@@ -1,0 +1,21 @@
+[package]
+name = "diffler-core"
+description = "Core review engine for diffler: sessions, diffs, verdicts, tasks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+git2.workspace = true
+similar.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

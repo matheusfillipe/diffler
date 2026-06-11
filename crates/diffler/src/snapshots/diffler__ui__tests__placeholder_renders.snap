@@ -1,0 +1,14 @@
+---
+source: crates/diffler/src/ui.rs
+expression: terminal.backend()
+---
+"╭ diffler ─────────────────────────────────────────────────╮"
+"│                     work in progress                     │"
+"│                                                          │"
+"│                         /tmp/repo                        │"
+"│                                                          │"
+"│                      press q to quit                     │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"╰──────────────────────────────────────────────────────────╯"
