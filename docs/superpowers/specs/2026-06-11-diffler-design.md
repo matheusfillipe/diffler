@@ -105,6 +105,17 @@ Doom-emacs/neogit keybindings are the default. Screens:
 
 Mouse: click select, wheel scroll. OSC52 for clipboard (works over ssh/tmux).
 
+## Configuration
+
+TOML, XDG-layered, every binding and preference configurable. Precedence (later wins):
+built-in defaults → `$XDG_CONFIG_HOME/diffler/config.toml` (fallback `~/.config/diffler/`,
+on every OS — unix-first, no platform dirs) → `<repo>/.diffler/config.toml` (per-project
+override) → CLI flags. CLI flags and config keys are the same framework: every flag has a
+config key (`--port` ↔ `port`), clap defaults come from the merged config. Sections:
+`[keys.status]`, `[keys.diff]`, `[keys.log]` (action = key remaps), `[ui]` (theme,
+context_lines, recent_commits), `[mcp]` (port, enabled), `[editor]` (command override).
+`diffler config --dump` prints the merged effective config with origins.
+
 ## Feedback markdown export
 
 `y`/`Y` produce markdown for paste into any agent:
