@@ -23,8 +23,8 @@ tokio = { version = "1.52", features = ["rt-multi-thread", "macros", "sync", "ti
 clap = { version = "4.6", features = ["derive"] }
 color-eyre = "0.6"
 thiserror = "2"
-git2 = { version = "0.20", default-features = false, features = ["vendored-libgit2"] }
-similar = { version = "2", features = ["inline", "unicode"] }
+git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2"] }
+similar = { version = "3", features = ["inline", "unicode"] }
 notify = "8.2"
 notify-debouncer-full = "0.7"
 rmcp = { version = "1", features = ["server", "transport-streamable-http-server"] }
