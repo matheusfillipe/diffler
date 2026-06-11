@@ -1,178 +1,178 @@
 # Diffler — Design Spec
 
-Date: 2026-06-11. Status: draft for review.
+Date: 2026-06-11 (revised same day: verdicts dropped, neogit UX adopted, git ops in M1).
+Status: approved, M1 in progress.
 
 ## What
 
-Terminal code review companion for AI coding agents. Launched in a repo (typically before/alongside
-Claude Code), it renders a live-updating, magit-style review UI and embeds an MCP server so any
-MCP-compatible harness interacts with the review: reads comments, receives hunk verdicts, reports
-work. Human reviews; agent responds; diff updates on the fly.
+Terminal code review companion for AI coding agents. Launched in a repo (typically alongside
+Claude Code), it renders a live-updating, neogit-style git UI and embeds an MCP server so any
+MCP-compatible harness reads review comments in place, answers questions, and reacts to
+feedback. Human reviews and operates git; agent responds; diff updates on the fly.
 
-Philosophy: YAGNI, KISS, suckless. One small native binary, alternate-screen TUI, dies with the
-terminal, no daemon, no browser.
+Philosophy: YAGNI, KISS, suckless. One small native binary, alternate-screen TUI, dies with
+the terminal, no daemon, no browser.
 
 ## Why (gap, validated in research/)
 
-Nobody combines: (1) MCP as the review protocol in a terminal TUI, (2) hunk-level accept/reject in
-an agent loop, (3) review + workload tracking in one surface, (4) live bidirectional updates.
-Closest competitors: hunk (custom daemon, TS, no verdicts), revdiff (one-shot exit codes), crit
-(web), tuicr (no MCP — rejected upstream), vibe-kanban (web, sunsetting). See `research/LANDSCAPE.md`.
+Nobody combines: (1) MCP as the review protocol in a terminal TUI, (2) a real magit-class
+git UI for the terminal review loop, (3) live bidirectional updates. Closest competitors:
+hunk (custom daemon, TS, no git ops), revdiff (one-shot exit codes), crit (web), tuicr
+(no MCP — rejected upstream). See `research/LANDSCAPE.md`, `research/NEOGIT-UX.md`.
 
-## Stack (locked — see research/STACK.md, research/VALIDATION.md)
+## Design decisions log
 
-Rust (edition 2024) · ratatui 0.30 + crossterm 0.29 · tokio · rmcp 1.7 (streamable HTTP via axum,
-localhost) · git2 0.20 · async-lsp 0.2 · notify 8.2 + debouncer · similar (histogram + inline) ·
-syntect + two-face. Decided after 4 side-by-side demos (`demos/`); deciding factors: agent
-self-testability (TestBackend + insta deterministic render tests), native latency, small binary.
+- **Verdicts (hunk accept/reject) dropped.** A bare reject carries no signal the agent can
+  act on. Comments are the feedback channel; "mark file viewed" covers the bookkeeping need.
+- **Worktrees/workspaces postponed** — undecided what multi-workspace UX should be.
+- **LSP postponed** (M3+). Architecture keeps room (async-lsp validated in research).
+- **Agent triggering**: MCP servers cannot initiate agent turns (sampling unsupported in
+  Claude Code, deprecated in spec 2026-07-28 RC). The loop is: agent long-polls
+  `wait_for_feedback`; the human submitting feedback unblocks it. Optionally documented
+  Claude Code hook snippet injects pending comments. Diffler spawning `claude -p` itself
+  is a possible future feature, not M1.
+
+## Stack (locked — research/STACK.md, research/VALIDATION.md)
+
+Rust edition 2024 · ratatui 0.30 + crossterm 0.29 · tokio · rmcp 1.7 (streamable HTTP via
+axum, localhost) · git2 0.21 · notify 8.2 + debouncer · similar 3 (histogram + graphemes) ·
+syntect + two-face · serde/serde_json · uuid.
 
 ## Architecture (single binary, library-core)
 
-Cargo workspace:
-
 ```
-diffler-core/   pure logic, no terminal: session model, diff pipeline, git, tasks, persistence
-diffler/        binary: TUI (ratatui) + MCP server (rmcp/axum) + LSP pool + watcher
-```
-
-Runtime (one tokio runtime, everything is tasks + channels):
-
-```
-#[tokio::main]
- ├─ MCP server task     axum on 127.0.0.1:{port}/mcp (port printed at startup; --port flag)
- ├─ watcher task        notify → debounce ~200ms → "dirty" signal; 5s fallback tick
- ├─ diff task           dirty → recompute diff + highlight off-thread → swap Arc<DiffModel>
- ├─ lsp pool task       async-lsp clients, lazy per language, registry TOML
- └─ main task           ratatui loop: EventStream + tokio::select! over all channels
+diffler-core/   pure logic: VCS trait + git backend, diff model, pairing/emphasis,
+                session (comments, viewed marks), markdown export, store, highlight
+diffler/        binary: TUI (ratatui) + MCP server (rmcp/axum) + watcher
 ```
 
-Rules: render loop never computes (slices visible lines from precomputed model); scroll anchored to
-(file, hunk, line-in-hunk) so agent edits don't jump the view; cache HighlightLines per file.
+### VCS abstraction
 
-## Core model (diffler-core)
+All version-control access goes through a `Vcs` trait in diffler-core (status, diffs, log,
+stage/unstage/discard, commit, branches). Only implementation now: git via git2. The trait
+exists because jj is coming; no second backend is built or stubbed (YAGNI), but nothing
+above the trait may import git2.
+
+### Runtime
+
+One tokio runtime: MCP server task (axum, `127.0.0.1:{port}/mcp`), watcher task (notify →
+debounce ~200ms → refresh signal, 5s fallback tick), diff/highlight recompute task (swaps
+`Arc<...>` models), main task = ratatui loop (`EventStream` + `select!`). Render loop never
+computes; scroll anchored to (file, hunk, line-in-hunk); HighlightLines cached per file.
+
+## Core model
 
 ```
 Session {
-  id, repo_path, diff_source: WorkingTree | RefRange(a, b) | Commit(sha) | Patch(path),
-  files: [FileReview { path, hunks: [HunkReview { header, verdict: Pending|Accepted|Rejected,
-                                                  lines, comments }],
-                       file_comments }],
-  comments: Comment { id, author (human|agent name), anchor (file, side, line | hunk | file),
-                      body, status: Open|Replied|Resolved, thread: [Reply] },
-  tasks: [Task { id, title, status: Todo|InProgress|Review|Done, branch?, attempts: u32, notes }],
+  comments: [Comment { id, author, anchor { file, line, on_old_side, hunk_id, line_text },
+                       body, status: Open|Replied|Resolved, replies, at }],
+  viewed:   { path -> content_hash },   // GitHub-style; resets when file changes
 }
 ```
 
-- Verdicts are diffler's differentiator: per-hunk Accept/Reject/Pending, set by human keys (`a`/`x`),
-  read by agent via MCP. Rejected hunks carry optional reason (comment-on-hunk).
-- Comment status lifecycle (open → replied → resolved) borrowed from diffx; unresolved comments +
-  rejected hunks = "not approved".
-- Persistence: JSON files under `.diffler/` in the repo (gitignored by default) — session survives
-  TUI restarts; agent loses nothing when TUI is down (MCP calls fail → harness retries; state on
-  disk). Schema is a semantic superset of tuicr sessions; `diffler export --tuicr` later (v1.5).
-- Hunk identity across live updates: content-hash anchored (like tuicr's reviewed_hunks); verdict
-  survives unrelated edits, resets if the hunk's content changes (a rejected hunk the agent rewrote
-  is genuinely new — back to Pending).
+- Comment anchors carry a `line_text` snapshot; UI marks comments outdated when the line
+  changed. Visual-mode comments anchor to a line range (start..end).
+- Viewed marks: `v` toggles; cleared automatically when the file's content hash changes.
+- Persistence: JSON in `.diffler/` (atomic temp+rename, self-gitignored). Session survives
+  TUI restarts; agent tool calls fail while TUI is down (no daemon, by design) and harnesses
+  retry.
 
-## Diff pipeline (research/DIFF-RENDERING.md recipe, Tier 1)
+## Diff pipeline (research/DIFF-RENDERING.md Tier 1)
 
-git2 hunks with histogram algorithm → similarity line-pairing → `similar` char-level intra-line
-spans → syntect highlights WHOLE file each side, sliced onto diff lines (correct across hunk
-boundaries) → composite: syntax fg, diff line bg, brighter intra-line bg. GitHub-dark theme from
-`demos/SPEC.md` is the default; theme = TOML. Progressive: plain text first frame, highlighted swap
-when ready.
+git2 hunks → similarity line-pairing → grapheme-level intraline emphasis (byte ranges) →
+syntect highlights WHOLE files, sliced onto diff lines → composite syntax-fg over diff-bg
+over emphasis-bg. GitHub-dark default theme. Progressive render (plain first frame OK).
 
-## Diff sources (no worktree management — research/WORKSPACES.md)
+## TUI (UX contract: research/NEOGIT-UX.md)
 
-`diffler` (working tree vs HEAD, default) · `diffler main` / `diffler a..b` / `diffler <sha>` ·
-`diffler --patch f.patch`. Existing worktrees listed read-only on Home as switchable diff sources.
-Diffler never creates/manages isolation — that's the orchestrator's job.
+Doom-emacs/neogit keybindings are the default. Screens:
 
-## TUI
+1. **Status (initial view)** — neogit layout: Head line, Untracked / Unstaged / Staged
+   sections (files expand inline to diffs via TAB), Recent commits (10, folded).
+   Keys: `j/k`, TAB fold, `s/u` stage/unstage (file or hunk), `S/U` all, `x` discard
+   (confirmed), `cc` commit ($EDITOR flow, submit/abort), `b` branch popup (`c` create+
+   checkout, `n` create, `D` delete), `ll` log, `<cr>` open, `<c-r>` refresh, `{`/`}` hunk
+   jumps, `?` help, `q` quit.
+2. **Log view (`ll`)** — `[7-char oid] [decorations] [subject]` rows, `<cr>` opens that
+   commit's diff in the diff view, j/k scroll, q back.
+3. **Diff/review view** — working-tree diff or a commit's diff; magit-style continuous
+   scroll across files/hunks; TAB folds files; syntax + word-level emphasis rendering.
+   Review keys: `c` comment on cursor line, `V` visual line-select then `c` comment on
+   range, `r` reply/resolve thread under cursor, `v` mark file viewed, `y` copy current
+   file's feedback as markdown, `Y` copy all feedback as markdown, `e` open `$EDITOR` at
+   the cursor's file:line (TUI suspends, subprocess runs, view + cursor restored on exit).
+4. **Modals** — comment input, confirm dialogs, branch popup, help. Transient popup model.
 
-Screens:
-1. **Home (magit-style)**: sections (TAB fold): Workspaces/branches (read-only diff sources),
-   Changes (files +n −n), Tasks (workload board: todo/in-progress/review/done with attempt counts),
-   Recent commits. `Enter` opens diff; `j/k` move; section keys jump.
-2. **Review (diff view)**: file sidebar + unified diff (side-by-side later), inline comment threads,
-   verdict chips per hunk. Keys: `j/k` lines, `J/K` hunks, `]f [f` files, `c` comment, `a` accept
-   hunk, `x` reject hunk, `r` reply/resolve, `K`(hover) `gd`(definition) `gr`(references) via LSP,
-   `e` open $EDITOR at line, `q` back.
-3. **Modals**: comment input, LSP results list (pick → jump or open editor), help (`?`).
+Mouse: click select, wheel scroll. OSC52 for clipboard (works over ssh/tmux).
 
-Mouse: click select/focus, wheel scroll. Select-to-copy: Shift+drag (documented); OSC52 yank on `y`
-for current line/hunk. Status bar: mode chip, repo@branch, MCP port + connected-client indicator,
-pending-comment count.
+## Feedback markdown export
+
+`y`/`Y` produce markdown for paste into any agent:
+
+```markdown
+## Review feedback — <repo> @ <branch> (<n> comments)
+
+### src/auth.py:42 (… context: `if claims.expiry <= now() - LEEWAY:`)
+> why LEEWAY here? clock skew? link the incident.
+
+### src/auth.py:50-58 (range)
+> this whole block duplicates validate_token
+```
+
+Includes file path, line/range, short diff/file context snippet, comment body, thread state.
 
 ## MCP interface (v1 tools)
 
 ```
-review_status()                 → { session, files, verdict counts, unresolved comments } — entry point
-get_diff(file?)                 → unified diff + hunk ids + verdicts
-get_comments(status?)           → comments with anchors + threads   (agent polls this)
-reply_comment(id, body)         → posts reply, marks Replied; TUI shows it live
-resolve_comment(id)             → agent claims fixed; human confirms resolve in TUI
-get_verdicts()                  → hunk verdicts + reject reasons    (agent's fix list)
-request_review(summary?)        → BLOCKS until human acts (approve session / comments+rejections
-                                  exist) → returns verdict bundle. The human-in-the-loop gate;
-                                  long-poll with timeout + cursor so harness timeouts are safe.
-list_tasks() / upsert_task(...) → workload tracking; agent reports todo/in-progress/review/done
-navigate(file, line)            → TUI jumps (human attention pointer)
+review_status()                  → repo, branch, files changed, viewed map, open comment count
+get_diff(file?)                  → unified diff text (whole or one file)
+get_comments(status?)            → comments with anchors, context snippet, threads
+reply_comment(id, body)          → agent answers in place; TUI renders the reply live
+resolve_comment(id)              → agent proposes resolved; human confirms in TUI (status
+                                   moves to Replied until human resolves — agent cannot
+                                   close the loop alone)
+wait_for_feedback(timeout_s)     → long-poll; returns when the human posts/edits comments
+                                   or presses the "send to agent" key; cursor token for
+                                   safe re-polling. THE agent-trigger mechanism.
+mark_viewed(file) / viewed map exposure for agent awareness (read-only effect on TUI list)
 ```
 
-Notifications: `tools/list_changed` on capability changes; otherwise agents poll (Claude Code lacks
-`resources/subscribe`). No sampling (unsupported + deprecated). Elicitation not used in v1 (verdicts
-belong in diffler's UI, not harness dialogs).
-
-Connection: TUI prints `claude mcp add --transport http diffler http://127.0.0.1:{port}/mcp` at
-startup; `diffler mcp-add` helper runs it. Fixed default port (config) so the registration survives
-restarts.
-
-## LSP (registry pattern — research/LSP-CLIENT-ARCHITECTURE.md, via async-lsp)
-
-Bundled `languages.toml` (helix-style: file-types, root markers, server priority chains, install
-hints). Detect → first-on-PATH wins → lazy spawn per language → prompt with install command if
-missing (never auto-install). Features: hover, definition, references, diagnostics in gutter.
-Agent edits → full-text didChange (open files) + didChangeWatchedFiles (wired to notify watcher).
-Negotiate utf-8 positions; answer server→client requests; cancel on cursor move; "indexing…" state
-from $/progress. LSP failures degrade silently to plain review — never block the review loop.
-
-## Error handling
-
-- TUI closed ⇒ MCP down: by design (no daemon). State persisted in `.diffler/`; agent's tool call
-  fails with connection refused; harness retries; human relaunches. `request_review` long-poll
-  returns cursor tokens so re-calls resume cleanly.
-- Repo edge cases: binary files (marker, no diff), renames (git2 detection), merge conflicts (show
-  conflict markers as-is), empty diff (clean-tree screen).
-- Watcher missed events: 5s fallback tick guarantees eventual consistency.
-- LSP server crash: restart once, then disable for session with status-bar notice.
-- Panic safety: ratatui restore hook (no wrecked terminals).
+Connection: TUI prints `claude mcp add --transport http diffler http://127.0.0.1:{port}/mcp`
+at startup; fixed default port (config). Notifications: tool polling only (Claude Code has
+no resources/subscribe). No sampling, no elicitation in v1.
 
 ## Testing (3 layers, all agent-drivable)
 
-1. `cargo test`: diffler-core pure-logic tests + ratatui TestBackend + insta snapshots (cell-exact
-   UI regression, deterministic).
-2. PTY integration: pexpect + pyte harness (proven in demos — `verify.py` pattern), tape-style
-   scripts in `tests/tapes/`.
-3. MCP E2E: test client calls tools against a running instance, asserts TUI state via PTY scrape.
+1. `cargo test` / nextest: core logic against **fixture git repos built in tempdirs**
+   (git2-driven `Fixture` helper: write/commit/branch/stage states), ratatui TestBackend +
+   insta snapshots for every screen.
+2. PTY integration: pexpect + pyte harness driving the real binary inside /tmp fixture
+   repos (pattern proven in demos/*/verify.py): launch, assert rendered status, stage,
+   comment, copy, quit.
+3. MCP E2E: HTTP test client calls tools against a running instance; asserts session state
+   and TUI render (via PTY scrape).
 
-## Milestones (full vision = v1; shipped incrementally)
+## Distribution
 
-- **M1 — review loop**: working-tree diff, live watcher, GitHub-dark rendering (full pipeline),
-  comments + verdicts, MCP server with all review tools, persistence. *Useful + differentiated alone.*
-- **M2 — sources + ergonomics**: ref/range/patch sources, worktree listing, $EDITOR escape, OSC52,
-  side-by-side toggle, themes, mouse polish.
-- **M3 — workload tracking**: tasks model + Home board + task MCP tools.
-- **M4 — LSP**: pool, registry, hover/def/refs, diagnostics gutter.
+- GitHub releases: tag-triggered, 6 native-runner targets (in place).
+- crates.io + npm: publish workflows using repo secrets (`CARGO_REGISTRY_TOKEN`,
+  `NPM_TOKEN`). npm = esbuild-style per-platform `optionalDependencies` packages +
+  `diffler` entry package with launcher shim; repacks release archives.
+- README documents: install (cargo/npm/binary), MCP setup for Claude Code, the agent
+  feedback loop, hook snippet.
+
+## Milestones
+
+- **M1 (current)**: everything above — neogit-core TUI (status/log/diff, stage/unstage/
+  discard/commit/branch), comments + visual-mode comments + viewed marks + markdown export,
+  live watcher, MCP server with the tool set, fixture+PTY+MCP test layers, publish
+  workflows, README.
+- **M2**: ref/range/patch diff sources, $EDITOR jump, side-by-side, themes, stash/push/pull
+  popups, agent-trigger hook polish.
+- **M3**: workload tracking; LSP. **Later**: jj backend, structural diff toggle.
 
 ## Non-goals
 
-Creating/managing worktrees, containers, branches · forge integration (GitHub/GitLab PRs) ·
-difftastic-style structural diff (maybe later as toggle) · being an orchestrator · sampling/elicitation
-· Windows (v1 targets macOS/Linux; nothing should preclude later support).
-
-## Open questions
-
-- Crate name availability (`diffler` on crates.io) — check before publish.
-- `request_review` long-poll duration vs harness tool-timeout defaults — needs empirical tuning (M1).
-- Verdict granularity below hunk (line ranges) — punt unless review demands it.
+Worktree/workspace management (undecided, postponed) · forge (GitHub PR) integration ·
+orchestrating agents (spawning `claude -p` is future work) · Windows in v1 (build exists,
+unsupported) · difftastic-style structural diff.
