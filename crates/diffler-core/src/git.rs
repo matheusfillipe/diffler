@@ -2,10 +2,11 @@
 //! (test fixtures aside).
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 
-use crate::model::{DiffLine, DiffModel, FileDiff, FileStatus, Hunk, LineKind, hunk_id};
+use crate::model::{DiffLine, DiffModel, FileDiff, FileStatus, Hunk, HunkId, LineKind, hunk_id};
 use crate::vcs::{BranchInfo, HeadInfo, LogEntry, StatusModel, Vcs, VcsError};
 
 pub struct GitVcs {
@@ -28,6 +29,10 @@ impl GitVcs {
             Err(err) if err.code() == git2::ErrorCode::UnbornBranch => Ok(None),
             Err(err) => Err(err.into()),
         }
+    }
+
+    fn workdir_path(&self) -> Result<&Path, VcsError> {
+        self.repo.workdir().ok_or(VcsError::NoWorkdir)
     }
 }
 
@@ -173,6 +178,193 @@ impl Vcs for GitVcs {
         }
         Ok(out)
     }
+
+    fn stage(&self, rel: &Path) -> Result<(), VcsError> {
+        let root = self.workdir_path()?;
+        let mut index = self.repo.index()?;
+        if root.join(rel).exists() {
+            index.add_path(rel)?;
+        } else {
+            index.remove_path(rel)?;
+        }
+        index.write()?;
+        Ok(())
+    }
+
+    fn stage_hunk(&self, rel: &Path, hunk: &HunkId) -> Result<(), VcsError> {
+        let mut diff = self
+            .repo
+            .diff_index_to_workdir(None, Some(&mut workdir_diff_options()))?;
+        let model = diff_to_model(&self.repo, &mut diff)?;
+        let patch = synthesize_patch(&model, rel, hunk, false)?;
+        let diff = git2::Diff::from_buffer(patch.as_bytes())?;
+        self.repo.apply(&diff, git2::ApplyLocation::Index, None)?;
+        Ok(())
+    }
+
+    fn unstage(&self, rel: &Path) -> Result<(), VcsError> {
+        match self.repo.head() {
+            Ok(head) => {
+                let target = head.peel(git2::ObjectType::Commit)?;
+                self.repo.reset_default(Some(&target), [rel])?;
+            }
+            // unborn branch: there is no HEAD entry to restore, drop from index
+            Err(err) if err.code() == git2::ErrorCode::UnbornBranch => {
+                let mut index = self.repo.index()?;
+                index.remove_path(rel)?;
+                index.write()?;
+            }
+            Err(err) => return Err(err.into()),
+        }
+        Ok(())
+    }
+
+    fn unstage_hunk(&self, rel: &Path, hunk: &HunkId) -> Result<(), VcsError> {
+        let head_tree = self.head_tree()?;
+        let mut opts = git2::DiffOptions::new();
+        opts.context_lines(3);
+        let mut diff = self
+            .repo
+            .diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts))?;
+        let model = diff_to_model(&self.repo, &mut diff)?;
+        let patch = synthesize_patch(&model, rel, hunk, true)?;
+        let diff = git2::Diff::from_buffer(patch.as_bytes())?;
+        self.repo.apply(&diff, git2::ApplyLocation::Index, None)?;
+        Ok(())
+    }
+
+    fn discard(&self, rel: &Path) -> Result<(), VcsError> {
+        let head_tree = self.head_tree()?;
+        let mut opts = git2::DiffOptions::new();
+        opts.pathspec(rel).disable_pathspec_match(true);
+        let staged = self
+            .repo
+            .diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts))?;
+        if staged.deltas().len() > 0 {
+            return Err(VcsError::Rejected(
+                "file has staged changes; unstage first".into(),
+            ));
+        }
+        let status = self.repo.status_file(rel)?;
+        if status.contains(git2::Status::WT_NEW) {
+            fs::remove_file(self.workdir_path()?.join(rel))?;
+            return Ok(());
+        }
+        let mut checkout = git2::build::CheckoutBuilder::new();
+        checkout.path(rel).force().update_index(false);
+        self.repo.checkout_head(Some(&mut checkout))?;
+        Ok(())
+    }
+
+    fn commit(&self, message: &str) -> Result<String, VcsError> {
+        if message.trim().is_empty() {
+            return Err(VcsError::Rejected("empty commit message".into()));
+        }
+        let mut index = self.repo.index()?;
+        let tree_id = index.write_tree()?;
+        let tree = self.repo.find_tree(tree_id)?;
+        let signature = self.repo.signature()?;
+        let parent = match self.repo.head() {
+            Ok(head) => Some(head.peel_to_commit()?),
+            Err(err) if err.code() == git2::ErrorCode::UnbornBranch => None,
+            Err(err) => return Err(err.into()),
+        };
+        let parents: Vec<&git2::Commit<'_>> = parent.iter().collect();
+        let oid = self.repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            message,
+            &tree,
+            &parents,
+        )?;
+        Ok(oid.to_string())
+    }
+
+    fn create_branch(&self, name: &str, checkout: bool) -> Result<(), VcsError> {
+        let head = self.repo.head()?.peel_to_commit()?;
+        self.repo.branch(name, &head, false)?;
+        if checkout {
+            self.checkout(name)?;
+        }
+        Ok(())
+    }
+
+    fn delete_branch(&self, name: &str) -> Result<(), VcsError> {
+        let mut branch = self.repo.find_branch(name, git2::BranchType::Local)?;
+        if branch.is_head() {
+            return Err(VcsError::Rejected(
+                "cannot delete the checked-out branch".into(),
+            ));
+        }
+        branch.delete()?;
+        Ok(())
+    }
+
+    fn checkout(&self, name: &str) -> Result<(), VcsError> {
+        let branch = self.repo.find_branch(name, git2::BranchType::Local)?;
+        let target = branch.get().peel(git2::ObjectType::Commit)?;
+        // safe (non-force) checkout: refuses to clobber local modifications
+        self.repo.checkout_tree(&target, None)?;
+        self.repo.set_head(&format!("refs/heads/{name}"))?;
+        Ok(())
+    }
+}
+
+/// Render one hunk of `rel` as a unified patch libgit2 can apply to the
+/// index. `reverse` flips the patch so applying it undoes a staged hunk.
+fn synthesize_patch(
+    model: &DiffModel,
+    rel: &Path,
+    hunk: &HunkId,
+    reverse: bool,
+) -> Result<String, VcsError> {
+    let rel = rel.to_string_lossy();
+    let Some((file, hunk)) = model
+        .files
+        .iter()
+        .filter(|f| f.path == rel)
+        .flat_map(|f| f.hunks.iter().map(move |h| (f, h)))
+        .find(|(_, h)| &h.id == hunk)
+    else {
+        return Err(VcsError::Rejected("hunk not found (diff changed?)".into()));
+    };
+
+    // writes to a String are infallible, so the fmt results are discarded
+    let mut patch = String::new();
+    let _ = writeln!(patch, "diff --git a/{0} b/{0}", file.path);
+    let added = matches!(file.status, FileStatus::Added | FileStatus::Untracked);
+    if added && !reverse {
+        let _ = writeln!(patch, "new file mode 100644");
+        let _ = writeln!(patch, "--- /dev/null");
+    } else {
+        let _ = writeln!(patch, "--- a/{}", file.path);
+    }
+    let _ = writeln!(patch, "+++ b/{}", file.path);
+    if reverse {
+        let _ = writeln!(
+            patch,
+            "@@ -{},{} +{},{} @@",
+            hunk.new_start, hunk.new_lines, hunk.old_start, hunk.old_lines
+        );
+    } else {
+        let _ = writeln!(
+            patch,
+            "@@ -{},{} +{},{} @@",
+            hunk.old_start, hunk.old_lines, hunk.new_start, hunk.new_lines
+        );
+    }
+    for line in &hunk.lines {
+        let origin = match (line.kind, reverse) {
+            (LineKind::Context, _) => ' ',
+            (LineKind::Deleted, false) | (LineKind::Added, true) => '-',
+            (LineKind::Added, false) | (LineKind::Deleted, true) => '+',
+        };
+        patch.push(origin);
+        patch.push_str(&line.text);
+        patch.push('\n');
+    }
+    Ok(patch)
 }
 
 fn workdir_diff_options() -> git2::DiffOptions {

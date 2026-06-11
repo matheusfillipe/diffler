@@ -1,11 +1,12 @@
 mod common;
 
 use std::fmt::Write as _;
+use std::path::Path;
 
 use common::Fixture;
 use diffler_core::git::GitVcs;
 use diffler_core::model::{FileStatus, LineKind};
-use diffler_core::vcs::Vcs;
+use diffler_core::vcs::{Vcs, VcsError};
 
 // helper fns run outside #[test] fns, where clippy's test allowances don't reach
 #[allow(clippy::expect_used)]
@@ -322,4 +323,229 @@ fn branches_lists_locals_with_head_marker() {
         .find(|b| b.name == "other")
         .expect("other listed");
     assert!(!other.is_head);
+}
+
+#[test]
+fn stage_moves_untracked_to_staged() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "x\n");
+    fx.commit_all("base");
+    fx.write("new.txt", "fresh\n");
+
+    let v = vcs(&fx);
+    v.stage(Path::new("new.txt")).expect("stage");
+
+    let st = v.status().expect("status");
+    assert!(st.untracked.files.is_empty());
+    assert!(st.unstaged.files.is_empty());
+    assert_eq!(st.staged.files.len(), 1);
+    assert_eq!(st.staged.files[0].path, "new.txt");
+    assert_eq!(st.staged.files[0].status, FileStatus::Added);
+}
+
+#[test]
+fn stage_records_a_worktree_deletion() {
+    let fx = Fixture::new();
+    fx.write("gone.txt", "bye\n");
+    fx.commit_all("base");
+    fx.remove("gone.txt");
+
+    let v = vcs(&fx);
+    v.stage(Path::new("gone.txt")).expect("stage");
+
+    let st = v.status().expect("status");
+    assert!(st.unstaged.files.is_empty());
+    assert_eq!(st.staged.files.len(), 1);
+    assert_eq!(st.staged.files[0].status, FileStatus::Deleted);
+}
+
+#[test]
+fn unstage_reverses_stage() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\n");
+    fx.commit_all("base");
+    fx.write("a.txt", "ONE\n");
+
+    let v = vcs(&fx);
+    v.stage(Path::new("a.txt")).expect("stage");
+    assert_eq!(v.status().expect("status").staged.files.len(), 1);
+
+    v.unstage(Path::new("a.txt")).expect("unstage");
+    let st = v.status().expect("status");
+    assert!(st.staged.files.is_empty());
+    assert_eq!(st.unstaged.files.len(), 1);
+    assert_eq!(st.unstaged.files[0].path, "a.txt");
+}
+
+#[test]
+fn stage_one_hunk_of_two_then_unstage_hunk_reverses() {
+    let fx = Fixture::new();
+    let mut base = String::new();
+    for i in 1..=40 {
+        writeln!(base, "line {i}").expect("write");
+    }
+    fx.write("a.txt", &base);
+    fx.commit_all("base");
+    let edited = base
+        .replace("line 5\n", "LINE FIVE\n")
+        .replace("line 35\n", "LINE THIRTY-FIVE\n");
+    fx.write("a.txt", &edited);
+
+    let v = vcs(&fx);
+    let st = v.status().expect("status");
+    assert_eq!(st.unstaged.files[0].hunks.len(), 2);
+    let first = st.unstaged.files[0].hunks[0].id.clone();
+
+    v.stage_hunk(Path::new("a.txt"), &first)
+        .expect("stage hunk");
+
+    let st = v.status().expect("status");
+    assert_eq!(st.staged.files.len(), 1);
+    assert_eq!(st.staged.files[0].hunks.len(), 1);
+    assert_eq!(st.staged.files[0].hunks[0].id, first);
+    assert_eq!(st.unstaged.files.len(), 1);
+    assert_eq!(st.unstaged.files[0].hunks.len(), 1);
+
+    v.unstage_hunk(Path::new("a.txt"), &first)
+        .expect("unstage hunk");
+
+    let st = v.status().expect("status");
+    assert!(st.staged.files.is_empty());
+    assert_eq!(st.unstaged.files[0].hunks.len(), 2);
+}
+
+#[test]
+fn stage_hunk_with_stale_id_is_rejected() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\n");
+    fx.commit_all("base");
+    fx.write("a.txt", "ONE\n");
+
+    let v = vcs(&fx);
+    let stale = diffler_core::model::HunkId("0000000000000000000000000000000000000000".into());
+    let err = v.stage_hunk(Path::new("a.txt"), &stale).expect_err("stale");
+    assert!(matches!(err, VcsError::Rejected(_)));
+}
+
+#[test]
+fn discard_restores_modified_file() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\n");
+    fx.commit_all("base");
+    fx.write("a.txt", "CHANGED\n");
+
+    let v = vcs(&fx);
+    v.discard(Path::new("a.txt")).expect("discard");
+
+    let content = std::fs::read_to_string(fx.root().join("a.txt")).expect("read");
+    assert_eq!(content, "one\n");
+    assert!(v.working_tree_diff().expect("diff").files.is_empty());
+}
+
+#[test]
+fn discard_deletes_untracked_file() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "x\n");
+    fx.commit_all("base");
+    fx.write("junk.txt", "scratch\n");
+
+    let v = vcs(&fx);
+    v.discard(Path::new("junk.txt")).expect("discard");
+    assert!(!fx.root().join("junk.txt").exists());
+}
+
+#[test]
+fn discard_of_staged_file_is_rejected() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\n");
+    fx.commit_all("base");
+    fx.write("a.txt", "STAGED\n");
+
+    let v = vcs(&fx);
+    v.stage(Path::new("a.txt")).expect("stage");
+    let err = v.discard(Path::new("a.txt")).expect_err("rejected");
+    assert!(matches!(err, VcsError::Rejected(_)));
+    let content = std::fs::read_to_string(fx.root().join("a.txt")).expect("read");
+    assert_eq!(content, "STAGED\n");
+}
+
+#[test]
+fn commit_creates_commit_and_clears_staged() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\n");
+    fx.commit_all("base");
+    fx.write("a.txt", "two\n");
+
+    let v = vcs(&fx);
+    v.stage(Path::new("a.txt")).expect("stage");
+    let oid = v.commit("change a").expect("commit");
+    assert_eq!(oid.len(), 40);
+
+    assert!(v.status().expect("status").staged.files.is_empty());
+    let entries = v.log(10).expect("log");
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].subject, "change a");
+    assert_eq!(entries[0].oid, oid);
+}
+
+#[test]
+fn empty_commit_message_is_rejected() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\n");
+    fx.commit_all("base");
+
+    let v = vcs(&fx);
+    let err = v.commit("  \n").expect_err("rejected");
+    assert!(matches!(err, VcsError::Rejected(_)));
+}
+
+#[test]
+fn branch_create_checkout_and_delete() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "x\n");
+    fx.commit_all("base");
+
+    let v = vcs(&fx);
+    let original = v.head().expect("head").branch.expect("on a branch");
+
+    v.create_branch("feature", true).expect("create");
+    assert_eq!(v.head().expect("head").branch.as_deref(), Some("feature"));
+
+    let err = v.delete_branch("feature").expect_err("current branch");
+    assert!(matches!(err, VcsError::Rejected(_)));
+
+    let branches = v.branches().expect("branches");
+    let feature = branches
+        .iter()
+        .find(|b| b.name == "feature")
+        .expect("feature listed");
+    assert!(feature.is_head);
+
+    v.checkout(&original).expect("checkout");
+    assert_eq!(v.head().expect("head").branch, Some(original));
+    v.delete_branch("feature").expect("delete");
+    assert!(
+        !v.branches()
+            .expect("branches")
+            .iter()
+            .any(|b| b.name == "feature")
+    );
+}
+
+#[test]
+fn create_branch_without_checkout_keeps_head() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "x\n");
+    fx.commit_all("base");
+
+    let v = vcs(&fx);
+    let original = v.head().expect("head").branch;
+    v.create_branch("idle", false).expect("create");
+    assert_eq!(v.head().expect("head").branch, original);
+    assert!(
+        v.branches()
+            .expect("branches")
+            .iter()
+            .any(|b| b.name == "idle")
+    );
 }
