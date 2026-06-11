@@ -2,7 +2,6 @@
 //! (test fixtures aside).
 
 use std::collections::HashMap;
-use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 
@@ -138,7 +137,8 @@ impl Vcs for GitVcs {
             let Ok(name) = reference.shorthand().map(str::to_owned) else {
                 continue;
             };
-            let Some(target) = reference.resolve().ok().and_then(|r| r.target()) else {
+            // peel through symbolic refs and annotated tags to the commit
+            let Some(target) = reference.peel_to_commit().ok().map(|c| c.id()) else {
                 continue;
             };
             refs_by_oid.entry(target).or_default().push(name);
@@ -192,12 +192,11 @@ impl Vcs for GitVcs {
     }
 
     fn stage_hunk(&self, rel: &Path, hunk: &HunkId) -> Result<(), VcsError> {
-        let mut diff = self
+        let diff = self
             .repo
             .diff_index_to_workdir(None, Some(&mut workdir_diff_options()))?;
-        let model = diff_to_model(&self.repo, &mut diff)?;
-        let patch = synthesize_patch(&model, rel, hunk, false)?;
-        let diff = git2::Diff::from_buffer(patch.as_bytes())?;
+        let patch = synthesize_patch(&diff, rel, hunk, false)?;
+        let diff = git2::Diff::from_buffer(&patch)?;
         self.repo.apply(&diff, git2::ApplyLocation::Index, None)?;
         Ok(())
     }
@@ -223,12 +222,11 @@ impl Vcs for GitVcs {
         let head_tree = self.head_tree()?;
         let mut opts = git2::DiffOptions::new();
         opts.context_lines(3);
-        let mut diff = self
+        let diff = self
             .repo
             .diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts))?;
-        let model = diff_to_model(&self.repo, &mut diff)?;
-        let patch = synthesize_patch(&model, rel, hunk, true)?;
-        let diff = git2::Diff::from_buffer(patch.as_bytes())?;
+        let patch = synthesize_patch(&diff, rel, hunk, true)?;
+        let diff = git2::Diff::from_buffer(&patch)?;
         self.repo.apply(&diff, git2::ApplyLocation::Index, None)?;
         Ok(())
     }
@@ -313,58 +311,85 @@ impl Vcs for GitVcs {
 
 /// Render one hunk of `rel` as a unified patch libgit2 can apply to the
 /// index. `reverse` flips the patch so applying it undoes a staged hunk.
+/// Built from the raw git2 patch lines (not the display model) so original
+/// line endings and missing-trailing-newline markers survive intact.
 fn synthesize_patch(
-    model: &DiffModel,
+    diff: &git2::Diff<'_>,
     rel: &Path,
-    hunk: &HunkId,
+    target: &HunkId,
     reverse: bool,
-) -> Result<String, VcsError> {
+) -> Result<Vec<u8>, VcsError> {
     let rel = rel.to_string_lossy();
-    let Some((file, hunk)) = model
-        .files
-        .iter()
-        .filter(|f| f.path == rel)
-        .flat_map(|f| f.hunks.iter().map(move |h| (f, h)))
-        .find(|(_, h)| &h.id == hunk)
-    else {
-        return Err(VcsError::Rejected("hunk not found (diff changed?)".into()));
-    };
-
-    // writes to a String are infallible, so the fmt results are discarded
-    let mut patch = String::new();
-    let _ = writeln!(patch, "diff --git a/{0} b/{0}", file.path);
-    let added = matches!(file.status, FileStatus::Added | FileStatus::Untracked);
-    if added && !reverse {
-        let _ = writeln!(patch, "new file mode 100644");
-        let _ = writeln!(patch, "--- /dev/null");
-    } else {
-        let _ = writeln!(patch, "--- a/{}", file.path);
-    }
-    let _ = writeln!(patch, "+++ b/{}", file.path);
-    if reverse {
-        let _ = writeln!(
-            patch,
-            "@@ -{},{} +{},{} @@",
-            hunk.new_start, hunk.new_lines, hunk.old_start, hunk.old_lines
-        );
-    } else {
-        let _ = writeln!(
-            patch,
-            "@@ -{},{} +{},{} @@",
-            hunk.old_start, hunk.old_lines, hunk.new_start, hunk.new_lines
-        );
-    }
-    for line in &hunk.lines {
-        let origin = match (line.kind, reverse) {
-            (LineKind::Context, _) => ' ',
-            (LineKind::Deleted, false) | (LineKind::Added, true) => '-',
-            (LineKind::Added, false) | (LineKind::Deleted, true) => '+',
+    for idx in 0..diff.deltas().len() {
+        let Some(patch) = git2::Patch::from_diff(diff, idx)? else {
+            continue;
         };
-        patch.push(origin);
-        patch.push_str(&line.text);
-        patch.push('\n');
+        let delta = patch.delta();
+        if delta.flags().is_binary() || delta_new_path(&delta) != rel {
+            continue;
+        }
+        for h in 0..patch.num_hunks() {
+            if hunk_id(&rel, &hunk_model_lines(&patch, h)?)? == *target {
+                return render_hunk_patch(&patch, h, &rel, delta.status(), reverse);
+            }
+        }
     }
-    Ok(patch)
+    Err(VcsError::Rejected("hunk not found (diff changed?)".into()))
+}
+
+fn render_hunk_patch(
+    patch: &git2::Patch<'_>,
+    h: usize,
+    rel: &str,
+    status: git2::Delta,
+    reverse: bool,
+) -> Result<Vec<u8>, VcsError> {
+    let added = matches!(status, git2::Delta::Added | git2::Delta::Untracked);
+    let deleted = status == git2::Delta::Deleted;
+    let mut out = Vec::new();
+    out.extend_from_slice(format!("diff --git a/{rel} b/{rel}\n").as_bytes());
+    // whole-file adds and deletes must keep that identity (with the sides
+    // swapped under reverse) so applying creates or drops the index entry
+    // instead of leaving an empty blob behind
+    if (added && !reverse) || (deleted && reverse) {
+        out.extend_from_slice(
+            format!("new file mode 100644\n--- /dev/null\n+++ b/{rel}\n").as_bytes(),
+        );
+    } else if (deleted && !reverse) || (added && reverse) {
+        out.extend_from_slice(
+            format!("deleted file mode 100644\n--- a/{rel}\n+++ /dev/null\n").as_bytes(),
+        );
+    } else {
+        out.extend_from_slice(format!("--- a/{rel}\n+++ b/{rel}\n").as_bytes());
+    }
+    let (hunk, line_count) = patch.hunk(h)?;
+    let (old, new) = (
+        (hunk.old_start(), hunk.old_lines()),
+        (hunk.new_start(), hunk.new_lines()),
+    );
+    let ((minus_start, minus_lines), (plus_start, plus_lines)) =
+        if reverse { (new, old) } else { (old, new) };
+    out.extend_from_slice(
+        format!("@@ -{minus_start},{minus_lines} +{plus_start},{plus_lines} @@\n").as_bytes(),
+    );
+    for l in 0..line_count {
+        let line = patch.line_in_hunk(h, l)?;
+        let origin = match (line.origin(), reverse) {
+            (' ', _) => Some(b' '),
+            ('+', false) | ('-', true) => Some(b'+'),
+            ('-', false) | ('+', true) => Some(b'-'),
+            // EOF-newline markers already carry the full "\ No newline at
+            // end of file" text, including the newline that terminates the
+            // preceding unterminated line, so they pass through unprefixed
+            ('=' | '>' | '<', _) => None,
+            _ => continue,
+        };
+        if let Some(origin) = origin {
+            out.push(origin);
+        }
+        out.extend_from_slice(line.content());
+    }
+    Ok(out)
 }
 
 fn workdir_diff_options() -> git2::DiffOptions {
@@ -422,27 +447,8 @@ fn build_file(
 
     let mut hunks = Vec::new();
     for h in 0..patch.num_hunks() {
-        let (hunk, line_count) = patch.hunk(h)?;
-        let mut lines = Vec::with_capacity(line_count);
-        for l in 0..line_count {
-            let line = patch.line_in_hunk(h, l)?;
-            let kind = match line.origin() {
-                '-' => LineKind::Deleted,
-                '+' => LineKind::Added,
-                ' ' => LineKind::Context,
-                // headers, EOF-newline markers etc. are not content lines
-                _ => continue,
-            };
-            let text = String::from_utf8_lossy(line.content())
-                .trim_end_matches(['\n', '\r'])
-                .to_owned();
-            lines.push(DiffLine::new(
-                kind,
-                line.old_lineno(),
-                line.new_lineno(),
-                text,
-            ));
-        }
+        let (hunk, _) = patch.hunk(h)?;
+        let lines = hunk_model_lines(&patch, h)?;
         let id = hunk_id(&file_path, &lines)?;
         hunks.push(Hunk {
             id,
@@ -463,6 +469,34 @@ fn build_file(
         new_text,
         hunks,
     }))
+}
+
+/// Content lines of one hunk as model lines (headers and EOF-newline markers
+/// excluded). Shared by model building and hunk lookup so the hunk ids
+/// computed in both places agree.
+fn hunk_model_lines(patch: &git2::Patch<'_>, h: usize) -> Result<Vec<DiffLine>, VcsError> {
+    let (_, line_count) = patch.hunk(h)?;
+    let mut lines = Vec::with_capacity(line_count);
+    for l in 0..line_count {
+        let line = patch.line_in_hunk(h, l)?;
+        let kind = match line.origin() {
+            '-' => LineKind::Deleted,
+            '+' => LineKind::Added,
+            ' ' => LineKind::Context,
+            // headers, EOF-newline markers etc. are not content lines
+            _ => continue,
+        };
+        let text = String::from_utf8_lossy(line.content())
+            .trim_end_matches(['\n', '\r'])
+            .to_owned();
+        lines.push(DiffLine::new(
+            kind,
+            line.old_lineno(),
+            line.new_lineno(),
+            text,
+        ));
+    }
+    Ok(lines)
 }
 
 fn build_binary_file(diff: &git2::Diff<'_>, idx: usize) -> Option<FileDiff> {

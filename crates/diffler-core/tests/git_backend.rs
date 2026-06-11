@@ -415,6 +415,154 @@ fn stage_one_hunk_of_two_then_unstage_hunk_reverses() {
 }
 
 #[test]
+fn stage_hunk_on_untracked_file_stages_it() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "x\n");
+    fx.commit_all("base");
+    fx.write("new.txt", "alpha\nbeta\n");
+
+    let v = vcs(&fx);
+    let st = v.status().expect("status");
+    let id = st.untracked.files[0].hunks[0].id.clone();
+    v.stage_hunk(Path::new("new.txt"), &id).expect("stage hunk");
+
+    let st = v.status().expect("status");
+    assert!(st.untracked.files.is_empty());
+    assert!(st.unstaged.files.is_empty());
+    assert_eq!(st.staged.files.len(), 1);
+    assert_eq!(st.staged.files[0].path, "new.txt");
+    assert_eq!(st.staged.files[0].status, FileStatus::Added);
+    assert_eq!(
+        st.staged.files[0].new_text.as_deref(),
+        Some("alpha\nbeta\n")
+    );
+}
+
+#[test]
+fn stage_second_hunk_only_applies_at_its_offset() {
+    let fx = Fixture::new();
+    let mut base = String::new();
+    for i in 1..=40 {
+        writeln!(base, "line {i}").expect("write");
+    }
+    fx.write("a.txt", &base);
+    fx.commit_all("base");
+    let edited = base
+        .replace("line 5\n", "LINE FIVE\n")
+        .replace("line 35\n", "LINE THIRTY-FIVE\n");
+    fx.write("a.txt", &edited);
+
+    let v = vcs(&fx);
+    let st = v.status().expect("status");
+    assert_eq!(st.unstaged.files[0].hunks.len(), 2);
+    let second = st.unstaged.files[0].hunks[1].id.clone();
+
+    v.stage_hunk(Path::new("a.txt"), &second)
+        .expect("stage hunk");
+
+    let st = v.status().expect("status");
+    assert_eq!(st.staged.files.len(), 1);
+    assert_eq!(st.staged.files[0].hunks.len(), 1);
+    assert_eq!(st.staged.files[0].hunks[0].id, second);
+    let staged_text = st.staged.files[0].new_text.as_deref().expect("text");
+    assert!(staged_text.contains("LINE THIRTY-FIVE"));
+    assert!(!staged_text.contains("LINE FIVE"));
+    assert_eq!(st.unstaged.files[0].hunks.len(), 1);
+}
+
+#[test]
+fn stage_hunk_on_file_without_trailing_newline() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\ntwo\n");
+    fx.commit_all("base");
+    fx.write("a.txt", "one\ntwo\nthree");
+
+    let v = vcs(&fx);
+    let st = v.status().expect("status");
+    let id = st.unstaged.files[0].hunks[0].id.clone();
+    v.stage_hunk(Path::new("a.txt"), &id).expect("stage hunk");
+
+    let st = v.status().expect("status");
+    assert!(st.unstaged.files.is_empty());
+    assert_eq!(st.staged.files.len(), 1);
+    assert_eq!(
+        st.staged.files[0].new_text.as_deref(),
+        Some("one\ntwo\nthree")
+    );
+}
+
+#[test]
+fn stage_hunk_on_crlf_file() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "alpha\r\nbeta\r\n");
+    fx.commit_all("base");
+    fx.write("a.txt", "alpha\r\nBETA\r\n");
+
+    let v = vcs(&fx);
+    let st = v.status().expect("status");
+    let id = st.unstaged.files[0].hunks[0].id.clone();
+    v.stage_hunk(Path::new("a.txt"), &id).expect("stage hunk");
+
+    let st = v.status().expect("status");
+    assert!(st.unstaged.files.is_empty());
+    assert_eq!(st.staged.files.len(), 1);
+    assert_eq!(
+        st.staged.files[0].new_text.as_deref(),
+        Some("alpha\r\nBETA\r\n")
+    );
+}
+
+#[test]
+fn stage_hunk_of_whole_file_deletion_records_the_delete() {
+    let fx = Fixture::new();
+    fx.write("gone.txt", "bye\n");
+    fx.commit_all("base");
+    fx.remove("gone.txt");
+
+    let v = vcs(&fx);
+    let st = v.status().expect("status");
+    let id = st.unstaged.files[0].hunks[0].id.clone();
+    v.stage_hunk(Path::new("gone.txt"), &id)
+        .expect("stage hunk");
+
+    let st = v.status().expect("status");
+    assert!(st.unstaged.files.is_empty());
+    assert_eq!(st.staged.files.len(), 1);
+    assert_eq!(st.staged.files[0].status, FileStatus::Deleted);
+    // the fixture handle caches the index; reload to see what apply wrote
+    let mut index = fx.repo.index().expect("index");
+    index.read(true).expect("reload");
+    assert!(index.get_path(Path::new("gone.txt"), 0).is_none());
+}
+
+#[test]
+fn unstage_hunk_of_staged_new_file_returns_it_to_untracked() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "x\n");
+    fx.commit_all("base");
+    fx.write("new.txt", "fresh\n");
+
+    let v = vcs(&fx);
+    v.stage(Path::new("new.txt")).expect("stage");
+    let st = v.status().expect("status");
+    assert_eq!(st.staged.files[0].status, FileStatus::Added);
+    let id = st.staged.files[0].hunks[0].id.clone();
+
+    v.unstage_hunk(Path::new("new.txt"), &id)
+        .expect("unstage hunk");
+
+    let st = v.status().expect("status");
+    assert!(st.staged.files.is_empty(), "no phantom staged entry");
+    assert!(st.unstaged.files.is_empty());
+    assert_eq!(st.untracked.files.len(), 1);
+    assert_eq!(st.untracked.files[0].path, "new.txt");
+    // the fixture handle caches the index; reload to see what apply wrote
+    let mut index = fx.repo.index().expect("index");
+    index.read(true).expect("reload");
+    assert!(index.get_path(Path::new("new.txt"), 0).is_none());
+}
+
+#[test]
 fn stage_hunk_with_stale_id_is_rejected() {
     let fx = Fixture::new();
     fx.write("a.txt", "one\n");
