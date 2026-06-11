@@ -4,6 +4,11 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
+ignore = [
+  # unmaintained transitive deps of syntect; swap for two-face loaders in M1 if still flagged
+  "RUSTSEC-2024-0320", # yaml-rust
+  "RUSTSEC-2025-0141", # bincode 1.x
+]
 
 [licenses]
 version = 2

@@ -1,0 +1,5 @@
+[default.extend-words]
+ratatui = "ratatui"
+
+[files]
+extend-exclude = ["demos/*/uv.lock", "demos/*/bun.lock", "Cargo.lock"]

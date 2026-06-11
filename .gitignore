@@ -7,3 +7,4 @@ demos/go-bubbletea/diffler-demo
 demos/ts-opentui/diffler-demo
 .DS_Store
 *.bun-build
+.claude/
