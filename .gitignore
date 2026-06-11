@@ -1,0 +1,8 @@
+target/
+node_modules/
+.venv/
+*.pyc
+__pycache__/
+demos/go-bubbletea/diffler-demo
+demos/ts-opentui/diffler-demo
+.DS_Store
