@@ -1,8 +1,9 @@
-//! Diff/review screen state and handlers: a continuous scroll of file
-//! headers, hunks, diff lines, and inline comments, flattened into a row
-//! list so the renderer only ever materializes the visible slice.
+//! Diff/review screen state and handlers: a file sidebar listing every file
+//! in the diff, and a pane showing only the selected file's hunks, lines, and
+//! inline comments, flattened into a row list so the renderer only ever
+//! materializes the visible slice.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 
 use diffler_core::feedback::{self, FeedbackOptions};
 use diffler_core::highlight::StyledRange;
@@ -20,14 +21,20 @@ pub enum DiffSource {
     Commit(String),
 }
 
-/// One terminal row of the flattened diff view. Indices point into the
-/// model the view renders; the row list is rebuilt whenever folds, the
-/// model, or the session change, so they never dangle.
+/// Which pane has the keyboard: the file sidebar or the diff body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pane {
+    List,
+    Diff,
+}
+
+/// One terminal row of the selected file's diff body. Indices point into the
+/// model the view renders; the row list is rebuilt whenever the selected
+/// file, the model, or the session change, so they never dangle. The `file`
+/// field always equals the selected file index, kept so the shared
+/// `diff_render` and anchor helpers read it unchanged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffRow {
-    File {
-        file: usize,
-    },
     Hunk {
         file: usize,
         hunk: usize,
@@ -60,14 +67,19 @@ pub struct DiffView {
     /// A commit's diff is immutable: fetched once at open and kept here.
     /// `None` means the view reads the live `review.model`.
     pub(crate) commit_model: Option<DiffModel>,
+    pub focus: Pane,
+    /// Index into `model.files`: the sidebar cursor.
+    pub selected: usize,
+    /// Row within the selected file's rows.
     pub cursor: usize,
-    /// First visible row; the renderer keeps the cursor in view.
+    /// First visible row of the diff pane; the renderer keeps the cursor in
+    /// view.
     pub scroll: usize,
     /// Row where `V` started; `Some` means line selection is active.
     pub visual_anchor: Option<usize>,
-    /// Body height of the last render, drives half-page motions.
+    /// Body height of the last diff-pane render, drives half-page motions.
     pub(crate) viewport: u16,
-    folded: BTreeSet<String>,
+    /// Rows for the selected file only.
     pub(crate) rows: Vec<DiffRow>,
     rows_dirty: bool,
     pub(crate) highlights: HashMap<String, FileHighlights>,
@@ -75,23 +87,15 @@ pub struct DiffView {
 
 impl DiffView {
     fn new(source: DiffSource, commit_model: Option<DiffModel>, review: &Review) -> Self {
-        let mut folded = BTreeSet::new();
-        if source == DiffSource::WorkingTree {
-            // viewed files read as done: they start collapsed
-            for file in &review.model.files {
-                if review.session.is_viewed(&file.path, &file.content_hash()) {
-                    folded.insert(file.path.clone());
-                }
-            }
-        }
         let mut view = Self {
             source,
             commit_model,
+            focus: Pane::List,
+            selected: 0,
             cursor: 0,
             scroll: 0,
             visual_anchor: None,
             viewport: 0,
-            folded,
             rows: Vec::new(),
             rows_dirty: true,
             highlights: HashMap::new(),
@@ -108,8 +112,12 @@ impl DiffView {
         &self.rows
     }
 
-    pub fn is_folded(&self, path: &str) -> bool {
-        self.folded.contains(path)
+    /// Path of the selected file, when the diff is non-empty.
+    pub fn selected_path(&self, review: &Review) -> Option<String> {
+        self.model(review)
+            .files
+            .get(self.selected)
+            .map(|f| f.path.clone())
     }
 
     /// Mark the row list stale. Selection is dropped with it: visual
@@ -124,8 +132,8 @@ impl DiffView {
             return;
         }
         let model = self.commit_model.as_ref().unwrap_or(&review.model);
-        let rows = build_rows(model, &review.session, &self.folded);
-        self.rows = rows;
+        self.selected = self.selected.min(model.files.len().saturating_sub(1));
+        self.rows = build_rows(model, &review.session, self.selected);
         self.rows_dirty = false;
         self.cursor = self.cursor.min(self.rows.len().saturating_sub(1));
         self.scroll = self.scroll.min(self.rows.len().saturating_sub(1));
@@ -137,12 +145,18 @@ impl DiffView {
         Some((anchor.min(self.cursor), anchor.max(self.cursor)))
     }
 
-    /// Row index of `path`'s file header.
-    fn file_row(&self, model: &DiffModel, path: &str) -> Option<usize> {
-        self.rows.iter().position(|row| {
-            matches!(row, DiffRow::File { file }
-                if model.files.get(*file).is_some_and(|f| f.path == path))
-        })
+    /// Move the sidebar cursor to `selected`, rebuilding the diff rows and
+    /// resetting the diff cursor to the top of the new file.
+    fn select(&mut self, selected: usize, review: &Review) {
+        if self.selected == selected {
+            return;
+        }
+        self.selected = selected;
+        self.cursor = 0;
+        self.scroll = 0;
+        self.visual_anchor = None;
+        self.rows_dirty = true;
+        self.ensure_rows(review);
     }
 }
 
@@ -220,45 +234,44 @@ fn push_comment_rows(rows: &mut Vec<DiffRow>, session: &Session, comments: &[(us
     }
 }
 
-fn build_rows(model: &DiffModel, session: &Session, folded: &BTreeSet<String>) -> Vec<DiffRow> {
+/// Build the diff-pane rows for one file: its hunks and lines, with comment
+/// blocks under their anchored line, file-level (or orphaned) comments first.
+fn build_rows(model: &DiffModel, session: &Session, selected: usize) -> Vec<DiffRow> {
     let mut rows = Vec::new();
-    for (file_idx, file) in model.files.iter().enumerate() {
-        rows.push(DiffRow::File { file: file_idx });
-        if folded.contains(&file.path) {
+    let Some(file) = model.files.get(selected) else {
+        return rows;
+    };
+    let mut by_line: HashMap<(usize, usize), Vec<(usize, bool)>> = HashMap::new();
+    let mut unanchored: Vec<(usize, bool)> = Vec::new();
+    for (comment_idx, comment) in session.comments.iter().enumerate() {
+        if comment.anchor.file != file.path {
             continue;
         }
-        let mut by_line: HashMap<(usize, usize), Vec<(usize, bool)>> = HashMap::new();
-        let mut unanchored: Vec<(usize, bool)> = Vec::new();
-        for (comment_idx, comment) in session.comments.iter().enumerate() {
-            if comment.anchor.file != file.path {
-                continue;
-            }
-            let outdated = comment.anchor.is_outdated(model);
-            match anchor_target(file, &comment.anchor) {
-                Some((hunk, line)) => by_line
-                    .entry((hunk, line))
-                    .or_default()
-                    .push((comment_idx, outdated)),
-                // a line anchor that no longer exists is outdated; a
-                // file-level comment (no line) simply lives under the header
-                None => unanchored.push((comment_idx, outdated)),
-            }
+        let outdated = comment.anchor.is_outdated(model);
+        match anchor_target(file, &comment.anchor) {
+            Some((hunk, line)) => by_line
+                .entry((hunk, line))
+                .or_default()
+                .push((comment_idx, outdated)),
+            // a line anchor that no longer exists is outdated; a file-level
+            // comment (no line) simply lives at the top
+            None => unanchored.push((comment_idx, outdated)),
         }
-        push_comment_rows(&mut rows, session, &unanchored);
-        for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
-            rows.push(DiffRow::Hunk {
-                file: file_idx,
+    }
+    push_comment_rows(&mut rows, session, &unanchored);
+    for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
+        rows.push(DiffRow::Hunk {
+            file: selected,
+            hunk: hunk_idx,
+        });
+        for line_idx in 0..hunk.lines.len() {
+            rows.push(DiffRow::Line {
+                file: selected,
                 hunk: hunk_idx,
+                line: line_idx,
             });
-            for line_idx in 0..hunk.lines.len() {
-                rows.push(DiffRow::Line {
-                    file: file_idx,
-                    hunk: hunk_idx,
-                    line: line_idx,
-                });
-                if let Some(list) = by_line.get(&(hunk_idx, line_idx)) {
-                    push_comment_rows(&mut rows, session, list);
-                }
+            if let Some(list) = by_line.get(&(hunk_idx, line_idx)) {
+                push_comment_rows(&mut rows, session, list);
             }
         }
     }
@@ -266,14 +279,28 @@ fn build_rows(model: &DiffModel, session: &Session, folded: &BTreeSet<String>) -
 }
 
 impl App {
+    /// Open the full working-tree diff with the sidebar focused at the first
+    /// file (`D` / section headers / commit-from-log model).
     pub(crate) fn open_working_tree_diff(&mut self, scope: Option<&str>) {
+        self.open_working_tree_diff_focused(scope, Pane::List);
+    }
+
+    /// Open a single file's diff with the diff pane focused (`<cr>` on a
+    /// status file row).
+    pub(crate) fn open_working_tree_file(&mut self, path: &str) {
+        self.open_working_tree_diff_focused(Some(path), Pane::Diff);
+    }
+
+    fn open_working_tree_diff_focused(&mut self, scope: Option<&str>, focus: Pane) {
         let mut view = DiffView::new(DiffSource::WorkingTree, None, &self.review);
         if let Some(path) = scope
-            && let Some(position) = view.file_row(&self.review.model, path)
+            && let Some(index) = self.review.model.files.iter().position(|f| f.path == path)
         {
-            view.cursor = position;
-            view.scroll = position;
+            view.selected = index;
+            view.invalidate();
+            view.ensure_rows(&self.review);
         }
+        view.focus = focus;
         self.diff = Some(view);
         self.screens.push(Screen::Diff);
     }
@@ -299,6 +326,40 @@ impl App {
         } else {
             return;
         }
+        // a quick file switch works from either pane, keeping focus
+        match action {
+            Action::NextFile => return self.diff_select_step(1),
+            Action::PrevFile => return self.diff_select_step(-1),
+            Action::ToggleFocus => return self.diff_toggle_focus(),
+            _ => {}
+        }
+        match self.diff.as_ref().map(|d| d.focus) {
+            Some(Pane::List) => self.dispatch_diff_list(action),
+            Some(Pane::Diff) => self.dispatch_diff_pane(action),
+            None => {}
+        }
+    }
+
+    fn dispatch_diff_list(&mut self, action: Action) {
+        match action {
+            Action::MoveDown => self.diff_select_step(1),
+            Action::MoveUp => self.diff_select_step(-1),
+            Action::GoTop => self.diff_select_to(0),
+            Action::GoBottom => self.diff_select_to(usize::MAX),
+            Action::Open => self.diff_focus(Pane::Diff),
+            Action::MarkViewed => self.diff_toggle_viewed(),
+            Action::OpenEditor => self.editor_at_diff_cursor(),
+            // copy is file/all scoped, not line scoped: works from the list
+            Action::CopyFileFeedback => self.copy_feedback(true),
+            Action::CopyAllFeedback => self.copy_feedback(false),
+            Action::Comment | Action::VisualSelect | Action::Reply | Action::Resolve => {
+                self.info("move into the diff to comment");
+            }
+            _ => {}
+        }
+    }
+
+    fn dispatch_diff_pane(&mut self, action: Action) {
         match action {
             Action::MoveDown => self.diff_move(1),
             Action::MoveUp => self.diff_move(-1),
@@ -308,9 +369,7 @@ impl App {
             Action::HalfPageUp => self.diff_move(-self.diff_half_page()),
             Action::NextHunk => self.diff_jump(true, |row| matches!(row, DiffRow::Hunk { .. })),
             Action::PrevHunk => self.diff_jump(false, |row| matches!(row, DiffRow::Hunk { .. })),
-            Action::NextSection => self.diff_jump(true, |row| matches!(row, DiffRow::File { .. })),
-            Action::PrevSection => self.diff_jump(false, |row| matches!(row, DiffRow::File { .. })),
-            Action::ToggleFold => self.diff_toggle_fold(),
+            Action::Open => self.diff_focus(Pane::List),
             Action::Comment => self.comment_at_cursor(),
             Action::VisualSelect => self.toggle_visual(),
             Action::Reply => self.reply_at_cursor(),
@@ -325,21 +384,63 @@ impl App {
         }
     }
 
-    /// `e`: open the cursor's file in the editor — at the line for diff
-    /// line rows (new side, old side for deletions), at the anchor for
-    /// comment rows, at the top for file and hunk headers.
+    fn diff_toggle_focus(&mut self) {
+        let Some(diff) = self.diff.as_mut() else {
+            return;
+        };
+        diff.focus = match diff.focus {
+            Pane::List => Pane::Diff,
+            Pane::Diff => Pane::List,
+        };
+    }
+
+    fn diff_focus(&mut self, pane: Pane) {
+        if let Some(diff) = self.diff.as_mut() {
+            diff.focus = pane;
+        }
+    }
+
+    /// Step the sidebar selection by `delta`, clamping at the ends.
+    fn diff_select_step(&mut self, delta: isize) {
+        let Some(diff) = self.diff.as_ref() else {
+            return;
+        };
+        let count = diff.model(&self.review).files.len();
+        if count == 0 {
+            return;
+        }
+        let target = diff.selected.saturating_add_signed(delta).min(count - 1);
+        self.diff_select_to(target);
+    }
+
+    fn diff_select_to(&mut self, target: usize) {
+        let review = &self.review;
+        if let Some(diff) = self.diff.as_mut() {
+            let count = diff.model(review).files.len();
+            if count == 0 {
+                return;
+            }
+            diff.select(target.min(count - 1), review);
+        }
+    }
+
+    /// `e`: open the selected file in the editor — at the line for diff line
+    /// rows (new side, old side for deletions), at the anchor for comment
+    /// rows, at the top otherwise (hunk header, or focus on the list).
     fn editor_at_diff_cursor(&mut self) {
         let target = self.diff.as_ref().and_then(|diff| {
             let model = diff.model(&self.review);
-            match diff.rows.get(diff.cursor)? {
-                DiffRow::File { file } | DiffRow::Hunk { file, .. } => {
-                    model.files.get(*file).map(|f| (f.path.clone(), None))
+            let file = model.files.get(diff.selected)?;
+            if diff.focus == Pane::List {
+                return Some((file.path.clone(), None));
+            }
+            match diff.rows.get(diff.cursor) {
+                Some(DiffRow::Hunk { .. }) | None => Some((file.path.clone(), None)),
+                Some(DiffRow::Line { hunk, line, .. }) => {
+                    let line = file.hunks.get(*hunk)?.lines.get(*line)?;
+                    Some((file.path.clone(), line.new_no.or(line.old_no)))
                 }
-                DiffRow::Line { file, hunk, line } => model.files.get(*file).and_then(|f| {
-                    let line = f.hunks.get(*hunk)?.lines.get(*line)?;
-                    Some((f.path.clone(), line.new_no.or(line.old_no)))
-                }),
-                DiffRow::Comment { comment, .. } => self
+                Some(DiffRow::Comment { comment, .. }) => self
                     .review
                     .session
                     .comments
@@ -397,63 +498,31 @@ impl App {
         }
     }
 
-    /// File path the cursor row belongs to.
+    /// Path of the selected file in the diff view.
     pub(crate) fn diff_cursor_path(&self) -> Option<String> {
         let diff = self.diff.as_ref()?;
-        let model = diff.model(&self.review);
-        match diff.rows.get(diff.cursor)? {
-            DiffRow::File { file } | DiffRow::Hunk { file, .. } | DiffRow::Line { file, .. } => {
-                model.files.get(*file).map(|f| f.path.clone())
-            }
-            DiffRow::Comment { comment, .. } => self
-                .review
-                .session
-                .comments
-                .get(*comment)
-                .map(|c| c.anchor.file.clone()),
-        }
+        diff.selected_path(&self.review)
     }
 
-    /// After a refresh, follow the file the cursor was on if its row moved.
+    /// After a refresh, keep the selected file by path; clamp if it is gone.
     pub(super) fn restore_diff_cursor(&mut self, path: Option<String>) {
         let Some(path) = path else {
             return;
         };
-        if self.diff_cursor_path().as_deref() == Some(path.as_str()) {
-            return;
-        }
+        let review = &self.review;
         let Some(diff) = self.diff.as_mut() else {
             return;
         };
-        let model = diff.commit_model.as_ref().unwrap_or(&self.review.model);
-        if let Some(position) = diff.file_row(model, &path) {
-            diff.cursor = position;
-        }
-    }
-
-    fn diff_toggle_fold(&mut self) {
-        let Some(path) = self.diff_cursor_path() else {
-            return;
-        };
-        let Some(diff) = self.diff.as_mut() else {
-            return;
-        };
-        if !diff.folded.remove(&path) {
-            diff.folded.insert(path.clone());
+        // the file moved index but its content is the same, so keep the diff
+        // cursor where it was; ensure_rows reclamps it
+        let model = diff.commit_model.as_ref().unwrap_or(&review.model);
+        match model.files.iter().position(|f| f.path == path) {
+            Some(index) if index != diff.selected => diff.selected = index,
+            Some(_) => return,
+            None => {}
         }
         diff.invalidate();
-        diff.ensure_rows(&self.review);
-        self.diff_cursor_to_file(&path);
-    }
-
-    fn diff_cursor_to_file(&mut self, path: &str) {
-        let Some(diff) = self.diff.as_mut() else {
-            return;
-        };
-        let model = diff.commit_model.as_ref().unwrap_or(&self.review.model);
-        if let Some(position) = diff.file_row(model, path) {
-            diff.cursor = position;
-        }
+        diff.ensure_rows(review);
     }
 
     fn toggle_visual(&mut self) {
@@ -616,46 +685,29 @@ impl App {
         if let Err(err) = self.review.save() {
             self.error(err.to_string());
         }
-        let Some(diff) = self.diff.as_mut() else {
-            return;
-        };
-        // marking viewed folds the file away; unmarking reopens it for
-        // re-review
-        if viewed {
-            diff.folded.remove(&path);
-        } else {
-            diff.folded.insert(path.clone());
-        }
-        diff.invalidate();
-        diff.ensure_rows(&self.review);
-        self.diff_cursor_to_file(&path);
-        // pressing v repeatedly walks the review: after marking, jump to
-        // the next file still waiting to be looked at
+        // pressing v repeatedly walks the review: after marking, advance the
+        // sidebar to the next file still waiting to be looked at
         if !viewed {
             self.diff_advance_to_unviewed();
         }
     }
 
-    /// Move the cursor to the next not-viewed file header below it, if any.
+    /// Move the sidebar selection to the next not-viewed file below it, if
+    /// any; otherwise stay put.
     fn diff_advance_to_unviewed(&mut self) {
-        let Some(diff) = self.diff.as_ref() else {
-            return;
-        };
-        let model = diff.model(&self.review);
-        let position =
-            diff.rows
+        let review = &self.review;
+        let next = self.diff.as_ref().and_then(|diff| {
+            let model = diff.model(review);
+            model
+                .files
                 .iter()
                 .enumerate()
-                .skip(diff.cursor + 1)
-                .find_map(|(index, row)| {
-                    let DiffRow::File { file } = row else {
-                        return None;
-                    };
-                    let file = model.files.get(*file)?;
-                    (!self.is_path_viewed(&file.path)).then_some(index)
-                });
-        if let (Some(position), Some(diff)) = (position, self.diff.as_mut()) {
-            diff.cursor = position;
+                .skip(diff.selected + 1)
+                .find(|(_, file)| !self.is_path_viewed(&file.path))
+                .map(|(index, _)| index)
+        });
+        if let Some(index) = next {
+            self.diff_select_to(index);
         }
     }
 
@@ -725,9 +777,41 @@ mod tests {
         app.diff.as_ref().expect("diff view").rows().to_vec()
     }
 
+    fn focus(app: &App) -> Pane {
+        app.diff.as_ref().expect("diff view").focus
+    }
+
+    fn selected_path(app: &App) -> String {
+        app.diff
+            .as_ref()
+            .expect("diff view")
+            .selected_path(&app.review)
+            .expect("selected file")
+    }
+
+    /// Put focus on the diff pane (unscoped open starts on the sidebar).
+    fn enter_diff_pane(app: &mut App) {
+        app.diff.as_mut().expect("diff view").focus = Pane::Diff;
+    }
+
     fn cursor_to_line(app: &mut App, pred: impl Fn(&DiffRow) -> bool) {
         let position = rows(app).iter().position(pred).expect("row present");
         app.diff.as_mut().unwrap().cursor = position;
+    }
+
+    /// Select the file at `path`, then focus the diff pane.
+    fn select_file(app: &mut App, path: &str) {
+        let index = app
+            .diff
+            .as_ref()
+            .unwrap()
+            .model(&app.review)
+            .files
+            .iter()
+            .position(|f| f.path == path)
+            .expect("file present");
+        app.diff_select_to(index);
+        enter_diff_pane(app);
     }
 
     /// Row index of the first added line ("42") in the standard fixture's
@@ -760,11 +844,12 @@ mod tests {
     }
 
     #[test]
-    fn rows_flatten_files_hunks_and_lines_in_order() {
+    fn rows_flatten_the_selected_files_hunks_and_lines_in_order() {
         let fixture = two_hunk_fixture();
         let app = diff_app(&fixture);
         let rows = rows(&app);
-        assert!(matches!(rows.first(), Some(DiffRow::File { file: 0 })));
+        // no file header row: the selected file is implicit
+        assert!(matches!(rows.first(), Some(DiffRow::Hunk { hunk: 0, .. })));
         let hunks: Vec<usize> = rows
             .iter()
             .filter_map(|r| match r {
@@ -773,7 +858,6 @@ mod tests {
             })
             .collect();
         assert_eq!(hunks, vec![0, 1], "both hunks flattened in order");
-        // every line row sits after its hunk header
         assert!(
             rows.iter()
                 .any(|r| matches!(r, DiffRow::Line { hunk: 1, .. })),
@@ -782,9 +866,91 @@ mod tests {
     }
 
     #[test]
+    fn open_starts_on_the_sidebar_at_the_first_file() {
+        let fixture = standard_fixture();
+        let app = diff_app(&fixture);
+        assert_eq!(focus(&app), Pane::List);
+        assert_eq!(app.diff.as_ref().unwrap().selected, 0);
+    }
+
+    #[test]
+    fn list_jk_changes_the_selected_file_and_resets_the_diff_cursor() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        let files: Vec<String> = app
+            .diff
+            .as_ref()
+            .unwrap()
+            .model(&app.review)
+            .files
+            .iter()
+            .map(|f| f.path.clone())
+            .collect();
+        assert!(files.len() >= 2);
+        // move the diff cursor down first, then switching files resets it
+        enter_diff_pane(&mut app);
+        app.handle(key('j'));
+        assert!(app.diff.as_ref().unwrap().cursor > 0);
+        app.diff.as_mut().unwrap().focus = Pane::List;
+        app.handle(key('j'));
+        assert_eq!(selected_path(&app), files[1]);
+        assert_eq!(app.diff.as_ref().unwrap().cursor, 0, "diff cursor reset");
+        assert_eq!(app.diff.as_ref().unwrap().scroll, 0);
+        app.handle(key('k'));
+        assert_eq!(selected_path(&app), files[0]);
+    }
+
+    #[test]
+    fn list_gg_and_g_jump_to_the_first_and_last_file() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        let count = app.diff.as_ref().unwrap().model(&app.review).files.len();
+        app.handle(key('G'));
+        assert_eq!(app.diff.as_ref().unwrap().selected, count - 1);
+        app.handle(key('g'));
+        app.handle(key('g'));
+        assert_eq!(app.diff.as_ref().unwrap().selected, 0);
+    }
+
+    #[test]
+    fn tab_toggles_focus_between_the_panes() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        assert_eq!(focus(&app), Pane::List);
+        app.handle(key('\t'));
+        assert_eq!(focus(&app), Pane::Diff);
+        app.handle(key('\t'));
+        assert_eq!(focus(&app), Pane::List);
+    }
+
+    #[test]
+    fn cr_from_the_list_focuses_the_diff_and_cr_back_returns() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        app.handle(key('\n'));
+        assert_eq!(focus(&app), Pane::Diff);
+        app.handle(key('\n'));
+        assert_eq!(focus(&app), Pane::List);
+    }
+
+    #[test]
+    fn ctrl_n_switches_the_selected_file_from_the_diff_pane_keeping_focus() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        enter_diff_pane(&mut app);
+        let first = selected_path(&app);
+        app.handle(ctrl_key('n'));
+        assert_eq!(focus(&app), Pane::Diff, "focus stays on the diff");
+        assert_ne!(selected_path(&app), first, "selection advanced");
+        app.handle(ctrl_key('p'));
+        assert_eq!(selected_path(&app), first);
+    }
+
+    #[test]
     fn comment_rows_appear_under_their_anchored_line() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
+        select_file(&mut app, "src/lib.rs");
         let position = added_line_position(&app);
         app.diff.as_mut().unwrap().cursor = position;
         app.handle(key('c'));
@@ -802,7 +968,6 @@ mod tests {
         assert!(comment.anchor.hunk.is_some(), "anchor carries the hunk id");
         assert_eq!(comment.anchor.line_text.as_deref(), Some("    42"));
 
-        // rows were invalidated: the comment block follows the anchored line
         let diff = app.diff.as_mut().unwrap();
         diff.ensure_rows(&app.review);
         let rows = rows(&app);
@@ -812,7 +977,6 @@ mod tests {
             .skip(line_position + 1)
             .take_while(|r| matches!(r, DiffRow::Comment { .. }))
             .collect();
-        // header + one body line + footer
         assert_eq!(
             block.len(),
             3,
@@ -831,6 +995,7 @@ mod tests {
     fn outdated_comment_is_flagged_when_the_line_text_drifts() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
+        select_file(&mut app, "src/lib.rs");
         app.review.session.add_comment(
             "reviewer",
             Anchor {
@@ -855,9 +1020,10 @@ mod tests {
     }
 
     #[test]
-    fn comment_for_a_departed_line_attaches_under_the_file_header() {
+    fn comment_for_a_departed_line_attaches_at_the_top() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
+        select_file(&mut app, "src/lib.rs");
         app.review.session.add_comment(
             "reviewer",
             Anchor {
@@ -874,57 +1040,27 @@ mod tests {
         diff.invalidate();
         diff.ensure_rows(&app.review);
         let rows = rows(&app);
-        let model = app.diff.as_ref().unwrap().model(&app.review);
-        let header = rows
-            .iter()
-            .position(|r| {
-                matches!(r, DiffRow::File { file }
-                    if model.files.get(*file).is_some_and(|f| f.path == "src/lib.rs"))
-            })
-            .expect("file header");
         assert!(
-            matches!(
-                rows.get(header + 1),
-                Some(DiffRow::Comment { outdated: true, .. })
-            ),
-            "orphaned comment sits under the header, flagged outdated: {rows:?}"
+            matches!(rows.first(), Some(DiffRow::Comment { outdated: true, .. })),
+            "orphaned comment sits at the top, flagged outdated: {rows:?}"
         );
     }
 
     #[test]
-    fn folded_file_collapses_to_its_header() {
-        let fixture = two_hunk_fixture();
-        let mut app = diff_app(&fixture);
-        let before = rows(&app).len();
-        assert!(before > 1);
-        app.handle(key('j'));
-        app.handle(key('\t'));
-        let rows = rows(&app);
-        assert_eq!(rows.len(), 1, "only the file header remains");
-        assert!(matches!(rows[0], DiffRow::File { .. }));
-        assert_eq!(app.diff.as_ref().unwrap().cursor, 0, "cursor on the header");
-        app.handle(key('\t'));
-        assert_eq!(self::rows(&app).len(), before);
-    }
-
-    #[test]
-    fn scoped_open_starts_at_the_files_header() {
+    fn scoped_open_selects_the_file_and_focuses_the_diff() {
         let fixture = standard_fixture();
         let mut app = App::new(fixture.review(), LoadedConfig::default());
-        app.open_working_tree_diff(Some("src/lib.rs"));
-        let diff = app.diff.as_ref().unwrap();
-        let model = diff.model(&app.review);
-        let DiffRow::File { file } = diff.rows()[diff.cursor] else {
-            panic!("cursor must sit on a file header");
-        };
-        assert_eq!(model.files[file].path, "src/lib.rs");
-        assert_eq!(diff.scroll, diff.cursor, "view starts scrolled to the file");
+        app.open_working_tree_file("src/lib.rs");
+        assert_eq!(focus(&app), Pane::Diff);
+        assert_eq!(selected_path(&app), "src/lib.rs");
+        assert_eq!(app.diff.as_ref().unwrap().cursor, 0, "starts at the top");
     }
 
     #[test]
     fn visual_selection_comments_a_new_side_range() {
         let fixture = two_hunk_fixture();
         let mut app = diff_app(&fixture);
+        enter_diff_pane(&mut app);
         // first hunk: "-line 1" then "+line one" then context lines
         cursor_to_line(&mut app, |r| {
             matches!(
@@ -958,6 +1094,7 @@ mod tests {
     fn visual_selection_anchored_on_a_deleted_line_uses_the_old_side() {
         let fixture = two_hunk_fixture();
         let mut app = diff_app(&fixture);
+        enter_diff_pane(&mut app);
         // hunk 0 line 0 is the deleted "line 1"
         cursor_to_line(&mut app, |r| {
             matches!(
@@ -987,6 +1124,7 @@ mod tests {
     fn escape_cancels_visual_selection() {
         let fixture = two_hunk_fixture();
         let mut app = diff_app(&fixture);
+        enter_diff_pane(&mut app);
         cursor_to_line(&mut app, |r| matches!(r, DiffRow::Line { .. }));
         app.handle(key('V'));
         assert!(app.diff.as_ref().unwrap().visual_anchor.is_some());
@@ -1005,6 +1143,7 @@ mod tests {
     fn reply_and_resolve_walk_the_comment_lifecycle() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
+        select_file(&mut app, "src/lib.rs");
         let position = added_line_position(&app);
         app.diff.as_mut().unwrap().cursor = position;
         app.handle(key('c'));
@@ -1031,7 +1170,6 @@ mod tests {
             app.review.session.comments[0].status,
             CommentStatus::Resolved
         );
-        // persisted to disk
         let reloaded = diffler_core::store::load(&fixture.root).unwrap();
         assert_eq!(reloaded.comments[0].status, CommentStatus::Resolved);
     }
@@ -1040,35 +1178,25 @@ mod tests {
     fn reply_off_a_comment_row_hints() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
+        enter_diff_pane(&mut app);
         app.handle(key('r'));
         let message = app.message.expect("message");
         assert!(message.text.contains("comment"));
     }
 
     #[test]
-    fn viewed_toggle_folds_the_file_and_persists() {
+    fn comment_keys_in_the_list_hint_to_move_into_the_diff() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
-        cursor_to_line(&mut app, |r| matches!(r, DiffRow::Line { .. }));
-        let path = app.diff_cursor_path().expect("path");
-        app.handle(key('v'));
-        assert!(app.is_path_viewed(&path));
-        assert!(app.diff.as_ref().unwrap().is_folded(&path));
-        let reloaded = diffler_core::store::load(&fixture.root).unwrap();
-        assert!(reloaded.viewed.contains_key(&path));
-        // the walk advanced to the next unviewed file's header
-        let DiffRow::File { .. } = rows(&app)[app.diff.as_ref().unwrap().cursor] else {
-            panic!("cursor should sit on a file header");
-        };
-        // step back onto the folded file and unmark it
-        app.handle(key('k'));
-        app.handle(key('v'));
-        assert!(!app.is_path_viewed(&path));
-        assert!(!app.diff.as_ref().unwrap().is_folded(&path));
+        assert_eq!(focus(&app), Pane::List);
+        app.handle(key('c'));
+        let message = app.message.expect("message");
+        assert!(message.text.contains("move into the diff"));
+        assert!(app.review.session.comments.is_empty());
     }
 
     #[test]
-    fn marking_viewed_advances_to_the_next_unviewed_file() {
+    fn marking_viewed_advances_selection_to_the_next_unviewed_file() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
         let paths: Vec<String> = app
@@ -1080,67 +1208,58 @@ mod tests {
             .collect();
         assert_eq!(paths.len(), 3, "walk needs several files: {paths:?}");
 
-        // v on the first file folds it and lands on the second's header
+        // v on the first file marks it and lands on the second
         app.handle(key('v'));
         assert!(app.is_path_viewed(&paths[0]));
-        assert_eq!(app.diff_cursor_path().as_deref(), Some(paths[1].as_str()));
-        let diff = app.diff.as_ref().unwrap();
-        assert!(
-            matches!(diff.rows()[diff.cursor], DiffRow::File { .. }),
-            "cursor sits on the next file header"
-        );
+        assert_eq!(selected_path(&app), paths[1]);
 
         // v-v walks the rest; the last v has nothing below and stays put
         app.handle(key('v'));
-        assert_eq!(app.diff_cursor_path().as_deref(), Some(paths[2].as_str()));
+        assert_eq!(selected_path(&app), paths[2]);
         app.handle(key('v'));
         assert!(paths.iter().all(|p| app.is_path_viewed(p)));
         assert_eq!(
-            app.diff_cursor_path().as_deref(),
-            Some(paths[2].as_str()),
-            "no unviewed file below: the cursor stays"
+            selected_path(&app),
+            paths[2],
+            "no unviewed file below: selection stays"
         );
     }
 
     #[test]
-    fn unmarking_viewed_does_not_move_the_cursor() {
+    fn unmarking_viewed_does_not_move_the_selection() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
-        let first = app.diff_cursor_path().expect("path");
+        let first = selected_path(&app);
         app.handle(key('v'));
-        // back onto the folded file, then unmark it
+        // step back onto the viewed file, then unmark it
         app.handle(key('k'));
-        assert_eq!(app.diff_cursor_path().as_deref(), Some(first.as_str()));
+        assert_eq!(selected_path(&app), first);
         app.handle(key('v'));
         assert!(!app.is_path_viewed(&first));
         assert_eq!(
-            app.diff_cursor_path().as_deref(),
-            Some(first.as_str()),
-            "unmarking reopens the file in place"
+            selected_path(&app),
+            first,
+            "unmarking keeps the selection in place"
         );
     }
 
     #[test]
-    fn viewed_files_start_folded_when_the_diff_opens() {
+    fn viewed_can_be_marked_from_the_diff_pane() {
         let fixture = standard_fixture();
-        let mut app = App::new(fixture.review(), LoadedConfig::default());
-        let hash = app
-            .review
-            .model
-            .files
-            .iter()
-            .find(|f| f.path == "src/lib.rs")
-            .map(FileDiff::content_hash)
-            .unwrap();
-        app.review.session.mark_viewed("src/lib.rs", &hash);
-        app.open_working_tree_diff(None);
-        assert!(app.diff.as_ref().unwrap().is_folded("src/lib.rs"));
+        let mut app = diff_app(&fixture);
+        let first = selected_path(&app);
+        enter_diff_pane(&mut app);
+        app.handle(key('v'));
+        assert!(app.is_path_viewed(&first));
+        // marking advanced the selection past the viewed file
+        assert_ne!(selected_path(&app), first);
     }
 
     #[test]
-    fn y_copies_the_current_files_feedback_as_osc52_markdown() {
+    fn y_copies_the_selected_files_feedback_as_osc52_markdown() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
+        select_file(&mut app, "src/lib.rs");
         let position = added_line_position(&app);
         app.diff.as_mut().unwrap().cursor = position;
         app.handle(key('c'));
@@ -1159,6 +1278,7 @@ mod tests {
             "other file",
         );
 
+        select_file(&mut app, "src/lib.rs");
         app.diff.as_mut().unwrap().cursor = added_line_position(&app);
         app.handle(key('y'));
         let payload = app.pending_osc.clone().expect("osc52 payload queued");
@@ -1199,6 +1319,7 @@ mod tests {
         let mut app = diff_app(&fixture);
         // pin the editor through config so the test ignores $EDITOR
         app.config.editor.command = Some("vim".to_owned());
+        select_file(&mut app, "src/lib.rs");
         let position = added_line_position(&app);
         app.diff.as_mut().unwrap().cursor = position;
         app.handle(key('e'));
@@ -1222,16 +1343,16 @@ mod tests {
     }
 
     #[test]
-    fn e_on_a_file_header_opens_without_a_line() {
+    fn e_from_the_list_opens_the_selected_file_without_a_line() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
         app.config.editor.command = Some("vim".to_owned());
-        cursor_to_line(&mut app, |r| matches!(r, DiffRow::File { .. }));
+        assert_eq!(focus(&app), Pane::List);
         app.handle(key('e'));
         let request = app.pending_editor.clone().expect("editor request");
         assert!(
             request.cmd.iter().all(|arg| !arg.starts_with('+')),
-            "no line jump from a header: {:?}",
+            "no line jump from the list: {:?}",
             request.cmd
         );
     }
@@ -1240,6 +1361,7 @@ mod tests {
     fn half_page_motions_move_by_the_viewport() {
         let fixture = two_hunk_fixture();
         let mut app = diff_app(&fixture);
+        enter_diff_pane(&mut app);
         app.diff.as_mut().unwrap().viewport = 10;
         app.handle(ctrl_key('d'));
         assert_eq!(app.diff.as_ref().unwrap().cursor, 5);
@@ -1248,10 +1370,11 @@ mod tests {
     }
 
     #[test]
-    fn hunk_and_file_jumps_move_between_headers() {
+    fn hunk_jumps_move_between_headers() {
         let fixture = two_hunk_fixture();
         let mut app = diff_app(&fixture);
-        app.handle(key('}'));
+        enter_diff_pane(&mut app);
+        // the cursor starts on the first hunk header (no file row precedes it)
         let first = app.diff.as_ref().unwrap().cursor;
         assert!(matches!(rows(&app)[first], DiffRow::Hunk { hunk: 0, .. }));
         app.handle(key('}'));
@@ -1267,6 +1390,7 @@ mod tests {
     fn noop_refresh_preserves_the_visual_selection() {
         let fixture = two_hunk_fixture();
         let mut app = diff_app(&fixture);
+        enter_diff_pane(&mut app);
         cursor_to_line(&mut app, |r| matches!(r, DiffRow::Line { .. }));
         app.handle(key('V'));
         assert!(app.diff.as_ref().unwrap().visual_anchor.is_some());
@@ -1283,6 +1407,7 @@ mod tests {
     fn real_change_refresh_clears_the_visual_selection() {
         let fixture = two_hunk_fixture();
         let mut app = diff_app(&fixture);
+        enter_diff_pane(&mut app);
         cursor_to_line(&mut app, |r| matches!(r, DiffRow::Line { .. }));
         app.handle(key('V'));
         fixture.write("zzz.md", "new\n");
@@ -1294,18 +1419,18 @@ mod tests {
     }
 
     #[test]
-    fn refresh_rebuilds_rows_and_follows_the_cursor_file() {
+    fn refresh_keeps_the_selected_file_by_path_when_files_shift() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
-        cursor_to_line(&mut app, |r| matches!(r, DiffRow::Line { .. }));
-        let path = app.diff_cursor_path().expect("path");
-        // a new file ahead of src/ shifts every row
+        select_file(&mut app, "src/lib.rs");
+        let path = selected_path(&app);
+        // a new file ahead of src/ shifts every file index
         fixture.write("aaa.rs", "fn nope() {}\n");
         app.handle(ctrl_key('r'));
         assert_eq!(
-            app.diff_cursor_path().as_deref(),
-            Some(path.as_str()),
-            "cursor follows its file across the refresh"
+            selected_path(&app),
+            path,
+            "selection follows its file across the refresh"
         );
     }
 

@@ -388,7 +388,7 @@ impl App {
                 let Some(path) = self.row_file(row).map(|(_, file, _)| file.path.clone()) else {
                     return;
                 };
-                self.open_working_tree_diff(Some(&path));
+                self.open_working_tree_file(&path);
             }
         }
     }
@@ -919,6 +919,11 @@ mod tests {
         assert_eq!(app.screen(), Screen::Diff);
         let diff = app.diff.as_ref().expect("diff view");
         assert_eq!(diff.source, DiffSource::WorkingTree);
+        assert_eq!(
+            diff.focus,
+            super::super::Pane::Diff,
+            "a file row focuses the diff"
+        );
         let path = app.diff_cursor_path().expect("cursor on the scoped file");
         assert_eq!(path, "src/lib.rs");
     }
@@ -940,9 +945,14 @@ mod tests {
         let diff = app.diff.as_ref().expect("diff view");
         assert_eq!(diff.source, DiffSource::WorkingTree);
         assert_eq!(
+            diff.focus,
+            super::super::Pane::List,
+            "a section header focuses the sidebar"
+        );
+        assert_eq!(
             app.diff_cursor_path().as_deref(),
             Some("ci.yml"),
-            "cursor on the staged section's first review file"
+            "selection on the staged section's first review file"
         );
         // unscoped: the whole review diff is in the view
         let model = app.diff.as_ref().unwrap().model(&app.review);

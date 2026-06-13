@@ -12,7 +12,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-pub use diff::{CommentLine, DiffRow, DiffSource, DiffView, FileHighlights, comment_display};
+pub use diff::{CommentLine, DiffRow, DiffSource, DiffView, FileHighlights, Pane, comment_display};
 pub use log::LogView;
 pub use status::{Row, Section, StatusView};
 

@@ -43,6 +43,10 @@
 # send_feedback = "Z"
 
 [keys.diff]
+# toggle_focus = "<tab>"
+# open = "<cr>"
+# next_file = "<c-n>"
+# prev_file = "<c-p>"
 # comment = "c"
 # visual_select = "V"
 # reply = "r"

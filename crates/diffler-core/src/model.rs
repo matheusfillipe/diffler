@@ -82,6 +82,30 @@ pub enum FileStatus {
     Untracked,
 }
 
+impl FileStatus {
+    /// Single-character indicator used in the diff sidebar (A/M/D/R/?).
+    pub const fn glyph(self) -> char {
+        match self {
+            Self::Added => 'A',
+            Self::Modified => 'M',
+            Self::Deleted => 'D',
+            Self::Renamed => 'R',
+            Self::Untracked => '?',
+        }
+    }
+
+    /// Neogit-style row label shown in file headers and the diff pane.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Added => "new file",
+            Self::Modified => "modified",
+            Self::Deleted => "deleted",
+            Self::Renamed => "renamed",
+            Self::Untracked => "untracked",
+        }
+    }
+}
+
 /// Stable identity for a hunk: hash of its normalized content. Survives
 /// edits elsewhere in the file; changes when the hunk's lines change.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -174,6 +198,21 @@ pub fn hunk_id(file_path: &str, lines: &[DiffLine]) -> Result<HunkId, git2::Erro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_status_glyph_and_label_cover_all_variants() {
+        assert_eq!(FileStatus::Added.glyph(), 'A');
+        assert_eq!(FileStatus::Modified.glyph(), 'M');
+        assert_eq!(FileStatus::Deleted.glyph(), 'D');
+        assert_eq!(FileStatus::Renamed.glyph(), 'R');
+        assert_eq!(FileStatus::Untracked.glyph(), '?');
+
+        assert_eq!(FileStatus::Added.label(), "new file");
+        assert_eq!(FileStatus::Modified.label(), "modified");
+        assert_eq!(FileStatus::Deleted.label(), "deleted");
+        assert_eq!(FileStatus::Renamed.label(), "renamed");
+        assert_eq!(FileStatus::Untracked.label(), "untracked");
+    }
 
     fn line(kind: LineKind, text: &str) -> DiffLine {
         DiffLine::new(kind, None, None, text.to_owned())

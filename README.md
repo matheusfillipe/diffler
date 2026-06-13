@@ -47,10 +47,11 @@ rather paste it into a prompt.
 
 | Key | Action |
 | --- | --- |
-| `j` / `k` | move down / up |
-| `TAB` | fold section or file |
-| `<cr>` | open diff for the file, section, or commit under the cursor |
+| `j` / `k` | move down / up (status rows, sidebar files, or diff lines) |
+| `TAB` | fold (status) / switch sidebar ⇄ diff focus (diff view) |
+| `<cr>` | open diff for the file, section, or commit; in the diff view, switch pane focus |
 | `D` | open the full review diff |
+| `<c-n>` / `<c-p>` | next / previous file in the diff view |
 | `s` / `u` | stage / unstage |
 | `S` / `U` | stage all / unstage all |
 | `x` | discard (with confirmation) |
@@ -65,6 +66,10 @@ rather paste it into a prompt.
 | `e` | open the file in `$EDITOR` |
 | `Z` | send feedback to the agent |
 | `q` | back / quit |
+
+The diff view is two panes: a file sidebar and the selected file's diff. `TAB`
+moves focus between them; `j`/`k` change the selected file from the sidebar or
+scroll the diff when focused there; `<c-n>`/`<c-p>` switch files from either.
 
 `?` shows the full keymap for the current screen.
 
