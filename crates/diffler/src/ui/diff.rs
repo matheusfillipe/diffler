@@ -38,7 +38,7 @@ const HINTS: &[(&[Action], &str)] = &[
 
 /// Sidebar width: a quarter of the screen, clamped to a readable band.
 fn sidebar_width(total: u16) -> u16 {
-    (total / 4).clamp(24, 40).min(total)
+    (total / 4).clamp(28, 44).min(total)
 }
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
@@ -249,12 +249,17 @@ fn sidebar_line(
         theme.bg
     };
     let dim = Style::new().fg(theme.dim).bg(bg);
+    // a left bar makes the cursor file unmistakable where the bg tint is subtle
+    let marker = if selected { "▌" } else { " " };
     let glyph = file.status.glyph();
-    let mut spans = vec![Span::styled(
-        format!(" {glyph} "),
-        Style::new().fg(status_color(theme, file.status)).bg(bg),
-    )];
-    // reserve room for the trailing markers, then truncate the path to fit.
+    let mut spans = vec![
+        Span::styled(marker.to_owned(), Style::new().fg(theme.accent).bg(bg)),
+        Span::styled(
+            format!("{glyph} "),
+            Style::new().fg(status_color(theme, file.status)).bg(bg),
+        ),
+    ];
+    // reserve room for the trailing markers, then fit the path into the rest.
     // " ·{open}" is 2 + the count's digits wide; " ✓" is 2
     let suffix_width = usize::from(viewed) * 2
         + if open > 0 {
@@ -264,8 +269,14 @@ fn sidebar_line(
         };
     let used = spans.iter().map(Span::width).sum::<usize>() + suffix_width;
     let room = (width as usize).saturating_sub(used + 1);
-    let path = truncate_path(&file.path, room);
-    spans.push(Span::styled(path, Style::new().fg(theme.fg).bg(bg)));
+    let name = Style::new()
+        .fg(if selected { theme.accent } else { theme.fg })
+        .bg(bg);
+    let (dir, base) = split_path(&file.path, room);
+    if !dir.is_empty() {
+        spans.push(Span::styled(dir, Style::new().fg(theme.dim).bg(bg)));
+    }
+    spans.push(Span::styled(base, name));
     if viewed {
         spans.push(Span::styled(" ✓".to_owned(), dim));
     }
@@ -275,15 +286,40 @@ fn sidebar_line(
     pad_line(spans, bg, width)
 }
 
-/// Keep the file name visible by trimming the leading path with an ellipsis.
-fn truncate_path(path: &str, room: usize) -> String {
-    let width = path.chars().count();
-    if width <= room || room == 0 {
-        return path.to_owned();
+/// Split a path into a dim directory prefix and a bright basename so the file
+/// name stays the visible identity. The basename is preserved whole and only
+/// end-clipped when it alone overflows `room`; any leftover room shows as much
+/// of the directory as fits, elided from the left. Char-based, multibyte-safe.
+///
+/// Returns `(directory_prefix, basename)`. The directory keeps its trailing
+/// `/` and is empty when nothing fits or the path is root-level.
+fn split_path(path: &str, room: usize) -> (String, String) {
+    let (dir, base) = match path.rfind('/') {
+        Some(slash) => (&path[..=slash], &path[slash + 1..]),
+        None => ("", path),
+    };
+    let base_width = base.chars().count();
+    if room == 0 {
+        return (String::new(), String::new());
     }
-    let keep = room.saturating_sub(1);
-    let tail: String = path.chars().skip(width - keep).collect();
-    format!("…{tail}")
+    // the basename is the identity: clip it only when it alone overflows
+    if base_width > room {
+        let keep = room.saturating_sub(1);
+        let head: String = base.chars().take(keep).collect();
+        return (String::new(), format!("{head}…"));
+    }
+    let dir_room = room - base_width;
+    let dir_width = dir.chars().count();
+    if dir.is_empty() || dir_room <= 1 {
+        return (String::new(), base.to_owned());
+    }
+    if dir_width <= dir_room {
+        return (dir.to_owned(), base.to_owned());
+    }
+    // keep the rightmost slice of the directory, room for a leading ellipsis
+    let keep = dir_room - 1;
+    let tail: String = dir.chars().skip(dir_width - keep).collect();
+    (format!("…{tail}"), base.to_owned())
 }
 
 fn status_color(theme: &Theme, status: FileStatus) -> Color {
@@ -492,9 +528,74 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
+    use super::split_path;
     use crate::app::{App, DiffRow, Pane};
     use crate::config::LoadedConfig;
     use crate::test_support::{Fixture, key, standard_fixture};
+
+    #[test]
+    fn deep_path_keeps_full_basename_and_left_elides_the_directory() {
+        let (dir, base) = split_path(
+            "src/very/deeply/nested/module/paths/authentication_handler.rs",
+            32,
+        );
+        assert_eq!(base, "authentication_handler.rs");
+        assert!(
+            dir.starts_with('…'),
+            "directory elided from the left: {dir:?}"
+        );
+        assert!(
+            dir.ends_with('/'),
+            "trailing slash kept before basename: {dir:?}"
+        );
+        assert!(dir.len() > 1, "some directory context shown: {dir:?}");
+        assert!(
+            dir.chars().count() + base.chars().count() <= 32,
+            "rendered path fits the width: {dir:?}{base:?}"
+        );
+    }
+
+    #[test]
+    fn basename_longer_than_width_is_end_clipped() {
+        let (dir, base) = split_path("src/a_very_long_filename_indeed.rs", 12);
+        assert_eq!(dir, "");
+        assert_eq!(base.chars().count(), 12);
+        assert!(base.ends_with('…'), "basename clipped at the end: {base:?}");
+        assert!(
+            base.starts_with("a_very"),
+            "basename kept from the start: {base:?}"
+        );
+    }
+
+    #[test]
+    fn short_path_shows_full_text_without_ellipsis() {
+        let (dir, base) = split_path("src/lib.rs", 32);
+        assert_eq!(dir, "src/");
+        assert_eq!(base, "lib.rs");
+    }
+
+    #[test]
+    fn root_level_file_shows_only_the_basename() {
+        let (dir, base) = split_path("todo.md", 32);
+        assert_eq!(dir, "");
+        assert_eq!(base, "todo.md");
+    }
+
+    #[test]
+    fn directory_dropped_when_only_the_basename_fits() {
+        // width holds the basename but leaves no room for any directory
+        let (dir, base) = split_path("src/deeply/nested/file.rs", 8);
+        assert_eq!(dir, "");
+        assert_eq!(base, "file.rs");
+    }
+
+    #[test]
+    fn basename_exactly_filling_width_is_not_clipped() {
+        // room equal to the basename width fits whole, no room for a directory
+        let (dir, base) = split_path("src/lib.rs", 6);
+        assert_eq!(dir, "");
+        assert_eq!(base, "lib.rs");
+    }
 
     fn render(app: &mut App) -> Terminal<TestBackend> {
         let backend = TestBackend::new(120, 40);

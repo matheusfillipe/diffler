@@ -6,7 +6,7 @@ expression: render(&mut app).backend()
 "╭ Files ─────────────────────╮╭ Diff ──────────────────────────────────────────────────────────────────────────────────╮"
 "│ A ci.yml ✓                 ││ untracked todo.md                                                                      │"
 "│ M src/lib.rs ✓             ││ @@ -0,0 +1,1 @@                                                                        │"
-"│ ? todo.md                  ││         1 - [ ] review                                                                 │"
+"│▌? todo.md                  ││         1 - [ ] review                                                                 │"
 "│                            ││                                                                                        │"
 "│                            ││                                                                                        │"
 "│                            ││                                                                                        │"
