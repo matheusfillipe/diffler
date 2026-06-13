@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use diffler_core::highlight::Highlighter;
-use diffler_core::model::{DiffModel, FileDiff, FileStatus, LineKind};
+use diffler_core::model::{DiffModel, FileDiff};
 use diffler_core::session::{Comment, CommentStatus, Session};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -20,8 +20,8 @@ use crate::app::{
 };
 use crate::keymap::Action;
 use crate::theme::Theme;
-use crate::ui::diff_render::{file_gutter_width, hunk_header, render_diff_line};
-use crate::ui::{hint_line, status_bar};
+use crate::ui::diff_render::{file_gutter_width, hunk_header, line_syntax, render_diff_line};
+use crate::ui::{diffstat_spans, hint_line, status_bar, status_color};
 
 /// Hint entries, rendered against the live keymap so remaps show.
 const HINTS: &[(&[Action], &str)] = &[
@@ -340,14 +340,6 @@ fn split_path(path: &str, room: usize) -> (String, String) {
     (format!("…{tail}"), base.to_owned())
 }
 
-fn status_color(theme: &Theme, status: FileStatus) -> Color {
-    match status {
-        FileStatus::Added | FileStatus::Untracked => theme.accent,
-        FileStatus::Deleted => theme.error_fg,
-        FileStatus::Modified | FileStatus::Renamed => theme.warn_fg,
-    }
-}
-
 fn row_line(
     theme: &Theme,
     session: &Session,
@@ -372,14 +364,9 @@ fn row_line(
             let Some(line) = file.hunks.get(*hunk).and_then(|h| h.lines.get(*line)) else {
                 return Line::default();
             };
-            let syntax = highlights.get(&file.path).and_then(|cached| {
-                let (side, number) = match line.kind {
-                    LineKind::Deleted => (&cached.old, line.old_no),
-                    LineKind::Added | LineKind::Context => (&cached.new, line.new_no),
-                };
-                let index = usize::try_from(number?).ok()?.checked_sub(1)?;
-                side.get(index).map(Vec::as_slice)
-            });
+            let syntax = highlights
+                .get(&file.path)
+                .and_then(|cached| line_syntax(&cached.old, &cached.new, line));
             render_diff_line(
                 theme,
                 line,
@@ -400,7 +387,7 @@ fn row_line(
     }
 }
 
-fn ensure_file_highlights(cache: &mut HashMap<String, FileHighlights>, file: &FileDiff) {
+pub(crate) fn ensure_file_highlights(cache: &mut HashMap<String, FileHighlights>, file: &FileDiff) {
     // both sides are highlighted, so the validity hash must cover both:
     // an old-side-only change (e.g. a rebase) must invalidate the entry
     let hash = file.sides_hash();
@@ -457,6 +444,16 @@ fn pane_header_line(
     } else if total > 0 {
         spans.push(Span::styled(" · resolved".to_owned(), dim));
     }
+    // GitHub-PR style: the file's `+A -B` hugs the right edge of the header
+    let (added, deleted) = file.diffstat();
+    let stat = diffstat_spans(theme, added, deleted, bg);
+    let stat_width: usize = stat.iter().map(Span::width).sum();
+    let used: usize = spans.iter().map(Span::width).sum();
+    let gap = (width as usize).saturating_sub(used + stat_width);
+    if gap > 0 {
+        spans.push(Span::styled(" ".repeat(gap), Style::new().bg(bg)));
+    }
+    spans.extend(stat);
     pad_line(spans, bg, width)
 }
 

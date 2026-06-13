@@ -8,8 +8,9 @@ pub mod log;
 pub mod popup;
 pub mod status;
 
+use diffler_core::model::FileStatus;
 use ratatui::Frame;
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
 use crate::app::{App, BranchAction, Modal, Screen, Severity};
@@ -19,9 +20,10 @@ use crate::theme::Theme;
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     match app.screen() {
         Screen::Status => {
-            // attach intra-line emphasis to expanded inline diffs before the
-            // read-only status render
+            // attach intra-line emphasis and syntax to expanded inline diffs
+            // before the read-only status render
             app.enrich_status_expanded();
+            app.ensure_status_highlights(diff::ensure_file_highlights);
             status::draw(frame, app);
         }
         Screen::Log => log::draw(frame, app),
@@ -97,6 +99,36 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         }
         None => {}
     }
+}
+
+/// Status accent shared by the diff sidebar and the status screen.
+pub(super) fn status_color(theme: &Theme, status: FileStatus) -> Color {
+    match status {
+        FileStatus::Added | FileStatus::Untracked => theme.accent,
+        FileStatus::Deleted => theme.error_fg,
+        FileStatus::Modified | FileStatus::Renamed => theme.warn_fg,
+    }
+}
+
+/// GitHub-style ` +A -B` diffstat spans over `bg`. A zero side is dimmed so it
+/// reads as inactive; both-zero yields no spans.
+pub(super) fn diffstat_spans(
+    theme: &Theme,
+    added: usize,
+    deleted: usize,
+    bg: Color,
+) -> Vec<Span<'static>> {
+    if added == 0 && deleted == 0 {
+        return Vec::new();
+    }
+    let side = |count: usize, color: Color| {
+        let fg = if count == 0 { theme.dim } else { color };
+        Style::new().fg(fg).bg(bg)
+    };
+    vec![
+        Span::styled(format!(" +{added}"), side(added, theme.added)),
+        Span::styled(format!(" -{deleted}"), side(deleted, theme.error_fg)),
+    ]
 }
 
 /// Hint line built from the active keymap so config remaps show. Each item

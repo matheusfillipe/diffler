@@ -4,8 +4,9 @@ expression: render(&mut app).backend()
 ---
 " Hint: <tab> toggle  s stage  u unstage  x discard  cc commit  ? help                                                   "
 " Head:     main 1685505 initial commit                                                                                  "
+" Changes   +2 -2  █████                                                                                                 "
 "                                                                                                                        "
-" ▾ Unstaged changes (1)                                                                                                 "
+" ▾ Unstaged changes (1) +2 -2                                                                                           "
 "     modified  data.txt                                                                                                 "
 " @@ -1,4 +1,4 @@                                                                                                        "
 "    1      line 1                                                                                                       "
@@ -21,7 +22,6 @@ expression: render(&mut app).backend()
 "        20 line twenty                                                                                                  "
 "                                                                                                                        "
 " ▸ Recent commits (1)                                                                                                   "
-"                                                                                                                        "
 "                                                                                                                        "
 "                                                                                                                        "
 "                                                                                                                        "

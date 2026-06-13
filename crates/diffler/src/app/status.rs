@@ -2,13 +2,13 @@
 //! diff expansion, folding, stage/unstage/discard, and cursor preservation
 //! across refreshes.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 use diffler_core::model::FileDiff;
 use diffler_core::vcs::LogEntry;
 
-use super::{App, Modal, PendingOp};
+use super::{App, FileHighlights, Modal, PendingOp};
 use crate::keymap::Action;
 
 /// Status screen sections, in display order.
@@ -97,6 +97,9 @@ pub struct StatusView {
     /// intra-line emphasis, so the per-file enrichment runs once. Cleared
     /// when the status sections are rebuilt (refresh).
     enriched: [BTreeSet<String>; 3],
+    /// Per-file syntax spans for inline diffs, keyed by path and validated by
+    /// the both-sides content hash. Filled lazily, only for expanded files.
+    pub(crate) highlights: HashMap<String, FileHighlights>,
 }
 
 impl StatusView {
@@ -108,6 +111,7 @@ impl StatusView {
             recent_folded: true,
             expanded: [const { BTreeSet::new() }; 3],
             enriched: [const { BTreeSet::new() }; 3],
+            highlights: HashMap::new(),
         }
     }
 
@@ -213,6 +217,34 @@ impl App {
             for file in &mut model.files {
                 if expanded.contains(&file.path) && enriched.insert(file.path.clone()) {
                     diffler_core::pairing::enrich_file(file);
+                }
+            }
+        }
+    }
+
+    /// Drive `fill` over every currently-expanded inline diff's file and its
+    /// syntax cache, so the renderer can highlight expanded files lazily —
+    /// only expanded files are touched. The UI supplies `fill` (the same
+    /// per-file highlighter the diff pane uses), keeping the highlighter in
+    /// the render layer.
+    pub(crate) fn ensure_status_highlights(
+        &mut self,
+        mut fill: impl FnMut(&mut HashMap<String, FileHighlights>, &FileDiff),
+    ) {
+        let cache = &mut self.status.highlights;
+        for section in Section::ALL {
+            let index = section.index();
+            let model = match section {
+                Section::Untracked => &self.review.status.untracked,
+                Section::Unstaged => &self.review.status.unstaged,
+                Section::Staged => &self.review.status.staged,
+            };
+            let Some(expanded) = self.status.expanded.get(index) else {
+                continue;
+            };
+            for file in &model.files {
+                if expanded.contains(&file.path) {
+                    fill(cache, file);
                 }
             }
         }
