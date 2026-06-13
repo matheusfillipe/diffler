@@ -15,9 +15,9 @@ def open_diff(tui):
 
 
 def cursor_to_added_line(tui):
-    """Move from the app.txt file header to the first added line (+beta2,
-    new-side line 2): header, hunk, context alpha, -beta, -gamma, +beta2."""
-    tui.send("jjjjj")
+    """The diff pane starts on the hunk header; reach the first added line
+    (+beta2, new-side line 2): hunk, context alpha, -beta, -gamma, +beta2."""
+    tui.send("jjjj")
 
 
 def load_session(repo):

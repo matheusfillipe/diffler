@@ -1,6 +1,7 @@
-//! Diff/review screen: renders the visible slice of the flattened row list
-//! — file headers, hunk headers, composite diff lines, and inline comment
-//! blocks — and keeps the cursor in view.
+//! Diff/review screen: a two-pane layout — a left file sidebar listing every
+//! file in the diff (status, viewed mark, comment count) and a right pane that
+//! renders the visible slice of the selected file's hunks, lines, and inline
+//! comment blocks, keeping the cursor in view.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -10,12 +11,12 @@ use diffler_core::model::{DiffModel, FileDiff, FileStatus, LineKind};
 use diffler_core::session::{Comment, CommentStatus, Session};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use crate::app::{
-    App, CommentLine, DiffRow, DiffSource, DiffView, FileHighlights, comment_display,
+    App, CommentLine, DiffRow, DiffSource, DiffView, FileHighlights, Pane, comment_display,
 };
 use crate::keymap::Action;
 use crate::theme::Theme;
@@ -24,15 +25,21 @@ use crate::ui::{hint_line, status_bar};
 
 /// Hint entries, rendered against the live keymap so remaps show.
 const HINTS: &[(&[Action], &str)] = &[
+    (&[Action::ToggleFocus], "focus"),
     (&[Action::Comment], "comment"),
     (&[Action::VisualSelect], "select"),
     (&[Action::Reply], "reply"),
     (&[Action::Resolve], "resolve"),
     (&[Action::MarkViewed], "viewed"),
-    (&[Action::ToggleFold], "fold"),
+    (&[Action::NextFile, Action::PrevFile], "file"),
     (&[Action::CopyFileFeedback, Action::CopyAllFeedback], "copy"),
     (&[Action::Back], "back"),
 ];
+
+/// Sidebar width: a quarter of the screen, clamped to a readable band.
+fn sidebar_width(total: u16) -> u16 {
+    (total / 4).clamp(24, 40).min(total)
+}
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let area = frame.area();
@@ -75,8 +82,99 @@ fn draw_body(
     review_model: &DiffModel,
     diff: &mut DiffView,
 ) {
-    let height = area.height.max(1) as usize;
-    diff.viewport = area.height;
+    let width = sidebar_width(area.width);
+    let [list_area, pane_area] =
+        Layout::horizontal([Constraint::Length(width), Constraint::Min(0)]).areas(area);
+    draw_sidebar(frame, list_area, theme, session, review_model, diff);
+    draw_pane(frame, pane_area, theme, session, review_model, diff);
+}
+
+/// Left pane: one row per file in the diff, the selected one highlighted, the
+/// focused pane's border accented.
+fn draw_sidebar(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    theme: &Theme,
+    session: &Session,
+    review_model: &DiffModel,
+    diff: &DiffView,
+) {
+    let focused = diff.focus == Pane::List;
+    let block = pane_block(theme, "Files", focused);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let model = diff.commit_model.as_ref().unwrap_or(review_model);
+    let is_working_tree = diff.source == DiffSource::WorkingTree;
+    let lines: Vec<Line<'static>> = model
+        .files
+        .iter()
+        .enumerate()
+        .map(|(index, file)| {
+            let viewed = is_working_tree && session.is_viewed(&file.path, &file.content_hash());
+            let open = open_comment_count(session, &file.path);
+            sidebar_line(
+                theme,
+                file,
+                viewed,
+                open,
+                inner.width,
+                index == diff.selected,
+            )
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Right pane: the selected file's header then the visible slice of its rows.
+fn draw_pane(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    theme: &Theme,
+    session: &Session,
+    review_model: &DiffModel,
+    diff: &mut DiffView,
+) {
+    let focused = diff.focus == Pane::Diff;
+    let block = pane_block(theme, "Diff", focused);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let model = diff.commit_model.as_ref().unwrap_or(review_model);
+    let Some(file) = model.files.get(diff.selected) else {
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                " nothing to review",
+                Style::new().fg(theme.dim).bg(theme.bg),
+            )),
+            inner,
+        );
+        return;
+    };
+
+    // header is fixed; the rows scroll beneath it
+    let [header_area, rows_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
+    let is_working_tree = diff.source == DiffSource::WorkingTree;
+    let viewed = is_working_tree && session.is_viewed(&file.path, &file.content_hash());
+    let open = open_comment_count(session, &file.path);
+    let total = session
+        .comments
+        .iter()
+        .filter(|c| c.anchor.file == file.path)
+        .count();
+    frame.render_widget(
+        Paragraph::new(pane_header_line(
+            theme,
+            file,
+            viewed,
+            (open, total),
+            header_area.width,
+        )),
+        header_area,
+    );
+
+    let height = rows_area.height.max(1) as usize;
+    diff.viewport = rows_area.height;
     if diff.cursor < diff.scroll {
         diff.scroll = diff.cursor;
     }
@@ -86,26 +184,8 @@ fn draw_body(
     let scroll = diff.scroll;
     let cursor = diff.cursor;
     let selection = diff.selection();
-    let model = diff.commit_model.as_ref().unwrap_or(review_model);
-
     // syntax is filled lazily, only for files that actually scroll into view
-    let visible_files: Vec<usize> = diff
-        .rows()
-        .iter()
-        .skip(scroll)
-        .take(height)
-        .filter_map(|row| match row {
-            DiffRow::File { file } | DiffRow::Hunk { file, .. } | DiffRow::Line { file, .. } => {
-                Some(*file)
-            }
-            DiffRow::Comment { .. } => None,
-        })
-        .collect();
-    for file in visible_files {
-        if let Some(file) = model.files.get(file) {
-            ensure_file_highlights(&mut diff.highlights, file);
-        }
-    }
+    ensure_file_highlights(&mut diff.highlights, file);
 
     let selected = |index: usize| {
         index == cursor || selection.is_some_and(|(start, end)| index >= start && index <= end)
@@ -123,12 +203,95 @@ fn draw_body(
                 model,
                 diff,
                 row,
-                area.width,
+                rows_area.width,
                 selected(index),
             )
         })
         .collect();
-    frame.render_widget(Paragraph::new(lines), area);
+    frame.render_widget(Paragraph::new(lines), rows_area);
+}
+
+/// Bordered pane with an accent title/border when focused, dim otherwise.
+fn pane_block(theme: &Theme, title: &str, focused: bool) -> Block<'static> {
+    let border = if focused { theme.accent } else { theme.border };
+    Block::new()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(border).bg(theme.bg))
+        .title(Span::styled(
+            format!(" {title} "),
+            Style::new()
+                .fg(if focused { theme.accent } else { theme.dim })
+                .bg(theme.bg)
+                .add_modifier(Modifier::BOLD),
+        ))
+}
+
+fn open_comment_count(session: &Session, path: &str) -> usize {
+    session
+        .comments
+        .iter()
+        .filter(|c| c.anchor.file == path && c.status != CommentStatus::Resolved)
+        .count()
+}
+
+fn sidebar_line(
+    theme: &Theme,
+    file: &FileDiff,
+    viewed: bool,
+    open: usize,
+    width: u16,
+    selected: bool,
+) -> Line<'static> {
+    let bg = if selected {
+        theme.cursor_line
+    } else {
+        theme.bg
+    };
+    let dim = Style::new().fg(theme.dim).bg(bg);
+    let glyph = file.status.glyph();
+    let mut spans = vec![Span::styled(
+        format!(" {glyph} "),
+        Style::new().fg(status_color(theme, file.status)).bg(bg),
+    )];
+    // reserve room for the trailing markers, then truncate the path to fit.
+    // " ·{open}" is 2 + the count's digits wide; " ✓" is 2
+    let suffix_width = usize::from(viewed) * 2
+        + if open > 0 {
+            2 + open.to_string().len()
+        } else {
+            0
+        };
+    let used = spans.iter().map(Span::width).sum::<usize>() + suffix_width;
+    let room = (width as usize).saturating_sub(used + 1);
+    let path = truncate_path(&file.path, room);
+    spans.push(Span::styled(path, Style::new().fg(theme.fg).bg(bg)));
+    if viewed {
+        spans.push(Span::styled(" ✓".to_owned(), dim));
+    }
+    if open > 0 {
+        spans.push(Span::styled(format!(" ·{open}"), dim));
+    }
+    pad_line(spans, bg, width)
+}
+
+/// Keep the file name visible by trimming the leading path with an ellipsis.
+fn truncate_path(path: &str, room: usize) -> String {
+    let width = path.chars().count();
+    if width <= room || room == 0 {
+        return path.to_owned();
+    }
+    let keep = room.saturating_sub(1);
+    let tail: String = path.chars().skip(width - keep).collect();
+    format!("…{tail}")
+}
+
+fn status_color(theme: &Theme, status: FileStatus) -> Color {
+    match status {
+        FileStatus::Added | FileStatus::Untracked => theme.accent,
+        FileStatus::Deleted => theme.error_fg,
+        FileStatus::Modified | FileStatus::Renamed => theme.warn_fg,
+    }
 }
 
 fn row_line(
@@ -141,31 +304,7 @@ fn row_line(
     selected: bool,
 ) -> Line<'static> {
     let highlights = &diff.highlights;
-    let is_working_tree = diff.source == DiffSource::WorkingTree;
     match row {
-        DiffRow::File { file } => match model.files.get(*file) {
-            Some(file) => {
-                let viewed = is_working_tree && session.is_viewed(&file.path, &file.content_hash());
-                let (open, total) = session
-                    .comments
-                    .iter()
-                    .filter(|c| c.anchor.file == file.path)
-                    .fold((0, 0), |(open, total), c| {
-                        let live = usize::from(c.status != CommentStatus::Resolved);
-                        (open + live, total + 1)
-                    });
-                file_header_line(
-                    theme,
-                    file,
-                    diff.is_folded(&file.path),
-                    viewed,
-                    (open, total),
-                    width,
-                    selected,
-                )
-            }
-            None => Line::default(),
-        },
         DiffRow::Hunk { file, hunk } => {
             match model.files.get(*file).and_then(|f| f.hunks.get(*hunk)) {
                 Some(hunk) => hunk_header(theme, hunk, width, selected),
@@ -230,28 +369,19 @@ fn ensure_file_highlights(cache: &mut HashMap<String, FileHighlights>, file: &Fi
     cache.insert(file.path.clone(), entry);
 }
 
-fn file_header_line(
+/// Right-pane header: status, path, binary/viewed marks, comment count.
+fn pane_header_line(
     theme: &Theme,
     file: &FileDiff,
-    folded: bool,
     viewed: bool,
     // (open or replied, total) comment counts for the file
     comments: (usize, usize),
     width: u16,
-    selected: bool,
 ) -> Line<'static> {
-    let bg = if selected {
-        theme.cursor_line
-    } else {
-        theme.panel
-    };
+    let bg = theme.panel;
     let dim = Style::new().fg(theme.dim).bg(bg);
-    let marker = if folded { " ▸ " } else { " ▾ " };
-    let mut spans = vec![Span::styled(marker.to_owned(), dim)];
-    let mode = mode_text(file.status);
-    if !mode.is_empty() {
-        spans.push(Span::styled(format!("{mode:<10}"), dim));
-    }
+    let mode = file.status.label();
+    let mut spans = vec![Span::styled(format!(" {mode:<10}"), dim)];
     spans.push(Span::styled(
         file.path.clone(),
         Style::new()
@@ -274,16 +404,6 @@ fn file_header_line(
         spans.push(Span::styled(" · resolved".to_owned(), dim));
     }
     pad_line(spans, bg, width)
-}
-
-fn mode_text(status: FileStatus) -> &'static str {
-    match status {
-        FileStatus::Added => "new file",
-        FileStatus::Modified => "modified",
-        FileStatus::Deleted => "deleted",
-        FileStatus::Renamed => "renamed",
-        FileStatus::Untracked => "untracked",
-    }
 }
 
 fn comment_row_line(
@@ -358,7 +478,7 @@ fn comment_row_line(
     pad_line(spans, bg, width)
 }
 
-fn pad_line(mut spans: Vec<Span<'static>>, bg: ratatui::style::Color, width: u16) -> Line<'static> {
+fn pad_line(mut spans: Vec<Span<'static>>, bg: Color, width: u16) -> Line<'static> {
     let used: usize = spans.iter().map(Span::width).sum();
     let pad = (width as usize).saturating_sub(used);
     if pad > 0 {
@@ -372,7 +492,7 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    use crate::app::{App, DiffRow};
+    use crate::app::{App, DiffRow, Pane};
     use crate::config::LoadedConfig;
     use crate::test_support::{Fixture, key, standard_fixture};
 
@@ -391,6 +511,24 @@ mod tests {
         app.author = "reviewer".to_owned();
         app.open_working_tree_diff(None);
         (fixture, app)
+    }
+
+    /// Select src/lib.rs and focus the diff pane.
+    fn open_lib_diff(app: &mut App) {
+        let index = app
+            .diff
+            .as_ref()
+            .unwrap()
+            .model(&app.review)
+            .files
+            .iter()
+            .position(|f| f.path == "src/lib.rs")
+            .expect("src/lib.rs present");
+        let diff = app.diff.as_mut().unwrap();
+        diff.selected = index;
+        diff.focus = Pane::Diff;
+        diff.invalidate();
+        diff.ensure_rows(&app.review);
     }
 
     fn cursor_to_added_line(app: &mut App) {
@@ -417,8 +555,9 @@ mod tests {
     }
 
     #[test]
-    fn working_tree_diff_renders_with_syntax_emphasis_and_gutter() {
+    fn diff_pane_renders_with_syntax_emphasis_and_gutter() {
         let (_fixture, mut app) = diff_app();
+        open_lib_diff(&mut app);
         let terminal = render(&mut app);
         // emphasis backgrounds composited over the line backgrounds
         let styles = format!("{:?}", terminal.backend().buffer());
@@ -426,7 +565,7 @@ mod tests {
         let del_emph = format!("{:?}", app.theme.del_emph_bg);
         assert!(styles.contains(&add_emph), "added emphasis bg rendered");
         assert!(styles.contains(&del_emph), "deleted emphasis bg rendered");
-        // the lazy cache highlighted the visible rust file
+        // the lazy cache highlighted the selected rust file
         let highlights = &app.diff.as_ref().unwrap().highlights;
         let lib = highlights
             .get("src/lib.rs")
@@ -436,6 +575,13 @@ mod tests {
             "rust syntax produced styled ranges"
         );
         insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn sidebar_focus_renders_the_file_list_and_first_file_diff() {
+        let (_fixture, mut app) = diff_app();
+        assert_eq!(app.diff.as_ref().unwrap().focus, Pane::List);
+        insta::assert_snapshot!(render(&mut app).backend());
     }
 
     #[test]
@@ -452,6 +598,7 @@ mod tests {
     #[test]
     fn comment_blocks_render_open_and_replied_threads() {
         let (_fixture, mut app) = diff_app();
+        open_lib_diff(&mut app);
         cursor_to_added_line(&mut app);
         app.handle(key('c'));
         for c in "why 42?".chars() {
@@ -485,6 +632,7 @@ mod tests {
     #[test]
     fn visual_selection_highlights_the_selected_rows() {
         let (_fixture, mut app) = diff_app();
+        open_lib_diff(&mut app);
         cursor_to_added_line(&mut app);
         app.handle(key('V'));
         app.handle(key('j'));
@@ -507,17 +655,44 @@ mod tests {
     }
 
     #[test]
-    fn folded_viewed_file_renders_collapsed_with_marks() {
+    fn viewed_file_shows_a_check_and_comment_count_in_the_sidebar() {
         let (_fixture, mut app) = diff_app();
+        open_lib_diff(&mut app);
         cursor_to_added_line(&mut app);
-        app.handle(key('v'));
-        assert!(app.diff.as_ref().unwrap().is_folded("src/lib.rs"));
-        insta::assert_snapshot!(render(&mut app).backend());
+        // a comment on the selected file
+        app.handle(key('c'));
+        for c in "look".chars() {
+            app.handle(key(c));
+        }
+        app.handle(key('\n'));
+        // mark src/lib.rs viewed without advancing the selection off it
+        let hash = app
+            .review
+            .model
+            .files
+            .iter()
+            .find(|f| f.path == "src/lib.rs")
+            .map(diffler_core::model::FileDiff::content_hash)
+            .unwrap();
+        app.review.session.mark_viewed("src/lib.rs", &hash);
+        app.diff.as_mut().unwrap().invalidate();
+        let terminal = render(&mut app);
+        let content = terminal.backend().to_string();
+        assert!(
+            content.contains("✓"),
+            "viewed check in the sidebar: {content}"
+        );
+        assert!(
+            content.contains("·1"),
+            "comment count in the sidebar: {content}"
+        );
+        insta::assert_snapshot!(terminal.backend());
     }
 
     #[test]
     fn file_header_shows_resolved_when_all_comments_are_resolved() {
         let (_fixture, mut app) = diff_app();
+        open_lib_diff(&mut app);
         cursor_to_added_line(&mut app);
         app.handle(key('c'));
         for c in "why 42?".chars() {
@@ -551,23 +726,21 @@ mod tests {
     }
 
     #[test]
-    fn viewed_walk_folds_files_and_advances_the_cursor() {
+    fn viewed_walk_advances_the_selection() {
         let (_fixture, mut app) = diff_app();
         app.handle(key('v'));
         app.handle(key('v'));
-        // two files viewed and folded; the cursor sits on the last
-        // unviewed file header, progress reads 2/3
+        // two files viewed; the sidebar cursor sits on the last unviewed
+        // file, progress reads 2/3
         insta::assert_snapshot!(render(&mut app).backend());
     }
 
     #[test]
-    fn huge_diff_renders_a_sliding_window_and_jumps_to_extremes() {
-        // ~1800 rows across 200 hunks: edits every 10th line stay further
-        // apart than the hunk-merge distance (2 × 3 context lines)
+    fn diff_pane_renders_a_sliding_window_and_jumps_to_extremes() {
+        // a single file with ~2000 lines: the model dwarfs the viewport
         let fixture = Fixture::new();
         let lines: Vec<String> = (1..=2000).map(|i| format!("line {i}")).collect();
         fixture.write("big.txt", &(lines.join("\n") + "\n"));
-        fixture.write("tail.rs", "fn tail() -> u32 {\n    1\n}\n");
         fixture.commit_all("initial commit");
         let edited: Vec<String> = (1..=2000)
             .map(|i| {
@@ -579,13 +752,12 @@ mod tests {
             })
             .collect();
         fixture.write("big.txt", &(edited.join("\n") + "\n"));
-        fixture.write("tail.rs", "fn tail() -> u32 {\n    2\n}\n");
 
         let mut app = App::new(fixture.review(), LoadedConfig::default());
-        app.open_working_tree_diff(None);
+        app.open_working_tree_file("big.txt");
         let total_rows = app.diff.as_ref().unwrap().rows().len();
         assert!(
-            total_rows > 1500,
+            total_rows > 200,
             "the model must dwarf the viewport: {total_rows}"
         );
 
@@ -599,26 +771,15 @@ mod tests {
         };
 
         let top = render(&mut app);
-        assert!(top.contains("big.txt"), "{top}");
-        assert!(
-            !top.contains("tail.rs"),
-            "rows far below the window stay unrendered: {top}"
-        );
+        assert!(top.contains("line 1"), "{top}");
         let diff = app.diff.as_ref().unwrap();
         assert_eq!(diff.scroll, 0);
-        // the lazy syntax cache only fills for files the window touched
         assert!(diff.highlights.contains_key("big.txt"));
-        assert!(!diff.highlights.contains_key("tail.rs"));
 
         // G: the cursor lands on the last row and the window slides down
         app.handle(key('G'));
         assert_eq!(app.diff.as_ref().unwrap().cursor, total_rows - 1);
         let bottom = render(&mut app);
-        assert!(bottom.contains("fn tail() -> u32 {"), "{bottom}");
-        assert!(
-            !bottom.contains("big.txt"),
-            "the top header scrolled out: {bottom}"
-        );
         let diff = app.diff.as_ref().unwrap();
         let viewport = usize::from(diff.viewport);
         assert!(viewport < total_rows, "sanity: window smaller than model");
@@ -627,23 +788,21 @@ mod tests {
             total_rows - viewport,
             "scroll pins the cursor to the last body row"
         );
-        assert!(
-            diff.highlights.contains_key("tail.rs"),
-            "scrolling in fills the lazy cache"
-        );
+        assert!(bottom.contains("2000"), "tail row visible: {bottom}");
 
-        // gg: back to the first row
+        // gg: back to the first row, the window slides up on the next render
         app.handle(key('g'));
         app.handle(key('g'));
         assert_eq!(app.diff.as_ref().unwrap().cursor, 0);
         let top_again = render(&mut app);
-        assert!(top_again.contains("big.txt"), "{top_again}");
+        assert!(top_again.contains("line 1"), "{top_again}");
         assert_eq!(app.diff.as_ref().unwrap().scroll, 0);
     }
 
     #[test]
     fn comment_input_modal_renders_over_the_diff() {
         let (_fixture, mut app) = diff_app();
+        open_lib_diff(&mut app);
         cursor_to_added_line(&mut app);
         app.handle(key('c'));
         for c in "why".chars() {

@@ -11,10 +11,10 @@ def test_review_walk_marks_all_files_and_shows_progress(spawn):
     tui.wait_for(" DIFF ")
     tui.wait_for("viewed 0/2 files")
 
-    # v on the first file header: marked viewed, folded, cursor advances
+    # v on the first file: marked viewed (✓ in the sidebar), selection advances
     tui.send("v")
     tui.wait_for("viewed 1/2 files")
-    tui.wait_for("✓ viewed")
+    tui.wait_for("✓")
 
     tui.send("v")
     tui.wait_for("viewed 2/2 files")
