@@ -483,6 +483,7 @@ fn build_file(
             old_lines: hunk.old_lines(),
             new_start: hunk.new_start(),
             new_lines: hunk.new_lines(),
+            context: hunk_context(&hunk),
             lines,
         });
     }
@@ -496,6 +497,17 @@ fn build_file(
         new_text,
         hunks,
     }))
+}
+
+/// git's section heading for a hunk: the text git appends after the second
+/// `@@` of the header (`@@ -a,b +c,d @@ <context>`), typically the enclosing
+/// function or section. Empty when git emits none (e.g. a top-of-file hunk).
+fn hunk_context(hunk: &git2::DiffHunk<'_>) -> String {
+    let header = String::from_utf8_lossy(hunk.header());
+    match header.split_once(" @@") {
+        Some((_, rest)) => rest.trim_matches(['\n', '\r', ' ']).to_owned(),
+        None => String::new(),
+    }
 }
 
 /// Content lines of one hunk as model lines (headers and EOF-newline markers

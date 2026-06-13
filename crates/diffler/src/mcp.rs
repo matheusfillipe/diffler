@@ -563,6 +563,7 @@ mod tests {
                         old_lines: 3,
                         new_start: 1,
                         new_lines: 3,
+                        context: String::new(),
                         lines: vec![
                             diff_line(LineKind::Context, Some(1), Some(1), "one"),
                             diff_line(LineKind::Deleted, Some(2), None, "two"),

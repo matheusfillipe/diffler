@@ -4,8 +4,8 @@ expression: render(&mut app).backend()
 ---
 " Hint: <tab> focus  c comment  V select  r reply  R resolve  v viewed  <c-n>/<c-p> file  y/Y copy  q back               "
 "╭ Files ─────────────────────╮╭ Diff ──────────────────────────────────────────────────────────────────────────────────╮"
-"│▌A ci.yml                   ││ new file  ci.yml                                                                  +1 -0│"
-"│ M src/lib.rs               ││ @@ -0,0 +1,1 @@                                                                        │"
+"│▌A ci.yml                   ││ new file  ci.yml                                                            +1 -0 █████│"
+"│ M src/lib.rs               ││                                                                                        │"
 "│ ? todo.md                  ││         1 on: push                                                                     │"
 "│                            ││                                                                                        │"
 "│                            ││                                                                                        │"

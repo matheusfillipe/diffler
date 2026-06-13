@@ -27,7 +27,7 @@ def load_session(repo):
 def test_enter_opens_the_diff_view(spawn):
     tui = spawn("--no-mcp")
     open_diff(tui)
-    tui.wait_for("@@ -1,3 +1,4 @@")
+    tui.wait_for("beta2")  # the added line, proving the diff rendered
     tui.wait_for("c comment")  # diff hint line
 
 
