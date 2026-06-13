@@ -1,7 +1,7 @@
 //! Status screen: hint line, head line, neogit-style sections with inline
 //! diff expansion, recent commits, and the status bar.
 
-use diffler_core::model::{FileDiff, FileStatus, Hunk};
+use diffler_core::model::FileDiff;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -12,7 +12,7 @@ use crate::app::{App, Row, Section};
 use crate::keymap::Action;
 use crate::theme::Theme;
 use crate::ui::diff_render::render_hunk_lines;
-use crate::ui::{cursor_line, hint_line, status_bar};
+use crate::ui::{cursor_line, diffstat_spans, hint_line, status_bar, status_color};
 
 /// Hint entries, rendered against the live keymap so remaps show.
 const HINTS: &[(&[Action], &str)] = &[
@@ -44,7 +44,16 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
 
 /// Body lines plus the vertical scroll keeping the cursor row in view.
 fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16) {
-    let mut lines = vec![head_line(app), Line::default()];
+    let mut lines = vec![head_line(app)];
+    let (added, deleted) = Section::ALL
+        .into_iter()
+        .map(|section| section_diffstat(app, section))
+        .fold((0, 0), |(a, d), (sa, sd)| (a + sa, d + sd));
+    // omit the summary entirely when there is nothing to review
+    if added != 0 || deleted != 0 {
+        lines.push(changes_line(&app.theme, added, deleted));
+    }
+    lines.push(Line::default());
     let rows = app.visible_rows();
     let has_sections = rows
         .iter()
@@ -69,7 +78,11 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16) {
                 file,
                 hunk,
             } => {
-                let Some(hunk) = hunk_at(app, section, file, hunk) else {
+                let Some(file_diff) = app.section_files(section).get(file) else {
+                    index += 1;
+                    continue;
+                };
+                let Some(hunk) = file_diff.hunks.get(hunk) else {
                     index += 1;
                     continue;
                 };
@@ -82,7 +95,14 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16) {
                 if let Some(offset) = selected {
                     cursor_line_index = lines.len() + offset;
                 }
-                lines.extend(render_hunk_lines(&app.theme, hunk, area.width, selected));
+                let syntax = app
+                    .status
+                    .highlights
+                    .get(&file_diff.path)
+                    .map(|cached| (cached.old.as_slice(), cached.new.as_slice()));
+                lines.extend(render_hunk_lines(
+                    &app.theme, hunk, syntax, area.width, selected,
+                ));
                 index += span;
             }
             row => {
@@ -102,10 +122,6 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16) {
     let height = area.height.max(1) as usize;
     let scroll = cursor_line_index.saturating_sub(height - 1) as u16;
     (lines, scroll)
-}
-
-fn hunk_at(app: &App, section: Section, file: usize, hunk: usize) -> Option<&Hunk> {
-    app.section_files(section).get(file)?.hunks.get(hunk)
 }
 
 fn centered_line(text: &str, style: Style, width: u16) -> Line<'static> {
@@ -138,11 +154,56 @@ fn head_line(app: &App) -> Line<'static> {
     Line::from(spans)
 }
 
+/// Grand-total diffstat summary: ` Changes  +A -B  <bar>`, aligned under the
+/// head line. The bar is a compact green:red proportion of added to deleted.
+fn changes_line(theme: &Theme, added: usize, deleted: usize) -> Line<'static> {
+    let mut spans = vec![Span::styled(" Changes  ", theme.dim_style())];
+    spans.extend(diffstat_spans(theme, added, deleted, theme.bg));
+    spans.push(Span::styled("  ", theme.base()));
+    spans.extend(proportion_bar(theme, added, deleted));
+    Line::from(spans)
+}
+
+/// A ~5-cell bar split green:red by the added:deleted ratio; at least one cell
+/// goes to each non-zero side so neither vanishes.
+fn proportion_bar(theme: &Theme, added: usize, deleted: usize) -> Vec<Span<'static>> {
+    const CELLS: usize = 5;
+    let total = added + deleted;
+    if total == 0 {
+        return Vec::new();
+    }
+    let mut add_cells = (added * CELLS).div_ceil(total).min(CELLS);
+    if added > 0 && add_cells == 0 {
+        add_cells = 1;
+    }
+    if deleted > 0 && add_cells == CELLS {
+        add_cells = CELLS - 1;
+    }
+    let del_cells = CELLS - add_cells;
+    let mut spans = Vec::new();
+    if add_cells > 0 {
+        spans.push(Span::styled(
+            "█".repeat(add_cells),
+            Style::new().fg(theme.added).bg(theme.bg),
+        ));
+    }
+    if del_cells > 0 {
+        spans.push(Span::styled(
+            "█".repeat(del_cells),
+            Style::new().fg(theme.error_fg).bg(theme.bg),
+        ));
+    }
+    spans
+}
+
 fn row_line(app: &App, row: &Row, selected: bool, width: u16) -> Line<'static> {
     let theme = &app.theme;
     let spans = match row {
         Row::SectionHeader { section, count } => {
-            header_spans(theme, section.title(), *count, app.is_folded(*section))
+            let mut spans = header_spans(theme, section.title(), *count, app.is_folded(*section));
+            let (added, deleted) = section_diffstat(app, *section);
+            spans.extend(diffstat_spans(theme, added, deleted, theme.bg));
+            spans
         }
         Row::RecentHeader { count } => {
             header_spans(theme, "Recent commits", *count, app.status.recent_folded)
@@ -182,10 +243,13 @@ fn file_spans(app: &App, file: Option<&FileDiff>, theme: &Theme) -> Vec<Span<'st
         return Vec::new();
     };
     let mut spans = vec![Span::styled("     ", theme.base())];
-    let mode = mode_text(file.status);
-    if !mode.is_empty() {
-        spans.push(Span::styled(format!("{mode:<10}"), theme.dim_style()));
-    }
+    let label = file.status.label();
+    spans.push(Span::styled(
+        format!("{label:<10}"),
+        Style::new()
+            .fg(status_color(theme, file.status))
+            .bg(theme.bg),
+    ));
     spans.push(Span::styled(file.path.clone(), theme.base()));
     if app.is_path_viewed(&file.path) {
         spans.push(Span::styled(" ✓", theme.dim_style()));
@@ -203,15 +267,12 @@ fn commit_spans(app: &App, index: usize, theme: &Theme) -> Vec<Span<'static>> {
     )]
 }
 
-fn mode_text(status: FileStatus) -> &'static str {
-    match status {
-        FileStatus::Added => "new file",
-        FileStatus::Modified => "modified",
-        FileStatus::Deleted => "deleted",
-        FileStatus::Renamed => "renamed",
-        // the untracked section lists bare paths, neogit-style
-        FileStatus::Untracked => "",
-    }
+/// Summed `(added, deleted)` over every file in a section.
+fn section_diffstat(app: &App, section: Section) -> (usize, usize) {
+    app.section_files(section)
+        .iter()
+        .map(FileDiff::diffstat)
+        .fold((0, 0), |(a, d), (fa, fd)| (a + fa, d + fd))
 }
 
 #[cfg(test)]
@@ -281,6 +342,17 @@ mod tests {
         let del_emph = format!("{:?}", app.theme.del_emph_bg);
         assert!(styles.contains(&add_emph), "added emphasis bg rendered");
         assert!(styles.contains(&del_emph), "deleted emphasis bg rendered");
+        // the inline diff is syntax-highlighted like the diff pane: the lazy
+        // cache filled for the expanded rust file produced styled ranges
+        let lib = app
+            .status
+            .highlights
+            .get("src/lib.rs")
+            .expect("expanded file highlighted");
+        assert!(
+            lib.new.iter().any(|line| !line.is_empty()),
+            "rust syntax produced styled ranges for the inline diff"
+        );
         insta::assert_snapshot!(terminal.backend());
     }
 

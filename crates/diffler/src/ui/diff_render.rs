@@ -10,28 +10,55 @@ use ratatui::text::{Line, Span};
 
 use crate::theme::Theme;
 
+/// Per-file syntax for both diff sides — `(old, new)` — each indexed by line
+/// number. The renderer picks the side per line via [`line_syntax`].
+pub type SideSyntax<'a> = (&'a [Vec<StyledRange>], &'a [Vec<StyledRange>]);
+
 /// Render one hunk as terminal lines: index 0 is the `@@` header, the rest
 /// map 1:1 to `hunk.lines`. `selected` is an index into the returned vec
 /// (0 = header) and paints that row with the cursor-line background.
+///
+/// `syntax` is the file's per-line syntax for both sides (`(old, new)`); when
+/// present each line is highlighted exactly as the diff pane does, with syntax
+/// foregrounds composited over the diff-kind background. `None` renders plain.
 pub fn render_hunk_lines(
     theme: &Theme,
     hunk: &Hunk,
+    syntax: Option<SideSyntax<'_>>,
     width: u16,
     selected: Option<usize>,
 ) -> Vec<Line<'static>> {
     let gutter = gutter_width(hunk);
     let mut lines = vec![hunk_header(theme, hunk, width, selected == Some(0))];
     lines.extend(hunk.lines.iter().enumerate().map(|(index, line)| {
+        let per_line = syntax.and_then(|(old, new)| line_syntax(old, new, line));
         render_diff_line(
             theme,
             line,
-            None,
+            per_line,
             gutter,
             width,
             selected == Some(index + 1),
         )
     }));
     lines
+}
+
+/// The per-line syntax slice for `line`, picked from the file's cached
+/// highlights: the old side for deletions, the new side for additions and
+/// context, indexed by the line's number. `None` when the line has no number
+/// on that side or the cache lacks it (e.g. a not-yet-highlighted file).
+pub fn line_syntax<'a>(
+    old: &'a [Vec<StyledRange>],
+    new: &'a [Vec<StyledRange>],
+    line: &DiffLine,
+) -> Option<&'a [StyledRange]> {
+    let (side, number) = match line.kind {
+        LineKind::Deleted => (old, line.old_no),
+        LineKind::Added | LineKind::Context => (new, line.new_no),
+    };
+    let index = usize::try_from(number?).ok()?.checked_sub(1)?;
+    side.get(index).map(Vec::as_slice)
 }
 
 /// Digits needed for the widest line number in the hunk, with a sane floor
@@ -226,7 +253,7 @@ mod tests {
     #[test]
     fn hunk_renders_header_gutter_and_emphasis() {
         let theme = Theme::github_dark();
-        let lines = render_hunk_lines(&theme, &sample_hunk(), 60, None);
+        let lines = render_hunk_lines(&theme, &sample_hunk(), None, 60, None);
         assert_eq!(lines.len(), 5, "header + 4 diff lines");
         let has_bg = |line: &Line<'_>, bg| line.spans.iter().any(|s| s.style.bg == Some(bg));
         assert!(has_bg(&lines[2], theme.del_emph_bg), "deleted emphasis bg");
@@ -247,7 +274,7 @@ mod tests {
             new_lines: 1,
             lines: vec![first_word],
         };
-        let lines = render_hunk_lines(&theme, &hunk, 60, None);
+        let lines = render_hunk_lines(&theme, &hunk, None, 60, None);
         let emphasized: String = lines[1]
             .spans
             .iter()
@@ -260,8 +287,8 @@ mod tests {
     #[test]
     fn selected_row_gets_cursor_background() {
         let theme = Theme::github_dark();
-        let plain = render_hunk_lines(&theme, &sample_hunk(), 60, None);
-        let selected = render_hunk_lines(&theme, &sample_hunk(), 60, Some(2));
+        let plain = render_hunk_lines(&theme, &sample_hunk(), None, 60, None);
+        let selected = render_hunk_lines(&theme, &sample_hunk(), None, 60, Some(2));
         assert_eq!(plain[1], selected[1], "unselected rows unchanged");
         assert_ne!(plain[2], selected[2], "selected row repainted");
     }
@@ -280,7 +307,7 @@ mod tests {
             new_lines: 1,
             lines: vec![bad],
         };
-        let lines = render_hunk_lines(&theme, &hunk, 40, None);
+        let lines = render_hunk_lines(&theme, &hunk, None, 40, None);
         let text: String = lines[1]
             .spans
             .iter()
@@ -302,7 +329,7 @@ mod tests {
             new_lines: 0,
             lines: vec![over],
         };
-        let lines = render_hunk_lines(&theme, &hunk, 40, None);
+        let lines = render_hunk_lines(&theme, &hunk, None, 40, None);
         let text: String = lines[1]
             .spans
             .iter()

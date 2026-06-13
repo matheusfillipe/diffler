@@ -59,6 +59,20 @@ impl FileDiff {
             .unwrap_or_default()
     }
 
+    /// `(added, deleted)` line counts across the file's hunks.
+    pub fn diffstat(&self) -> (usize, usize) {
+        let mut added = 0;
+        let mut deleted = 0;
+        for line in self.hunks.iter().flat_map(|h| &h.lines) {
+            match line.kind {
+                LineKind::Added => added += 1,
+                LineKind::Deleted => deleted += 1,
+                LineKind::Context => {}
+            }
+        }
+        (added, deleted)
+    }
+
     /// Content identity of both sides, for caches derived from old and new
     /// text (e.g. syntax highlighting). Viewed marks key on `content_hash`
     /// instead: they only care about the side the reviewer reads.
@@ -385,6 +399,48 @@ mod tests {
                 }],
             }],
         }
+    }
+
+    #[test]
+    fn diffstat_counts_added_and_deleted_over_hunks() {
+        // model_with_lines: one context, one deleted, one added line
+        let model = model_with_lines();
+        assert_eq!(model.files[0].diffstat(), (1, 1));
+
+        // two hunks: 2 added + 1 deleted total, context ignored
+        let file = FileDiff {
+            path: "f.rs".into(),
+            old_path: None,
+            status: FileStatus::Modified,
+            binary: false,
+            old_text: None,
+            new_text: None,
+            hunks: vec![
+                Hunk {
+                    id: HunkId("a".into()),
+                    old_start: 1,
+                    old_lines: 1,
+                    new_start: 1,
+                    new_lines: 2,
+                    lines: vec![
+                        DiffLine::new(LineKind::Context, Some(1), Some(1), "ctx".into()),
+                        DiffLine::new(LineKind::Added, None, Some(2), "add one".into()),
+                    ],
+                },
+                Hunk {
+                    id: HunkId("b".into()),
+                    old_start: 5,
+                    old_lines: 1,
+                    new_start: 6,
+                    new_lines: 1,
+                    lines: vec![
+                        DiffLine::new(LineKind::Deleted, Some(5), None, "gone".into()),
+                        DiffLine::new(LineKind::Added, None, Some(6), "add two".into()),
+                    ],
+                },
+            ],
+        };
+        assert_eq!(file.diffstat(), (2, 1));
     }
 
     #[test]

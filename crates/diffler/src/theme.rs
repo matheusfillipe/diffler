@@ -17,6 +17,9 @@ pub struct Theme {
     pub add_line_bg: Color,
     pub del_emph_bg: Color,
     pub add_emph_bg: Color,
+    /// Diffstat added foreground (a readable green for `+N` counts). Deletes
+    /// reuse `error_fg`, the same red the status accent uses for them.
+    pub added: Color,
     /// Status-bar message severities (GitHub-dark attention/danger).
     pub warn_fg: Color,
     pub error_fg: Color,
@@ -41,6 +44,7 @@ impl Theme {
             add_line_bg: Color::Rgb(0x12, 0x35, 0x2a),
             del_emph_bg: Color::Rgb(0x8b, 0x2c, 0x2f),
             add_emph_bg: Color::Rgb(0x1f, 0x6f, 0x48),
+            added: Color::Rgb(0x3f, 0xb9, 0x50),
             warn_fg: Color::Rgb(0xd2, 0x99, 0x22),
             error_fg: Color::Rgb(0xf8, 0x51, 0x49),
             chip: Style::new().fg(bg).bg(accent).add_modifier(Modifier::BOLD),
