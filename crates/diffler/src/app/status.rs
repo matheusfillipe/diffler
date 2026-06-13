@@ -93,6 +93,10 @@ pub struct StatusView {
     pub recent_folded: bool,
     /// Per-section set of file paths whose inline diff is expanded.
     expanded: [BTreeSet<String>; 3],
+    /// Per-section set of file paths whose inline diff has been enriched with
+    /// intra-line emphasis, so the per-file enrichment runs once. Cleared
+    /// when the status sections are rebuilt (refresh).
+    enriched: [BTreeSet<String>; 3],
 }
 
 impl StatusView {
@@ -103,6 +107,15 @@ impl StatusView {
             recent,
             recent_folded: true,
             expanded: [const { BTreeSet::new() }; 3],
+            enriched: [const { BTreeSet::new() }; 3],
+        }
+    }
+
+    /// Forget which inline diffs have been enriched (after a refresh rebuilds
+    /// the status sections unenriched).
+    pub(super) fn clear_enriched(&mut self) {
+        for set in &mut self.enriched {
+            set.clear();
         }
     }
 }
@@ -178,6 +191,31 @@ impl App {
             Section::Staged => &self.review.status.staged,
         };
         &model.files
+    }
+
+    /// Enrich every currently-expanded inline diff with intra-line emphasis
+    /// before the status screen renders. Memoized per section/path so the
+    /// pairing runs once per expanded file. Called by the renderer.
+    pub(crate) fn enrich_status_expanded(&mut self) {
+        for section in Section::ALL {
+            let index = section.index();
+            let model = match section {
+                Section::Untracked => &mut self.review.status.untracked,
+                Section::Unstaged => &mut self.review.status.unstaged,
+                Section::Staged => &mut self.review.status.staged,
+            };
+            let (Some(expanded), Some(enriched)) = (
+                self.status.expanded.get(index),
+                self.status.enriched.get_mut(index),
+            ) else {
+                continue;
+            };
+            for file in &mut model.files {
+                if expanded.contains(&file.path) && enriched.insert(file.path.clone()) {
+                    diffler_core::pairing::enrich_file(file);
+                }
+            }
+        }
     }
 
     pub(super) fn dispatch_status(&mut self, action: Action) {
@@ -377,10 +415,11 @@ impl App {
             // a section header opens the full review diff, starting the
             // walk at the section's first file (when the review covers it)
             Row::SectionHeader { section, .. } => {
+                let review_model = self.review.model();
                 let path = self
                     .section_files(section)
                     .iter()
-                    .find(|f| self.review.model.files.iter().any(|m| m.path == f.path))
+                    .find(|f| review_model.files.iter().any(|m| m.path == f.path))
                     .map(|f| f.path.clone());
                 self.open_working_tree_diff(path.as_deref());
             }
@@ -402,7 +441,7 @@ impl App {
         };
         let Some(hash) = self
             .review
-            .model
+            .model()
             .files
             .iter()
             .find(|f| f.path == path)
@@ -964,7 +1003,7 @@ mod tests {
         let (_fixture, mut app) = app();
         // simulate the staged file leaving the review diff (e.g. a stage
         // reverted in the worktree between refreshes)
-        app.review.model.files.retain(|f| f.path != "ci.yml");
+        app.review.model_mut().files.retain(|f| f.path != "ci.yml");
         cursor_to(&mut app, |row| {
             matches!(
                 row,

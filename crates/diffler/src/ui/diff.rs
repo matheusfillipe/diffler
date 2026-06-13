@@ -52,13 +52,20 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     .areas(area);
     frame.render_widget(Paragraph::new(hint_line(app, HINTS)), hint);
 
+    // attach intra-line emphasis to the selected file once, before the
+    // read-only borrows below; the model is computed here on first access
+    app.enrich_diff_selected_file();
+
     // disjoint field borrows: the diff view mutates (scroll, highlight
     // cache) while theme and review stay read-only
     let theme = &app.theme;
     let review = &app.review;
     if let Some(diff) = app.diff.as_mut() {
         diff.ensure_rows(review);
-        draw_body(frame, body, theme, &review.session, &review.model, diff);
+        // a commit view renders from its pinned model; only fall back to the
+        // (lazily computed) working-tree model for the working-tree view
+        let review_model = (diff.commit_model.is_none()).then(|| review.model());
+        draw_body(frame, body, theme, &review.session, review_model, diff);
     }
 
     frame.render_widget(
@@ -79,7 +86,7 @@ fn draw_body(
     area: Rect,
     theme: &Theme,
     session: &Session,
-    review_model: &DiffModel,
+    review_model: Option<&DiffModel>,
     diff: &mut DiffView,
 ) {
     let width = sidebar_width(area.width);
@@ -96,14 +103,16 @@ fn draw_sidebar(
     area: Rect,
     theme: &Theme,
     session: &Session,
-    review_model: &DiffModel,
+    review_model: Option<&DiffModel>,
     diff: &DiffView,
 ) {
     let focused = diff.focus == Pane::List;
     let block = pane_block(theme, "Files", focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let model = diff.commit_model.as_ref().unwrap_or(review_model);
+    let Some(model) = diff.commit_model.as_ref().or(review_model) else {
+        return;
+    };
     let is_working_tree = diff.source == DiffSource::WorkingTree;
     let lines: Vec<Line<'static>> = model
         .files
@@ -131,7 +140,7 @@ fn draw_pane(
     area: Rect,
     theme: &Theme,
     session: &Session,
-    review_model: &DiffModel,
+    review_model: Option<&DiffModel>,
     diff: &mut DiffView,
 ) {
     let focused = diff.focus == Pane::Diff;
@@ -139,7 +148,16 @@ fn draw_pane(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let model = diff.commit_model.as_ref().unwrap_or(review_model);
+    let Some(model) = diff.commit_model.as_ref().or(review_model) else {
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                " nothing to review",
+                Style::new().fg(theme.dim).bg(theme.bg),
+            )),
+            inner,
+        );
+        return;
+    };
     let Some(file) = model.files.get(diff.selected) else {
         frame.render_widget(
             Paragraph::new(Line::styled(
@@ -769,7 +787,7 @@ mod tests {
         // mark src/lib.rs viewed without advancing the selection off it
         let hash = app
             .review
-            .model
+            .model()
             .files
             .iter()
             .find(|f| f.path == "src/lib.rs")

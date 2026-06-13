@@ -136,7 +136,9 @@ fn modified_line_pair_carries_intraline_emphasis() {
     fx.write("a.py", "value = old_name\nrest = 1\n");
     fx.commit_all("base");
     fx.write("a.py", "value = new_name\nrest = 1\n");
-    let model = vcs(&fx).working_tree_diff().expect("diff");
+    let mut model = vcs(&fx).working_tree_diff().expect("diff");
+    // emphasis is deferred out of the backend: enrich the file to assert on it
+    diffler_core::pairing::enrich_file(&mut model.files[0]);
     let lines = &model.files[0].hunks[0].lines;
     let deleted = lines
         .iter()
