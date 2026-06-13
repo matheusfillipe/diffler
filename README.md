@@ -10,8 +10,14 @@ binary, no browser, no daemon.
 
 ## Install
 
-Not yet published; until the first release, build from source with
-`cargo install --git https://github.com/matheusfillipe/diffler diffler`.
+Not yet published; until the first release, build from source:
+
+```sh
+cargo install --git https://github.com/matheusfillipe/diffler diffler
+# or from a clone:
+just install
+```
+
 Once released:
 
 ```sh

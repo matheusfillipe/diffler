@@ -1,6 +1,14 @@
 default:
     @just --list
 
+# install the binary to ~/.cargo/bin
+install:
+    cargo install --path crates/diffler --locked
+
+# build and run against a repo (defaults to the current directory)
+run *args:
+    cargo run -p diffler -- {{args}}
+
 # fast inner-loop verification (agents: run after every change)
 check:
     cargo clippy --workspace --all-targets --all-features
