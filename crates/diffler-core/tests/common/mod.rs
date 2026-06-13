@@ -21,6 +21,9 @@ impl Fixture {
         let mut config = repo.config().expect("config");
         config.set_str("user.name", "test").expect("config");
         config.set_str("user.email", "test@test").expect("config");
+        // pin line endings so checkout restores exact bytes across platforms
+        config.set_str("core.autocrlf", "false").expect("config");
+        config.set_str("core.eol", "lf").expect("config");
         drop(config);
         Self { dir, repo }
     }
