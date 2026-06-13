@@ -3,7 +3,7 @@
 //! inline comments, flattened into a row list so the renderer only ever
 //! materializes the visible slice.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use diffler_core::feedback::{self, FeedbackOptions};
 use diffler_core::highlight::StyledRange;
@@ -14,6 +14,7 @@ use diffler_core::session::{Anchor, Comment, CommentStatus, Session};
 use super::{App, InputOp, Modal, Screen};
 use crate::clipboard;
 use crate::keymap::Action;
+use crate::tree::{self, TreeNode, TreeRow};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiffSource {
@@ -68,8 +69,13 @@ pub struct DiffView {
     /// `None` means the view reads the live `review.model`.
     pub(crate) commit_model: Option<DiffModel>,
     pub focus: Pane,
-    /// Index into `model.files`: the sidebar cursor.
+    /// Index into `model.files`: the file shown in the diff pane. Derived from
+    /// the file under `tree_cursor` whenever that lands on a File row.
     pub selected: usize,
+    /// Folded directory paths in the sidebar tree; persists across refresh.
+    pub(crate) folded_dirs: BTreeSet<String>,
+    /// Cursor into the current visible sidebar tree rows (dirs and files).
+    pub(crate) tree_cursor: usize,
     /// Row within the selected file's rows.
     pub cursor: usize,
     /// First visible row of the diff pane; the renderer keeps the cursor in
@@ -96,6 +102,8 @@ impl DiffView {
             commit_model,
             focus: Pane::List,
             selected: 0,
+            folded_dirs: BTreeSet::new(),
+            tree_cursor: 0,
             cursor: 0,
             scroll: 0,
             visual_anchor: None,
@@ -168,6 +176,11 @@ impl DiffView {
         self.rows_dirty = false;
         self.cursor = self.cursor.min(self.rows.len().saturating_sub(1));
         self.scroll = self.scroll.min(self.rows.len().saturating_sub(1));
+        // the file list may have shifted (refresh) or folds may hide the old
+        // cursor row: keep the tree cursor on the pane's file
+        let tree_rows = self.tree_rows(model);
+        self.tree_cursor = tree_position_of_file(&tree_rows, self.selected)
+            .unwrap_or_else(|| self.tree_cursor.min(tree_rows.len().saturating_sub(1)));
     }
 
     /// Inclusive row span the visual selection covers, when active.
@@ -189,6 +202,19 @@ impl DiffView {
         self.rows_dirty = true;
         self.ensure_rows(review);
     }
+
+    /// The flattened sidebar tree (dirs and files) over the model's files,
+    /// honoring the folded set. Files keep their model index.
+    pub(crate) fn tree_rows(&self, model: &DiffModel) -> Vec<TreeRow> {
+        let paths: Vec<&str> = model.files.iter().map(|f| f.path.as_str()).collect();
+        tree::visible_rows(&paths, &self.folded_dirs)
+    }
+}
+
+/// Visible-row index of the File row addressing `file_index`, if shown.
+fn tree_position_of_file(rows: &[TreeRow], file_index: usize) -> Option<usize> {
+    rows.iter()
+        .position(|row| matches!(&row.node, TreeNode::File { index, .. } if *index == file_index))
 }
 
 /// One display line of a comment block.
@@ -362,10 +388,11 @@ impl App {
         } else {
             return;
         }
-        // a quick file switch works from either pane, keeping focus
+        // a quick file switch works from either pane, keeping focus, walking
+        // the tree's file rows so it tracks the sidebar order
         match action {
-            Action::NextFile => return self.diff_select_step(1),
-            Action::PrevFile => return self.diff_select_step(-1),
+            Action::NextFile => return self.diff_step_file(true),
+            Action::PrevFile => return self.diff_step_file(false),
             Action::ToggleFocus => return self.diff_toggle_focus(),
             _ => {}
         }
@@ -378,11 +405,13 @@ impl App {
 
     fn dispatch_diff_list(&mut self, action: Action) {
         match action {
-            Action::MoveDown => self.diff_select_step(1),
-            Action::MoveUp => self.diff_select_step(-1),
-            Action::GoTop => self.diff_select_to(0),
-            Action::GoBottom => self.diff_select_to(usize::MAX),
-            Action::Open => self.diff_focus(Pane::Diff),
+            Action::MoveDown => self.diff_tree_step(1),
+            Action::MoveUp => self.diff_tree_step(-1),
+            Action::GoTop => self.diff_tree_to(0),
+            Action::GoBottom => self.diff_tree_to(usize::MAX),
+            // <cr> focuses the pane on a file row, folds/unfolds a dir row
+            Action::Open => self.diff_tree_activate(),
+            Action::ToggleFold => self.diff_toggle_dir_fold(),
             Action::MarkViewed => self.diff_toggle_viewed(),
             Action::OpenEditor => self.editor_at_diff_cursor(),
             // copy is file/all scoped, not line scoped: works from the list
@@ -414,6 +443,8 @@ impl App {
             Action::CopyFileFeedback => self.copy_feedback(true),
             Action::CopyAllFeedback => self.copy_feedback(false),
             Action::OpenEditor => self.editor_at_diff_cursor(),
+            // folding is a sidebar concern; in the pane za is a no-op
+            Action::ToggleFold => {}
             other => {
                 self.info(format!("{} is not implemented yet", other.name()));
             }
@@ -436,27 +467,111 @@ impl App {
         }
     }
 
-    /// Step the sidebar selection by `delta`, clamping at the ends.
-    fn diff_select_step(&mut self, delta: isize) {
+    /// Move the sidebar tree cursor by `delta` over the visible rows (dirs and
+    /// files), then land the pane on the file under it when it is a file row.
+    fn diff_tree_step(&mut self, delta: isize) {
         let Some(diff) = self.diff.as_ref() else {
             return;
         };
-        let count = diff.model(&self.review).files.len();
-        if count == 0 {
+        let rows = diff.tree_rows(diff.model(&self.review));
+        if rows.is_empty() {
             return;
         }
-        let target = diff.selected.saturating_add_signed(delta).min(count - 1);
-        self.diff_select_to(target);
+        let target = diff
+            .tree_cursor
+            .saturating_add_signed(delta)
+            .min(rows.len() - 1);
+        self.diff_tree_to(target);
     }
 
-    fn diff_select_to(&mut self, target: usize) {
+    /// Place the tree cursor at `target` (clamped), updating the pane's file
+    /// when the row is a file. A dir row leaves the pane on its last file.
+    fn diff_tree_to(&mut self, target: usize) {
         let review = &self.review;
-        if let Some(diff) = self.diff.as_mut() {
-            let count = diff.model(review).files.len();
-            if count == 0 {
-                return;
-            }
-            diff.select(target.min(count - 1), review);
+        let Some(diff) = self.diff.as_mut() else {
+            return;
+        };
+        let rows = diff.tree_rows(diff.model(review));
+        if rows.is_empty() {
+            return;
+        }
+        let target = target.min(rows.len() - 1);
+        diff.tree_cursor = target;
+        if let Some(TreeRow {
+            node: TreeNode::File { index, .. },
+            ..
+        }) = rows.get(target)
+        {
+            let index = *index;
+            diff.select(index, review);
+            // select() re-seats the tree cursor onto the selected file row via
+            // ensure_rows; restore the explicit target so it stays put
+            diff.tree_cursor = target;
+        }
+    }
+
+    /// `<cr>` on the tree cursor: focus the diff pane on a file row, or toggle
+    /// the fold on a directory row.
+    fn diff_tree_activate(&mut self) {
+        let review = &self.review;
+        let Some(diff) = self.diff.as_mut() else {
+            return;
+        };
+        let rows = diff.tree_rows(diff.model(review));
+        match rows.get(diff.tree_cursor).map(|r| &r.node) {
+            Some(TreeNode::File { .. }) => self.diff_focus(Pane::Diff),
+            Some(TreeNode::Dir { .. }) => self.diff_toggle_dir_fold(),
+            None => {}
+        }
+    }
+
+    /// `za`: toggle the fold of the directory under the tree cursor. A no-op on
+    /// a file row.
+    fn diff_toggle_dir_fold(&mut self) {
+        let review = &self.review;
+        let Some(diff) = self.diff.as_mut() else {
+            return;
+        };
+        let rows = diff.tree_rows(diff.model(review));
+        let Some(TreeRow {
+            node: TreeNode::Dir { path, .. },
+            ..
+        }) = rows.get(diff.tree_cursor)
+        else {
+            return;
+        };
+        let path = path.clone();
+        if !diff.folded_dirs.remove(&path) {
+            diff.folded_dirs.insert(path);
+        }
+        // folding past the cursor shrinks the tree; keep the cursor in range
+        let rows = diff.tree_rows(diff.model(review));
+        diff.tree_cursor = diff.tree_cursor.min(rows.len().saturating_sub(1));
+    }
+
+    /// `<c-n>`/`<c-p>`: jump the tree cursor to the next/prev file row (skipping
+    /// directories), updating the pane's file. Keeps the current focus.
+    fn diff_step_file(&mut self, forward: bool) {
+        let Some(diff) = self.diff.as_ref() else {
+            return;
+        };
+        let rows = diff.tree_rows(diff.model(&self.review));
+        let is_file = |row: &TreeRow| matches!(row.node, TreeNode::File { .. });
+        let target = if forward {
+            rows.iter()
+                .enumerate()
+                .skip(diff.tree_cursor + 1)
+                .find(|(_, row)| is_file(row))
+                .map(|(index, _)| index)
+        } else {
+            rows.iter()
+                .enumerate()
+                .take(diff.tree_cursor)
+                .rfind(|(_, row)| is_file(row))
+                .map(|(index, _)| index)
+        };
+        if let Some(target) = target {
+            self.diff_tree_to(target);
         }
     }
 
@@ -766,7 +881,23 @@ impl App {
                 .map(|(index, _)| index)
         });
         if let Some(index) = next {
-            self.diff_select_to(index);
+            self.diff_select_file_index(index);
+        }
+    }
+
+    /// Land the pane on the model file at `index` and seat the tree cursor on
+    /// its row. Used where a file is chosen by model index (the viewed walk,
+    /// scoped open) rather than by tree position.
+    fn diff_select_file_index(&mut self, index: usize) {
+        let review = &self.review;
+        if let Some(diff) = self.diff.as_mut() {
+            let count = diff.model(review).files.len();
+            if count == 0 {
+                return;
+            }
+            // select() rebuilds the rows; ensure_rows then re-seats the tree
+            // cursor onto the newly selected file
+            diff.select(index.min(count - 1), review);
         }
     }
 
@@ -848,6 +979,27 @@ mod tests {
             .expect("selected file")
     }
 
+    fn tree_cursor(app: &App) -> usize {
+        app.diff.as_ref().expect("diff view").tree_cursor
+    }
+
+    fn tree_row_count(app: &App) -> usize {
+        let diff = app.diff.as_ref().expect("diff view");
+        diff.tree_rows(diff.model(&app.review)).len()
+    }
+
+    /// Kinds of the visible sidebar tree rows: "dir" or "file:<name>".
+    fn tree_kinds(app: &App) -> Vec<String> {
+        let diff = app.diff.as_ref().expect("diff view");
+        diff.tree_rows(diff.model(&app.review))
+            .iter()
+            .map(|row| match &row.node {
+                crate::tree::TreeNode::Dir { .. } => "dir".to_owned(),
+                crate::tree::TreeNode::File { name, .. } => format!("file:{name}"),
+            })
+            .collect()
+    }
+
     /// Put focus on the diff pane (unscoped open starts on the sidebar).
     fn enter_diff_pane(app: &mut App) {
         app.diff.as_mut().expect("diff view").focus = Pane::Diff;
@@ -869,7 +1021,7 @@ mod tests {
             .iter()
             .position(|f| f.path == path)
             .expect("file present");
-        app.diff_select_to(index);
+        app.diff_select_file_index(index);
         enter_diff_pane(app);
     }
 
@@ -933,42 +1085,101 @@ mod tests {
     }
 
     #[test]
-    fn list_jk_changes_the_selected_file_and_resets_the_diff_cursor() {
+    fn list_jk_moves_over_tree_rows_and_files_under_the_cursor_become_selected() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
-        let files: Vec<String> = app
-            .diff
-            .as_ref()
-            .unwrap()
-            .model(&app.review)
-            .files
-            .iter()
-            .map(|f| f.path.clone())
-            .collect();
-        assert!(files.len() >= 2);
-        // move the diff cursor down first, then switching files resets it
+        // standard fixture tree (model order ci.yml, src/lib.rs, todo.md):
+        //   0 dir src   1 file lib.rs   2 file ci.yml   3 file todo.md
+        assert_eq!(
+            tree_kinds(&app),
+            vec![
+                "dir".to_owned(),
+                "file:lib.rs".to_owned(),
+                "file:ci.yml".to_owned(),
+                "file:todo.md".to_owned(),
+            ]
+        );
+        // the cursor opens on the row of the shown file (ci.yml, model index 0)
+        assert_eq!(tree_cursor(&app), 2);
+        assert_eq!(selected_path(&app), "ci.yml");
+        // gg lands on the src dir row; the pane keeps its last file
+        app.handle(key('g'));
+        app.handle(key('g'));
+        assert_eq!(tree_cursor(&app), 0);
+        assert_eq!(selected_path(&app), "ci.yml", "a dir row keeps the pane");
+        // move the diff cursor down first, then j onto the lib.rs file row
+        // selects it and resets the diff cursor
         enter_diff_pane(&mut app);
         app.handle(key('j'));
         assert!(app.diff.as_ref().unwrap().cursor > 0);
         app.diff.as_mut().unwrap().focus = Pane::List;
         app.handle(key('j'));
-        assert_eq!(selected_path(&app), files[1]);
+        assert_eq!(tree_cursor(&app), 1);
+        assert_eq!(selected_path(&app), "src/lib.rs");
         assert_eq!(app.diff.as_ref().unwrap().cursor, 0, "diff cursor reset");
         assert_eq!(app.diff.as_ref().unwrap().scroll, 0);
+        // j again advances onto the next file (ci.yml at root)
+        app.handle(key('j'));
+        assert_eq!(selected_path(&app), "ci.yml");
+        // k back onto the lib.rs file row reselects it
         app.handle(key('k'));
-        assert_eq!(selected_path(&app), files[0]);
+        assert_eq!(selected_path(&app), "src/lib.rs");
     }
 
     #[test]
-    fn list_gg_and_g_jump_to_the_first_and_last_file() {
+    fn list_gg_and_g_jump_to_the_first_and_last_visible_row() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
-        let count = app.diff.as_ref().unwrap().model(&app.review).files.len();
+        let last = tree_row_count(&app) - 1;
         app.handle(key('G'));
-        assert_eq!(app.diff.as_ref().unwrap().selected, count - 1);
+        assert_eq!(tree_cursor(&app), last);
+        // the last visible row is a file (todo.md), so it is selected
+        assert_eq!(selected_path(&app), "todo.md");
         app.handle(key('g'));
         app.handle(key('g'));
-        assert_eq!(app.diff.as_ref().unwrap().selected, 0);
+        assert_eq!(tree_cursor(&app), 0, "back to the first visible row");
+    }
+
+    #[test]
+    fn folding_a_dir_hides_its_subtree_and_unfolding_restores_it() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        // cursor onto the src dir row (the first visible row)
+        app.handle(key('g'));
+        app.handle(key('g'));
+        assert_eq!(tree_kinds(&app).len(), 4);
+        // za folds it: lib.rs disappears, the dir row stays
+        app.handle(key('z'));
+        app.handle(key('a'));
+        assert_eq!(
+            tree_kinds(&app),
+            vec![
+                "dir".to_owned(),
+                "file:ci.yml".to_owned(),
+                "file:todo.md".to_owned(),
+            ],
+            "folded src/ hides lib.rs"
+        );
+        // <cr> on the dir row also toggles: this unfolds it again
+        app.handle(key('\n'));
+        assert_eq!(
+            tree_kinds(&app).len(),
+            4,
+            "unfolded src/ shows lib.rs again"
+        );
+    }
+
+    #[test]
+    fn cr_on_a_file_row_focuses_the_diff_pane() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        // ci.yml's row is under the cursor at open; <cr> focuses the pane
+        assert!(matches!(
+            tree_kinds(&app).get(tree_cursor(&app)).map(String::as_str),
+            Some("file:ci.yml")
+        ));
+        app.handle(key('\n'));
+        assert_eq!(focus(&app), Pane::Diff);
     }
 
     #[test]
@@ -1003,6 +1214,36 @@ mod tests {
         assert_ne!(selected_path(&app), first, "selection advanced");
         app.handle(ctrl_key('p'));
         assert_eq!(selected_path(&app), first);
+    }
+
+    #[test]
+    fn ctrl_n_and_ctrl_p_walk_only_file_rows_skipping_directories() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        // tree: dir src, lib.rs, ci.yml, todo.md — c-n/c-p never land on a dir
+        app.handle(key('g'));
+        app.handle(key('g'));
+        assert!(matches!(
+            tree_kinds(&app).get(tree_cursor(&app)).map(String::as_str),
+            Some("dir")
+        ));
+        // from the dir row, c-n jumps to the first file below it
+        app.handle(ctrl_key('n'));
+        assert_eq!(selected_path(&app), "src/lib.rs");
+        let mut visited = vec![selected_path(&app)];
+        // walk forward to the end, recording every stop is a file
+        for _ in 0..2 {
+            app.handle(ctrl_key('n'));
+            assert!(matches!(
+                tree_kinds(&app).get(tree_cursor(&app)).map(String::as_str),
+                Some(kind) if kind.starts_with("file:")
+            ));
+            visited.push(selected_path(&app));
+        }
+        assert_eq!(visited, vec!["src/lib.rs", "ci.yml", "todo.md"]);
+        // and back the other way, still only files
+        app.handle(ctrl_key('p'));
+        assert_eq!(selected_path(&app), "ci.yml");
     }
 
     #[test]
@@ -1288,10 +1529,13 @@ mod tests {
     fn unmarking_viewed_does_not_move_the_selection() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
+        // ci.yml is shown at open; v marks it and advances to src/lib.rs
         let first = selected_path(&app);
+        assert_eq!(first, "ci.yml");
         app.handle(key('v'));
-        // step back onto the viewed file, then unmark it
-        app.handle(key('k'));
+        assert_eq!(selected_path(&app), "src/lib.rs");
+        // ci.yml's file row sits below lib.rs in the tree; step down onto it
+        app.handle(key('j'));
         assert_eq!(selected_path(&app), first);
         app.handle(key('v'));
         assert!(!app.is_path_viewed(&first));

@@ -7,7 +7,7 @@ expression: render(&mut app).backend()
 " Changes   +2 -2  █████                                                                                                 "
 "                                                                                                                        "
 " ▾ Unstaged changes (1) +2 -2                                                                                           "
-"     modified  data.txt                                                                                                 "
+"     M data.txt +2 -2                                                                                                   "
 "                                                                                                                        "
 "    1      line 1                                                                                                       "
 "         1 line one                                                                                                     "
