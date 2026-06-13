@@ -1,0 +1,14 @@
+{
+  "name": "@diffler/platform",
+  "version": "0.0.0",
+  "description": "diffler binary",
+  "license": "(MIT OR Apache-2.0)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/matheusfillipe/diffler.git"
+  },
+  "files": [
+    "bin"
+  ],
+  "preferUnplugged": true
+}

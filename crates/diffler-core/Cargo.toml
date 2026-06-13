@@ -1,6 +1,6 @@
 [package]
 name = "diffler-core"
-description = "Core review engine for diffler: sessions, diffs, verdicts, tasks"
+description = "Core review engine for diffler: diffs, sessions, comments, viewed marks"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,8 +13,10 @@ git2.workspace = true
 similar.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-
-[dev-dependencies]
+uuid.workspace = true
+syntect.workspace = true
+two-face.workspace = true
+# runtime dependency: store's atomic save writes through a NamedTempFile
 tempfile.workspace = true
 
 [lints]

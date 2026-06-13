@@ -32,7 +32,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo nextest run --workspace --all-features
+      - run: cargo nextest run --workspace --all-features --no-fail-fast
       - run: cargo test --doc --workspace
 
   lint:
@@ -47,6 +47,18 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: astral-sh/setup-uv@v8.2.0
+      - run: cargo build -p diffler
+      - run: uv run --with pexpect --with pyte --with pytest --with mcp pytest tests/e2e -x -q
 
   msrv:
     runs-on: ubuntu-latest

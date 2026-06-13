@@ -105,6 +105,17 @@ Doom-emacs/neogit keybindings are the default. Screens:
 
 Mouse: click select, wheel scroll. OSC52 for clipboard (works over ssh/tmux).
 
+## Configuration
+
+TOML, XDG-layered, every binding and preference configurable. Precedence (later wins):
+built-in defaults → `$XDG_CONFIG_HOME/diffler/config.toml` (fallback `~/.config/diffler/`,
+on every OS — unix-first, no platform dirs) → `<repo>/.diffler/config.toml` (per-project
+override) → CLI flags. CLI flags and config keys are the same framework: every flag has a
+config key (`--port` ↔ `port`), clap defaults come from the merged config. Sections:
+`[keys.status]`, `[keys.diff]`, `[keys.log]` (action = key remaps), `[ui]` (theme,
+context_lines, recent_commits), `[mcp]` (port, enabled), `[editor]` (command override).
+`diffler config --dump` prints the merged effective config with origins.
+
 ## Feedback markdown export
 
 `y`/`Y` produce markdown for paste into any agent:
@@ -123,17 +134,21 @@ Includes file path, line/range, short diff/file context snippet, comment body, t
 
 ## MCP interface (v1 tools)
 
+(names follow the implementation)
+
 ```
 review_status()                  → repo, branch, files changed, viewed map, open comment count
 get_diff(file?)                  → unified diff text (whole or one file)
 get_comments(status?)            → comments with anchors, context snippet, threads
 reply_comment(id, body)          → agent answers in place; TUI renders the reply live
-resolve_comment(id)              → agent proposes resolved; human confirms in TUI (status
+propose_resolve(id, note?)       → agent proposes resolved; human confirms in TUI (status
                                    moves to Replied until human resolves — agent cannot
                                    close the loop alone)
-wait_for_feedback(timeout_s)     → long-poll; returns when the human posts/edits comments
-                                   or presses the "send to agent" key; cursor token for
-                                   safe re-polling. THE agent-trigger mechanism.
+wait_for_feedback(since_epoch?, timeout_seconds?)
+                                 → long-poll; returns when the human posts/edits comments
+                                   or presses the "send to agent" key; the epoch is the
+                                   cursor token for safe re-polling. THE agent-trigger
+                                   mechanism.
 mark_viewed(file) / viewed map exposure for agent awareness (read-only effect on TUI list)
 ```
 

@@ -24,6 +24,11 @@ snap:
 snap-accept:
     cargo insta accept
 
+# PTY end-to-end suite (CI runs this in a separate ubuntu job)
+e2e:
+    cargo build -p diffler
+    uv run --with pexpect --with pyte --with pytest --with mcp pytest tests/e2e -x -q
+
 # core gate, matches CI's test+lint jobs (CI additionally runs msrv, deny, typos)
 ci:
     cargo fmt --all -- --check

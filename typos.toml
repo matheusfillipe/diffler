@@ -1,3 +1,12 @@
+[default]
+# deliberate non-words: an RFC 4648 base64 test vector, a hyphenated term, and
+# a misspelling a config test asserts on
+extend-ignore-re = [
+  'base64\(b"fo"\)',
+  "mis-highlight",
+  '`ui\.thme`',
+]
+
 [default.extend-words]
 ratatui = "ratatui"
 
