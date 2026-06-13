@@ -18,7 +18,12 @@ use crate::theme::Theme;
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     match app.screen() {
-        Screen::Status => status::draw(frame, app),
+        Screen::Status => {
+            // attach intra-line emphasis to expanded inline diffs before the
+            // read-only status render
+            app.enrich_status_expanded();
+            status::draw(frame, app);
+        }
         Screen::Log => log::draw(frame, app),
         Screen::Diff => diff::draw(frame, app),
     }

@@ -3,7 +3,7 @@
 //! inline comments, flattened into a row list so the renderer only ever
 //! materializes the visible slice.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use diffler_core::feedback::{self, FeedbackOptions};
 use diffler_core::highlight::StyledRange;
@@ -83,6 +83,10 @@ pub struct DiffView {
     pub(crate) rows: Vec<DiffRow>,
     rows_dirty: bool,
     pub(crate) highlights: HashMap<String, FileHighlights>,
+    /// Paths whose intra-line emphasis has been computed, so the per-file
+    /// enrichment runs once. Cleared whenever the underlying model is
+    /// rebuilt (refresh) so a fresh unenriched file gets re-enriched.
+    enriched: HashSet<String>,
 }
 
 impl DiffView {
@@ -99,13 +103,39 @@ impl DiffView {
             rows: Vec::new(),
             rows_dirty: true,
             highlights: HashMap::new(),
+            enriched: HashSet::new(),
         };
         view.ensure_rows(review);
         view
     }
 
     pub fn model<'a>(&'a self, review: &'a Review) -> &'a DiffModel {
-        self.commit_model.as_ref().unwrap_or(&review.model)
+        self.commit_model.as_ref().unwrap_or_else(|| review.model())
+    }
+
+    /// Attach intra-line emphasis to the selected file once, just before it
+    /// is rendered. `review_model` is the live working-tree model, used only
+    /// when this view is not pinned to an immutable commit model.
+    pub(crate) fn enrich_selected(&mut self, review_model: Option<&mut DiffModel>) {
+        let selected = self.selected;
+        let model = match self.commit_model.as_mut() {
+            Some(model) => model,
+            None => match review_model {
+                Some(model) => model,
+                None => return,
+            },
+        };
+        let Some(file) = model.files.get_mut(selected) else {
+            return;
+        };
+        if self.enriched.insert(file.path.clone()) {
+            diffler_core::pairing::enrich_file(file);
+        }
+    }
+
+    /// Forget which files have been enriched (after the model is rebuilt).
+    pub(crate) fn clear_enriched(&mut self) {
+        self.enriched.clear();
     }
 
     pub fn rows(&self) -> &[DiffRow] {
@@ -125,13 +155,14 @@ impl DiffView {
     pub(crate) fn invalidate(&mut self) {
         self.rows_dirty = true;
         self.visual_anchor = None;
+        self.enriched.clear();
     }
 
     pub(crate) fn ensure_rows(&mut self, review: &Review) {
         if !self.rows_dirty {
             return;
         }
-        let model = self.commit_model.as_ref().unwrap_or(&review.model);
+        let model = self.commit_model.as_ref().unwrap_or_else(|| review.model());
         self.selected = self.selected.min(model.files.len().saturating_sub(1));
         self.rows = build_rows(model, &review.session, self.selected);
         self.rows_dirty = false;
@@ -294,7 +325,12 @@ impl App {
     fn open_working_tree_diff_focused(&mut self, scope: Option<&str>, focus: Pane) {
         let mut view = DiffView::new(DiffSource::WorkingTree, None, &self.review);
         if let Some(path) = scope
-            && let Some(index) = self.review.model.files.iter().position(|f| f.path == path)
+            && let Some(index) = self
+                .review
+                .model()
+                .files
+                .iter()
+                .position(|f| f.path == path)
         {
             view.selected = index;
             view.invalidate();
@@ -504,6 +540,29 @@ impl App {
         diff.selected_path(&self.review)
     }
 
+    /// Enrich the diff view's selected file with intra-line emphasis before
+    /// it is rendered. A commit view enriches its own immutable model; the
+    /// working-tree view enriches the live review model (computing it if this
+    /// is the first access). Called by the renderer, memoized per file.
+    pub(crate) fn enrich_diff_selected_file(&mut self) {
+        let on_commit = self
+            .diff
+            .as_ref()
+            .is_some_and(|diff| diff.commit_model.is_some());
+        if on_commit {
+            if let Some(diff) = self.diff.as_mut() {
+                diff.enrich_selected(None);
+            }
+        } else if self.diff.is_some() {
+            // disjoint field borrows: the live model from `review`, the
+            // selection + memo from `diff`
+            let model = self.review.model_mut();
+            if let Some(diff) = self.diff.as_mut() {
+                diff.enrich_selected(Some(model));
+            }
+        }
+    }
+
     /// After a refresh, keep the selected file by path; clamp if it is gone.
     pub(super) fn restore_diff_cursor(&mut self, path: Option<String>) {
         let Some(path) = path else {
@@ -515,7 +574,7 @@ impl App {
         };
         // the file moved index but its content is the same, so keep the diff
         // cursor where it was; ensure_rows reclamps it
-        let model = diff.commit_model.as_ref().unwrap_or(&review.model);
+        let model = diff.commit_model.as_ref().unwrap_or_else(|| review.model());
         match model.files.iter().position(|f| f.path == path) {
             Some(index) if index != diff.selected => diff.selected = index,
             Some(_) => return,
@@ -667,7 +726,7 @@ impl App {
         };
         let Some(hash) = self
             .review
-            .model
+            .model()
             .files
             .iter()
             .find(|f| f.path == path)
@@ -743,7 +802,7 @@ impl App {
         let title = format!("Review feedback — {repo} @ {branch} ({count} {noun})");
         let markdown = feedback::to_markdown(
             session,
-            &self.review.model,
+            self.review.model(),
             &FeedbackOptions {
                 title: &title,
                 file_filter: filter.as_deref(),
@@ -1201,7 +1260,7 @@ mod tests {
         let mut app = diff_app(&fixture);
         let paths: Vec<String> = app
             .review
-            .model
+            .model()
             .files
             .iter()
             .map(|f| f.path.clone())
@@ -1287,7 +1346,7 @@ mod tests {
         let repo = fixture.root.file_name().unwrap().to_string_lossy();
         let expected = feedback::to_markdown(
             &app.review.session,
-            &app.review.model,
+            app.review.model(),
             &FeedbackOptions {
                 title: &format!("Review feedback — {repo} @ main (1 comment)"),
                 file_filter: Some("src/lib.rs"),

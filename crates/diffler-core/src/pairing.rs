@@ -5,16 +5,17 @@
 use similar::TextDiff;
 
 use crate::diff::intraline;
-use crate::model::{DiffLine, DiffModel, Hunk, LineKind};
+use crate::model::{DiffLine, FileDiff, Hunk, LineKind};
 
 /// Below this similarity the pair is treated as unrelated (no emphasis).
 const MIN_SIMILARITY: f32 = 0.4;
 
-pub fn enrich(model: &mut DiffModel) {
-    for file in &mut model.files {
-        for hunk in &mut file.hunks {
-            enrich_hunk(hunk);
-        }
+/// Attach intra-line emphasis to one file's hunks. Pairing is a render-time
+/// concern (only the TUI reads `.emphasis`), so callers enrich the file they
+/// are about to display rather than enriching whole models up front.
+pub fn enrich_file(file: &mut FileDiff) {
+    for hunk in &mut file.hunks {
+        enrich_hunk(hunk);
     }
 }
 

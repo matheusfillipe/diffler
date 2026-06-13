@@ -15,7 +15,7 @@ impl App {
         match kind {
             McpRequestKind::ReviewStatus => McpResponse::Status(self.review_status_response()),
             McpRequestKind::GetDiff { file } => {
-                match render_unified(&self.review.model, file.as_deref()) {
+                match render_unified(self.review.model(), file.as_deref()) {
                     Ok(diff) => McpResponse::Diff(diff),
                     Err(message) => McpResponse::Error(message),
                 }
@@ -37,7 +37,7 @@ impl App {
     fn review_status_response(&self) -> ReviewStatusResponse {
         let files_changed = self
             .review
-            .model
+            .model()
             .files
             .iter()
             .map(|f| FileEntry {
@@ -77,7 +77,7 @@ impl App {
             .comments
             .iter()
             .filter(|c| keep(c.status))
-            .map(|c| comment_info(c, &self.review.model))
+            .map(|c| comment_info(c, self.review.model()))
             .collect()
     }
 
@@ -122,7 +122,7 @@ impl App {
     fn agent_mark_viewed(&mut self, file: &str) -> McpResponse {
         let Some(hash) = self
             .review
-            .model
+            .model()
             .files
             .iter()
             .find(|f| f.path == file)
@@ -201,6 +201,46 @@ mod tests {
             file: Some("nope.rs".to_owned()),
         });
         assert!(matches!(response, McpResponse::Error(message) if message.contains("nope.rs")));
+    }
+
+    #[test]
+    fn pairing_deferral_does_not_change_mcp_diff_or_feedback() {
+        let (_fixture, mut app, _id) = app_with_comment();
+        // capture the agent-facing outputs while the model carries no emphasis
+        let McpResponse::Diff(before_diff) = app.handle_mcp(McpRequestKind::GetDiff { file: None })
+        else {
+            panic!("expected a diff response");
+        };
+        let McpResponse::Comments(before_feedback) = app.handle_mcp(McpRequestKind::Feedback)
+        else {
+            panic!("expected comments");
+        };
+
+        // enrich the whole working model with intra-line emphasis, the thing
+        // the backend used to do eagerly and the TUI now does per file
+        for file in &mut app.review.model_mut().files {
+            diffler_core::pairing::enrich_file(file);
+        }
+        let has_emphasis = app
+            .review
+            .model()
+            .files
+            .iter()
+            .flat_map(|f| &f.hunks)
+            .flat_map(|h| &h.lines)
+            .any(|l| !l.emphasis.is_empty());
+        assert!(has_emphasis, "the fixture has a paired line to emphasize");
+
+        let McpResponse::Diff(after_diff) = app.handle_mcp(McpRequestKind::GetDiff { file: None })
+        else {
+            panic!("expected a diff response");
+        };
+        let McpResponse::Comments(after_feedback) = app.handle_mcp(McpRequestKind::Feedback) else {
+            panic!("expected comments");
+        };
+        // emphasis is a render-only concern: MCP output is byte-identical
+        assert_eq!(before_diff, after_diff, "get_diff ignores emphasis");
+        assert_eq!(before_feedback, after_feedback, "feedback ignores emphasis");
     }
 
     #[test]

@@ -258,7 +258,7 @@ impl App {
     /// review diff (the model viewed hashes are reconciled with).
     pub fn is_path_viewed(&self, path: &str) -> bool {
         self.review
-            .model
+            .model()
             .files
             .iter()
             .find(|f| f.path == path)
@@ -267,10 +267,9 @@ impl App {
 
     /// `(files in the review diff, files marked viewed)` for the status bar.
     pub fn viewed_counts(&self) -> (usize, usize) {
-        let total = self.review.model.files.len();
-        let viewed = self
-            .review
-            .model
+        let model = self.review.model();
+        let total = model.files.len();
+        let viewed = model
             .files
             .iter()
             .filter(|f| self.review.session.is_viewed(&f.path, &f.content_hash()))
@@ -567,11 +566,13 @@ impl App {
     pub(crate) fn refresh(&mut self) {
         let status_anchor = self.status_cursor_anchor();
         let diff_anchor_path = self.diff_cursor_path();
-        let fingerprint = self.review.model.fingerprint();
+        let fingerprint = self.review.model().fingerprint();
         if let Err(err) = self.review.refresh() {
             self.error(err.to_string());
             return;
         }
+        // rebuilt models carry no emphasis; reset the per-file enrich memos
+        self.status.clear_enriched();
         match self.review.vcs.head() {
             Ok(head) => self.head = head,
             Err(err) => self.error(err.to_string()),
@@ -583,9 +584,12 @@ impl App {
         self.restore_status_cursor(status_anchor);
         self.refresh_log();
         if let Some(diff) = self.diff.as_mut() {
+            // a no-op refresh keeps the rows (and visual selection) but still
+            // rebuilt the model unenriched, so the emphasis memo must reset
+            diff.clear_enriched();
             // invalidating drops the visual selection, so a no-op refresh
             // (poll tick, watcher echo) must leave the rows alone
-            if self.review.model.fingerprint() != fingerprint {
+            if self.review.model().fingerprint() != fingerprint {
                 diff.invalidate();
             }
             diff.ensure_rows(&self.review);

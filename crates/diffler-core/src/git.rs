@@ -439,10 +439,10 @@ fn diff_to_model(
             files.push(file);
         }
     }
-    let mut model = DiffModel { files };
-    // every model leaves the backend review-ready: paired lines + emphasis
-    crate::pairing::enrich(&mut model);
-    Ok(model)
+    // intra-line emphasis is a render-time concern: the TUI enriches the
+    // file it is about to draw (see crate::pairing::enrich_file), so the
+    // backend leaves `.emphasis` empty.
+    Ok(DiffModel { files })
 }
 
 fn build_file(

@@ -23,11 +23,11 @@ fn review_persists_session_and_auto_resets_viewed_on_rewrite() {
     fx.write("a.py", "def f():\n    return 2\n");
 
     let mut review = Review::open(fx.root()).expect("open");
-    assert_eq!(review.model.files.len(), 1);
-    assert_eq!(review.model.files[0].path, "a.py");
+    assert_eq!(review.model().files.len(), 1);
+    assert_eq!(review.model().files[0].path, "a.py");
     assert_eq!(review.status.unstaged.files.len(), 1);
 
-    let hash = review.model.files[0].content_hash();
+    let hash = review.model().files[0].content_hash();
     review
         .session
         .add_comment("mattf", anchor("a.py", 2), "why 2?");
@@ -38,14 +38,14 @@ fn review_persists_session_and_auto_resets_viewed_on_rewrite() {
     let mut review = Review::open(fx.root()).expect("reopen");
     assert_eq!(review.session.comments.len(), 1);
     assert_eq!(review.session.comments[0].body, "why 2?");
-    let current = review.model.files[0].content_hash();
+    let current = review.model().files[0].content_hash();
     assert!(review.session.is_viewed("a.py", &current));
 
     // the agent rewrites the file: viewed auto-resets, the comment stays
     fx.write("a.py", "def f():\n    return 3\n");
     review.refresh().expect("refresh");
     assert!(review.session.viewed.is_empty());
-    let current = review.model.files[0].content_hash();
+    let current = review.model().files[0].content_hash();
     assert!(!review.session.is_viewed("a.py", &current));
     assert_eq!(review.session.comments.len(), 1);
 }
