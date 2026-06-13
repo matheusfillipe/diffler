@@ -1415,7 +1415,7 @@ git commit -m "Persist sessions atomically in .diffler/"
 
 ### Task 8: Syntax highlighting module
 
-Whole-file highlight, sliced per line — never per hunk (multi-line strings/comments would mis-highlight; see research/DIFF-RENDERING.md).
+Whole-file highlight, sliced per line — never per hunk (multi-line strings/comments would highlight incorrectly; see research/DIFF-RENDERING.md).
 
 **Files:**
 - Create: `crates/diffler-core/src/highlight.rs`

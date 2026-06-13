@@ -1,9 +1,8 @@
 [default]
-# deliberate non-words: an RFC 4648 base64 test vector, a hyphenated term, and
-# a misspelling a config test asserts on
+# deliberate non-words that must stay verbatim: an RFC 4648 base64 test vector
+# and a misspelled config key a test asserts the loader rejects
 extend-ignore-re = [
   'base64\(b"fo"\)',
-  "mis-highlight",
   '`ui\.thme`',
 ]
 

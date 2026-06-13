@@ -694,6 +694,32 @@ fn discard_restores_modified_file() {
 }
 
 #[test]
+fn discard_leaves_file_clean_under_autocrlf() {
+    // a Windows user with core.autocrlf=true: checkout smudges LF->CRLF, so the
+    // file on disk differs in size from the stored blob. discard must still
+    // leave the file reported as clean (matching `git status`), not phantom-dirty.
+    let fx = Fixture::new();
+    {
+        let mut config = fx.repo.config().expect("config");
+        config.set_str("core.autocrlf", "true").expect("autocrlf");
+        config.set_str("core.eol", "crlf").expect("eol");
+    }
+    fx.write("a.txt", "one\ntwo\nthree\n");
+    fx.commit_all("base");
+    fx.write("a.txt", "one\nCHANGED\nthree\n");
+
+    let v = vcs(&fx);
+    v.discard(Path::new("a.txt")).expect("discard");
+
+    assert!(
+        v.working_tree_diff().expect("diff").files.is_empty(),
+        "discard left a phantom modification under autocrlf"
+    );
+    let status = v.status().expect("status");
+    assert_eq!(status.unstaged.files.len(), 0, "phantom unstaged file");
+}
+
+#[test]
 fn discard_deletes_untracked_file() {
     let fx = Fixture::new();
     fx.write("a.txt", "x\n");

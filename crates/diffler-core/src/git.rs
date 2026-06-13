@@ -266,8 +266,14 @@ impl Vcs for GitVcs {
             fs::remove_file(self.workdir_path()?.join(rel))?;
             return Ok(());
         }
+        // refresh the index stat cache to match the file we just wrote. with
+        // autocrlf the checkout smudges LF->CRLF, growing the file; leaving the
+        // cached stat stale makes git report a phantom modification (size
+        // mismatch defeats the racy-clean check) even though the content is
+        // identical to HEAD. the file has no staged changes here, so the index
+        // blob already equals HEAD and updating it only corrects the metadata.
         let mut checkout = git2::build::CheckoutBuilder::new();
-        checkout.path(rel).force().update_index(false);
+        checkout.path(rel).force().update_index(true);
         self.repo.checkout_head(Some(&mut checkout))?;
         Ok(())
     }
