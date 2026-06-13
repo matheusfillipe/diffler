@@ -1,0 +1,59 @@
+# diffler configuration. Every key is optional; values shown are the defaults.
+#
+# Layering, later wins per key:
+#   1. built-in defaults
+#   2. ~/.config/diffler/config.toml ($XDG_CONFIG_HOME respected, macOS included)
+#   3. <repo>/.diffler/config.toml
+#   4. CLI flags (--port, --no-mcp, --theme)
+#
+# Inspect the merged result and the origin of each value:
+#   diffler config --dump
+
+[ui]
+# theme = "github-dark"
+# context_lines = 3
+# recent_commits = 10
+
+[mcp]
+# enabled = true
+# port = 8417
+
+[editor]
+# Editor command; unset falls back to $DIFFLER_EDITOR, then $EDITOR.
+# command = "nvim"
+
+# Key remaps per screen: action name -> chord. Chords are single keys ("q",
+# "V"), ctrl combos ("<c-r>"), specials ("<cr>", "<tab>"), or two-key
+# sequences ("cc", "gg"). Unlisted actions keep their built-in binding;
+# `?` in the TUI shows the effective keymap.
+
+[keys.status]
+# stage = "s"
+# unstage = "u"
+# stage_all = "S"
+# unstage_all = "U"
+# discard = "x"
+# commit_flow = "cc"
+# branch_popup = "b"
+# log_view = "ll"
+# open = "<cr>"
+# open_review_diff = "D"
+# toggle_fold = "<tab>"
+# refresh = "<c-r>"
+# send_feedback = "Z"
+
+[keys.diff]
+# comment = "c"
+# visual_select = "V"
+# reply = "r"
+# resolve = "R"
+# mark_viewed = "v"
+# copy_file_feedback = "y"
+# copy_all_feedback = "Y"
+# open_editor = "e"
+# next_hunk = "}"
+# prev_hunk = "{"
+
+[keys.log]
+# open = "<cr>"
+# refresh = "<c-r>"

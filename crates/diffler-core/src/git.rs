@@ -3,22 +3,34 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::model::{DiffLine, DiffModel, FileDiff, FileStatus, Hunk, HunkId, LineKind, hunk_id};
 use crate::vcs::{BranchInfo, HeadInfo, LogEntry, StatusModel, Vcs, VcsError};
 
+/// git's own default amount of context around hunks.
+pub const DEFAULT_CONTEXT_LINES: u32 = 3;
+
 pub struct GitVcs {
     repo: git2::Repository,
+    context_lines: u32,
 }
 
 impl GitVcs {
     pub fn open(root: &Path) -> Result<Self, VcsError> {
+        Self::open_with_context(root, DEFAULT_CONTEXT_LINES)
+    }
+
+    /// Open with a custom number of context lines around diff hunks.
+    pub fn open_with_context(root: &Path, context_lines: u32) -> Result<Self, VcsError> {
         let repo = git2::Repository::open(root)?;
         if repo.workdir().is_none() {
             return Err(VcsError::NoWorkdir);
         }
-        Ok(Self { repo })
+        Ok(Self {
+            repo,
+            context_lines,
+        })
     }
 
     /// HEAD tree, or `None` on an unborn branch (fresh repo).
@@ -36,6 +48,12 @@ impl GitVcs {
 }
 
 impl Vcs for GitVcs {
+    fn git_dir(&self) -> Result<PathBuf, VcsError> {
+        // libgit2 resolves gitlink files, so linked worktrees come back as
+        // their external gitdir under the main repo's .git/worktrees/
+        Ok(self.repo.path().to_path_buf())
+    }
+
     fn head(&self) -> Result<HeadInfo, VcsError> {
         match self.repo.head() {
             Ok(head) => {
@@ -80,7 +98,7 @@ impl Vcs for GitVcs {
         // staged new file lands in staged only, not here
         let mut workdir = self
             .repo
-            .diff_index_to_workdir(None, Some(&mut workdir_diff_options()))?;
+            .diff_index_to_workdir(None, Some(&mut workdir_diff_options(self.context_lines)))?;
         let workdir_model = diff_to_model(&self.repo, &mut workdir)?;
         let (untracked, unstaged): (Vec<_>, Vec<_>) = workdir_model
             .files
@@ -89,7 +107,7 @@ impl Vcs for GitVcs {
 
         let head_tree = self.head_tree()?;
         let mut opts = git2::DiffOptions::new();
-        opts.context_lines(3);
+        opts.context_lines(self.context_lines);
         let mut staged = self
             .repo
             .diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts))?;
@@ -106,7 +124,7 @@ impl Vcs for GitVcs {
         let head_tree = self.head_tree()?;
         let mut diff = self.repo.diff_tree_to_workdir_with_index(
             head_tree.as_ref(),
-            Some(&mut workdir_diff_options()),
+            Some(&mut workdir_diff_options(self.context_lines)),
         )?;
         let mut find = git2::DiffFindOptions::new();
         find.renames(true);
@@ -121,7 +139,7 @@ impl Vcs for GitVcs {
         // root commit: first-parent tree is the empty tree
         let parent_tree = commit.parent(0).ok().map(|p| p.tree()).transpose()?;
         let mut opts = git2::DiffOptions::new();
-        opts.context_lines(3);
+        opts.context_lines(self.context_lines);
         let mut diff =
             self.repo
                 .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut opts))?;
@@ -194,7 +212,7 @@ impl Vcs for GitVcs {
     fn stage_hunk(&self, rel: &Path, hunk: &HunkId) -> Result<(), VcsError> {
         let diff = self
             .repo
-            .diff_index_to_workdir(None, Some(&mut workdir_diff_options()))?;
+            .diff_index_to_workdir(None, Some(&mut workdir_diff_options(self.context_lines)))?;
         let patch = synthesize_patch(&diff, rel, hunk, false)?;
         let diff = git2::Diff::from_buffer(&patch)?;
         self.repo.apply(&diff, git2::ApplyLocation::Index, None)?;
@@ -221,7 +239,7 @@ impl Vcs for GitVcs {
     fn unstage_hunk(&self, rel: &Path, hunk: &HunkId) -> Result<(), VcsError> {
         let head_tree = self.head_tree()?;
         let mut opts = git2::DiffOptions::new();
-        opts.context_lines(3);
+        opts.context_lines(self.context_lines);
         let diff = self
             .repo
             .diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts))?;
@@ -392,12 +410,12 @@ fn render_hunk_patch(
     Ok(out)
 }
 
-fn workdir_diff_options() -> git2::DiffOptions {
+fn workdir_diff_options(context_lines: u32) -> git2::DiffOptions {
     let mut opts = git2::DiffOptions::new();
     opts.include_untracked(true)
         .recurse_untracked_dirs(true)
         .show_untracked_content(true)
-        .context_lines(3);
+        .context_lines(context_lines);
     opts
 }
 
@@ -415,7 +433,10 @@ fn diff_to_model(
             files.push(file);
         }
     }
-    Ok(DiffModel { files })
+    let mut model = DiffModel { files };
+    // every model leaves the backend review-ready: paired lines + emphasis
+    crate::pairing::enrich(&mut model);
+    Ok(model)
 }
 
 fn build_file(

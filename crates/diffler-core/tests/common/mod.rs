@@ -1,5 +1,7 @@
 // fixture helpers run outside #[test] fns, where clippy's test allowances don't reach
 #![allow(clippy::expect_used)]
+// shared across integration-test binaries that each use a different subset
+#![allow(dead_code)]
 
 use std::fs;
 use std::path::Path;

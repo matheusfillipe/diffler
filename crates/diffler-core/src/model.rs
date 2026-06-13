@@ -9,6 +9,34 @@ pub struct DiffModel {
     pub files: Vec<FileDiff>,
 }
 
+impl DiffModel {
+    /// Cheap content identity of the whole model (file paths + per-file
+    /// sides hashes), so callers can skip invalidating derived state when
+    /// a refresh recomputed an identical diff.
+    pub fn fingerprint(&self) -> String {
+        let mut buf = Vec::new();
+        for file in &self.files {
+            buf.extend_from_slice(file.path.as_bytes());
+            buf.push(0);
+            buf.extend_from_slice(file.sides_hash().as_bytes());
+            buf.push(b'\n');
+        }
+        git2::Oid::hash_object(git2::ObjectType::Blob, &buf)
+            .map(|o| o.to_string())
+            .unwrap_or_default()
+    }
+
+    /// The diff line carrying number `line` on the requested side of
+    /// `file`'s hunks, if it is part of the diff.
+    pub fn find_line(&self, file: &str, line: u32, on_old_side: bool) -> Option<&DiffLine> {
+        let file = self.files.iter().find(|f| f.path == file)?;
+        file.hunks.iter().flat_map(|h| &h.lines).find(|l| {
+            let no = if on_old_side { l.old_no } else { l.new_no };
+            no == Some(line)
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileDiff {
     pub path: String,
@@ -27,6 +55,18 @@ impl FileDiff {
     pub fn content_hash(&self) -> String {
         let bytes = self.new_text.as_deref().unwrap_or("").as_bytes();
         git2::Oid::hash_object(git2::ObjectType::Blob, bytes)
+            .map(|o| o.to_string())
+            .unwrap_or_default()
+    }
+
+    /// Content identity of both sides, for caches derived from old and new
+    /// text (e.g. syntax highlighting). Viewed marks key on `content_hash`
+    /// instead: they only care about the side the reviewer reads.
+    pub fn sides_hash(&self) -> String {
+        let mut bytes = Vec::from(self.old_text.as_deref().unwrap_or("").as_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(self.new_text.as_deref().unwrap_or("").as_bytes());
+        git2::Oid::hash_object(git2::ObjectType::Blob, &bytes)
             .map(|o| o.to_string())
             .unwrap_or_default()
     }
@@ -74,6 +114,17 @@ pub enum LineKind {
     Added,
 }
 
+impl LineKind {
+    /// Unified-diff origin character (' ', '-', '+').
+    pub const fn origin(self) -> char {
+        match self {
+            Self::Context => ' ',
+            Self::Deleted => '-',
+            Self::Added => '+',
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffLine {
     pub kind: LineKind,
@@ -104,6 +155,9 @@ pub fn hunk_id(file_path: &str, lines: &[DiffLine]) -> Result<HunkId, git2::Erro
     buf.push_str(file_path);
     buf.push('\n');
     for line in lines {
+        // the tags mirror LineKind::origin but stay hard-coded: hunk ids are
+        // persisted in sessions, so changing the mapping would orphan every
+        // existing comment anchor
         let tag = match line.kind {
             LineKind::Context => ' ',
             LineKind::Deleted => '-',
@@ -203,6 +257,111 @@ mod tests {
             hunks: vec![],
         };
         assert_eq!(file.content_hash(), file.content_hash());
+    }
+
+    #[test]
+    fn sides_hash_changes_when_old_text_changes() {
+        let base = FileDiff {
+            path: "f.rs".into(),
+            old_path: None,
+            status: FileStatus::Modified,
+            binary: false,
+            old_text: Some("fn main() {}".into()),
+            new_text: Some("fn main() { let x = 1; }".into()),
+            hunks: vec![],
+        };
+        let mut changed = base.clone();
+        changed.old_text = Some("fn main() { unreachable!() }".into());
+        assert_eq!(
+            base.content_hash(),
+            changed.content_hash(),
+            "same new side, same content hash"
+        );
+        assert_ne!(base.sides_hash(), changed.sides_hash());
+    }
+
+    fn one_file_model(path: &str, old_text: &str, new_text: &str) -> DiffModel {
+        DiffModel {
+            files: vec![FileDiff {
+                path: path.to_owned(),
+                old_path: None,
+                status: FileStatus::Modified,
+                binary: false,
+                old_text: Some(old_text.to_owned()),
+                new_text: Some(new_text.to_owned()),
+                hunks: vec![],
+            }],
+        }
+    }
+
+    #[test]
+    fn fingerprint_is_stable_for_identical_models() {
+        let a = one_file_model("f.rs", "old", "new");
+        let b = one_file_model("f.rs", "old", "new");
+        assert_eq!(a.fingerprint(), b.fingerprint());
+    }
+
+    #[test]
+    fn fingerprint_changes_with_content_path_and_file_set() {
+        let base = one_file_model("f.rs", "old", "new");
+        assert_ne!(
+            base.fingerprint(),
+            one_file_model("f.rs", "old", "newer").fingerprint(),
+            "changed side changes the fingerprint"
+        );
+        assert_ne!(
+            base.fingerprint(),
+            one_file_model("g.rs", "old", "new").fingerprint(),
+            "renamed file changes the fingerprint"
+        );
+        let mut grown = base.clone();
+        grown.files.extend(one_file_model("g.rs", "", "x").files);
+        assert_ne!(
+            base.fingerprint(),
+            grown.fingerprint(),
+            "added file changes the fingerprint"
+        );
+    }
+
+    fn model_with_lines() -> DiffModel {
+        DiffModel {
+            files: vec![FileDiff {
+                path: "f.rs".into(),
+                old_path: None,
+                status: FileStatus::Modified,
+                binary: false,
+                old_text: None,
+                new_text: None,
+                hunks: vec![Hunk {
+                    id: HunkId("h".into()),
+                    old_start: 1,
+                    old_lines: 2,
+                    new_start: 1,
+                    new_lines: 2,
+                    lines: vec![
+                        DiffLine::new(LineKind::Context, Some(1), Some(1), "one".into()),
+                        DiffLine::new(LineKind::Deleted, Some(2), None, "two".into()),
+                        DiffLine::new(LineKind::Added, None, Some(2), "TWO".into()),
+                    ],
+                }],
+            }],
+        }
+    }
+
+    #[test]
+    fn find_line_matches_the_requested_side() {
+        let model = model_with_lines();
+        let new_side = model.find_line("f.rs", 2, false).expect("new side");
+        assert_eq!(new_side.text, "TWO");
+        let old_side = model.find_line("f.rs", 2, true).expect("old side");
+        assert_eq!(old_side.text, "two");
+    }
+
+    #[test]
+    fn find_line_misses_unknown_files_and_lines() {
+        let model = model_with_lines();
+        assert!(model.find_line("nope.rs", 1, false).is_none());
+        assert!(model.find_line("f.rs", 99, false).is_none());
     }
 
     #[test]

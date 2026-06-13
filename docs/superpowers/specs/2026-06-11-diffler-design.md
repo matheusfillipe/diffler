@@ -134,17 +134,21 @@ Includes file path, line/range, short diff/file context snippet, comment body, t
 
 ## MCP interface (v1 tools)
 
+(names follow the implementation)
+
 ```
 review_status()                  → repo, branch, files changed, viewed map, open comment count
 get_diff(file?)                  → unified diff text (whole or one file)
 get_comments(status?)            → comments with anchors, context snippet, threads
 reply_comment(id, body)          → agent answers in place; TUI renders the reply live
-resolve_comment(id)              → agent proposes resolved; human confirms in TUI (status
+propose_resolve(id, note?)       → agent proposes resolved; human confirms in TUI (status
                                    moves to Replied until human resolves — agent cannot
                                    close the loop alone)
-wait_for_feedback(timeout_s)     → long-poll; returns when the human posts/edits comments
-                                   or presses the "send to agent" key; cursor token for
-                                   safe re-polling. THE agent-trigger mechanism.
+wait_for_feedback(since_epoch?, timeout_seconds?)
+                                 → long-poll; returns when the human posts/edits comments
+                                   or presses the "send to agent" key; the epoch is the
+                                   cursor token for safe re-polling. THE agent-trigger
+                                   mechanism.
 mark_viewed(file) / viewed map exposure for agent awareness (read-only effect on TUI list)
 ```
 

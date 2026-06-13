@@ -19,7 +19,7 @@ keywords = ["diff", "tui", "code-review", "mcp", "agents"]
 diffler-core = { path = "crates/diffler-core", version = "0.1.0" }
 ratatui = "0.30"
 crossterm = { version = "0.29", features = ["event-stream"] }
-tokio = { version = "1.52", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util"] }
+tokio = { version = "1.52", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "net"] }
 clap = { version = "4.6", features = ["derive"] }
 color-eyre = "0.6"
 thiserror = "2"
@@ -27,13 +27,17 @@ git2 = { version = "0.21", default-features = false, features = ["vendored-libgi
 similar = { version = "3", features = ["inline", "unicode"] }
 notify = "8.2"
 notify-debouncer-full = "0.7"
+futures-util = { version = "0.3", default-features = false }
 rmcp = { version = "1", features = ["server", "transport-streamable-http-server"] }
 axum = "0.8"
 async-lsp = { version = "0.2", features = ["tokio"] }
 syntect = { version = "5.2", default-features = false, features = ["default-fancy"] }
 two-face = { version = "0.5", default-features = false, features = ["syntect-default-fancy"] }
 serde = { version = "1", features = ["derive"] }
+serde_ignored = "0.1"
 serde_json = "1"
+toml = "1"
+uuid = { version = "1", features = ["v4"] }
 insta = "1.47"
 tempfile = "3"
 

@@ -4,7 +4,13 @@
 //! headless and reused by the TUI, the MCP server, and future frontends.
 
 pub mod diff;
+pub mod feedback;
 pub mod git;
+pub mod highlight;
 pub mod model;
+pub mod pairing;
 pub mod repo;
+pub mod review;
+pub mod session;
+pub mod store;
 pub mod vcs;

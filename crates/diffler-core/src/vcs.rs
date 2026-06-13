@@ -1,7 +1,7 @@
 //! Backend-agnostic VCS interface. Everything above this trait consumes
 //! `dyn Vcs`; only the `git` module (and test fixtures) may import git2.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
@@ -59,6 +59,10 @@ pub struct StatusModel {
 }
 
 pub trait Vcs: Send {
+    /// Resolved repository metadata directory. In a plain repo this is
+    /// `<root>/.git`; in a linked worktree `<root>/.git` is a gitlink file
+    /// and this resolves to the external gitdir it points at.
+    fn git_dir(&self) -> Result<PathBuf, VcsError>;
     /// Current branch, commit, and upstream.
     fn head(&self) -> Result<HeadInfo, VcsError>;
     /// Untracked / unstaged / staged sections as separate diff models.

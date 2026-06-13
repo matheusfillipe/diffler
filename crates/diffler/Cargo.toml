@@ -12,21 +12,28 @@ diffler-core.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
 tokio.workspace = true
+futures-util.workspace = true
 clap.workspace = true
 color-eyre.workspace = true
-# pre-staged for M1 (MCP server), M4 (LSP), M1 (watcher/highlighting):
-# kept as build dependencies now to validate CI build times across targets.
+serde.workspace = true
+serde_ignored.workspace = true
+thiserror.workspace = true
+toml.workspace = true
 rmcp.workspace = true
 axum.workspace = true
-async-lsp.workspace = true
 notify.workspace = true
 notify-debouncer-full.workspace = true
-syntect.workspace = true
-two-face.workspace = true
 serde_json.workspace = true
+# pre-staged for the LSP client; validates CI build times across targets
+async-lsp.workspace = true
 
 [dev-dependencies]
+git2.workspace = true
 insta.workspace = true
+tempfile.workspace = true
+rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
+# test-util enables the paused clock for long-poll timeout tests
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

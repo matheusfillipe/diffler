@@ -26,6 +26,74 @@ fn head_oid(fx: &Fixture) -> String {
 }
 
 #[test]
+fn git_dir_resolves_to_the_dot_git_directory() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "x\n");
+    fx.commit_all("base");
+    let dir = vcs(&fx).git_dir().expect("git dir");
+    assert_eq!(
+        dir.canonicalize().expect("canonicalize"),
+        fx.root().join(".git").canonicalize().expect("canonicalize")
+    );
+}
+
+#[test]
+fn git_dir_in_a_linked_worktree_resolves_the_gitlink() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "x\n");
+    fx.commit_all("base");
+    let wt_dir = tempfile::tempdir().expect("tempdir");
+    let wt = wt_dir.path().join("wt");
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(fx.root())
+        .arg("worktree")
+        .arg("add")
+        .arg(&wt)
+        .output()
+        .expect("git worktree add");
+    assert!(
+        output.status.success(),
+        "worktree add failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(wt.join(".git").is_file(), "worktree .git is a gitlink file");
+
+    let v = GitVcs::open(&wt).expect("open worktree");
+    let dir = v.git_dir().expect("git dir");
+    assert!(dir.is_dir(), "resolved gitdir exists: {}", dir.display());
+    let expected = fx.root().join(".git/worktrees/wt");
+    assert_eq!(
+        dir.canonicalize().expect("canonicalize"),
+        expected.canonicalize().expect("canonicalize")
+    );
+}
+
+#[test]
+fn context_lines_shrink_hunk_context() {
+    let fx = Fixture::new();
+    let mut base = String::new();
+    for i in 1..=20 {
+        writeln!(base, "line {i}").expect("write");
+    }
+    fx.write("a.txt", &base);
+    fx.commit_all("base");
+    fx.write("a.txt", &base.replace("line 10\n", "LINE TEN\n"));
+
+    let context = |lines: u32| -> usize {
+        let v = GitVcs::open_with_context(fx.root(), lines).expect("open");
+        let model = v.working_tree_diff().expect("diff");
+        model.files[0].hunks[0]
+            .lines
+            .iter()
+            .filter(|l| l.kind == LineKind::Context)
+            .count()
+    };
+    assert_eq!(context(3), 6, "git default: three lines each side");
+    assert_eq!(context(1), 2, "context_lines=1 keeps one line each side");
+}
+
+#[test]
 fn clean_tree_is_empty() {
     let fx = Fixture::new();
     fx.write("a.txt", "hello\n");
@@ -60,6 +128,41 @@ fn modified_file_produces_hunk_with_line_numbers() {
     assert_eq!(deleted[0].new_no, None);
     assert_eq!(added[0].text, "TWO");
     assert_eq!(added[0].new_no, Some(2));
+}
+
+#[test]
+fn modified_line_pair_carries_intraline_emphasis() {
+    let fx = Fixture::new();
+    fx.write("a.py", "value = old_name\nrest = 1\n");
+    fx.commit_all("base");
+    fx.write("a.py", "value = new_name\nrest = 1\n");
+    let model = vcs(&fx).working_tree_diff().expect("diff");
+    let lines = &model.files[0].hunks[0].lines;
+    let deleted = lines
+        .iter()
+        .find(|l| l.kind == LineKind::Deleted)
+        .expect("deleted line");
+    let added = lines
+        .iter()
+        .find(|l| l.kind == LineKind::Added)
+        .expect("added line");
+    assert_eq!(deleted.text, "value = old_name");
+    assert_eq!(added.text, "value = new_name");
+    // substitution: both sides emphasize the swapped word
+    assert!(!deleted.emphasis.is_empty());
+    assert!(!added.emphasis.is_empty());
+    let old_hl: String = deleted
+        .emphasis
+        .iter()
+        .map(|r| &deleted.text[r.clone()])
+        .collect();
+    let new_hl: String = added
+        .emphasis
+        .iter()
+        .map(|r| &added.text[r.clone()])
+        .collect();
+    assert_eq!(old_hl, "old");
+    assert_eq!(new_hl, "new");
 }
 
 #[test]
