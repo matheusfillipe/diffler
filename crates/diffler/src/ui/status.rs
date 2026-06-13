@@ -516,4 +516,76 @@ mod tests {
         let after = render(&mut app).backend().to_string();
         assert_eq!(before, after);
     }
+
+    use crate::theme::Theme;
+    use crate::ui::{diffstat_spans, status_color};
+    use diffler_core::model::FileStatus;
+
+    fn bar_cells(spans: &[ratatui::text::Span<'_>], fg: ratatui::style::Color) -> usize {
+        spans
+            .iter()
+            .filter(|s| s.style.fg == Some(fg))
+            .map(|s| s.content.chars().count())
+            .sum()
+    }
+
+    #[test]
+    fn proportion_bar_is_empty_without_changes() {
+        let theme = Theme::github_dark();
+        assert!(super::proportion_bar(&theme, 0, 0).is_empty());
+    }
+
+    #[test]
+    fn proportion_bar_fills_five_cells_split_by_ratio() {
+        let theme = Theme::github_dark();
+        for (add, del) in [(5, 0), (0, 5), (8, 4), (1, 100), (100, 1)] {
+            let spans = super::proportion_bar(&theme, add, del);
+            let green = bar_cells(&spans, theme.added);
+            let red = bar_cells(&spans, theme.error_fg);
+            assert_eq!(green + red, 5, "({add},{del}) must fill 5 cells");
+            // a non-zero side always keeps at least one cell so it stays visible
+            assert_eq!(add > 0, green > 0, "({add},{del}) green visibility");
+            assert_eq!(del > 0, red > 0, "({add},{del}) red visibility");
+        }
+    }
+
+    #[test]
+    fn status_color_distinguishes_the_status_groups() {
+        let theme = Theme::github_dark();
+        assert_eq!(status_color(&theme, FileStatus::Added), theme.accent);
+        assert_eq!(status_color(&theme, FileStatus::Untracked), theme.accent);
+        assert_eq!(status_color(&theme, FileStatus::Deleted), theme.error_fg);
+        assert_eq!(status_color(&theme, FileStatus::Modified), theme.warn_fg);
+        assert_eq!(status_color(&theme, FileStatus::Renamed), theme.warn_fg);
+    }
+
+    #[test]
+    fn diffstat_spans_color_each_side_and_dim_a_zero() {
+        let theme = Theme::github_dark();
+        assert!(diffstat_spans(&theme, 0, 0, theme.bg).is_empty());
+
+        let spans = diffstat_spans(&theme, 3, 0, theme.bg);
+        assert_eq!(spans[0].content, " +3");
+        assert_eq!(spans[0].style.fg, Some(theme.added));
+        assert_eq!(spans[1].content, " -0");
+        assert_eq!(spans[1].style.fg, Some(theme.dim), "a zero side is dimmed");
+
+        let spans = diffstat_spans(&theme, 0, 7, theme.bg);
+        assert_eq!(spans[0].style.fg, Some(theme.dim));
+        assert_eq!(spans[1].style.fg, Some(theme.error_fg));
+    }
+
+    #[test]
+    fn file_row_label_is_colored_by_status() {
+        let fixture = standard_fixture();
+        let app = app_for(&fixture);
+        // the unstaged section holds a modified file in the standard fixture
+        let file = app.section_files(Section::Unstaged).first().expect("file");
+        let spans = super::file_spans(&app, Some(file), &app.theme);
+        let label = spans
+            .iter()
+            .find(|s| s.content.trim() == file.status.label())
+            .expect("status label span");
+        assert_eq!(label.style.fg, Some(status_color(&app.theme, file.status)));
+    }
 }
