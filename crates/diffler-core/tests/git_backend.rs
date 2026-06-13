@@ -131,6 +131,52 @@ fn modified_file_produces_hunk_with_line_numbers() {
 }
 
 #[test]
+fn hunk_context_captures_the_enclosing_section() {
+    let fx = Fixture::new();
+    // an enclosing function far enough above the change that git's default
+    // three context lines don't reach it: git then names the section in the
+    // hunk header, which we capture into `context`
+    let mut base = String::from("fn outer() {\n");
+    for i in 1..=10 {
+        writeln!(base, "    let v{i} = {i};").expect("write");
+    }
+    base.push_str("}\n");
+    fx.write("a.rs", &base);
+    fx.commit_all("base");
+    fx.write("a.rs", &base.replace("let v6 = 6;", "let v6 = 60;"));
+
+    let model = vcs(&fx).working_tree_diff().expect("diff");
+    let hunk = &model.files[0].hunks[0];
+    assert!(
+        hunk.context.contains("fn outer()"),
+        "enclosing function captured as context: {:?}",
+        hunk.context
+    );
+    // context must not leak into the hunk id, which keys on lines alone
+    let lines = hunk.lines.clone();
+    let id = diffler_core::model::hunk_id("a.rs", &lines).expect("id");
+    assert_eq!(id, hunk.id, "context does not perturb the hunk id");
+}
+
+#[test]
+fn top_of_file_hunk_has_empty_context() {
+    let fx = Fixture::new();
+    let mut base = String::new();
+    for i in 1..=10 {
+        writeln!(base, "line {i}").expect("write");
+    }
+    fx.write("a.txt", &base);
+    fx.commit_all("base");
+    fx.write("a.txt", &base.replace("line 1\n", "LINE ONE\n"));
+
+    let model = vcs(&fx).working_tree_diff().expect("diff");
+    assert_eq!(
+        model.files[0].hunks[0].context, "",
+        "no enclosing section above a top-of-file change"
+    );
+}
+
+#[test]
 fn modified_line_pair_carries_intraline_emphasis() {
     let fx = Fixture::new();
     fx.write("a.py", "value = old_name\nrest = 1\n");

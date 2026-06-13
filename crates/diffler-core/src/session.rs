@@ -277,6 +277,7 @@ mod tests {
                     old_lines: 3,
                     new_start: 1,
                     new_lines: 3,
+                    context: String::new(),
                     lines: vec![
                         DiffLine::new(LineKind::Context, Some(1), Some(1), "one".into()),
                         DiffLine::new(LineKind::Deleted, Some(2), None, "two".into()),

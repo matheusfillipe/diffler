@@ -83,14 +83,22 @@ pub fn file_gutter_width(file: &FileDiff) -> usize {
     (max.ilog10() as usize + 1).max(4)
 }
 
+/// GitHub-style section separator: a dim full-width band carrying git's
+/// enclosing-section context (the `@@` line numbers are dropped as redundant
+/// with the gutter). When git names no section the band alone reads as the
+/// hunk boundary. Stays a navigable row so `{`/`}` hunk jumps land on it.
 pub fn hunk_header(theme: &Theme, hunk: &Hunk, width: u16, selected: bool) -> Line<'static> {
     let bg = if selected {
         theme.cursor_line
     } else {
         theme.panel
     };
-    let text = format!(" {}", hunk.header());
-    let pad = (width as usize).saturating_sub(text.len());
+    let text = if hunk.context.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", hunk.context)
+    };
+    let pad = (width as usize).saturating_sub(text.chars().count());
     Line::from(vec![
         Span::styled(text, Style::new().fg(theme.dim).bg(bg)),
         Span::styled(" ".repeat(pad), Style::new().bg(bg)),
@@ -232,6 +240,7 @@ mod tests {
             old_lines: 3,
             new_start: 1,
             new_lines: 3,
+            context: String::new(),
             lines: vec![
                 line(LineKind::Context, Some(1), Some(1), "fn answer() {"),
                 deleted,
@@ -272,6 +281,7 @@ mod tests {
             old_lines: 0,
             new_start: 1,
             new_lines: 1,
+            context: String::new(),
             lines: vec![first_word],
         };
         let lines = render_hunk_lines(&theme, &hunk, None, 60, None);
@@ -305,6 +315,7 @@ mod tests {
             old_lines: 0,
             new_start: 1,
             new_lines: 1,
+            context: String::new(),
             lines: vec![bad],
         };
         let lines = render_hunk_lines(&theme, &hunk, None, 40, None);
@@ -327,6 +338,7 @@ mod tests {
             old_lines: 1,
             new_start: 1,
             new_lines: 0,
+            context: String::new(),
             lines: vec![over],
         };
         let lines = render_hunk_lines(&theme, &hunk, None, 40, None);
@@ -393,6 +405,7 @@ mod tests {
                     old_lines: 3,
                     new_start: 1,
                     new_lines: 3,
+                    context: String::new(),
                     lines: vec![],
                 },
                 Hunk {
@@ -401,6 +414,7 @@ mod tests {
                     old_lines: 12,
                     new_start: 99990,
                     new_lines: 12,
+                    context: String::new(),
                     lines: vec![],
                 },
             ],

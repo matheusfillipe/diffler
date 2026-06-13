@@ -131,6 +131,44 @@ pub(super) fn diffstat_spans(
     ]
 }
 
+/// A ~5-cell bar split green:red by the added:deleted ratio over `bg`; at least
+/// one cell goes to each non-zero side so neither vanishes. Empty with no
+/// changes. Shared by the status total and the diff pane header.
+pub(super) fn proportion_bar(
+    theme: &Theme,
+    added: usize,
+    deleted: usize,
+    bg: Color,
+) -> Vec<Span<'static>> {
+    const CELLS: usize = 5;
+    let total = added + deleted;
+    if total == 0 {
+        return Vec::new();
+    }
+    let mut add_cells = (added * CELLS).div_ceil(total).min(CELLS);
+    if added > 0 && add_cells == 0 {
+        add_cells = 1;
+    }
+    if deleted > 0 && add_cells == CELLS {
+        add_cells = CELLS - 1;
+    }
+    let del_cells = CELLS - add_cells;
+    let mut spans = Vec::new();
+    if add_cells > 0 {
+        spans.push(Span::styled(
+            "█".repeat(add_cells),
+            Style::new().fg(theme.added).bg(bg),
+        ));
+    }
+    if del_cells > 0 {
+        spans.push(Span::styled(
+            "█".repeat(del_cells),
+            Style::new().fg(theme.error_fg).bg(bg),
+        ));
+    }
+    spans
+}
+
 /// Hint line built from the active keymap so config remaps show. Each item
 /// is `(actions, label)`; actions sharing a label render as `a/b label`, and
 /// items whose action lost its key to a remap are dropped.

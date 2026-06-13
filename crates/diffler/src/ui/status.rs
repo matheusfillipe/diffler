@@ -12,7 +12,7 @@ use crate::app::{App, Row, Section};
 use crate::keymap::Action;
 use crate::theme::Theme;
 use crate::ui::diff_render::render_hunk_lines;
-use crate::ui::{cursor_line, diffstat_spans, hint_line, status_bar, status_color};
+use crate::ui::{cursor_line, diffstat_spans, hint_line, proportion_bar, status_bar, status_color};
 
 /// Hint entries, rendered against the live keymap so remaps show.
 const HINTS: &[(&[Action], &str)] = &[
@@ -160,40 +160,8 @@ fn changes_line(theme: &Theme, added: usize, deleted: usize) -> Line<'static> {
     let mut spans = vec![Span::styled(" Changes  ", theme.dim_style())];
     spans.extend(diffstat_spans(theme, added, deleted, theme.bg));
     spans.push(Span::styled("  ", theme.base()));
-    spans.extend(proportion_bar(theme, added, deleted));
+    spans.extend(proportion_bar(theme, added, deleted, theme.bg));
     Line::from(spans)
-}
-
-/// A ~5-cell bar split green:red by the added:deleted ratio; at least one cell
-/// goes to each non-zero side so neither vanishes.
-fn proportion_bar(theme: &Theme, added: usize, deleted: usize) -> Vec<Span<'static>> {
-    const CELLS: usize = 5;
-    let total = added + deleted;
-    if total == 0 {
-        return Vec::new();
-    }
-    let mut add_cells = (added * CELLS).div_ceil(total).min(CELLS);
-    if added > 0 && add_cells == 0 {
-        add_cells = 1;
-    }
-    if deleted > 0 && add_cells == CELLS {
-        add_cells = CELLS - 1;
-    }
-    let del_cells = CELLS - add_cells;
-    let mut spans = Vec::new();
-    if add_cells > 0 {
-        spans.push(Span::styled(
-            "█".repeat(add_cells),
-            Style::new().fg(theme.added).bg(theme.bg),
-        ));
-    }
-    if del_cells > 0 {
-        spans.push(Span::styled(
-            "█".repeat(del_cells),
-            Style::new().fg(theme.error_fg).bg(theme.bg),
-        ));
-    }
-    spans
 }
 
 fn row_line(app: &App, row: &Row, selected: bool, width: u16) -> Line<'static> {
@@ -518,7 +486,7 @@ mod tests {
     }
 
     use crate::theme::Theme;
-    use crate::ui::{diffstat_spans, status_color};
+    use crate::ui::{diffstat_spans, proportion_bar, status_color};
     use diffler_core::model::FileStatus;
 
     fn bar_cells(spans: &[ratatui::text::Span<'_>], fg: ratatui::style::Color) -> usize {
@@ -532,14 +500,14 @@ mod tests {
     #[test]
     fn proportion_bar_is_empty_without_changes() {
         let theme = Theme::github_dark();
-        assert!(super::proportion_bar(&theme, 0, 0).is_empty());
+        assert!(proportion_bar(&theme, 0, 0, theme.bg).is_empty());
     }
 
     #[test]
     fn proportion_bar_fills_five_cells_split_by_ratio() {
         let theme = Theme::github_dark();
         for (add, del) in [(5, 0), (0, 5), (8, 4), (1, 100), (100, 1)] {
-            let spans = super::proportion_bar(&theme, add, del);
+            let spans = proportion_bar(&theme, add, del, theme.bg);
             let green = bar_cells(&spans, theme.added);
             let red = bar_cells(&spans, theme.error_fg);
             assert_eq!(green + red, 5, "({add},{del}) must fill 5 cells");

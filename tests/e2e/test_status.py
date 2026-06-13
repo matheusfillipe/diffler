@@ -28,10 +28,9 @@ def test_cursor_moves_and_tab_expands_inline_hunks(spawn):
     # rows: Untracked header, notes.txt, Unstaged header, app.txt
     tui.send("jjj")
     tui.send("\t")
-    tui.wait_for("@@ -1,3 +1,4 @@")
-    tui.wait_for("beta2")
+    tui.wait_for("beta2")  # the expanded inline diff shows the added line
     tui.send("\t")
-    tui.wait_gone("@@ -1,3 +1,4 @@")
+    tui.wait_gone("beta2")
     # k back up to the Untracked header; folding it hides the file row
     tui.send("kkk")
     tui.send("\t")

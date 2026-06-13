@@ -132,6 +132,10 @@ pub struct Hunk {
     pub old_lines: u32,
     pub new_start: u32,
     pub new_lines: u32,
+    /// git's section heading: the enclosing function/section name git emits
+    /// after the second `@@` of the hunk header. Empty when git gives none
+    /// (e.g. a top-of-file hunk). Excluded from `id`, which keys only on lines.
+    pub context: String,
     pub lines: Vec<DiffLine>,
 }
 
@@ -277,6 +281,7 @@ mod tests {
             old_lines: 7,
             new_start: 10,
             new_lines: 9,
+            context: String::new(),
             lines: vec![],
         };
         assert_eq!(hunk.header(), "@@ -10,7 +10,9 @@");
@@ -391,6 +396,7 @@ mod tests {
                     old_lines: 2,
                     new_start: 1,
                     new_lines: 2,
+                    context: String::new(),
                     lines: vec![
                         DiffLine::new(LineKind::Context, Some(1), Some(1), "one".into()),
                         DiffLine::new(LineKind::Deleted, Some(2), None, "two".into()),
@@ -422,6 +428,7 @@ mod tests {
                     old_lines: 1,
                     new_start: 1,
                     new_lines: 2,
+                    context: String::new(),
                     lines: vec![
                         DiffLine::new(LineKind::Context, Some(1), Some(1), "ctx".into()),
                         DiffLine::new(LineKind::Added, None, Some(2), "add one".into()),
@@ -433,6 +440,7 @@ mod tests {
                     old_lines: 1,
                     new_start: 6,
                     new_lines: 1,
+                    context: String::new(),
                     lines: vec![
                         DiffLine::new(LineKind::Deleted, Some(5), None, "gone".into()),
                         DiffLine::new(LineKind::Added, None, Some(6), "add two".into()),

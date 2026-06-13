@@ -21,7 +21,7 @@ use crate::app::{
 use crate::keymap::Action;
 use crate::theme::Theme;
 use crate::ui::diff_render::{file_gutter_width, hunk_header, line_syntax, render_diff_line};
-use crate::ui::{diffstat_spans, hint_line, status_bar, status_color};
+use crate::ui::{diffstat_spans, hint_line, proportion_bar, status_bar, status_color};
 
 /// Hint entries, rendered against the live keymap so remaps show.
 const HINTS: &[(&[Action], &str)] = &[
@@ -444,16 +444,22 @@ fn pane_header_line(
     } else if total > 0 {
         spans.push(Span::styled(" · resolved".to_owned(), dim));
     }
-    // GitHub-PR style: the file's `+A -B` hugs the right edge of the header
+    // GitHub-PR style: the file's `+A -B` and its proportion bar hug the right
+    // edge of the header, mirroring the status screen's grand-total summary
     let (added, deleted) = file.diffstat();
-    let stat = diffstat_spans(theme, added, deleted, bg);
-    let stat_width: usize = stat.iter().map(Span::width).sum();
+    let mut tail = diffstat_spans(theme, added, deleted, bg);
+    let bar = proportion_bar(theme, added, deleted, bg);
+    if !bar.is_empty() {
+        tail.push(Span::styled(" ".to_owned(), Style::new().bg(bg)));
+        tail.extend(bar);
+    }
+    let tail_width: usize = tail.iter().map(Span::width).sum();
     let used: usize = spans.iter().map(Span::width).sum();
-    let gap = (width as usize).saturating_sub(used + stat_width);
+    let gap = (width as usize).saturating_sub(used + tail_width);
     if gap > 0 {
         spans.push(Span::styled(" ".repeat(gap), Style::new().bg(bg)));
     }
-    spans.extend(stat);
+    spans.extend(tail);
     pad_line(spans, bg, width)
 }
 

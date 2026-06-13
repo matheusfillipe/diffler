@@ -78,6 +78,7 @@ mod tests {
             old_lines: 1,
             new_start: 1,
             new_lines: 1,
+            context: String::new(),
             lines: lines
                 .into_iter()
                 .map(|(k, t)| DiffLine::new(k, None, None, t.to_owned()))
