@@ -1,5 +1,5 @@
 {
-  "name": "@diffler/platform",
+  "name": "@matheusfillipe/diffler-platform",
   "version": "0.0.0",
   "description": "diffler binary",
   "license": "(MIT OR Apache-2.0)",
@@ -10,5 +10,8 @@
   "files": [
     "bin"
   ],
-  "preferUnplugged": true
+  "preferUnplugged": true,
+  "publishConfig": {
+    "access": "public"
+  }
 }

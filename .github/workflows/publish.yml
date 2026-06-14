@@ -110,8 +110,8 @@ jobs:
       # symlink stays out of the published tarball (files allowlists bin only)
       - name: Smoke test entry shim
         run: |
-          mkdir -p npm/dist/diffler/node_modules/@diffler
-          ln -s ../../../@diffler/linux-x64 npm/dist/diffler/node_modules/@diffler/linux-x64
+          mkdir -p npm/dist/diffler/node_modules/@matheusfillipe
+          ln -s ../../../@matheusfillipe/diffler-linux-x64 npm/dist/diffler/node_modules/@matheusfillipe/diffler-linux-x64
           node npm/dist/diffler/bin/diffler.js --version
       # npm publish only happens for a real release: a dry run packs a single
       # host platform, which must never reach the registry
@@ -120,7 +120,7 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          for pkg in npm/dist/@diffler/* npm/dist/diffler; do
+          for pkg in npm/dist/@matheusfillipe/diffler-* npm/dist/diffler; do
             npm publish "$pkg" --access public
           done
       - name: Pack tarballs (dry run)
@@ -131,7 +131,7 @@ jobs:
           NODE_AUTH_TOKEN: ""
         run: |
           mkdir tarballs
-          for pkg in npm/dist/@diffler/* npm/dist/diffler; do
+          for pkg in npm/dist/@matheusfillipe/diffler-* npm/dist/diffler; do
             npm pack "$pkg" --pack-destination tarballs
           done
           echo "::notice::npm dry run only (dry_run input or missing NPM_TOKEN); nothing was published"

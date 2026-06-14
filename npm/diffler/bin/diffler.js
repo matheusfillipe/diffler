@@ -8,12 +8,12 @@
 const { spawnSync } = require("node:child_process");
 
 const PACKAGES = {
-  "linux-x64": "@diffler/linux-x64",
-  "linux-arm64": "@diffler/linux-arm64",
-  "darwin-x64": "@diffler/darwin-x64",
-  "darwin-arm64": "@diffler/darwin-arm64",
-  "win32-x64": "@diffler/win32-x64",
-  "win32-arm64": "@diffler/win32-arm64",
+  "linux-x64": "@matheusfillipe/diffler-linux-x64",
+  "linux-arm64": "@matheusfillipe/diffler-linux-arm64",
+  "darwin-x64": "@matheusfillipe/diffler-darwin-x64",
+  "darwin-arm64": "@matheusfillipe/diffler-darwin-arm64",
+  "win32-x64": "@matheusfillipe/diffler-win32-x64",
+  "win32-arm64": "@matheusfillipe/diffler-win32-arm64",
 };
 
 function resolveBinary() {
@@ -30,7 +30,7 @@ function resolveBinary() {
   } catch {
     console.error(`diffler: platform package ${pkg} is not installed.`);
     console.error(
-      "Reinstall with optional dependencies enabled: npm install -g diffler"
+      "Reinstall with optional dependencies enabled: npm install -g @matheusfillipe/diffler"
     );
     process.exit(1);
   }

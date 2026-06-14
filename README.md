@@ -10,22 +10,28 @@ binary, no browser, no daemon.
 
 ## Install
 
-Not yet published; until the first release, build from source:
+Pick any package manager — the installed command is always `diffler`:
+
+```sh
+# Rust
+cargo install diffler
+
+# npm, one-off
+npx @matheusfillipe/diffler
+
+# npm, global
+npm install -g @matheusfillipe/diffler
+```
+
+Or grab a prebuilt binary (macOS, Linux, Windows; x86_64 and arm64) from the
+[releases page](https://github.com/matheusfillipe/diffler/releases).
+
+Until the first release lands, build from source:
 
 ```sh
 cargo install --git https://github.com/matheusfillipe/diffler diffler
 # or from a clone:
 just install
-```
-
-Once released:
-
-```sh
-cargo install diffler
-# or
-npm install -g diffler
-# or download a release binary
-# https://github.com/matheusfillipe/diffler/releases
 ```
 
 ## Quickstart
@@ -35,6 +41,8 @@ port 8417. Connect your agent once:
 
 ```sh
 claude mcp add --transport http diffler http://127.0.0.1:8417/mcp
+# or, over stdio, auto-discovering the port:
+claude mcp add diffler -- npx -y diffler-mcp
 ```
 
 The loop: the agent edits files, the diff updates live. You comment lines or
