@@ -1,4 +1,4 @@
-# @diffler/mcp
+# diffler-mcp
 
 A tiny stdio↔HTTP bridge that lets Claude Code (or any stdio MCP client) talk to
 the MCP server embedded in a running [diffler](https://github.com/matheusfillipe/diffler)
@@ -15,7 +15,7 @@ Run diffler in your repo (it prints the connect hint and writes
 `.diffler/mcp.json` with the live port), then:
 
 ```bash
-claude mcp add diffler -- npx -y @diffler/mcp
+claude mcp add diffler -- npx -y diffler-mcp
 ```
 
 Or in a checked-in `.mcp.json`:
@@ -25,7 +25,7 @@ Or in a checked-in `.mcp.json`:
   "mcpServers": {
     "diffler": {
       "command": "npx",
-      "args": ["-y", "@diffler/mcp"]
+      "args": ["-y", "diffler-mcp"]
     }
   }
 }
@@ -48,7 +48,7 @@ Resolution order (first match wins):
   "mcpServers": {
     "diffler": {
       "command": "npx",
-      "args": ["-y", "@diffler/mcp", "--port", "8417"],
+      "args": ["-y", "diffler-mcp", "--port", "8417"],
       "env": { "DIFFLER_MCP_HOST": "127.0.0.1" }
     }
   }

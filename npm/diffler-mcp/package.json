@@ -1,5 +1,5 @@
 {
-  "name": "@diffler/mcp",
+  "name": "diffler-mcp",
   "version": "0.1.0",
   "description": "stdio↔HTTP MCP proxy bridging Claude Code (or any stdio MCP client) to a running diffler review session",
   "type": "module",
@@ -26,6 +26,12 @@
     "code-review",
     "claude"
   ],
+  "scripts": {
+    "prepublishOnly": "node --check index.js"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0"
   }
