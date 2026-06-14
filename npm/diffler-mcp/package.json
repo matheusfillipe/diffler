@@ -4,7 +4,7 @@
   "description": "stdio↔HTTP MCP proxy bridging Claude Code (or any stdio MCP client) to a running diffler review session",
   "type": "module",
   "bin": {
-    "diffler-mcp": "./index.js"
+    "diffler-mcp": "index.js"
   },
   "files": [
     "index.js",
@@ -16,7 +16,7 @@
   "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/matheusfillipe/diffler.git",
+    "url": "git+https://github.com/matheusfillipe/diffler.git",
     "directory": "npm/diffler-mcp"
   },
   "keywords": [
