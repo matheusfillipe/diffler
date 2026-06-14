@@ -108,6 +108,8 @@ pub struct StatusView {
     pub folded: [bool; 3],
     pub recent: Vec<LogEntry>,
     pub recent_folded: bool,
+    /// Body height of the last render, so half-page motions step by a screenful.
+    pub(crate) viewport: u16,
     /// Per-section set of file paths whose inline diff is expanded.
     expanded: [BTreeSet<String>; 3],
     /// Per-section set of folded directory paths in that section's file tree.
@@ -128,6 +130,7 @@ impl StatusView {
             folded: [false; 3],
             recent,
             recent_folded: true,
+            viewport: 0,
             expanded: [const { BTreeSet::new() }; 3],
             folded_dirs: [const { BTreeSet::new() }; 3],
             enriched: [const { BTreeSet::new() }; 3],
@@ -331,6 +334,23 @@ impl App {
         }
     }
 
+    /// Move the cursor by half a screenful, clamped to the visible rows.
+    fn status_half_page(&mut self, down: bool) {
+        // before the first render the height is unknown; half a typical
+        // terminal is a fine guess
+        let half = if self.status.viewport == 0 {
+            20
+        } else {
+            usize::from(self.status.viewport / 2).max(1)
+        };
+        if down {
+            let last = self.visible_rows().len().saturating_sub(1);
+            self.status.cursor = (self.status.cursor + half).min(last);
+        } else {
+            self.status.cursor = self.status.cursor.saturating_sub(half);
+        }
+    }
+
     pub(super) fn dispatch_status(&mut self, action: Action) {
         match action {
             Action::MoveDown => {
@@ -338,6 +358,8 @@ impl App {
                 self.status.cursor = (self.status.cursor + 1).min(last);
             }
             Action::MoveUp => self.status.cursor = self.status.cursor.saturating_sub(1),
+            Action::HalfPageDown => self.status_half_page(true),
+            Action::HalfPageUp => self.status_half_page(false),
             Action::GoTop => self.status.cursor = 0,
             Action::GoBottom => {
                 self.status.cursor = self.visible_rows().len().saturating_sub(1);
@@ -881,6 +903,26 @@ mod tests {
         assert_eq!(app.status.cursor, app.visible_rows().len() - 1);
         app.handle(key('g'));
         app.handle(key('g'));
+        assert_eq!(app.status.cursor, 0);
+    }
+
+    #[test]
+    fn half_page_motions_step_by_the_viewport_and_clamp() {
+        let (_fixture, mut app) = app();
+        assert_eq!(app.visible_rows().len(), 7);
+        // a half-page of a 4-row body is 2 rows
+        app.status.viewport = 4;
+        app.handle(ctrl_key('d'));
+        assert_eq!(app.status.cursor, 2);
+        app.handle(ctrl_key('d'));
+        assert_eq!(app.status.cursor, 4);
+        app.handle(ctrl_key('u'));
+        assert_eq!(app.status.cursor, 2);
+        // a tall viewport clamps to the last row, never past it
+        app.status.viewport = 40;
+        app.handle(ctrl_key('d'));
+        assert_eq!(app.status.cursor, 6);
+        app.handle(ctrl_key('u'));
         assert_eq!(app.status.cursor, 0);
     }
 

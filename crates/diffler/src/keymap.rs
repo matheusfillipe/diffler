@@ -207,6 +207,8 @@ const STATUS_DEFAULTS: &[(&str, Action)] = &[
     ("k", Action::MoveUp),
     ("gg", Action::GoTop),
     ("G", Action::GoBottom),
+    ("<c-d>", Action::HalfPageDown),
+    ("<c-u>", Action::HalfPageUp),
     ("v", Action::MarkViewed),
     ("<c-n>", Action::NextSection),
     ("<c-p>", Action::PrevSection),

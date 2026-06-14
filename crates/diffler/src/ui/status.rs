@@ -32,7 +32,7 @@ const HINTS: &[Hint] = &[
     Hint::Leaf(&[Action::Help], "help"),
 ];
 
-pub fn draw(frame: &mut Frame<'_>, app: &App) {
+pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let area = frame.area();
     frame.render_widget(Block::new().style(app.theme.base()), area);
     let [hint, body_area, bar] = Layout::vertical([
@@ -41,6 +41,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
         Constraint::Length(1),
     ])
     .areas(area);
+    app.status.viewport = body_area.height;
     frame.render_widget(Paragraph::new(hint_line(app, HINTS)), hint);
     let (lines, scroll) = body(app, body_area);
     frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), body_area);
