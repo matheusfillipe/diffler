@@ -165,7 +165,8 @@ fn draw_pane(
     diff: &mut DiffView,
 ) {
     let focused = diff.focus == Pane::Diff;
-    let block = pane_block(theme, "Diff", focused);
+    let title = pane_title(&diff.source);
+    let block = pane_block(theme, &title, focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -248,6 +249,18 @@ fn draw_pane(
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), rows_area);
+}
+
+/// Diff-pane title: a plain "Diff" for the working tree or a single commit, a
+/// `oldest7..newest7` range span when the pane shows a combined commit range.
+fn pane_title(source: &DiffSource) -> String {
+    match source {
+        DiffSource::WorkingTree | DiffSource::Commit(_) => "Diff".to_owned(),
+        DiffSource::Range { oldest, newest } => {
+            let short = |oid: &str| oid.get(..7).unwrap_or(oid).to_owned();
+            format!("Diff {}..{}", short(oldest), short(newest))
+        }
+    }
 }
 
 /// Bordered pane with an accent title/border when focused, dim otherwise.
@@ -779,6 +792,32 @@ mod tests {
         app.handle(key('l'));
         app.handle(key('l'));
         app.handle(key('\n'));
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn range_diff_from_the_log_renders_with_a_range_header() {
+        let fixture = standard_fixture();
+        fixture.write("notes.txt", "alpha\nbeta\n");
+        fixture.commit_all("add beta note");
+        fixture.write(
+            "src/util.rs",
+            "pub fn twice(x: u32) -> u32 {\n    x * 2\n}\n",
+        );
+        fixture.commit_all("add util module");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        // into the log, select the two newest commits, open the combined diff
+        app.handle(key('l'));
+        app.handle(key('l'));
+        app.handle(key('V'));
+        app.handle(key('j'));
+        app.handle(key('\n'));
+        let content = render(&mut app).backend().to_string();
+        // the pane title carries the oldest7..newest7 span
+        assert!(
+            content.contains(".."),
+            "range header shows a span: {content}"
+        );
         insta::assert_snapshot!(render(&mut app).backend());
     }
 

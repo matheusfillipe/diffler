@@ -21,6 +21,12 @@ use crate::tree::{self, TreeNode, TreeRow};
 pub enum DiffSource {
     WorkingTree,
     Commit(String),
+    /// Combined diff of a contiguous commit range, oldest to newest (full
+    /// oids). The pane pins the range model like a single commit's.
+    Range {
+        oldest: String,
+        newest: String,
+    },
 }
 
 /// Which pane has the keyboard: the file sidebar or the diff body.
@@ -419,6 +425,27 @@ impl App {
         }
     }
 
+    /// Open the combined diff of a contiguous commit range (oldest to newest,
+    /// full oids), pinned like a single commit's diff.
+    pub(crate) fn open_range_diff(&mut self, oldest: &str, newest: &str) {
+        match self.review.vcs.range_diff(oldest, newest) {
+            Ok(model) => {
+                let view = DiffView::new(
+                    DiffSource::Range {
+                        oldest: oldest.to_owned(),
+                        newest: newest.to_owned(),
+                    },
+                    Some(model),
+                    &self.review,
+                    self.config.ui.diff_file_layout,
+                );
+                self.diff = Some(view);
+                self.screens.push(Screen::Diff);
+            }
+            Err(err) => self.error(err.to_string()),
+        }
+    }
+
     pub(super) fn dispatch_diff(&mut self, action: Action) {
         if let Some(diff) = self.diff.as_mut() {
             diff.ensure_rows(&self.review);
@@ -446,6 +473,10 @@ impl App {
             Action::MoveUp => self.diff_tree_step(-1),
             Action::GoTop => self.diff_tree_to(0),
             Action::GoBottom => self.diff_tree_to(usize::MAX),
+            // half-page keys preview the selected file's diff without leaving
+            // the sidebar: they scroll the diff pane, not the file selection
+            Action::HalfPageDown => self.diff_move(self.diff_half_page()),
+            Action::HalfPageUp => self.diff_move(-self.diff_half_page()),
             // <cr> focuses the pane on a file row, folds/unfolds a dir row
             Action::Open => self.diff_tree_activate(),
             Action::ToggleFold => self.diff_toggle_dir_fold(),
@@ -1765,6 +1796,28 @@ mod tests {
         assert_eq!(app.diff.as_ref().unwrap().cursor, 5);
         app.handle(ctrl_key('u'));
         assert_eq!(app.diff.as_ref().unwrap().cursor, 0);
+    }
+
+    #[test]
+    fn list_focus_half_page_scrolls_the_diff_pane_keeping_the_selection() {
+        let fixture = two_hunk_fixture();
+        let mut app = diff_app(&fixture);
+        // stay on the sidebar (List focus is where open lands)
+        assert_eq!(focus(&app), Pane::List);
+        let selected_before = selected_path(&app);
+        let tree_before = tree_cursor(&app);
+        app.diff.as_mut().unwrap().viewport = 10;
+        assert_eq!(app.diff.as_ref().unwrap().cursor, 0);
+        app.handle(ctrl_key('d'));
+        // the diff-pane cursor advanced by half a page
+        assert_eq!(app.diff.as_ref().unwrap().cursor, 5);
+        // but the sidebar selection and cursor did not move
+        assert_eq!(selected_path(&app), selected_before);
+        assert_eq!(tree_cursor(&app), tree_before);
+        assert_eq!(focus(&app), Pane::List, "focus stays on the sidebar");
+        app.handle(ctrl_key('u'));
+        assert_eq!(app.diff.as_ref().unwrap().cursor, 0);
+        assert_eq!(selected_path(&app), selected_before);
     }
 
     #[test]

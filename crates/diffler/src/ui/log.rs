@@ -40,6 +40,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         if log.cursor >= log.scroll + height {
             log.scroll = log.cursor + 1 - height;
         }
+        let selection = log.selection();
+        let selected =
+            |index: usize| selection.is_some_and(|(start, end)| index >= start && index <= end);
         let lines: Vec<Line<'static>> = log
             .entries
             .iter()
@@ -48,7 +51,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             .take(height)
             .map(|(index, entry)| {
                 let line = entry_line(&app.theme, entry);
-                if index == log.cursor {
+                // the cursor and every row in the visual range share the
+                // cursor-line tint, mirroring the diff view's selection
+                if index == log.cursor || selected(index) {
                     cursor_line(line, &app.theme, body.width)
                 } else {
                     line
@@ -107,6 +112,37 @@ mod tests {
         let terminal = render(&mut app);
         let content = terminal.backend().to_string();
         assert!(content.contains("feat/topic"), "refs decorate: {content}");
+        insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn log_visual_selection_highlights_the_range() {
+        let fixture = standard_fixture();
+        fixture.write("notes.txt", "alpha\nbeta\n");
+        fixture.commit_all("add beta note");
+        fixture.write("notes.txt", "alpha\nbeta\ngamma\n");
+        fixture.commit_all("add gamma note");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.handle(key('l'));
+        app.handle(key('l'));
+        // V at the top commit, then j extends the selection over two rows
+        app.handle(key('V'));
+        app.handle(key('j'));
+        assert_eq!(app.log.as_ref().unwrap().selection(), Some((0, 1)));
+        let terminal = render(&mut app);
+        // the two-row selection tints more cells than a bare cursor row does
+        let bg = format!("{:?}", app.theme.cursor_line);
+        let selected = format!("{:?}", terminal.backend().buffer())
+            .matches(&bg)
+            .count();
+        app.log.as_mut().unwrap().visual_anchor = None;
+        let unselected = format!("{:?}", render(&mut app).backend().buffer())
+            .matches(&bg)
+            .count();
+        assert!(
+            selected > unselected,
+            "selection must paint extra rows: {selected} vs {unselected}"
+        );
         insta::assert_snapshot!(terminal.backend());
     }
 

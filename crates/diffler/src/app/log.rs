@@ -14,8 +14,18 @@ pub struct LogView {
     pub cursor: usize,
     /// First visible entry; the renderer keeps the cursor in view.
     pub scroll: usize,
+    /// Row where `V` started; `Some` means range selection is active.
+    pub visual_anchor: Option<usize>,
     /// Body height of the last render, drives half-page motions.
     pub(crate) viewport: u16,
+}
+
+impl LogView {
+    /// Inclusive row span the visual selection covers, when active.
+    pub fn selection(&self) -> Option<(usize, usize)> {
+        let anchor = self.visual_anchor?;
+        Some((anchor.min(self.cursor), anchor.max(self.cursor)))
+    }
 }
 
 impl App {
@@ -26,6 +36,7 @@ impl App {
                     entries,
                     cursor: 0,
                     scroll: 0,
+                    visual_anchor: None,
                     viewport: 0,
                 });
                 self.screens.push(super::Screen::Log);
@@ -43,6 +54,8 @@ impl App {
             Ok(entries) => {
                 log.entries = entries;
                 log.cursor = log.cursor.min(log.entries.len().saturating_sub(1));
+                // anchors are row indices; new history would dangle them
+                log.visual_anchor = None;
             }
             Err(err) => {
                 let text = err.to_string();
@@ -53,14 +66,7 @@ impl App {
 
     pub(super) fn dispatch_log(&mut self, action: Action) {
         if action == Action::Open {
-            let oid = self
-                .log
-                .as_ref()
-                .and_then(|log| log.entries.get(log.cursor))
-                .map(|entry| entry.oid.clone());
-            if let Some(oid) = oid {
-                self.open_commit_diff(&oid);
-            }
+            self.open_log_selection();
             return;
         }
         let half = self.log_half_page();
@@ -75,9 +81,38 @@ impl App {
             Action::GoBottom => log.cursor = last,
             Action::HalfPageDown => log.cursor = (log.cursor + half).min(last),
             Action::HalfPageUp => log.cursor = log.cursor.saturating_sub(half),
+            // V toggles a range selection anchored at the cursor commit
+            Action::VisualSelect => {
+                if log.visual_anchor.take().is_none() {
+                    log.visual_anchor = Some(log.cursor);
+                }
+            }
             other => {
                 self.info(format!("{} is not implemented yet", other.name()));
             }
+        }
+    }
+
+    /// `<cr>` in the log: with a selection, open the combined diff of the
+    /// selected commit range (rows are newest-first, so the span's high index
+    /// is the oldest commit); otherwise open the single commit under the
+    /// cursor.
+    fn open_log_selection(&mut self) {
+        let Some(log) = self.log.as_ref() else {
+            return;
+        };
+        if let Some((top, bottom)) = log.selection() {
+            let (Some(newest), Some(oldest)) = (log.entries.get(top), log.entries.get(bottom))
+            else {
+                return;
+            };
+            let (oldest, newest) = (oldest.oid.clone(), newest.oid.clone());
+            self.open_range_diff(&oldest, &newest);
+        } else {
+            let Some(oid) = log.entries.get(log.cursor).map(|entry| entry.oid.clone()) else {
+                return;
+            };
+            self.open_commit_diff(&oid);
         }
     }
 
@@ -195,5 +230,83 @@ mod tests {
         assert!(app.diff.is_none());
         app.handle(key('q'));
         assert_eq!(app.screen(), Screen::Status);
+    }
+
+    #[test]
+    fn visual_select_anchors_and_extends_over_commit_rows() {
+        let fixture = log_fixture();
+        let mut app = open_log(&fixture);
+        app.handle(key('V'));
+        let log = app.log.as_ref().expect("log view");
+        assert_eq!(log.visual_anchor, Some(0));
+        assert_eq!(log.selection(), Some((0, 0)));
+        // j extends the selection down to the older commit
+        app.handle(key('j'));
+        assert_eq!(app.log.as_ref().unwrap().selection(), Some((0, 1)));
+        // k brings the cursor back up, collapsing the selection
+        app.handle(key('k'));
+        assert_eq!(app.log.as_ref().unwrap().selection(), Some((0, 0)));
+    }
+
+    #[test]
+    fn enter_on_a_two_commit_selection_opens_the_combined_range_diff() {
+        let fixture = log_fixture();
+        let mut app = open_log(&fixture);
+        // select the two newest commits (add util module, add beta note)
+        app.handle(key('V'));
+        app.handle(key('j'));
+        let (newest, oldest) = {
+            let log = app.log.as_ref().unwrap();
+            (log.entries[0].oid.clone(), log.entries[1].oid.clone())
+        };
+        app.handle(key('\n'));
+        assert_eq!(app.screen(), Screen::Diff);
+        let diff = app.diff.as_ref().expect("diff view");
+        let DiffSource::Range {
+            oldest: src_oldest,
+            newest: src_newest,
+        } = &diff.source
+        else {
+            panic!("expected a range diff, got {:?}", diff.source);
+        };
+        assert_eq!(src_oldest, &oldest);
+        assert_eq!(src_newest, &newest);
+        // the combined diff folds both commits' files into one model
+        let paths: Vec<&str> = diff
+            .model(&app.review)
+            .files
+            .iter()
+            .map(|f| f.path.as_str())
+            .collect();
+        assert!(paths.contains(&"notes.txt"), "{paths:?}");
+        assert!(paths.contains(&"src/util.rs"), "{paths:?}");
+    }
+
+    #[test]
+    fn enter_without_a_selection_opens_the_single_commit_diff() {
+        let fixture = log_fixture();
+        let mut app = open_log(&fixture);
+        app.handle(key('j'));
+        app.handle(key('\n'));
+        let diff = app.diff.as_ref().expect("diff view");
+        assert!(
+            matches!(&diff.source, DiffSource::Commit(_)),
+            "no selection means a single commit diff: {:?}",
+            diff.source
+        );
+    }
+
+    #[test]
+    fn escape_cancels_the_log_visual_selection() {
+        let fixture = log_fixture();
+        let mut app = open_log(&fixture);
+        app.handle(key('V'));
+        assert!(app.log.as_ref().unwrap().visual_anchor.is_some());
+        app.handle(crate::test_support::esc_key());
+        assert!(app.log.as_ref().unwrap().visual_anchor.is_none());
+        // V twice toggles off as well
+        app.handle(key('V'));
+        app.handle(key('V'));
+        assert!(app.log.as_ref().unwrap().visual_anchor.is_none());
     }
 }

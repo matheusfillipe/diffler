@@ -83,6 +83,11 @@ pub trait Vcs: Send {
     fn working_tree_diff(&self) -> Result<DiffModel, VcsError>;
     /// Changes a single commit introduced over its first parent.
     fn commit_diff(&self, oid: &str) -> Result<DiffModel, VcsError>;
+    /// Combined diff of a contiguous commit range, from the first parent of
+    /// `oldest` to `newest` (`git diff <oldest>^..<newest>` semantics). When
+    /// `oldest` is a root commit its first-parent tree is the empty tree, so
+    /// the range includes everything `oldest` introduced.
+    fn range_diff(&self, oldest_oid: &str, newest_oid: &str) -> Result<DiffModel, VcsError>;
     /// History from HEAD, newest first.
     fn log(&self, limit: usize) -> Result<Vec<LogEntry>, VcsError>;
     /// Local branches.

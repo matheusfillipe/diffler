@@ -134,3 +134,7 @@ pub fn key(c: char) -> AppEvent {
 pub fn ctrl_key(c: char) -> AppEvent {
     AppEvent::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
 }
+
+pub fn esc_key() -> AppEvent {
+    AppEvent::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+}

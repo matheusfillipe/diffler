@@ -341,6 +341,61 @@ fn commit_diff_shows_only_that_commits_change() {
 }
 
 #[test]
+fn range_diff_combines_two_commits() {
+    let fx = Fixture::new();
+    fx.write("base.txt", "base\n");
+    fx.commit_all("base");
+    fx.write("a.txt", "from a\n");
+    fx.commit_all("add a");
+    let oldest = head_oid(&fx);
+    fx.write("b.txt", "from b\n");
+    fx.commit_all("add b");
+    let newest = head_oid(&fx);
+
+    let v = vcs(&fx);
+    let model = v.range_diff(&oldest, &newest).expect("range diff");
+    // the base-to-oldest^ boundary excludes base.txt but folds both commits'
+    // additions into one diff
+    let paths: Vec<&str> = model.files.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(paths, vec!["a.txt", "b.txt"]);
+    assert!(model.files.iter().all(|f| f.status == FileStatus::Added));
+}
+
+#[test]
+fn range_diff_of_a_single_commit_equals_commit_diff() {
+    let fx = Fixture::new();
+    fx.write("base.txt", "base\n");
+    fx.commit_all("base");
+    fx.write("base.txt", "changed\n");
+    fx.commit_all("change");
+    let oid = head_oid(&fx);
+
+    let v = vcs(&fx);
+    let range = v.range_diff(&oid, &oid).expect("range diff");
+    let single = v.commit_diff(&oid).expect("commit diff");
+    assert_eq!(range.files, single.files);
+}
+
+#[test]
+fn range_diff_over_a_root_commit_uses_the_empty_tree() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "from a\n");
+    fx.commit_all("add a");
+    let root = head_oid(&fx);
+    fx.write("b.txt", "from b\n");
+    fx.commit_all("add b");
+    let newest = head_oid(&fx);
+
+    let v = vcs(&fx);
+    let model = v.range_diff(&root, &newest).expect("range diff");
+    // oldest is the root commit: the range spans the empty tree to newest, so
+    // both files appear as additions
+    let paths: Vec<&str> = model.files.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(paths, vec!["a.txt", "b.txt"]);
+    assert!(model.files.iter().all(|f| f.status == FileStatus::Added));
+}
+
+#[test]
 fn log_is_newest_first_with_decorations() {
     let fx = Fixture::new();
     fx.write("a.txt", "one\n");

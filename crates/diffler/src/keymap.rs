@@ -276,6 +276,7 @@ const LOG_DEFAULTS: &[(&str, Action)] = &[
     ("G", Action::GoBottom),
     ("<c-d>", Action::HalfPageDown),
     ("<c-u>", Action::HalfPageUp),
+    ("V", Action::VisualSelect),
     ("<cr>", Action::Open),
     ("<c-r>", Action::Refresh),
     ("?", Action::Help),

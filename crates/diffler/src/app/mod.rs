@@ -399,8 +399,18 @@ impl App {
         // Esc leaves visual selection; it stays out of the keymap because it
         // also drains pending chords and cancels modals everywhere else
         if key.code == KeyCode::Esc && self.visual_active() {
-            if let Some(diff) = self.diff.as_mut() {
-                diff.visual_anchor = None;
+            match self.screen() {
+                Screen::Diff => {
+                    if let Some(diff) = self.diff.as_mut() {
+                        diff.visual_anchor = None;
+                    }
+                }
+                Screen::Log => {
+                    if let Some(log) = self.log.as_mut() {
+                        log.visual_anchor = None;
+                    }
+                }
+                Screen::Status => {}
             }
             self.pending.clear();
             return Flow::Continue;
@@ -477,11 +487,14 @@ impl App {
     }
 
     fn visual_active(&self) -> bool {
-        self.screen() == Screen::Diff
-            && self
+        match self.screen() {
+            Screen::Diff => self
                 .diff
                 .as_ref()
-                .is_some_and(|d| d.visual_anchor.is_some())
+                .is_some_and(|d| d.visual_anchor.is_some()),
+            Screen::Log => self.log.as_ref().is_some_and(|l| l.visual_anchor.is_some()),
+            Screen::Status => false,
+        }
     }
 
     /// While a modal is up it owns the keyboard.

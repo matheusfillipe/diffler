@@ -146,6 +146,22 @@ impl Vcs for GitVcs {
         diff_to_model(&self.repo, &mut diff)
     }
 
+    fn range_diff(&self, oldest_oid: &str, newest_oid: &str) -> Result<DiffModel, VcsError> {
+        let oldest = self.repo.find_commit(git2::Oid::from_str(oldest_oid)?)?;
+        let newest = self.repo.find_commit(git2::Oid::from_str(newest_oid)?)?;
+        let newest_tree = newest.tree()?;
+        // the range starts before the oldest commit, so its base is that
+        // commit's first parent; a root commit has none and diffs against the
+        // empty tree, matching commit_diff
+        let base_tree = oldest.parent(0).ok().map(|p| p.tree()).transpose()?;
+        let mut opts = git2::DiffOptions::new();
+        opts.context_lines(self.context_lines);
+        let mut diff =
+            self.repo
+                .diff_tree_to_tree(base_tree.as_ref(), Some(&newest_tree), Some(&mut opts))?;
+        diff_to_model(&self.repo, &mut diff)
+    }
+
     fn log(&self, limit: usize) -> Result<Vec<LogEntry>, VcsError> {
         if self.head_tree()?.is_none() {
             return Ok(Vec::new());
