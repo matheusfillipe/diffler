@@ -562,7 +562,15 @@ fn comment_row_line(
     } else {
         theme.panel
     };
-    let border = Style::new().fg(theme.dim).bg(bg);
+    // a solid left bar in the comment's status color turns the block into a
+    // distinct card that stands out against the diff lines around it
+    let (status_label, accent) = match comment.status {
+        CommentStatus::Open => ("open", theme.warn_fg),
+        CommentStatus::Replied => ("replied", theme.accent),
+        CommentStatus::Resolved => ("resolved", theme.dim),
+    };
+    let bar = Span::styled("  ▌ ".to_owned(), Style::new().fg(accent).bg(bg));
+    let dim = Style::new().fg(theme.dim).bg(bg);
     let fg = Style::new().fg(theme.fg).bg(bg);
     let lines = comment_display(comment);
     let Some(part) = lines.get(line) else {
@@ -570,13 +578,8 @@ fn comment_row_line(
     };
     let spans = match part {
         CommentLine::Header => {
-            let (status, color) = match comment.status {
-                CommentStatus::Open => ("open", theme.warn_fg),
-                CommentStatus::Replied => ("replied", theme.accent),
-                CommentStatus::Resolved => ("resolved", theme.dim),
-            };
             let mut spans = vec![
-                Span::styled("   ┌─ ".to_owned(), border),
+                bar,
                 Span::styled(
                     comment.author.clone(),
                     Style::new()
@@ -584,8 +587,11 @@ fn comment_row_line(
                         .bg(bg)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(" · ".to_owned(), border),
-                Span::styled(status.to_owned(), Style::new().fg(color).bg(bg)),
+                Span::styled(" · ".to_owned(), dim),
+                Span::styled(
+                    status_label.to_owned(),
+                    Style::new().fg(accent).bg(bg).add_modifier(Modifier::BOLD),
+                ),
             ];
             if outdated {
                 spans.push(Span::styled(
@@ -595,28 +601,28 @@ fn comment_row_line(
             }
             spans
         }
-        CommentLine::Body(text) => vec![
-            Span::styled("   │ ".to_owned(), border),
-            Span::styled(text.clone(), fg),
-        ],
+        CommentLine::Body(text) => vec![bar, Span::styled(text.clone(), fg)],
         CommentLine::Reply {
             author,
             text,
             first,
         } => {
-            let mut spans = vec![Span::styled("   │ ".to_owned(), border)];
+            let mut spans = vec![bar];
             if *first {
                 spans.push(Span::styled(
                     format!("↳ {author}: "),
                     Style::new().fg(theme.purple).bg(bg),
                 ));
             } else {
-                spans.push(Span::styled("  ".to_owned(), border));
+                spans.push(Span::styled("  ".to_owned(), fg));
             }
             spans.push(Span::styled(text.clone(), fg));
             spans
         }
-        CommentLine::Footer => vec![Span::styled("   └─".to_owned(), border)],
+        CommentLine::Footer => vec![Span::styled(
+            "  ▌".to_owned(),
+            Style::new().fg(accent).bg(bg),
+        )],
     };
     pad_line(spans, bg, width)
 }
