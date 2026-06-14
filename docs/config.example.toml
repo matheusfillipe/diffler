@@ -13,6 +13,11 @@
 # theme = "github-dark"
 # context_lines = 3
 # recent_commits = 10
+# File-list layout per view: "list" (flat magit-style, one row per file with
+# its full path) or "tree" (collapsible directories). Status defaults to the
+# flat list; the diff sidebar defaults to the tree.
+# status_file_layout = "list"
+# diff_file_layout = "tree"
 
 [mcp]
 # enabled = true

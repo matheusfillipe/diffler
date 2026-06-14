@@ -52,11 +52,32 @@ fn defaults_dump_when_no_config_exists() {
     assert!(out.contains("theme = \"github-dark\""));
     assert!(out.contains("context_lines = 3"));
     assert!(out.contains("recent_commits = 10"));
+    assert!(out.contains("status_file_layout = \"list\""));
+    assert!(out.contains("diff_file_layout = \"tree\""));
     assert!(out.contains("enabled = true"));
     assert!(out.contains("port = 8417"));
     assert!(out.contains("# ui.theme = default"));
+    assert!(out.contains("# ui.status_file_layout = default"));
+    assert!(out.contains("# ui.diff_file_layout = default"));
     assert!(out.contains("# mcp.port = default"));
     assert!(out.contains("# editor.command = default"));
+}
+
+#[test]
+fn file_layout_override_dumps_with_its_origin() {
+    let repo = tempfile::tempdir().expect("repo dir");
+    let xdg = tempfile::tempdir().expect("xdg dir");
+    init_repo(repo.path());
+    write_config(
+        &xdg.path().join("diffler"),
+        "[ui]\nstatus_file_layout = \"tree\"\ndiff_file_layout = \"list\"\n",
+    );
+
+    let out = stdout(&dump(repo.path(), Some(xdg.path()), None, &[]));
+    assert!(out.contains("status_file_layout = \"tree\""));
+    assert!(out.contains("diff_file_layout = \"list\""));
+    assert!(out.contains("# ui.status_file_layout = global:"));
+    assert!(out.contains("# ui.diff_file_layout = global:"));
 }
 
 #[test]

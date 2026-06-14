@@ -9,8 +9,9 @@ use diffler_core::model::FileDiff;
 use diffler_core::vcs::LogEntry;
 
 use super::{App, FileHighlights, Modal, PendingOp};
+use crate::config::FileLayout;
 use crate::keymap::Action;
-use crate::tree::{self, TreeNode};
+use crate::tree::{self, TreeNode, TreeRow};
 
 /// Status screen sections, in display order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,6 +176,31 @@ impl App {
             .unwrap_or_default()
     }
 
+    /// Layout-aware flattened rows for a section's files. The flat list is a
+    /// degenerate tree (one File node per file, depth 0, no Dir nodes), so the
+    /// caller's row-building and the cursor model are identical for both
+    /// layouts. The tree honors the section's folded directories.
+    fn section_layout_rows(&self, section: Section, files: &[FileDiff]) -> Vec<TreeRow> {
+        match self.config.ui.status_file_layout {
+            FileLayout::List => files
+                .iter()
+                .enumerate()
+                .map(|(index, file)| TreeRow {
+                    depth: 0,
+                    node: TreeNode::File {
+                        index,
+                        name: file.path.clone(),
+                    },
+                })
+                .collect(),
+            FileLayout::Tree => {
+                let folded = self.section_folded_dirs(section);
+                let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+                tree::visible_rows(&paths, &folded)
+            }
+        }
+    }
+
     /// Flattened cursor-addressable rows given current fold/expansion state.
     /// Empty sections are hidden, neogit-style; blank separators are a
     /// rendering concern, so j/k skip them by construction.
@@ -192,11 +218,10 @@ impl App {
             if self.is_folded(section) {
                 continue;
             }
-            // a directory tree over the section's files, folds honored; a
-            // folded directory hides its files (and so their inline diffs)
-            let folded = self.section_folded_dirs(section);
-            let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
-            for tree_row in tree::visible_rows(&paths, &folded) {
+            // List renders a degenerate tree — one File row per file at depth 0,
+            // no Dir rows — so the same cursor/navigation model serves both
+            // layouts; Tree groups files under collapsible directory rows.
+            for tree_row in self.section_layout_rows(section, files) {
                 match tree_row.node {
                     TreeNode::Dir { path, name } => rows.push(Row::Dir {
                         section,
@@ -796,6 +821,16 @@ mod tests {
         (fixture, app)
     }
 
+    /// An app whose status file layout is forced to `layout`, overriding the
+    /// default.
+    fn app_with_status_layout(layout: crate::config::FileLayout) -> (Fixture, App) {
+        let fixture = standard_fixture();
+        let mut loaded = LoadedConfig::default();
+        loaded.config.ui.status_file_layout = layout;
+        let app = App::new(fixture.review(), loaded);
+        (fixture, app)
+    }
+
     /// Move the cursor onto the first row matching `pred`.
     fn cursor_to(app: &mut App, pred: impl Fn(&Row) -> bool) -> Row {
         let rows = app.visible_rows();
@@ -815,15 +850,15 @@ mod tests {
     #[test]
     fn cursor_moves_and_clamps() {
         let (_fixture, mut app) = app();
-        // untracked (header + todo.md) + unstaged (header + src/ dir + lib.rs)
-        // + staged (header + ci.yml) + recent commits header: 8 rows
-        assert_eq!(app.visible_rows().len(), 8);
+        // flat default: untracked (header + todo.md) + unstaged (header +
+        // lib.rs) + staged (header + ci.yml) + recent commits header: 7 rows
+        assert_eq!(app.visible_rows().len(), 7);
         app.handle(key('k'));
         assert_eq!(app.status.cursor, 0, "MoveUp clamps at the top");
         for _ in 0..20 {
             app.handle(key('j'));
         }
-        assert_eq!(app.status.cursor, 7, "MoveDown clamps at the last row");
+        assert_eq!(app.status.cursor, 6, "MoveDown clamps at the last row");
     }
 
     #[test]
@@ -842,15 +877,46 @@ mod tests {
         // the untracked section holds one root-level file (todo.md)
         app.handle(key('\t'));
         assert!(app.is_folded(Section::Untracked));
-        assert_eq!(app.visible_rows().len(), 7);
+        assert_eq!(app.visible_rows().len(), 6);
         app.handle(key('\t'));
         assert!(!app.is_folded(Section::Untracked));
-        assert_eq!(app.visible_rows().len(), 8);
+        assert_eq!(app.visible_rows().len(), 7);
     }
 
     #[test]
-    fn a_section_lists_its_files_as_a_directory_tree() {
+    fn the_default_layout_lists_files_flat_with_no_dir_rows() {
         let (_fixture, app) = app();
+        let rows = app.visible_rows();
+        // the flat magit list emits no Dir rows at all
+        assert!(
+            !rows.iter().any(|r| matches!(r, Row::Dir { .. })),
+            "flat list has no directory rows: {rows:?}"
+        );
+        // every file row sits at depth 0 (no tree indentation)
+        assert!(
+            rows.iter()
+                .all(|r| !matches!(r, Row::File { depth, .. } if *depth != 0)),
+            "flat file rows live at depth 0: {rows:?}"
+        );
+        // the nested unstaged file is still present, just without its src dir
+        let unstaged_files = rows
+            .iter()
+            .filter(|r| {
+                matches!(
+                    r,
+                    Row::File {
+                        section: Section::Unstaged,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(unstaged_files, 1, "the src/lib.rs row is there: {rows:?}");
+    }
+
+    #[test]
+    fn the_tree_layout_lists_its_files_as_a_directory_tree() {
+        let (_fixture, app) = app_with_status_layout(crate::config::FileLayout::Tree);
         // unstaged holds src/lib.rs: a src dir row precedes the file row
         let rows = app.visible_rows();
         let unstaged: Vec<&Row> = rows
@@ -879,7 +945,7 @@ mod tests {
 
     #[test]
     fn tab_on_a_dir_row_folds_it_and_hides_its_files() {
-        let (_fixture, mut app) = app();
+        let (_fixture, mut app) = app_with_status_layout(crate::config::FileLayout::Tree);
         // cursor onto the src dir row in the unstaged section
         cursor_to(
             &mut app,
@@ -921,7 +987,9 @@ mod tests {
         fixture.commit_all("initial commit");
         // a new untracked file in a nested directory
         fixture.write("docs/api/intro.md", "# intro\n");
-        let app = App::new(fixture.review(), LoadedConfig::default());
+        let mut loaded = LoadedConfig::default();
+        loaded.config.ui.status_file_layout = crate::config::FileLayout::Tree;
+        let app = App::new(fixture.review(), loaded);
         let rows = app.visible_rows();
         let kinds: Vec<String> = rows
             .iter()

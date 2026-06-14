@@ -1,6 +1,7 @@
 # PTY end-to-end harness: pexpect drives the compiled diffler binary inside
 # a virtual terminal, pyte turns the ANSI stream into an assertable screen
 # buffer, and plain `git` CLI builds the fixture repos.
+import codecs
 import os
 import subprocess
 import time
@@ -27,6 +28,10 @@ class Tui:
         # raw bytes are kept verbatim: OSC sequences (e.g. OSC52 clipboard)
         # address the terminal emulator and never land in the screen grid
         self.raw = b""
+        # an incremental decoder buffers a multibyte char split across two
+        # reads; decoding each chunk independently would emit `�` and desync
+        # pyte's column tracking (box-drawing chars are 3 bytes each)
+        self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
         self.screen = pyte.Screen(cols, rows)
         self.stream = pyte.Stream(self.screen)
         self.child = pexpect.spawn(
@@ -52,7 +57,7 @@ class Tui:
         except EOF:
             return False
         self.raw += data
-        self.stream.feed(data.decode("utf-8", "replace"))
+        self.stream.feed(self._decoder.decode(data))
         return True
 
     def text(self):

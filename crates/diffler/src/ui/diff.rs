@@ -353,7 +353,9 @@ fn sidebar_file_line(
     let name_style = Style::new()
         .fg(if on_cursor { theme.accent } else { theme.fg })
         .bg(bg);
-    spans.push(Span::styled(clip_name(name, room), name_style));
+    // the file's identity is its tail (basename); when a flat-list path
+    // overflows, elide from the front so the name stays visible
+    spans.push(Span::styled(clip_path(name, room), name_style));
     if viewed {
         spans.push(Span::styled(" ✓".to_owned(), dim));
     }
@@ -387,6 +389,25 @@ fn clip_name(name: &str, room: usize) -> String {
     }
     let head: String = name.chars().take(room.saturating_sub(1)).collect();
     format!("{head}…")
+}
+
+/// Clip a file label to `room` cells. A flat-list path (with a directory
+/// prefix) front-elides with a leading `…` so its tail — the basename, the
+/// file's identity — stays visible; a bare basename end-clips via
+/// [`clip_name`], matching the tree layout. Char-based, multibyte-safe.
+fn clip_path(name: &str, room: usize) -> String {
+    if !name.contains('/') {
+        return clip_name(name, room);
+    }
+    if room == 0 {
+        return String::new();
+    }
+    let count = name.chars().count();
+    if count <= room {
+        return name.to_owned();
+    }
+    let tail: String = name.chars().skip(count - room.saturating_sub(1)).collect();
+    format!("…{tail}")
 }
 
 fn row_line(
@@ -598,7 +619,7 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    use super::clip_name;
+    use super::{clip_name, clip_path};
     use crate::app::{App, DiffRow, Pane};
     use crate::config::LoadedConfig;
     use crate::test_support::{Fixture, key, standard_fixture};
@@ -627,6 +648,26 @@ mod tests {
     #[test]
     fn zero_room_yields_an_empty_name() {
         assert_eq!(clip_name("lib.rs", 0), "");
+    }
+
+    #[test]
+    fn clip_path_keeps_a_bare_basename_end_clipped() {
+        // no directory prefix: defers to clip_name's end-elision
+        assert_eq!(clip_path("lib.rs", 32), "lib.rs");
+        let clipped = clip_path("a_very_long_filename_indeed.rs", 12);
+        assert_eq!(clipped.chars().count(), 12);
+        assert!(clipped.ends_with('…'), "end-clipped: {clipped:?}");
+    }
+
+    #[test]
+    fn clip_path_front_elides_a_path_to_keep_the_basename() {
+        // a path that fits is untouched
+        assert_eq!(clip_path("src/lib.rs", 32), "src/lib.rs");
+        // an overflowing path drops the head, keeping the basename visible
+        let clipped = clip_path("deep/nested/dir/module.rs", 12);
+        assert_eq!(clipped.chars().count(), 12);
+        assert!(clipped.starts_with('…'), "front-elided: {clipped:?}");
+        assert!(clipped.ends_with("module.rs"), "basename kept: {clipped:?}");
     }
 
     fn render(app: &mut App) -> Terminal<TestBackend> {
@@ -713,6 +754,18 @@ mod tests {
     #[test]
     fn sidebar_focus_renders_the_file_list_and_first_file_diff() {
         let (_fixture, mut app) = diff_app();
+        assert_eq!(app.diff.as_ref().unwrap().focus, Pane::List);
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn sidebar_renders_as_a_flat_list_when_configured() {
+        let fixture = standard_fixture();
+        let mut loaded = LoadedConfig::default();
+        loaded.config.ui.diff_file_layout = crate::config::FileLayout::List;
+        let mut app = App::new(fixture.review(), loaded);
+        app.author = "reviewer".to_owned();
+        app.open_working_tree_diff(None);
         assert_eq!(app.diff.as_ref().unwrap().focus, Pane::List);
         insta::assert_snapshot!(render(&mut app).backend());
     }

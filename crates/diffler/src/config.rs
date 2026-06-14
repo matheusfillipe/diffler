@@ -26,12 +26,50 @@ pub struct Config {
     pub keys: KeysConfig,
 }
 
+/// How a view lists files: a flat magit-style list (one row per file, full
+/// repo-relative path) or a collapsible directory tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileLayout {
+    List,
+    Tree,
+}
+
+impl FileLayout {
+    /// Parse a config string, falling back to `default` with a warning on an
+    /// unknown value — the same lenient flow the theme key uses, so a typo
+    /// never aborts startup.
+    fn from_str(value: &str, key: &str, default: Self) -> (Self, Option<String>) {
+        match value {
+            "list" => (Self::List, None),
+            "tree" => (Self::Tree, None),
+            other => (
+                default,
+                Some(format!("unknown {key} \"{other}\", using \"{default}\"")),
+            ),
+        }
+    }
+}
+
+impl fmt::Display for FileLayout {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::List => "list",
+            Self::Tree => "tree",
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UiConfig {
     pub theme: String,
     pub context_lines: u32,
     pub recent_commits: usize,
+    /// File-list layout on the status screen; flat magit list by default.
+    pub status_file_layout: FileLayout,
+    /// File-list layout in the diff sidebar; collapsible tree by default.
+    pub diff_file_layout: FileLayout,
 }
 
 impl Default for UiConfig {
@@ -40,6 +78,8 @@ impl Default for UiConfig {
             theme: "github-dark".to_owned(),
             context_lines: 3,
             recent_commits: 10,
+            status_file_layout: FileLayout::List,
+            diff_file_layout: FileLayout::Tree,
         }
     }
 }
@@ -204,6 +244,10 @@ struct PartialUi {
     theme: Option<String>,
     context_lines: Option<u32>,
     recent_commits: Option<usize>,
+    // layouts are read as raw strings so an unknown value warns and falls back
+    // (via [`FileLayout::from_str`]) instead of aborting the whole parse
+    status_file_layout: Option<String>,
+    diff_file_layout: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -233,6 +277,29 @@ fn read_layer(path: &Path, warnings: &mut Vec<String>) -> Result<PartialConfig, 
         warnings.push(format!("{}: unknown key `{unknown}`", path.display()));
     })
     .map_err(parse_err)
+}
+
+/// Apply a layer's file-layout value: an unknown string keeps the prior value
+/// (the default) and warns, matching the theme key's lenient handling, rather
+/// than aborting the parse.
+fn set_layout(
+    value: Option<String>,
+    target: &mut FileLayout,
+    key: &str,
+    origin: &Origin,
+    origins: &mut BTreeMap<String, Origin>,
+    warnings: &mut Vec<String>,
+) {
+    let Some(value) = value else {
+        return;
+    };
+    let (layout, warning) = FileLayout::from_str(&value, key, *target);
+    if let Some(warning) = warning {
+        warnings.push(warning);
+        return;
+    }
+    *target = layout;
+    origins.insert(key.to_owned(), origin.clone());
 }
 
 fn apply_layer(
@@ -275,6 +342,22 @@ fn apply_layer(
         "ui.recent_commits",
         origin,
         origins,
+    );
+    set_layout(
+        layer.ui.status_file_layout,
+        &mut config.ui.status_file_layout,
+        "ui.status_file_layout",
+        origin,
+        origins,
+        warnings,
+    );
+    set_layout(
+        layer.ui.diff_file_layout,
+        &mut config.ui.diff_file_layout,
+        "ui.diff_file_layout",
+        origin,
+        origins,
+        warnings,
     );
     set(
         layer.mcp.enabled,
@@ -330,10 +413,12 @@ fn apply_cli(cli: &CliOverrides, config: &mut Config, origins: &mut BTreeMap<Str
 
 /// Scalar keys always listed in the `--dump` origins block; `keys.*` entries
 /// are appended dynamically since their names come from the user.
-const SCALAR_KEYS: [&str; 6] = [
+const SCALAR_KEYS: [&str; 8] = [
     "ui.theme",
     "ui.context_lines",
     "ui.recent_commits",
+    "ui.status_file_layout",
+    "ui.diff_file_layout",
     "mcp.enabled",
     "mcp.port",
     "editor.command",
@@ -512,6 +597,8 @@ mod tests {
         assert_eq!(config.ui.theme, "github-dark");
         assert_eq!(config.ui.context_lines, 3);
         assert_eq!(config.ui.recent_commits, 10);
+        assert_eq!(config.ui.status_file_layout, FileLayout::List);
+        assert_eq!(config.ui.diff_file_layout, FileLayout::Tree);
         assert!(config.mcp.enabled);
         assert_eq!(config.mcp.port, 8417);
         assert_eq!(config.editor.command, None);
@@ -618,6 +705,52 @@ mod tests {
         let loaded = load_layers(Some(&global), None, &CliOverrides::default()).unwrap();
         assert_eq!(loaded.config.editor.command.as_deref(), Some("hx"));
         assert_eq!(loaded.origins["editor.command"], Origin::Global(global));
+    }
+
+    #[test]
+    fn file_layouts_default_to_status_list_and_diff_tree() {
+        let loaded = load_layers(None, None, &CliOverrides::default()).unwrap();
+        assert_eq!(loaded.config.ui.status_file_layout, FileLayout::List);
+        assert_eq!(loaded.config.ui.diff_file_layout, FileLayout::Tree);
+    }
+
+    #[test]
+    fn file_layouts_override_in_either_direction() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project.toml");
+        // flip both away from their defaults: status to tree, diff to list
+        fs::write(
+            &project,
+            "[ui]\nstatus_file_layout = \"tree\"\ndiff_file_layout = \"list\"\n",
+        )
+        .unwrap();
+        let loaded = load_layers(None, Some(&project), &CliOverrides::default()).unwrap();
+        assert_eq!(loaded.config.ui.status_file_layout, FileLayout::Tree);
+        assert_eq!(loaded.config.ui.diff_file_layout, FileLayout::List);
+        assert_eq!(
+            loaded.origins["ui.status_file_layout"],
+            Origin::Project(project.clone())
+        );
+        assert_eq!(
+            loaded.origins["ui.diff_file_layout"],
+            Origin::Project(project)
+        );
+        assert!(loaded.warnings.is_empty());
+    }
+
+    #[test]
+    fn unknown_file_layout_warns_and_keeps_the_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project.toml");
+        fs::write(&project, "[ui]\nstatus_file_layout = \"nope\"\n").unwrap();
+        let loaded = load_layers(None, Some(&project), &CliOverrides::default()).unwrap();
+        // the bad value falls back to the default; nothing aborts
+        assert_eq!(loaded.config.ui.status_file_layout, FileLayout::List);
+        assert!(!loaded.origins.contains_key("ui.status_file_layout"));
+        assert_eq!(loaded.warnings.len(), 1);
+        let warning = &loaded.warnings[0];
+        assert!(warning.contains("nope"), "names the bad value: {warning}");
+        assert!(warning.contains("list"), "names the fallback: {warning}");
     }
 
     #[test]

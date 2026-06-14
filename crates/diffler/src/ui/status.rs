@@ -9,6 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
 use crate::app::{App, Row, Section};
+use crate::config::FileLayout;
 use crate::keymap::Action;
 use crate::theme::Theme;
 use crate::ui::diff_render::render_hunk_lines;
@@ -234,8 +235,10 @@ fn dir_spans(theme: &Theme, name: &str, folded: bool, depth: usize) -> Vec<Span<
     ]
 }
 
-/// A file row: indent, status glyph (colored), basename, the viewed check, and
-/// the file's `+A -B` diffstat. The full path is dropped — the tree shows it.
+/// A file row. In the tree layout: indent, status glyph (colored), basename —
+/// the directory rows above carry the path. In the flat magit list: a status
+/// glyph plus the full repo-relative path, no indent. Both trail the viewed
+/// check and the file's `+A -B` diffstat.
 fn file_spans(
     app: &App,
     file: Option<&FileDiff>,
@@ -245,10 +248,22 @@ fn file_spans(
     let Some(file) = file else {
         return Vec::new();
     };
-    let name = file.path.rsplit('/').next().unwrap_or(&file.path);
     let glyph = file.status.glyph();
+    let flat = app.config.ui.status_file_layout == FileLayout::List;
+    // flat list shows the whole path (no dir rows to carry it); the tree shows
+    // just the basename, nested under its directory rows
+    let name = if flat {
+        file.path.as_str()
+    } else {
+        file.path.rsplit('/').next().unwrap_or(&file.path)
+    };
+    let indent = if flat {
+        " ".to_owned()
+    } else {
+        tree_indent(depth)
+    };
     let mut spans = vec![
-        Span::styled(tree_indent(depth), theme.base()),
+        Span::styled(indent, theme.base()),
         Span::styled(
             format!("{glyph} "),
             Style::new()
@@ -320,6 +335,15 @@ mod tests {
     fn status_screen_renders() {
         let fixture = standard_fixture();
         let mut app = app_for(&fixture);
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn status_screen_renders_as_a_tree_when_configured() {
+        let fixture = standard_fixture();
+        let mut loaded = LoadedConfig::default();
+        loaded.config.ui.status_file_layout = crate::config::FileLayout::Tree;
+        let mut app = App::new(fixture.review(), loaded);
         insta::assert_snapshot!(render(&mut app).backend());
     }
 
@@ -599,9 +623,11 @@ mod tests {
     }
 
     #[test]
-    fn file_row_glyph_is_colored_by_status_and_shows_the_basename() {
+    fn tree_file_row_glyph_is_colored_by_status_and_shows_the_basename() {
         let fixture = standard_fixture();
-        let app = app_for(&fixture);
+        let mut loaded = LoadedConfig::default();
+        loaded.config.ui.status_file_layout = crate::config::FileLayout::Tree;
+        let app = App::new(fixture.review(), loaded);
         // the unstaged section holds a modified file in the standard fixture
         let file = app.section_files(Section::Unstaged).first().expect("file");
         let spans = super::file_spans(&app, Some(file), &app.theme, 1);
@@ -610,7 +636,7 @@ mod tests {
             .find(|s| s.content.trim() == file.status.glyph().to_string())
             .expect("status glyph span");
         assert_eq!(glyph.style.fg, Some(status_color(&app.theme, file.status)));
-        // the basename shows, not the full path
+        // the tree shows the basename, not the full path
         assert!(
             spans.iter().any(|s| s.content == "lib.rs"),
             "basename present: {spans:?}"
@@ -618,6 +644,24 @@ mod tests {
         assert!(
             spans.iter().all(|s| s.content != file.path),
             "full path dropped: {spans:?}"
+        );
+    }
+
+    #[test]
+    fn flat_list_file_row_shows_the_full_repo_relative_path() {
+        let fixture = standard_fixture();
+        // default layout is the flat magit list
+        let app = app_for(&fixture);
+        let file = app.section_files(Section::Unstaged).first().expect("file");
+        let spans = super::file_spans(&app, Some(file), &app.theme, 0);
+        // the whole path shows, not just the basename
+        assert!(
+            spans.iter().any(|s| s.content == file.path),
+            "full path present: {spans:?}"
+        );
+        assert!(
+            spans.iter().all(|s| s.content != "lib.rs"),
+            "basename alone not shown: {spans:?}"
         );
     }
 }

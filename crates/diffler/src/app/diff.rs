@@ -13,6 +13,7 @@ use diffler_core::session::{Anchor, Comment, CommentStatus, Session};
 
 use super::{App, InputOp, Modal, Screen};
 use crate::clipboard;
+use crate::config::FileLayout;
 use crate::keymap::Action;
 use crate::tree::{self, TreeNode, TreeRow};
 
@@ -69,10 +70,14 @@ pub struct DiffView {
     /// `None` means the view reads the live `review.model`.
     pub(crate) commit_model: Option<DiffModel>,
     pub focus: Pane,
+    /// File-list layout for the sidebar: a flat list or a collapsible tree.
+    /// Pinned at open from `ui.diff_file_layout`.
+    layout: FileLayout,
     /// Index into `model.files`: the file shown in the diff pane. Derived from
     /// the file under `tree_cursor` whenever that lands on a File row.
     pub selected: usize,
     /// Folded directory paths in the sidebar tree; persists across refresh.
+    /// Unused in the flat list (it has no directories).
     pub(crate) folded_dirs: BTreeSet<String>,
     /// Cursor into the current visible sidebar tree rows (dirs and files).
     pub(crate) tree_cursor: usize,
@@ -96,11 +101,17 @@ pub struct DiffView {
 }
 
 impl DiffView {
-    fn new(source: DiffSource, commit_model: Option<DiffModel>, review: &Review) -> Self {
+    fn new(
+        source: DiffSource,
+        commit_model: Option<DiffModel>,
+        review: &Review,
+        layout: FileLayout,
+    ) -> Self {
         let mut view = Self {
             source,
             commit_model,
             focus: Pane::List,
+            layout,
             selected: 0,
             folded_dirs: BTreeSet::new(),
             tree_cursor: 0,
@@ -203,11 +214,31 @@ impl DiffView {
         self.ensure_rows(review);
     }
 
-    /// The flattened sidebar tree (dirs and files) over the model's files,
-    /// honoring the folded set. Files keep their model index.
+    /// The flattened sidebar rows over the model's files. The tree layout
+    /// groups files under collapsible directory rows (honoring the folded
+    /// set); the flat list is a degenerate tree — one File row per file at
+    /// depth 0, carrying its full path, no Dir rows — so `tree_cursor` and the
+    /// file-navigation helpers work unchanged for both. Files keep their model
+    /// index.
     pub(crate) fn tree_rows(&self, model: &DiffModel) -> Vec<TreeRow> {
-        let paths: Vec<&str> = model.files.iter().map(|f| f.path.as_str()).collect();
-        tree::visible_rows(&paths, &self.folded_dirs)
+        match self.layout {
+            FileLayout::List => model
+                .files
+                .iter()
+                .enumerate()
+                .map(|(index, file)| TreeRow {
+                    depth: 0,
+                    node: TreeNode::File {
+                        index,
+                        name: file.path.clone(),
+                    },
+                })
+                .collect(),
+            FileLayout::Tree => {
+                let paths: Vec<&str> = model.files.iter().map(|f| f.path.as_str()).collect();
+                tree::visible_rows(&paths, &self.folded_dirs)
+            }
+        }
     }
 }
 
@@ -349,7 +380,12 @@ impl App {
     }
 
     fn open_working_tree_diff_focused(&mut self, scope: Option<&str>, focus: Pane) {
-        let mut view = DiffView::new(DiffSource::WorkingTree, None, &self.review);
+        let mut view = DiffView::new(
+            DiffSource::WorkingTree,
+            None,
+            &self.review,
+            self.config.ui.diff_file_layout,
+        );
         if let Some(path) = scope
             && let Some(index) = self
                 .review
@@ -374,6 +410,7 @@ impl App {
                     DiffSource::Commit(oid.to_owned()),
                     Some(model),
                     &self.review,
+                    self.config.ui.diff_file_layout,
                 );
                 self.diff = Some(view);
                 self.screens.push(Screen::Diff);
@@ -963,6 +1000,17 @@ mod tests {
         app
     }
 
+    /// A diff app whose sidebar layout is forced to `layout`, overriding the
+    /// default tree.
+    fn diff_app_with_layout(fixture: &Fixture, layout: crate::config::FileLayout) -> App {
+        let mut loaded = LoadedConfig::default();
+        loaded.config.ui.diff_file_layout = layout;
+        let mut app = App::new(fixture.review(), loaded);
+        app.author = "reviewer".to_owned();
+        app.open_working_tree_diff(None);
+        app
+    }
+
     fn rows(app: &App) -> Vec<DiffRow> {
         app.diff.as_ref().expect("diff view").rows().to_vec()
     }
@@ -1122,6 +1170,53 @@ mod tests {
         app.handle(key('j'));
         assert_eq!(selected_path(&app), "ci.yml");
         // k back onto the lib.rs file row reselects it
+        app.handle(key('k'));
+        assert_eq!(selected_path(&app), "src/lib.rs");
+    }
+
+    #[test]
+    fn the_default_sidebar_layout_is_a_tree_with_dir_rows() {
+        let fixture = standard_fixture();
+        let app = diff_app(&fixture);
+        // the default keeps the collapsible tree: a src dir row precedes lib.rs
+        assert_eq!(
+            tree_kinds(&app),
+            vec![
+                "dir".to_owned(),
+                "file:lib.rs".to_owned(),
+                "file:ci.yml".to_owned(),
+                "file:todo.md".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_list_sidebar_layout_is_flat_with_full_paths_and_no_dirs() {
+        let fixture = standard_fixture();
+        let app = diff_app_with_layout(&fixture, crate::config::FileLayout::List);
+        // flat: every row is a file carrying its full repo-relative path, no
+        // dir rows, in model order
+        assert_eq!(
+            tree_kinds(&app),
+            vec![
+                "file:ci.yml".to_owned(),
+                "file:src/lib.rs".to_owned(),
+                "file:todo.md".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn list_sidebar_jk_walks_files_and_selects_them() {
+        let fixture = standard_fixture();
+        let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::List);
+        // cursor opens on the shown file (ci.yml, model index 0, first row)
+        assert_eq!(tree_cursor(&app), 0);
+        assert_eq!(selected_path(&app), "ci.yml");
+        app.handle(key('j'));
+        assert_eq!(selected_path(&app), "src/lib.rs");
+        app.handle(key('j'));
+        assert_eq!(selected_path(&app), "todo.md");
         app.handle(key('k'));
         assert_eq!(selected_path(&app), "src/lib.rs");
     }
