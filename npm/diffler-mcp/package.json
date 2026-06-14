@@ -1,0 +1,32 @@
+{
+  "name": "@diffler/mcp",
+  "version": "0.1.0",
+  "description": "stdio↔HTTP MCP proxy bridging Claude Code (or any stdio MCP client) to a running diffler review session",
+  "type": "module",
+  "bin": {
+    "diffler-mcp": "./index.js"
+  },
+  "files": [
+    "index.js",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/matheusfillipe/diffler.git",
+    "directory": "npm/diffler-mcp"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "diffler",
+    "code-review",
+    "claude"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}
