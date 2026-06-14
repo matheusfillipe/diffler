@@ -2,7 +2,9 @@ name: CI
 on:
   push:
     branches: [main]
-    tags: ['v*']
+    # mcp-v* publishes the diffler-mcp proxy; the diffler binary release runs
+    # on v* tags in release.yml / publish.yml
+    tags: ['mcp-v*']
   pull_request:
   workflow_dispatch:
 
@@ -84,12 +86,12 @@ jobs:
       - uses: actions/checkout@v6
       - uses: crate-ci/typos@v1
 
-  # publishes npm/diffler-mcp after the full suite is green. A v* tag publishes
-  # for real via npm Trusted Publishing (OIDC, no token, provenance attested);
-  # a manual run validates packaging with a dry-run so the path stays testable.
-  npm-publish:
+  # publishes the diffler-mcp proxy after the full suite is green. An mcp-v*
+  # tag publishes for real via npm Trusted Publishing (OIDC, no token); a manual
+  # run validates packaging with a dry-run so the path stays testable.
+  mcp-publish:
     needs: [test, lint, e2e, msrv, deny, typos]
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    if: startsWith(github.ref, 'refs/tags/mcp-v') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -105,25 +107,10 @@ jobs:
           registry-url: https://registry.npmjs.org
       # Trusted Publishing needs npm >= 11.5.1; node 22 ships an older npm
       - run: npm install -g npm@latest
-      - name: Publish (dry-run on manual dispatch, real on a v* tag)
+      - name: Publish (dry-run on manual dispatch, real on an mcp-v* tag)
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             npm publish --dry-run
           else
             npm publish
           fi
-
-  # cuts a GitHub Release from the tag with auto-generated notes. Uses the
-  # built-in token, so this needs no external setup and is fully CI-tested.
-  github-release:
-    needs: [test, lint, e2e, msrv, deny, typos]
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v6
-      - run: gh release create "$TAG" --generate-notes --title "$TAG"
-        env:
-          TAG: ${{ github.ref_name }}
-          GH_TOKEN: ${{ github.token }}
