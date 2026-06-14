@@ -2,7 +2,7 @@
 source: crates/diffler/src/ui/status.rs
 expression: render(&mut app).backend()
 ---
-" Hint: <tab> toggle  s stage  u unstage  x discard  cc commit  ? help                                                   "
+" Hint: c commit  b branch  l log  s stage  x discard  ? help                                                            "
 " Head:     main 1685505 initial commit                                                                                  "
 " Changes   +2 -2  █████                                                                                                 "
 "                                                                                                                        "

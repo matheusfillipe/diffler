@@ -8,7 +8,7 @@ use std::path::Path;
 use diffler_core::model::FileDiff;
 use diffler_core::vcs::LogEntry;
 
-use super::{App, FileHighlights, Modal, PendingOp};
+use super::{App, BranchAction, FileHighlights, Modal, PendingOp};
 use crate::config::FileLayout;
 use crate::keymap::Action;
 use crate::tree::{self, TreeNode, TreeRow};
@@ -357,7 +357,13 @@ impl App {
             Action::MarkViewed => self.toggle_viewed(),
             Action::LogView => self.open_log(),
             Action::CommitFlow => self.commit_flow(),
-            Action::BranchPopup => self.open_branch_popup(),
+            Action::CommitExtend => self.commit_extend(),
+            Action::CommitAmend => self.commit_amend(),
+            Action::CommitReword => self.commit_reword(),
+            Action::BranchCheckout => self.open_branch_list(BranchAction::Checkout),
+            Action::BranchCreateCheckout => self.branch_name_input(true),
+            Action::BranchCreate => self.branch_name_input(false),
+            Action::BranchDelete => self.open_branch_list(BranchAction::Delete),
             Action::OpenEditor => self.editor_at_status_cursor(),
             other => {
                 self.info(format!("{} is not implemented yet", other.name()));

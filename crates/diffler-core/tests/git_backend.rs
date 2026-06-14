@@ -825,6 +825,89 @@ fn empty_commit_message_is_rejected() {
 }
 
 #[test]
+fn amend_rewrites_head_and_folds_in_the_index() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\n");
+    fx.commit_all("first");
+
+    let v = vcs(&fx);
+    // stage a follow-up change and amend with a new message
+    fx.write("b.txt", "two\n");
+    v.stage(Path::new("b.txt")).expect("stage");
+    let oid = v.amend(Some("first amended"), true).expect("amend");
+
+    let entries = v.log(10).expect("log");
+    assert_eq!(entries.len(), 1, "amend replaces HEAD, no new parent");
+    assert_eq!(entries[0].subject, "first amended");
+    assert_eq!(entries[0].oid, oid);
+    // the staged file folded into the amended commit
+    assert!(v.status().expect("status").staged.files.is_empty());
+}
+
+#[test]
+fn extend_reuses_the_head_message() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\n");
+    fx.commit_all("keep this message");
+
+    let v = vcs(&fx);
+    fx.write("b.txt", "extra\n");
+    v.stage(Path::new("b.txt")).expect("stage");
+    v.amend(None, true).expect("extend");
+
+    let entries = v.log(10).expect("log");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].subject, "keep this message", "message reused");
+    // b.txt is now part of HEAD: nothing left staged or changed
+    assert!(v.working_tree_diff().expect("diff").files.is_empty());
+}
+
+#[test]
+fn reword_changes_only_the_message_keeping_the_tree() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\n");
+    fx.commit_all("old subject");
+
+    let v = vcs(&fx);
+    // a staged change must NOT enter a pure reword (use_index = false)
+    fx.write("b.txt", "ignored by reword\n");
+    v.stage(Path::new("b.txt")).expect("stage");
+    v.amend(Some("new subject"), false).expect("reword");
+
+    let entries = v.log(10).expect("log");
+    assert_eq!(entries[0].subject, "new subject");
+    // the staged change is still staged: reword left the tree alone
+    assert!(
+        v.status()
+            .expect("status")
+            .staged
+            .files
+            .iter()
+            .any(|f| f.path == "b.txt"),
+        "reword keeps HEAD's tree; the staged change stays staged"
+    );
+}
+
+#[test]
+fn head_message_returns_the_full_subject() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\n");
+    fx.commit_all("the subject line\n\nthe body\n");
+    let message = vcs(&fx).head_message().expect("head message");
+    assert!(message.starts_with("the subject line"));
+    assert!(message.contains("the body"));
+}
+
+#[test]
+fn amend_with_empty_message_is_rejected() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\n");
+    fx.commit_all("base");
+    let err = vcs(&fx).amend(Some("  \n"), false).expect_err("rejected");
+    assert!(matches!(err, VcsError::Rejected(_)));
+}
+
+#[test]
 fn branch_create_checkout_and_delete() {
     let fx = Fixture::new();
     fx.write("a.txt", "x\n");
@@ -872,5 +955,22 @@ fn create_branch_without_checkout_keeps_head() {
             .expect("branches")
             .iter()
             .any(|b| b.name == "idle")
+    );
+}
+
+// amend on an unborn HEAD (zero commits) must return a clean error; the app
+// guards this at the UI layer, but the trait method must not panic
+#[test]
+fn amend_on_unborn_head_returns_error_not_panic() {
+    let fx = Fixture::new();
+    // no commits: HEAD is unborn
+    let err = vcs(&fx)
+        .amend(Some("anything"), false)
+        .expect_err("amend on unborn HEAD must fail");
+    // must be a VcsError (not a panic); the exact variant (Git or Rejected) is
+    // an implementation detail but it must not be a NoWorkdir
+    assert!(
+        !matches!(err, VcsError::NoWorkdir),
+        "unborn HEAD is not a missing workdir: {err}"
     );
 }

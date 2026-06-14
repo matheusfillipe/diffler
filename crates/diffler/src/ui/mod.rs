@@ -16,6 +16,7 @@ use ratatui::text::{Line, Span};
 use crate::app::{App, BranchAction, Modal, Screen, Severity};
 use crate::keymap::{Action, render_chord};
 use crate::theme::Theme;
+use crate::transient::TransientKind;
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     match app.screen() {
@@ -49,18 +50,6 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             }
             .render(frame, &app.theme);
         }
-        Some(Modal::Branch) => {
-            popup::Popup {
-                title: "Branch".to_owned(),
-                entries: vec![
-                    ("b".to_owned(), "checkout".to_owned()),
-                    ("c".to_owned(), "create and checkout".to_owned()),
-                    ("n".to_owned(), "create".to_owned()),
-                    ("D".to_owned(), "delete".to_owned()),
-                ],
-            }
-            .render(frame, &app.theme);
-        }
         Some(Modal::Help) => {
             let screen = match app.screen() {
                 Screen::Status => "status",
@@ -69,12 +58,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             };
             popup::Popup {
                 title: format!("Help — {screen} keys"),
-                entries: app
-                    .active_keymap()
-                    .bindings()
-                    .iter()
-                    .map(|(chord, action)| (render_chord(chord), action.name().to_owned()))
-                    .collect(),
+                entries: help_entries(app),
             }
             .render(frame, &app.theme);
         }
@@ -99,6 +83,37 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         }
         None => {}
     }
+    // the which-key panel is a transient overlay, not a modal: it draws only
+    // once the reveal timer has elapsed and never over a modal
+    if app.modal.is_none()
+        && let Some(transient) = app.which_key_panel()
+    {
+        popup::WhichKeyPanel { transient }.render(frame, &app.theme);
+    }
+}
+
+/// Help popup entries: the active keymap's leaves, then — on the status
+/// screen — each transient's prefix and its grouped sub-keys, so the popup
+/// documents the full two-level map.
+fn help_entries(app: &App) -> Vec<(String, String)> {
+    let keymap = app.active_keymap();
+    let mut entries: Vec<(String, String)> = keymap
+        .bindings()
+        .iter()
+        .map(|(chord, action)| (render_chord(chord), action.name().to_owned()))
+        .collect();
+    if app.screen() == Screen::Status {
+        for kind in TransientKind::ALL {
+            let Some(prefix) = keymap.prefix_chord(kind) else {
+                continue;
+            };
+            entries.push((prefix, format!("{} …", kind.title())));
+            for (key, label) in app.transient(kind).flat_entries() {
+                entries.push((format!("  {key}"), label.to_owned()));
+            }
+        }
+    }
+    entries
 }
 
 /// Status accent shared by the diff sidebar and the status screen.
@@ -169,19 +184,36 @@ pub(super) fn proportion_bar(
     spans
 }
 
-/// Hint line built from the active keymap so config remaps show. Each item
-/// is `(actions, label)`; actions sharing a label render as `a/b label`, and
-/// items whose action lost its key to a remap are dropped.
-pub(super) fn hint_line(app: &App, items: &[(&[Action], &str)]) -> Line<'static> {
+/// One hint entry: either leaf actions sharing a label, or a transient prefix.
+/// Prefix entries render only the top-level key, keeping the hint line at the
+/// prefix altitude (sub-commands live in the which-key panel and help popup).
+pub(super) enum Hint {
+    Leaf(&'static [Action], &'static str),
+    Prefix(TransientKind, &'static str),
+}
+
+/// Hint line built from the active keymap so config remaps show. Leaf items
+/// whose action lost its key to a remap are dropped; a prefix without a bound
+/// key (a dropped conflict) is dropped too.
+pub(super) fn hint_line(app: &App, items: &[Hint]) -> Line<'static> {
     let keymap = app.active_keymap();
     let mut parts = Vec::new();
-    for (actions, label) in items {
-        let chords: Vec<String> = actions
-            .iter()
-            .filter_map(|action| keymap.chord_for(*action))
-            .collect();
-        if chords.len() == actions.len() {
-            parts.push(format!("{} {label}", chords.join("/")));
+    for item in items {
+        match item {
+            Hint::Leaf(actions, label) => {
+                let chords: Vec<String> = actions
+                    .iter()
+                    .filter_map(|action| keymap.chord_for(*action))
+                    .collect();
+                if chords.len() == actions.len() {
+                    parts.push(format!("{} {label}", chords.join("/")));
+                }
+            }
+            Hint::Prefix(kind, label) => {
+                if let Some(chord) = keymap.prefix_chord(*kind) {
+                    parts.push(format!("{chord} {label}"));
+                }
+            }
         }
     }
     Line::styled(

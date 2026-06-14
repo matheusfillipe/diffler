@@ -12,17 +12,21 @@ use crate::app::{App, Row, Section};
 use crate::config::FileLayout;
 use crate::keymap::Action;
 use crate::theme::Theme;
+use crate::transient::TransientKind;
+use crate::ui::Hint;
 use crate::ui::diff_render::render_hunk_lines;
 use crate::ui::{cursor_line, diffstat_spans, hint_line, proportion_bar, status_bar, status_color};
 
-/// Hint entries, rendered against the live keymap so remaps show.
-const HINTS: &[(&[Action], &str)] = &[
-    (&[Action::ToggleFold], "toggle"),
-    (&[Action::Stage], "stage"),
-    (&[Action::Unstage], "unstage"),
-    (&[Action::Discard], "discard"),
-    (&[Action::CommitFlow], "commit"),
-    (&[Action::Help], "help"),
+/// Prefix-only hint entries: top-level keys and the transient prefixes,
+/// rendered against the live keymap so remaps show. Sub-commands stay out of
+/// the hint line — they appear in the which-key panel and the help popup.
+const HINTS: &[Hint] = &[
+    Hint::Prefix(TransientKind::Commit, "commit"),
+    Hint::Prefix(TransientKind::Branch, "branch"),
+    Hint::Prefix(TransientKind::Log, "log"),
+    Hint::Leaf(&[Action::Stage], "stage"),
+    Hint::Leaf(&[Action::Discard], "discard"),
+    Hint::Leaf(&[Action::Help], "help"),
 ];
 
 pub fn draw(frame: &mut Frame<'_>, app: &App) {
@@ -479,14 +483,19 @@ mod tests {
     }
 
     #[test]
-    fn help_popup_lists_the_active_keymap_over_status() {
+    fn help_popup_lists_the_active_keymap_and_transient_groups() {
         let fixture = standard_fixture();
         let mut app = app_for(&fixture);
         app.handle(key('?'));
         let terminal = render(&mut app);
         let content = terminal.backend().to_string();
-        assert!(content.contains("commit_flow"), "{content}");
+        // top-level leaves still list their action names
         assert!(content.contains("open_review_diff"), "{content}");
+        // transients appear as a prefix line plus their grouped sub-keys
+        assert!(content.contains("Commit …"), "{content}");
+        assert!(content.contains("Amend"), "{content}");
+        assert!(content.contains("Branch …"), "{content}");
+        assert!(content.contains("Create and checkout"), "{content}");
         insta::assert_snapshot!(terminal.backend());
     }
 
@@ -506,11 +515,51 @@ mod tests {
     }
 
     #[test]
-    fn branch_popup_renders_as_a_bottom_split_over_status() {
+    fn which_key_branch_panel_renders_after_the_reveal_tick() {
         let fixture = standard_fixture();
         let mut app = app_for(&fixture);
         app.handle(key('b'));
+        // the reveal timer has not elapsed: no panel yet (no flash)
+        assert!(app.which_key_panel().is_none());
+        app.handle(AppEvent::Tick);
+        assert!(app.which_key_panel().is_some());
         insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn which_key_commit_panel_renders_after_the_reveal_tick() {
+        let fixture = standard_fixture();
+        let mut app = app_for(&fixture);
+        app.handle(key('c'));
+        app.handle(AppEvent::Tick);
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn a_fast_resolving_key_never_flashes_the_panel() {
+        let fixture = standard_fixture();
+        let mut app = app_for(&fixture);
+        app.handle(key('b'));
+        // resolving before the reveal tick: the panel is never shown and the
+        // transient closes
+        assert!(app.which_key_panel().is_none());
+        app.handle(key('n'));
+        assert!(app.transient.is_none(), "n resolved create");
+        assert!(app.which_key_panel().is_none());
+    }
+
+    #[test]
+    fn prefix_only_hint_line_shows_no_sub_commands() {
+        let fixture = standard_fixture();
+        let mut app = app_for(&fixture);
+        let content = render(&mut app).backend().to_string();
+        let hint = content.lines().next().unwrap_or_default();
+        assert!(hint.contains("c commit"), "{hint}");
+        assert!(hint.contains("b branch"), "{hint}");
+        assert!(hint.contains("l log"), "{hint}");
+        // sub-commands (amend/reword/checkout) stay out of the hint line
+        assert!(!hint.contains("amend"), "{hint}");
+        assert!(!hint.contains("checkout"), "{hint}");
     }
 
     #[test]

@@ -303,6 +303,31 @@ impl Vcs for GitVcs {
         Ok(oid.to_string())
     }
 
+    fn head_message(&self) -> Result<String, VcsError> {
+        let commit = self.repo.head()?.peel_to_commit()?;
+        Ok(commit.message().unwrap_or_default().to_owned())
+    }
+
+    fn amend(&self, message: Option<&str>, use_index: bool) -> Result<String, VcsError> {
+        if let Some(message) = message
+            && message.trim().is_empty()
+        {
+            return Err(VcsError::Rejected("empty commit message".into()));
+        }
+        let head = self.repo.head()?.peel_to_commit()?;
+        // extend/amend fold the staged index into the new tree; a pure reword
+        // keeps HEAD's tree so only the message changes
+        let tree = if use_index {
+            let mut index = self.repo.index()?;
+            let tree_id = index.write_tree()?;
+            self.repo.find_tree(tree_id)?
+        } else {
+            head.tree()?
+        };
+        let oid = head.amend(Some("HEAD"), None, None, None, message, Some(&tree))?;
+        Ok(oid.to_string())
+    }
+
     fn create_branch(&self, name: &str, checkout: bool) -> Result<(), VcsError> {
         let head = self.repo.head()?.peel_to_commit()?;
         self.repo.branch(name, &head, false)?;

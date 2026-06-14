@@ -2,7 +2,7 @@
 source: crates/diffler/src/ui/status.rs
 expression: terminal.backend()
 ---
-" Hint: <tab> toggle  s stage  u unstage  x discard  cc commit  ? help                                                   "
+" Hint: c commit  b branch  l log  s stage  x discard  ? help                                                            "
 " Head:     main c1ac28f initial commit                                                                                  "
 " Changes   +3 -1  █████                                                                                                 "
 "                                                                                                                        "

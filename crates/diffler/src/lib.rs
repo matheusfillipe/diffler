@@ -12,6 +12,7 @@ pub mod mcp;
 #[cfg(test)]
 mod test_support;
 pub mod theme;
+pub mod transient;
 pub mod tree;
 pub mod ui;
 pub mod watch;

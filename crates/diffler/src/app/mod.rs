@@ -26,6 +26,7 @@ use crate::editor::{self, EditorPurpose, EditorRequest};
 use crate::event::AppEvent;
 use crate::keymap::{self, Action, Context, Keymap, Resolved};
 use crate::theme::Theme;
+use crate::transient::{Transient, TransientKind, TransientResolve};
 
 /// What the main loop should do after an event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,8 +103,6 @@ pub enum Modal {
         cursor: usize,
         on_submit: InputOp,
     },
-    /// Branch action popup (neogit `b`).
-    Branch,
     /// Branch picker feeding `action` with the selected name.
     BranchList {
         branches: Vec<BranchInfo>,
@@ -119,6 +118,35 @@ struct Keymaps {
     diff: Keymap,
     log: Keymap,
 }
+
+/// Built transients, applied with config overrides once at startup.
+struct Transients {
+    commit: Transient,
+    branch: Transient,
+    log: Transient,
+}
+
+impl Transients {
+    fn get(&self, kind: TransientKind) -> &Transient {
+        match kind {
+            TransientKind::Commit => &self.commit,
+            TransientKind::Branch => &self.branch,
+            TransientKind::Log => &self.log,
+        }
+    }
+}
+
+/// An open transient awaiting its next key. `opened_at` is a tick count so the
+/// which-key reveal timer never reads a wall clock in render.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpenTransient {
+    pub kind: TransientKind,
+    opened_at: u32,
+}
+
+/// Ticks (250ms each) the transient stays armed before the which-key panel is
+/// revealed, so a fast resolving key never flashes the panel.
+const WHICH_KEY_REVEAL_TICKS: u32 = 1;
 
 /// Pending multi-key sequences die after this many 250ms ticks.
 const PENDING_TIMEOUT_TICKS: u8 = 4;
@@ -158,6 +186,10 @@ pub struct App {
     /// Bound port of the embedded MCP server, if it started successfully.
     pub mcp_port: Option<u16>,
     keymaps: Keymaps,
+    transients: Transients,
+    /// The open transient, if any. Set when a top-level prefix fires; cleared
+    /// when a key resolves, Esc aborts, or an unknown key closes it.
+    pub transient: Option<OpenTransient>,
     pending: Vec<KeyPress>,
     pending_ticks: u8,
     tick_count: u32,
@@ -181,6 +213,16 @@ impl App {
             status: build(Context::Status),
             diff: build(Context::Diff),
             log: build(Context::Log),
+        };
+        let mut build_transient = |kind| {
+            let (transient, warnings) = Transient::build(kind, &config.keys);
+            startup_warnings.extend(warnings);
+            transient
+        };
+        let transients = Transients {
+            commit: build_transient(TransientKind::Commit),
+            branch: build_transient(TransientKind::Branch),
+            log: build_transient(TransientKind::Log),
         };
 
         let mut message = startup_warnings
@@ -232,6 +274,8 @@ impl App {
             feedback_tx: tokio::sync::watch::Sender::new(0),
             mcp_port: None,
             keymaps,
+            transients,
+            transient: None,
             pending: Vec::new(),
             pending_ticks: 0,
             tick_count: 0,
@@ -283,6 +327,8 @@ impl App {
             AppEvent::Key(key) if key.kind != crossterm::event::KeyEventKind::Release => {
                 if self.modal.is_some() {
                     self.handle_modal_key(&key)
+                } else if self.transient.is_some() {
+                    self.handle_transient_key(&key)
                 } else {
                     self.handle_key(&key)
                 }
@@ -342,7 +388,62 @@ impl App {
         self.pending = pending;
         match resolved {
             Resolved::Action(action) => self.dispatch(action),
+            Resolved::Transient(kind) => {
+                self.open_transient(kind);
+                Flow::Continue
+            }
             Resolved::Pending | Resolved::Unbound => Flow::Continue,
+        }
+    }
+
+    fn open_transient(&mut self, kind: TransientKind) {
+        self.message = None;
+        self.transient = Some(OpenTransient {
+            kind,
+            opened_at: self.tick_count,
+        });
+    }
+
+    /// While a transient is armed it owns the keyboard: Esc/Backspace close it,
+    /// a leaf key fires and closes, an unknown key closes with a beep
+    /// (neogit-style).
+    fn handle_transient_key(&mut self, key: &KeyEvent) -> Flow {
+        let Some(open) = self.transient else {
+            return Flow::Continue;
+        };
+        // a single-level transient has nothing to pop, so Backspace and Esc
+        // both abort it without dispatching
+        if matches!(key.code, KeyCode::Esc | KeyCode::Backspace) {
+            self.transient = None;
+            return Flow::Continue;
+        }
+        let press = keymap::press_from_event(key);
+        let resolved = self.transients.get(open.kind).resolve(&press);
+        self.transient = None;
+        match resolved {
+            TransientResolve::Action(action) => self.dispatch(action),
+            TransientResolve::Unbound => {
+                // neogit beeps and closes on an unbound key in a transient
+                self.info("no such command");
+                Flow::Continue
+            }
+        }
+    }
+
+    /// The built transient for `kind`, with config overrides applied — what
+    /// the help popup reads.
+    pub fn transient(&self, kind: TransientKind) -> &Transient {
+        self.transients.get(kind)
+    }
+
+    /// The transient panel to reveal: `Some` once the reveal timer has elapsed
+    /// since the transient opened, so a fast resolving key never flashes it.
+    pub fn which_key_panel(&self) -> Option<&Transient> {
+        let open = self.transient?;
+        if self.tick_count.wrapping_sub(open.opened_at) >= WHICH_KEY_REVEAL_TICKS {
+            Some(self.transients.get(open.kind))
+        } else {
+            None
         }
     }
 
@@ -363,7 +464,6 @@ impl App {
                 _ => {}
             },
             Some(Modal::Input { .. }) => self.handle_input_key(key),
-            Some(Modal::Branch) => self.handle_branch_popup_key(key),
             Some(Modal::BranchList { .. }) => self.handle_branch_list_key(key),
             Some(Modal::Help) => match key.code {
                 KeyCode::Esc | KeyCode::Char('q' | '?') => self.modal = None,
@@ -603,22 +703,7 @@ impl App {
             .is_none_or(|healthy| !healthy.load(Ordering::Relaxed))
     }
 
-    // --- branch popup ---
-
-    pub(crate) fn open_branch_popup(&mut self) {
-        self.modal = Some(Modal::Branch);
-    }
-
-    fn handle_branch_popup_key(&mut self, key: &KeyEvent) {
-        match key.code {
-            KeyCode::Char('c') => self.branch_name_input(true),
-            KeyCode::Char('n') => self.branch_name_input(false),
-            KeyCode::Char('b') => self.open_branch_list(BranchAction::Checkout),
-            KeyCode::Char('D') => self.open_branch_list(BranchAction::Delete),
-            KeyCode::Esc | KeyCode::Char('q') => self.modal = None,
-            _ => {}
-        }
-    }
+    // --- branch transient flows ---
 
     fn branch_name_input(&mut self, checkout: bool) {
         let title = if checkout {
@@ -656,8 +741,7 @@ impl App {
 
     fn handle_branch_list_key(&mut self, key: &KeyEvent) {
         match key.code {
-            // back to the branch popup, not all the way out
-            KeyCode::Esc | KeyCode::Char('q') => self.modal = Some(Modal::Branch),
+            KeyCode::Esc | KeyCode::Char('q') => self.modal = None,
             KeyCode::Char('j') | KeyCode::Down => {
                 if let Some(Modal::BranchList {
                     branches, cursor, ..
@@ -729,7 +813,7 @@ impl App {
         });
     }
 
-    /// `cc`: straight to the editor on a gitcommit-style message file when
+    /// `c c`: straight to the editor on a gitcommit-style message file when
     /// something is staged.
     pub(crate) fn commit_flow(&mut self) {
         let staged = &self.review.status.staged.files;
@@ -738,8 +822,66 @@ impl App {
             return;
         }
         let template = editor::commit_template(staged);
-        // the resolved gitdir, not `<root>/.git`: in a linked worktree the
-        // latter is a gitlink file and joining onto it cannot work
+        self.queue_message_editor(template, |msg_path| EditorPurpose::Commit { msg_path });
+    }
+
+    /// `c e`: extend HEAD with the staged index, reusing its message — no
+    /// editor. Refused on an empty index (nothing to add) or unborn branch.
+    pub(crate) fn commit_extend(&mut self) {
+        if self.review.status.staged.files.is_empty() {
+            self.info("nothing staged");
+            return;
+        }
+        if self.head.oid7.is_empty() {
+            self.info("no commit to extend");
+            return;
+        }
+        self.apply_amend(None, true);
+    }
+
+    /// `c a`: amend HEAD via the editor on its message, folding the staged
+    /// index into the new commit.
+    pub(crate) fn commit_amend(&mut self) {
+        self.amend_via_editor(true);
+    }
+
+    /// `c w`: reword HEAD via the editor on its message, keeping its tree.
+    pub(crate) fn commit_reword(&mut self) {
+        self.amend_via_editor(false);
+    }
+
+    fn amend_via_editor(&mut self, use_index: bool) {
+        if self.head.oid7.is_empty() {
+            self.info("no commit to amend");
+            return;
+        }
+        let existing = match self.review.vcs.head_message() {
+            Ok(message) => message,
+            Err(err) => {
+                self.error(err.to_string());
+                return;
+            }
+        };
+        // a reword keeps HEAD's tree, so its template lists no staged files
+        let staged: &[diffler_core::model::FileDiff] = if use_index {
+            &self.review.status.staged.files
+        } else {
+            &[]
+        };
+        let template = editor::amend_template(&existing, staged);
+        self.queue_message_editor(template, move |msg_path| EditorPurpose::Amend {
+            msg_path,
+            use_index,
+        });
+    }
+
+    /// Write `template` to `COMMIT_EDITMSG` and queue the editor on it. The
+    /// gitdir comes from libgit2 (not `<root>/.git`) so linked worktrees work.
+    fn queue_message_editor(
+        &mut self,
+        template: String,
+        purpose: impl FnOnce(std::path::PathBuf) -> EditorPurpose,
+    ) {
         let git_dir = match self.review.vcs.git_dir() {
             Ok(dir) => dir,
             Err(err) => {
@@ -755,8 +897,24 @@ impl App {
         let cmd = editor::command_for(&self.editor_command(), &msg_path, None);
         self.pending_editor = Some(EditorRequest {
             cmd,
-            purpose: EditorPurpose::Commit { msg_path },
+            purpose: purpose(msg_path),
         });
+    }
+
+    /// Run the backend amend and report. `message` `None` reuses HEAD's
+    /// message (extend); `use_index` folds the staged index in.
+    fn apply_amend(&mut self, message: Option<&str>, use_index: bool) {
+        match self.review.vcs.amend(message, use_index) {
+            Ok(oid) => {
+                self.refresh();
+                let subject = self.head.subject.clone();
+                let oid7 = oid.get(..7).unwrap_or(&oid).to_owned();
+                if self.message.is_none() {
+                    self.info(format!("amended {oid7} {subject}"));
+                }
+            }
+            Err(err) => self.error(err.to_string()),
+        }
     }
 
     /// Called by the main loop after the editor subprocess ended and the
@@ -766,6 +924,10 @@ impl App {
         self.message = None;
         match purpose {
             EditorPurpose::Commit { msg_path } => self.finish_commit(&msg_path, outcome),
+            EditorPurpose::Amend {
+                msg_path,
+                use_index,
+            } => self.finish_amend(&msg_path, use_index, outcome),
             EditorPurpose::OpenFile { path } => {
                 if let Err(err) = outcome {
                     self.error(format!("editor failed: {err}"));
@@ -813,6 +975,33 @@ impl App {
             }
             Err(err) => self.error(err.to_string()),
         }
+    }
+
+    fn finish_amend(&mut self, msg_path: &Path, use_index: bool, outcome: Result<bool, String>) {
+        match outcome {
+            Err(err) => {
+                self.error(format!("editor failed: {err}"));
+                return;
+            }
+            // a non-zero editor exit (e.g. vim's :cq) aborts the amend
+            Ok(false) => {
+                self.info("amend aborted");
+                return;
+            }
+            Ok(true) => {}
+        }
+        let raw = match std::fs::read_to_string(msg_path) {
+            Ok(raw) => raw,
+            Err(err) => {
+                self.error(format!("cannot read {}: {err}", msg_path.display()));
+                return;
+            }
+        };
+        let Some(message) = editor::strip_commit_message(&raw) else {
+            self.info("amend aborted");
+            return;
+        };
+        self.apply_amend(Some(&message), use_index);
     }
 }
 
@@ -1186,11 +1375,205 @@ mod tests {
     }
 
     #[test]
-    fn branch_popup_creates_and_checks_out_a_branch() {
+    fn commit_transient_opens_on_c_and_resolves_cc() {
+        let (_fixture, mut app) = app();
+        app.handle(key('c'));
+        assert_eq!(
+            app.transient.map(|t| t.kind),
+            Some(TransientKind::Commit),
+            "c opens the commit transient"
+        );
+        assert_eq!(app.message, None, "opening a transient is silent");
+        app.handle(key('c'));
+        assert_eq!(app.transient, None, "the leaf closes the transient");
+        let request = app.pending_editor.expect("editor request");
+        assert!(matches!(request.purpose, EditorPurpose::Commit { .. }));
+    }
+
+    #[test]
+    fn escape_aborts_an_open_transient() {
+        let (_fixture, mut app) = app();
+        app.handle(key('c'));
+        assert!(app.transient.is_some());
+        app.handle(AppEvent::Key(KeyEvent::new(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(app.transient, None, "esc closes without dispatching");
+        assert_eq!(app.pending_editor, None);
+    }
+
+    #[test]
+    fn an_unknown_key_in_a_transient_closes_it_with_a_beep() {
+        let (_fixture, mut app) = app();
+        app.handle(key('c'));
+        app.handle(key('z'));
+        assert_eq!(app.transient, None);
+        let message = app.message.expect("beep message");
+        assert_eq!(message.severity, Severity::Info);
+        assert!(message.text.contains("no such command"));
+    }
+
+    #[test]
+    fn the_reveal_timer_gates_the_which_key_panel() {
+        let (_fixture, mut app) = app();
+        app.handle(key('c'));
+        assert!(app.which_key_panel().is_none(), "no flash before the tick");
+        app.handle(AppEvent::Tick);
+        assert!(app.which_key_panel().is_some(), "revealed after the tick");
+    }
+
+    #[test]
+    fn commit_extend_amends_with_the_same_message_no_editor() {
+        let (_fixture, mut app) = app();
+        // ci.yml is staged in the standard fixture
+        let subject_before = app.head.subject.clone();
+        app.handle(key('c'));
+        app.handle(key('e'));
+        assert_eq!(app.pending_editor, None, "extend runs without the editor");
+        assert_eq!(
+            app.section_files(Section::Staged).len(),
+            0,
+            "index folded in"
+        );
+        assert_eq!(app.head.subject, subject_before, "message reused");
+        let message = app.message.expect("message");
+        assert!(message.text.starts_with("amended "), "{}", message.text);
+    }
+
+    #[test]
+    fn commit_extend_with_nothing_staged_hints() {
+        let fixture = two_hunk_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.handle(key('c'));
+        app.handle(key('e'));
+        assert_eq!(app.pending_editor, None);
+        assert!(
+            app.message
+                .expect("message")
+                .text
+                .contains("nothing staged")
+        );
+    }
+
+    #[test]
+    fn commit_amend_opens_the_editor_then_amends() {
+        let (_fixture, mut app) = app();
+        app.handle(key('c'));
+        app.handle(key('a'));
+        let Some(EditorRequest {
+            purpose:
+                EditorPurpose::Amend {
+                    msg_path,
+                    use_index,
+                },
+            ..
+        }) = app.pending_editor.take()
+        else {
+            panic!("expected an amend request");
+        };
+        assert!(use_index, "amend folds the index in");
+        // the template pre-fills the existing HEAD message
+        let template = std::fs::read_to_string(&msg_path).unwrap();
+        assert!(template.contains("initial commit"), "{template}");
+        std::fs::write(&msg_path, "reworded subject\n").unwrap();
+        app.editor_finished(
+            EditorPurpose::Amend {
+                msg_path,
+                use_index,
+            },
+            Ok(true),
+        );
+        assert_eq!(app.head.subject, "reworded subject");
+        assert_eq!(
+            app.section_files(Section::Staged).len(),
+            0,
+            "index folded in"
+        );
+    }
+
+    #[test]
+    fn commit_reword_changes_the_message_keeping_staged_changes() {
+        let (_fixture, mut app) = app();
+        app.handle(key('c'));
+        app.handle(key('w'));
+        let Some(EditorRequest {
+            purpose:
+                EditorPurpose::Amend {
+                    msg_path,
+                    use_index,
+                },
+            ..
+        }) = app.pending_editor.take()
+        else {
+            panic!("expected an amend request");
+        };
+        assert!(!use_index, "reword keeps HEAD's tree");
+        std::fs::write(&msg_path, "just a reword\n").unwrap();
+        app.editor_finished(
+            EditorPurpose::Amend {
+                msg_path,
+                use_index,
+            },
+            Ok(true),
+        );
+        assert_eq!(app.head.subject, "just a reword");
+        // the previously staged ci.yml stays staged: reword left the tree alone
+        assert!(
+            app.section_files(Section::Staged)
+                .iter()
+                .any(|f| f.path == "ci.yml"),
+            "staged change preserved across a reword"
+        );
+    }
+
+    #[test]
+    fn a_failed_editor_aborts_the_amend() {
+        let (_fixture, mut app) = app();
+        let head_before = app.head.oid7.clone();
+        app.handle(key('c'));
+        app.handle(key('w'));
+        let request = app.pending_editor.take().expect("editor request");
+        // a non-zero editor exit aborts without rewriting HEAD
+        app.editor_finished(request.purpose, Ok(false));
+        let message = app.message.expect("message");
+        assert!(message.text.contains("amend aborted"));
+        assert_eq!(app.head.oid7, head_before, "HEAD unchanged");
+    }
+
+    #[test]
+    fn config_can_rebind_a_transient_sub_key() {
+        let fixture = standard_fixture();
+        let mut loaded = LoadedConfig::default();
+        loaded
+            .config
+            .keys
+            .commit
+            .insert("amend".to_owned(), "m".to_owned());
+        let mut app = App::new(fixture.review(), loaded);
+        app.handle(key('c'));
+        app.handle(key('m'));
+        let request = app.pending_editor.expect("editor request");
+        assert!(matches!(
+            request.purpose,
+            EditorPurpose::Amend {
+                use_index: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn branch_transient_creates_and_checks_out_a_branch() {
         let (_fixture, mut app) = app();
         app.handle(key('b'));
-        assert_eq!(app.modal, Some(Modal::Branch));
+        assert_eq!(
+            app.transient.map(|t| t.kind),
+            Some(TransientKind::Branch),
+            "b opens the branch transient"
+        );
         app.handle(key('c'));
+        assert_eq!(app.transient, None, "a resolving key closes the transient");
         assert!(matches!(app.modal, Some(Modal::Input { .. })));
         type_text(&mut app, "feat/x");
         app.handle(key('\n'));
@@ -1201,7 +1584,7 @@ mod tests {
     }
 
     #[test]
-    fn branch_popup_n_creates_without_checkout() {
+    fn branch_transient_n_creates_without_checkout() {
         let (_fixture, mut app) = app();
         app.handle(key('b'));
         app.handle(key('n'));
@@ -1315,7 +1698,7 @@ mod tests {
     }
 
     #[test]
-    fn branch_list_escape_returns_to_the_branch_popup() {
+    fn branch_list_escape_closes_the_picker() {
         let (fixture, mut app) = app();
         fixture.branch("feat/topic");
         app.handle(key('b'));
@@ -1325,12 +1708,7 @@ mod tests {
             KeyCode::Esc,
             KeyModifiers::NONE,
         )));
-        assert_eq!(app.modal, Some(Modal::Branch));
-        app.handle(AppEvent::Key(KeyEvent::new(
-            KeyCode::Esc,
-            KeyModifiers::NONE,
-        )));
-        assert_eq!(app.modal, None);
+        assert_eq!(app.modal, None, "esc closes the branch picker");
     }
 
     #[test]

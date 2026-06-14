@@ -109,14 +109,30 @@ pub struct EditorConfig {
     pub command: Option<String>,
 }
 
-/// Key remaps per screen: action name → chord string. Defaults are empty;
-/// built-in bindings live in the keymap and config entries override them.
+/// Key remaps per screen and per transient: action (or sub-key) name → chord
+/// string. Defaults are empty; built-in bindings live in the keymap and config
+/// entries override them. The `commit`/`branch`/`log_menu` tables address the
+/// transient sub-keys (e.g. `[keys.commit] amend = "m"`).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct KeysConfig {
     pub status: BTreeMap<String, String>,
     pub diff: BTreeMap<String, String>,
     pub log: BTreeMap<String, String>,
+    pub commit: BTreeMap<String, String>,
+    pub branch: BTreeMap<String, String>,
+    pub log_menu: BTreeMap<String, String>,
+}
+
+impl KeysConfig {
+    /// Override table for a transient's sub-keys.
+    pub fn transient(&self, kind: crate::transient::TransientKind) -> &BTreeMap<String, String> {
+        match kind {
+            crate::transient::TransientKind::Commit => &self.commit,
+            crate::transient::TransientKind::Branch => &self.branch,
+            crate::transient::TransientKind::Log => &self.log_menu,
+        }
+    }
 }
 
 /// CLI flags that override file layers. Every flag maps to a config key.
@@ -382,6 +398,9 @@ fn apply_layer(
         (layer.keys.status, &mut config.keys.status, "status"),
         (layer.keys.diff, &mut config.keys.diff, "diff"),
         (layer.keys.log, &mut config.keys.log, "log"),
+        (layer.keys.commit, &mut config.keys.commit, "commit"),
+        (layer.keys.branch, &mut config.keys.branch, "branch"),
+        (layer.keys.log_menu, &mut config.keys.log_menu, "log_menu"),
     ];
     for (entries, target, section) in key_sections {
         for (action, chord) in entries {
@@ -605,6 +624,9 @@ mod tests {
         assert!(config.keys.status.is_empty());
         assert!(config.keys.diff.is_empty());
         assert!(config.keys.log.is_empty());
+        assert!(config.keys.commit.is_empty());
+        assert!(config.keys.branch.is_empty());
+        assert!(config.keys.log_menu.is_empty());
     }
 
     #[test]

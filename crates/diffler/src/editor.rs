@@ -12,6 +12,12 @@ use diffler_core::model::{FileDiff, FileStatus};
 pub enum EditorPurpose {
     /// Read the message file back and commit (gitcommit flow).
     Commit { msg_path: std::path::PathBuf },
+    /// Read the message file back and amend HEAD. `use_index` folds the staged
+    /// index into the amended commit (amend); false keeps HEAD's tree (reword).
+    Amend {
+        msg_path: std::path::PathBuf,
+        use_index: bool,
+    },
     /// The human edited a file under review; refresh to pick up changes.
     OpenFile { path: String },
 }
@@ -108,6 +114,27 @@ pub fn commit_template(staged: &[FileDiff]) -> String {
     );
     for file in staged {
         let _ = writeln!(out, "#\t{}: {}", status_label(file.status), file.path);
+    }
+    out
+}
+
+/// Initial amend/reword `COMMIT_EDITMSG` content: the existing message
+/// followed by the git comment block. `staged` is listed only when the amend
+/// folds the index in (an empty list for a pure reword).
+pub fn amend_template(existing: &str, staged: &[FileDiff]) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::from(existing.trim_end_matches('\n'));
+    out.push('\n');
+    out.push_str(
+        "# Please enter the commit message for your amended commit. Lines\n\
+         # starting with '#' are ignored, and an empty message aborts.\n",
+    );
+    if !staged.is_empty() {
+        out.push_str("#\n# Staged:\n");
+        for file in staged {
+            let _ = writeln!(out, "#\t{}: {}", status_label(file.status), file.path);
+        }
     }
     out
 }

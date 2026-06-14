@@ -88,6 +88,13 @@ pub trait Vcs: Send {
     fn discard(&self, rel: &Path) -> Result<(), VcsError>;
     /// Commit the index; returns the new commit id.
     fn commit(&self, message: &str) -> Result<String, VcsError>;
+    /// Full message of the HEAD commit, for amend/reword editor templates.
+    fn head_message(&self) -> Result<String, VcsError>;
+    /// Amend HEAD, returning the new commit id. `message` `None` reuses HEAD's
+    /// message (extend); `Some` rewords it. `use_index` true folds the staged
+    /// index into the new tree (extend/amend); false keeps HEAD's tree (a
+    /// pure reword). Local-only — no network.
+    fn amend(&self, message: Option<&str>, use_index: bool) -> Result<String, VcsError>;
     fn create_branch(&self, name: &str, checkout: bool) -> Result<(), VcsError>;
     /// Refused for the currently checked-out branch.
     fn delete_branch(&self, name: &str) -> Result<(), VcsError>;

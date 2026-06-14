@@ -21,20 +21,21 @@ use crate::app::{
 use crate::keymap::Action;
 use crate::theme::Theme;
 use crate::tree::TreeNode;
+use crate::ui::Hint;
 use crate::ui::diff_render::{file_gutter_width, hunk_header, line_syntax, render_diff_line};
 use crate::ui::{diffstat_spans, hint_line, proportion_bar, status_bar, status_color};
 
 /// Hint entries, rendered against the live keymap so remaps show.
-const HINTS: &[(&[Action], &str)] = &[
-    (&[Action::ToggleFocus], "focus"),
-    (&[Action::Comment], "comment"),
-    (&[Action::VisualSelect], "select"),
-    (&[Action::Reply], "reply"),
-    (&[Action::Resolve], "resolve"),
-    (&[Action::MarkViewed], "viewed"),
-    (&[Action::NextFile, Action::PrevFile], "file"),
-    (&[Action::CopyFileFeedback, Action::CopyAllFeedback], "copy"),
-    (&[Action::Back], "back"),
+const HINTS: &[Hint] = &[
+    Hint::Leaf(&[Action::ToggleFocus], "focus"),
+    Hint::Leaf(&[Action::Comment], "comment"),
+    Hint::Leaf(&[Action::VisualSelect], "select"),
+    Hint::Leaf(&[Action::Reply], "reply"),
+    Hint::Leaf(&[Action::Resolve], "resolve"),
+    Hint::Leaf(&[Action::MarkViewed], "viewed"),
+    Hint::Leaf(&[Action::NextFile, Action::PrevFile], "file"),
+    Hint::Leaf(&[Action::CopyFileFeedback, Action::CopyAllFeedback], "copy"),
+    Hint::Leaf(&[Action::Back], "back"),
 ];
 
 /// Sidebar width: a quarter of the screen, clamped to a readable band.

@@ -10,13 +10,14 @@ use ratatui::widgets::{Block, Paragraph};
 use crate::app::App;
 use crate::keymap::Action;
 use crate::theme::Theme;
+use crate::ui::Hint;
 use crate::ui::{cursor_line, hint_line, status_bar};
 
 /// Hint entries, rendered against the live keymap so remaps show.
-const HINTS: &[(&[Action], &str)] = &[
-    (&[Action::Open], "open commit"),
-    (&[Action::MoveDown, Action::MoveUp], "move"),
-    (&[Action::Back], "back"),
+const HINTS: &[Hint] = &[
+    Hint::Leaf(&[Action::Open], "open commit"),
+    Hint::Leaf(&[Action::MoveDown, Action::MoveUp], "move"),
+    Hint::Leaf(&[Action::Back], "back"),
 ];
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {

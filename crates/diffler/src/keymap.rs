@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::config::{Chord, KeyPress, KeysConfig, parse_chord};
+use crate::transient::TransientKind;
 
 /// Everything a key can do. Defined as the full superset so config action
 /// names stay stable across screens.
@@ -30,7 +31,13 @@ pub enum Action {
     Open,
     OpenReviewDiff,
     CommitFlow,
-    BranchPopup,
+    CommitExtend,
+    CommitAmend,
+    CommitReword,
+    BranchCheckout,
+    BranchCreateCheckout,
+    BranchCreate,
+    BranchDelete,
     LogView,
     NextHunk,
     PrevHunk,
@@ -73,7 +80,13 @@ impl Action {
             Self::Open => "open",
             Self::OpenReviewDiff => "open_review_diff",
             Self::CommitFlow => "commit_flow",
-            Self::BranchPopup => "branch_popup",
+            Self::CommitExtend => "commit_extend",
+            Self::CommitAmend => "commit_amend",
+            Self::CommitReword => "commit_reword",
+            Self::BranchCheckout => "branch_checkout",
+            Self::BranchCreateCheckout => "branch_create_checkout",
+            Self::BranchCreate => "branch_create",
+            Self::BranchDelete => "branch_delete",
             Self::LogView => "log_view",
             Self::NextHunk => "next_hunk",
             Self::PrevHunk => "prev_hunk",
@@ -94,7 +107,7 @@ impl Action {
         }
     }
 
-    const ALL: [Self; 37] = [
+    const ALL: [Self; 43] = [
         Self::MoveDown,
         Self::MoveUp,
         Self::GoTop,
@@ -114,7 +127,13 @@ impl Action {
         Self::Open,
         Self::OpenReviewDiff,
         Self::CommitFlow,
-        Self::BranchPopup,
+        Self::CommitExtend,
+        Self::CommitAmend,
+        Self::CommitReword,
+        Self::BranchCheckout,
+        Self::BranchCreateCheckout,
+        Self::BranchCreate,
+        Self::BranchDelete,
         Self::LogView,
         Self::NextHunk,
         Self::PrevHunk,
@@ -151,6 +170,9 @@ pub enum Context {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Resolved {
     Action(Action),
+    /// A top-level prefix key: open the named transient and resolve the next
+    /// key against it.
+    Transient(TransientKind),
     /// The sequence so far is a prefix of some chord; the caller keeps the
     /// pending buffer and applies a timeout.
     Pending,
@@ -160,6 +182,9 @@ pub enum Resolved {
 #[derive(Debug, Clone)]
 pub struct Keymap {
     bindings: Vec<(Chord, Action)>,
+    /// Single-key prefixes that open transients (status context only). A
+    /// prefix key is never also a leaf in the same context.
+    prefixes: Vec<(KeyPress, TransientKind)>,
 }
 
 const STATUS_DEFAULTS: &[(&str, Action)] = &[
@@ -179,9 +204,6 @@ const STATUS_DEFAULTS: &[(&str, Action)] = &[
     ("<c-r>", Action::Refresh),
     ("<cr>", Action::Open),
     ("D", Action::OpenReviewDiff),
-    ("cc", Action::CommitFlow),
-    ("b", Action::BranchPopup),
-    ("ll", Action::LogView),
     ("{", Action::PrevHunk),
     ("}", Action::NextHunk),
     ("e", Action::OpenEditor),
@@ -189,6 +211,17 @@ const STATUS_DEFAULTS: &[(&str, Action)] = &[
     ("?", Action::Help),
     ("q", Action::Back),
 ];
+
+/// Status-context prefix keys: each opens a transient. The config name is the
+/// transient's `name()`, so `[keys.status] commit = "x"` rebinds the prefix.
+const STATUS_PREFIXES: &[(&str, TransientKind)] = &[
+    ("c", TransientKind::Commit),
+    ("b", TransientKind::Branch),
+    ("l", TransientKind::Log),
+];
+
+/// Contexts with no transients (diff, log) bind no prefixes.
+const NO_PREFIXES: &[(&str, TransientKind)] = &[];
 
 const DIFF_DEFAULTS: &[(&str, Action)] = &[
     ("j", Action::MoveDown),
@@ -236,10 +269,10 @@ impl Keymap {
     /// overrides (action name → chord). Returns user-facing warnings for
     /// entries that cannot apply.
     pub fn for_context(context: Context, keys: &KeysConfig) -> (Self, Vec<String>) {
-        let (defaults, overrides, section) = match context {
-            Context::Status => (STATUS_DEFAULTS, &keys.status, "status"),
-            Context::Diff => (DIFF_DEFAULTS, &keys.diff, "diff"),
-            Context::Log => (LOG_DEFAULTS, &keys.log, "log"),
+        let (defaults, prefixes, overrides, section) = match context {
+            Context::Status => (STATUS_DEFAULTS, STATUS_PREFIXES, &keys.status, "status"),
+            Context::Diff => (DIFF_DEFAULTS, NO_PREFIXES, &keys.diff, "diff"),
+            Context::Log => (LOG_DEFAULTS, NO_PREFIXES, &keys.log, "log"),
         };
         let mut keymap = Self {
             // defaults are static strings validated by tests; a default that
@@ -249,8 +282,14 @@ impl Keymap {
                 .iter()
                 .filter_map(|(chord, action)| Some((parse_chord(chord).ok()?, *action)))
                 .collect(),
+            prefixes: prefixes
+                .iter()
+                .filter_map(|(chord, kind)| Some((single_press(chord)?, *kind)))
+                .collect(),
         };
-        let warnings = keymap.apply_overrides(overrides, section);
+        let mut warnings = keymap.apply_overrides(overrides, section, defaults);
+        warnings.extend(keymap.apply_prefix_overrides(overrides, section));
+        warnings.extend(keymap.enforce_leaf_prefix(section));
         (keymap, warnings)
     }
 
@@ -258,9 +297,15 @@ impl Keymap {
         &mut self,
         overrides: &BTreeMap<String, String>,
         section: &str,
+        defaults: &[(&str, Action)],
     ) -> Vec<String> {
         let mut warnings = Vec::new();
         for (name, chord_str) in overrides {
+            // prefix names (commit/branch/log_menu) are handled separately by
+            // apply_prefix_overrides; don't flag them as unknown actions here
+            if self.prefixes.iter().any(|(_, kind)| kind.name() == name) {
+                continue;
+            }
             let Some(action) = Action::from_name(name) else {
                 warnings.push(format!("unknown action `{name}` in [keys.{section}]"));
                 continue;
@@ -293,14 +338,183 @@ impl Keymap {
                 }
             }
         }
+        // a transient prefix fires on its single key before any chord starting
+        // with that key can accumulate — a multi-key chord whose first key is a
+        // live prefix is therefore unreachable
+        let new_bindings_that_clash: Vec<(Chord, Action)> = self
+            .bindings
+            .iter()
+            .filter(|(chord, _)| {
+                chord.len() > 1
+                    && chord.first().is_some_and(|first| {
+                        self.prefixes
+                            .iter()
+                            .any(|(prefix_key, _)| first == prefix_key)
+                    })
+            })
+            .cloned()
+            .collect();
+        for (chord, action) in new_bindings_that_clash {
+            let prefix_kind = chord.first().and_then(|first| {
+                self.prefixes
+                    .iter()
+                    .find(|(k, _)| k == first)
+                    .map(|(_, kind)| *kind)
+            });
+            if let Some(kind) = prefix_kind {
+                warnings.push(format!(
+                    "binding {} for {} is shadowed by {} prefix in [keys.{section}]; using default",
+                    render_chord(&chord),
+                    action.name(),
+                    kind.name(),
+                ));
+                // restore the default binding for this action and drop the
+                // conflicting override
+                self.bindings.retain(|(c, _)| *c != chord);
+                if let Some(def_chord) = defaults
+                    .iter()
+                    .find(|(_, a)| *a == action)
+                    .and_then(|(s, _)| parse_chord(s).ok())
+                {
+                    // only restore if the default key is still free
+                    if !self.bindings.iter().any(|(c, _)| *c == def_chord) {
+                        self.bindings.push((def_chord, action));
+                    }
+                }
+            }
+        }
         warnings
     }
 
+    /// Apply `[keys.<section>]` overrides that rebind a transient prefix key
+    /// (keyed by the transient name, e.g. `commit = "x"`). A prefix override
+    /// must be a single key; remapping it frees both the prefix's old key and
+    /// the key's old owner.
+    fn apply_prefix_overrides(
+        &mut self,
+        overrides: &BTreeMap<String, String>,
+        section: &str,
+    ) -> Vec<String> {
+        let mut warnings = Vec::new();
+        for (key, kind) in &mut self.prefixes {
+            let Some(chord_str) = overrides.get(kind.name()) else {
+                continue;
+            };
+            match single_press(chord_str) {
+                // a duplicate prefix key (two prefixes on one chord) is caught
+                // by enforce_leaf_prefix, which drops the later one
+                Some(new_key) => *key = new_key,
+                None => warnings.push(format!(
+                    "[keys.{section}] {}: prefix chord {chord_str:?} must be a single key; using default",
+                    kind.name()
+                )),
+            }
+        }
+        warnings
+    }
+
+    /// Enforce the level invariant: no key is both a leaf and a prefix, and no
+    /// two prefixes share a key. Drop the conflicting prefix and warn (the
+    /// HARD config requirement; defaults are conflict-free by construction).
+    ///
+    /// Also covers the multi-key case: a prefix whose key equals the first
+    /// press of a multi-key chord makes that chord unreachable (the transient
+    /// fires on the first press before the second can accumulate). Treat this
+    /// the same as a leaf clash: drop the offending prefix and warn.
+    fn enforce_leaf_prefix(&mut self, section: &str) -> Vec<String> {
+        let mut warnings = Vec::new();
+        let leaf_singletons: Vec<(KeyPress, Action)> = self
+            .bindings
+            .iter()
+            .filter_map(|(chord, action)| match chord.as_slice() {
+                [key] => Some((key.clone(), *action)),
+                _ => None,
+            })
+            .collect();
+        // first key of every multi-key chord — a prefix on that key swallows
+        // the press before the chord can accumulate
+        let chord_firsts: Vec<(KeyPress, Action)> = self
+            .bindings
+            .iter()
+            .filter_map(|(chord, action)| {
+                if chord.len() > 1 {
+                    chord.first().map(|k| (k.clone(), *action))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let mut kept: Vec<(KeyPress, TransientKind)> = Vec::new();
+        for (key, kind) in std::mem::take(&mut self.prefixes) {
+            if let Some((_, action)) = leaf_singletons.iter().find(|(k, _)| *k == key) {
+                warnings.push(format!(
+                    "[keys.{section}] {} prefix on {} clashes with leaf {}; prefix dropped",
+                    kind.name(),
+                    render_chord(std::slice::from_ref(&key)),
+                    action.name(),
+                ));
+                continue;
+            }
+            // a prefix key that is also the first key of a multi-key chord
+            // shadows the chord: the transient fires before the chord completes
+            if let Some((_, action)) = chord_firsts.iter().find(|(k, _)| *k == key) {
+                let full_chord = self
+                    .bindings
+                    .iter()
+                    .find(|(_, a)| *a == *action)
+                    .map_or(String::new(), |(c, _)| render_chord(c));
+                warnings.push(format!(
+                    "[keys.{section}] {} prefix on {} shadows chord {} ({}); prefix dropped",
+                    kind.name(),
+                    render_chord(std::slice::from_ref(&key)),
+                    full_chord,
+                    action.name(),
+                ));
+                continue;
+            }
+            if let Some((_, other)) = kept.iter().find(|(k, _)| *k == key) {
+                warnings.push(format!(
+                    "[keys.{section}] {} prefix on {} clashes with {} prefix; dropped",
+                    kind.name(),
+                    render_chord(std::slice::from_ref(&key)),
+                    other.name(),
+                ));
+                continue;
+            }
+            kept.push((key, kind));
+        }
+        self.prefixes = kept;
+        warnings
+    }
+
+    /// The transient kind a single press opens, if any.
+    pub fn prefix_for(&self, press: &KeyPress) -> Option<TransientKind> {
+        self.prefixes
+            .iter()
+            .find(|(key, _)| key == press)
+            .map(|(_, kind)| *kind)
+    }
+
+    /// The key bound to a transient prefix, rendered in config syntax, for
+    /// the prefix-only hint line and help popup.
+    pub fn prefix_chord(&self, kind: TransientKind) -> Option<String> {
+        self.prefixes
+            .iter()
+            .find(|(_, k)| *k == kind)
+            .map(|(key, _)| render_chord(std::slice::from_ref(key)))
+    }
+
     /// Feed one key press, accumulating multi-key sequences in `pending`.
-    /// An exact match fires (and clears `pending`); a prefix stays pending;
-    /// a dead sequence is dropped, retrying the new key on its own so e.g.
-    /// `c` then `j` still moves down.
+    /// A prefix key opens its transient; an exact leaf match fires (and clears
+    /// `pending`); a prefix stays pending; a dead sequence is dropped,
+    /// retrying the new key on its own so e.g. `c` then `j` still moves down.
     pub fn resolve(&self, pending: &mut Vec<KeyPress>, press: KeyPress) -> Resolved {
+        // a transient prefix is single-key and only fires from a clean buffer
+        if pending.is_empty()
+            && let Some(kind) = self.prefix_for(&press)
+        {
+            return Resolved::Transient(kind);
+        }
         pending.push(press.clone());
         match self.lookup(pending) {
             Lookup::Exact(action) => {
@@ -361,6 +575,17 @@ enum Lookup {
     Exact(Action),
     Prefix,
     None,
+}
+
+/// Parse a chord that must be exactly one key press; `None` otherwise. Prefix
+/// and transient keys are single-press by design.
+fn single_press(chord: &str) -> Option<KeyPress> {
+    let mut presses = parse_chord(chord).ok()?;
+    if presses.len() == 1 {
+        Some(presses.remove(0))
+    } else {
+        None
+    }
 }
 
 /// Render a chord back to the `parse_chord` syntax for warnings, hints,
@@ -477,13 +702,84 @@ mod tests {
             keymap.chord_for(Action::ToggleFold).as_deref(),
             Some("<tab>")
         );
-        assert_eq!(keymap.chord_for(Action::CommitFlow).as_deref(), Some("cc"));
+        // commit_flow is a transient leaf now, not a top-level leaf
+        assert_eq!(keymap.chord_for(Action::CommitFlow), None);
         assert_eq!(keymap.chord_for(Action::Comment), None, "unbound in status");
 
         let mut keys = KeysConfig::default();
         keys.status.insert("stage".to_owned(), "<c-s>".to_owned());
         let (keymap, _) = Keymap::for_context(Context::Status, &keys);
         assert_eq!(keymap.chord_for(Action::Stage).as_deref(), Some("<c-s>"));
+    }
+
+    #[test]
+    fn status_prefixes_open_transients() {
+        let keymap = keymap(Context::Status);
+        let mut pending = Vec::new();
+        assert_eq!(
+            keymap.resolve(&mut pending, press("c")),
+            Resolved::Transient(TransientKind::Commit)
+        );
+        assert_eq!(
+            keymap.resolve(&mut pending, press("b")),
+            Resolved::Transient(TransientKind::Branch)
+        );
+        assert_eq!(
+            keymap.resolve(&mut pending, press("l")),
+            Resolved::Transient(TransientKind::Log)
+        );
+        assert!(pending.is_empty(), "a prefix never leaves a pending buffer");
+        assert_eq!(
+            keymap.prefix_chord(TransientKind::Commit).as_deref(),
+            Some("c")
+        );
+        assert_eq!(
+            keymap.prefix_chord(TransientKind::Branch).as_deref(),
+            Some("b")
+        );
+    }
+
+    #[test]
+    fn a_prefix_key_is_not_a_leaf() {
+        let keymap = keymap(Context::Status);
+        // no top-level chord owns c/b/l; they are prefixes only
+        assert!(keymap.bindings.iter().all(|(chord, _)| {
+            !matches!(chord.as_slice(), [k] if matches!(k.code, KeyCode::Char('c' | 'b' | 'l')))
+        }));
+    }
+
+    #[test]
+    fn prefix_override_remaps_the_transient_key() {
+        let mut keys = KeysConfig::default();
+        // remap the commit prefix to a free key (<c-c> owns no leaf in status)
+        keys.status.insert("commit".to_owned(), "<c-c>".to_owned());
+        let (keymap, warnings) = Keymap::for_context(Context::Status, &keys);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let mut pending = Vec::new();
+        assert_eq!(
+            keymap.resolve(&mut pending, press("<c-c>")),
+            Resolved::Transient(TransientKind::Commit)
+        );
+        // the old `c` no longer opens the commit transient
+        assert_eq!(keymap.prefix_for(&press("c")), None);
+    }
+
+    #[test]
+    fn a_prefix_clashing_with_a_leaf_is_dropped_with_a_warning() {
+        let mut keys = KeysConfig::default();
+        // aim the commit prefix at `s`, which the stage leaf owns
+        keys.status.insert("commit".to_owned(), "s".to_owned());
+        let (keymap, warnings) = Keymap::for_context(Context::Status, &keys);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("commit"), "{warnings:?}");
+        assert!(warnings[0].contains("stage"), "{warnings:?}");
+        // the leaf still fires; the prefix is gone
+        let mut pending = Vec::new();
+        assert_eq!(
+            keymap.resolve(&mut pending, press("s")),
+            Resolved::Action(Action::Stage)
+        );
+        assert_eq!(keymap.prefix_for(&press("s")), None);
     }
 
     #[test]
@@ -547,19 +843,19 @@ mod tests {
     #[test]
     fn override_creating_a_prefix_collision_warns() {
         let mut keys = KeysConfig::default();
-        // `c` becomes a strict prefix of the default `cc` commit chord
-        keys.status.insert("stage".to_owned(), "c".to_owned());
+        // `g` becomes a strict prefix of the default `gg` go-top chord
+        keys.status.insert("stage".to_owned(), "g".to_owned());
         let (keymap, warnings) = Keymap::for_context(Context::Status, &keys);
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(
-            warnings[0].contains("binding c for stage shadows chord cc (commit_flow)"),
+            warnings[0].contains("binding g for stage shadows chord gg (go_top)"),
             "{warnings:?}"
         );
         assert!(warnings[0].contains("[keys.status]"), "{warnings:?}");
         // behavior is unchanged: the short binding still fires
         let mut pending = Vec::new();
         assert_eq!(
-            keymap.resolve(&mut pending, press("c")),
+            keymap.resolve(&mut pending, press("g")),
             Resolved::Action(Action::Stage)
         );
     }
@@ -587,13 +883,14 @@ mod tests {
 
     #[test]
     fn two_key_sequence_resolves() {
+        // gg (go-top) is the surviving two-key chord in the status context
         let keymap = keymap(Context::Status);
         let mut pending = Vec::new();
-        assert_eq!(keymap.resolve(&mut pending, press("c")), Resolved::Pending);
+        assert_eq!(keymap.resolve(&mut pending, press("g")), Resolved::Pending);
         assert_eq!(pending.len(), 1);
         assert_eq!(
-            keymap.resolve(&mut pending, press("c")),
-            Resolved::Action(Action::CommitFlow)
+            keymap.resolve(&mut pending, press("g")),
+            Resolved::Action(Action::GoTop)
         );
         assert!(pending.is_empty());
     }
@@ -602,11 +899,11 @@ mod tests {
     fn dangling_prefix_stays_pending() {
         let keymap = keymap(Context::Status);
         let mut pending = Vec::new();
-        assert_eq!(keymap.resolve(&mut pending, press("l")), Resolved::Pending);
+        assert_eq!(keymap.resolve(&mut pending, press("g")), Resolved::Pending);
         assert_eq!(pending.len(), 1);
         assert_eq!(
-            keymap.resolve(&mut pending, press("l")),
-            Resolved::Action(Action::LogView)
+            keymap.resolve(&mut pending, press("g")),
+            Resolved::Action(Action::GoTop)
         );
     }
 
@@ -614,7 +911,7 @@ mod tests {
     fn unknown_key_clears_pending() {
         let keymap = keymap(Context::Status);
         let mut pending = Vec::new();
-        assert_eq!(keymap.resolve(&mut pending, press("c")), Resolved::Pending);
+        assert_eq!(keymap.resolve(&mut pending, press("g")), Resolved::Pending);
         assert_eq!(keymap.resolve(&mut pending, press("z")), Resolved::Unbound);
         assert!(pending.is_empty());
     }
@@ -623,7 +920,7 @@ mod tests {
     fn dead_sequence_retries_new_key_alone() {
         let keymap = keymap(Context::Status);
         let mut pending = Vec::new();
-        assert_eq!(keymap.resolve(&mut pending, press("c")), Resolved::Pending);
+        assert_eq!(keymap.resolve(&mut pending, press("g")), Resolved::Pending);
         assert_eq!(
             keymap.resolve(&mut pending, press("j")),
             Resolved::Action(Action::MoveDown)
@@ -648,5 +945,68 @@ mod tests {
     fn ctrl_event_matches_ctrl_chord() {
         let event = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
         assert_eq!(press_from_event(&event), press("<c-r>"));
+    }
+
+    // --- conflict-enforcement gap: prefix vs first key of multi-key chord ---
+
+    #[test]
+    fn prefix_override_onto_first_key_of_chord_warns_and_falls_back() {
+        // Moving the commit prefix to `g` would swallow the first press of `gg`
+        // (GoTop), making it unreachable. The prefix must be dropped.
+        let mut keys = KeysConfig::default();
+        keys.status.insert("commit".to_owned(), "g".to_owned());
+        let (keymap, warnings) = Keymap::for_context(Context::Status, &keys);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("commit"), "{warnings:?}");
+        assert!(warnings[0].contains("gg"), "{warnings:?}");
+        assert!(warnings[0].contains("go_top"), "{warnings:?}");
+        // prefix dropped: `g` must not open any transient
+        assert_eq!(keymap.prefix_for(&press("g")), None);
+        // `gg` still resolves to GoTop because the prefix was dropped
+        let mut pending = Vec::new();
+        assert_eq!(keymap.resolve(&mut pending, press("g")), Resolved::Pending);
+        assert_eq!(
+            keymap.resolve(&mut pending, press("g")),
+            Resolved::Action(Action::GoTop)
+        );
+    }
+
+    #[test]
+    fn leaf_override_onto_chord_starting_with_live_prefix_warns_and_falls_back() {
+        // `cx` can never fire in the status context because `c` is the commit
+        // prefix — the transient opens before the second key is seen. The
+        // override must be rejected and the action fall back to its default.
+        let mut keys = KeysConfig::default();
+        keys.status.insert("discard".to_owned(), "cx".to_owned());
+        let (keymap, warnings) = Keymap::for_context(Context::Status, &keys);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("cx"), "{warnings:?}");
+        assert!(warnings[0].contains("discard"), "{warnings:?}");
+        assert!(warnings[0].contains("commit"), "{warnings:?}");
+        // discard fell back to its default `x`
+        let mut pending = Vec::new();
+        assert_eq!(
+            keymap.resolve(&mut pending, press("x")),
+            Resolved::Action(Action::Discard)
+        );
+        // the commit prefix is still intact
+        assert_eq!(
+            keymap.resolve(&mut pending, press("c")),
+            Resolved::Transient(TransientKind::Commit)
+        );
+    }
+
+    #[test]
+    fn defaults_remain_conflict_free_under_stricter_check() {
+        // All three default contexts must produce zero warnings under the new
+        // checks. In particular: `g` (first key of `gg`) is not a transient
+        // prefix by default, so `gg` must not false-positive.
+        for context in [Context::Status, Context::Diff, Context::Log] {
+            let (_, warnings) = Keymap::for_context(context, &KeysConfig::default());
+            assert!(
+                warnings.is_empty(),
+                "default {context:?} keymap emitted unexpected warnings: {warnings:?}"
+            );
+        }
     }
 }
