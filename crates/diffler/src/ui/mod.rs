@@ -119,7 +119,7 @@ fn help_entries(app: &App) -> Vec<(String, String)> {
 /// Status accent shared by the diff sidebar and the status screen.
 pub(super) fn status_color(theme: &Theme, status: FileStatus) -> Color {
     match status {
-        FileStatus::Added | FileStatus::Untracked => theme.accent,
+        FileStatus::Added | FileStatus::Untracked => theme.added,
         FileStatus::Deleted => theme.error_fg,
         FileStatus::Modified | FileStatus::Renamed => theme.warn_fg,
     }

@@ -674,8 +674,8 @@ mod tests {
     #[test]
     fn status_color_distinguishes_the_status_groups() {
         let theme = Theme::github_dark();
-        assert_eq!(status_color(&theme, FileStatus::Added), theme.accent);
-        assert_eq!(status_color(&theme, FileStatus::Untracked), theme.accent);
+        assert_eq!(status_color(&theme, FileStatus::Added), theme.added);
+        assert_eq!(status_color(&theme, FileStatus::Untracked), theme.added);
         assert_eq!(status_color(&theme, FileStatus::Deleted), theme.error_fg);
         assert_eq!(status_color(&theme, FileStatus::Modified), theme.warn_fg);
         assert_eq!(status_color(&theme, FileStatus::Renamed), theme.warn_fg);
