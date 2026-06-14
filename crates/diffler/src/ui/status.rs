@@ -70,10 +70,10 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16) {
     let mut cursor_line_index = 0usize;
     let mut index = 0;
     while let Some(row) = rows.get(index) {
-        match *row {
+        match row {
             // a hunk renders as one block: header + its diff lines, which all
             // follow contiguously in the flattened rows
-            Row::HunkHeader {
+            &Row::HunkHeader {
                 section,
                 file,
                 hunk,
@@ -113,7 +113,7 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16) {
                 if index == app.status.cursor {
                     cursor_line_index = lines.len();
                 }
-                lines.push(row_line(app, &row, index == app.status.cursor, area.width));
+                lines.push(row_line(app, row, index == app.status.cursor, area.width));
                 index += 1;
             }
         }
@@ -176,9 +176,19 @@ fn row_line(app: &App, row: &Row, selected: bool, width: u16) -> Line<'static> {
         Row::RecentHeader { count } => {
             header_spans(theme, "Recent commits", *count, app.status.recent_folded)
         }
-        Row::File { section, index } => {
+        Row::Dir {
+            section,
+            path,
+            name,
+            depth,
+        } => dir_spans(theme, name, app.is_dir_folded(*section, path), *depth),
+        Row::File {
+            section,
+            index,
+            depth,
+        } => {
             let file = app.section_files(*section).get(*index);
-            file_spans(app, file, theme)
+            file_spans(app, file, theme, *depth)
         }
         Row::Commit { index } => commit_spans(app, *index, theme),
         // hunk rows are rendered as blocks in `body`, never through here
@@ -206,22 +216,52 @@ fn header_spans(theme: &Theme, title: &str, count: usize, folded: bool) -> Vec<S
     ]
 }
 
-fn file_spans(app: &App, file: Option<&FileDiff>, theme: &Theme) -> Vec<Span<'static>> {
+/// Indentation for a tree row at `depth` within a section: a base indent that
+/// clears the header's fold arrow, plus two cells per level.
+fn tree_indent(depth: usize) -> String {
+    " ".repeat(5 + depth * 2)
+}
+
+/// A directory row: indent, fold arrow, the dim directory name.
+fn dir_spans(theme: &Theme, name: &str, folded: bool, depth: usize) -> Vec<Span<'static>> {
+    vec![
+        Span::styled(tree_indent(depth), theme.base()),
+        Span::styled(
+            if folded { "▸ " } else { "▾ " }.to_owned(),
+            theme.dim_style(),
+        ),
+        Span::styled(name.to_owned(), theme.base()),
+    ]
+}
+
+/// A file row: indent, status glyph (colored), basename, the viewed check, and
+/// the file's `+A -B` diffstat. The full path is dropped — the tree shows it.
+fn file_spans(
+    app: &App,
+    file: Option<&FileDiff>,
+    theme: &Theme,
+    depth: usize,
+) -> Vec<Span<'static>> {
     let Some(file) = file else {
         return Vec::new();
     };
-    let mut spans = vec![Span::styled("     ", theme.base())];
-    let label = file.status.label();
-    spans.push(Span::styled(
-        format!("{label:<10}"),
-        Style::new()
-            .fg(status_color(theme, file.status))
-            .bg(theme.bg),
-    ));
-    spans.push(Span::styled(file.path.clone(), theme.base()));
+    let name = file.path.rsplit('/').next().unwrap_or(&file.path);
+    let glyph = file.status.glyph();
+    let mut spans = vec![
+        Span::styled(tree_indent(depth), theme.base()),
+        Span::styled(
+            format!("{glyph} "),
+            Style::new()
+                .fg(status_color(theme, file.status))
+                .bg(theme.bg),
+        ),
+        Span::styled(name.to_owned(), theme.base()),
+    ];
     if app.is_path_viewed(&file.path) {
         spans.push(Span::styled(" ✓", theme.dim_style()));
     }
+    let (added, deleted) = file.diffstat();
+    spans.extend(diffstat_spans(theme, added, deleted, theme.bg));
     spans
 }
 
@@ -379,6 +419,21 @@ mod tests {
             .expect("recent header");
         app.handle(key('\t'));
         insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn collapsed_dir_chain_renders_its_joined_name() {
+        let fixture = Fixture::new();
+        fixture.write("keep.txt", "x\n");
+        fixture.commit_all("initial commit");
+        // a single-child chain: docs/ -> api/ -> intro.md
+        fixture.write("docs/api/intro.md", "# intro\n");
+        let mut app = app_for(&fixture);
+        let screen = render(&mut app).backend().to_string();
+        assert!(
+            screen.contains("docs/api"),
+            "the collapsed chain shows its joined name, not just the last segment:\n{screen}"
+        );
     }
 
     #[test]
@@ -544,16 +599,25 @@ mod tests {
     }
 
     #[test]
-    fn file_row_label_is_colored_by_status() {
+    fn file_row_glyph_is_colored_by_status_and_shows_the_basename() {
         let fixture = standard_fixture();
         let app = app_for(&fixture);
         // the unstaged section holds a modified file in the standard fixture
         let file = app.section_files(Section::Unstaged).first().expect("file");
-        let spans = super::file_spans(&app, Some(file), &app.theme);
-        let label = spans
+        let spans = super::file_spans(&app, Some(file), &app.theme, 1);
+        let glyph = spans
             .iter()
-            .find(|s| s.content.trim() == file.status.label())
-            .expect("status label span");
-        assert_eq!(label.style.fg, Some(status_color(&app.theme, file.status)));
+            .find(|s| s.content.trim() == file.status.glyph().to_string())
+            .expect("status glyph span");
+        assert_eq!(glyph.style.fg, Some(status_color(&app.theme, file.status)));
+        // the basename shows, not the full path
+        assert!(
+            spans.iter().any(|s| s.content == "lib.rs"),
+            "basename present: {spans:?}"
+        );
+        assert!(
+            spans.iter().all(|s| s.content != file.path),
+            "full path dropped: {spans:?}"
+        );
     }
 }

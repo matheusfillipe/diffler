@@ -20,6 +20,7 @@ use crate::app::{
 };
 use crate::keymap::Action;
 use crate::theme::Theme;
+use crate::tree::TreeNode;
 use crate::ui::diff_render::{file_gutter_width, hunk_header, line_syntax, render_diff_line};
 use crate::ui::{diffstat_spans, hint_line, proportion_bar, status_bar, status_color};
 
@@ -114,21 +115,40 @@ fn draw_sidebar(
         return;
     };
     let is_working_tree = diff.source == DiffSource::WorkingTree;
-    let lines: Vec<Line<'static>> = model
-        .files
+    let lines: Vec<Line<'static>> = diff
+        .tree_rows(model)
         .iter()
         .enumerate()
-        .map(|(index, file)| {
-            let viewed = is_working_tree && session.is_viewed(&file.path, &file.content_hash());
-            let open = open_comment_count(session, &file.path);
-            sidebar_line(
-                theme,
-                file,
-                viewed,
-                open,
-                inner.width,
-                index == diff.selected,
-            )
+        .map(|(row_index, row)| {
+            let on_cursor = row_index == diff.tree_cursor;
+            match &row.node {
+                TreeNode::Dir { name, path } => sidebar_dir_line(
+                    theme,
+                    name,
+                    diff.folded_dirs.contains(path),
+                    row.depth,
+                    inner.width,
+                    on_cursor,
+                ),
+                TreeNode::File { index, name } => {
+                    let Some(file) = model.files.get(*index) else {
+                        return Line::default();
+                    };
+                    let viewed =
+                        is_working_tree && session.is_viewed(&file.path, &file.content_hash());
+                    let open = open_comment_count(session, &file.path);
+                    sidebar_file_line(
+                        theme,
+                        file,
+                        name,
+                        viewed,
+                        open,
+                        row.depth,
+                        inner.width,
+                        on_cursor,
+                    )
+                }
+            }
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), inner);
@@ -253,32 +273,75 @@ fn open_comment_count(session: &Session, path: &str) -> usize {
         .count()
 }
 
-fn sidebar_line(
+/// Sidebar leading cells: the cursor `▌` marker plus the tree indent for
+/// `depth`. Shared by dir and file rows so columns line up.
+fn tree_lead(theme: &Theme, depth: usize, bg: Color, on_cursor: bool) -> Span<'static> {
+    // a left bar makes the cursor row unmistakable where the bg tint is subtle
+    let marker = if on_cursor { "▌" } else { " " };
+    Span::styled(
+        format!("{marker}{}", " ".repeat(depth * 2)),
+        Style::new().fg(theme.accent).bg(bg),
+    )
+}
+
+/// A directory row: indent, fold arrow, and the dim directory name.
+fn sidebar_dir_line(
+    theme: &Theme,
+    name: &str,
+    folded: bool,
+    depth: usize,
+    width: u16,
+    on_cursor: bool,
+) -> Line<'static> {
+    let bg = if on_cursor {
+        theme.cursor_line
+    } else {
+        theme.bg
+    };
+    let arrow = if folded { "▸ " } else { "▾ " };
+    let spans = vec![
+        tree_lead(theme, depth, bg, on_cursor),
+        Span::styled(arrow.to_owned(), Style::new().fg(theme.dim).bg(bg)),
+        Span::styled(
+            name.to_owned(),
+            Style::new()
+                .fg(if on_cursor { theme.accent } else { theme.fg })
+                .bg(bg),
+        ),
+    ];
+    pad_line(spans, bg, width)
+}
+
+/// A file row: indent, status glyph (colored), basename, then the viewed and
+/// comment-count marks and the `+A -B` diffstat. The diffstat is dropped first
+/// when the sidebar is too narrow to keep the name and marks legible.
+#[allow(clippy::too_many_arguments)]
+fn sidebar_file_line(
     theme: &Theme,
     file: &FileDiff,
+    name: &str,
     viewed: bool,
     open: usize,
+    depth: usize,
     width: u16,
-    selected: bool,
+    on_cursor: bool,
 ) -> Line<'static> {
-    let bg = if selected {
+    let bg = if on_cursor {
         theme.cursor_line
     } else {
         theme.bg
     };
     let dim = Style::new().fg(theme.dim).bg(bg);
-    // a left bar makes the cursor file unmistakable where the bg tint is subtle
-    let marker = if selected { "▌" } else { " " };
     let glyph = file.status.glyph();
     let mut spans = vec![
-        Span::styled(marker.to_owned(), Style::new().fg(theme.accent).bg(bg)),
+        tree_lead(theme, depth, bg, on_cursor),
         Span::styled(
             format!("{glyph} "),
             Style::new().fg(status_color(theme, file.status)).bg(bg),
         ),
     ];
-    // reserve room for the trailing markers, then fit the path into the rest.
-    // " ·{open}" is 2 + the count's digits wide; " ✓" is 2
+    // reserve room for the trailing markers, then clip the basename into the
+    // rest. " ·{open}" is 2 + the count's digits wide; " ✓" is 2
     let suffix_width = usize::from(viewed) * 2
         + if open > 0 {
             2 + open.to_string().len()
@@ -287,57 +350,43 @@ fn sidebar_line(
         };
     let used = spans.iter().map(Span::width).sum::<usize>() + suffix_width;
     let room = (width as usize).saturating_sub(used + 1);
-    let name = Style::new()
-        .fg(if selected { theme.accent } else { theme.fg })
+    let name_style = Style::new()
+        .fg(if on_cursor { theme.accent } else { theme.fg })
         .bg(bg);
-    let (dir, base) = split_path(&file.path, room);
-    if !dir.is_empty() {
-        spans.push(Span::styled(dir, Style::new().fg(theme.dim).bg(bg)));
-    }
-    spans.push(Span::styled(base, name));
+    spans.push(Span::styled(clip_name(name, room), name_style));
     if viewed {
         spans.push(Span::styled(" ✓".to_owned(), dim));
     }
     if open > 0 {
         spans.push(Span::styled(format!(" ·{open}"), dim));
     }
+    // GitHub-PR style: the file's `+A -B` hugs the right edge, but only if it
+    // fits after the name and marks — name + marks stay legible first
+    let (added, deleted) = file.diffstat();
+    let stat = diffstat_spans(theme, added, deleted, bg);
+    let stat_width: usize = stat.iter().map(Span::width).sum();
+    let used: usize = spans.iter().map(Span::width).sum();
+    if stat_width > 0 && used + stat_width < width as usize {
+        let gap = (width as usize).saturating_sub(used + stat_width);
+        if gap > 0 {
+            spans.push(Span::styled(" ".repeat(gap), Style::new().bg(bg)));
+        }
+        spans.extend(stat);
+    }
     pad_line(spans, bg, width)
 }
 
-/// Split a path into a dim directory prefix and a bright basename so the file
-/// name stays the visible identity. The basename is preserved whole and only
-/// end-clipped when it alone overflows `room`; any leftover room shows as much
-/// of the directory as fits, elided from the left. Char-based, multibyte-safe.
-///
-/// Returns `(directory_prefix, basename)`. The directory keeps its trailing
-/// `/` and is empty when nothing fits or the path is root-level.
-fn split_path(path: &str, room: usize) -> (String, String) {
-    let (dir, base) = match path.rfind('/') {
-        Some(slash) => (&path[..=slash], &path[slash + 1..]),
-        None => ("", path),
-    };
-    let base_width = base.chars().count();
+/// Clip a basename to `room` cells, end-eliding with `…`. Char-based so it is
+/// multibyte-safe.
+fn clip_name(name: &str, room: usize) -> String {
     if room == 0 {
-        return (String::new(), String::new());
+        return String::new();
     }
-    // the basename is the identity: clip it only when it alone overflows
-    if base_width > room {
-        let keep = room.saturating_sub(1);
-        let head: String = base.chars().take(keep).collect();
-        return (String::new(), format!("{head}…"));
+    if name.chars().count() <= room {
+        return name.to_owned();
     }
-    let dir_room = room - base_width;
-    let dir_width = dir.chars().count();
-    if dir.is_empty() || dir_room <= 1 {
-        return (String::new(), base.to_owned());
-    }
-    if dir_width <= dir_room {
-        return (dir.to_owned(), base.to_owned());
-    }
-    // keep the rightmost slice of the directory, room for a leading ellipsis
-    let keep = dir_room - 1;
-    let tail: String = dir.chars().skip(dir_width - keep).collect();
-    (format!("…{tail}"), base.to_owned())
+    let head: String = name.chars().take(room.saturating_sub(1)).collect();
+    format!("{head}…")
 }
 
 fn row_line(
@@ -549,73 +598,35 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    use super::split_path;
+    use super::clip_name;
     use crate::app::{App, DiffRow, Pane};
     use crate::config::LoadedConfig;
     use crate::test_support::{Fixture, key, standard_fixture};
 
     #[test]
-    fn deep_path_keeps_full_basename_and_left_elides_the_directory() {
-        let (dir, base) = split_path(
-            "src/very/deeply/nested/module/paths/authentication_handler.rs",
-            32,
-        );
-        assert_eq!(base, "authentication_handler.rs");
+    fn basename_shorter_than_room_is_kept_whole() {
+        assert_eq!(clip_name("lib.rs", 32), "lib.rs");
+    }
+
+    #[test]
+    fn basename_exactly_filling_room_is_not_clipped() {
+        assert_eq!(clip_name("lib.rs", 6), "lib.rs");
+    }
+
+    #[test]
+    fn basename_longer_than_room_is_end_clipped_with_ellipsis() {
+        let clipped = clip_name("a_very_long_filename_indeed.rs", 12);
+        assert_eq!(clipped.chars().count(), 12);
+        assert!(clipped.ends_with('…'), "clipped at the end: {clipped:?}");
         assert!(
-            dir.starts_with('…'),
-            "directory elided from the left: {dir:?}"
-        );
-        assert!(
-            dir.ends_with('/'),
-            "trailing slash kept before basename: {dir:?}"
-        );
-        assert!(dir.len() > 1, "some directory context shown: {dir:?}");
-        assert!(
-            dir.chars().count() + base.chars().count() <= 32,
-            "rendered path fits the width: {dir:?}{base:?}"
+            clipped.starts_with("a_very"),
+            "kept from the start: {clipped:?}"
         );
     }
 
     #[test]
-    fn basename_longer_than_width_is_end_clipped() {
-        let (dir, base) = split_path("src/a_very_long_filename_indeed.rs", 12);
-        assert_eq!(dir, "");
-        assert_eq!(base.chars().count(), 12);
-        assert!(base.ends_with('…'), "basename clipped at the end: {base:?}");
-        assert!(
-            base.starts_with("a_very"),
-            "basename kept from the start: {base:?}"
-        );
-    }
-
-    #[test]
-    fn short_path_shows_full_text_without_ellipsis() {
-        let (dir, base) = split_path("src/lib.rs", 32);
-        assert_eq!(dir, "src/");
-        assert_eq!(base, "lib.rs");
-    }
-
-    #[test]
-    fn root_level_file_shows_only_the_basename() {
-        let (dir, base) = split_path("todo.md", 32);
-        assert_eq!(dir, "");
-        assert_eq!(base, "todo.md");
-    }
-
-    #[test]
-    fn directory_dropped_when_only_the_basename_fits() {
-        // width holds the basename but leaves no room for any directory
-        let (dir, base) = split_path("src/deeply/nested/file.rs", 8);
-        assert_eq!(dir, "");
-        assert_eq!(base, "file.rs");
-    }
-
-    #[test]
-    fn basename_exactly_filling_width_is_not_clipped() {
-        // room equal to the basename width fits whole, no room for a directory
-        let (dir, base) = split_path("src/lib.rs", 6);
-        assert_eq!(dir, "");
-        assert_eq!(base, "lib.rs");
+    fn zero_room_yields_an_empty_name() {
+        assert_eq!(clip_name("lib.rs", 0), "");
     }
 
     fn render(app: &mut App) -> Terminal<TestBackend> {

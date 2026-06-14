@@ -10,6 +10,7 @@ use diffler_core::vcs::LogEntry;
 
 use super::{App, FileHighlights, Modal, PendingOp};
 use crate::keymap::Action;
+use crate::tree::{self, TreeNode};
 
 /// Status screen sections, in display order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,18 +40,29 @@ impl Section {
     }
 }
 
-/// One cursor-addressable row of the status screen: section headers, file
-/// rows, and — when a file is expanded inline — hunk headers and diff lines,
-/// plus the trailing Recent commits section.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// One cursor-addressable row of the status screen: section headers, directory
+/// rows, file rows, and — when a file is expanded inline — hunk headers and
+/// diff lines, plus the trailing Recent commits section. Holds an owned
+/// directory path (the fold key), so it is `Clone`, not `Copy`.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Row {
     SectionHeader {
         section: Section,
         count: usize,
     },
+    /// A directory in a section's file tree; `path` is the fold key, `name` the
+    /// display name (a joined `a/b/c` for a collapsed single-child chain),
+    /// `depth` the indentation under the header.
+    Dir {
+        section: Section,
+        path: String,
+        name: String,
+        depth: usize,
+    },
     File {
         section: Section,
         index: usize,
+        depth: usize,
     },
     HunkHeader {
         section: Section,
@@ -76,6 +88,10 @@ pub enum Row {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum CursorAnchor {
     Section(Section),
+    Dir {
+        section: Section,
+        path: String,
+    },
     File {
         section: Section,
         path: String,
@@ -93,6 +109,8 @@ pub struct StatusView {
     pub recent_folded: bool,
     /// Per-section set of file paths whose inline diff is expanded.
     expanded: [BTreeSet<String>; 3],
+    /// Per-section set of folded directory paths in that section's file tree.
+    folded_dirs: [BTreeSet<String>; 3],
     /// Per-section set of file paths whose inline diff has been enriched with
     /// intra-line emphasis, so the per-file enrichment runs once. Cleared
     /// when the status sections are rebuilt (refresh).
@@ -110,6 +128,7 @@ impl StatusView {
             recent,
             recent_folded: true,
             expanded: [const { BTreeSet::new() }; 3],
+            folded_dirs: [const { BTreeSet::new() }; 3],
             enriched: [const { BTreeSet::new() }; 3],
             highlights: HashMap::new(),
         }
@@ -140,6 +159,22 @@ impl App {
             .is_some_and(|set| set.contains(path))
     }
 
+    /// Whether the directory `path` is folded in `section`'s file tree.
+    pub fn is_dir_folded(&self, section: Section, path: &str) -> bool {
+        self.status
+            .folded_dirs
+            .get(section.index())
+            .is_some_and(|set| set.contains(path))
+    }
+
+    fn section_folded_dirs(&self, section: Section) -> BTreeSet<String> {
+        self.status
+            .folded_dirs
+            .get(section.index())
+            .cloned()
+            .unwrap_or_default()
+    }
+
     /// Flattened cursor-addressable rows given current fold/expansion state.
     /// Empty sections are hidden, neogit-style; blank separators are a
     /// rendering concern, so j/k skip them by construction.
@@ -157,23 +192,44 @@ impl App {
             if self.is_folded(section) {
                 continue;
             }
-            for (index, file) in files.iter().enumerate() {
-                rows.push(Row::File { section, index });
-                if !self.is_expanded(section, &file.path) {
-                    continue;
-                }
-                for (hunk_index, hunk) in file.hunks.iter().enumerate() {
-                    rows.push(Row::HunkHeader {
+            // a directory tree over the section's files, folds honored; a
+            // folded directory hides its files (and so their inline diffs)
+            let folded = self.section_folded_dirs(section);
+            let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+            for tree_row in tree::visible_rows(&paths, &folded) {
+                match tree_row.node {
+                    TreeNode::Dir { path, name } => rows.push(Row::Dir {
                         section,
-                        file: index,
-                        hunk: hunk_index,
-                    });
-                    rows.extend((0..hunk.lines.len()).map(|line| Row::DiffLine {
-                        section,
-                        file: index,
-                        hunk: hunk_index,
-                        line,
-                    }));
+                        path,
+                        name,
+                        depth: tree_row.depth,
+                    }),
+                    TreeNode::File { index, .. } => {
+                        rows.push(Row::File {
+                            section,
+                            index,
+                            depth: tree_row.depth,
+                        });
+                        let Some(file) = files.get(index) else {
+                            continue;
+                        };
+                        if !self.is_expanded(section, &file.path) {
+                            continue;
+                        }
+                        for (hunk_index, hunk) in file.hunks.iter().enumerate() {
+                            rows.push(Row::HunkHeader {
+                                section,
+                                file: index,
+                                hunk: hunk_index,
+                            });
+                            rows.extend((0..hunk.lines.len()).map(|line| Row::DiffLine {
+                                section,
+                                file: index,
+                                hunk: hunk_index,
+                                line,
+                            }));
+                        }
+                    }
                 }
             }
         }
@@ -306,7 +362,7 @@ impl App {
         } else {
             None
         };
-        let Some(path) = self.row_file(row).map(|(_, file, _)| file.path.clone()) else {
+        let Some(path) = self.row_file(&row).map(|(_, file, _)| file.path.clone()) else {
             self.info("no file under the cursor");
             return;
         };
@@ -314,13 +370,13 @@ impl App {
     }
 
     fn cursor_row(&self) -> Option<Row> {
-        self.visible_rows().get(self.status.cursor).copied()
+        self.visible_rows().get(self.status.cursor).cloned()
     }
 
     /// The file a row addresses, with the hunk index for hunk-scoped rows.
-    pub fn row_file(&self, row: Row) -> Option<(Section, &FileDiff, Option<usize>)> {
-        match row {
-            Row::File { section, index } => self
+    pub fn row_file(&self, row: &Row) -> Option<(Section, &FileDiff, Option<usize>)> {
+        match *row {
+            Row::File { section, index, .. } => self
                 .section_files(section)
                 .get(index)
                 .map(|file| (section, file, None)),
@@ -338,7 +394,10 @@ impl App {
                 .section_files(section)
                 .get(file)
                 .map(|f| (section, f, Some(hunk))),
-            Row::SectionHeader { .. } | Row::RecentHeader { .. } | Row::Commit { .. } => None,
+            Row::Dir { .. }
+            | Row::SectionHeader { .. }
+            | Row::RecentHeader { .. }
+            | Row::Commit { .. } => None,
         }
     }
 
@@ -346,7 +405,7 @@ impl App {
         let Some(row) = self.cursor_row() else {
             return;
         };
-        let Some((section, file, hunk)) = self.row_file(row) else {
+        let Some((section, file, hunk)) = self.row_file(&row) else {
             return;
         };
         if section == Section::Staged {
@@ -369,7 +428,7 @@ impl App {
         let Some(row) = self.cursor_row() else {
             return;
         };
-        let Some((section, file, hunk)) = self.row_file(row) else {
+        let Some((section, file, hunk)) = self.row_file(&row) else {
             return;
         };
         if section != Section::Staged {
@@ -423,7 +482,7 @@ impl App {
         let Some(row) = self.cursor_row() else {
             return;
         };
-        let Some((_, file, _)) = self.row_file(row) else {
+        let Some((_, file, _)) = self.row_file(&row) else {
             return;
         };
         let path = file.path.clone();
@@ -437,9 +496,9 @@ impl App {
         let Some(row) = self.cursor_row() else {
             return;
         };
-        match row {
+        match &row {
             Row::Commit { index } => {
-                let Some(oid) = self.status.recent.get(index).map(|e| e.oid.clone()) else {
+                let Some(oid) = self.status.recent.get(*index).map(|e| e.oid.clone()) else {
                     return;
                 };
                 self.open_commit_diff(&oid);
@@ -447,6 +506,7 @@ impl App {
             // a section header opens the full review diff, starting the
             // walk at the section's first file (when the review covers it)
             Row::SectionHeader { section, .. } => {
+                let section = *section;
                 let review_model = self.review.model();
                 let path = self
                     .section_files(section)
@@ -455,6 +515,7 @@ impl App {
                     .map(|f| f.path.clone());
                 self.open_working_tree_diff(path.as_deref());
             }
+            // file/hunk/diff rows open the file; a dir row has no file: no-op
             row => {
                 let Some(path) = self.row_file(row).map(|(_, file, _)| file.path.clone()) else {
                     return;
@@ -468,7 +529,7 @@ impl App {
         let Some(row) = self.cursor_row() else {
             return;
         };
-        let Some(path) = self.row_file(row).map(|(_, file, _)| file.path.clone()) else {
+        let Some(path) = self.row_file(&row).map(|(_, file, _)| file.path.clone()) else {
             return;
         };
         let Some(hash) = self
@@ -507,7 +568,21 @@ impl App {
                 }
                 self.cursor_to_section_header(section);
             }
-            Row::File { section, index } => {
+            // a directory folds/unfolds in place; its row stays under the cursor
+            Row::Dir { section, path, .. } => {
+                if let Some(set) = self.status.folded_dirs.get_mut(section.index())
+                    && !set.remove(&path)
+                {
+                    set.insert(path.clone());
+                }
+                let position = self.visible_rows().iter().position(
+                    |row| matches!(row, Row::Dir { section: s, path: p, .. } if *s == section && *p == path),
+                );
+                if let Some(position) = position {
+                    self.status.cursor = position;
+                }
+            }
+            Row::File { section, index, .. } => {
                 let Some(path) = self
                     .section_files(section)
                     .get(index)
@@ -534,7 +609,7 @@ impl App {
                 }
                 // collapsing from inside lands the cursor on the file row
                 let position = self.visible_rows().iter().position(
-                    |row| matches!(row, Row::File { section: s, index } if *s == section && *index == file),
+                    |row| matches!(row, Row::File { section: s, index, .. } if *s == section && *index == file),
                 );
                 if let Some(position) = position {
                     self.status.cursor = position;
@@ -587,12 +662,16 @@ impl App {
 
     pub(super) fn status_cursor_anchor(&self) -> Option<CursorAnchor> {
         let row = self.cursor_row()?;
-        Some(match row {
-            Row::SectionHeader { section, .. } => CursorAnchor::Section(section),
+        Some(match &row {
+            Row::SectionHeader { section, .. } => CursorAnchor::Section(*section),
+            Row::Dir { section, path, .. } => CursorAnchor::Dir {
+                section: *section,
+                path: path.clone(),
+            },
             Row::RecentHeader { .. } => CursorAnchor::Recent,
-            Row::Commit { index } => CursorAnchor::Commit(index),
+            Row::Commit { index } => CursorAnchor::Commit(*index),
             Row::File { .. } | Row::HunkHeader { .. } | Row::DiffLine { .. } => {
-                let (section, file, hunk) = self.row_file(row)?;
+                let (section, file, hunk) = self.row_file(&row)?;
                 CursorAnchor::File {
                     section,
                     path: file.path.clone(),
@@ -624,6 +703,18 @@ impl App {
                     rows.iter()
                         .position(|r| matches!(r, Row::RecentHeader { .. }))
                 }),
+            // a folded dir survives a refresh by its path; fall back to the
+            // section header when the directory is gone
+            CursorAnchor::Dir { section, path } => rows
+                .iter()
+                .position(
+                    |r| matches!(r, Row::Dir { section: s, path: p, .. } if s == section && p == path),
+                )
+                .or_else(|| {
+                    rows.iter().position(
+                        |r| matches!(r, Row::SectionHeader { section: s, .. } if s == section),
+                    )
+                }),
             CursorAnchor::File {
                 section,
                 path,
@@ -631,7 +722,7 @@ impl App {
             } => {
                 let file_at = |row: &Row| -> Option<(Section, usize)> {
                     match row {
-                        Row::File { section, index } => Some((*section, *index)),
+                        Row::File { section, index, .. } => Some((*section, *index)),
                         _ => None,
                     }
                 };
@@ -710,7 +801,7 @@ mod tests {
         let rows = app.visible_rows();
         let position = rows.iter().position(pred).expect("row present");
         app.status.cursor = position;
-        rows[position]
+        rows.into_iter().nth(position).expect("row present")
     }
 
     fn file_row_in(section: Section) -> impl Fn(&Row) -> bool {
@@ -724,14 +815,15 @@ mod tests {
     #[test]
     fn cursor_moves_and_clamps() {
         let (_fixture, mut app) = app();
-        // 3 sections of 1 file each + the recent commits header: 7 rows
-        assert_eq!(app.visible_rows().len(), 7);
+        // untracked (header + todo.md) + unstaged (header + src/ dir + lib.rs)
+        // + staged (header + ci.yml) + recent commits header: 8 rows
+        assert_eq!(app.visible_rows().len(), 8);
         app.handle(key('k'));
         assert_eq!(app.status.cursor, 0, "MoveUp clamps at the top");
         for _ in 0..20 {
             app.handle(key('j'));
         }
-        assert_eq!(app.status.cursor, 6, "MoveDown clamps at the last row");
+        assert_eq!(app.status.cursor, 7, "MoveDown clamps at the last row");
     }
 
     #[test]
@@ -747,12 +839,118 @@ mod tests {
     #[test]
     fn fold_toggles_the_section_under_the_cursor() {
         let (_fixture, mut app) = app();
+        // the untracked section holds one root-level file (todo.md)
         app.handle(key('\t'));
         assert!(app.is_folded(Section::Untracked));
-        assert_eq!(app.visible_rows().len(), 6);
+        assert_eq!(app.visible_rows().len(), 7);
         app.handle(key('\t'));
         assert!(!app.is_folded(Section::Untracked));
-        assert_eq!(app.visible_rows().len(), 7);
+        assert_eq!(app.visible_rows().len(), 8);
+    }
+
+    #[test]
+    fn a_section_lists_its_files_as_a_directory_tree() {
+        let (_fixture, app) = app();
+        // unstaged holds src/lib.rs: a src dir row precedes the file row
+        let rows = app.visible_rows();
+        let unstaged: Vec<&Row> = rows
+            .iter()
+            .skip_while(|r| {
+                !matches!(
+                    r,
+                    Row::SectionHeader {
+                        section: Section::Unstaged,
+                        ..
+                    }
+                )
+            })
+            .skip(1)
+            .take_while(|r| !matches!(r, Row::SectionHeader { .. } | Row::RecentHeader { .. }))
+            .collect();
+        assert!(
+            matches!(unstaged.first(), Some(Row::Dir { path, depth: 0, .. }) if path == "src"),
+            "src dir row at depth 0: {unstaged:?}"
+        );
+        assert!(
+            matches!(unstaged.get(1), Some(Row::File { depth: 1, .. })),
+            "the file row nests under the dir: {unstaged:?}"
+        );
+    }
+
+    #[test]
+    fn tab_on_a_dir_row_folds_it_and_hides_its_files() {
+        let (_fixture, mut app) = app();
+        // cursor onto the src dir row in the unstaged section
+        cursor_to(
+            &mut app,
+            |row| matches!(row, Row::Dir { path, .. } if path == "src"),
+        );
+        app.handle(key('\t'));
+        assert!(app.is_dir_folded(Section::Unstaged, "src"));
+        assert!(
+            !app.visible_rows().iter().any(|r| matches!(
+                r,
+                Row::File {
+                    section: Section::Unstaged,
+                    ..
+                }
+            )),
+            "folding src/ hid the file under it"
+        );
+        // the cursor stayed on the (still-visible) dir row
+        assert!(matches!(
+            app.visible_rows()[app.status.cursor],
+            Row::Dir { path: ref p, .. } if p == "src"
+        ));
+        // tab again unfolds and the file returns
+        app.handle(key('\t'));
+        assert!(!app.is_dir_folded(Section::Unstaged, "src"));
+        assert!(app.visible_rows().iter().any(|r| matches!(
+            r,
+            Row::File {
+                section: Section::Unstaged,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn untracked_files_slot_into_their_tree_by_path() {
+        let fixture = Fixture::new();
+        fixture.write("src/lib.rs", "pub fn answer() -> u32 {\n    41\n}\n");
+        fixture.commit_all("initial commit");
+        // a new untracked file in a nested directory
+        fixture.write("docs/api/intro.md", "# intro\n");
+        let app = App::new(fixture.review(), LoadedConfig::default());
+        let rows = app.visible_rows();
+        let kinds: Vec<String> = rows
+            .iter()
+            .skip_while(|r| {
+                !matches!(
+                    r,
+                    Row::SectionHeader {
+                        section: Section::Untracked,
+                        ..
+                    }
+                )
+            })
+            .skip(1)
+            .take_while(|r| !matches!(r, Row::SectionHeader { .. } | Row::RecentHeader { .. }))
+            .map(|r| match r {
+                Row::Dir { path, depth, .. } => format!("dir:{path}@{depth}"),
+                Row::File { index, depth, .. } => format!("file:{index}@{depth}"),
+                other => format!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                // docs/ and api/ are a single-child chain, collapsed to one row
+                "dir:docs/api@0".to_owned(),
+                "file:0@1".to_owned(),
+            ],
+            "the untracked file nests under the collapsed docs/api chain"
+        );
     }
 
     #[test]
@@ -1208,7 +1406,8 @@ mod tests {
         let Some((section, file, _)) = app
             .visible_rows()
             .get(app.status.cursor)
-            .and_then(|row| app.row_file(*row))
+            .cloned()
+            .and_then(|row| app.row_file(&row))
             .map(|(s, f, h)| (s, f.path.clone(), h))
         else {
             panic!("cursor should still be on a file row");
@@ -1224,8 +1423,8 @@ mod tests {
         fixture.stage("todo.md");
         app.handle(ctrl_key('r'));
         // todo.md moved to staged: the anchor follows the path there
-        let row = app.visible_rows()[app.status.cursor];
-        let (section, file, _) = app.row_file(row).expect("file row");
+        let row = app.visible_rows()[app.status.cursor].clone();
+        let (section, file, _) = app.row_file(&row).expect("file row");
         assert_eq!(section, Section::Staged);
         assert_eq!(file.path, "todo.md");
     }

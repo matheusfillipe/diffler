@@ -200,6 +200,7 @@ const DIFF_DEFAULTS: &[(&str, Action)] = &[
     ("<c-n>", Action::NextFile),
     ("<c-p>", Action::PrevFile),
     ("<tab>", Action::ToggleFocus),
+    ("za", Action::ToggleFold),
     ("<cr>", Action::Open),
     ("<c-r>", Action::Refresh),
     ("{", Action::PrevHunk),
