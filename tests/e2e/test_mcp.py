@@ -76,3 +76,13 @@ def test_review_status_and_get_comments_round_trip(spawn, repo):
     assert comments[0]["file"] == "app.txt"
     assert comments[0]["line"] == 2
     assert comments[0]["status"] == "open"
+
+
+def test_endpoint_file_publishes_the_bound_port(spawn, repo):
+    tui = spawn("--port", str(free_port()))
+    url = mcp_url(tui)
+    port = int(re.search(r":(\d+)/mcp", url).group(1))
+    # the stdio proxy discovers the live port from this file
+    endpoint = json.loads((repo / ".diffler" / "mcp.json").read_text())
+    assert endpoint["port"] == port
+    assert endpoint["url"] == url

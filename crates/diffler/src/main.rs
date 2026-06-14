@@ -97,6 +97,7 @@ async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<
         match mcp::spawn_mcp(tx.clone(), app.feedback_tx.subscribe(), app.config.mcp.port).await {
             Ok(handle) => {
                 app.mcp_port = Some(handle.port);
+                let _ = mcp::write_endpoint(&app.review.repo_root, handle.port);
                 // show the connect hint as the initial message only when no
                 // startup warning is already occupying the one-shot slot
                 if app.message.is_none() {
@@ -159,6 +160,7 @@ async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<
     events.abort();
     if let Some(mcp) = mcp {
         mcp.handle.abort();
+        mcp::clear_endpoint(&app.review.repo_root);
     }
     drop(watcher);
     Ok(())

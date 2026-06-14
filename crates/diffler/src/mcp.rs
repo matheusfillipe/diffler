@@ -6,6 +6,7 @@
 
 use std::fmt;
 use std::io::ErrorKind;
+use std::path::Path;
 use std::time::Duration;
 
 use diffler_core::feedback;
@@ -580,6 +581,32 @@ pub fn connect_hint(port: u16) -> String {
     format!("mcp :{port} — claude mcp add --transport http diffler http://127.0.0.1:{port}/mcp")
 }
 
+/// Repo-relative path of the endpoint discovery file an external proxy reads.
+const ENDPOINT_FILE: &str = "mcp.json";
+
+fn endpoint_path(repo_root: &Path) -> std::path::PathBuf {
+    repo_root.join(".diffler").join(ENDPOINT_FILE)
+}
+
+/// Publish the live MCP endpoint to `.diffler/mcp.json` so a stdio proxy (the
+/// `npx` bridge) can discover the actual port, which may differ from the
+/// configured one after an ephemeral fallback.
+pub fn write_endpoint(repo_root: &Path, port: u16) -> std::io::Result<()> {
+    let dir = repo_root.join(".diffler");
+    std::fs::create_dir_all(&dir)?;
+    let gitignore = dir.join(".gitignore");
+    if !gitignore.exists() {
+        std::fs::write(&gitignore, "*\n")?;
+    }
+    let body = format!("{{\n  \"port\": {port},\n  \"url\": \"http://127.0.0.1:{port}/mcp\"\n}}\n");
+    std::fs::write(endpoint_path(repo_root), body)
+}
+
+/// Remove the endpoint file on shutdown so a stale port never lingers.
+pub fn clear_endpoint(repo_root: &Path) {
+    let _ = std::fs::remove_file(endpoint_path(repo_root));
+}
+
 #[cfg(test)]
 mod tests {
     use diffler_core::model::{DiffLine, FileDiff, Hunk, HunkId, LineKind};
@@ -843,6 +870,22 @@ mod tests {
             Duration::from_secs(MAX_WAIT_SECONDS),
             "a timeout above the cap must clamp to {MAX_WAIT_SECONDS}s"
         );
+    }
+
+    #[test]
+    fn endpoint_file_publishes_the_port_and_clears() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_endpoint(dir.path(), 8417).expect("write");
+        let path = dir.path().join(".diffler/mcp.json");
+        let body = std::fs::read_to_string(&path).expect("read");
+        assert!(body.contains("\"port\": 8417"), "{body}");
+        assert!(body.contains("http://127.0.0.1:8417/mcp"), "{body}");
+        // the .diffler dir self-gitignores like the session store
+        let gitignore =
+            std::fs::read_to_string(dir.path().join(".diffler/.gitignore")).expect("gitignore");
+        assert_eq!(gitignore, "*\n");
+        clear_endpoint(dir.path());
+        assert!(!path.exists(), "endpoint file removed on shutdown");
     }
 
     // spawn_mcp falls back to :0 only on AddrInUse, not on other errors.
