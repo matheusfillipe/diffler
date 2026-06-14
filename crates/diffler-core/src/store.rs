@@ -26,7 +26,9 @@ pub enum StoreError {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct OnDisk {
     version: u32,
-    /// Absent in legacy files, where the source is implicitly the working tree.
+    /// Self-describes the file for `load_all`; lookups go by filename (the
+    /// source key), so the filename is authoritative. Absent in legacy files,
+    /// where the source is implicitly the working tree.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     source: Option<ReviewSource>,
     #[serde(flatten)]

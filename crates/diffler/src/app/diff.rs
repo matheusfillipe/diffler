@@ -1906,8 +1906,8 @@ mod tests {
         app.open_commit_diff(&oid);
         let path = selected_path(&app);
 
-        // marking a commit-diff file viewed used to fail with "not part of the
-        // review diff" because the lookup hit the working-tree model
+        // a commit-diff file lives in the pinned commit model, so viewed must
+        // resolve against it, not the working-tree model
         app.handle(key('v'));
 
         let source = diffler_core::source::ReviewSource::commit(&oid);

@@ -28,8 +28,9 @@ impl ReviewSource {
         }
     }
 
-    /// Stable persistence key, also the on-disk filename stem. Full oids keep
-    /// it collision-free; every character is filesystem-safe.
+    /// Stable persistence key, also the on-disk filename stem. The `-`
+    /// separator is unambiguous because git/jj oids are dash-free hex; every
+    /// character is filesystem-safe.
     pub fn key(&self) -> String {
         match self {
             Self::WorkingTree => "working".to_owned(),

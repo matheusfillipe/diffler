@@ -174,9 +174,11 @@ impl App {
     }
 
     fn agent_mark_viewed(&mut self, file: &str) -> McpResponse {
+        // mark the file in the review the human is currently looking at, so a
+        // commit/range diff gets its own viewed marks like the working tree
+        let source = self.active_review_source();
         let Some(hash) = self
-            .review
-            .model()
+            .source_model(&source)
             .files
             .iter()
             .find(|f| f.path == file)
@@ -184,8 +186,13 @@ impl App {
         else {
             return McpResponse::Error(format!("unknown file: {file}"));
         };
-        self.review.session.mark_viewed(file, &hash);
-        self.persist_agent_change(&ReviewSource::WorkingTree);
+        if let Err(err) = self.review.ensure_source(&source) {
+            return McpResponse::Error(err.to_string());
+        }
+        self.review
+            .session_for_mut(&source)
+            .mark_viewed(file, &hash);
+        self.persist_agent_change(&source);
         self.info(format!("agent marked {file} viewed"));
         McpResponse::Ok
     }
@@ -528,6 +535,31 @@ mod tests {
             .expect("commit review");
         assert_eq!(commit.open_comments, 1);
         assert_eq!(commit.label, source.label());
+    }
+
+    #[test]
+    fn agent_mark_viewed_targets_the_open_review_source() {
+        let (_fixture, mut app, _id) = app_with_comment();
+        let oid = app.status.recent[0].oid.clone();
+        app.open_commit_diff(&oid);
+
+        let response = app.handle_mcp(McpRequestKind::MarkViewed {
+            file: "src/lib.rs".to_owned(),
+        });
+        assert_eq!(response, McpResponse::Ok);
+
+        let source = ReviewSource::commit(&oid);
+        assert!(
+            app.review
+                .session_for(&source)
+                .viewed
+                .contains_key("src/lib.rs"),
+            "viewed lands on the open commit review"
+        );
+        assert!(
+            app.review.session.viewed.is_empty(),
+            "the working-tree review is untouched"
+        );
     }
 
     #[test]

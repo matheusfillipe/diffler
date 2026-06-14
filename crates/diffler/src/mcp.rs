@@ -466,7 +466,9 @@ impl DifflerMcp {
         }
     }
 
-    #[tool(description = "Mark a file of the review diff as viewed in the TUI's file list.")]
+    #[tool(
+        description = "Mark a file as viewed in the review the human is currently looking at (working tree, or the open commit/range diff)."
+    )]
     async fn mark_viewed(
         &self,
         Parameters(params): Parameters<MarkViewedParams>,
