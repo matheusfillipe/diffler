@@ -21,7 +21,7 @@ def cursor_to_added_line(tui):
 
 
 def load_session(repo):
-    return json.loads((repo / ".diffler" / "session.json").read_text())
+    return json.loads((repo / ".diffler" / "reviews" / "working.json").read_text())
 
 
 def test_enter_opens_the_diff_view(spawn):

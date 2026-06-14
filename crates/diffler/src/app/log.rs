@@ -219,7 +219,7 @@ mod tests {
         app.handle(key('\n'));
         assert_eq!(app.screen(), Screen::Diff);
         let diff = app.diff.as_ref().expect("diff view");
-        let DiffSource::Commit(oid) = &diff.source else {
+        let DiffSource::Commit { oid } = &diff.source else {
             panic!("expected a commit diff");
         };
         let expected = &app.log.as_ref().unwrap().entries[1].oid;
@@ -290,7 +290,7 @@ mod tests {
         app.handle(key('\n'));
         let diff = app.diff.as_ref().expect("diff view");
         assert!(
-            matches!(&diff.source, DiffSource::Commit(_)),
+            matches!(&diff.source, DiffSource::Commit { .. }),
             "no selection means a single commit diff: {:?}",
             diff.source
         );

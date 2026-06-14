@@ -587,16 +587,23 @@ impl App {
         if body.is_empty() {
             return;
         }
+        let source = self.active_review_source();
         match on_submit {
             InputOp::Comment { anchor } => {
-                self.review.session.add_comment(&self.author, anchor, body);
+                self.review
+                    .session_for_mut(&source)
+                    .add_comment(&self.author, anchor, body);
                 if let Some(diff) = self.diff.as_mut() {
                     diff.visual_anchor = None;
                 }
                 self.after_session_change();
             }
             InputOp::Reply { comment_id } => {
-                if self.review.session.reply(&comment_id, &self.author, body) {
+                if self
+                    .review
+                    .session_for_mut(&source)
+                    .reply(&comment_id, &self.author, body)
+                {
                     self.after_session_change();
                 } else {
                     self.error("comment is gone; reply dropped");
@@ -622,6 +629,14 @@ impl App {
         *self.feedback_tx.borrow()
     }
 
+    /// The review source the user is currently looking at: the open diff's
+    /// source, or the working tree on the status screen.
+    pub(crate) fn active_review_source(&self) -> DiffSource {
+        self.diff
+            .as_ref()
+            .map_or(DiffSource::WorkingTree, |diff| diff.source.clone())
+    }
+
     /// Persist the session and invalidate comment-bearing rows after a
     /// human comment change; also wakes agents waiting for feedback.
     fn after_session_change(&mut self) {
@@ -632,7 +647,8 @@ impl App {
     /// Like [`App::after_session_change`] but for agent-driven mutations,
     /// which must not wake the agent's own `wait_for_feedback` poll.
     pub(crate) fn after_agent_session_change(&mut self) {
-        if let Err(err) = self.review.save() {
+        let source = self.active_review_source();
+        if let Err(err) = self.review.save_for(&source) {
             self.error(err.to_string());
         }
         if let Some(diff) = self.diff.as_mut() {

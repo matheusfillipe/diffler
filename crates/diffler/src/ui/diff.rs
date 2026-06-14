@@ -67,7 +67,8 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         // a commit view renders from its pinned model; only fall back to the
         // (lazily computed) working-tree model for the working-tree view
         let review_model = (diff.commit_model.is_none()).then(|| review.model());
-        draw_body(frame, body, theme, &review.session, review_model, diff);
+        let session = review.session_for(&diff.source);
+        draw_body(frame, body, theme, session, review_model, diff);
     }
 
     frame.render_widget(
@@ -115,7 +116,6 @@ fn draw_sidebar(
     let Some(model) = diff.commit_model.as_ref().or(review_model) else {
         return;
     };
-    let is_working_tree = diff.source == DiffSource::WorkingTree;
     let lines: Vec<Line<'static>> = diff
         .tree_rows(model)
         .iter()
@@ -135,8 +135,7 @@ fn draw_sidebar(
                     let Some(file) = model.files.get(*index) else {
                         return Line::default();
                     };
-                    let viewed =
-                        is_working_tree && session.is_viewed(&file.path, &file.content_hash());
+                    let viewed = session.is_viewed(&file.path, &file.content_hash());
                     let open = open_comment_count(session, &file.path);
                     sidebar_file_line(
                         theme,
@@ -194,8 +193,7 @@ fn draw_pane(
     // header is fixed; the rows scroll beneath it
     let [header_area, rows_area] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
-    let is_working_tree = diff.source == DiffSource::WorkingTree;
-    let viewed = is_working_tree && session.is_viewed(&file.path, &file.content_hash());
+    let viewed = session.is_viewed(&file.path, &file.content_hash());
     let open = open_comment_count(session, &file.path);
     let total = session
         .comments
@@ -255,7 +253,7 @@ fn draw_pane(
 /// `oldest7..newest7` range span when the pane shows a combined commit range.
 fn pane_title(source: &DiffSource) -> String {
     match source {
-        DiffSource::WorkingTree | DiffSource::Commit(_) => "Diff".to_owned(),
+        DiffSource::WorkingTree | DiffSource::Commit { .. } => "Diff".to_owned(),
         DiffSource::Range { oldest, newest } => {
             let short = |oid: &str| oid.get(..7).unwrap_or(oid).to_owned();
             format!("Diff {}..{}", short(oldest), short(newest))

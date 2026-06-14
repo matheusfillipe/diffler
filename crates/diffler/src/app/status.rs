@@ -1395,7 +1395,7 @@ mod tests {
         app.handle(key('\n'));
         assert_eq!(app.screen(), Screen::Diff);
         let diff = app.diff.as_ref().expect("diff view");
-        let DiffSource::Commit(oid) = &diff.source else {
+        let DiffSource::Commit { oid } = &diff.source else {
             panic!("expected a commit source, got {:?}", diff.source);
         };
         assert_eq!(oid.len(), 40);

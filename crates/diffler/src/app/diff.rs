@@ -10,24 +10,13 @@ use diffler_core::highlight::StyledRange;
 use diffler_core::model::{DiffModel, FileDiff};
 use diffler_core::review::Review;
 use diffler_core::session::{Anchor, Comment, CommentStatus, Session};
+pub use diffler_core::source::ReviewSource as DiffSource;
 
 use super::{App, InputOp, Modal, Screen};
 use crate::clipboard;
 use crate::config::FileLayout;
 use crate::keymap::Action;
 use crate::tree::{self, TreeNode, TreeRow};
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DiffSource {
-    WorkingTree,
-    Commit(String),
-    /// Combined diff of a contiguous commit range, oldest to newest (full
-    /// oids). The pane pins the range model like a single commit's.
-    Range {
-        oldest: String,
-        newest: String,
-    },
-}
 
 /// Which pane has the keyboard: the file sidebar or the diff body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,7 +178,7 @@ impl DiffView {
         }
         let model = self.commit_model.as_ref().unwrap_or_else(|| review.model());
         self.selected = self.selected.min(model.files.len().saturating_sub(1));
-        self.rows = build_rows(model, &review.session, self.selected);
+        self.rows = build_rows(model, review.session_for(&self.source), self.selected);
         self.rows_dirty = false;
         self.cursor = self.cursor.min(self.rows.len().saturating_sub(1));
         self.scroll = self.scroll.min(self.rows.len().saturating_sub(1));
@@ -412,8 +401,13 @@ impl App {
     pub(crate) fn open_commit_diff(&mut self, oid: &str) {
         match self.review.vcs.commit_diff(oid) {
             Ok(model) => {
+                let source = DiffSource::commit(oid);
+                if let Err(err) = self.review.ensure_source(&source) {
+                    self.error(err.to_string());
+                    return;
+                }
                 let view = DiffView::new(
-                    DiffSource::Commit(oid.to_owned()),
+                    source,
                     Some(model),
                     &self.review,
                     self.config.ui.diff_file_layout,
@@ -430,11 +424,13 @@ impl App {
     pub(crate) fn open_range_diff(&mut self, oldest: &str, newest: &str) {
         match self.review.vcs.range_diff(oldest, newest) {
             Ok(model) => {
+                let source = DiffSource::range(oldest, newest);
+                if let Err(err) = self.review.ensure_source(&source) {
+                    self.error(err.to_string());
+                    return;
+                }
                 let view = DiffView::new(
-                    DiffSource::Range {
-                        oldest: oldest.to_owned(),
-                        newest: newest.to_owned(),
-                    },
+                    source,
                     Some(model),
                     &self.review,
                     self.config.ui.diff_file_layout,
@@ -870,7 +866,7 @@ impl App {
         let DiffRow::Comment { comment, .. } = diff.rows.get(diff.cursor)? else {
             return None;
         };
-        self.review.session.comments.get(*comment)
+        self.review.session_for(&diff.source).comments.get(*comment)
     }
 
     fn reply_at_cursor(&mut self) {
@@ -898,7 +894,8 @@ impl App {
             return;
         }
         let id = comment.id.clone();
-        self.review.session.resolve(&id);
+        let source = self.active_review_source();
+        self.review.session_for_mut(&source).resolve(&id);
         self.after_session_change();
         self.info("comment resolved");
     }
@@ -907,24 +904,26 @@ impl App {
         let Some(path) = self.diff_cursor_path() else {
             return;
         };
-        let Some(hash) = self
-            .review
-            .model()
-            .files
-            .iter()
-            .find(|f| f.path == path)
-            .map(FileDiff::content_hash)
-        else {
+        let source = self.active_review_source();
+        let hash = self.diff.as_ref().and_then(|diff| {
+            diff.model(&self.review)
+                .files
+                .iter()
+                .find(|f| f.path == path)
+                .map(FileDiff::content_hash)
+        });
+        let Some(hash) = hash else {
             self.info(format!("{path} is not part of the review diff"));
             return;
         };
-        let viewed = self.review.session.is_viewed(&path, &hash);
+        let session = self.review.session_for_mut(&source);
+        let viewed = session.is_viewed(&path, &hash);
         if viewed {
-            self.review.session.unmark_viewed(&path);
+            session.unmark_viewed(&path);
         } else {
-            self.review.session.mark_viewed(&path, &hash);
+            session.mark_viewed(&path, &hash);
         }
-        if let Err(err) = self.review.save() {
+        if let Err(err) = self.review.save_for(&source) {
             self.error(err.to_string());
         }
         // pressing v repeatedly walks the review: after marking, advance the
@@ -940,12 +939,13 @@ impl App {
         let review = &self.review;
         let next = self.diff.as_ref().and_then(|diff| {
             let model = diff.model(review);
+            let session = review.session_for(&diff.source);
             model
                 .files
                 .iter()
                 .enumerate()
                 .skip(diff.selected + 1)
-                .find(|(_, file)| !self.is_path_viewed(&file.path))
+                .find(|(_, file)| !session.is_viewed(&file.path, &file.content_hash()))
                 .map(|(index, _)| index)
         });
         if let Some(index) = next {
@@ -1896,6 +1896,40 @@ mod tests {
         fixture.write("zzz.md", "new\n");
         app.handle(ctrl_key('r'));
         assert_eq!(rows(&app).len(), before, "commit model is immutable");
+    }
+
+    #[test]
+    fn viewed_on_a_commit_diff_persists_to_that_source_not_the_working_tree() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let oid = app.status.recent[0].oid.clone();
+        app.open_commit_diff(&oid);
+        let path = selected_path(&app);
+
+        // marking a commit-diff file viewed used to fail with "not part of the
+        // review diff" because the lookup hit the working-tree model
+        app.handle(key('v'));
+
+        let source = diffler_core::source::ReviewSource::commit(&oid);
+        assert!(
+            app.review.session_for(&source).viewed.contains_key(&path),
+            "viewed mark lands on the commit source"
+        );
+        assert!(
+            app.review.session.viewed.is_empty(),
+            "the working-tree session is untouched"
+        );
+
+        // a fresh open reloads the commit source's viewed mark from disk
+        let mut reopened = App::new(fixture.review(), LoadedConfig::default());
+        reopened.open_commit_diff(&oid);
+        assert!(
+            reopened
+                .review
+                .session_for(&source)
+                .viewed
+                .contains_key(&path)
+        );
     }
 
     #[test]
