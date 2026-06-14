@@ -2,12 +2,14 @@
 //! loop against the owned review state; the `mcp` module only ships
 //! requests here and renders the responses.
 
+use diffler_core::model::DiffModel;
 use diffler_core::session::CommentStatus;
+use diffler_core::source::ReviewSource;
 
 use super::App;
 use crate::mcp::{
     AGENT_AUTHOR, CommentInfo, FileEntry, McpRequestKind, McpResponse, ReviewStatusResponse,
-    comment_info, comment_status_name, file_status_name, render_unified,
+    ReviewSummary, comment_info, comment_status_name, file_status_name, render_unified,
 };
 
 impl App {
@@ -23,6 +25,7 @@ impl App {
             McpRequestKind::GetComments { status } => McpResponse::Comments(
                 self.comments_response(|c| status.is_none_or(|wanted| c == wanted)),
             ),
+            McpRequestKind::ListReviews => McpResponse::Reviews(self.review_summaries()),
             McpRequestKind::ReplyComment { id, body } => self.agent_reply(&id, &body),
             McpRequestKind::ProposeResolve { id, note } => {
                 self.agent_propose_resolve(&id, note.as_deref())
@@ -46,14 +49,7 @@ impl App {
                 viewed: self.review.session.is_viewed(&f.path, &f.content_hash()),
             })
             .collect();
-        let (mut open, mut replied, mut resolved) = (0, 0, 0);
-        for comment in &self.review.session.comments {
-            match comment.status {
-                CommentStatus::Open => open += 1,
-                CommentStatus::Replied => replied += 1,
-                CommentStatus::Resolved => resolved += 1,
-            }
-        }
+        let (open, replied, resolved) = count_by_status(&self.review.session.comments);
         ReviewStatusResponse {
             repo: self
                 .review
@@ -68,48 +64,106 @@ impl App {
             replied_comments: replied,
             resolved_comments: resolved,
             feedback_epoch: self.feedback_epoch(),
+            reviews: self.review_summaries(),
         }
     }
 
-    fn comments_response(&self, keep: impl Fn(CommentStatus) -> bool) -> Vec<CommentInfo> {
+    fn review_summaries(&self) -> Vec<ReviewSummary> {
         self.review
-            .session
-            .comments
-            .iter()
-            .filter(|c| keep(c.status))
-            .map(|c| comment_info(c, self.review.model()))
+            .all_reviews()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(source, session)| {
+                let (open, replied, resolved) = count_by_status(&session.comments);
+                ReviewSummary {
+                    source: source.key(),
+                    label: source.label(),
+                    open_comments: open,
+                    replied_comments: replied,
+                    resolved_comments: resolved,
+                }
+            })
             .collect()
     }
 
-    fn agent_reply(&mut self, id: &str, body: &str) -> McpResponse {
-        if !self.review.session.reply(id, AGENT_AUTHOR, body) {
-            return McpResponse::Error(format!("unknown comment id: {id}"));
+    /// The diff a source is reviewing, used to render comment context and judge
+    /// outdated-ness. Backend errors degrade to an empty diff.
+    fn source_model(&self, source: &ReviewSource) -> DiffModel {
+        match source {
+            ReviewSource::WorkingTree => self.review.model().clone(),
+            ReviewSource::Commit { oid } => self.review.vcs.commit_diff(oid).unwrap_or_default(),
+            ReviewSource::Range { oldest, newest } => self
+                .review
+                .vcs
+                .range_diff(oldest, newest)
+                .unwrap_or_default(),
         }
-        self.after_agent_session_change();
+    }
+
+    /// Comments across every review, each tagged with its source so the agent
+    /// knows what the human reviewed and where the change came from.
+    fn comments_response(&self, keep: impl Fn(CommentStatus) -> bool) -> Vec<CommentInfo> {
+        let mut out = Vec::new();
+        for (source, session) in self.review.all_reviews().unwrap_or_default() {
+            let model = self.source_model(&source);
+            for comment in session.comments.iter().filter(|c| keep(c.status)) {
+                out.push(comment_info(comment, &model, &source));
+            }
+        }
+        out
+    }
+
+    /// The review a comment id lives in, searching every persisted source.
+    fn source_of_comment(&self, id: &str) -> Option<ReviewSource> {
+        self.review
+            .all_reviews()
+            .ok()?
+            .into_iter()
+            .find(|(_, session)| session.comments.iter().any(|c| c.id == id))
+            .map(|(source, _)| source)
+    }
+
+    fn agent_reply(&mut self, id: &str, body: &str) -> McpResponse {
+        let Some(source) = self.source_of_comment(id) else {
+            return McpResponse::Error(format!("unknown comment id: {id}"));
+        };
+        if let Err(err) = self.review.ensure_source(&source) {
+            return McpResponse::Error(err.to_string());
+        }
+        self.review
+            .session_for_mut(&source)
+            .reply(id, AGENT_AUTHOR, body);
+        self.persist_agent_change(&source);
         self.info("agent replied to a comment");
-        self.comment_status_response(id)
+        self.comment_status_response(&source, id)
     }
 
     /// The agent can only propose: the comment moves to replied with a
     /// flagged note, and the human resolves it in the TUI (`R`).
     fn agent_propose_resolve(&mut self, id: &str, note: Option<&str>) -> McpResponse {
+        let Some(source) = self.source_of_comment(id) else {
+            return McpResponse::Error(format!("unknown comment id: {id}"));
+        };
+        if let Err(err) = self.review.ensure_source(&source) {
+            return McpResponse::Error(err.to_string());
+        }
         let note = note
             .map(str::trim)
             .filter(|n| !n.is_empty())
             .unwrap_or("marked resolved");
         let body = format!("[agent] {note}");
-        if !self.review.session.reply(id, AGENT_AUTHOR, &body) {
-            return McpResponse::Error(format!("unknown comment id: {id}"));
-        }
-        self.after_agent_session_change();
+        self.review
+            .session_for_mut(&source)
+            .reply(id, AGENT_AUTHOR, &body);
+        self.persist_agent_change(&source);
         self.info("agent proposed resolving a comment (confirm with R)");
-        self.comment_status_response(id)
+        self.comment_status_response(&source, id)
     }
 
-    fn comment_status_response(&self, id: &str) -> McpResponse {
+    fn comment_status_response(&self, source: &ReviewSource, id: &str) -> McpResponse {
         let status = self
             .review
-            .session
+            .session_for(source)
             .comments
             .iter()
             .find(|c| c.id == id)
@@ -131,10 +185,34 @@ impl App {
             return McpResponse::Error(format!("unknown file: {file}"));
         };
         self.review.session.mark_viewed(file, &hash);
-        self.after_agent_session_change();
+        self.persist_agent_change(&ReviewSource::WorkingTree);
         self.info(format!("agent marked {file} viewed"));
         McpResponse::Ok
     }
+
+    /// Persist one source after an agent mutation and refresh the open diff.
+    /// Unlike the human path this never bumps the feedback epoch — an agent's
+    /// own change must not wake its `wait_for_feedback` poll.
+    fn persist_agent_change(&mut self, source: &ReviewSource) {
+        if let Err(err) = self.review.save_for(source) {
+            self.error(err.to_string());
+        }
+        if let Some(diff) = self.diff.as_mut() {
+            diff.invalidate();
+        }
+    }
+}
+
+fn count_by_status(comments: &[diffler_core::session::Comment]) -> (usize, usize, usize) {
+    let (mut open, mut replied, mut resolved) = (0, 0, 0);
+    for comment in comments {
+        match comment.status {
+            CommentStatus::Open => open += 1,
+            CommentStatus::Replied => replied += 1,
+            CommentStatus::Resolved => resolved += 1,
+        }
+    }
+    (open, replied, resolved)
 }
 
 #[cfg(test)]
@@ -347,6 +425,109 @@ mod tests {
             file: "nope.rs".to_owned(),
         });
         assert!(matches!(response, McpResponse::Error(_)));
+    }
+
+    fn commit_anchor(file: &str) -> Anchor {
+        Anchor {
+            file: file.to_owned(),
+            line: Some(1),
+            line_end: None,
+            on_old_side: false,
+            hunk: None,
+            line_text: None,
+        }
+    }
+
+    #[test]
+    fn get_comments_aggregates_every_source_and_tags_provenance() {
+        let (_fixture, mut app, working_id) = app_with_comment();
+        let oid = app.status.recent[0].oid.clone();
+        let source = ReviewSource::commit(&oid);
+        app.review.ensure_source(&source).expect("ensure");
+        let commit_id = app
+            .review
+            .session_for_mut(&source)
+            .add_comment("human", commit_anchor("src/lib.rs"), "on the commit")
+            .id
+            .clone();
+        app.review.save_for(&source).expect("save");
+
+        let McpResponse::Comments(all) =
+            app.handle_mcp(McpRequestKind::GetComments { status: None })
+        else {
+            panic!("expected comments");
+        };
+        let working = all.iter().find(|c| c.id == working_id).expect("working");
+        assert_eq!(working.source, "working");
+        assert_eq!(working.source_label, "working tree");
+        let on_commit = all.iter().find(|c| c.id == commit_id).expect("commit");
+        assert_eq!(on_commit.source, source.key());
+        assert_eq!(on_commit.source_label, source.label());
+    }
+
+    #[test]
+    fn agent_reply_targets_the_comment_owning_source() {
+        let (fixture, mut app, _working_id) = app_with_comment();
+        let oid = app.status.recent[0].oid.clone();
+        let source = ReviewSource::commit(&oid);
+        app.review.ensure_source(&source).expect("ensure");
+        let id = app
+            .review
+            .session_for_mut(&source)
+            .add_comment("human", commit_anchor("src/lib.rs"), "why here?")
+            .id
+            .clone();
+        app.review.save_for(&source).expect("save");
+
+        let response = app.handle_mcp(McpRequestKind::ReplyComment {
+            id,
+            body: "because".to_owned(),
+        });
+        assert_eq!(
+            response,
+            McpResponse::Replied {
+                status: "replied".to_owned()
+            }
+        );
+        // the reply persists under the commit source, not the working tree
+        let reloaded = diffler_core::store::load_source(&fixture.root, &source).expect("load");
+        assert_eq!(reloaded.comments[0].status, CommentStatus::Replied);
+        assert_eq!(reloaded.comments[0].replies[0].author, AGENT_AUTHOR);
+        assert!(
+            app.review
+                .session
+                .comments
+                .iter()
+                .all(|c| c.replies.is_empty()),
+            "the working-tree comment is untouched"
+        );
+    }
+
+    #[test]
+    fn list_reviews_enumerates_sources_with_counts() {
+        let (_fixture, mut app, _id) = app_with_comment();
+        let oid = app.status.recent[0].oid.clone();
+        let source = ReviewSource::commit(&oid);
+        app.review.ensure_source(&source).expect("ensure");
+        app.review
+            .session_for_mut(&source)
+            .add_comment("human", commit_anchor("src/lib.rs"), "x");
+        app.review.save_for(&source).expect("save");
+
+        let McpResponse::Reviews(reviews) = app.handle_mcp(McpRequestKind::ListReviews) else {
+            panic!("expected reviews");
+        };
+        let working = reviews
+            .iter()
+            .find(|r| r.source == "working")
+            .expect("working review");
+        assert_eq!(working.open_comments, 1);
+        let commit = reviews
+            .iter()
+            .find(|r| r.source == source.key())
+            .expect("commit review");
+        assert_eq!(commit.open_comments, 1);
+        assert_eq!(commit.label, source.label());
     }
 
     #[test]

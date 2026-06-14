@@ -11,6 +11,7 @@ use std::time::Duration;
 use diffler_core::feedback;
 use diffler_core::model::{DiffModel, FileStatus};
 use diffler_core::session::{Comment, CommentStatus};
+use diffler_core::source::ReviewSource;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{ServerCapabilities, ServerInfo};
@@ -56,6 +57,9 @@ pub enum McpRequestKind {
     GetComments {
         status: Option<CommentStatus>,
     },
+    /// Every persisted review (working tree, commits, ranges) with its comment
+    /// counts, so the agent knows what the human reviewed and where from.
+    ListReviews,
     ReplyComment {
         id: String,
         body: String,
@@ -76,6 +80,7 @@ pub enum McpResponse {
     Status(ReviewStatusResponse),
     Diff(String),
     Comments(Vec<CommentInfo>),
+    Reviews(Vec<ReviewSummary>),
     Replied {
         status: String,
     },
@@ -94,6 +99,22 @@ pub struct ReviewStatusResponse {
     pub replied_comments: usize,
     pub resolved_comments: usize,
     pub feedback_epoch: u64,
+    /// Every persisted review and its comment counts; `files_changed` above is
+    /// the working-tree review, the default the human starts on.
+    pub reviews: Vec<ReviewSummary>,
+}
+
+/// One review's provenance and comment tally: what was reviewed (working tree,
+/// a commit, or a range) and how many comments sit at each status.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+pub struct ReviewSummary {
+    /// Stable source key (e.g. "working", "commit-<oid>", "range-<a>-<b>").
+    pub source: String,
+    /// Human-facing description (e.g. "commit a1b2c3", "range a1b2c3..d4e5f6").
+    pub label: String,
+    pub open_comments: usize,
+    pub replied_comments: usize,
+    pub resolved_comments: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
@@ -111,6 +132,10 @@ pub struct DiffResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub struct CommentInfo {
     pub id: String,
+    /// Stable key of the review this comment belongs to (see [`ReviewSummary`]).
+    pub source: String,
+    /// Human-facing description of that review (what the human was looking at).
+    pub source_label: String,
     pub file: String,
     pub line: Option<u32>,
     pub line_end: Option<u32>,
@@ -135,6 +160,11 @@ pub struct ReplyInfo {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub struct CommentsResponse {
     pub comments: Vec<CommentInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+pub struct ReviewsResponse {
+    pub reviews: Vec<ReviewSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
@@ -252,8 +282,8 @@ pub fn render_unified(model: &DiffModel, file: Option<&str>) -> Result<String, S
 }
 
 /// Agent-facing view of one comment, with context and outdated detection
-/// judged against the current diff model.
-pub fn comment_info(comment: &Comment, model: &DiffModel) -> CommentInfo {
+/// judged against the current diff model, tagged with its review source.
+pub fn comment_info(comment: &Comment, model: &DiffModel, source: &ReviewSource) -> CommentInfo {
     let anchor = &comment.anchor;
     // range comments anchor to their END line (`Anchor::is_outdated`), but
     // the context snippet renders from the START line so it reads naturally
@@ -270,6 +300,8 @@ pub fn comment_info(comment: &Comment, model: &DiffModel) -> CommentInfo {
     let outdated = anchor.is_outdated(model);
     CommentInfo {
         id: comment.id.clone(),
+        source: source.key(),
+        source_label: source.label(),
         file: anchor.file.clone(),
         line: anchor.line,
         line_end: anchor.line_end,
@@ -379,7 +411,7 @@ impl DifflerMcp {
     }
 
     #[tool(
-        description = "Review comments with anchors, diff context, and threads; optionally filtered by status (open, replied, resolved)."
+        description = "Review comments across every review (working tree, commits, ranges), each tagged with its source and source_label; anchors, diff context, and threads included. Optionally filtered by status (open, replied, resolved)."
     )]
     async fn get_comments(
         &self,
@@ -388,6 +420,16 @@ impl DifflerMcp {
         let status = params.status.as_deref().map(parse_status).transpose()?;
         match self.request(McpRequestKind::GetComments { status }).await? {
             McpResponse::Comments(comments) => Ok(Json(CommentsResponse { comments })),
+            _ => Err(mismatch()),
+        }
+    }
+
+    #[tool(
+        description = "List every review the human has — the working tree, individual commits, and commit ranges — each with its comment counts, so you can tell where feedback came from."
+    )]
+    async fn list_reviews(&self) -> Result<Json<ReviewsResponse>, ErrorData> {
+        match self.request(McpRequestKind::ListReviews).await? {
+            McpResponse::Reviews(reviews) => Ok(Json(ReviewsResponse { reviews })),
             _ => Err(mismatch()),
         }
     }
@@ -650,7 +692,11 @@ mod tests {
         a.on_old_side = true;
         a.line_text = Some("two".to_owned());
         session.add_comment("human", a, "what was wrong with two?");
-        let info = comment_info(&session.comments[0], &sample_model());
+        let info = comment_info(
+            &session.comments[0],
+            &sample_model(),
+            &ReviewSource::WorkingTree,
+        );
         assert_eq!(info.side, "old");
         assert_eq!(info.line, Some(2));
         assert_eq!(info.line_end, None);
@@ -665,7 +711,11 @@ mod tests {
         a.line_text = Some("TWO".to_owned());
         let id = session.add_comment("human", a, "why uppercase?").id.clone();
         session.reply(&id, AGENT_AUTHOR, "legacy API");
-        let info = comment_info(&session.comments[0], &sample_model());
+        let info = comment_info(
+            &session.comments[0],
+            &sample_model(),
+            &ReviewSource::WorkingTree,
+        );
         assert_eq!(info.file, "src/auth.py");
         assert_eq!(info.line, Some(2));
         assert_eq!(info.side, "new");
@@ -680,7 +730,11 @@ mod tests {
     fn comment_info_flags_departed_lines_outdated() {
         let mut session = Session::default();
         session.add_comment("human", anchor("src/auth.py", Some(99)), "moved on");
-        let info = comment_info(&session.comments[0], &sample_model());
+        let info = comment_info(
+            &session.comments[0],
+            &sample_model(),
+            &ReviewSource::WorkingTree,
+        );
         assert!(info.outdated);
         assert_eq!(info.context, None);
     }
@@ -691,7 +745,11 @@ mod tests {
         let mut a = anchor("src/auth.py", Some(2));
         a.line_text = Some("old text".to_owned());
         session.add_comment("human", a, "stale");
-        let info = comment_info(&session.comments[0], &sample_model());
+        let info = comment_info(
+            &session.comments[0],
+            &sample_model(),
+            &ReviewSource::WorkingTree,
+        );
         assert!(info.outdated);
         assert!(info.context.is_some(), "context still renders");
     }
@@ -702,8 +760,8 @@ mod tests {
         session.add_comment("human", anchor("src/auth.py", None), "overall");
         session.add_comment("human", anchor("gone.py", None), "gone");
         let model = sample_model();
-        assert!(!comment_info(&session.comments[0], &model).outdated);
-        assert!(comment_info(&session.comments[1], &model).outdated);
+        assert!(!comment_info(&session.comments[0], &model, &ReviewSource::WorkingTree).outdated);
+        assert!(comment_info(&session.comments[1], &model, &ReviewSource::WorkingTree).outdated);
     }
 
     // A range comment where start != end is NOT outdated when the end
@@ -724,7 +782,11 @@ mod tests {
         // sanity: start text differs from end text
         assert_ne!(a.line_text.as_deref(), Some("one"));
         session.add_comment("human", a.clone(), "range comment");
-        let info = comment_info(&session.comments[0], &sample_model());
+        let info = comment_info(
+            &session.comments[0],
+            &sample_model(),
+            &ReviewSource::WorkingTree,
+        );
         assert!(
             !info.outdated,
             "end line text matches snapshot — must NOT be outdated"
@@ -732,7 +794,11 @@ mod tests {
         // change the snapshot to something that no longer matches line 3
         a.line_text = Some("changed".to_owned());
         session.comments[0].anchor = a;
-        let info2 = comment_info(&session.comments[0], &sample_model());
+        let info2 = comment_info(
+            &session.comments[0],
+            &sample_model(),
+            &ReviewSource::WorkingTree,
+        );
         assert!(info2.outdated, "end line text drifted — must be outdated");
     }
 
