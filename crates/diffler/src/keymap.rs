@@ -46,6 +46,8 @@ pub enum Action {
     FetchAll,
     NextHunk,
     PrevHunk,
+    NextComment,
+    PrevComment,
     HalfPageDown,
     HalfPageUp,
     Comment,
@@ -100,6 +102,8 @@ impl Action {
             Self::FetchAll => "fetch_all",
             Self::NextHunk => "next_hunk",
             Self::PrevHunk => "prev_hunk",
+            Self::NextComment => "next_comment",
+            Self::PrevComment => "prev_comment",
             Self::HalfPageDown => "half_page_down",
             Self::HalfPageUp => "half_page_up",
             Self::Comment => "comment",
@@ -117,7 +121,7 @@ impl Action {
         }
     }
 
-    const ALL: [Self; 48] = [
+    const ALL: [Self; 50] = [
         Self::MoveDown,
         Self::MoveUp,
         Self::GoTop,
@@ -152,6 +156,8 @@ impl Action {
         Self::FetchAll,
         Self::NextHunk,
         Self::PrevHunk,
+        Self::NextComment,
+        Self::PrevComment,
         Self::HalfPageDown,
         Self::HalfPageUp,
         Self::Comment,
@@ -258,6 +264,8 @@ const DIFF_DEFAULTS: &[(&str, Action)] = &[
     ("<c-r>", Action::Refresh),
     ("{", Action::PrevHunk),
     ("}", Action::NextHunk),
+    ("[", Action::PrevComment),
+    ("]", Action::NextComment),
     ("c", Action::Comment),
     ("V", Action::VisualSelect),
     ("r", Action::Reply),

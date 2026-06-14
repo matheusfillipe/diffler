@@ -454,6 +454,16 @@ impl App {
             Action::NextFile => return self.diff_step_file(true),
             Action::PrevFile => return self.diff_step_file(false),
             Action::ToggleFocus => return self.diff_toggle_focus(),
+            // comment walk works from either pane; land in the diff pane on the
+            // comment so it can be read and replied to
+            Action::NextComment => {
+                self.diff_focus(Pane::Diff);
+                return self.diff_jump_comment(true);
+            }
+            Action::PrevComment => {
+                self.diff_focus(Pane::Diff);
+                return self.diff_jump_comment(false);
+            }
             _ => {}
         }
         match self.diff.as_ref().map(|d| d.focus) {
@@ -687,6 +697,14 @@ impl App {
             i64::from(viewport) / 2
         };
         isize::try_from(half).unwrap_or(20).max(1)
+    }
+
+    /// Jump the pane cursor to the next/previous comment block, landing on its
+    /// header row (`line == 0`) so multi-line comments are stepped as one.
+    fn diff_jump_comment(&mut self, forward: bool) {
+        self.diff_jump(forward, |row| {
+            matches!(row, DiffRow::Comment { line: 0, .. })
+        });
     }
 
     fn diff_jump(&mut self, forward: bool, target: impl Fn(&DiffRow) -> bool) {
@@ -1370,6 +1388,51 @@ mod tests {
         // and back the other way, still only files
         app.handle(ctrl_key('p'));
         assert_eq!(selected_path(&app), "ci.yml");
+    }
+
+    #[test]
+    fn bracket_keys_walk_between_comments() {
+        let fixture = two_hunk_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let anchor = |line: u32| Anchor {
+            file: "data.txt".to_owned(),
+            line: Some(line),
+            line_end: None,
+            on_old_side: false,
+            hunk: None,
+            line_text: None,
+        };
+        app.review.session.add_comment("r", anchor(1), "first");
+        app.review.session.add_comment("r", anchor(20), "second");
+        app.open_working_tree_diff(None);
+        {
+            let diff = app.diff.as_mut().unwrap();
+            diff.focus = Pane::Diff;
+            diff.cursor = 0;
+            diff.invalidate();
+        }
+        app.diff.as_mut().unwrap().ensure_rows(&app.review);
+
+        let on_header = |app: &App| {
+            let diff = app.diff.as_ref().unwrap();
+            matches!(
+                diff.rows().get(diff.cursor),
+                Some(DiffRow::Comment { line: 0, .. })
+            )
+        };
+        app.handle(key(']'));
+        assert!(on_header(&app), "] lands on a comment header");
+        let first = app.diff.as_ref().unwrap().cursor;
+        app.handle(key(']'));
+        assert!(on_header(&app));
+        let second = app.diff.as_ref().unwrap().cursor;
+        assert!(second > first, "] advances to the next comment");
+        app.handle(key('['));
+        assert_eq!(
+            app.diff.as_ref().unwrap().cursor,
+            first,
+            "[ returns to the previous comment"
+        );
     }
 
     #[test]
