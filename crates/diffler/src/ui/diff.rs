@@ -151,7 +151,11 @@ fn draw_sidebar(
             }
         })
         .collect();
-    frame.render_widget(Paragraph::new(lines), inner);
+    // follow the cursor: once it passes the last visible row, scroll so it
+    // stays in view (the sidebar tree can be far taller than the pane)
+    let height = inner.height.max(1) as usize;
+    let scroll = diff.tree_cursor.saturating_sub(height - 1) as u16;
+    frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), inner);
 }
 
 /// Right pane: the selected file's header then the visible slice of its rows.
@@ -780,6 +784,37 @@ mod tests {
         app.open_working_tree_diff(None);
         assert_eq!(app.diff.as_ref().unwrap().focus, Pane::List);
         insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn sidebar_scrolls_to_keep_the_cursor_visible() {
+        let fixture = crate::test_support::Fixture::new();
+        fixture.write(".keep", "x\n");
+        fixture.commit_all("base");
+        for i in 0..40 {
+            fixture.write(&format!("f{i:02}.txt"), "x\n");
+        }
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_working_tree_diff(None);
+        let count = {
+            let diff = app.diff.as_ref().unwrap();
+            diff.tree_rows(diff.model(&app.review)).len()
+        };
+        app.diff.as_mut().unwrap().tree_cursor = count - 1;
+
+        let backend = TestBackend::new(120, 14);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .expect("draw");
+        let content = terminal.backend().to_string();
+        assert!(content.contains("f39.txt"), "cursor row visible: {content}");
+        // f01 lives only in the sidebar (f00 is the selected file shown in the
+        // pane header), so its absence proves the sidebar scrolled past the top
+        assert!(
+            !content.contains("f01.txt"),
+            "top rows scrolled off: {content}"
+        );
     }
 
     #[test]
