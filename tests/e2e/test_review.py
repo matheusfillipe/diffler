@@ -40,9 +40,9 @@ def test_comment_modal_writes_comment_and_session(spawn, repo):
     tui.send("needs work")
     tui.send("\r")
     # the comment box renders inline: author chip, body, border
-    tui.wait_for("┌─ reviewer · open")
+    tui.wait_for("▌ reviewer · open")
     tui.wait_for("needs work")
-    tui.wait_for("└─")
+    tui.wait_for("▌ reviewer")
 
     session = load_session(repo)
     comment = session["comments"][0]
@@ -63,7 +63,7 @@ def test_visual_range_comment_sets_line_end(spawn, repo):
     tui.wait_for("Comment app.txt:2-3")
     tui.send("range note")
     tui.send("\r")
-    tui.wait_for("└─")
+    tui.wait_for("▌ reviewer")
 
     comment = load_session(repo)["comments"][0]
     assert comment["body"] == "range note"
@@ -79,7 +79,7 @@ def test_copy_emits_osc52_and_send_bumps_feedback(spawn):
     tui.wait_for("Comment app.txt:2")
     tui.send("ship it")
     tui.send("\r")
-    tui.wait_for("└─")
+    tui.wait_for("▌ reviewer")
 
     tui.send("Y")
     tui.wait_for("copied 1 comment (all)")

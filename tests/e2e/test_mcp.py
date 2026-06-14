@@ -69,7 +69,7 @@ def test_review_status_and_get_comments_round_trip(spawn, repo):
     tui.wait_for("Comment app.txt:2")
     tui.send("ship it")
     tui.send("\r")
-    tui.wait_for("└─")
+    tui.wait_for("▌ reviewer")
 
     comments = call_tool(url, "get_comments")["comments"]
     assert [c["body"] for c in comments] == ["ship it"]
