@@ -17,10 +17,10 @@ Pick any package manager — the installed command is always `diffler`:
 cargo install diffler
 
 # npm, one-off
-npx @matheusfillipe/diffler
+npx @mattfillipe/diffler
 
 # npm, global
-npm install -g @matheusfillipe/diffler
+npm install -g @mattfillipe/diffler
 ```
 
 Or grab a prebuilt binary (macOS, Linux, Windows; x86_64 and arm64) from the

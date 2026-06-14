@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Repack release archives into npm packages under npm/dist/:
-# one @matheusfillipe/diffler-<platform> package per archive found, plus the
-# @matheusfillipe/diffler entry package (launcher shim + optionalDependencies).
+# one @mattfillipe/diffler-<platform> package per archive found, plus the
+# @mattfillipe/diffler entry package (launcher shim + optionalDependencies).
 #
 # Usage: scripts/npm-pack.sh <version> <archives-dir>
 #   <archives-dir> holds diffler-<tag>-<target>.{tar.gz,zip} release assets.
@@ -50,7 +50,7 @@ for pair in $targets; do
     exit 1
   fi
 
-  pkg_dir="$dist/@matheusfillipe/diffler-$platform"
+  pkg_dir="$dist/@mattfillipe/diffler-$platform"
   mkdir -p "$pkg_dir/bin"
   cp "$binary" "$pkg_dir/bin/$bin_name"
   chmod +x "$pkg_dir/bin/$bin_name"
@@ -67,9 +67,9 @@ for pair in $targets; do
     pkg.os = [os];
     pkg.cpu = [cpu];
     fs.writeFileSync(out, JSON.stringify(pkg, null, 2) + "\n");
-  ' "$root/npm/platform/package.json" "@matheusfillipe/diffler-$platform" "$version" "$platform" "$pkg_dir/package.json"
+  ' "$root/npm/platform/package.json" "@mattfillipe/diffler-$platform" "$version" "$platform" "$pkg_dir/package.json"
 
-  echo "packed @matheusfillipe/diffler-$platform ($archive)"
+  echo "packed @mattfillipe/diffler-$platform ($archive)"
   packed=$((packed + 1))
 done
 
