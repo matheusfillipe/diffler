@@ -12,5 +12,6 @@ pub mod pairing;
 pub mod repo;
 pub mod review;
 pub mod session;
+pub mod source;
 pub mod store;
 pub mod vcs;

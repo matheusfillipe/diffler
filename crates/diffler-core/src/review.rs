@@ -2,6 +2,7 @@
 //! entry point the TUI and MCP layers consume.
 
 use std::cell::OnceCell;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
@@ -9,6 +10,7 @@ use thiserror::Error;
 use crate::git::GitVcs;
 use crate::model::DiffModel;
 use crate::session::Session;
+use crate::source::ReviewSource;
 use crate::store::{self, StoreError};
 use crate::vcs::{StatusModel, Vcs, VcsError};
 
@@ -28,7 +30,13 @@ pub struct Review {
     /// lazily on first [`Review::model`] access — the status screen is the
     /// initial view and never needs the whole working diff up front.
     model: OnceCell<DiffModel>,
+    /// The working-tree review session, the default view.
     pub session: Session,
+    /// Lazily-loaded sessions for non-working sources (commits, ranges), keyed
+    /// by [`ReviewSource::key`].
+    sources: HashMap<String, (ReviewSource, Session)>,
+    /// Returned by [`Review::session_for`] for a source that has no review yet.
+    empty: Session,
 }
 
 impl Review {
@@ -51,6 +59,8 @@ impl Review {
             status,
             model: OnceCell::new(),
             session,
+            sources: HashMap::new(),
+            empty: Session::default(),
         })
     }
 
@@ -84,6 +94,69 @@ impl Review {
     pub fn save(&self) -> Result<(), ReviewError> {
         store::save(&self.repo_root, &self.session)?;
         Ok(())
+    }
+
+    /// Load a non-working source's session into the cache if not already there.
+    /// Call before reading via [`Review::session_for`] for that source.
+    pub fn ensure_source(&mut self, source: &ReviewSource) -> Result<(), ReviewError> {
+        if matches!(source, ReviewSource::WorkingTree) {
+            return Ok(());
+        }
+        let key = source.key();
+        if !self.sources.contains_key(&key) {
+            let session = store::load_source(&self.repo_root, source)?;
+            self.sources.insert(key, (source.clone(), session));
+        }
+        Ok(())
+    }
+
+    /// The session for a source. The working tree is always present; other
+    /// sources must be [`Review::ensure_source`]d first, else an empty session
+    /// is returned.
+    pub fn session_for(&self, source: &ReviewSource) -> &Session {
+        match source {
+            ReviewSource::WorkingTree => &self.session,
+            other => self
+                .sources
+                .get(&other.key())
+                .map_or(&self.empty, |(_, session)| session),
+        }
+    }
+
+    pub fn session_for_mut(&mut self, source: &ReviewSource) -> &mut Session {
+        match source {
+            ReviewSource::WorkingTree => &mut self.session,
+            other => {
+                &mut self
+                    .sources
+                    .entry(other.key())
+                    .or_insert_with(|| (other.clone(), Session::default()))
+                    .1
+            }
+        }
+    }
+
+    pub fn save_for(&self, source: &ReviewSource) -> Result<(), ReviewError> {
+        store::save_source(&self.repo_root, source, self.session_for(source))?;
+        Ok(())
+    }
+
+    /// Every review across all sources, in-memory state overriding disk, sorted
+    /// by source key. Powers the agent-facing aggregate feed.
+    pub fn all_reviews(&self) -> Result<Vec<(ReviewSource, Session)>, ReviewError> {
+        let mut by_key: BTreeMap<String, (ReviewSource, Session)> =
+            store::load_all(&self.repo_root)?
+                .into_iter()
+                .map(|(source, session)| (source.key(), (source, session)))
+                .collect();
+        by_key.insert(
+            ReviewSource::WorkingTree.key(),
+            (ReviewSource::WorkingTree, self.session.clone()),
+        );
+        for (key, (source, session)) in &self.sources {
+            by_key.insert(key.clone(), (source.clone(), session.clone()));
+        }
+        Ok(by_key.into_values().collect())
     }
 
     /// Whether the working-tree model has been computed yet.
@@ -155,5 +228,45 @@ mod tests {
         assert!(review.model_is_cached(), "access caches the model");
         let eager = review.vcs.working_tree_diff().expect("diff");
         assert_eq!(lazy, eager, "lazy model equals the eager build");
+    }
+
+    #[test]
+    fn per_source_sessions_persist_independently_and_aggregate() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        init_repo(root);
+        write(root, "a.py", "value = old\n");
+        commit_all(root, "base");
+        write(root, "a.py", "value = new\n");
+
+        let root = repo::discover(root).expect("discover");
+        let mut review = Review::open(&root).expect("open");
+
+        let commit = crate::source::ReviewSource::commit("deadbeef");
+        review.ensure_source(&commit).expect("ensure");
+        review
+            .session_for_mut(&commit)
+            .mark_viewed("a.py", "hash-commit");
+        review.save_for(&commit).expect("save commit");
+        review.session.mark_viewed("a.py", "hash-working");
+        review.save().expect("save working");
+
+        // the same path means different things per source
+        assert!(review.session_for(&commit).is_viewed("a.py", "hash-commit"));
+        assert!(!review.session.is_viewed("a.py", "hash-commit"));
+
+        // a fresh open reloads each source from its own file
+        let mut reopened = Review::open(&root).expect("reopen");
+        reopened.ensure_source(&commit).expect("ensure");
+        assert!(
+            reopened
+                .session_for(&commit)
+                .is_viewed("a.py", "hash-commit")
+        );
+        assert!(reopened.session.is_viewed("a.py", "hash-working"));
+
+        let all = reopened.all_reviews().expect("all");
+        let keys: Vec<String> = all.iter().map(|(s, _)| s.key()).collect();
+        assert_eq!(keys, ["commit-deadbeef", "working"]);
     }
 }
