@@ -50,6 +50,18 @@ pub struct BranchInfo {
     pub is_head: bool,
 }
 
+/// A network operation the binary runs by shelling out to the backend's CLI,
+/// so the user's existing auth (SSH agent, credential helper, tokens) applies
+/// without diffler holding any credentials.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkOp {
+    Push,
+    PushSetUpstream,
+    Pull,
+    Fetch,
+    FetchAll,
+}
+
 /// Per-area views of the working tree, neogit-style sections.
 #[derive(Debug, Clone, Default)]
 pub struct StatusModel {
@@ -99,4 +111,10 @@ pub trait Vcs: Send {
     /// Refused for the currently checked-out branch.
     fn delete_branch(&self, name: &str) -> Result<(), VcsError>;
     fn checkout(&self, name: &str) -> Result<(), VcsError>;
+    /// Argv to run for a network op, e.g. `["git", "push"]`. The binary runs
+    /// this in [`Vcs::workdir`] so the backend's own CLI handles credentials;
+    /// diffler never touches them. A future jj backend returns `["jj", …]`.
+    fn network_argv(&self, op: NetworkOp) -> Vec<String>;
+    /// Working directory to run [`Vcs::network_argv`] in.
+    fn workdir(&self) -> Result<PathBuf, VcsError>;
 }

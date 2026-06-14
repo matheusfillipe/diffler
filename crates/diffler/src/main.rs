@@ -1,5 +1,8 @@
+use std::path::Path;
+
 use clap::{Parser, Subcommand};
-use diffler::app::{App, Flow};
+use diffler::app::{self, App, Flow};
+use diffler::event::AppEvent;
 use diffler::{config, editor, event, mcp, ui, watch};
 use diffler_core::review::Review;
 use ratatui::DefaultTerminal;
@@ -137,6 +140,17 @@ async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<
             app.editor_finished(purpose, outcome);
             continue;
         }
+        if let Some(app::GitOp { label, argv }) = app.pending_git.take() {
+            // the terminal stays up: spawn the process on a blocking thread
+            // with a tx clone so the result returns as an event and the loop
+            // keeps drawing the "running …" status meanwhile
+            let repo_root = app.review.repo_root.clone();
+            let tx = tx.clone();
+            tokio::task::spawn_blocking(move || {
+                let _ = tx.send(run_git(&label, &argv, &repo_root));
+            });
+            continue;
+        }
         let Some(event) = rx.recv().await else { break };
         if app.handle(event) == Flow::Quit {
             break;
@@ -148,4 +162,38 @@ async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<
     }
     drop(watcher);
     Ok(())
+}
+
+/// Run a network git op as a child process in `repo_root`, capturing its
+/// combined output. Runs on a blocking thread; the result is an [`AppEvent`]
+/// the run loop folds back into the status bar. Shelling to the user's `git`
+/// keeps credentials entirely out of diffler.
+fn run_git(label: &str, argv: &[String], repo_root: &Path) -> AppEvent {
+    let Some((program, rest)) = argv.split_first() else {
+        return AppEvent::GitDone {
+            label: label.to_owned(),
+            ok: false,
+            output: "empty command".to_owned(),
+        };
+    };
+    match std::process::Command::new(program)
+        .args(rest)
+        .current_dir(repo_root)
+        .output()
+    {
+        Ok(out) => {
+            let mut output = String::from_utf8_lossy(&out.stderr).into_owned();
+            output.push_str(&String::from_utf8_lossy(&out.stdout));
+            AppEvent::GitDone {
+                label: label.to_owned(),
+                ok: out.status.success(),
+                output,
+            }
+        }
+        Err(err) => AppEvent::GitDone {
+            label: label.to_owned(),
+            ok: false,
+            output: format!("cannot run {program}: {err}"),
+        },
+    }
 }

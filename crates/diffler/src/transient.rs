@@ -6,14 +6,17 @@
 use crate::config::{KeyPress, KeysConfig, parse_chord};
 use crate::keymap::{Action, render_chord};
 
-/// Which transient a top-level prefix opens. Phase 1 covers commit and
-/// branch; the log prefix is a single-leaf transient so every git group is
-/// reached the same way.
+/// Which transient a top-level prefix opens. Commit and branch are multi-leaf;
+/// log/push/pull/fetch are small transients so every git group is reached the
+/// same way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransientKind {
     Commit,
     Branch,
     Log,
+    Push,
+    Pull,
+    Fetch,
 }
 
 impl TransientKind {
@@ -24,6 +27,9 @@ impl TransientKind {
             Self::Commit => "commit",
             Self::Branch => "branch",
             Self::Log => "log_menu",
+            Self::Push => "push",
+            Self::Pull => "pull",
+            Self::Fetch => "fetch",
         }
     }
 
@@ -33,10 +39,20 @@ impl TransientKind {
             Self::Commit => "Commit",
             Self::Branch => "Branch",
             Self::Log => "Log",
+            Self::Push => "Push",
+            Self::Pull => "Pull",
+            Self::Fetch => "Fetch",
         }
     }
 
-    pub const ALL: [Self; 3] = [Self::Commit, Self::Branch, Self::Log];
+    pub const ALL: [Self; 6] = [
+        Self::Commit,
+        Self::Branch,
+        Self::Log,
+        Self::Push,
+        Self::Pull,
+        Self::Fetch,
+    ];
 }
 
 /// One entry inside a transient: a single key bound to an `Action`, with a
@@ -110,12 +126,38 @@ const LOG_GROUPS: &[DefaultGroup] = &[(
     &[("current", "l", Action::LogView, "Current branch")],
 )];
 
+const PUSH_GROUPS: &[DefaultGroup] = &[(
+    "Push to",
+    &[
+        ("push", "p", Action::Push, "Push"),
+        (
+            "set_upstream",
+            "u",
+            Action::PushSetUpstream,
+            "Push and set upstream",
+        ),
+    ],
+)];
+
+const PULL_GROUPS: &[DefaultGroup] = &[("Pull from", &[("pull", "p", Action::Pull, "Pull")])];
+
+const FETCH_GROUPS: &[DefaultGroup] = &[(
+    "Fetch from",
+    &[
+        ("fetch", "f", Action::Fetch, "Fetch"),
+        ("all", "a", Action::FetchAll, "Fetch all remotes"),
+    ],
+)];
+
 impl TransientKind {
     fn default_groups(self) -> &'static [DefaultGroup] {
         match self {
             Self::Commit => COMMIT_GROUPS,
             Self::Branch => BRANCH_GROUPS,
             Self::Log => LOG_GROUPS,
+            Self::Push => PUSH_GROUPS,
+            Self::Pull => PULL_GROUPS,
+            Self::Fetch => FETCH_GROUPS,
         }
     }
 }
@@ -327,6 +369,42 @@ mod tests {
         assert_eq!(
             log.resolve(&press("l")),
             TransientResolve::Action(Action::LogView)
+        );
+    }
+
+    #[test]
+    fn push_transient_resolves_its_leaves() {
+        let push = transient(TransientKind::Push);
+        assert_eq!(
+            push.resolve(&press("p")),
+            TransientResolve::Action(Action::Push)
+        );
+        assert_eq!(
+            push.resolve(&press("u")),
+            TransientResolve::Action(Action::PushSetUpstream)
+        );
+        assert_eq!(push.resolve(&press("z")), TransientResolve::Unbound);
+    }
+
+    #[test]
+    fn pull_transient_resolves_its_leaf() {
+        let pull = transient(TransientKind::Pull);
+        assert_eq!(
+            pull.resolve(&press("p")),
+            TransientResolve::Action(Action::Pull)
+        );
+    }
+
+    #[test]
+    fn fetch_transient_resolves_its_leaves() {
+        let fetch = transient(TransientKind::Fetch);
+        assert_eq!(
+            fetch.resolve(&press("f")),
+            TransientResolve::Action(Action::Fetch)
+        );
+        assert_eq!(
+            fetch.resolve(&press("a")),
+            TransientResolve::Action(Action::FetchAll)
         );
     }
 

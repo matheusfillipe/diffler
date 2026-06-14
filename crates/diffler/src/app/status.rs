@@ -6,7 +6,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 use diffler_core::model::FileDiff;
-use diffler_core::vcs::LogEntry;
+use diffler_core::vcs::{LogEntry, NetworkOp};
 
 use super::{App, BranchAction, FileHighlights, Modal, PendingOp};
 use crate::config::FileLayout;
@@ -364,6 +364,13 @@ impl App {
             Action::BranchCreateCheckout => self.branch_name_input(true),
             Action::BranchCreate => self.branch_name_input(false),
             Action::BranchDelete => self.open_branch_list(BranchAction::Delete),
+            Action::Push => self.request_network(NetworkOp::Push, "push"),
+            Action::PushSetUpstream => {
+                self.request_network(NetworkOp::PushSetUpstream, "push -u");
+            }
+            Action::Pull => self.request_network(NetworkOp::Pull, "pull"),
+            Action::Fetch => self.request_network(NetworkOp::Fetch, "fetch"),
+            Action::FetchAll => self.request_network(NetworkOp::FetchAll, "fetch --all"),
             Action::OpenEditor => self.editor_at_status_cursor(),
             other => {
                 self.info(format!("{} is not implemented yet", other.name()));

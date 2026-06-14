@@ -24,6 +24,9 @@ const HINTS: &[Hint] = &[
     Hint::Prefix(TransientKind::Commit, "commit"),
     Hint::Prefix(TransientKind::Branch, "branch"),
     Hint::Prefix(TransientKind::Log, "log"),
+    Hint::Prefix(TransientKind::Push, "push"),
+    Hint::Prefix(TransientKind::Pull, "pull"),
+    Hint::Prefix(TransientKind::Fetch, "fetch"),
     Hint::Leaf(&[Action::Stage], "stage"),
     Hint::Leaf(&[Action::Discard], "discard"),
     Hint::Leaf(&[Action::Help], "help"),
@@ -536,6 +539,24 @@ mod tests {
     }
 
     #[test]
+    fn which_key_push_panel_renders_after_the_reveal_tick() {
+        let fixture = standard_fixture();
+        let mut app = app_for(&fixture);
+        app.handle(key('P'));
+        app.handle(AppEvent::Tick);
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn which_key_fetch_panel_renders_after_the_reveal_tick() {
+        let fixture = standard_fixture();
+        let mut app = app_for(&fixture);
+        app.handle(key('f'));
+        app.handle(AppEvent::Tick);
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
     fn a_fast_resolving_key_never_flashes_the_panel() {
         let fixture = standard_fixture();
         let mut app = app_for(&fixture);
@@ -557,9 +578,13 @@ mod tests {
         assert!(hint.contains("c commit"), "{hint}");
         assert!(hint.contains("b branch"), "{hint}");
         assert!(hint.contains("l log"), "{hint}");
-        // sub-commands (amend/reword/checkout) stay out of the hint line
+        assert!(hint.contains("P push"), "{hint}");
+        assert!(hint.contains("p pull"), "{hint}");
+        assert!(hint.contains("f fetch"), "{hint}");
+        // sub-commands (amend/reword/checkout/upstream) stay out of the hint line
         assert!(!hint.contains("amend"), "{hint}");
         assert!(!hint.contains("checkout"), "{hint}");
+        assert!(!hint.contains("upstream"), "{hint}");
     }
 
     #[test]

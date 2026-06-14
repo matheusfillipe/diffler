@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::model::{DiffLine, DiffModel, FileDiff, FileStatus, Hunk, HunkId, LineKind, hunk_id};
-use crate::vcs::{BranchInfo, HeadInfo, LogEntry, StatusModel, Vcs, VcsError};
+use crate::vcs::{BranchInfo, HeadInfo, LogEntry, NetworkOp, StatusModel, Vcs, VcsError};
 
 /// git's own default amount of context around hunks.
 pub const DEFAULT_CONTEXT_LINES: u32 = 3;
@@ -355,6 +355,27 @@ impl Vcs for GitVcs {
         self.repo.checkout_tree(&target, None)?;
         self.repo.set_head(&format!("refs/heads/{name}"))?;
         Ok(())
+    }
+
+    fn network_argv(&self, op: NetworkOp) -> Vec<String> {
+        // shelling to `git` (not git2) so the user's credential helper, SSH
+        // agent, and config drive auth; PushSetUpstream targets HEAD so the
+        // current branch publishes to its same-named remote ref
+        let args: &[&str] = match op {
+            NetworkOp::Push => &["push"],
+            NetworkOp::PushSetUpstream => &["push", "-u", "origin", "HEAD"],
+            NetworkOp::Pull => &["pull"],
+            NetworkOp::Fetch => &["fetch"],
+            NetworkOp::FetchAll => &["fetch", "--all"],
+        };
+        std::iter::once("git")
+            .chain(args.iter().copied())
+            .map(str::to_owned)
+            .collect()
+    }
+
+    fn workdir(&self) -> Result<PathBuf, VcsError> {
+        Ok(self.workdir_path()?.to_path_buf())
     }
 }
 

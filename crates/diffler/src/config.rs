@@ -122,6 +122,9 @@ pub struct KeysConfig {
     pub commit: BTreeMap<String, String>,
     pub branch: BTreeMap<String, String>,
     pub log_menu: BTreeMap<String, String>,
+    pub push: BTreeMap<String, String>,
+    pub pull: BTreeMap<String, String>,
+    pub fetch: BTreeMap<String, String>,
 }
 
 impl KeysConfig {
@@ -131,6 +134,9 @@ impl KeysConfig {
             crate::transient::TransientKind::Commit => &self.commit,
             crate::transient::TransientKind::Branch => &self.branch,
             crate::transient::TransientKind::Log => &self.log_menu,
+            crate::transient::TransientKind::Push => &self.push,
+            crate::transient::TransientKind::Pull => &self.pull,
+            crate::transient::TransientKind::Fetch => &self.fetch,
         }
     }
 }
@@ -401,6 +407,9 @@ fn apply_layer(
         (layer.keys.commit, &mut config.keys.commit, "commit"),
         (layer.keys.branch, &mut config.keys.branch, "branch"),
         (layer.keys.log_menu, &mut config.keys.log_menu, "log_menu"),
+        (layer.keys.push, &mut config.keys.push, "push"),
+        (layer.keys.pull, &mut config.keys.pull, "pull"),
+        (layer.keys.fetch, &mut config.keys.fetch, "fetch"),
     ];
     for (entries, target, section) in key_sections {
         for (action, chord) in entries {
@@ -627,6 +636,9 @@ mod tests {
         assert!(config.keys.commit.is_empty());
         assert!(config.keys.branch.is_empty());
         assert!(config.keys.log_menu.is_empty());
+        assert!(config.keys.push.is_empty());
+        assert!(config.keys.pull.is_empty());
+        assert!(config.keys.fetch.is_empty());
     }
 
     #[test]

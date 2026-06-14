@@ -6,7 +6,7 @@ use std::path::Path;
 use common::Fixture;
 use diffler_core::git::GitVcs;
 use diffler_core::model::{FileStatus, LineKind};
-use diffler_core::vcs::{Vcs, VcsError};
+use diffler_core::vcs::{NetworkOp, Vcs, VcsError};
 
 // helper fns run outside #[test] fns, where clippy's test allowances don't reach
 #[allow(clippy::expect_used)]
@@ -955,6 +955,37 @@ fn create_branch_without_checkout_keeps_head() {
             .expect("branches")
             .iter()
             .any(|b| b.name == "idle")
+    );
+}
+
+#[test]
+fn network_argv_maps_each_op_to_the_git_cli() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "x\n");
+    fx.commit_all("base");
+    let v = vcs(&fx);
+    assert_eq!(v.network_argv(NetworkOp::Push), ["git", "push"]);
+    assert_eq!(
+        v.network_argv(NetworkOp::PushSetUpstream),
+        ["git", "push", "-u", "origin", "HEAD"]
+    );
+    assert_eq!(v.network_argv(NetworkOp::Pull), ["git", "pull"]);
+    assert_eq!(v.network_argv(NetworkOp::Fetch), ["git", "fetch"]);
+    assert_eq!(
+        v.network_argv(NetworkOp::FetchAll),
+        ["git", "fetch", "--all"]
+    );
+}
+
+#[test]
+fn workdir_is_the_repo_working_tree() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "x\n");
+    fx.commit_all("base");
+    let dir = vcs(&fx).workdir().expect("workdir");
+    assert_eq!(
+        dir.canonicalize().expect("canonicalize"),
+        fx.root().canonicalize().expect("canonicalize")
     );
 }
 

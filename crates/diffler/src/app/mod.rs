@@ -19,7 +19,7 @@ pub use status::{Row, Section, StatusView};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use diffler_core::review::Review;
 use diffler_core::session::Anchor;
-use diffler_core::vcs::{BranchInfo, HeadInfo, Vcs, VcsError};
+use diffler_core::vcs::{BranchInfo, HeadInfo, NetworkOp, Vcs, VcsError};
 
 use crate::config::{Config, KeyPress, LoadedConfig};
 use crate::editor::{self, EditorPurpose, EditorRequest};
@@ -113,6 +113,17 @@ pub enum Modal {
     Help,
 }
 
+/// A network git op the main loop runs by shelling out, with the terminal kept
+/// up: it spawns a blocking task so the event loop keeps drawing, and the
+/// result returns as [`AppEvent::GitDone`]. Set by a push/pull/fetch leaf.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitOp {
+    /// Human label for the status bar, e.g. "push".
+    pub label: String,
+    /// Full argv: program followed by its arguments.
+    pub argv: Vec<String>,
+}
+
 struct Keymaps {
     status: Keymap,
     diff: Keymap,
@@ -124,6 +135,9 @@ struct Transients {
     commit: Transient,
     branch: Transient,
     log: Transient,
+    push: Transient,
+    pull: Transient,
+    fetch: Transient,
 }
 
 impl Transients {
@@ -132,6 +146,9 @@ impl Transients {
             TransientKind::Commit => &self.commit,
             TransientKind::Branch => &self.branch,
             TransientKind::Log => &self.log,
+            TransientKind::Push => &self.push,
+            TransientKind::Pull => &self.pull,
+            TransientKind::Fetch => &self.fetch,
         }
     }
 }
@@ -174,6 +191,10 @@ pub struct App {
     /// Editor subprocess the main loop runs with the terminal suspended,
     /// then reports back through [`App::editor_finished`].
     pub pending_editor: Option<EditorRequest>,
+    /// Network git op the main loop runs in the background (terminal stays up),
+    /// reporting back through [`AppEvent::GitDone`]. Set by a push/pull/fetch
+    /// transient leaf, taken once by the loop.
+    pub pending_git: Option<GitOp>,
     /// Watcher health flag, set by `watch::spawn_watcher`. `None` (no
     /// watcher) counts as unhealthy: the tick fallback polls instead.
     pub watcher_healthy: Option<Arc<AtomicBool>>,
@@ -223,6 +244,9 @@ impl App {
             commit: build_transient(TransientKind::Commit),
             branch: build_transient(TransientKind::Branch),
             log: build_transient(TransientKind::Log),
+            push: build_transient(TransientKind::Push),
+            pull: build_transient(TransientKind::Pull),
+            fetch: build_transient(TransientKind::Fetch),
         };
 
         let mut message = startup_warnings
@@ -269,6 +293,7 @@ impl App {
             message,
             pending_osc: None,
             pending_editor: None,
+            pending_git: None,
             watcher_healthy: None,
             refresh_flash: 0,
             feedback_tx: tokio::sync::watch::Sender::new(0),
@@ -360,6 +385,10 @@ impl App {
                     // a dropped receiver means the agent gave up mid-call
                     let _ = request.reply.send(response);
                 }
+                Flow::Continue
+            }
+            AppEvent::GitDone { label, ok, output } => {
+                self.git_finished(&label, ok, &output);
                 Flow::Continue
             }
             AppEvent::Key(_) | AppEvent::Mouse(_) | AppEvent::Resize => Flow::Continue,
@@ -811,6 +840,51 @@ impl App {
                 path: path.to_owned(),
             },
         });
+    }
+
+    // --- network ops (push/pull/fetch) ---
+
+    /// Queue a network git op: resolve its argv from the backend and set
+    /// `pending_git`, plus a "running …" status so the next draw shows it. The
+    /// main loop runs the process in the background and reports back through
+    /// [`AppEvent::GitDone`], so the event loop never freezes on the network.
+    pub(crate) fn request_network(&mut self, op: NetworkOp, label: &str) {
+        let argv = self.review.vcs.network_argv(op);
+        self.pending_git = Some(GitOp {
+            label: label.to_owned(),
+            argv,
+        });
+        self.info(format!("running git {label}…"));
+    }
+
+    /// Report a finished network op: the first non-empty output line as a
+    /// success toast (label + summary), or as an error on failure. Refresh
+    /// first (head/log/ahead-behind may have moved), then set the toast so a
+    /// clean refresh does not clobber it.
+    fn git_finished(&mut self, label: &str, ok: bool, output: &str) {
+        let summary = output
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or("")
+            .to_owned();
+        self.message = None;
+        self.refresh();
+        // a refresh error already occupies the message slot; leave it
+        if self.message.is_some() {
+            return;
+        }
+        if ok {
+            if summary.is_empty() {
+                self.info(format!("{label} done"));
+            } else {
+                self.info(format!("{label}: {summary}"));
+            }
+        } else if summary.is_empty() {
+            self.error(format!("{label} failed"));
+        } else {
+            self.error(summary);
+        }
     }
 
     /// `c c`: straight to the editor on a gitcommit-style message file when
@@ -1709,6 +1783,99 @@ mod tests {
             KeyModifiers::NONE,
         )));
         assert_eq!(app.modal, None, "esc closes the branch picker");
+    }
+
+    #[test]
+    fn push_transient_leaf_queues_the_push_argv_and_label() {
+        let (_fixture, mut app) = app();
+        app.handle(key('P'));
+        assert_eq!(
+            app.transient.map(|t| t.kind),
+            Some(TransientKind::Push),
+            "P opens the push transient"
+        );
+        app.handle(key('p'));
+        assert_eq!(app.transient, None, "the leaf closes the transient");
+        let git = app.pending_git.clone().expect("pending git op");
+        assert_eq!(git.label, "push");
+        assert_eq!(git.argv, vec!["git".to_owned(), "push".to_owned()]);
+        // a running status shows immediately so the next draw reflects it
+        let message = app.message.expect("running status");
+        assert!(
+            message.text.contains("running git push"),
+            "{}",
+            message.text
+        );
+    }
+
+    #[test]
+    fn push_set_upstream_leaf_queues_the_u_argv() {
+        let (_fixture, mut app) = app();
+        app.handle(key('P'));
+        app.handle(key('u'));
+        let git = app.pending_git.clone().expect("pending git op");
+        assert_eq!(git.label, "push -u");
+        assert_eq!(
+            git.argv,
+            vec!["git", "push", "-u", "origin", "HEAD"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn pull_and_fetch_leaves_queue_their_argv() {
+        let (_fixture, mut app) = app();
+        app.handle(key('p'));
+        app.handle(key('p'));
+        assert_eq!(
+            app.pending_git.take().expect("pull op").argv,
+            vec!["git".to_owned(), "pull".to_owned()]
+        );
+        app.handle(key('f'));
+        app.handle(key('f'));
+        assert_eq!(
+            app.pending_git.take().expect("fetch op").argv,
+            vec!["git".to_owned(), "fetch".to_owned()]
+        );
+        app.handle(key('f'));
+        app.handle(key('a'));
+        assert_eq!(
+            app.pending_git.take().expect("fetch-all op").argv,
+            vec!["git".to_owned(), "fetch".to_owned(), "--all".to_owned()]
+        );
+    }
+
+    #[test]
+    fn git_done_success_shows_a_status_summary() {
+        let (_fixture, mut app) = app();
+        app.handle(AppEvent::GitDone {
+            label: "push".to_owned(),
+            ok: true,
+            output: "Everything up-to-date\n".to_owned(),
+        });
+        let message = app.message.expect("status");
+        assert_eq!(message.severity, Severity::Info);
+        assert!(message.text.contains("push"), "{}", message.text);
+        assert!(
+            message.text.contains("Everything up-to-date"),
+            "{}",
+            message.text
+        );
+    }
+
+    #[test]
+    fn git_done_failure_surfaces_the_first_stderr_line_as_an_error() {
+        let (_fixture, mut app) = app();
+        app.handle(AppEvent::GitDone {
+            label: "push".to_owned(),
+            ok: false,
+            output: "fatal: No configured push destination.\nmore detail\n".to_owned(),
+        });
+        let message = app.message.expect("status");
+        assert_eq!(message.severity, Severity::Error);
+        assert_eq!(message.text, "fatal: No configured push destination.");
     }
 
     #[test]

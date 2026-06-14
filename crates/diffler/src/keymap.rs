@@ -39,6 +39,11 @@ pub enum Action {
     BranchCreate,
     BranchDelete,
     LogView,
+    Push,
+    PushSetUpstream,
+    Pull,
+    Fetch,
+    FetchAll,
     NextHunk,
     PrevHunk,
     HalfPageDown,
@@ -88,6 +93,11 @@ impl Action {
             Self::BranchCreate => "branch_create",
             Self::BranchDelete => "branch_delete",
             Self::LogView => "log_view",
+            Self::Push => "push",
+            Self::PushSetUpstream => "push_set_upstream",
+            Self::Pull => "pull",
+            Self::Fetch => "fetch",
+            Self::FetchAll => "fetch_all",
             Self::NextHunk => "next_hunk",
             Self::PrevHunk => "prev_hunk",
             Self::HalfPageDown => "half_page_down",
@@ -107,7 +117,7 @@ impl Action {
         }
     }
 
-    const ALL: [Self; 43] = [
+    const ALL: [Self; 48] = [
         Self::MoveDown,
         Self::MoveUp,
         Self::GoTop,
@@ -135,6 +145,11 @@ impl Action {
         Self::BranchCreate,
         Self::BranchDelete,
         Self::LogView,
+        Self::Push,
+        Self::PushSetUpstream,
+        Self::Pull,
+        Self::Fetch,
+        Self::FetchAll,
         Self::NextHunk,
         Self::PrevHunk,
         Self::HalfPageDown,
@@ -218,6 +233,9 @@ const STATUS_PREFIXES: &[(&str, TransientKind)] = &[
     ("c", TransientKind::Commit),
     ("b", TransientKind::Branch),
     ("l", TransientKind::Log),
+    ("P", TransientKind::Push),
+    ("p", TransientKind::Pull),
+    ("f", TransientKind::Fetch),
 ];
 
 /// Contexts with no transients (diff, log) bind no prefixes.
@@ -728,6 +746,18 @@ mod tests {
             keymap.resolve(&mut pending, press("l")),
             Resolved::Transient(TransientKind::Log)
         );
+        assert_eq!(
+            keymap.resolve(&mut pending, press("P")),
+            Resolved::Transient(TransientKind::Push)
+        );
+        assert_eq!(
+            keymap.resolve(&mut pending, press("p")),
+            Resolved::Transient(TransientKind::Pull)
+        );
+        assert_eq!(
+            keymap.resolve(&mut pending, press("f")),
+            Resolved::Transient(TransientKind::Fetch)
+        );
         assert!(pending.is_empty(), "a prefix never leaves a pending buffer");
         assert_eq!(
             keymap.prefix_chord(TransientKind::Commit).as_deref(),
@@ -736,6 +766,10 @@ mod tests {
         assert_eq!(
             keymap.prefix_chord(TransientKind::Branch).as_deref(),
             Some("b")
+        );
+        assert_eq!(
+            keymap.prefix_chord(TransientKind::Push).as_deref(),
+            Some("P")
         );
     }
 

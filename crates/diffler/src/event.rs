@@ -22,6 +22,13 @@ pub enum AppEvent {
     /// Agent tool call routed through the event channel so the app stays
     /// the single owner of the review state (`mcp` module).
     Mcp(McpRequest),
+    /// A shelled-out network git op finished (`app::GitOp`). The result returns
+    /// as an event so the run loop keeps drawing while the process runs.
+    GitDone {
+        label: String,
+        ok: bool,
+        output: String,
+    },
     Quit,
 }
 
