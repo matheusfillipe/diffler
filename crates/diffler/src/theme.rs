@@ -34,7 +34,8 @@ impl Theme {
         Self {
             bg,
             panel: Color::Rgb(0x16, 0x1b, 0x22),
-            cursor_line: Color::Rgb(0x21, 0x26, 0x2d),
+            // blue-tinted so the selected row stays legible against the dark bg
+            cursor_line: Color::Rgb(0x26, 0x46, 0x6b),
             fg: Color::Rgb(0xe6, 0xed, 0xf3),
             dim: Color::Rgb(0x8b, 0x94, 0x9e),
             accent,
