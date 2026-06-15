@@ -7,7 +7,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use diffler_core::feedback::{self, FeedbackOptions};
 use diffler_core::highlight::StyledRange;
-use diffler_core::model::{DiffModel, FileDiff};
+use diffler_core::model::{DiffModel, FileDiff, LineKind};
 use diffler_core::review::Review;
 use diffler_core::session::{Anchor, Comment, CommentStatus, Session};
 pub use diffler_core::source::ReviewSource as DiffSource;
@@ -17,6 +17,7 @@ use crate::clipboard;
 use crate::config::FileLayout;
 use crate::keymap::Action;
 use crate::tree::{self, TreeNode, TreeRow};
+use crate::ui::diff_render::SplitSide;
 
 /// Which pane has the keyboard: the file sidebar or the diff body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,6 +82,12 @@ pub struct DiffView {
     /// First visible row of the diff pane; the renderer keeps the cursor in
     /// view.
     pub scroll: usize,
+    /// Side-by-side (old left / new right) pane; pinned at open from
+    /// `ui.side_by_side`, then `|` toggles it live.
+    pub side_by_side: bool,
+    /// First visible split row while `side_by_side` is on; the renderer keeps
+    /// the cursor's line in view.
+    pub(crate) split_scroll: usize,
     /// Row where `V` started; `Some` means line selection is active.
     pub visual_anchor: Option<usize>,
     /// Body height of the last diff-pane render, drives half-page motions.
@@ -101,6 +108,7 @@ impl DiffView {
         commit_model: Option<DiffModel>,
         review: &Review,
         layout: FileLayout,
+        side_by_side: bool,
     ) -> Self {
         let mut view = Self {
             source,
@@ -112,6 +120,8 @@ impl DiffView {
             tree_cursor: 0,
             cursor: 0,
             scroll: 0,
+            side_by_side,
+            split_scroll: 0,
             visual_anchor: None,
             viewport: 0,
             rows: Vec::new(),
@@ -154,6 +164,55 @@ impl DiffView {
 
     pub fn rows(&self) -> &[DiffRow] {
         &self.rows
+    }
+
+    /// Map the unified cursor to its row in `split` and the column the cursor
+    /// line sits in (`None` for a hunk header, comment, or context line that
+    /// fills both columns), so the split renderer highlights and scrolls to it.
+    pub(crate) fn split_cursor(&self, split: &[SplitRow]) -> (usize, Option<SplitSide>) {
+        let Some(row) = self.rows.get(self.cursor) else {
+            return (0, None);
+        };
+        match *row {
+            DiffRow::Hunk { hunk, .. } => (
+                split
+                    .iter()
+                    .position(|r| matches!(r, SplitRow::Hunk { hunk: h } if *h == hunk))
+                    .unwrap_or(0),
+                None,
+            ),
+            DiffRow::Line { hunk, line, .. } => {
+                for (i, r) in split.iter().enumerate() {
+                    if let SplitRow::Pair {
+                        hunk: h,
+                        left,
+                        right,
+                    } = r
+                        && *h == hunk
+                    {
+                        if *left == Some(line) && *right == Some(line) {
+                            return (i, None);
+                        }
+                        if *left == Some(line) {
+                            return (i, Some(SplitSide::Left));
+                        }
+                        if *right == Some(line) {
+                            return (i, Some(SplitSide::Right));
+                        }
+                    }
+                }
+                (0, None)
+            }
+            DiffRow::Comment { comment, line, .. } => (
+                split
+                    .iter()
+                    .position(|r| {
+                        matches!(r, SplitRow::Comment { comment: c, line: l, .. } if *c == comment && *l == line)
+                    })
+                    .unwrap_or(0),
+                None,
+            ),
+        }
     }
 
     /// Path of the selected file, when the diff is non-empty.
@@ -317,13 +376,15 @@ fn push_comment_rows(rows: &mut Vec<DiffRow>, session: &Session, comments: &[(us
     }
 }
 
-/// Build the diff-pane rows for one file: its hunks and lines, with comment
-/// blocks under their anchored line, file-level (or orphaned) comments first.
-fn build_rows(model: &DiffModel, session: &Session, selected: usize) -> Vec<DiffRow> {
-    let mut rows = Vec::new();
-    let Some(file) = model.files.get(selected) else {
-        return rows;
-    };
+/// Bucket a file's comments by their `(hunk, line)` anchor for inline display.
+/// A line anchor that no longer exists is outdated, and a file-level comment
+/// has no line — both land in the unanchored list, rendered at the top.
+type CommentBuckets = (
+    HashMap<(usize, usize), Vec<(usize, bool)>>,
+    Vec<(usize, bool)>,
+);
+
+fn collect_comments(file: &FileDiff, session: &Session, model: &DiffModel) -> CommentBuckets {
     let mut by_line: HashMap<(usize, usize), Vec<(usize, bool)>> = HashMap::new();
     let mut unanchored: Vec<(usize, bool)> = Vec::new();
     for (comment_idx, comment) in session.comments.iter().enumerate() {
@@ -336,11 +397,20 @@ fn build_rows(model: &DiffModel, session: &Session, selected: usize) -> Vec<Diff
                 .entry((hunk, line))
                 .or_default()
                 .push((comment_idx, outdated)),
-            // a line anchor that no longer exists is outdated; a file-level
-            // comment (no line) simply lives at the top
             None => unanchored.push((comment_idx, outdated)),
         }
     }
+    (by_line, unanchored)
+}
+
+/// Build the diff-pane rows for one file: its hunks and lines, with comment
+/// blocks under their anchored line, file-level (or orphaned) comments first.
+fn build_rows(model: &DiffModel, session: &Session, selected: usize) -> Vec<DiffRow> {
+    let mut rows = Vec::new();
+    let Some(file) = model.files.get(selected) else {
+        return rows;
+    };
+    let (by_line, unanchored) = collect_comments(file, session, model);
     push_comment_rows(&mut rows, session, &unanchored);
     for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
         rows.push(DiffRow::Hunk {
@@ -357,6 +427,105 @@ fn build_rows(model: &DiffModel, session: &Session, selected: usize) -> Vec<Diff
                 push_comment_rows(&mut rows, session, list);
             }
         }
+    }
+    rows
+}
+
+/// One row of the side-by-side diff body. `left`/`right` index into the hunk's
+/// lines: a context row carries the same index on both sides, a modified row
+/// pairs a deletion with an addition, and a lone deletion or addition fills one
+/// side with `None`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitRow {
+    Hunk {
+        hunk: usize,
+    },
+    Pair {
+        hunk: usize,
+        left: Option<usize>,
+        right: Option<usize>,
+    },
+    Comment {
+        comment: usize,
+        line: usize,
+        outdated: bool,
+    },
+}
+
+fn push_split_comments(rows: &mut Vec<SplitRow>, session: &Session, comments: &[(usize, bool)]) {
+    for &(comment, outdated) in comments {
+        let Some(c) = session.comments.get(comment) else {
+            continue;
+        };
+        let count = comment_display(c).len();
+        rows.extend((0..count).map(|line| SplitRow::Comment {
+            comment,
+            line,
+            outdated,
+        }));
+    }
+}
+
+/// Emit a change block as aligned pairs: deletions on the left, additions on
+/// the right, zipped by position with `None` filling the shorter side. Any
+/// comment anchored to a paired line follows its row.
+fn flush_change_block(
+    rows: &mut Vec<SplitRow>,
+    session: &Session,
+    by_line: &HashMap<(usize, usize), Vec<(usize, bool)>>,
+    hunk: usize,
+    dels: &[usize],
+    adds: &[usize],
+) {
+    for k in 0..dels.len().max(adds.len()) {
+        let left = dels.get(k).copied();
+        let right = adds.get(k).copied();
+        rows.push(SplitRow::Pair { hunk, left, right });
+        for line in [left, right].into_iter().flatten() {
+            if let Some(list) = by_line.get(&(hunk, line)) {
+                push_split_comments(rows, session, list);
+            }
+        }
+    }
+}
+
+/// Build the side-by-side rows for one file, the split-mode counterpart to
+/// [`build_rows`]. Same comment placement; lines are paired old-to-new.
+pub(crate) fn build_split_rows(
+    model: &DiffModel,
+    session: &Session,
+    selected: usize,
+) -> Vec<SplitRow> {
+    let mut rows = Vec::new();
+    let Some(file) = model.files.get(selected) else {
+        return rows;
+    };
+    let (by_line, unanchored) = collect_comments(file, session, model);
+    push_split_comments(&mut rows, session, &unanchored);
+    for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
+        rows.push(SplitRow::Hunk { hunk: hunk_idx });
+        let mut dels: Vec<usize> = Vec::new();
+        let mut adds: Vec<usize> = Vec::new();
+        for (line_idx, line) in hunk.lines.iter().enumerate() {
+            match line.kind {
+                LineKind::Context => {
+                    flush_change_block(&mut rows, session, &by_line, hunk_idx, &dels, &adds);
+                    dels.clear();
+                    adds.clear();
+                    rows.push(SplitRow::Pair {
+                        hunk: hunk_idx,
+                        left: Some(line_idx),
+                        right: Some(line_idx),
+                    });
+                    if let Some(list) = by_line.get(&(hunk_idx, line_idx)) {
+                        push_split_comments(&mut rows, session, list);
+                    }
+                }
+                LineKind::Deleted => dels.push(line_idx),
+                LineKind::Added => adds.push(line_idx),
+            }
+        }
+        flush_change_block(&mut rows, session, &by_line, hunk_idx, &dels, &adds);
     }
     rows
 }
@@ -380,6 +549,7 @@ impl App {
             None,
             &self.review,
             self.config.ui.diff_file_layout,
+            self.config.ui.side_by_side,
         );
         if let Some(path) = scope
             && let Some(index) = self
@@ -411,6 +581,7 @@ impl App {
                     Some(model),
                     &self.review,
                     self.config.ui.diff_file_layout,
+                    self.config.ui.side_by_side,
                 );
                 self.diff = Some(view);
                 self.screens.push(Screen::Diff);
@@ -434,6 +605,7 @@ impl App {
                     Some(model),
                     &self.review,
                     self.config.ui.diff_file_layout,
+                    self.config.ui.side_by_side,
                 );
                 self.diff = Some(view);
                 self.screens.push(Screen::Diff);
@@ -454,6 +626,7 @@ impl App {
             Action::NextFile => return self.diff_step_file(true),
             Action::PrevFile => return self.diff_step_file(false),
             Action::ToggleFocus => return self.diff_toggle_focus(),
+            Action::ToggleSideBySide => return self.toggle_side_by_side(),
             // comment walk works from either pane; land in the diff pane on the
             // comment so it can be read and replied to
             Action::NextComment => {
@@ -509,6 +682,13 @@ impl App {
             Action::NextHunk => self.diff_jump(true, |row| matches!(row, DiffRow::Hunk { .. })),
             Action::PrevHunk => self.diff_jump(false, |row| matches!(row, DiffRow::Hunk { .. })),
             Action::Open => self.diff_focus(Pane::List),
+            // side-by-side is a read-only view; commenting and selection stay
+            // in the unified pane, reachable by toggling back with `|`
+            Action::Comment | Action::VisualSelect | Action::Reply | Action::Resolve
+                if self.diff.as_ref().is_some_and(|d| d.side_by_side) =>
+            {
+                self.info("switch to the unified view (|) to comment");
+            }
             Action::Comment => self.comment_at_cursor(),
             Action::VisualSelect => self.toggle_visual(),
             Action::Reply => self.reply_at_cursor(),
@@ -523,6 +703,19 @@ impl App {
                 self.info(format!("{} is not implemented yet", other.name()));
             }
         }
+    }
+
+    fn toggle_side_by_side(&mut self) {
+        let Some(diff) = self.diff.as_mut() else {
+            return;
+        };
+        diff.side_by_side = !diff.side_by_side;
+        diff.split_scroll = 0;
+        self.info(if self.diff.as_ref().is_some_and(|d| d.side_by_side) {
+            "side-by-side"
+        } else {
+            "unified"
+        });
     }
 
     fn diff_toggle_focus(&mut self) {
@@ -2033,6 +2226,65 @@ mod tests {
                 },
                 CommentLine::Footer,
             ]
+        );
+    }
+
+    #[test]
+    fn build_split_rows_aligns_old_and_new_sides() {
+        let fixture = standard_fixture();
+        let app = diff_app(&fixture);
+        let diff = app.diff.as_ref().unwrap();
+        let model = diff.model(&app.review);
+        let session = app.review.session_for(&DiffSource::WorkingTree);
+        for (index, file) in model.files.iter().enumerate() {
+            for row in build_split_rows(model, session, index) {
+                let SplitRow::Pair { hunk, left, right } = row else {
+                    continue;
+                };
+                assert!(left.is_some() || right.is_some(), "a pair fills a side");
+                let lines = &file.hunks[hunk].lines;
+                if let Some(l) = left {
+                    assert!(matches!(
+                        lines[l].kind,
+                        LineKind::Deleted | LineKind::Context
+                    ));
+                }
+                if let Some(r) = right {
+                    assert!(matches!(lines[r].kind, LineKind::Added | LineKind::Context));
+                }
+                if left == right {
+                    assert!(matches!(lines[left.unwrap()].kind, LineKind::Context));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn toggle_side_by_side_flips_the_mode() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        app.diff.as_mut().unwrap().focus = Pane::Diff;
+        assert!(!app.diff.as_ref().unwrap().side_by_side);
+        app.handle(key('|'));
+        assert!(app.diff.as_ref().unwrap().side_by_side);
+        app.handle(key('|'));
+        assert!(!app.diff.as_ref().unwrap().side_by_side);
+    }
+
+    #[test]
+    fn commenting_in_side_by_side_is_redirected_to_unified() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        let diff = app.diff.as_mut().unwrap();
+        diff.focus = Pane::Diff;
+        diff.side_by_side = true;
+        app.handle(key('c'));
+        assert!(app.modal.is_none(), "no comment modal opens in split mode");
+        assert!(
+            app.message
+                .as_ref()
+                .is_some_and(|m| m.text.contains("unified")),
+            "the message points to the unified view"
         );
     }
 }

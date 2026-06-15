@@ -6,8 +6,8 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use diffler_core::highlight::Highlighter;
-use diffler_core::model::{DiffModel, FileDiff};
+use diffler_core::highlight::{Highlighter, StyledRange};
+use diffler_core::model::{DiffLine, DiffModel, FileDiff};
 use diffler_core::session::{Comment, CommentStatus, Session};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -16,13 +16,16 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use crate::app::{
-    App, CommentLine, DiffRow, DiffSource, DiffView, FileHighlights, Pane, comment_display,
+    App, CommentLine, DiffRow, DiffSource, DiffView, FileHighlights, Pane, SplitRow,
+    build_split_rows, comment_display,
 };
 use crate::keymap::Action;
 use crate::theme::Theme;
 use crate::tree::TreeNode;
 use crate::ui::Hint;
-use crate::ui::diff_render::{file_gutter_width, hunk_header, line_syntax, render_diff_line};
+use crate::ui::diff_render::{
+    SplitSide, file_gutter_width, hunk_header, line_syntax, render_diff_line, render_split_pair,
+};
 use crate::ui::{diffstat_spans, hint_line, proportion_bar, status_bar, status_color};
 
 /// Hint entries, rendered against the live keymap so remaps show.
@@ -33,6 +36,7 @@ const HINTS: &[Hint] = &[
     Hint::Leaf(&[Action::Reply], "reply"),
     Hint::Leaf(&[Action::Resolve], "resolve"),
     Hint::Leaf(&[Action::MarkViewed], "viewed"),
+    Hint::Leaf(&[Action::ToggleSideBySide], "split"),
     Hint::Leaf(&[Action::NextFile, Action::PrevFile], "file"),
     Hint::Leaf(&[Action::CopyFileFeedback, Action::CopyAllFeedback], "copy"),
     Hint::Leaf(&[Action::Back], "back"),
@@ -158,7 +162,9 @@ fn draw_sidebar(
     frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), inner);
 }
 
-/// Right pane: the selected file's header then the visible slice of its rows.
+/// Right pane: the selected file's header then the visible slice of its rows,
+/// in unified or side-by-side mode.
+#[allow(clippy::too_many_lines)]
 fn draw_pane(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -215,8 +221,47 @@ fn draw_pane(
         header_area,
     );
 
-    let height = rows_area.height.max(1) as usize;
     diff.viewport = rows_area.height;
+    // syntax is filled lazily, only for files that actually scroll into view
+    ensure_file_highlights(&mut diff.highlights, file);
+
+    if diff.side_by_side {
+        let split = build_split_rows(model, session, diff.selected);
+        let (sel, side) = diff.split_cursor(&split);
+        let height = rows_area.height.max(1) as usize;
+        if sel < diff.split_scroll {
+            diff.split_scroll = sel;
+        }
+        if sel >= diff.split_scroll + height {
+            diff.split_scroll = sel + 1 - height;
+        }
+        let scroll = diff.split_scroll;
+        let highlights = diff.highlights.get(&file.path);
+        let gutter = file_gutter_width(file);
+        let lines: Vec<Line<'static>> = split
+            .iter()
+            .enumerate()
+            .skip(scroll)
+            .take(height)
+            .map(|(index, row)| {
+                split_row_line(
+                    theme,
+                    session,
+                    file,
+                    highlights,
+                    gutter,
+                    rows_area.width,
+                    row,
+                    index == sel,
+                    side,
+                )
+            })
+            .collect();
+        frame.render_widget(Paragraph::new(lines), rows_area);
+        return;
+    }
+
+    let height = rows_area.height.max(1) as usize;
     if diff.cursor < diff.scroll {
         diff.scroll = diff.cursor;
     }
@@ -226,8 +271,6 @@ fn draw_pane(
     let scroll = diff.scroll;
     let cursor = diff.cursor;
     let selection = diff.selection();
-    // syntax is filled lazily, only for files that actually scroll into view
-    ensure_file_highlights(&mut diff.highlights, file);
 
     let selected = |index: usize| {
         index == cursor || selection.is_some_and(|(start, end)| index >= start && index <= end)
@@ -251,6 +294,73 @@ fn draw_pane(
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), rows_area);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn split_row_line(
+    theme: &Theme,
+    session: &Session,
+    file: &FileDiff,
+    highlights: Option<&FileHighlights>,
+    gutter: usize,
+    width: u16,
+    row: &SplitRow,
+    on_cursor: bool,
+    cursor_side: Option<SplitSide>,
+) -> Line<'static> {
+    match *row {
+        SplitRow::Hunk { hunk } => match file.hunks.get(hunk) {
+            Some(hunk) => hunk_header(theme, hunk, width, on_cursor),
+            None => Line::default(),
+        },
+        SplitRow::Pair { hunk, left, right } => {
+            let Some(hunk) = file.hunks.get(hunk) else {
+                return Line::default();
+            };
+            let cell = |index: Option<usize>, side: SplitSide| {
+                index.and_then(|i| hunk.lines.get(i)).map(|line| {
+                    (
+                        line,
+                        highlights.and_then(|hl| split_side_syntax(hl, line, side)),
+                    )
+                })
+            };
+            let sel_left = on_cursor && !matches!(cursor_side, Some(SplitSide::Right));
+            let sel_right = on_cursor && !matches!(cursor_side, Some(SplitSide::Left));
+            render_split_pair(
+                theme,
+                cell(left, SplitSide::Left),
+                cell(right, SplitSide::Right),
+                gutter,
+                width,
+                sel_left,
+                sel_right,
+            )
+        }
+        SplitRow::Comment {
+            comment,
+            line,
+            outdated,
+        } => match session.comments.get(comment) {
+            Some(comment) => comment_row_line(theme, comment, line, outdated, width, on_cursor),
+            None => Line::default(),
+        },
+    }
+}
+
+/// Per-side syntax for a split row: the old highlights for the left column, the
+/// new highlights for the right, indexed by that side's line number.
+fn split_side_syntax<'a>(
+    highlights: &'a FileHighlights,
+    line: &DiffLine,
+    side: SplitSide,
+) -> Option<&'a [StyledRange]> {
+    let (column, number) = match side {
+        SplitSide::Left => (&highlights.old, line.old_no),
+        SplitSide::Right => (&highlights.new, line.new_no),
+    };
+    let index = usize::try_from(number?).ok()?.checked_sub(1)?;
+    column.get(index).map(Vec::as_slice)
 }
 
 /// Diff-pane title: a plain "Diff" for the working tree or a single commit, a
@@ -771,6 +881,14 @@ mod tests {
             "rust syntax produced styled ranges"
         );
         insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn side_by_side_pane_renders_old_and_new_columns() {
+        let (_fixture, mut app) = diff_app();
+        open_lib_diff(&mut app);
+        app.diff.as_mut().unwrap().side_by_side = true;
+        insta::assert_snapshot!(render(&mut app).backend());
     }
 
     #[test]

@@ -18,6 +18,8 @@
 # flat list; the diff sidebar defaults to the tree.
 # status_file_layout = "list"
 # diff_file_layout = "tree"
+# Open the diff pane side-by-side (old left, new right); `|` toggles it live.
+# side_by_side = false
 
 [mcp]
 # enabled = true

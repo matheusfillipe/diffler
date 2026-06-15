@@ -70,6 +70,9 @@ pub struct UiConfig {
     pub status_file_layout: FileLayout,
     /// File-list layout in the diff sidebar; collapsible tree by default.
     pub diff_file_layout: FileLayout,
+    /// Open the diff pane in side-by-side (old left, new right) mode; `|`
+    /// toggles it live. Unified by default.
+    pub side_by_side: bool,
 }
 
 impl Default for UiConfig {
@@ -80,6 +83,7 @@ impl Default for UiConfig {
             recent_commits: 10,
             status_file_layout: FileLayout::List,
             diff_file_layout: FileLayout::Tree,
+            side_by_side: false,
         }
     }
 }
@@ -272,6 +276,7 @@ struct PartialUi {
     // (via [`FileLayout::from_str`]) instead of aborting the whole parse
     status_file_layout: Option<String>,
     diff_file_layout: Option<String>,
+    side_by_side: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -384,6 +389,13 @@ fn apply_layer(
         warnings,
     );
     set(
+        layer.ui.side_by_side,
+        &mut config.ui.side_by_side,
+        "ui.side_by_side",
+        origin,
+        origins,
+    );
+    set(
         layer.mcp.enabled,
         &mut config.mcp.enabled,
         "mcp.enabled",
@@ -444,12 +456,13 @@ fn apply_cli(cli: &CliOverrides, config: &mut Config, origins: &mut BTreeMap<Str
 
 /// Scalar keys always listed in the `--dump` origins block; `keys.*` entries
 /// are appended dynamically since their names come from the user.
-const SCALAR_KEYS: [&str; 8] = [
+const SCALAR_KEYS: [&str; 9] = [
     "ui.theme",
     "ui.context_lines",
     "ui.recent_commits",
     "ui.status_file_layout",
     "ui.diff_file_layout",
+    "ui.side_by_side",
     "mcp.enabled",
     "mcp.port",
     "editor.command",
@@ -630,6 +643,7 @@ mod tests {
         assert_eq!(config.ui.recent_commits, 10);
         assert_eq!(config.ui.status_file_layout, FileLayout::List);
         assert_eq!(config.ui.diff_file_layout, FileLayout::Tree);
+        assert!(!config.ui.side_by_side);
         assert!(config.mcp.enabled);
         assert_eq!(config.mcp.port, 8417);
         assert_eq!(config.editor.command, None);

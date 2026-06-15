@@ -2,7 +2,7 @@
 source: crates/diffler/src/ui/diff.rs
 expression: render(&mut app).backend()
 ---
-" Hint: <tab> focus  c comment  V select  r reply  R resolve  v viewed  <c-n>/<c-p> file  y/Y copy  q back               "
+" Hint: <tab> focus  c comment  V select  r reply  R resolve  v viewed  | split  <c-n>/<c-p> file  y/Y copy  q back      "
 "╭ Files ─────────────────────╮╭ Diff ──────────────────────────────────────────────────────────────────────────────────╮"
 "│ ▾ src                      ││ new file  notes.txt                                                         +1 -0 █████│"
 "│   A lib.rs            +3 -0││                                                                                        │"

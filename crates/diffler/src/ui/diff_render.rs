@@ -7,6 +7,7 @@ use diffler_core::highlight::StyledRange;
 use diffler_core::model::{DiffLine, FileDiff, Hunk, LineKind};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use unicode_width::UnicodeWidthChar;
 
 use crate::theme::Theme;
 
@@ -143,6 +144,124 @@ pub fn render_diff_line(
         spans.push(Span::styled(" ".repeat(pad), Style::new().bg(base_bg)));
     }
     Line::from(spans)
+}
+
+/// Which column of a side-by-side row a line belongs to: the old side renders
+/// on the left, the new side on the right.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitSide {
+    Left,
+    Right,
+}
+
+/// One side of a side-by-side row: the line and its per-line syntax, or `None`
+/// for a column with no counterpart (a lone deletion's right, a lone
+/// addition's left).
+pub type SplitCell<'a> = Option<(&'a DiffLine, Option<&'a [StyledRange]>)>;
+
+/// Render one side-by-side row: the old line in the left column, the new line
+/// in the right, divided by a separator. Each column shows a single gutter
+/// number (old on the left, new on the right) and the same composited text the
+/// unified view draws. `sel_left`/`sel_right` paint a column with the
+/// cursor-line background.
+pub fn render_split_pair(
+    theme: &Theme,
+    left: SplitCell<'_>,
+    right: SplitCell<'_>,
+    gutter: usize,
+    width: u16,
+    sel_left: bool,
+    sel_right: bool,
+) -> Line<'static> {
+    let total = width as usize;
+    let left_w = total.saturating_sub(1) / 2;
+    let right_w = total.saturating_sub(1 + left_w);
+    let mut spans = side_spans(theme, left, SplitSide::Left, gutter, left_w, sel_left);
+    spans.push(Span::styled("│", Style::new().fg(theme.dim).bg(theme.bg)));
+    spans.extend(side_spans(
+        theme,
+        right,
+        SplitSide::Right,
+        gutter,
+        right_w,
+        sel_right,
+    ));
+    Line::from(spans)
+}
+
+/// Render one column of a side-by-side row, clipped and padded to `col_width`.
+fn side_spans(
+    theme: &Theme,
+    cell: SplitCell<'_>,
+    side: SplitSide,
+    gutter: usize,
+    col_width: usize,
+    selected: bool,
+) -> Vec<Span<'static>> {
+    let Some((line, syntax)) = cell else {
+        let bg = if selected {
+            theme.cursor_line
+        } else {
+            theme.bg
+        };
+        return vec![Span::styled(" ".repeat(col_width), Style::new().bg(bg))];
+    };
+    let (line_bg, emph_bg) = match line.kind {
+        LineKind::Added => (theme.add_line_bg, theme.add_emph_bg),
+        LineKind::Deleted => (theme.del_line_bg, theme.del_emph_bg),
+        LineKind::Context => (theme.bg, theme.bg),
+    };
+    let base_bg = if selected { theme.cursor_line } else { line_bg };
+    let number = match side {
+        SplitSide::Left => line.old_no,
+        SplitSide::Right => line.new_no,
+    };
+    let number = match number {
+        Some(n) => format!("{n:>gutter$}"),
+        None => " ".repeat(gutter),
+    };
+    let mut spans = vec![Span::styled(
+        format!(" {number} "),
+        Style::new().fg(theme.dim).bg(base_bg),
+    )];
+    spans.extend(composite_spans(theme, line, syntax, base_bg, emph_bg));
+    clip_pad(spans, col_width, base_bg)
+}
+
+/// Clip a styled run to `width` display columns, padding the remainder with
+/// the background so every column fills exactly.
+fn clip_pad(spans: Vec<Span<'static>>, width: usize, bg: Color) -> Vec<Span<'static>> {
+    let mut out = Vec::new();
+    let mut used = 0;
+    for span in spans {
+        if used >= width {
+            break;
+        }
+        let w = span.width();
+        if used + w <= width {
+            used += w;
+            out.push(span);
+        } else {
+            // clip by display width, not char count, so a wide (CJK/emoji)
+            // glyph at the boundary can't overrun the column and shove the
+            // neighbouring column off the pane
+            let mut clipped = String::new();
+            for ch in span.content.chars() {
+                let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+                if used + cw > width {
+                    break;
+                }
+                clipped.push(ch);
+                used += cw;
+            }
+            out.push(Span::styled(clipped, span.style));
+            break;
+        }
+    }
+    if used < width {
+        out.push(Span::styled(" ".repeat(width - used), Style::new().bg(bg)));
+    }
+    out
 }
 
 /// Split the text at every syntax/emphasis range boundary and style each
@@ -425,5 +544,22 @@ mod tests {
             ..file
         };
         assert_eq!(file_gutter_width(&empty), 4);
+    }
+
+    #[test]
+    fn clip_pad_clips_by_display_width_not_char_count() {
+        // five double-width glyphs are ten columns; clipping to six must keep
+        // three glyphs, never overrun the column and shove a neighbour aside
+        let spans = vec![Span::raw("一二三四五")];
+        let out = clip_pad(spans, 6, Color::Reset);
+        let width: usize = out.iter().map(Span::width).sum();
+        assert_eq!(width, 6);
+    }
+
+    #[test]
+    fn clip_pad_pads_a_short_run_to_the_column_width() {
+        let out = clip_pad(vec![Span::raw("ab")], 6, Color::Reset);
+        let width: usize = out.iter().map(Span::width).sum();
+        assert_eq!(width, 6);
     }
 }
