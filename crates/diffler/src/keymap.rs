@@ -22,6 +22,7 @@ pub enum Action {
     PrevFile,
     ToggleFocus,
     ToggleFold,
+    ToggleSideBySide,
     Stage,
     Unstage,
     StageAll,
@@ -78,6 +79,7 @@ impl Action {
             Self::PrevFile => "prev_file",
             Self::ToggleFocus => "toggle_focus",
             Self::ToggleFold => "toggle_fold",
+            Self::ToggleSideBySide => "toggle_side_by_side",
             Self::Stage => "stage",
             Self::Unstage => "unstage",
             Self::StageAll => "stage_all",
@@ -121,7 +123,7 @@ impl Action {
         }
     }
 
-    const ALL: [Self; 50] = [
+    const ALL: [Self; 51] = [
         Self::MoveDown,
         Self::MoveUp,
         Self::GoTop,
@@ -132,6 +134,7 @@ impl Action {
         Self::PrevFile,
         Self::ToggleFocus,
         Self::ToggleFold,
+        Self::ToggleSideBySide,
         Self::Stage,
         Self::Unstage,
         Self::StageAll,
@@ -260,6 +263,7 @@ const DIFF_DEFAULTS: &[(&str, Action)] = &[
     ("<c-p>", Action::PrevFile),
     ("<tab>", Action::ToggleFocus),
     ("za", Action::ToggleFold),
+    ("|", Action::ToggleSideBySide),
     ("<cr>", Action::Open),
     ("<c-r>", Action::Refresh),
     ("{", Action::PrevHunk),

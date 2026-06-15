@@ -38,6 +38,7 @@ serde_ignored = "0.1"
 serde_json = "1"
 toml = "1"
 uuid = { version = "1", features = ["v4"] }
+unicode-width = "0.2"
 insta = "1.47"
 tempfile = "3"
 
