@@ -1,28 +1,28 @@
 class Diffler < Formula
   desc "Terminal code review for AI coding agents"
   homepage "https://github.com/matheusfillipe/diffler"
-  version "0.1.5"
+  version "0.1.6"
   license "MIT OR Apache-2.0"
 
   on_macos do
     on_arm do
-      url "https://github.com/matheusfillipe/diffler/releases/download/v0.1.5/diffler-v0.1.5-aarch64-apple-darwin.tar.gz"
-      sha256 "58edccf51cb0d46ea7d7ae5fa8622871fe3f3a45ee12371ad858737d88a80c84"
+      url "https://github.com/matheusfillipe/diffler/releases/download/v0.1.6/diffler-v0.1.6-aarch64-apple-darwin.tar.gz"
+      sha256 "cfe0ddffd9824faf91cb145400baba7964f5eff2881ae6011d24aff5b5010bcb"
     end
     on_intel do
-      url "https://github.com/matheusfillipe/diffler/releases/download/v0.1.5/diffler-v0.1.5-x86_64-apple-darwin.tar.gz"
-      sha256 "569475e6483bcec052ba5aaa28c3e6a968b158a47cacc4af27b735c49203358e"
+      url "https://github.com/matheusfillipe/diffler/releases/download/v0.1.6/diffler-v0.1.6-x86_64-apple-darwin.tar.gz"
+      sha256 "69bdc249563cd120cb41f2fc8a0c860f94d386238d0bf09e60abe899b14221b6"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/matheusfillipe/diffler/releases/download/v0.1.5/diffler-v0.1.5-aarch64-unknown-linux-musl.tar.gz"
-      sha256 "8da24b4f74ce5aec129c52627e15a5950aeacbd55e9a97610dde515edc69cc1f"
+      url "https://github.com/matheusfillipe/diffler/releases/download/v0.1.6/diffler-v0.1.6-aarch64-unknown-linux-musl.tar.gz"
+      sha256 "879ee0a8f1578158bef8ead16e90b1a5096b426c5a617b2395c684436dadf32c"
     end
     on_intel do
-      url "https://github.com/matheusfillipe/diffler/releases/download/v0.1.5/diffler-v0.1.5-x86_64-unknown-linux-musl.tar.gz"
-      sha256 "eba2c4bfff3a7b7a7601b11e903231be4e410861046b05ff3bc718b42b811dec"
+      url "https://github.com/matheusfillipe/diffler/releases/download/v0.1.6/diffler-v0.1.6-x86_64-unknown-linux-musl.tar.gz"
+      sha256 "c881739b75f69c2b79109e30bfb908eb01a2424098998f68084f15f463087659"
     end
   end
 
