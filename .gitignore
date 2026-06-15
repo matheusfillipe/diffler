@@ -1,12 +1,14 @@
 target/
 node_modules/
+package-lock.json
 npm/dist/
 .venv/
 *.pyc
 __pycache__/
-demos/go-bubbletea/diffler-demo
-demos/ts-opentui/diffler-demo
+.pytest_cache/
 .DS_Store
 result
+flake.lock
 *.bun-build
 .claude/
+.diffler/

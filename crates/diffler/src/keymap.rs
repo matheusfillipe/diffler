@@ -179,7 +179,7 @@ impl Action {
     }
 }
 
-/// Which screen's bindings apply (research/NEOGIT-UX.md mapping decisions).
+/// Which screen's keymap is active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Context {
     Status,
