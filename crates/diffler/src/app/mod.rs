@@ -398,7 +398,41 @@ impl App {
                 self.git_finished(&label, ok, &output);
                 Flow::Continue
             }
+            // mouse only drives the plain screens; a modal or transient owns
+            // input while open
+            AppEvent::Mouse(mouse) if self.modal.is_none() && self.transient.is_none() => {
+                self.handle_mouse(mouse);
+                Flow::Continue
+            }
             AppEvent::Key(_) | AppEvent::Mouse(_) | AppEvent::Resize => Flow::Continue,
+        }
+    }
+
+    fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
+        use crossterm::event::{MouseButton, MouseEventKind};
+        match mouse.kind {
+            MouseEventKind::ScrollDown => self.mouse_scroll(mouse.column, mouse.row, 1),
+            MouseEventKind::ScrollUp => self.mouse_scroll(mouse.column, mouse.row, -1),
+            MouseEventKind::Down(MouseButton::Left) => self.mouse_click(mouse.column, mouse.row),
+            _ => {}
+        }
+    }
+
+    fn mouse_scroll(&mut self, col: u16, row: u16, dir: isize) {
+        // one wheel notch nudges a few rows, like a terminal pager
+        let delta = dir * 3;
+        match self.screen() {
+            Screen::Status => self.status_mouse_scroll(delta),
+            Screen::Diff => self.diff_mouse_scroll(col, row, delta),
+            Screen::Log => self.log_mouse_scroll(delta),
+        }
+    }
+
+    fn mouse_click(&mut self, col: u16, row: u16) {
+        match self.screen() {
+            Screen::Status => self.status_mouse_click(col, row),
+            Screen::Diff => self.diff_mouse_click(col, row),
+            Screen::Log => self.log_mouse_click(col, row),
         }
     }
 
@@ -1121,6 +1155,19 @@ fn byte_index(buffer: &str, chars: usize) -> usize {
         .char_indices()
         .nth(chars)
         .map_or(buffer.len(), |(index, _)| index)
+}
+
+/// Map a mouse point to a 0-based index into a list rendered in `area` with
+/// `scroll` rows hidden above the top; `None` when the point falls outside.
+pub(crate) fn hit_index(
+    area: ratatui::layout::Rect,
+    scroll: usize,
+    col: u16,
+    row: u16,
+) -> Option<usize> {
+    let inside =
+        col >= area.x && col < area.x + area.width && row >= area.y && row < area.y + area.height;
+    inside.then(|| scroll + (row - area.y) as usize)
 }
 
 fn empty_head() -> HeadInfo {

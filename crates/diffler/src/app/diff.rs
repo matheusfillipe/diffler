@@ -88,6 +88,11 @@ pub struct DiffView {
     /// First visible split row while `side_by_side` is on; the renderer keeps
     /// the cursor's line in view.
     pub(crate) split_scroll: usize,
+    /// Last render's sidebar/pane rects and sidebar scroll, for mouse
+    /// hit-testing. The pane's own scroll is `scroll` / `split_scroll`.
+    pub(crate) sidebar: ratatui::layout::Rect,
+    pub(crate) sidebar_scroll: usize,
+    pub(crate) pane: ratatui::layout::Rect,
     /// Row where `V` started; `Some` means line selection is active.
     pub visual_anchor: Option<usize>,
     /// Body height of the last diff-pane render, drives half-page motions.
@@ -122,6 +127,9 @@ impl DiffView {
             scroll: 0,
             side_by_side,
             split_scroll: 0,
+            sidebar: ratatui::layout::Rect::default(),
+            sidebar_scroll: 0,
+            pane: ratatui::layout::Rect::default(),
             visual_anchor: None,
             viewport: 0,
             rows: Vec::new(),
@@ -654,8 +662,10 @@ impl App {
             Action::GoBottom => self.diff_tree_to(usize::MAX),
             // half-page keys preview the selected file's diff without leaving
             // the sidebar: they scroll the diff pane, not the file selection
-            Action::HalfPageDown => self.diff_move(self.diff_half_page()),
-            Action::HalfPageUp => self.diff_move(-self.diff_half_page()),
+            Action::HalfPageDown => self.diff_move(self.diff_page(false)),
+            Action::HalfPageUp => self.diff_move(-self.diff_page(false)),
+            Action::FullPageDown => self.diff_move(self.diff_page(true)),
+            Action::FullPageUp => self.diff_move(-self.diff_page(true)),
             // <cr> focuses the pane on a file row, folds/unfolds a dir row
             Action::Open => self.diff_tree_activate(),
             Action::ToggleFold => self.diff_toggle_dir_fold(),
@@ -677,8 +687,10 @@ impl App {
             Action::MoveUp => self.diff_move(-1),
             Action::GoTop => self.diff_move(isize::MIN),
             Action::GoBottom => self.diff_move(isize::MAX),
-            Action::HalfPageDown => self.diff_move(self.diff_half_page()),
-            Action::HalfPageUp => self.diff_move(-self.diff_half_page()),
+            Action::HalfPageDown => self.diff_move(self.diff_page(false)),
+            Action::HalfPageUp => self.diff_move(-self.diff_page(false)),
+            Action::FullPageDown => self.diff_move(self.diff_page(true)),
+            Action::FullPageUp => self.diff_move(-self.diff_page(true)),
             Action::NextHunk => self.diff_jump(true, |row| matches!(row, DiffRow::Hunk { .. })),
             Action::PrevHunk => self.diff_jump(false, |row| matches!(row, DiffRow::Hunk { .. })),
             Action::Open => self.diff_focus(Pane::List),
@@ -731,6 +743,57 @@ impl App {
     fn diff_focus(&mut self, pane: Pane) {
         if let Some(diff) = self.diff.as_mut() {
             diff.focus = pane;
+        }
+    }
+
+    pub(super) fn diff_mouse_scroll(&mut self, col: u16, _row: u16, delta: isize) {
+        // the sidebar fills the left columns; scroll whichever pane the pointer
+        // sits over
+        let in_sidebar = self.diff.as_ref().is_some_and(|diff| col < diff.pane.x);
+        if in_sidebar {
+            self.diff_tree_step(delta);
+        } else {
+            self.diff_move(delta);
+        }
+    }
+
+    pub(super) fn diff_mouse_click(&mut self, col: u16, row: u16) {
+        let Some((sidebar, sidebar_scroll, pane, pane_scroll, split)) =
+            self.diff.as_ref().map(|d| {
+                (
+                    d.sidebar,
+                    d.sidebar_scroll,
+                    d.pane,
+                    d.scroll,
+                    d.side_by_side,
+                )
+            })
+        else {
+            return;
+        };
+        if let Some(tree_index) = super::hit_index(sidebar, sidebar_scroll, col, row) {
+            let count = self
+                .diff
+                .as_ref()
+                .map_or(0, |d| d.tree_rows(d.model(&self.review)).len());
+            if tree_index < count {
+                self.diff_tree_to(tree_index);
+                self.diff_tree_activate();
+            }
+            return;
+        }
+        if let Some(pane_index) = super::hit_index(pane, pane_scroll, col, row) {
+            // unified rows map 1:1 to screen lines; split mode keeps keyboard
+            // nav rather than invert its paired-row layout
+            if !split {
+                let len = self.diff.as_ref().map_or(0, |d| d.rows().len());
+                if pane_index < len
+                    && let Some(diff) = self.diff.as_mut()
+                {
+                    diff.cursor = pane_index;
+                }
+            }
+            self.diff_focus(Pane::Diff);
         }
     }
 
@@ -880,16 +943,21 @@ impl App {
         diff.cursor = diff.cursor.saturating_add_signed(delta).min(last);
     }
 
-    fn diff_half_page(&self) -> isize {
+    fn diff_page(&self, full: bool) -> isize {
         let viewport = self.diff.as_ref().map_or(0, |d| d.viewport);
-        // before the first render the height is unknown; half a typical
-        // terminal is a fine guess
-        let half = if viewport == 0 {
-            20
+        // before the first render the height is unknown; a typical terminal
+        // is a fine guess
+        let lines = if viewport == 0 {
+            40
         } else {
-            i64::from(viewport) / 2
+            i64::from(viewport)
         };
-        isize::try_from(half).unwrap_or(20).max(1)
+        let step = if full {
+            (lines - 1).max(1)
+        } else {
+            (lines / 2).max(1)
+        };
+        isize::try_from(step).unwrap_or(20).max(1)
     }
 
     /// Jump the pane cursor to the next/previous comment block, landing on its

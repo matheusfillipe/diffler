@@ -86,7 +86,14 @@ The diff view is two panes: a file sidebar and the selected file's diff. `TAB`
 moves focus between them; `j`/`k` change the selected file from the sidebar or
 scroll the diff when focused there; `<c-n>`/`<c-p>` switch files from either.
 
-`?` shows the full keymap for the current screen.
+`?` shows the full keymap for the current screen. `<c-d>`/`<c-u>` scroll a half
+page; `<c-f>`/`<c-b>` scroll a full page in the diff and log views.
+
+The mouse works too (including over tmux): the wheel scrolls the pane under the
+pointer, and a left click selects a row — clicking a section, directory, or
+recent-commits header folds it, and clicking a sidebar file opens it. Mouse
+capture means the terminal's own text selection needs the usual override
+(`Shift`, or `Option` in iTerm2).
 
 ## MCP tools
 

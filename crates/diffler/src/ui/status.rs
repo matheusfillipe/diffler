@@ -44,7 +44,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     .areas(area);
     app.status.viewport = body_area.height;
     frame.render_widget(Paragraph::new(hint_line(app, HINTS)), hint);
-    let (lines, scroll) = body(app, body_area);
+    let (lines, scroll, line_rows) = body(app, body_area);
+    app.status.body = body_area;
+    app.status.scroll = scroll;
+    app.status.line_rows = line_rows;
     frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), body_area);
     frame.render_widget(
         Paragraph::new(status_bar(app, bar.width)).style(Style::new().bg(app.theme.panel)),
@@ -52,8 +55,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     );
 }
 
-/// Body lines plus the vertical scroll keeping the cursor row in view.
-fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16) {
+/// Body lines, the vertical scroll keeping the cursor row in view, and a
+/// per-rendered-line table of the `visible_rows` index each line belongs to
+/// (`None` for headers/blanks) so mouse clicks map back to a row.
+fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16, Vec<Option<usize>>) {
     let mut lines = vec![head_line(app)];
     let (added, deleted) = Section::ALL
         .into_iter()
@@ -78,6 +83,9 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16) {
     }
 
     let mut cursor_line_index = 0usize;
+    // the preamble lines (head, optional changes summary, blanks, empty-state)
+    // belong to no row
+    let mut line_rows: Vec<Option<usize>> = vec![None; lines.len()];
     let mut index = 0;
     while let Some(row) = rows.get(index) {
         match row {
@@ -113,17 +121,20 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16) {
                 lines.extend(render_hunk_lines(
                     &app.theme, hunk, syntax, area.width, selected,
                 ));
+                line_rows.extend((0..span).map(|offset| Some(index + offset)));
                 index += span;
             }
             row => {
                 if index > 0 && matches!(row, Row::SectionHeader { .. } | Row::RecentHeader { .. })
                 {
                     lines.push(Line::default());
+                    line_rows.push(None);
                 }
                 if index == app.status.cursor {
                     cursor_line_index = lines.len();
                 }
                 lines.push(row_line(app, row, index == app.status.cursor, area.width));
+                line_rows.push(Some(index));
                 index += 1;
             }
         }
@@ -131,7 +142,7 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16) {
 
     let height = area.height.max(1) as usize;
     let scroll = cursor_line_index.saturating_sub(height - 1) as u16;
-    (lines, scroll)
+    (lines, scroll, line_rows)
 }
 
 fn centered_line(text: &str, style: Style, width: u16) -> Line<'static> {
@@ -315,7 +326,9 @@ mod tests {
     use crate::app::{App, Row, Section};
     use crate::config::LoadedConfig;
     use crate::event::AppEvent;
-    use crate::test_support::{Fixture, key, standard_fixture, two_hunk_fixture};
+    use crate::test_support::{
+        Fixture, key, mouse_click, mouse_scroll, standard_fixture, two_hunk_fixture,
+    };
 
     /// Render through the top-level draw so modal overlays and screen
     /// switching are covered too.
@@ -326,6 +339,80 @@ mod tests {
             .draw(|frame| crate::ui::draw(frame, app))
             .expect("draw");
         terminal
+    }
+
+    /// Screen position rendering `visible_rows()[row]`, via the geometry the
+    /// last render stored.
+    fn screen_pos(app: &App, row: usize) -> (u16, u16) {
+        let line = app
+            .status
+            .line_rows
+            .iter()
+            .position(|r| *r == Some(row))
+            .expect("row is on screen");
+        let y = app.status.body.y + (line as u16 - app.status.scroll);
+        (app.status.body.x + 1, y)
+    }
+
+    #[test]
+    fn mouse_wheel_scrolls_the_status_cursor() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        render(&mut app);
+        let before = app.status.cursor;
+        app.handle(mouse_scroll(true, 5, 5));
+        let after = app.status.cursor;
+        assert!(after > before, "wheel down advanced the cursor");
+        app.handle(mouse_scroll(false, 5, 5));
+        assert!(app.status.cursor < after, "wheel up moved it back");
+    }
+
+    #[test]
+    fn clicking_a_file_row_selects_it() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        render(&mut app);
+        // pick a non-zero file row to prove the click maps there, not just to 0
+        let rows = app.visible_rows();
+        let target = rows
+            .iter()
+            .position(|r| matches!(r, Row::File { .. }))
+            .expect("a file row");
+        let (x, y) = screen_pos(&app, target);
+        app.handle(mouse_click(x, y));
+        assert_eq!(app.status.cursor, target);
+    }
+
+    #[test]
+    fn clicking_a_section_header_toggles_its_fold() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        render(&mut app);
+        let Some(Row::SectionHeader { section, .. }) = app.visible_rows().first().cloned() else {
+            panic!("first row is a section header");
+        };
+        let folded = app.is_folded(section);
+        let (x, y) = screen_pos(&app, 0);
+        app.handle(mouse_click(x, y));
+        assert_eq!(app.status.cursor, 0);
+        assert_ne!(app.is_folded(section), folded, "click toggled the fold");
+    }
+
+    #[test]
+    fn clicking_the_recent_commits_header_toggles_it() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        render(&mut app);
+        let target = app
+            .visible_rows()
+            .iter()
+            .position(|r| matches!(r, Row::RecentHeader { .. }))
+            .expect("a recent-commits header");
+        let folded = app.status.recent_folded;
+        let (x, y) = screen_pos(&app, target);
+        app.handle(mouse_click(x, y));
+        assert_eq!(app.status.cursor, target);
+        assert_ne!(app.status.recent_folded, folded, "click toggled the fold");
     }
 
     fn app_for(fixture: &Fixture) -> App {

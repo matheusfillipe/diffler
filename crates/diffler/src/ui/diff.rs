@@ -120,11 +120,12 @@ fn draw_sidebar(
     theme: &Theme,
     session: &Session,
     review_model: Option<&DiffModel>,
-    diff: &DiffView,
+    diff: &mut DiffView,
 ) {
     let focused = diff.focus == Pane::List;
     let block = pane_block(theme, "Files", focused);
     let inner = block.inner(area);
+    diff.sidebar = inner;
     frame.render_widget(block, area);
     let Some(model) = diff.commit_model.as_ref().or(review_model) else {
         return;
@@ -168,6 +169,7 @@ fn draw_sidebar(
     // stays in view (the sidebar tree can be far taller than the pane)
     let height = inner.height.max(1) as usize;
     let scroll = diff.tree_cursor.saturating_sub(height - 1) as u16;
+    diff.sidebar_scroll = scroll as usize;
     frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), inner);
 }
 
@@ -231,6 +233,7 @@ fn draw_pane(
     );
 
     diff.viewport = rows_area.height;
+    diff.pane = rows_area;
     // syntax is filled lazily, only for files that actually scroll into view
     ensure_file_highlights(&mut diff.highlights, file);
 
@@ -763,7 +766,7 @@ mod tests {
     use super::{clip_name, clip_path};
     use crate::app::{App, DiffRow, Pane};
     use crate::config::LoadedConfig;
-    use crate::test_support::{Fixture, key, standard_fixture};
+    use crate::test_support::{Fixture, key, mouse_click, mouse_scroll, standard_fixture};
 
     #[test]
     fn basename_shorter_than_room_is_kept_whole() {
@@ -898,6 +901,39 @@ mod tests {
         open_lib_diff(&mut app);
         app.diff.as_mut().unwrap().side_by_side = true;
         insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn clicking_a_sidebar_file_selects_and_focuses_the_pane() {
+        let (_fixture, mut app) = diff_app();
+        render(&mut app);
+        let diff = app.diff.as_ref().unwrap();
+        let rows = diff.tree_rows(diff.model(&app.review));
+        let target = rows
+            .iter()
+            .position(|r| matches!(r.node, crate::tree::TreeNode::File { .. }))
+            .expect("a file row in the sidebar");
+        let (sidebar, scroll) = (diff.sidebar, diff.sidebar_scroll as u16);
+        let x = sidebar.x + 1;
+        let y = sidebar.y + target as u16 - scroll;
+        app.handle(mouse_click(x, y));
+        let diff = app.diff.as_ref().unwrap();
+        assert_eq!(diff.tree_cursor, target);
+        assert_eq!(diff.focus, Pane::Diff);
+    }
+
+    #[test]
+    fn mouse_wheel_over_the_pane_scrolls_it() {
+        let (_fixture, mut app) = diff_app();
+        open_lib_diff(&mut app);
+        render(&mut app);
+        let before = app.diff.as_ref().unwrap().cursor;
+        let pane = app.diff.as_ref().unwrap().pane;
+        app.handle(mouse_scroll(true, pane.x + 1, pane.y + 1));
+        assert!(
+            app.diff.as_ref().unwrap().cursor > before,
+            "wheel advanced the pane cursor"
+        );
     }
 
     #[test]
