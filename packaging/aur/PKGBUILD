@@ -1,6 +1,6 @@
 # Maintainer: Matheus Fillipe <matheus.fillipe@syte.ms>
 pkgname=diffler-bin
-pkgver=0.1.9
+pkgver=0.1.10
 pkgrel=1
 pkgdesc="Terminal code review for AI coding agents"
 arch=('x86_64' 'aarch64')
@@ -8,10 +8,10 @@ url="https://github.com/matheusfillipe/diffler"
 license=('MIT' 'Apache-2.0')
 provides=('diffler')
 conflicts=('diffler')
-source_x86_64=("diffler-$pkgver-x86_64.tar.gz::https://github.com/matheusfillipe/diffler/releases/download/v0.1.9/diffler-v0.1.9-x86_64-unknown-linux-musl.tar.gz")
-source_aarch64=("diffler-$pkgver-aarch64.tar.gz::https://github.com/matheusfillipe/diffler/releases/download/v0.1.9/diffler-v0.1.9-aarch64-unknown-linux-musl.tar.gz")
-sha256sums_x86_64=('3f9a2bf7080cfd1c588680a3710b59bc25b3010df18638a0159e6b8df75bb3b7')
-sha256sums_aarch64=('4279985b983ff73e775e9b23f5c8b38063caa6f919fb1f55ed9cdb3c3ad1674a')
+source_x86_64=("diffler-$pkgver-x86_64.tar.gz::https://github.com/matheusfillipe/diffler/releases/download/v0.1.10/diffler-v0.1.10-x86_64-unknown-linux-musl.tar.gz")
+source_aarch64=("diffler-$pkgver-aarch64.tar.gz::https://github.com/matheusfillipe/diffler/releases/download/v0.1.10/diffler-v0.1.10-aarch64-unknown-linux-musl.tar.gz")
+sha256sums_x86_64=('f1e85be08c57102efafdd2edaa6d9c18cec0f8d2946d8af8fe638ab0a4a829fa')
+sha256sums_aarch64=('4bf95c1ff12367f0f7129c656561f6b61764bb39f1bb76cf28619a137acb3b73')
 
 package() {
   local triple
@@ -19,7 +19,7 @@ package() {
     x86_64) triple="x86_64-unknown-linux-musl" ;;
     aarch64) triple="aarch64-unknown-linux-musl" ;;
   esac
-  install -Dm755 "diffler-v0.1.9-$triple/diffler" "$pkgdir/usr/bin/diffler"
-  install -Dm644 "diffler-v0.1.9-$triple/LICENSE-MIT" "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
-  install -Dm644 "diffler-v0.1.9-$triple/LICENSE-APACHE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+  install -Dm755 "diffler-v0.1.10-$triple/diffler" "$pkgdir/usr/bin/diffler"
+  install -Dm644 "diffler-v0.1.10-$triple/LICENSE-MIT" "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
+  install -Dm644 "diffler-v0.1.10-$triple/LICENSE-APACHE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
 }
