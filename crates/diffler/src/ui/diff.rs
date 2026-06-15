@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use diffler_core::highlight::{Highlighter, StyledRange};
+use diffler_core::highlight::{Highlighter, StyledRange, SyntaxTheme};
 use diffler_core::model::{DiffLine, DiffModel, FileDiff};
 use diffler_core::session::{Comment, CommentStatus, Session};
 use ratatui::Frame;
@@ -83,8 +83,17 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
 
 /// The process-wide syntax set: loading it is expensive, highlight results
 /// are cached per file on the view.
+static HIGHLIGHTER: OnceLock<Highlighter> = OnceLock::new();
+
+/// Pin the shared highlighter to the session's theme. Called once at startup;
+/// the theme is fixed per session, so a second call is a no-op. Because the
+/// cell is process-global, a test that wants themed-syntax output must set its
+/// theme before any other `App` in the same test binary pins a different one.
+pub(crate) fn init_highlighter(syntax: SyntaxTheme) {
+    let _ = HIGHLIGHTER.set(Highlighter::new(syntax));
+}
+
 fn highlighter() -> &'static Highlighter {
-    static HIGHLIGHTER: OnceLock<Highlighter> = OnceLock::new();
     HIGHLIGHTER.get_or_init(Highlighter::default)
 }
 
