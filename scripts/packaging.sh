@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Render the Homebrew formula, Scoop manifest, and AUR PKGBUILD for a release
-# from its uploaded GitHub assets. CI commits the brew/scoop files and pushes
-# the PKGBUILD to the AUR. The binary archives carry a top-level
-# diffler-v<ver>-<target>/ directory holding the `diffler` binary.
+# Render the Homebrew formula, Scoop manifest, AUR PKGBUILD/.SRCINFO, and Nix
+# flake for a release from its uploaded GitHub assets. CI commits all of them;
+# the AUR push is done manually (just aur-publish). The binary archives carry a
+# top-level diffler-v<ver>-<target>/ directory holding the `diffler` binary.
 #
 # Usage: scripts/packaging.sh <version> <assets-dir>
 set -euo pipefail
@@ -139,4 +139,53 @@ PKG
   printf '\npkgname = diffler-bin\n'
 } >"$root/packaging/aur/.SRCINFO"
 
-echo "rendered Formula/diffler.rb, bucket/diffler.json, packaging/aur/{PKGBUILD,.SRCINFO} for $ver"
+# Flake fetching the prebuilt binary (musl-static on Linux runs on NixOS as-is,
+# so no patchelf). nix's ${..} and $out are escaped to survive this heredoc.
+cat >"$root/flake.nix" <<NIX
+{
+  description = "$desc";
+
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+
+  outputs = { self, nixpkgs }:
+    let
+      version = "$ver";
+      base = "$base";
+      targets = {
+        x86_64-linux = { triple = "x86_64-unknown-linux-musl"; sha256 = "$lin_x64"; };
+        aarch64-linux = { triple = "aarch64-unknown-linux-musl"; sha256 = "$lin_arm"; };
+        x86_64-darwin = { triple = "x86_64-apple-darwin"; sha256 = "$mac_x64"; };
+        aarch64-darwin = { triple = "aarch64-apple-darwin"; sha256 = "$mac_arm"; };
+      };
+      forAllSystems = nixpkgs.lib.genAttrs (builtins.attrNames targets);
+    in {
+      packages = forAllSystems (system:
+        let
+          pkgs = nixpkgs.legacyPackages.\${system};
+          t = targets.\${system};
+        in {
+          default = pkgs.stdenvNoCC.mkDerivation {
+            pname = "diffler";
+            inherit version;
+            src = pkgs.fetchurl {
+              url = "\${base}/diffler-v\${version}-\${t.triple}.tar.gz";
+              sha256 = t.sha256;
+            };
+            sourceRoot = ".";
+            dontStrip = true;
+            installPhase = ''
+              install -Dm755 diffler-v\${version}-\${t.triple}/diffler \$out/bin/diffler
+            '';
+          };
+        });
+      apps = forAllSystems (system: {
+        default = {
+          type = "app";
+          program = "\${self.packages.\${system}.default}/bin/diffler";
+        };
+      });
+    };
+}
+NIX
+
+echo "rendered Formula/diffler.rb, bucket/diffler.json, packaging/aur/{PKGBUILD,.SRCINFO}, flake.nix for $ver"

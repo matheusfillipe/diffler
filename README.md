@@ -28,6 +28,10 @@ scoop install diffler
 # Arch (AUR)
 yay -S diffler-bin
 
+# Nix (flake — runs the prebuilt binary)
+nix run github:matheusfillipe/diffler
+nix profile install github:matheusfillipe/diffler
+
 # npm — prebuilt binary, one-off or global
 npx @mattfillipe/diffler
 npm install -g @mattfillipe/diffler

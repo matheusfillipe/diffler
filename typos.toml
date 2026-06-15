@@ -10,4 +10,4 @@ extend-ignore-re = [
 ratatui = "ratatui"
 
 [files]
-extend-exclude = ["demos/*/uv.lock", "demos/*/bun.lock", "Cargo.lock", "Formula/*", "bucket/*", "packaging/*"]
+extend-exclude = ["demos/*/uv.lock", "demos/*/bun.lock", "Cargo.lock", "Formula/*", "bucket/*", "packaging/*", "flake.nix"]
