@@ -43,6 +43,10 @@ release-minor:
 release-major:
     bash scripts/release.sh major
 
+# push the AUR package (run locally; uses your aur.archlinux.org ssh key)
+aur-publish:
+    bash scripts/aur-push.sh
+
 # PTY end-to-end suite (CI runs this in a separate ubuntu job)
 e2e:
     cargo build -p diffler

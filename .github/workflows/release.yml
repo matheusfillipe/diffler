@@ -156,25 +156,10 @@ jobs:
           mkdir -p /tmp/assets
           gh release download "$TAG" --dir /tmp/assets --repo "$GITHUB_REPOSITORY"
           bash scripts/packaging.sh "${TAG#v}" /tmp/assets
-      - name: Commit brew + scoop + PKGBUILD
+      - name: Commit brew + scoop + AUR manifests
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Formula/diffler.rb bucket/diffler.json packaging/aur/PKGBUILD
+          git add Formula/diffler.rb bucket/diffler.json packaging/aur/PKGBUILD packaging/aur/.SRCINFO
           git diff --cached --quiet || git commit -m "Update package manifests for ${{ github.ref_name }}"
           git push origin main
-      - name: Check AUR key
-        id: aur
-        env:
-          KEY: ${{ secrets.AUR_SSH_KEY }}
-        run: echo "present=$([ -n "$KEY" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
-      - name: Publish to the AUR
-        if: steps.aur.outputs.present == 'true'
-        uses: KSXGitHub/github-actions-deploy-aur@v2.7.2
-        with:
-          pkgname: diffler-bin
-          pkgbuild: packaging/aur/PKGBUILD
-          commit_username: Matheus Fillipe
-          commit_email: matheus.fillipe@syte.ms
-          ssh_private_key: ${{ secrets.AUR_SSH_KEY }}
-          commit_message: diffler ${{ github.ref_name }}

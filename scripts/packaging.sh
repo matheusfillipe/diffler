@@ -121,4 +121,22 @@ package() {
 }
 PKG
 
-echo "rendered Formula/diffler.rb, bucket/diffler.json, packaging/aur/PKGBUILD for $ver"
+# .SRCINFO is normally produced by `makepkg --printsrcinfo` (Arch-only); since
+# every field is known here, render it directly so the AUR push needs no makepkg
+{
+  printf 'pkgbase = diffler-bin\n'
+  printf '\tpkgdesc = %s\n' "$desc"
+  printf '\tpkgver = %s\n' "$ver"
+  printf '\tpkgrel = 1\n'
+  printf '\turl = %s\n' "$repo"
+  printf '\tarch = x86_64\n\tarch = aarch64\n'
+  printf '\tlicense = MIT\n\tlicense = Apache-2.0\n'
+  printf '\tprovides = diffler\n\tconflicts = diffler\n'
+  printf '\tsource_x86_64 = diffler-%s-x86_64.tar.gz::%s/diffler-v%s-x86_64-unknown-linux-musl.tar.gz\n' "$ver" "$base" "$ver"
+  printf '\tsha256sums_x86_64 = %s\n' "$lin_x64"
+  printf '\tsource_aarch64 = diffler-%s-aarch64.tar.gz::%s/diffler-v%s-aarch64-unknown-linux-musl.tar.gz\n' "$ver" "$base" "$ver"
+  printf '\tsha256sums_aarch64 = %s\n' "$lin_arm"
+  printf '\npkgname = diffler-bin\n'
+} >"$root/packaging/aur/.SRCINFO"
+
+echo "rendered Formula/diffler.rb, bucket/diffler.json, packaging/aur/{PKGBUILD,.SRCINFO} for $ver"
