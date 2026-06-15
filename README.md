@@ -10,29 +10,32 @@ binary, no browser, no daemon.
 
 ## Install
 
-Pick any package manager — the installed command is always `diffler`:
+The installed command is always `diffler`. Pick whatever fits:
 
 ```sh
-# Rust
+# Rust — compile from source, or grab the prebuilt with cargo-binstall
 cargo install diffler
+cargo binstall diffler
 
-# npm, one-off
+# Homebrew (macOS / Linux)
+brew tap matheusfillipe/diffler https://github.com/matheusfillipe/diffler
+brew install diffler
+
+# Scoop (Windows)
+scoop bucket add diffler https://github.com/matheusfillipe/diffler
+scoop install diffler
+
+# Arch (AUR)
+yay -S diffler-bin
+
+# npm — prebuilt binary, one-off or global
 npx @mattfillipe/diffler
-
-# npm, global
 npm install -g @mattfillipe/diffler
 ```
 
-Or grab a prebuilt binary (macOS, Linux, Windows; x86_64 and arm64) from the
-[releases page](https://github.com/matheusfillipe/diffler/releases).
-
-Until the first release lands, build from source:
-
-```sh
-cargo install --git https://github.com/matheusfillipe/diffler diffler
-# or from a clone:
-just install
-```
+Or download a prebuilt binary (macOS, Linux, Windows; x86_64 and arm64) from the
+[releases page](https://github.com/matheusfillipe/diffler/releases) — any
+GitHub-release installer (`eget`, `ubi`, …) works against it too.
 
 ## Quickstart
 
