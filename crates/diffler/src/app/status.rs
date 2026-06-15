@@ -393,6 +393,8 @@ impl App {
             Action::Pull => self.request_network(NetworkOp::Pull, "pull"),
             Action::Fetch => self.request_network(NetworkOp::Fetch, "fetch"),
             Action::FetchAll => self.request_network(NetworkOp::FetchAll, "fetch --all"),
+            Action::StashPush => self.stash_push(),
+            Action::StashPop => self.stash_pop(),
             Action::OpenEditor => self.editor_at_status_cursor(),
             other => {
                 self.info(format!("{} is not implemented yet", other.name()));
@@ -550,6 +552,22 @@ impl App {
             message: format!("Discard changes to {path}?"),
             on_confirm: PendingOp::Discard { path },
         });
+    }
+
+    fn stash_push(&mut self) {
+        self.message = None;
+        self.vcs_op(|vcs| vcs.stash_push(None));
+        if self.message.is_none() {
+            self.info("stashed changes");
+        }
+    }
+
+    fn stash_pop(&mut self) {
+        self.message = None;
+        self.vcs_op(|vcs| vcs.stash_pop());
+        if self.message.is_none() {
+            self.info("popped latest stash");
+        }
     }
 
     fn open_at_cursor(&mut self) {

@@ -2,7 +2,7 @@
 source: crates/diffler/src/ui/status.rs
 expression: render(&mut app).backend()
 ---
-" Hint: c commit  b branch  l log  P push  p pull  f fetch  s stage  x discard  ? help                                   "
+" Hint: c commit  b branch  l log  P push  p pull  f fetch  z stash  s stage  x discard  ? help                          "
 " Head:     main c1ac28f initial commit                                                                                  "
 " Changes   +3 -1  █████                                                                                                 "
 "                                                                                                                        "
