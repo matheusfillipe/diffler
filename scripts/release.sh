@@ -51,12 +51,13 @@ echo "release: $cur -> $new"
 perl -0pi -e "s/^version = \"\Q$cur\E\"/version = \"$new\"/m" Cargo.toml
 perl -0pi -e "s/(diffler-core = \{ path = \"crates\/diffler-core\", version = )\"\Q$cur\E\"/\${1}\"$new\"/" Cargo.toml
 perl -0pi -e "s/(\"version\": )\"[^\"]*\"/\${1}\"$new\"/" npm/diffler/package.json
+perl -0pi -e "s/(\"version\": )\"[^\"]*\"/\${1}\"$new\"/" npm/diffler-mcp/package.json
 
 # --- gate: full build/lint/test (also syncs Cargo.lock to the new version) ---
 just ci
 
 # --- commit, tag, push; CI does the rest ---
-git add Cargo.toml Cargo.lock npm/diffler/package.json
+git add Cargo.toml Cargo.lock npm/diffler/package.json npm/diffler-mcp/package.json
 git commit -m "Release $new"
 git tag "v$new"
 git push origin main "v$new"
