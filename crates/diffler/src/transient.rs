@@ -17,6 +17,7 @@ pub enum TransientKind {
     Push,
     Pull,
     Fetch,
+    Stash,
 }
 
 impl TransientKind {
@@ -30,6 +31,7 @@ impl TransientKind {
             Self::Push => "push",
             Self::Pull => "pull",
             Self::Fetch => "fetch",
+            Self::Stash => "stash",
         }
     }
 
@@ -42,16 +44,18 @@ impl TransientKind {
             Self::Push => "Push",
             Self::Pull => "Pull",
             Self::Fetch => "Fetch",
+            Self::Stash => "Stash",
         }
     }
 
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Commit,
         Self::Branch,
         Self::Log,
         Self::Push,
         Self::Pull,
         Self::Fetch,
+        Self::Stash,
     ];
 }
 
@@ -149,6 +153,14 @@ const FETCH_GROUPS: &[DefaultGroup] = &[(
     ],
 )];
 
+const STASH_GROUPS: &[DefaultGroup] = &[(
+    "Stash",
+    &[
+        ("push", "z", Action::StashPush, "Stash changes"),
+        ("pop", "p", Action::StashPop, "Pop latest stash"),
+    ],
+)];
+
 impl TransientKind {
     fn default_groups(self) -> &'static [DefaultGroup] {
         match self {
@@ -157,6 +169,7 @@ impl TransientKind {
             Self::Log => LOG_GROUPS,
             Self::Push => PUSH_GROUPS,
             Self::Pull => PULL_GROUPS,
+            Self::Stash => STASH_GROUPS,
             Self::Fetch => FETCH_GROUPS,
         }
     }
@@ -406,6 +419,20 @@ mod tests {
             fetch.resolve(&press("a")),
             TransientResolve::Action(Action::FetchAll)
         );
+    }
+
+    #[test]
+    fn stash_transient_resolves_its_leaves() {
+        let stash = transient(TransientKind::Stash);
+        assert_eq!(
+            stash.resolve(&press("z")),
+            TransientResolve::Action(Action::StashPush)
+        );
+        assert_eq!(
+            stash.resolve(&press("p")),
+            TransientResolve::Action(Action::StashPop)
+        );
+        assert_eq!(stash.resolve(&press("x")), TransientResolve::Unbound);
     }
 
     #[test]

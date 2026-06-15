@@ -509,6 +509,22 @@ mod tests {
     }
 
     #[test]
+    fn which_key_panel_renders_the_stash_transient() {
+        let (transient, warnings) = crate::transient::Transient::build(
+            crate::transient::TransientKind::Stash,
+            &crate::config::KeysConfig::default(),
+        );
+        assert!(warnings.is_empty());
+        let terminal = render(|frame, theme| {
+            WhichKeyPanel {
+                transient: &transient,
+            }
+            .render(frame, theme);
+        });
+        insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
     fn popup_renders_as_bottom_split() {
         let popup = Popup {
             title: "Branch".to_owned(),

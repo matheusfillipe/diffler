@@ -45,6 +45,16 @@ impl GitVcs {
     fn workdir_path(&self) -> Result<&Path, VcsError> {
         self.repo.workdir().ok_or(VcsError::NoWorkdir)
     }
+
+    /// Whether any tracked file differs from HEAD or the index — i.e. there is
+    /// something `git stash` would save. Untracked files don't count, matching
+    /// stash's default.
+    fn has_tracked_changes(&self) -> Result<bool, VcsError> {
+        let mut opts = git2::StatusOptions::new();
+        opts.include_untracked(false).include_ignored(false);
+        let statuses = self.repo.statuses(Some(&mut opts))?;
+        Ok(statuses.iter().next().is_some())
+    }
 }
 
 impl Vcs for GitVcs {
@@ -371,6 +381,34 @@ impl Vcs for GitVcs {
         self.repo.checkout_tree(&target, None)?;
         self.repo.set_head(&format!("refs/heads/{name}"))?;
         Ok(())
+    }
+
+    fn stash_push(&self, message: Option<&str>) -> Result<(), VcsError> {
+        if !self.has_tracked_changes()? {
+            return Err(VcsError::Rejected("nothing to stash".into()));
+        }
+        // git2 stash mutates the repo, but the trait is &self; a fresh handle on
+        // the same workdir gives the &mut without threading mutability everywhere
+        let mut repo = git2::Repository::open(self.workdir_path()?)?;
+        let signature = repo.signature()?;
+        repo.stash_save2(&signature, message, None)?;
+        Ok(())
+    }
+
+    fn stash_pop(&self) -> Result<(), VcsError> {
+        let mut repo = git2::Repository::open(self.workdir_path()?)?;
+        match repo.stash_pop(0, None) {
+            Ok(()) => Ok(()),
+            Err(err) if err.code() == git2::ErrorCode::NotFound => {
+                Err(VcsError::Rejected("no stash to pop".into()))
+            }
+            // a conflicting pop leaves the merge in the worktree and keeps the
+            // stash entry; say so rather than surfacing a bare libgit2 error
+            Err(err) if err.code() == git2::ErrorCode::Conflict => Err(VcsError::Rejected(
+                "stash applied with conflicts; resolve them — the stash was kept".into(),
+            )),
+            Err(err) => Err(err.into()),
+        }
     }
 
     fn network_argv(&self, op: NetworkOp) -> Vec<String> {

@@ -1,21 +1,8 @@
 ---
-source: crates/diffler/src/ui/status.rs
-expression: render(&mut app).backend()
+source: crates/diffler/src/ui/popup.rs
+expression: terminal.backend()
 ---
-" Hint: c commit  b branch  l log  P push  p pull  f fetch  z stash  s stage  x discard  ? help                          "
-" Head:     main c1ac28f initial commit                                                                                  "
-" Changes   +3 -1  █████                                                                                                 "
-"                                                                                                                        "
-" ▾ Untracked (1) +1 -0                                                                                                  "
-" ? todo.md +1 -0                                                                                                        "
-"                                                                                                                        "
-" ▾ Unstaged changes (1) +1 -1                                                                                           "
-" M src/lib.rs +1 -1                                                                                                     "
-"                                                                                                                        "
-" ▾ Staged changes (1) +1 -0                                                                                             "
-" A ci.yml +1 -0                                                                                                         "
-"                                                                                                                        "
-" ▸ Recent commits (1)                                                                                                   "
+"status screen content behind the popup                                                                                  "
 "                                                                                                                        "
 "                                                                                                                        "
 "                                                                                                                        "
@@ -41,4 +28,17 @@ expression: render(&mut app).backend()
 "                                                                                                                        "
 "                                                                                                                        "
 "                                                                                                                        "
-" STATUS  fixture@main  mcp off  3 files, 0 viewed                                       feedback sent to waiting agents "
+"                                                                                                                        "
+"                                                                                                                        "
+"                                                                                                                        "
+"                                                                                                                        "
+"                                                                                                                        "
+"                                                                                                                        "
+"                                                                                                                        "
+"                                                                                                                        "
+"                                                                                                                        "
+"                                                                                                                        "
+" Stash ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+" Stash                                                                                                                  "
+" z  Stash changes                                                                                                       "
+" p  Pop latest stash                                                                                                    "

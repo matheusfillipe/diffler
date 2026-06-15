@@ -141,6 +141,7 @@ struct Transients {
     push: Transient,
     pull: Transient,
     fetch: Transient,
+    stash: Transient,
 }
 
 impl Transients {
@@ -152,6 +153,7 @@ impl Transients {
             TransientKind::Push => &self.push,
             TransientKind::Pull => &self.pull,
             TransientKind::Fetch => &self.fetch,
+            TransientKind::Stash => &self.stash,
         }
     }
 }
@@ -250,6 +252,7 @@ impl App {
             push: build_transient(TransientKind::Push),
             pull: build_transient(TransientKind::Pull),
             fetch: build_transient(TransientKind::Fetch),
+            stash: build_transient(TransientKind::Stash),
         };
 
         let mut message = startup_warnings
