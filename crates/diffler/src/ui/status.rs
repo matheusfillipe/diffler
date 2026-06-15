@@ -27,6 +27,7 @@ const HINTS: &[Hint] = &[
     Hint::Prefix(TransientKind::Push, "push"),
     Hint::Prefix(TransientKind::Pull, "pull"),
     Hint::Prefix(TransientKind::Fetch, "fetch"),
+    Hint::Prefix(TransientKind::Stash, "stash"),
     Hint::Leaf(&[Action::Stage], "stage"),
     Hint::Leaf(&[Action::Discard], "discard"),
     Hint::Leaf(&[Action::Help], "help"),

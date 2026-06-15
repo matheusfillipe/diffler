@@ -116,6 +116,13 @@ pub trait Vcs: Send {
     /// Refused for the currently checked-out branch.
     fn delete_branch(&self, name: &str) -> Result<(), VcsError>;
     fn checkout(&self, name: &str) -> Result<(), VcsError>;
+    /// Stash tracked changes (staged + unstaged), reverting the worktree to
+    /// HEAD; untracked files are left in place, matching `git stash`. `message`
+    /// `None` lets the backend label it. Local-only — no network.
+    fn stash_push(&self, message: Option<&str>) -> Result<(), VcsError>;
+    /// Restore the most recent stash and drop it. Refused when there is no
+    /// stash or the pop would conflict.
+    fn stash_pop(&self) -> Result<(), VcsError>;
     /// Argv to run for a network op, e.g. `["git", "push"]`. The binary runs
     /// this in [`Vcs::workdir`] so the backend's own CLI handles credentials;
     /// diffler never touches them. A future jj backend returns `["jj", …]`.

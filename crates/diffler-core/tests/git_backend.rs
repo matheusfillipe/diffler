@@ -1060,3 +1060,69 @@ fn amend_on_unborn_head_returns_error_not_panic() {
         "unborn HEAD is not a missing workdir: {err}"
     );
 }
+
+#[test]
+fn stash_push_clears_the_worktree_and_pop_restores_it() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\ntwo\nthree\n");
+    fx.commit_all("init");
+    fx.write("a.txt", "one\nTWO\nthree\n");
+    let v = vcs(&fx);
+
+    v.stash_push(None).expect("stash");
+    assert!(
+        v.working_tree_diff().expect("diff").files.is_empty(),
+        "worktree matches HEAD after stashing"
+    );
+
+    v.stash_pop().expect("pop");
+    let model = v.working_tree_diff().expect("diff");
+    assert_eq!(model.files.len(), 1, "the change comes back");
+    assert_eq!(model.files[0].path, "a.txt");
+}
+
+#[test]
+fn stash_push_on_a_clean_tree_is_rejected() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\n");
+    fx.commit_all("init");
+    let err = vcs(&fx)
+        .stash_push(None)
+        .expect_err("nothing to stash on a clean tree");
+    assert!(matches!(err, VcsError::Rejected(_)), "got {err:?}");
+}
+
+#[test]
+fn stash_push_ignores_untracked_files() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\n");
+    fx.commit_all("init");
+    fx.write("untracked.txt", "new\n");
+    let err = vcs(&fx)
+        .stash_push(None)
+        .expect_err("untracked-only is nothing to stash");
+    assert!(matches!(err, VcsError::Rejected(_)), "got {err:?}");
+}
+
+#[test]
+fn stash_pop_with_no_stash_is_rejected() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\n");
+    fx.commit_all("init");
+    let err = vcs(&fx).stash_pop().expect_err("no stash to pop");
+    assert!(matches!(err, VcsError::Rejected(_)), "got {err:?}");
+}
+
+#[test]
+fn stash_pop_that_conflicts_is_rejected() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "base\n");
+    fx.commit_all("init");
+    fx.write("a.txt", "stashed change\n");
+    let v = vcs(&fx);
+    v.stash_push(None).expect("stash");
+    // an incompatible edit to the same line the stash also changed
+    fx.write("a.txt", "conflicting change\n");
+    let err = v.stash_pop().expect_err("conflicting pop");
+    assert!(matches!(err, VcsError::Rejected(_)), "got {err:?}");
+}

@@ -44,6 +44,8 @@ pub enum Action {
     Pull,
     Fetch,
     FetchAll,
+    StashPush,
+    StashPop,
     NextHunk,
     PrevHunk,
     NextComment,
@@ -100,6 +102,8 @@ impl Action {
             Self::Pull => "pull",
             Self::Fetch => "fetch",
             Self::FetchAll => "fetch_all",
+            Self::StashPush => "stash_push",
+            Self::StashPop => "stash_pop",
             Self::NextHunk => "next_hunk",
             Self::PrevHunk => "prev_hunk",
             Self::NextComment => "next_comment",
@@ -121,7 +125,7 @@ impl Action {
         }
     }
 
-    const ALL: [Self; 50] = [
+    const ALL: [Self; 52] = [
         Self::MoveDown,
         Self::MoveUp,
         Self::GoTop,
@@ -154,6 +158,8 @@ impl Action {
         Self::Pull,
         Self::Fetch,
         Self::FetchAll,
+        Self::StashPush,
+        Self::StashPop,
         Self::NextHunk,
         Self::PrevHunk,
         Self::NextComment,
@@ -244,6 +250,7 @@ const STATUS_PREFIXES: &[(&str, TransientKind)] = &[
     ("P", TransientKind::Push),
     ("p", TransientKind::Pull),
     ("f", TransientKind::Fetch),
+    ("z", TransientKind::Stash),
 ];
 
 /// Contexts with no transients (diff, log) bind no prefixes.
@@ -768,6 +775,10 @@ mod tests {
         assert_eq!(
             keymap.resolve(&mut pending, press("f")),
             Resolved::Transient(TransientKind::Fetch)
+        );
+        assert_eq!(
+            keymap.resolve(&mut pending, press("z")),
+            Resolved::Transient(TransientKind::Stash)
         );
         assert!(pending.is_empty(), "a prefix never leaves a pending buffer");
         assert_eq!(
