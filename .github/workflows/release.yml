@@ -161,7 +161,7 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
       - name: Validate the Nix flake builds against the release assets
-        run: nix build "path:.#packages.x86_64-linux.default" -L
+        run: nix build "path:$PWD#packages.x86_64-linux.default" -L
       - name: Commit brew + scoop + AUR manifests
         run: |
           git config user.name "github-actions[bot]"
