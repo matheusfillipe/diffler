@@ -2,8 +2,6 @@ name: CI
 on:
   push:
     branches: [main]
-    # mcp-v* publishes the diffler-mcp proxy; the diffler binary release runs
-    # on v* tags in release.yml / publish.yml
     tags: ['mcp-v*']
   pull_request:
   workflow_dispatch:
@@ -86,9 +84,6 @@ jobs:
       - uses: actions/checkout@v6
       - uses: crate-ci/typos@v1
 
-  # publishes the diffler-mcp proxy after the full suite is green. An mcp-v*
-  # tag publishes for real via npm Trusted Publishing (OIDC, no token); a manual
-  # run validates packaging with a dry-run so the path stays testable.
   mcp-publish:
     needs: [test, lint, e2e, msrv, deny, typos]
     if: startsWith(github.ref, 'refs/tags/mcp-v') || github.event_name == 'workflow_dispatch'
@@ -105,10 +100,8 @@ jobs:
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
-      # Trusted Publishing needs npm >= 11.5.1; node 22 ships an older npm
       - run: npm install -g npm@latest
       - name: Publish (dry-run on manual dispatch, real on an mcp-v* tag)
-        # blank the placeholder token setup-node writes so npm uses OIDC
         env:
           NODE_AUTH_TOKEN: ""
         run: |

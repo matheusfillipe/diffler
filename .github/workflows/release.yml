@@ -12,12 +12,15 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
-  # single job creates the draft release so concurrent matrix jobs don't race
   create-release:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - name: Verify tag matches Cargo.toml version
+        run: |
+          ver=$(grep -m1 -E '^version = "' Cargo.toml | sed -E 's/^version = "([^"]+)"/\1/')
+          [ "v$ver" = "$GITHUB_REF_NAME" ] || { echo "Cargo.toml $ver != tag $GITHUB_REF_NAME"; exit 1; }
       - env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "$GITHUB_REF_NAME"
@@ -77,3 +80,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: gh release upload "$GITHUB_REF_NAME" "$ASSET" --clobber
+
+  publish-release:
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false --repo "$GITHUB_REPOSITORY"

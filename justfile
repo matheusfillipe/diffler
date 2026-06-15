@@ -32,6 +32,17 @@ snap:
 snap-accept:
     cargo insta accept
 
+# cut a release: bump the version (Cargo + npm in lockstep), gate, tag, push;
+# CI then builds binaries and publishes crates.io + npm from the committed version
+release-patch:
+    bash scripts/release.sh patch
+
+release-minor:
+    bash scripts/release.sh minor
+
+release-major:
+    bash scripts/release.sh major
+
 # PTY end-to-end suite (CI runs this in a separate ubuntu job)
 e2e:
     cargo build -p diffler

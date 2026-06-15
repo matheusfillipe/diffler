@@ -17,10 +17,6 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
-  # Publishes via crates.io Trusted Publishing (OIDC) — no token. The first
-  # publish of each crate is manual (cargo login + cargo publish), to create
-  # and own the name; configure the trusted publisher on crates.io afterwards
-  # and CI updates them tokenlessly from then on.
   crates:
     runs-on: ubuntu-latest
     permissions:
@@ -29,7 +25,6 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
-      # exchange the GitHub OIDC token for a short-lived crates.io token
       - uses: rust-lang/crates-io-auth-action@v1
         id: auth
         if: github.event_name == 'release'
@@ -40,19 +35,12 @@ jobs:
         run: |
           cargo publish -p diffler-core --locked
           cargo publish -p diffler --locked
-      # Only diffler-core gets a dry run: `cargo publish --dry-run -p diffler`
-      # verifies against the live registry, where diffler-core is not (yet)
-      # published at this version, so it would always fail here.
       - name: Dry run
         if: github.event_name != 'release'
         run: |
           cargo publish --dry-run -p diffler-core --locked
           echo "::notice::crates.io dry run only (no release event); nothing was published"
 
-  # @mattfillipe/diffler is one package whose postinstall fetches the matching
-  # binary from this release's assets, so publishing needs no archives and no
-  # token — npm Trusted Publishing (OIDC), the same path as diffler-mcp. The
-  # first publish of the package is manual (see docs); CI updates it after.
   npm:
     runs-on: ubuntu-latest
     permissions:
@@ -67,19 +55,15 @@ jobs:
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
-      # Trusted Publishing needs npm >= 11.5.1; node 22 ships an older npm
       - run: npm install -g npm@latest
-      - name: Set version
+      - name: Verify package version matches the tag
+        if: github.event_name == 'release'
         env:
-          EVENT: ${{ github.event_name }}
           TAG: ${{ github.event.release.tag_name }}
         run: |
-          [ "$EVENT" = release ] && version="${TAG#v}" || version="0.0.0"
-          npm version "$version" --no-git-tag-version --allow-same-version
+          pkg=$(node -p "require('./package.json').version")
+          [ "v$pkg" = "$TAG" ] || { echo "package.json $pkg != tag $TAG"; exit 1; }
       - name: Publish (real on release via Trusted Publishing, else dry-run)
-        # setup-node's registry-url writes an .npmrc with a placeholder auth
-        # token; blanking it forces npm to fall through to OIDC instead of
-        # trying (and failing) token auth
         env:
           NODE_AUTH_TOKEN: ""
         run: |
