@@ -108,6 +108,9 @@ jobs:
       # Trusted Publishing needs npm >= 11.5.1; node 22 ships an older npm
       - run: npm install -g npm@latest
       - name: Publish (dry-run on manual dispatch, real on an mcp-v* tag)
+        # blank the placeholder token setup-node writes so npm uses OIDC
+        env:
+          NODE_AUTH_TOKEN: ""
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             npm publish --dry-run

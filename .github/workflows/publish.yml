@@ -77,6 +77,11 @@ jobs:
           [ "$EVENT" = release ] && version="${TAG#v}" || version="0.0.0"
           npm version "$version" --no-git-tag-version --allow-same-version
       - name: Publish (real on release via Trusted Publishing, else dry-run)
+        # setup-node's registry-url writes an .npmrc with a placeholder auth
+        # token; blanking it forces npm to fall through to OIDC instead of
+        # trying (and failing) token auth
+        env:
+          NODE_AUTH_TOKEN: ""
         run: |
           if [ "${{ github.event_name }}" = "release" ]; then
             npm publish
