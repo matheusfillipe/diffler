@@ -230,6 +230,7 @@ impl App {
         } = loaded;
         let (theme, theme_warning) = Theme::from_name(&config.ui.theme);
         startup_warnings.extend(theme_warning);
+        crate::ui::diff::init_highlighter(theme.syntax);
         let mut build = |context| {
             let (keymap, warnings) = Keymap::for_context(context, &config.keys);
             startup_warnings.extend(warnings);

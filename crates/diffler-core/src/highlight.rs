@@ -14,6 +14,27 @@ pub struct Highlighter {
     theme: Theme,
 }
 
+/// Syntax-highlight palette, paired with a UI theme so foreground colors stay
+/// legible against the diff backgrounds (a dark UI needs dark-theme syntax, a
+/// light UI light-theme syntax).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SyntaxTheme {
+    #[default]
+    OneHalfDark,
+    OneHalfLight,
+    Dracula,
+}
+
+impl SyntaxTheme {
+    fn embedded(self) -> EmbeddedThemeName {
+        match self {
+            Self::OneHalfDark => EmbeddedThemeName::OneHalfDark,
+            Self::OneHalfLight => EmbeddedThemeName::OneHalfLight,
+            Self::Dracula => EmbeddedThemeName::Dracula,
+        }
+    }
+}
+
 /// Foreground color + style for a byte range of one line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StyledRange {
@@ -25,15 +46,19 @@ pub struct StyledRange {
 
 impl Default for Highlighter {
     fn default() -> Self {
-        let syntaxes = two_face::syntax::extra_newlines();
-        let themes: EmbeddedLazyThemeSet = two_face::theme::extra();
-        // closest bundled match to the spec's GitHub-dark look
-        let theme = themes.get(EmbeddedThemeName::OneHalfDark).clone();
-        Self { syntaxes, theme }
+        Self::new(SyntaxTheme::default())
     }
 }
 
 impl Highlighter {
+    /// Build a highlighter whose foregrounds come from `syntax`.
+    pub fn new(syntax: SyntaxTheme) -> Self {
+        let syntaxes = two_face::syntax::extra_newlines();
+        let themes: EmbeddedLazyThemeSet = two_face::theme::extra();
+        let theme = themes.get(syntax.embedded()).clone();
+        Self { syntaxes, theme }
+    }
+
     /// Highlight `content` as the language guessed from `path`'s extension.
     /// Returns one `Vec<StyledRange>` per line (without trailing newlines).
     /// Unknown languages produce empty ranges per line (plain rendering).
@@ -124,5 +149,13 @@ mod tests {
         let hl = Highlighter::default();
         let lines = hl.highlight("file.zzz-unknown", "a\nb\n");
         assert_eq!(lines, vec![Vec::new(), Vec::new()]);
+    }
+
+    #[test]
+    fn syntax_theme_changes_the_foreground_palette() {
+        let src = "fn main() { let x = 1; }\n";
+        let dark = Highlighter::new(SyntaxTheme::OneHalfDark).highlight("a.rs", src);
+        let light = Highlighter::new(SyntaxTheme::OneHalfLight).highlight("a.rs", src);
+        assert_ne!(dark, light, "a different syntax theme recolors the line");
     }
 }
