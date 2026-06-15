@@ -11,20 +11,17 @@
     "diffler": "bin/diffler.js"
   },
   "files": [
-    "bin"
+    "bin/diffler.js",
+    "install.js",
+    "lib"
   ],
+  "scripts": {
+    "postinstall": "node install.js"
+  },
   "engines": {
     "node": ">=18"
   },
   "publishConfig": {
     "access": "public"
-  },
-  "optionalDependencies": {
-    "@mattfillipe/diffler-linux-x64": "0.0.0",
-    "@mattfillipe/diffler-linux-arm64": "0.0.0",
-    "@mattfillipe/diffler-darwin-x64": "0.0.0",
-    "@mattfillipe/diffler-darwin-arm64": "0.0.0",
-    "@mattfillipe/diffler-win32-x64": "0.0.0",
-    "@mattfillipe/diffler-win32-arm64": "0.0.0"
   }
 }

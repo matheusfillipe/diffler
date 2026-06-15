@@ -1,46 +1,26 @@
 #!/usr/bin/env node
 "use strict";
 
-// Launcher shim: the actual binary ships in per-platform packages installed
-// through optionalDependencies (the esbuild distribution pattern). This file
-// only resolves the right package and execs it.
+// Launcher shim: resolve the platform binary (fetching it on first run if the
+// postinstall step was skipped), then exec it with the caller's args/stdio.
 
 const { spawnSync } = require("node:child_process");
+const { ensureBinary } = require("../lib/resolve.js");
 
-const PACKAGES = {
-  "linux-x64": "@mattfillipe/diffler-linux-x64",
-  "linux-arm64": "@mattfillipe/diffler-linux-arm64",
-  "darwin-x64": "@mattfillipe/diffler-darwin-x64",
-  "darwin-arm64": "@mattfillipe/diffler-darwin-arm64",
-  "win32-x64": "@mattfillipe/diffler-win32-x64",
-  "win32-arm64": "@mattfillipe/diffler-win32-arm64",
-};
-
-function resolveBinary() {
-  const key = `${process.platform}-${process.arch}`;
-  const pkg = PACKAGES[key];
-  if (!pkg) {
-    console.error(`diffler: unsupported platform ${key}`);
-    console.error(`supported platforms: ${Object.keys(PACKAGES).join(", ")}`);
-    process.exit(1);
-  }
-  const bin = process.platform === "win32" ? "bin/diffler.exe" : "bin/diffler";
+async function main() {
+  let binary;
   try {
-    return require.resolve(`${pkg}/${bin}`);
-  } catch {
-    console.error(`diffler: platform package ${pkg} is not installed.`);
-    console.error(
-      "Reinstall with optional dependencies enabled: npm install -g @mattfillipe/diffler"
-    );
+    binary = await ensureBinary();
+  } catch (err) {
+    process.stderr.write(`diffler: ${err.message}\n`);
     process.exit(1);
   }
+  const result = spawnSync(binary, process.argv.slice(2), { stdio: "inherit" });
+  if (result.error) {
+    process.stderr.write(`diffler: ${result.error.message}\n`);
+    process.exit(1);
+  }
+  process.exit(result.status === null ? 1 : result.status);
 }
 
-const result = spawnSync(resolveBinary(), process.argv.slice(2), {
-  stdio: "inherit",
-});
-if (result.error) {
-  console.error(`diffler: ${result.error.message}`);
-  process.exit(1);
-}
-process.exit(result.status === null ? 1 : result.status);
+main();
