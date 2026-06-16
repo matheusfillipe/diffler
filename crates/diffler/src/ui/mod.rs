@@ -329,7 +329,19 @@ pub(super) fn status_bar(app: &App, width: u16) -> Line<'static> {
         };
         spans.push(Span::styled(text, on_panel(theme.dim)));
     }
-    if let Some(message) = &app.message {
+    if let Some(search) = &app.search {
+        let (i, n) = search.count();
+        let count = if n == 0 {
+            "  [no match]".to_owned()
+        } else {
+            format!("  [{i}/{n}]")
+        };
+        spans.push(Span::styled(
+            format!("  /{}", search.query()),
+            on_panel(theme.accent),
+        ));
+        spans.push(Span::styled(count, on_panel(theme.dim)));
+    } else if let Some(message) = &app.message {
         let fg = match message.severity {
             Severity::Info => theme.dim,
             Severity::Warning => theme.warn_fg,

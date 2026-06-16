@@ -62,6 +62,9 @@ pub enum Action {
     MarkViewed,
     CopyFileFeedback,
     CopyAllFeedback,
+    Search,
+    SearchNext,
+    SearchPrev,
     OpenEditor,
     SendFeedback,
     Help,
@@ -123,6 +126,9 @@ impl Action {
             Self::MarkViewed => "mark_viewed",
             Self::CopyFileFeedback => "copy_file_feedback",
             Self::CopyAllFeedback => "copy_all_feedback",
+            Self::Search => "search",
+            Self::SearchNext => "search_next",
+            Self::SearchPrev => "search_prev",
             Self::OpenEditor => "open_editor",
             Self::SendFeedback => "send_feedback",
             Self::Help => "help",
@@ -131,7 +137,7 @@ impl Action {
         }
     }
 
-    const ALL: [Self; 55] = [
+    const ALL: [Self; 58] = [
         Self::MoveDown,
         Self::MoveUp,
         Self::GoTop,
@@ -182,6 +188,9 @@ impl Action {
         Self::MarkViewed,
         Self::CopyFileFeedback,
         Self::CopyAllFeedback,
+        Self::Search,
+        Self::SearchNext,
+        Self::SearchPrev,
         Self::OpenEditor,
         Self::SendFeedback,
         Self::Help,
@@ -294,6 +303,9 @@ const DIFF_DEFAULTS: &[(&str, Action)] = &[
     ("Y", Action::CopyAllFeedback),
     ("e", Action::OpenEditor),
     ("Z", Action::SendFeedback),
+    ("/", Action::Search),
+    ("n", Action::SearchNext),
+    ("N", Action::SearchPrev),
     ("?", Action::Help),
     ("q", Action::Back),
 ];
@@ -310,6 +322,9 @@ const LOG_DEFAULTS: &[(&str, Action)] = &[
     ("V", Action::VisualSelect),
     ("<cr>", Action::Open),
     ("<c-r>", Action::Refresh),
+    ("/", Action::Search),
+    ("n", Action::SearchNext),
+    ("N", Action::SearchPrev),
     ("?", Action::Help),
     ("q", Action::Back),
 ];

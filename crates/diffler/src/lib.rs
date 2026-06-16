@@ -9,6 +9,7 @@ pub mod editor;
 pub mod event;
 pub mod keymap;
 pub mod mcp;
+pub mod search;
 #[cfg(test)]
 mod test_support;
 pub mod theme;

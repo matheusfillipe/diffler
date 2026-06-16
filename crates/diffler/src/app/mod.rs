@@ -29,6 +29,7 @@ use crate::config::{Config, KeyPress, LoadedConfig};
 use crate::editor::{self, EditorPurpose, EditorRequest};
 use crate::event::AppEvent;
 use crate::keymap::{self, Action, Context, Keymap, Resolved};
+use crate::search::Search;
 use crate::theme::Theme;
 use crate::transient::{Transient, TransientKind, TransientResolve};
 
@@ -190,6 +191,10 @@ pub struct App {
     pub log: Option<LogView>,
     pub diff: Option<DiffView>,
     pub modal: Option<Modal>,
+    /// Active `/` search over the focused pane, if any. `search.open` means the
+    /// prompt is capturing input; otherwise highlights persist while `n`/`N`
+    /// navigate.
+    pub search: Option<Search>,
     pub message: Option<StatusMessage>,
     /// Text to put on the system clipboard. The main loop, after the next
     /// draw, emits it as an OSC52 sequence (covers ssh/tmux) and also pipes it
@@ -314,6 +319,7 @@ impl App {
             log: None,
             diff: None,
             modal: None,
+            search: None,
             message,
             pending_clipboard: None,
             pending_editor: None,
@@ -380,6 +386,8 @@ impl App {
                     self.handle_modal_key(&key)
                 } else if self.transient.is_some() {
                     self.handle_transient_key(&key)
+                } else if self.search.as_ref().is_some_and(|s| s.open) {
+                    self.handle_search_key(&key)
                 } else {
                     self.handle_key(&key)
                 }
@@ -759,6 +767,9 @@ impl App {
                 self.feedback_tx.send_modify(|epoch| *epoch += 1);
                 self.info("feedback sent to waiting agents");
             }
+            Action::Search => self.search_start(),
+            Action::SearchNext => self.search_step(true),
+            Action::SearchPrev => self.search_step(false),
             action => match self.screen() {
                 Screen::Status => self.dispatch_status(action),
                 Screen::Log => self.dispatch_log(action),
@@ -772,12 +783,165 @@ impl App {
         if self.screens.len() <= 1 {
             return Flow::Quit;
         }
+        self.search = None;
         match self.screens.pop() {
             Some(Screen::Diff) => self.diff = None,
             Some(Screen::Log) => self.log = None,
             Some(Screen::Status) | None => {}
         }
         Flow::Continue
+    }
+
+    fn search_start(&mut self) {
+        let origin = self.focused_cursor_row();
+        let rows = self.focused_search_rows();
+        let mut search = Search::start(origin);
+        search.recompute(&rows);
+        self.search = Some(search);
+    }
+
+    fn handle_search_key(&mut self, key: &KeyEvent) -> Flow {
+        match key.code {
+            KeyCode::Esc => self.search_cancel(),
+            KeyCode::Enter => self.search_commit(),
+            KeyCode::Backspace => self.search_edit(Search::backspace),
+            KeyCode::Left => {
+                if let Some(s) = self.search.as_mut() {
+                    s.move_left();
+                }
+            }
+            KeyCode::Right => {
+                if let Some(s) = self.search.as_mut() {
+                    s.move_right();
+                }
+            }
+            KeyCode::Char(c) => self.search_edit(|s| s.insert(c)),
+            _ => {}
+        }
+        Flow::Continue
+    }
+
+    /// Apply an edit to the query, recompute matches, and live-preview the
+    /// active match (incsearch).
+    fn search_edit(&mut self, edit: impl FnOnce(&mut Search)) {
+        if let Some(s) = self.search.as_mut() {
+            edit(s);
+        }
+        let rows = self.focused_search_rows();
+        if let Some(s) = self.search.as_mut() {
+            s.recompute(&rows);
+        }
+        if let Some(row) = self.search.as_ref().and_then(Search::current_row) {
+            self.focus_searched_row(row);
+        }
+    }
+
+    fn search_step(&mut self, forward: bool) {
+        let row = match self.search.as_mut() {
+            Some(s) if !s.open => {
+                if forward {
+                    s.next_match()
+                } else {
+                    s.prev_match()
+                }
+            }
+            _ => return,
+        };
+        if let Some(row) = row {
+            self.focus_searched_row(row);
+        }
+    }
+
+    fn search_commit(&mut self) {
+        let Some(search) = self.search.as_mut() else {
+            return;
+        };
+        if search.query().is_empty() {
+            self.search = None;
+            return;
+        }
+        if let Some(row) = search.commit() {
+            self.focus_searched_row(row);
+        }
+    }
+
+    fn search_cancel(&mut self) {
+        if let Some(origin) = self.search.take().map(|s| s.origin_row()) {
+            self.focus_searched_row(origin);
+        }
+    }
+
+    fn focused_cursor_row(&self) -> usize {
+        match self.screen() {
+            Screen::Status => self.status.cursor,
+            Screen::Log => self.log.as_ref().map_or(0, |l| l.cursor),
+            Screen::Diff => self.diff.as_ref().map_or(0, |d| match d.focus {
+                Pane::List => d.tree_cursor,
+                Pane::Diff => d.cursor,
+            }),
+        }
+    }
+
+    fn focused_search_rows(&self) -> Vec<(usize, String)> {
+        match self.screen() {
+            // status tree search is a follow-up; its rows are a follow-up slice
+            Screen::Status => Vec::new(),
+            Screen::Log => self.log.as_ref().map_or_else(Vec::new, |log| {
+                log.entries
+                    .iter()
+                    .enumerate()
+                    .map(|(i, e)| {
+                        (
+                            i,
+                            format!("{} {} {} {}", e.oid7, e.subject, e.author, e.refs.join(" ")),
+                        )
+                    })
+                    .collect()
+            }),
+            Screen::Diff => self.diff_search_rows(),
+        }
+    }
+
+    fn diff_search_rows(&self) -> Vec<(usize, String)> {
+        let Some(diff) = self.diff.as_ref() else {
+            return Vec::new();
+        };
+        let model = diff.model(&self.review);
+        match diff.focus {
+            Pane::List => diff
+                .tree_rows(model)
+                .iter()
+                .enumerate()
+                .map(|(i, r)| (i, tree_row_label(&r.node)))
+                .collect(),
+            Pane::Diff => {
+                let file = model.files.get(diff.selected);
+                diff.rows()
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, row)| diff_row_text(file, row).map(|t| (i, t)))
+                    .collect()
+            }
+        }
+    }
+
+    fn focus_searched_row(&mut self, row: usize) {
+        match self.screen() {
+            Screen::Status => {}
+            Screen::Log => {
+                if let Some(l) = self.log.as_mut() {
+                    l.cursor = row;
+                }
+            }
+            Screen::Diff => {
+                if let Some(d) = self.diff.as_mut() {
+                    match d.focus {
+                        Pane::List => d.tree_cursor = row,
+                        Pane::Diff => d.cursor = row,
+                    }
+                }
+            }
+        }
     }
 
     pub fn info(&mut self, text: impl Into<String>) {
@@ -1187,6 +1351,23 @@ impl App {
             return;
         };
         self.apply_amend(Some(&message), use_index);
+    }
+}
+
+fn tree_row_label(node: &crate::tree::TreeNode) -> String {
+    match node {
+        crate::tree::TreeNode::Dir { name, .. } | crate::tree::TreeNode::File { name, .. } => {
+            name.clone()
+        }
+    }
+}
+
+fn diff_row_text(file: Option<&diffler_core::model::FileDiff>, row: &DiffRow) -> Option<String> {
+    match *row {
+        DiffRow::Line { hunk, line, .. } => {
+            Some(file?.hunks.get(hunk)?.lines.get(line)?.text.clone())
+        }
+        _ => None,
     }
 }
 
