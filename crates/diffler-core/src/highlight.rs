@@ -53,7 +53,7 @@ impl Highlighter {
     /// Returns one `Vec<StyledRange>` per line (without trailing newlines).
     /// Unknown languages produce empty ranges per line (plain rendering).
     pub fn highlight(&self, path: &str, content: &str) -> Vec<Vec<StyledRange>> {
-        let bounds = line_bounds(content);
+        let bounds = crate::syntax::line_bounds(content);
         let mut out: Vec<Vec<StyledRange>> = vec![Vec::new(); bounds.len()];
 
         let Some(entry) = self.registry.for_path(path) else {
@@ -80,20 +80,42 @@ impl Highlighter {
                     stack.pop();
                 }
                 HighlightEvent::Source { start, end } => {
-                    let Some(&name_idx) = stack.last() else {
-                        continue;
-                    };
-                    let Some(name) = HIGHLIGHT_NAMES.get(name_idx) else {
-                        continue;
-                    };
-                    let Some(style) = self.theme.style(name) else {
-                        continue;
-                    };
-                    emit(start, end, &style, &bounds, &starts, &mut out);
+                    if let Some(&name_idx) = stack.last()
+                        && let Some(name) = HIGHLIGHT_NAMES.get(name_idx)
+                        && let Some(style) = self.theme.style(name)
+                    {
+                        crate::syntax::split_range_by_line(
+                            &bounds,
+                            &starts,
+                            &(start..end),
+                            |li, r| {
+                                if let Some(line) = out.get_mut(li) {
+                                    line.push(StyledRange {
+                                        range: r,
+                                        fg: style.fg,
+                                        bold: style.bold,
+                                        italic: style.italic,
+                                    });
+                                }
+                            },
+                        );
+                    }
                 }
             }
         }
         out
+    }
+
+    /// Definition breadcrumb index for `content`, computed via the same grammar
+    /// registry used for highlighting. Empty for unsupported languages.
+    pub fn scope_index(&self, path: &str, content: &str) -> crate::syntax::ScopeIndex {
+        self.registry.scope_index(path, content)
+    }
+
+    /// Set AST-diff char-precise emphasis on `file`. Returns `false` (caller
+    /// should fall back to the textual engine) when unavailable.
+    pub fn syntactic_emphasis(&self, file: &mut crate::model::FileDiff) -> bool {
+        self.registry.syntactic_emphasis(file)
     }
 }
 
@@ -101,68 +123,6 @@ struct StyleSpec {
     fg: (u8, u8, u8),
     bold: bool,
     italic: bool,
-}
-
-/// Push styled byte ranges for the source span `[start, end)` onto every line it
-/// covers, clamped to each line's visible (newline-excluded) region.
-fn emit(
-    start: usize,
-    end: usize,
-    style: &StyleSpec,
-    bounds: &[(usize, usize)],
-    starts: &[usize],
-    out: &mut [Vec<StyledRange>],
-) {
-    let mut li = match starts.binary_search(&start) {
-        Ok(i) => i,
-        Err(i) => i.saturating_sub(1),
-    };
-    while let Some(&(ls, le)) = bounds.get(li) {
-        if ls >= end {
-            break;
-        }
-        let s = start.max(ls);
-        let e = end.min(le);
-        if s < e
-            && let Some(line) = out.get_mut(li)
-        {
-            line.push(StyledRange {
-                range: (s - ls)..(e - ls),
-                fg: style.fg,
-                bold: style.bold,
-                italic: style.italic,
-            });
-        }
-        li += 1;
-    }
-}
-
-/// `(start_byte, visible_end_byte)` per line, matching `str::lines()`: the
-/// visible end excludes the trailing `\n`/`\r\n`.
-fn line_bounds(content: &str) -> Vec<(usize, usize)> {
-    let bytes = content.as_bytes();
-    let mut out = Vec::new();
-    let mut start = 0;
-    for (i, &b) in bytes.iter().enumerate() {
-        if b == b'\n' {
-            let end = if i > start && bytes.get(i - 1) == Some(&b'\r') {
-                i - 1
-            } else {
-                i
-            };
-            out.push((start, end));
-            start = i + 1;
-        }
-    }
-    if start < bytes.len() {
-        let end = if bytes.last() == Some(&b'\r') {
-            bytes.len() - 1
-        } else {
-            bytes.len()
-        };
-        out.push((start, end));
-    }
-    out
 }
 
 impl SyntaxTheme {

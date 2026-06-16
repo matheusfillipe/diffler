@@ -14,7 +14,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 pub(crate) use diff::build_split_rows;
 pub use diff::{
-    CommentLine, DiffRow, DiffSource, DiffView, FileHighlights, Pane, SplitRow, comment_display,
+    CommentLine, DiffRow, DiffSource, DiffView, FileHighlights, FileScope, Pane, SplitRow,
+    comment_display,
 };
 pub use log::LogView;
 pub use status::{Row, Section, StatusView};

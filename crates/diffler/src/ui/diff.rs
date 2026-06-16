@@ -16,7 +16,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use crate::app::{
-    App, CommentLine, DiffRow, DiffSource, DiffView, FileHighlights, Pane, SplitRow,
+    App, CommentLine, DiffRow, DiffSource, DiffView, FileHighlights, FileScope, Pane, SplitRow,
     build_split_rows, comment_display,
 };
 use crate::keymap::Action;
@@ -93,7 +93,7 @@ pub(crate) fn init_highlighter(syntax: SyntaxTheme) {
     let _ = HIGHLIGHTER.set(Highlighter::new(syntax));
 }
 
-fn highlighter() -> &'static Highlighter {
+pub(crate) fn highlighter() -> &'static Highlighter {
     HIGHLIGHTER.get_or_init(Highlighter::default)
 }
 
@@ -212,7 +212,7 @@ fn draw_pane(
     };
 
     // header is fixed; the rows scroll beneath it
-    let [header_area, rows_area] =
+    let [header_area, body_area] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
     let viewed = session.is_viewed(&file.path, &file.content_hash());
     let open = open_comment_count(session, &file.path);
@@ -232,10 +232,25 @@ fn draw_pane(
         header_area,
     );
 
+    // syntax + scope are filled lazily, only for files that scroll into view
+    ensure_file_highlights(&mut diff.highlights, file);
+    ensure_file_scope(&mut diff.scopes, file);
+    // a sticky breadcrumb row, reserved only when the file has definitions, so
+    // plain files keep full height and code files get a stable layout
+    let has_scope = diff
+        .scopes
+        .get(&file.path)
+        .is_some_and(|s| !s.index.is_empty());
+    let (crumb_area, rows_area) = if has_scope {
+        let [crumb, rows] =
+            Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(body_area);
+        (Some(crumb), rows)
+    } else {
+        (None, body_area)
+    };
+
     diff.viewport = rows_area.height;
     diff.pane = rows_area;
-    // syntax is filled lazily, only for files that actually scroll into view
-    ensure_file_highlights(&mut diff.highlights, file);
 
     if diff.side_by_side {
         let split = build_split_rows(model, session, diff.selected);
@@ -269,6 +284,11 @@ fn draw_pane(
                 )
             })
             .collect();
+        let top = split
+            .iter()
+            .skip(scroll)
+            .find_map(|r| split_right_new_no(file, r));
+        render_scope_crumb(frame, crumb_area, theme, diff.scopes.get(&file.path), top);
         frame.render_widget(Paragraph::new(lines), rows_area);
         return;
     }
@@ -306,6 +326,13 @@ fn draw_pane(
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), rows_area);
+
+    let top = diff
+        .rows()
+        .iter()
+        .skip(scroll)
+        .find_map(|r| row_new_no(file, r));
+    render_scope_crumb(frame, crumb_area, theme, diff.scopes.get(&file.path), top);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -593,6 +620,68 @@ fn row_line(
             None => Line::default(),
         },
     }
+}
+
+/// One terminal row: the enclosing-definition breadcrumb for the top visible
+/// line, styled like a hunk heading. Blank when the top line is at top level.
+fn scope_line(theme: &Theme, crumbs: &[String], width: u16) -> Line<'static> {
+    let text = if crumbs.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", crumbs.join(" › "))
+    };
+    let pad = (width as usize).saturating_sub(text.chars().count());
+    Line::from(vec![
+        Span::styled(text, Style::new().fg(theme.dim).bg(theme.panel)),
+        Span::styled(" ".repeat(pad), Style::new().bg(theme.panel)),
+    ])
+}
+
+fn render_scope_crumb(
+    frame: &mut Frame<'_>,
+    area: Option<Rect>,
+    theme: &Theme,
+    scope: Option<&FileScope>,
+    top_new_line: Option<u32>,
+) {
+    let Some(area) = area else {
+        return;
+    };
+    let crumbs = match (scope, top_new_line) {
+        (Some(scope), Some(line)) => scope.index.crumbs(line.saturating_sub(1) as usize),
+        _ => Vec::new(),
+    };
+    frame.render_widget(Paragraph::new(scope_line(theme, &crumbs, area.width)), area);
+}
+
+/// New-side line number of a unified diff row, if it has one.
+fn row_new_no(file: &FileDiff, row: &DiffRow) -> Option<u32> {
+    match *row {
+        DiffRow::Line { hunk, line, .. } => file.hunks.get(hunk)?.lines.get(line)?.new_no,
+        _ => None,
+    }
+}
+
+/// New-side line number of a split row's right cell, if any.
+fn split_right_new_no(file: &FileDiff, row: &SplitRow) -> Option<u32> {
+    match *row {
+        SplitRow::Pair { hunk, right, .. } => file.hunks.get(hunk)?.lines.get(right?)?.new_no,
+        _ => None,
+    }
+}
+
+/// Parse and cache the selected file's scope index, invalidated by content hash.
+fn ensure_file_scope(cache: &mut HashMap<String, FileScope>, file: &FileDiff) {
+    let hash = file.sides_hash();
+    if cache.get(&file.path).is_some_and(|c| c.hash == hash) {
+        return;
+    }
+    let index = file
+        .new_text
+        .as_deref()
+        .map(|content| highlighter().scope_index(&file.path, content))
+        .unwrap_or_default();
+    cache.insert(file.path.clone(), FileScope { hash, index });
 }
 
 pub(crate) fn ensure_file_highlights(cache: &mut HashMap<String, FileHighlights>, file: &FileDiff) {

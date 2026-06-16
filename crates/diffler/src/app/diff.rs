@@ -11,6 +11,7 @@ use diffler_core::model::{DiffModel, FileDiff, LineKind};
 use diffler_core::review::Review;
 use diffler_core::session::{Anchor, Comment, CommentStatus, Session};
 pub use diffler_core::source::ReviewSource as DiffSource;
+use diffler_core::syntax::ScopeIndex;
 
 use super::{App, InputOp, Modal, Screen};
 use crate::config::FileLayout;
@@ -59,6 +60,13 @@ pub struct FileHighlights {
     pub new: Vec<Vec<StyledRange>>,
 }
 
+/// Enclosing-definition index for one file's new-side content, keyed by the
+/// both-sides hash so edits invalidate it. Drives the sticky scope breadcrumb.
+pub struct FileScope {
+    pub hash: String,
+    pub index: ScopeIndex,
+}
+
 pub struct DiffView {
     pub source: DiffSource,
     /// A commit's diff is immutable: fetched once at open and kept here.
@@ -84,6 +92,10 @@ pub struct DiffView {
     /// Side-by-side (old left / new right) pane; pinned at open from
     /// `ui.side_by_side`, then `|` toggles it live.
     pub side_by_side: bool,
+    /// Prefer AST-diff (semantic) intra-line emphasis over the textual engine;
+    /// pinned at open from `ui.semantic_diff`. Falls back to textual per file
+    /// when no grammar/parse is available.
+    semantic: bool,
     /// First visible split row while `side_by_side` is on; the renderer keeps
     /// the cursor's line in view.
     pub(crate) split_scroll: usize,
@@ -100,6 +112,7 @@ pub struct DiffView {
     pub(crate) rows: Vec<DiffRow>,
     rows_dirty: bool,
     pub(crate) highlights: HashMap<String, FileHighlights>,
+    pub(crate) scopes: HashMap<String, FileScope>,
     /// Paths whose intra-line emphasis has been computed, so the per-file
     /// enrichment runs once. Cleared whenever the underlying model is
     /// rebuilt (refresh) so a fresh unenriched file gets re-enriched.
@@ -113,6 +126,7 @@ impl DiffView {
         review: &Review,
         layout: FileLayout,
         side_by_side: bool,
+        semantic: bool,
     ) -> Self {
         let mut view = Self {
             source,
@@ -125,6 +139,7 @@ impl DiffView {
             cursor: 0,
             scroll: 0,
             side_by_side,
+            semantic,
             split_scroll: 0,
             sidebar: ratatui::layout::Rect::default(),
             sidebar_scroll: 0,
@@ -134,6 +149,7 @@ impl DiffView {
             rows: Vec::new(),
             rows_dirty: true,
             highlights: HashMap::new(),
+            scopes: HashMap::new(),
             enriched: HashSet::new(),
         };
         view.ensure_rows(review);
@@ -149,6 +165,7 @@ impl DiffView {
     /// when this view is not pinned to an immutable commit model.
     pub(crate) fn enrich_selected(&mut self, review_model: Option<&mut DiffModel>) {
         let selected = self.selected;
+        let semantic = self.semantic;
         let model = match self.commit_model.as_mut() {
             Some(model) => model,
             None => match review_model {
@@ -160,7 +177,12 @@ impl DiffView {
             return;
         };
         if self.enriched.insert(file.path.clone()) {
-            diffler_core::pairing::enrich_file(file);
+            // semantic (AST) emphasis first; fall back to the textual engine
+            // when the file has no grammar, fails to parse, or is too large
+            let done = semantic && crate::ui::diff::highlighter().syntactic_emphasis(file);
+            if !done {
+                diffler_core::pairing::enrich_file(file);
+            }
         }
     }
 
@@ -557,6 +579,7 @@ impl App {
             &self.review,
             self.config.ui.diff_file_layout,
             self.config.ui.side_by_side,
+            self.config.ui.semantic_diff,
         );
         if let Some(path) = scope
             && let Some(index) = self
@@ -589,6 +612,7 @@ impl App {
                     &self.review,
                     self.config.ui.diff_file_layout,
                     self.config.ui.side_by_side,
+                    self.config.ui.semantic_diff,
                 );
                 self.diff = Some(view);
                 self.screens.push(Screen::Diff);
@@ -613,6 +637,7 @@ impl App {
                     &self.review,
                     self.config.ui.diff_file_layout,
                     self.config.ui.side_by_side,
+                    self.config.ui.semantic_diff,
                 );
                 self.diff = Some(view);
                 self.screens.push(Screen::Diff);

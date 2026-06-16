@@ -73,6 +73,10 @@ pub struct UiConfig {
     /// Open the diff pane in side-by-side (old left, new right) mode; `|`
     /// toggles it live. Unified by default.
     pub side_by_side: bool,
+    /// Emphasize only what changed *semantically* (AST diff): reindentation and
+    /// block wrapping are not flagged. On by default; set false for the textual
+    /// engine.
+    pub semantic_diff: bool,
 }
 
 impl Default for UiConfig {
@@ -84,6 +88,7 @@ impl Default for UiConfig {
             status_file_layout: FileLayout::List,
             diff_file_layout: FileLayout::Tree,
             side_by_side: false,
+            semantic_diff: true,
         }
     }
 }
@@ -277,6 +282,7 @@ struct PartialUi {
     status_file_layout: Option<String>,
     diff_file_layout: Option<String>,
     side_by_side: Option<bool>,
+    semantic_diff: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -331,6 +337,8 @@ fn set_layout(
     origins.insert(key.to_owned(), origin.clone());
 }
 
+// A flat one-block-per-key application list; length is inherent.
+#[allow(clippy::too_many_lines)]
 fn apply_layer(
     layer: PartialConfig,
     config: &mut Config,
@@ -396,6 +404,13 @@ fn apply_layer(
         origins,
     );
     set(
+        layer.ui.semantic_diff,
+        &mut config.ui.semantic_diff,
+        "ui.semantic_diff",
+        origin,
+        origins,
+    );
+    set(
         layer.mcp.enabled,
         &mut config.mcp.enabled,
         "mcp.enabled",
@@ -456,13 +471,14 @@ fn apply_cli(cli: &CliOverrides, config: &mut Config, origins: &mut BTreeMap<Str
 
 /// Scalar keys always listed in the `--dump` origins block; `keys.*` entries
 /// are appended dynamically since their names come from the user.
-const SCALAR_KEYS: [&str; 9] = [
+const SCALAR_KEYS: [&str; 10] = [
     "ui.theme",
     "ui.context_lines",
     "ui.recent_commits",
     "ui.status_file_layout",
     "ui.diff_file_layout",
     "ui.side_by_side",
+    "ui.semantic_diff",
     "mcp.enabled",
     "mcp.port",
     "editor.command",
@@ -644,6 +660,7 @@ mod tests {
         assert_eq!(config.ui.status_file_layout, FileLayout::List);
         assert_eq!(config.ui.diff_file_layout, FileLayout::Tree);
         assert!(!config.ui.side_by_side);
+        assert!(config.ui.semantic_diff);
         assert!(config.mcp.enabled);
         assert_eq!(config.mcp.port, 8417);
         assert_eq!(config.editor.command, None);
