@@ -15,7 +15,10 @@ use crate::theme::Theme;
 use crate::transient::TransientKind;
 use crate::ui::Hint;
 use crate::ui::diff_render::render_hunk_lines;
-use crate::ui::{cursor_line, diffstat_spans, hint_line, proportion_bar, status_bar, status_color};
+use crate::ui::{
+    commit_meta_spans, cursor_line, diffstat_spans, hint_line, proportion_bar, status_bar,
+    status_color,
+};
 
 /// Prefix-only hint entries: top-level keys and the transient prefixes,
 /// rendered against the live keymap so remaps show. Sub-commands stay out of
@@ -211,7 +214,7 @@ fn row_line(app: &App, row: &Row, selected: bool, width: u16) -> Line<'static> {
             let file = app.section_files(*section).get(*index);
             file_spans(app, file, theme, *depth)
         }
-        Row::Commit { index } => commit_spans(app, *index, theme),
+        Row::Commit { index } => commit_spans(app, *index, theme, width),
         // hunk rows are rendered as blocks in `body`, never through here
         Row::HunkHeader { .. } | Row::DiffLine { .. } => Vec::new(),
     };
@@ -300,14 +303,24 @@ fn file_spans(
     spans
 }
 
-fn commit_spans(app: &App, index: usize, theme: &Theme) -> Vec<Span<'static>> {
+fn commit_spans(app: &App, index: usize, theme: &Theme, width: u16) -> Vec<Span<'static>> {
     let Some(entry) = app.status.recent.get(index) else {
         return Vec::new();
     };
-    vec![Span::styled(
+    let mut spans = vec![Span::styled(
         format!("     {} {}", entry.oid7, entry.subject),
         theme.dim_style(),
-    )]
+    )];
+    let used: usize = spans.iter().map(Span::width).sum();
+    spans.extend(commit_meta_spans(
+        theme,
+        &entry.author,
+        entry.time_unix,
+        app.now_unix,
+        used,
+        width as usize,
+    ));
+    spans
 }
 
 /// Summed `(added, deleted)` over every file in a section.
@@ -562,6 +575,15 @@ mod tests {
             .position(|row| matches!(row, Row::RecentHeader { .. }))
             .expect("recent header");
         app.handle(key('\t'));
+        // pin "now" an hour past the newest commit so the ages render stably
+        app.now_unix = app
+            .status
+            .recent
+            .iter()
+            .map(|e| e.time_unix)
+            .max()
+            .unwrap_or(0)
+            + 3661;
         insta::assert_snapshot!(render(&mut app).backend());
     }
 

@@ -224,6 +224,51 @@ pub(super) fn hint_line(app: &App, items: &[Hint]) -> Line<'static> {
 
 /// Repaint a row with the cursor-line background, padded to the full width
 /// so the highlight spans the whole row.
+/// Compact "time ago" for a commit time, neogit-style: `49s`, `6m`, `21h`,
+/// `3d`, `2w`, `5mo`, `1y`. Future times (clock skew) clamp to `0s`.
+pub(super) fn relative_time(now: i64, then: i64) -> String {
+    let secs = (now - then).max(0);
+    let (n, unit) = match secs {
+        s if s < 60 => (s, "s"),
+        s if s < 3600 => (s / 60, "m"),
+        s if s < 86_400 => (s / 3600, "h"),
+        s if s < 86_400 * 7 => (s / 86_400, "d"),
+        s if s < 86_400 * 30 => (s / (86_400 * 7), "w"),
+        s if s < 86_400 * 365 => (s / (86_400 * 30), "mo"),
+        s => (s / (86_400 * 365), "y"),
+    };
+    format!("{n}{unit}")
+}
+
+/// Right-aligned author + commit age for a commit row, given the width already
+/// used by the row's left content. Empty when there is no room, so the left
+/// content (oid, subject) is never pushed off-screen.
+pub(super) fn commit_meta_spans(
+    theme: &Theme,
+    author: &str,
+    time_unix: i64,
+    now: i64,
+    used: usize,
+    width: usize,
+) -> Vec<Span<'static>> {
+    let age = relative_time(now, time_unix);
+    let meta_width = author.chars().count() + 2 + age.chars().count() + 1;
+    if used + meta_width >= width {
+        return Vec::new();
+    }
+    let pad = width - used - meta_width;
+    vec![
+        Span::styled(" ".repeat(pad), Style::new().bg(theme.bg)),
+        Span::styled(
+            author.to_owned(),
+            Style::new().fg(theme.accent).bg(theme.bg),
+        ),
+        Span::styled("  ", Style::new().bg(theme.bg)),
+        Span::styled(age, theme.dim_style()),
+        Span::styled(" ", Style::new().bg(theme.bg)),
+    ]
+}
+
 pub(super) fn cursor_line(line: Line<'static>, theme: &Theme, width: u16) -> Line<'static> {
     let pad = (width as usize).saturating_sub(line.width());
     let mut spans: Vec<Span<'static>> = line
@@ -301,4 +346,24 @@ pub(super) fn status_bar(app: &App, width: u16) -> Line<'static> {
         spans.push(Span::styled(text, on_panel(fg)));
     }
     Line::from(spans)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::relative_time;
+
+    #[test]
+    fn relative_time_picks_a_compact_unit() {
+        let now = 1_000_000;
+        assert_eq!(relative_time(now, now), "0s");
+        assert_eq!(relative_time(now, now - 49), "49s");
+        assert_eq!(relative_time(now, now - 6 * 60), "6m");
+        assert_eq!(relative_time(now, now - 21 * 3600), "21h");
+        assert_eq!(relative_time(now, now - 3 * 86_400), "3d");
+        assert_eq!(relative_time(now, now - 2 * 7 * 86_400), "2w");
+        assert_eq!(relative_time(now, now - 90 * 86_400), "3mo");
+        assert_eq!(relative_time(now, now - 800 * 86_400), "2y");
+        // future commit times (clock skew) clamp to 0s, never negative
+        assert_eq!(relative_time(now, now + 500), "0s");
+    }
 }

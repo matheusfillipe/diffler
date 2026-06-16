@@ -222,6 +222,19 @@ pub struct App {
     tick_count: u32,
     /// Time and cell of the last left-press, for double-click detection.
     last_click: Option<(std::time::Instant, u16, u16)>,
+    /// Wall-clock seconds, refreshed with the commit list, for rendering
+    /// commit ages ("3h ago"). A field so tests can pin it.
+    pub now_unix: i64,
+}
+
+/// Current wall-clock time in unix seconds, or 0 if the clock is before the
+/// epoch (it never is).
+pub(crate) fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_secs()).ok())
+        .unwrap_or(0)
 }
 
 impl App {
@@ -315,6 +328,7 @@ impl App {
             pending_ticks: 0,
             tick_count: 0,
             last_click: None,
+            now_unix: now_unix(),
         }
     }
 
@@ -788,6 +802,7 @@ impl App {
     }
 
     pub(crate) fn refresh(&mut self) {
+        self.now_unix = now_unix();
         let status_anchor = self.status_cursor_anchor();
         let diff_anchor_path = self.diff_cursor_path();
         let fingerprint = self.review.model().fingerprint();
