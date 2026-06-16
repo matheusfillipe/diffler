@@ -782,6 +782,13 @@ impl App {
         Flow::Continue
     }
 
+    /// Enter a screen. Clears any search, whose matches are keyed to the
+    /// leaving screen's rows.
+    fn push_screen(&mut self, screen: Screen) {
+        self.search = None;
+        self.screens.push(screen);
+    }
+
     fn pop_screen(&mut self) -> Flow {
         if self.screens.len() <= 1 {
             return Flow::Quit;
@@ -808,24 +815,12 @@ impl App {
             KeyCode::Esc => self.search_cancel(),
             KeyCode::Enter => self.search_commit(),
             KeyCode::Backspace => self.search_edit(Search::backspace),
-            KeyCode::Left => {
-                if let Some(s) = self.search.as_mut() {
-                    s.move_left();
-                }
-            }
-            KeyCode::Right => {
-                if let Some(s) = self.search.as_mut() {
-                    s.move_right();
-                }
-            }
             KeyCode::Char(c) => self.search_edit(|s| s.insert(c)),
             _ => {}
         }
         Flow::Continue
     }
 
-    /// Apply an edit to the query, recompute matches, and live-preview the
-    /// active match (incsearch).
     fn search_edit(&mut self, edit: impl FnOnce(&mut Search)) {
         if let Some(s) = self.search.as_mut() {
             edit(s);
@@ -887,7 +882,6 @@ impl App {
 
     fn focused_search_rows(&self) -> Vec<(usize, String)> {
         match self.screen() {
-            // status tree search is a follow-up; its rows are a follow-up slice
             Screen::Status => Vec::new(),
             Screen::Log => self.log.as_ref().map_or_else(Vec::new, |log| {
                 log.entries

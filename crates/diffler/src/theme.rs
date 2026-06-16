@@ -21,7 +21,6 @@ pub struct Theme {
     /// Background for lines a comment is anchored to (GitHub-style amber), so
     /// the scope of a multi-line review comment is visible in the diff.
     pub annotated: Color,
-    /// Background for `/` search matches; `search_current` marks the active one.
     pub search: Color,
     pub search_current: Color,
     /// Diffstat added foreground (a readable green for `+N` counts). Deletes

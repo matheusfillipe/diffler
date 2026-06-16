@@ -1,14 +1,12 @@
-//! Vim-style `/` search shared by every pane. A pane exposes its rows through
-//! [`Searchable`]; [`Search`] holds the query, the matches, and the active one,
-//! and drives incremental highlight + `n`/`N` navigation. Matching is plain
-//! substring with smartcase (case-insensitive unless the query has an
-//! uppercase letter).
+//! Vim-style `/` search. A pane feeds [`Search`] its rows as `(row index,
+//! text)`; the search holds the query, matches, and active match, and drives
+//! incremental highlight + `n`/`N` navigation. Matching is plain substring with
+//! smartcase: case-insensitive unless the query has an uppercase letter.
 
 use std::ops::Range;
 
-/// One match: a byte range within the text of row `row`. The row index is the
-/// pane's own row index — whatever the pane uses to move its cursor and to key
-/// its rendered rows.
+/// A byte range within row `row`'s text. The row index is the pane's own — the
+/// one it uses to move its cursor and to key its rendered rows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Match {
     pub row: usize,
@@ -17,15 +15,13 @@ pub struct Match {
 
 pub struct Search {
     query: String,
-    /// Char index of the prompt's edit cursor.
-    query_cursor: usize,
-    /// The prompt is capturing input (vs committed, highlights persisting).
+    /// The prompt is capturing input; once committed it stays `false` while
+    /// highlights persist and `n`/`N` navigate.
     pub open: bool,
     matches: Vec<Match>,
-    /// Index into `matches` of the active match.
     current: usize,
-    /// Cursor row when the search started, so the first match is picked
-    /// relative to it and the cursor can be restored on cancel.
+    /// Cursor row when the search started: the first match is picked relative to
+    /// it, and the cursor returns here on cancel.
     origin_row: usize,
 }
 
@@ -33,7 +29,6 @@ impl Search {
     pub fn start(origin_row: usize) -> Self {
         Self {
             query: String::new(),
-            query_cursor: 0,
             open: true,
             matches: Vec::new(),
             current: 0,
@@ -45,15 +40,11 @@ impl Search {
         &self.query
     }
 
-    pub fn query_cursor(&self) -> usize {
-        self.query_cursor
-    }
-
     pub fn origin_row(&self) -> usize {
         self.origin_row
     }
 
-    /// `(1-based active, total)`, or `(0, 0)` when there are no matches.
+    /// `(1-based active, total)`; `(0, 0)` when there are no matches.
     pub fn count(&self) -> (usize, usize) {
         if self.matches.is_empty() {
             (0, 0)
@@ -63,37 +54,16 @@ impl Search {
     }
 
     pub fn insert(&mut self, c: char) {
-        let byte = self
-            .query
-            .char_indices()
-            .nth(self.query_cursor)
-            .map_or(self.query.len(), |(i, _)| i);
-        self.query.insert(byte, c);
-        self.query_cursor += 1;
+        self.query.push(c);
     }
 
     pub fn backspace(&mut self) {
-        if self.query_cursor == 0 {
-            return;
-        }
-        let prev = self.query_cursor - 1;
-        if let Some((byte, c)) = self.query.char_indices().nth(prev) {
-            self.query.drain(byte..byte + c.len_utf8());
-            self.query_cursor = prev;
-        }
+        self.query.pop();
     }
 
-    pub fn move_left(&mut self) {
-        self.query_cursor = self.query_cursor.saturating_sub(1);
-    }
-
-    pub fn move_right(&mut self) {
-        self.query_cursor = (self.query_cursor + 1).min(self.query.chars().count());
-    }
-
-    /// Recompute matches against `rows` and pick the active match as the first
-    /// at or after `origin_row` (wrapping). Called as the query changes and on
-    /// model refresh so highlights track live content.
+    /// Recompute matches against `rows`, picking the active match as the first
+    /// at or after `origin_row`. Re-run whenever the rows change so highlights
+    /// track the live content.
     pub fn recompute(&mut self, rows: &[(usize, String)]) {
         self.matches = find_matches(rows, &self.query);
         self.current = self
@@ -103,8 +73,6 @@ impl Search {
             .unwrap_or(0);
     }
 
-    /// Close the prompt, keeping highlights. Returns the row of the active match
-    /// to focus, if any.
     pub fn commit(&mut self) -> Option<usize> {
         self.open = false;
         self.active_row()
@@ -130,13 +98,10 @@ impl Search {
         self.matches.get(self.current).map(|m| m.row)
     }
 
-    /// Row of the active match, for live preview while typing.
     pub fn current_row(&self) -> Option<usize> {
         self.active_row()
     }
 
-    /// Match ranges on `row` paired with whether each is the active match,
-    /// for the renderer to paint.
     pub fn ranges_for(&self, row: usize) -> Vec<(Range<usize>, bool)> {
         self.matches
             .iter()
@@ -147,9 +112,9 @@ impl Search {
     }
 }
 
-/// Plain-substring matches with smartcase: case-insensitive unless `query` has
-/// an uppercase letter. Empty query matches nothing. Byte ranges index the
-/// original row text (ASCII case-folding preserves byte length).
+/// Plain-substring matches with smartcase. Byte ranges index the original row
+/// text — ASCII case-folding preserves byte length, so a fold-space match maps
+/// back unchanged.
 pub fn find_matches(rows: &[(usize, String)], query: &str) -> Vec<Match> {
     if query.is_empty() {
         return Vec::new();
@@ -256,5 +221,16 @@ mod tests {
         assert_eq!(ranges.len(), 2);
         assert!(ranges[0].1, "first is active");
         assert!(!ranges[1].1);
+    }
+
+    #[test]
+    fn backspace_shrinks_the_query() {
+        let r = rows(&[(0, "alpha"), (1, "beta")]);
+        let mut s = search(0, "al", &r);
+        assert_eq!(s.count(), (1, 1));
+        s.backspace();
+        s.recompute(&r);
+        assert_eq!(s.query(), "a");
+        assert_eq!(s.count().1, 3, "two 'a' in alpha, one in beta");
     }
 }

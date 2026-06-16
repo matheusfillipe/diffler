@@ -593,7 +593,7 @@ impl App {
         }
         view.focus = focus;
         self.diff = Some(view);
-        self.screens.push(Screen::Diff);
+        self.push_screen(Screen::Diff);
     }
 
     pub(crate) fn open_commit_diff(&mut self, oid: &str) {
@@ -613,7 +613,7 @@ impl App {
                     self.config.ui.semantic_diff,
                 );
                 self.diff = Some(view);
-                self.screens.push(Screen::Diff);
+                self.push_screen(Screen::Diff);
             }
             Err(err) => self.error(err.to_string()),
         }
@@ -638,13 +638,22 @@ impl App {
                     self.config.ui.semantic_diff,
                 );
                 self.diff = Some(view);
-                self.screens.push(Screen::Diff);
+                self.push_screen(Screen::Diff);
             }
             Err(err) => self.error(err.to_string()),
         }
     }
 
     pub(super) fn dispatch_diff(&mut self, action: Action) {
+        // a file or focus change moves search onto different rows, so drop it
+        let scope = self.diff.as_ref().map(|d| (d.selected, d.focus));
+        self.dispatch_diff_inner(action);
+        if self.search.is_some() && self.diff.as_ref().map(|d| (d.selected, d.focus)) != scope {
+            self.search = None;
+        }
+    }
+
+    fn dispatch_diff_inner(&mut self, action: Action) {
         if let Some(diff) = self.diff.as_mut() {
             diff.ensure_rows(&self.review);
         } else {

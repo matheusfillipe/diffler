@@ -112,6 +112,8 @@ pub fn hunk_header(theme: &Theme, hunk: &Hunk, width: u16, selected: bool) -> Li
 
 /// Render one diff line: gutter numbers, then the text composited from the
 /// optional per-line syntax spans (fg) and the line's emphasis ranges (bg).
+// orthogonal styling inputs (gutter, selection, annotation, search ranges); a
+// params struct would not read more clearly
 #[allow(clippy::too_many_arguments)]
 pub fn render_diff_line(
     theme: &Theme,

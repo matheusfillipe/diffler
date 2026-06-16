@@ -588,6 +588,7 @@ fn clip_path(name: &str, room: usize) -> String {
     format!("…{tail}")
 }
 
+// mirrors render_diff_line's orthogonal styling inputs plus the search ranges
 #[allow(clippy::too_many_arguments)]
 fn row_line(
     theme: &Theme,
