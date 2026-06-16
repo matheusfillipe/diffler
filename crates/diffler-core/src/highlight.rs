@@ -146,7 +146,9 @@ impl SyntaxTheme {
                 "function" => (97, 175, 239),
                 "type" | "constructor" => (229, 192, 123),
                 "string" => (152, 195, 121),
-                "comment" => (92, 99, 112),
+                // brighter than One Dark's default so comments stay legible on
+                // the added/removed diff backgrounds, not just the editor bg
+                "comment" => (126, 134, 145),
                 "constant" | "number" | "attribute" => (209, 154, 102),
                 "operator" | "escape" => (86, 182, 194),
                 "property" | "tag" => (224, 108, 117),

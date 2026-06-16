@@ -76,7 +76,10 @@ impl LanguageRegistry {
     }
 }
 
-/// Map whole-file changed byte ranges to per-line, within-line ranges.
+/// Map whole-file changed byte ranges to per-line, within-line ranges. Lines
+/// whose entire content changed are cleared: a fully added/removed/rewritten
+/// line has nothing to distinguish, so the +/- background already says it all
+/// and char emphasis there is just noise.
 fn per_line_emphasis(src: &str, ranges: &[Range<usize>]) -> LineEmphasis {
     let bounds = line_bounds(src);
     let starts: Vec<usize> = bounds.iter().map(|&(s, _)| s).collect();
@@ -88,7 +91,28 @@ fn per_line_emphasis(src: &str, ranges: &[Range<usize>]) -> LineEmphasis {
             }
         });
     }
+    for (line_ranges, &(s, e)) in out.iter_mut().zip(&bounds) {
+        if whole_line_changed(src.get(s..e).unwrap_or(""), line_ranges) {
+            line_ranges.clear();
+        }
+    }
     out
+}
+
+/// True when every non-whitespace byte of the line is emphasized (gaps fall
+/// only on whitespace) — i.e. the entire content changed.
+fn whole_line_changed(text: &str, ranges: &[Range<usize>]) -> bool {
+    let mut any_content = false;
+    for (i, &b) in text.as_bytes().iter().enumerate() {
+        if b == b' ' || b == b'\t' {
+            continue;
+        }
+        any_content = true;
+        if !ranges.iter().any(|r| r.start <= i && i < r.end) {
+            return false;
+        }
+    }
+    any_content
 }
 
 /// Clip ranges to the line's length and drop any that become empty.
@@ -155,6 +179,20 @@ mod tests {
         assert!(
             !new_e[changed].is_empty(),
             "the structurally changed line is emphasized"
+        );
+    }
+
+    #[test]
+    fn a_fully_added_line_is_not_char_emphasized() {
+        let reg = LanguageRegistry::build();
+        let old = "fn f() {\n}\n";
+        let new = "fn f() {\n    let entirely_new = compute_something();\n}\n";
+        let (_, new_e) = reg.line_emphasis("a.rs", old, new).expect("rust parses");
+        let added = line_with(new, "entirely_new");
+        assert!(
+            new_e[added].is_empty(),
+            "a wholly-new line has nothing to distinguish, got {:?}",
+            new_e[added]
         );
     }
 

@@ -40,6 +40,7 @@ pub fn render_hunk_lines(
             gutter,
             width,
             selected == Some(index + 1),
+            false,
         )
     }));
     lines
@@ -115,6 +116,7 @@ pub fn render_diff_line(
     gutter: usize,
     width: u16,
     selected: bool,
+    annotated: bool,
 ) -> Line<'static> {
     let line_bg = match line.kind {
         LineKind::Added => theme.add_line_bg,
@@ -126,7 +128,13 @@ pub fn render_diff_line(
         LineKind::Deleted => theme.del_emph_bg,
         LineKind::Context => theme.bg,
     };
-    let base_bg = if selected { theme.cursor_line } else { line_bg };
+    let base_bg = if selected {
+        theme.cursor_line
+    } else if annotated {
+        theme.annotated
+    } else {
+        line_bg
+    };
 
     let number = |n: Option<u32>| match n {
         Some(n) => format!("{n:>gutter$}"),
@@ -157,7 +165,7 @@ pub enum SplitSide {
 /// One side of a side-by-side row: the line and its per-line syntax, or `None`
 /// for a column with no counterpart (a lone deletion's right, a lone
 /// addition's left).
-pub type SplitCell<'a> = Option<(&'a DiffLine, Option<&'a [StyledRange]>)>;
+pub type SplitCell<'a> = Option<(&'a DiffLine, Option<&'a [StyledRange]>, bool)>;
 
 /// Render one side-by-side row: the old line in the left column, the new line
 /// in the right, divided by a separator. Each column shows a single gutter
@@ -198,7 +206,7 @@ fn side_spans(
     col_width: usize,
     selected: bool,
 ) -> Vec<Span<'static>> {
-    let Some((line, syntax)) = cell else {
+    let Some((line, syntax, annotated)) = cell else {
         let bg = if selected {
             theme.cursor_line
         } else {
@@ -211,7 +219,13 @@ fn side_spans(
         LineKind::Deleted => (theme.del_line_bg, theme.del_emph_bg),
         LineKind::Context => (theme.bg, theme.bg),
     };
-    let base_bg = if selected { theme.cursor_line } else { line_bg };
+    let base_bg = if selected {
+        theme.cursor_line
+    } else if annotated {
+        theme.annotated
+    } else {
+        line_bg
+    };
     let number = match side {
         SplitSide::Left => line.old_no,
         SplitSide::Right => line.new_no,
@@ -488,7 +502,7 @@ mod tests {
                 italic: false,
             },
         ];
-        let rendered = render_diff_line(&theme, &added, Some(&syntax), 4, 60, false);
+        let rendered = render_diff_line(&theme, &added, Some(&syntax), 4, 60, false, false);
         let keyword: Vec<_> = rendered
             .spans
             .iter()

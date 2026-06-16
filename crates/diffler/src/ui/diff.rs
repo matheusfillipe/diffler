@@ -361,6 +361,7 @@ fn split_row_line(
                     (
                         line,
                         highlights.and_then(|hl| split_side_syntax(hl, line, side)),
+                        line_annotated(session, &file.path, line),
                     )
                 })
             };
@@ -602,6 +603,7 @@ fn row_line(
             let syntax = highlights
                 .get(&file.path)
                 .and_then(|cached| line_syntax(&cached.old, &cached.new, line));
+            let annotated = line_annotated(session, &file.path, line);
             render_diff_line(
                 theme,
                 line,
@@ -609,6 +611,7 @@ fn row_line(
                 file_gutter_width(file),
                 width,
                 selected,
+                annotated,
             )
         }
         DiffRow::Comment {
@@ -652,6 +655,26 @@ fn render_scope_crumb(
         _ => Vec::new(),
     };
     frame.render_widget(Paragraph::new(scope_line(theme, &crumbs, area.width)), area);
+}
+
+/// Whether `line` falls inside any comment's anchored range for `file_path` —
+/// drives the GitHub-style highlight marking a multi-line comment's scope.
+fn line_annotated(session: &Session, file_path: &str, line: &DiffLine) -> bool {
+    session.comments.iter().any(|c| {
+        if c.anchor.file != file_path {
+            return false;
+        }
+        let Some(start) = c.anchor.line else {
+            return false;
+        };
+        let end = c.anchor.line_end.unwrap_or(start);
+        let no = if c.anchor.on_old_side {
+            line.old_no
+        } else {
+            line.new_no
+        };
+        no.is_some_and(|n| start <= n && n <= end)
+    })
 }
 
 /// New-side line number of a unified diff row, if it has one.
@@ -965,7 +988,16 @@ mod tests {
 
     #[test]
     fn diff_pane_renders_with_syntax_emphasis_and_gutter() {
-        let (_fixture, mut app) = diff_app();
+        // grapheme engine: it char-diffs the `41`→`42` literal so the emphasis
+        // background composites. The syntactic engine treats the whole literal
+        // as changed (no partial highlight); that path is covered by the core
+        // intraline tests.
+        let fixture = standard_fixture();
+        let mut loaded = LoadedConfig::default();
+        loaded.config.ui.semantic_diff = false;
+        let mut app = App::new(fixture.review(), loaded);
+        app.author = "reviewer".to_owned();
+        app.open_working_tree_diff(None);
         open_lib_diff(&mut app);
         let terminal = render(&mut app);
         // emphasis backgrounds composited over the line backgrounds
@@ -984,6 +1016,31 @@ mod tests {
             "rust syntax produced styled ranges"
         );
         insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn comment_range_highlights_its_anchored_lines() {
+        let (_fixture, mut app) = diff_app();
+        open_lib_diff(&mut app);
+        app.review.session.add_comment(
+            "reviewer",
+            diffler_core::session::Anchor {
+                file: "src/lib.rs".to_owned(),
+                line: Some(1),
+                line_end: Some(2),
+                on_old_side: false,
+                hunk: None,
+                line_text: None,
+            },
+            "this whole block",
+        );
+        app.diff.as_mut().unwrap().invalidate();
+        let terminal = render(&mut app);
+        let styles = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            styles.contains(&format!("{:?}", app.theme.annotated)),
+            "a multi-line comment paints its anchored lines with the annotated bg"
+        );
     }
 
     #[test]
