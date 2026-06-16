@@ -622,7 +622,7 @@ dependencies = [
 
 [[package]]
 name = "diffler"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "async-lsp",
  "axum",
@@ -649,7 +649,7 @@ dependencies = [
 
 [[package]]
 name = "diffler-core"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "git2",
  "serde",
