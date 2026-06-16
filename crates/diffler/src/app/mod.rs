@@ -388,6 +388,9 @@ impl App {
                     self.handle_transient_key(&key)
                 } else if self.search.as_ref().is_some_and(|s| s.open) {
                     self.handle_search_key(&key)
+                } else if key.code == KeyCode::Esc && self.search.is_some() {
+                    self.search = None;
+                    Flow::Continue
                 } else {
                     self.handle_key(&key)
                 }

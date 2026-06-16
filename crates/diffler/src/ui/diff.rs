@@ -111,7 +111,7 @@ fn draw_body(
     let width = sidebar_width(area.width);
     let [list_area, pane_area] =
         Layout::horizontal([Constraint::Length(width), Constraint::Min(0)]).areas(area);
-    draw_sidebar(frame, list_area, theme, session, review_model, diff);
+    draw_sidebar(frame, list_area, theme, session, review_model, diff, search);
     draw_pane(frame, pane_area, theme, session, review_model, diff, search);
 }
 
@@ -124,6 +124,7 @@ fn draw_sidebar(
     session: &Session,
     review_model: Option<&DiffModel>,
     diff: &mut DiffView,
+    search: Option<&Search>,
 ) {
     let focused = diff.focus == Pane::List;
     let block = pane_block(theme, "Files", focused);
@@ -139,7 +140,7 @@ fn draw_sidebar(
         .enumerate()
         .map(|(row_index, row)| {
             let on_cursor = row_index == diff.tree_cursor;
-            match &row.node {
+            let line = match &row.node {
                 TreeNode::Dir { name, path } => sidebar_dir_line(
                     theme,
                     name,
@@ -165,6 +166,12 @@ fn draw_sidebar(
                         on_cursor,
                     )
                 }
+            };
+            match search.filter(|_| focused).map(|s| s.ranges_for(row_index)) {
+                Some(ranges) if !ranges.is_empty() => {
+                    super::tint_search_row(line, ranges.iter().any(|(_, current)| *current), theme)
+                }
+                _ => line,
             }
         })
         .collect();
