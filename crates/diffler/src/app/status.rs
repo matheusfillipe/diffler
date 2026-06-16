@@ -365,34 +365,53 @@ impl App {
         }
     }
 
-    pub(super) fn status_mouse_scroll(&mut self, delta: isize) {
-        let last = self.visible_rows().len().saturating_sub(1);
-        self.status.cursor = self.status.cursor.saturating_add_signed(delta).min(last);
+    pub(super) fn status_mouse(&mut self, gesture: super::MouseGesture) {
+        use super::MouseGesture;
+        match gesture {
+            MouseGesture::Scroll { down, .. } => {
+                let delta = if down { 3 } else { -3 };
+                let last = self.visible_rows().len().saturating_sub(1);
+                self.status.cursor = self.status.cursor.saturating_add_signed(delta).min(last);
+            }
+            // single-click selects; double-click activates (open file/commit,
+            // or fold the section/dir/recent header) — like `<cr>`/`<tab>`
+            MouseGesture::Press { col, row } => {
+                self.status_select_at(col, row);
+            }
+            MouseGesture::DoublePress { col, row } => {
+                if self.status_select_at(col, row) {
+                    self.status_activate_cursor();
+                }
+            }
+            // the status screen has no line selection to drag or cancel
+            MouseGesture::Drag { .. } | MouseGesture::Cancel => {}
+        }
     }
 
-    pub(super) fn status_mouse_click(&mut self, col: u16, row: u16) {
+    /// Move the cursor to the row under `(col, row)`. Returns whether a row was
+    /// hit (so a double-click only activates on a real row).
+    fn status_select_at(&mut self, col: u16, row: u16) -> bool {
         let Some(line) = super::hit_index(self.status.body, self.status.scroll as usize, col, row)
         else {
-            return;
+            return false;
         };
         let Some(Some(index)) = self.status.line_rows.get(line).copied() else {
-            return;
+            return false;
         };
-        let rows = self.visible_rows();
-        let Some(kind) = rows.get(index).cloned() else {
-            return;
-        };
+        if index >= self.visible_rows().len() {
+            return false;
+        }
         self.status.cursor = index;
-        // a click on a foldable row toggles it (section/dir/recent header) or
-        // expands a file; hunk and diff-line rows only move the cursor
-        if matches!(
-            kind,
-            Row::SectionHeader { .. }
-                | Row::Dir { .. }
-                | Row::File { .. }
-                | Row::RecentHeader { .. }
-        ) {
-            self.toggle_fold();
+        true
+    }
+
+    fn status_activate_cursor(&mut self) {
+        match self.cursor_row() {
+            Some(Row::File { .. } | Row::Commit { .. }) => self.open_at_cursor(),
+            Some(Row::SectionHeader { .. } | Row::Dir { .. } | Row::RecentHeader { .. }) => {
+                self.toggle_fold();
+            }
+            _ => {}
         }
     }
 

@@ -384,7 +384,7 @@ mod tests {
     }
 
     #[test]
-    fn clicking_a_section_header_toggles_its_fold() {
+    fn single_click_on_a_section_header_only_selects() {
         let fixture = standard_fixture();
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         render(&mut app);
@@ -395,11 +395,31 @@ mod tests {
         let (x, y) = screen_pos(&app, 0);
         app.handle(mouse_click(x, y));
         assert_eq!(app.status.cursor, 0);
-        assert_ne!(app.is_folded(section), folded, "click toggled the fold");
+        assert_eq!(app.is_folded(section), folded, "single click does not fold");
     }
 
     #[test]
-    fn clicking_the_recent_commits_header_toggles_it() {
+    fn double_clicking_a_section_header_toggles_its_fold() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        render(&mut app);
+        let Some(Row::SectionHeader { section, .. }) = app.visible_rows().first().cloned() else {
+            panic!("first row is a section header");
+        };
+        let folded = app.is_folded(section);
+        let (x, y) = screen_pos(&app, 0);
+        app.handle(mouse_click(x, y));
+        app.handle(mouse_click(x, y));
+        assert_eq!(app.status.cursor, 0);
+        assert_ne!(
+            app.is_folded(section),
+            folded,
+            "double-click toggled the fold"
+        );
+    }
+
+    #[test]
+    fn double_clicking_the_recent_commits_header_toggles_it() {
         let fixture = standard_fixture();
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         render(&mut app);
@@ -411,8 +431,12 @@ mod tests {
         let folded = app.status.recent_folded;
         let (x, y) = screen_pos(&app, target);
         app.handle(mouse_click(x, y));
+        app.handle(mouse_click(x, y));
         assert_eq!(app.status.cursor, target);
-        assert_ne!(app.status.recent_folded, folded, "click toggled the fold");
+        assert_ne!(
+            app.status.recent_folded, folded,
+            "double-click toggled the fold"
+        );
     }
 
     fn app_for(fixture: &Fixture) -> App {

@@ -3,7 +3,7 @@ use std::path::Path;
 use clap::{Parser, Subcommand};
 use diffler::app::{self, App, Flow};
 use diffler::event::AppEvent;
-use diffler::{config, editor, event, mcp, ui, watch};
+use diffler::{clipboard, config, editor, event, mcp, ui, watch};
 use diffler_core::review::Review;
 use ratatui::DefaultTerminal;
 use tokio::sync::mpsc;
@@ -141,14 +141,16 @@ async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<
     };
     loop {
         terminal.draw(|frame| ui::draw(frame, &mut app))?;
-        if let Some(sequence) = app.pending_osc.take() {
-            // an OSC52 sequence addresses the terminal emulator, not the
-            // screen: it must bypass ratatui's buffer and go out raw,
-            // right after the draw so it cannot interleave with one
+        if let Some(text) = app.pending_clipboard.take() {
+            // OSC52 addresses the terminal emulator, not the screen: it must
+            // bypass ratatui's buffer and go out raw, right after the draw so
+            // it cannot interleave with one. The native CLI pipe (on a blocking
+            // thread, since it spawns a process) covers terminals without OSC52.
             use std::io::Write as _;
             let mut out = std::io::stdout();
-            out.write_all(sequence.as_bytes())?;
+            out.write_all(clipboard::osc52(&text).as_bytes())?;
             out.flush()?;
+            tokio::task::spawn_blocking(move || clipboard::native_copy(&text));
         }
         if let Some(request) = app.pending_editor.take() {
             // the event pump must release the tty before the editor gets

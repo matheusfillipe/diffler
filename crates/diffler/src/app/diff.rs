@@ -13,7 +13,6 @@ use diffler_core::session::{Anchor, Comment, CommentStatus, Session};
 pub use diffler_core::source::ReviewSource as DiffSource;
 
 use super::{App, InputOp, Modal, Screen};
-use crate::clipboard;
 use crate::config::FileLayout;
 use crate::keymap::Action;
 use crate::tree::{self, TreeNode, TreeRow};
@@ -672,7 +671,7 @@ impl App {
             Action::MarkViewed => self.diff_toggle_viewed(),
             Action::OpenEditor => self.editor_at_diff_cursor(),
             // copy is file/all scoped, not line scoped: works from the list
-            Action::CopyFileFeedback => self.copy_feedback(true),
+            Action::CopyFileFeedback => self.copy_file_or_selection(),
             Action::CopyAllFeedback => self.copy_feedback(false),
             Action::Comment | Action::VisualSelect | Action::Reply | Action::Resolve => {
                 self.info("move into the diff to comment");
@@ -706,7 +705,7 @@ impl App {
             Action::Reply => self.reply_at_cursor(),
             Action::Resolve => self.resolve_at_cursor(),
             Action::MarkViewed => self.diff_toggle_viewed(),
-            Action::CopyFileFeedback => self.copy_feedback(true),
+            Action::CopyFileFeedback => self.copy_file_or_selection(),
             Action::CopyAllFeedback => self.copy_feedback(false),
             Action::OpenEditor => self.editor_at_diff_cursor(),
             // folding is a sidebar concern; in the pane za is a no-op
@@ -746,55 +745,94 @@ impl App {
         }
     }
 
-    pub(super) fn diff_mouse_scroll(&mut self, col: u16, _row: u16, delta: isize) {
-        // the sidebar fills the left columns; scroll whichever pane the pointer
-        // sits over
-        let in_sidebar = self.diff.as_ref().is_some_and(|diff| col < diff.pane.x);
-        if in_sidebar {
-            self.diff_tree_step(delta);
-        } else {
-            self.diff_move(delta);
+    pub(super) fn diff_mouse(&mut self, gesture: super::MouseGesture) {
+        use super::MouseGesture;
+        match gesture {
+            MouseGesture::Scroll { col, down, .. } => {
+                let delta = if down { 3 } else { -3 };
+                // the sidebar fills the left columns; scroll whichever pane the
+                // pointer sits over
+                let in_sidebar = self.diff.as_ref().is_some_and(|d| col < d.pane.x);
+                if in_sidebar {
+                    self.diff_tree_step(delta);
+                } else {
+                    self.diff_move(delta);
+                }
+            }
+            MouseGesture::Press { col, row } => self.diff_press_at(col, row),
+            MouseGesture::DoublePress { col, row } => self.diff_activate_at(col, row),
+            MouseGesture::Drag { col, row } => self.diff_drag_to(col, row),
+            MouseGesture::Cancel => {
+                if let Some(diff) = self.diff.as_mut() {
+                    diff.visual_anchor = None;
+                }
+            }
         }
     }
 
-    pub(super) fn diff_mouse_click(&mut self, col: u16, row: u16) {
-        let Some((sidebar, sidebar_scroll, pane, pane_scroll, split)) =
-            self.diff.as_ref().map(|d| {
-                (
-                    d.sidebar,
-                    d.sidebar_scroll,
-                    d.pane,
-                    d.scroll,
-                    d.side_by_side,
-                )
-            })
-        else {
-            return;
-        };
-        if let Some(tree_index) = super::hit_index(sidebar, sidebar_scroll, col, row) {
-            let count = self
-                .diff
-                .as_ref()
-                .map_or(0, |d| d.tree_rows(d.model(&self.review)).len());
-            if tree_index < count {
-                self.diff_tree_to(tree_index);
-                self.diff_tree_activate();
-            }
+    /// Single-click: select the sidebar file under the pointer, or move the
+    /// pane cursor to the clicked line, dropping any selection.
+    fn diff_press_at(&mut self, col: u16, row: u16) {
+        if let Some(index) = self.diff_sidebar_row_at(col, row) {
+            self.diff_tree_to(index);
             return;
         }
-        if let Some(pane_index) = super::hit_index(pane, pane_scroll, col, row) {
-            // unified rows map 1:1 to screen lines; split mode keeps keyboard
-            // nav rather than invert its paired-row layout
-            if !split {
-                let len = self.diff.as_ref().map_or(0, |d| d.rows().len());
-                if pane_index < len
-                    && let Some(diff) = self.diff.as_mut()
-                {
-                    diff.cursor = pane_index;
-                }
+        if let Some(index) = self.diff_pane_row_at(col, row)
+            && let Some(diff) = self.diff.as_mut()
+        {
+            diff.cursor = index;
+            diff.visual_anchor = None;
+        }
+    }
+
+    /// Double-click: open the sidebar file / toggle its dir fold (like `<cr>`),
+    /// or add a comment on the clicked diff line (like `c`).
+    fn diff_activate_at(&mut self, col: u16, row: u16) {
+        if let Some(index) = self.diff_sidebar_row_at(col, row) {
+            self.diff_tree_to(index);
+            self.diff_tree_activate();
+            return;
+        }
+        if let Some(index) = self.diff_pane_row_at(col, row) {
+            if let Some(diff) = self.diff.as_mut() {
+                diff.cursor = index;
+                diff.visual_anchor = None;
             }
             self.diff_focus(Pane::Diff);
+            self.comment_at_cursor();
         }
+    }
+
+    /// Left-drag in the pane grows a visual line selection from the press point.
+    fn diff_drag_to(&mut self, col: u16, row: u16) {
+        if let Some(index) = self.diff_pane_row_at(col, row)
+            && let Some(diff) = self.diff.as_mut()
+        {
+            // the press set the cursor; the first drag anchors the selection
+            // there, then each drag extends the cursor end
+            if diff.visual_anchor.is_none() {
+                diff.visual_anchor = Some(diff.cursor);
+            }
+            diff.cursor = index;
+        }
+    }
+
+    /// Sidebar tree-row index under `(col, row)`, when the pointer is on a row.
+    fn diff_sidebar_row_at(&self, col: u16, row: u16) -> Option<usize> {
+        let diff = self.diff.as_ref()?;
+        let index = super::hit_index(diff.sidebar, diff.sidebar_scroll, col, row)?;
+        (index < diff.tree_rows(diff.model(&self.review)).len()).then_some(index)
+    }
+
+    /// Unified pane row index under `(col, row)`. `None` in split mode, whose
+    /// paired rows don't map 1:1 — mouse line ops stay in the unified view.
+    fn diff_pane_row_at(&self, col: u16, row: u16) -> Option<usize> {
+        let diff = self.diff.as_ref()?;
+        if diff.side_by_side {
+            return None;
+        }
+        let index = super::hit_index(diff.pane, diff.scroll, col, row)?;
+        (index < diff.rows().len()).then_some(index)
     }
 
     /// Move the sidebar tree cursor by `delta` over the visible rows (dirs and
@@ -1287,9 +1325,68 @@ impl App {
                 include_resolved: false,
             },
         );
-        self.pending_osc = Some(clipboard::osc52(&markdown));
+        self.pending_clipboard = Some(markdown);
         let scope = if file_only { "file" } else { "all" };
         self.info(format!("copied {count} {noun} ({scope})"));
+    }
+
+    /// `y` while a visual range is selected: copy those lines as a diff body
+    /// (kept `+`/`-`/context markers, gutter line numbers stripped) to the
+    /// clipboard. Returns false when nothing is selected, so the caller falls
+    /// back to copying the file's comment feedback.
+    fn copy_selection(&mut self) -> bool {
+        let (text, count) = {
+            let Some(diff) = self.diff.as_ref() else {
+                return false;
+            };
+            let Some((start, end)) = diff.selection() else {
+                return false;
+            };
+            let model = diff.model(&self.review);
+            let mut text = String::new();
+            let mut count = 0;
+            for row in diff.rows().get(start..=end).into_iter().flatten() {
+                let DiffRow::Line { file, hunk, line } = row else {
+                    continue;
+                };
+                let Some(diff_line) = model
+                    .files
+                    .get(*file)
+                    .and_then(|f| f.hunks.get(*hunk))
+                    .and_then(|h| h.lines.get(*line))
+                else {
+                    continue;
+                };
+                let marker = match diff_line.kind {
+                    LineKind::Added => '+',
+                    LineKind::Deleted => '-',
+                    LineKind::Context => ' ',
+                };
+                text.push(marker);
+                text.push_str(&diff_line.text);
+                text.push('\n');
+                count += 1;
+            }
+            (text, count)
+        };
+        if count == 0 {
+            return false;
+        }
+        self.pending_clipboard = Some(text);
+        if let Some(diff) = self.diff.as_mut() {
+            diff.visual_anchor = None;
+        }
+        self.info(format!(
+            "copied {count} line{}",
+            if count == 1 { "" } else { "s" }
+        ));
+        true
+    }
+
+    fn copy_file_or_selection(&mut self) {
+        if !self.copy_selection() {
+            self.copy_feedback(true);
+        }
     }
 }
 
@@ -2009,7 +2106,7 @@ mod tests {
     }
 
     #[test]
-    fn y_copies_the_selected_files_feedback_as_osc52_markdown() {
+    fn y_copies_the_selected_files_feedback_as_markdown() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
         select_file(&mut app, "src/lib.rs");
@@ -2034,7 +2131,10 @@ mod tests {
         select_file(&mut app, "src/lib.rs");
         app.diff.as_mut().unwrap().cursor = added_line_position(&app);
         app.handle(key('y'));
-        let payload = app.pending_osc.clone().expect("osc52 payload queued");
+        let payload = app
+            .pending_clipboard
+            .clone()
+            .expect("clipboard text queued");
         let toast = app.message.clone().expect("toast");
         assert_eq!(toast.text, "copied 1 comment (file)");
         let repo = fixture.root.file_name().unwrap().to_string_lossy();
@@ -2049,7 +2149,7 @@ mod tests {
         );
         assert!(expected.contains("why 42?"));
         assert!(!expected.contains("other file"), "file filter applies");
-        assert_eq!(payload, clipboard::osc52(&expected));
+        assert_eq!(payload, expected);
 
         app.handle(key('Y'));
         let message = app.message.clone().expect("toast");
@@ -2057,11 +2157,39 @@ mod tests {
     }
 
     #[test]
+    fn y_with_a_visual_selection_copies_the_diff_lines() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        select_file(&mut app, "src/lib.rs");
+        app.diff.as_mut().unwrap().cursor = added_line_position(&app);
+        app.handle(key('V'));
+        app.handle(key('y'));
+        let text = app
+            .pending_clipboard
+            .clone()
+            .expect("selection copied to the clipboard");
+        assert!(
+            text.starts_with('+'),
+            "added line keeps its marker: {text:?}"
+        );
+        assert!(text.contains("42"), "the line text is copied: {text:?}");
+        assert!(
+            !text.contains("  1 "),
+            "gutter line numbers are stripped: {text:?}"
+        );
+        assert_eq!(
+            app.diff.as_ref().unwrap().visual_anchor,
+            None,
+            "the selection clears after copying"
+        );
+    }
+
+    #[test]
     fn y_with_no_comments_hints_instead_of_copying() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
         app.handle(key('y'));
-        assert_eq!(app.pending_osc, None);
+        assert_eq!(app.pending_clipboard, None);
         let message = app.message.expect("message");
         assert!(message.text.contains("no comments"));
     }

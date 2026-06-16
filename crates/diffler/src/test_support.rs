@@ -163,3 +163,23 @@ pub fn mouse_click(col: u16, row: u16) -> AppEvent {
         modifiers: KeyModifiers::NONE,
     })
 }
+
+pub fn mouse_drag(col: u16, row: u16) -> AppEvent {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    AppEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Drag(MouseButton::Left),
+        column: col,
+        row,
+        modifiers: KeyModifiers::NONE,
+    })
+}
+
+pub fn mouse_right_click(col: u16, row: u16) -> AppEvent {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    AppEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Right),
+        column: col,
+        row,
+        modifiers: KeyModifiers::NONE,
+    })
+}

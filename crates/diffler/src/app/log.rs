@@ -122,28 +122,56 @@ impl App {
         }
     }
 
-    pub(super) fn log_mouse_scroll(&mut self, delta: isize) {
-        let Some(log) = self.log.as_mut() else {
-            return;
-        };
-        let last = log.entries.len().saturating_sub(1);
-        log.cursor = log.cursor.saturating_add_signed(delta).min(last);
+    pub(super) fn log_mouse(&mut self, gesture: super::MouseGesture) {
+        use super::MouseGesture;
+        match gesture {
+            MouseGesture::Scroll { down, .. } => {
+                let delta = if down { 3 } else { -3 };
+                if let Some(log) = self.log.as_mut() {
+                    let last = log.entries.len().saturating_sub(1);
+                    log.cursor = log.cursor.saturating_add_signed(delta).min(last);
+                }
+            }
+            MouseGesture::Press { col, row } => {
+                if let Some(index) = self.log_row_at(col, row)
+                    && let Some(log) = self.log.as_mut()
+                {
+                    log.cursor = index;
+                    log.visual_anchor = None;
+                }
+            }
+            // double-click opens the commit's diff, like `<cr>`
+            MouseGesture::DoublePress { col, row } => {
+                if let Some(index) = self.log_row_at(col, row) {
+                    if let Some(log) = self.log.as_mut() {
+                        log.cursor = index;
+                    }
+                    self.open_log_selection();
+                }
+            }
+            // drag grows the range selection from the press row
+            MouseGesture::Drag { col, row } => {
+                if let Some(index) = self.log_row_at(col, row)
+                    && let Some(log) = self.log.as_mut()
+                {
+                    if log.visual_anchor.is_none() {
+                        log.visual_anchor = Some(log.cursor);
+                    }
+                    log.cursor = index;
+                }
+            }
+            MouseGesture::Cancel => {
+                if let Some(log) = self.log.as_mut() {
+                    log.visual_anchor = None;
+                }
+            }
+        }
     }
 
-    pub(super) fn log_mouse_click(&mut self, col: u16, row: u16) {
-        let Some((body, scroll, len)) = self
-            .log
-            .as_ref()
-            .map(|l| (l.body, l.scroll, l.entries.len()))
-        else {
-            return;
-        };
-        if let Some(index) = super::hit_index(body, scroll, col, row)
-            && index < len
-            && let Some(log) = self.log.as_mut()
-        {
-            log.cursor = index;
-        }
+    fn log_row_at(&self, col: u16, row: u16) -> Option<usize> {
+        let log = self.log.as_ref()?;
+        let index = super::hit_index(log.body, log.scroll, col, row)?;
+        (index < log.entries.len()).then_some(index)
     }
 
     fn log_page(&self, full: bool) -> usize {
