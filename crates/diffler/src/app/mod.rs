@@ -890,12 +890,7 @@ impl App {
                 log.entries
                     .iter()
                     .enumerate()
-                    .map(|(i, e)| {
-                        (
-                            i,
-                            format!("{} {} {} {}", e.oid7, e.subject, e.author, e.refs.join(" ")),
-                        )
-                    })
+                    .map(|(i, e)| (i, e.subject.clone()))
                     .collect()
             }),
             Screen::Diff => self.diff_search_rows(),

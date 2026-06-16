@@ -18,6 +18,60 @@ use crate::keymap::{Action, render_chord};
 use crate::theme::Theme;
 use crate::transient::TransientKind;
 
+/// Split `text` into spans, painting `/`-search match byte ranges with the
+/// search background (the active match stronger). Shared by every searchable
+/// pane so highlight looks the same everywhere; `ranges` are byte offsets into
+/// `text`, paired with whether each is the active match.
+pub(super) fn highlight_spans(
+    text: &str,
+    base: Style,
+    ranges: &[(std::ops::Range<usize>, bool)],
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    if ranges.is_empty() {
+        return vec![Span::styled(text.to_owned(), base)];
+    }
+    let snap = |i: usize| {
+        let mut i = i.min(text.len());
+        while !text.is_char_boundary(i) {
+            i -= 1;
+        }
+        i
+    };
+    let mut bounds = vec![0, text.len()];
+    for (range, _) in ranges {
+        bounds.push(snap(range.start));
+        bounds.push(snap(range.end));
+    }
+    bounds.sort_unstable();
+    bounds.dedup();
+    let bg_at = |at: usize| {
+        ranges
+            .iter()
+            .find(|(range, _)| snap(range.start) <= at && at < snap(range.end))
+            .map(|(_, current)| {
+                if *current {
+                    theme.search_current
+                } else {
+                    theme.search
+                }
+            })
+    };
+    let mut spans = Vec::new();
+    for pair in bounds.windows(2) {
+        let &[start, end] = pair else { continue };
+        let Some(segment) = text.get(start..end) else {
+            continue;
+        };
+        if segment.is_empty() {
+            continue;
+        }
+        let style = bg_at(start).map_or(base, |bg| base.bg(bg));
+        spans.push(Span::styled(segment.to_owned(), style));
+    }
+    spans
+}
+
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     match app.screen() {
         Screen::Status => {
