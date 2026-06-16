@@ -8,7 +8,7 @@ use std::ops::Range;
 
 use syndiff::{SyntaxDiffOptions, build_tree, diff_trees};
 
-use crate::model::FileDiff;
+use crate::model::{FileDiff, LineKind};
 use crate::syntax::registry::LanguageRegistry;
 use crate::syntax::{MAX_PARSE_BYTES, line_bounds, parse, split_range_by_line};
 
@@ -67,19 +67,17 @@ impl LanguageRegistry {
                     (None, Some(o)) => old_emph.get(o as usize - 1),
                     _ => None,
                 };
-                line.emphasis = ranges
-                    .map(|r| clamp(r, line.text.len()))
-                    .unwrap_or_default();
+                let (moved, emphasis) =
+                    classify_line(line.kind, &line.text, ranges.map_or(&[], Vec::as_slice));
+                line.moved = moved;
+                line.emphasis = emphasis;
             }
         }
         true
     }
 }
 
-/// Map whole-file changed byte ranges to per-line, within-line ranges. Lines
-/// whose entire content changed are cleared: a fully added/removed/rewritten
-/// line has nothing to distinguish, so the +/- background already says it all
-/// and char emphasis there is just noise.
+/// Map whole-file changed byte ranges to the raw per-line, within-line ranges.
 fn per_line_emphasis(src: &str, ranges: &[Range<usize>]) -> LineEmphasis {
     let bounds = line_bounds(src);
     let starts: Vec<usize> = bounds.iter().map(|&(s, _)| s).collect();
@@ -91,12 +89,23 @@ fn per_line_emphasis(src: &str, ranges: &[Range<usize>]) -> LineEmphasis {
             }
         });
     }
-    for (line_ranges, &(s, e)) in out.iter_mut().zip(&bounds) {
-        if whole_line_changed(src.get(s..e).unwrap_or(""), line_ranges) {
-            line_ranges.clear();
-        }
-    }
     out
+}
+
+/// Classify an added/deleted `line` from its raw changed byte `ranges`:
+/// - no change → a reindent/move: `(moved = true, no emphasis)`, a thin rail;
+/// - the whole content changed → `(false, no emphasis)`, a full +/- background;
+/// - some tokens changed → `(false, those ranges)`, background plus emphasis.
+fn classify_line(kind: LineKind, text: &str, ranges: &[Range<usize>]) -> (bool, Vec<Range<usize>>) {
+    let ranges = clamp(ranges, text.len());
+    let changed = matches!(kind, LineKind::Added | LineKind::Deleted);
+    if ranges.is_empty() {
+        return (changed, Vec::new());
+    }
+    if whole_line_changed(text, &ranges) {
+        return (false, Vec::new());
+    }
+    (false, ranges)
 }
 
 /// True when every non-whitespace byte of the line is emphasized (gaps fall
@@ -183,22 +192,47 @@ mod tests {
     }
 
     #[test]
-    fn a_fully_added_line_is_not_char_emphasized() {
+    fn unsupported_language_returns_none() {
         let reg = LanguageRegistry::build();
-        let old = "fn f() {\n}\n";
-        let new = "fn f() {\n    let entirely_new = compute_something();\n}\n";
-        let (_, new_e) = reg.line_emphasis("a.rs", old, new).expect("rust parses");
-        let added = line_with(new, "entirely_new");
+        assert!(reg.line_emphasis("a.zzz", "a\n", "b\n").is_none());
+    }
+
+    #[test]
+    fn classify_reindented_line_is_a_move() {
+        // an added/deleted line with no changed bytes only moved/reindented
+        let (moved, emph) = classify_line(LineKind::Added, "    <Form>", &[]);
+        assert!(moved, "reindent/move is flagged");
+        assert!(emph.is_empty());
+    }
+
+    #[test]
+    fn classify_whole_line_change_keeps_background_without_emphasis() {
+        // every non-whitespace byte changed -> full +/- bg, no char emphasis
+        let text = "    let entirely_new = compute();";
+        let ranges = [4..7, 8..20, 21..22, 23..text.len()];
+        let (moved, emph) = classify_line(LineKind::Added, text, &ranges);
+        assert!(!moved, "a wholly-changed line is a real change, not a move");
         assert!(
-            new_e[added].is_empty(),
-            "a wholly-new line has nothing to distinguish, got {:?}",
-            new_e[added]
+            emph.is_empty(),
+            "no char emphasis when the whole line changed"
         );
     }
 
     #[test]
-    fn unsupported_language_returns_none() {
-        let reg = LanguageRegistry::build();
-        assert!(reg.line_emphasis("a.zzz", "a\n", "b\n").is_none());
+    fn classify_partial_change_keeps_emphasis() {
+        // only `2` changed in `    let x = 2;`
+        let text = "    let x = 2;";
+        let changed = 12..13;
+        let (moved, emph) = classify_line(LineKind::Added, text, std::slice::from_ref(&changed));
+        assert!(!moved);
+        assert_eq!(emph.len(), 1);
+        assert_eq!(emph[0], changed);
+    }
+
+    #[test]
+    fn classify_context_line_is_never_moved() {
+        let (moved, emph) = classify_line(LineKind::Context, "    unchanged", &[]);
+        assert!(!moved);
+        assert!(emph.is_empty());
     }
 }
