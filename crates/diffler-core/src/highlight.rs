@@ -1,17 +1,17 @@
-//! Whole-file syntax highlighting sliced into per-line styled ranges.
-//! Highlighting whole files (not hunks) keeps stateful constructs like
-//! multi-line strings correct across hunk boundaries.
+//! Whole-file syntax highlighting via tree-sitter, sliced into per-line styled
+//! ranges. Highlighting whole files (not hunks) keeps multi-line constructs
+//! like strings correct across hunk boundaries. Unknown languages and parse
+//! failures degrade to plain (empty) ranges so rendering never breaks.
 
 use std::ops::Range;
 
-use syntect::easy::HighlightLines;
-use syntect::highlighting::Theme;
-use syntect::parsing::SyntaxSet;
-use two_face::theme::{EmbeddedLazyThemeSet, EmbeddedThemeName};
+use tree_sitter_highlight::{HighlightEvent, Highlighter as TsHighlighter};
+
+use crate::syntax::{HIGHLIGHT_NAMES, LanguageRegistry};
 
 pub struct Highlighter {
-    syntaxes: SyntaxSet,
-    theme: Theme,
+    registry: LanguageRegistry,
+    theme: SyntaxTheme,
 }
 
 /// Syntax-highlight palette, paired with a UI theme so foreground colors stay
@@ -23,16 +23,6 @@ pub enum SyntaxTheme {
     OneHalfDark,
     OneHalfLight,
     Dracula,
-}
-
-impl SyntaxTheme {
-    fn embedded(self) -> EmbeddedThemeName {
-        match self {
-            Self::OneHalfDark => EmbeddedThemeName::OneHalfDark,
-            Self::OneHalfLight => EmbeddedThemeName::OneHalfLight,
-            Self::Dracula => EmbeddedThemeName::Dracula,
-        }
-    }
 }
 
 /// Foreground color + style for a byte range of one line.
@@ -53,53 +43,181 @@ impl Default for Highlighter {
 impl Highlighter {
     /// Build a highlighter whose foregrounds come from `syntax`.
     pub fn new(syntax: SyntaxTheme) -> Self {
-        let syntaxes = two_face::syntax::extra_newlines();
-        let themes: EmbeddedLazyThemeSet = two_face::theme::extra();
-        let theme = themes.get(syntax.embedded()).clone();
-        Self { syntaxes, theme }
+        Self {
+            registry: LanguageRegistry::build(),
+            theme: syntax,
+        }
     }
 
     /// Highlight `content` as the language guessed from `path`'s extension.
     /// Returns one `Vec<StyledRange>` per line (without trailing newlines).
     /// Unknown languages produce empty ranges per line (plain rendering).
     pub fn highlight(&self, path: &str, content: &str) -> Vec<Vec<StyledRange>> {
-        let extension = std::path::Path::new(path)
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
-        let Some(syntax) = self.syntaxes.find_syntax_by_extension(extension) else {
-            return content.lines().map(|_| Vec::new()).collect();
+        let bounds = line_bounds(content);
+        let mut out: Vec<Vec<StyledRange>> = vec![Vec::new(); bounds.len()];
+
+        let Some(entry) = self.registry.for_path(path) else {
+            return out;
         };
-        let mut machine = HighlightLines::new(syntax, &self.theme);
-        let mut out = Vec::new();
-        for line in syntect::util::LinesWithEndings::from(content) {
-            let spans = machine
-                .highlight_line(line, &self.syntaxes)
-                .unwrap_or_default();
-            let mut ranges = Vec::new();
-            let mut pos = 0usize;
-            let visible_len = line.trim_end_matches(['\n', '\r']).len();
-            for (style, text) in spans {
-                let start = pos;
-                pos += text.len();
-                let end = pos.min(visible_len);
-                if start >= end {
-                    continue;
+        let Some(config) = entry.config.as_ref() else {
+            return out;
+        };
+
+        let mut ts = TsHighlighter::new();
+        let Ok(events) = ts.highlight(config, content.as_bytes(), None, |_| None) else {
+            return out;
+        };
+
+        let starts: Vec<usize> = bounds.iter().map(|&(s, _)| s).collect();
+        let mut stack: Vec<usize> = Vec::new();
+        for event in events {
+            let Ok(event) = event else {
+                return out;
+            };
+            match event {
+                HighlightEvent::HighlightStart(h) => stack.push(h.0),
+                HighlightEvent::HighlightEnd => {
+                    stack.pop();
                 }
-                ranges.push(StyledRange {
-                    range: start..end,
-                    fg: (style.foreground.r, style.foreground.g, style.foreground.b),
-                    bold: style
-                        .font_style
-                        .contains(syntect::highlighting::FontStyle::BOLD),
-                    italic: style
-                        .font_style
-                        .contains(syntect::highlighting::FontStyle::ITALIC),
-                });
+                HighlightEvent::Source { start, end } => {
+                    let Some(&name_idx) = stack.last() else {
+                        continue;
+                    };
+                    let Some(name) = HIGHLIGHT_NAMES.get(name_idx) else {
+                        continue;
+                    };
+                    let Some(style) = self.theme.style(name) else {
+                        continue;
+                    };
+                    emit(start, end, &style, &bounds, &starts, &mut out);
+                }
             }
-            out.push(ranges);
         }
         out
+    }
+}
+
+struct StyleSpec {
+    fg: (u8, u8, u8),
+    bold: bool,
+    italic: bool,
+}
+
+/// Push styled byte ranges for the source span `[start, end)` onto every line it
+/// covers, clamped to each line's visible (newline-excluded) region.
+fn emit(
+    start: usize,
+    end: usize,
+    style: &StyleSpec,
+    bounds: &[(usize, usize)],
+    starts: &[usize],
+    out: &mut [Vec<StyledRange>],
+) {
+    let mut li = match starts.binary_search(&start) {
+        Ok(i) => i,
+        Err(i) => i.saturating_sub(1),
+    };
+    while let Some(&(ls, le)) = bounds.get(li) {
+        if ls >= end {
+            break;
+        }
+        let s = start.max(ls);
+        let e = end.min(le);
+        if s < e
+            && let Some(line) = out.get_mut(li)
+        {
+            line.push(StyledRange {
+                range: (s - ls)..(e - ls),
+                fg: style.fg,
+                bold: style.bold,
+                italic: style.italic,
+            });
+        }
+        li += 1;
+    }
+}
+
+/// `(start_byte, visible_end_byte)` per line, matching `str::lines()`: the
+/// visible end excludes the trailing `\n`/`\r\n`.
+fn line_bounds(content: &str) -> Vec<(usize, usize)> {
+    let bytes = content.as_bytes();
+    let mut out = Vec::new();
+    let mut start = 0;
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'\n' {
+            let end = if i > start && bytes.get(i - 1) == Some(&b'\r') {
+                i - 1
+            } else {
+                i
+            };
+            out.push((start, end));
+            start = i + 1;
+        }
+    }
+    if start < bytes.len() {
+        let end = if bytes.last() == Some(&b'\r') {
+            bytes.len() - 1
+        } else {
+            bytes.len()
+        };
+        out.push((start, end));
+    }
+    out
+}
+
+impl SyntaxTheme {
+    /// Style for a tree-sitter capture name, matched by its leading category
+    /// (`function.method` -> `function`). `None` leaves the span at default fg.
+    fn style(self, name: &str) -> Option<StyleSpec> {
+        let category = name.split('.').next().unwrap_or(name);
+        let italic = category == "comment";
+        let fg = self.color(category)?;
+        Some(StyleSpec {
+            fg,
+            bold: false,
+            italic,
+        })
+    }
+
+    fn color(self, category: &str) -> Option<(u8, u8, u8)> {
+        let c = match self {
+            SyntaxTheme::OneHalfDark => match category {
+                "keyword" | "label" => (198, 120, 221),
+                "function" => (97, 175, 239),
+                "type" | "constructor" => (229, 192, 123),
+                "string" => (152, 195, 121),
+                "comment" => (92, 99, 112),
+                "constant" | "number" | "attribute" => (209, 154, 102),
+                "operator" | "escape" => (86, 182, 194),
+                "property" | "tag" => (224, 108, 117),
+                "variable" | "punctuation" => (171, 178, 191),
+                _ => return None,
+            },
+            SyntaxTheme::OneHalfLight => match category {
+                "keyword" | "label" => (166, 38, 164),
+                "function" => (64, 120, 242),
+                "type" | "constructor" => (193, 132, 1),
+                "string" => (80, 161, 79),
+                "comment" => (160, 161, 167),
+                "constant" | "number" | "attribute" => (152, 104, 1),
+                "operator" | "escape" => (1, 132, 188),
+                "property" | "tag" => (228, 86, 73),
+                "variable" | "punctuation" => (56, 58, 66),
+                _ => return None,
+            },
+            SyntaxTheme::Dracula => match category {
+                "keyword" | "label" | "tag" | "operator" => (255, 121, 198),
+                "function" | "property" => (80, 250, 123),
+                "type" | "constructor" => (139, 233, 253),
+                "string" => (241, 250, 140),
+                "comment" => (98, 114, 164),
+                "constant" | "number" => (189, 147, 249),
+                "escape" | "attribute" => (255, 184, 108),
+                "variable" | "punctuation" => (248, 248, 242),
+                _ => return None,
+            },
+        };
+        Some(c)
     }
 }
 
@@ -112,7 +230,6 @@ mod tests {
         let hl = Highlighter::default();
         let lines = hl.highlight("a.py", "def f():\n    return 1\n");
         assert_eq!(lines.len(), 2);
-        // line styled with more than one color: keyword vs identifier
         let colors: std::collections::HashSet<(u8, u8, u8)> =
             lines[0].iter().map(|r| r.fg).collect();
         assert!(colors.len() > 1, "expected multiple colors, got {colors:?}");
@@ -135,8 +252,6 @@ mod tests {
         let hl = Highlighter::default();
         let src = "s = \"\"\"first\nsecond\nthird\"\"\"\nx = 1\n";
         let lines = hl.highlight("a.py", src);
-        // the middle line is entirely inside the string: single styled run,
-        // same color as the string-opening run on line 0
         let string_color = lines[0].iter().last().map(|r| r.fg).expect("line 0 styled");
         assert!(
             lines[1].iter().all(|r| r.fg == string_color),
