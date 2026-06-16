@@ -20,6 +20,7 @@ use crate::app::{
     build_split_rows, comment_display,
 };
 use crate::keymap::Action;
+use crate::search::Search;
 use crate::theme::Theme;
 use crate::tree::TreeNode;
 use crate::ui::Hint;
@@ -66,13 +67,14 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     // cache) while theme and review stay read-only
     let theme = &app.theme;
     let review = &app.review;
+    let search = app.search.as_ref();
     if let Some(diff) = app.diff.as_mut() {
         diff.ensure_rows(review);
         // a commit view renders from its pinned model; only fall back to the
         // (lazily computed) working-tree model for the working-tree view
         let review_model = (diff.commit_model.is_none()).then(|| review.model());
         let session = review.session_for(&diff.source);
-        draw_body(frame, body, theme, session, review_model, diff);
+        draw_body(frame, body, theme, session, review_model, diff, search);
     }
 
     frame.render_widget(
@@ -104,12 +106,13 @@ fn draw_body(
     session: &Session,
     review_model: Option<&DiffModel>,
     diff: &mut DiffView,
+    search: Option<&Search>,
 ) {
     let width = sidebar_width(area.width);
     let [list_area, pane_area] =
         Layout::horizontal([Constraint::Length(width), Constraint::Min(0)]).areas(area);
-    draw_sidebar(frame, list_area, theme, session, review_model, diff);
-    draw_pane(frame, pane_area, theme, session, review_model, diff);
+    draw_sidebar(frame, list_area, theme, session, review_model, diff, search);
+    draw_pane(frame, pane_area, theme, session, review_model, diff, search);
 }
 
 /// Left pane: one row per file in the diff, the selected one highlighted, the
@@ -121,6 +124,7 @@ fn draw_sidebar(
     session: &Session,
     review_model: Option<&DiffModel>,
     diff: &mut DiffView,
+    search: Option<&Search>,
 ) {
     let focused = diff.focus == Pane::List;
     let block = pane_block(theme, "Files", focused);
@@ -136,7 +140,7 @@ fn draw_sidebar(
         .enumerate()
         .map(|(row_index, row)| {
             let on_cursor = row_index == diff.tree_cursor;
-            match &row.node {
+            let line = match &row.node {
                 TreeNode::Dir { name, path } => sidebar_dir_line(
                     theme,
                     name,
@@ -162,6 +166,12 @@ fn draw_sidebar(
                         on_cursor,
                     )
                 }
+            };
+            match search.filter(|_| focused).map(|s| s.ranges_for(row_index)) {
+                Some(ranges) if !ranges.is_empty() => {
+                    super::tint_search_row(line, ranges.iter().any(|(_, current)| *current), theme)
+                }
+                _ => line,
             }
         })
         .collect();
@@ -183,6 +193,7 @@ fn draw_pane(
     session: &Session,
     review_model: Option<&DiffModel>,
     diff: &mut DiffView,
+    search: Option<&Search>,
 ) {
     let focused = diff.focus == Pane::Diff;
     let title = pane_title(&diff.source);
@@ -313,6 +324,7 @@ fn draw_pane(
         .skip(scroll)
         .take(height)
         .map(|(index, row)| {
+            let ranges = search.map(|s| s.ranges_for(index)).unwrap_or_default();
             row_line(
                 theme,
                 session,
@@ -321,6 +333,7 @@ fn draw_pane(
                 row,
                 rows_area.width,
                 selected(index),
+                &ranges,
             )
         })
         .collect();
@@ -575,6 +588,8 @@ fn clip_path(name: &str, room: usize) -> String {
     format!("…{tail}")
 }
 
+// mirrors render_diff_line's orthogonal styling inputs plus the search ranges
+#[allow(clippy::too_many_arguments)]
 fn row_line(
     theme: &Theme,
     session: &Session,
@@ -583,6 +598,7 @@ fn row_line(
     row: &DiffRow,
     width: u16,
     selected: bool,
+    search: &[(std::ops::Range<usize>, bool)],
 ) -> Line<'static> {
     let highlights = &diff.highlights;
     match row {
@@ -611,6 +627,7 @@ fn row_line(
                 width,
                 selected,
                 annotated,
+                search,
             )
         }
         DiffRow::Comment {

@@ -42,7 +42,7 @@ impl App {
                     viewport: 0,
                     body: ratatui::layout::Rect::default(),
                 });
-                self.screens.push(super::Screen::Log);
+                self.push_screen(super::Screen::Log);
             }
             Err(err) => self.error(err.to_string()),
         }

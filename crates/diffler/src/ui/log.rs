@@ -32,6 +32,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     frame.render_widget(Paragraph::new(hint_line(app, HINTS)), hint);
 
     let now = app.now_unix;
+    let search = app.search.as_ref();
     if let Some(log) = app.log.as_mut() {
         log.viewport = body.height;
         log.body = body;
@@ -52,7 +53,8 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             .skip(log.scroll)
             .take(height)
             .map(|(index, entry)| {
-                let line = entry_line(&app.theme, entry, now, body.width);
+                let ranges = search.map(|s| s.ranges_for(index)).unwrap_or_default();
+                let line = entry_line(&app.theme, entry, now, body.width, &ranges);
                 // the cursor and every row in the visual range share the
                 // cursor-line tint, mirroring the diff view's selection
                 if index == log.cursor || selected(index) {
@@ -71,7 +73,13 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     );
 }
 
-fn entry_line(theme: &Theme, entry: &LogEntry, now: i64, width: u16) -> Line<'static> {
+fn entry_line(
+    theme: &Theme,
+    entry: &LogEntry,
+    now: i64,
+    width: u16,
+    search: &[(std::ops::Range<usize>, bool)],
+) -> Line<'static> {
     let mut spans = vec![Span::styled(format!(" {} ", entry.oid7), theme.dim_style())];
     if !entry.refs.is_empty() {
         spans.push(Span::styled(
@@ -79,7 +87,12 @@ fn entry_line(theme: &Theme, entry: &LogEntry, now: i64, width: u16) -> Line<'st
             Style::new().fg(theme.accent).bg(theme.bg),
         ));
     }
-    spans.push(Span::styled(entry.subject.clone(), theme.base()));
+    spans.extend(super::highlight_spans(
+        &entry.subject,
+        theme.base(),
+        search,
+        theme,
+    ));
     let used: usize = spans.iter().map(Span::width).sum();
     spans.extend(commit_meta_spans(
         theme,
