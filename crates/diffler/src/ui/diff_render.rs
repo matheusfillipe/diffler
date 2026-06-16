@@ -3,6 +3,8 @@
 //! intra-line emphasis ranges, and optional syntax foregrounds composited
 //! per cell (syntax = fg, diff kind = bg, emphasis = stronger bg).
 
+use std::ops::Range;
+
 use diffler_core::highlight::StyledRange;
 use diffler_core::model::{DiffLine, FileDiff, Hunk, LineKind};
 use ratatui::style::{Color, Modifier, Style};
@@ -41,6 +43,7 @@ pub fn render_hunk_lines(
             width,
             selected == Some(index + 1),
             false,
+            &[],
         )
     }));
     lines
@@ -109,6 +112,7 @@ pub fn hunk_header(theme: &Theme, hunk: &Hunk, width: u16, selected: bool) -> Li
 
 /// Render one diff line: gutter numbers, then the text composited from the
 /// optional per-line syntax spans (fg) and the line's emphasis ranges (bg).
+#[allow(clippy::too_many_arguments)]
 pub fn render_diff_line(
     theme: &Theme,
     line: &DiffLine,
@@ -117,6 +121,7 @@ pub fn render_diff_line(
     width: u16,
     selected: bool,
     annotated: bool,
+    search: &[(Range<usize>, bool)],
 ) -> Line<'static> {
     let (base_bg, emph_bg) = line_backgrounds(theme, line, selected, annotated);
 
@@ -134,7 +139,9 @@ pub fn render_diff_line(
             Style::new().fg(theme.dim).bg(base_bg),
         ),
     ];
-    spans.extend(composite_spans(theme, line, syntax, base_bg, emph_bg));
+    spans.extend(composite_spans(
+        theme, line, syntax, base_bg, emph_bg, search,
+    ));
 
     let used: usize = spans.iter().map(Span::width).sum();
     let pad = (width as usize).saturating_sub(used);
@@ -258,7 +265,7 @@ fn side_spans(
         ),
         Span::styled(format!("{number} "), Style::new().fg(theme.dim).bg(base_bg)),
     ];
-    spans.extend(composite_spans(theme, line, syntax, base_bg, emph_bg));
+    spans.extend(composite_spans(theme, line, syntax, base_bg, emph_bg, &[]));
     clip_pad(spans, col_width, base_bg)
 }
 
@@ -309,6 +316,7 @@ fn composite_spans(
     syntax: Option<&[StyledRange]>,
     base_bg: Color,
     emph_bg: Color,
+    search: &[(Range<usize>, bool)],
 ) -> Vec<Span<'static>> {
     let text = line.text.as_str();
     let snap = |index: usize| snap_to_boundary(text, index.min(text.len()));
@@ -322,9 +330,20 @@ fn composite_spans(
         bounds.push(snap(styled.range.start));
         bounds.push(snap(styled.range.end));
     }
+    for (range, _) in search {
+        bounds.push(snap(range.start));
+        bounds.push(snap(range.end));
+    }
     bounds.sort_unstable();
     bounds.dedup();
 
+    // a search match outranks emphasis on the chars it covers
+    let search_at = |at: usize| {
+        search
+            .iter()
+            .find(|(range, _)| snap(range.start) <= at && at < snap(range.end))
+            .map(|(_, current)| *current)
+    };
     let emphasized = |at: usize| {
         line.emphasis
             .iter()
@@ -345,7 +364,12 @@ fn composite_spans(
         if segment.is_empty() {
             continue;
         }
-        let bg = if emphasized(start) { emph_bg } else { base_bg };
+        let bg = match search_at(start) {
+            Some(true) => theme.search_current,
+            Some(false) => theme.search,
+            None if emphasized(start) => emph_bg,
+            None => base_bg,
+        };
         let mut style = Style::new().fg(theme.fg).bg(bg);
         if let Some(styled) = syntax_at(start) {
             let (r, g, b) = styled.fg;
@@ -522,7 +546,7 @@ mod tests {
                 italic: false,
             },
         ];
-        let rendered = render_diff_line(&theme, &added, Some(&syntax), 4, 60, false, false);
+        let rendered = render_diff_line(&theme, &added, Some(&syntax), 4, 60, false, false, &[]);
         let keyword: Vec<_> = rendered
             .spans
             .iter()
@@ -547,7 +571,7 @@ mod tests {
         let theme = Theme::github_dark();
         let mut moved = line(LineKind::Added, None, Some(2), "    <Form>");
         moved.moved = true;
-        let rendered = render_diff_line(&theme, &moved, None, 3, 60, false, false);
+        let rendered = render_diff_line(&theme, &moved, None, 3, 60, false, false, &[]);
         let text: String = rendered.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(
             text.starts_with('▌'),
