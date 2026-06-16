@@ -14,4 +14,5 @@ pub mod review;
 pub mod session;
 pub mod source;
 pub mod store;
+pub mod syntax;
 pub mod vcs;

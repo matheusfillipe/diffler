@@ -40,6 +40,7 @@ pub fn render_hunk_lines(
             gutter,
             width,
             selected == Some(index + 1),
+            false,
         )
     }));
     lines
@@ -115,27 +116,24 @@ pub fn render_diff_line(
     gutter: usize,
     width: u16,
     selected: bool,
+    annotated: bool,
 ) -> Line<'static> {
-    let line_bg = match line.kind {
-        LineKind::Added => theme.add_line_bg,
-        LineKind::Deleted => theme.del_line_bg,
-        LineKind::Context => theme.bg,
-    };
-    let emph_bg = match line.kind {
-        LineKind::Added => theme.add_emph_bg,
-        LineKind::Deleted => theme.del_emph_bg,
-        LineKind::Context => theme.bg,
-    };
-    let base_bg = if selected { theme.cursor_line } else { line_bg };
+    let (base_bg, emph_bg) = line_backgrounds(theme, line, selected, annotated);
 
     let number = |n: Option<u32>| match n {
         Some(n) => format!("{n:>gutter$}"),
         None => " ".repeat(gutter),
     };
-    let mut spans = vec![Span::styled(
-        format!(" {} {} ", number(line.old_no), number(line.new_no)),
-        Style::new().fg(theme.dim).bg(base_bg),
-    )];
+    let mut spans = vec![
+        Span::styled(
+            rail(line),
+            Style::new().fg(rail_color(theme, line)).bg(base_bg),
+        ),
+        Span::styled(
+            format!("{} {} ", number(line.old_no), number(line.new_no)),
+            Style::new().fg(theme.dim).bg(base_bg),
+        ),
+    ];
     spans.extend(composite_spans(theme, line, syntax, base_bg, emph_bg));
 
     let used: usize = spans.iter().map(Span::width).sum();
@@ -144,6 +142,44 @@ pub fn render_diff_line(
         spans.push(Span::styled(" ".repeat(pad), Style::new().bg(base_bg)));
     }
     Line::from(spans)
+}
+
+/// The line (base) and emphasis backgrounds, given selection/annotation state.
+/// A moved/reindented line drops its full +/- background for a thin rail.
+fn line_backgrounds(
+    theme: &Theme,
+    line: &DiffLine,
+    selected: bool,
+    annotated: bool,
+) -> (Color, Color) {
+    let (line_bg, emph_bg) = match line.kind {
+        LineKind::Added => (theme.add_line_bg, theme.add_emph_bg),
+        LineKind::Deleted => (theme.del_line_bg, theme.del_emph_bg),
+        LineKind::Context => (theme.bg, theme.bg),
+    };
+    let line_bg = if line.moved { theme.bg } else { line_bg };
+    let base_bg = if selected {
+        theme.cursor_line
+    } else if annotated {
+        theme.annotated
+    } else {
+        line_bg
+    };
+    (base_bg, emph_bg)
+}
+
+/// The gutter's leading cell: a thin colored bar for a moved/reindented line,
+/// otherwise a blank that keeps every other line's alignment unchanged.
+fn rail(line: &DiffLine) -> &'static str {
+    if line.moved { "▌" } else { " " }
+}
+
+fn rail_color(theme: &Theme, line: &DiffLine) -> Color {
+    match line.kind {
+        LineKind::Added => theme.added,
+        LineKind::Deleted => theme.error_fg,
+        LineKind::Context => theme.dim,
+    }
 }
 
 /// Which column of a side-by-side row a line belongs to: the old side renders
@@ -157,7 +193,7 @@ pub enum SplitSide {
 /// One side of a side-by-side row: the line and its per-line syntax, or `None`
 /// for a column with no counterpart (a lone deletion's right, a lone
 /// addition's left).
-pub type SplitCell<'a> = Option<(&'a DiffLine, Option<&'a [StyledRange]>)>;
+pub type SplitCell<'a> = Option<(&'a DiffLine, Option<&'a [StyledRange]>, bool)>;
 
 /// Render one side-by-side row: the old line in the left column, the new line
 /// in the right, divided by a separator. Each column shows a single gutter
@@ -198,7 +234,7 @@ fn side_spans(
     col_width: usize,
     selected: bool,
 ) -> Vec<Span<'static>> {
-    let Some((line, syntax)) = cell else {
+    let Some((line, syntax, annotated)) = cell else {
         let bg = if selected {
             theme.cursor_line
         } else {
@@ -206,12 +242,7 @@ fn side_spans(
         };
         return vec![Span::styled(" ".repeat(col_width), Style::new().bg(bg))];
     };
-    let (line_bg, emph_bg) = match line.kind {
-        LineKind::Added => (theme.add_line_bg, theme.add_emph_bg),
-        LineKind::Deleted => (theme.del_line_bg, theme.del_emph_bg),
-        LineKind::Context => (theme.bg, theme.bg),
-    };
-    let base_bg = if selected { theme.cursor_line } else { line_bg };
+    let (base_bg, emph_bg) = line_backgrounds(theme, line, selected, annotated);
     let number = match side {
         SplitSide::Left => line.old_no,
         SplitSide::Right => line.new_no,
@@ -220,10 +251,13 @@ fn side_spans(
         Some(n) => format!("{n:>gutter$}"),
         None => " ".repeat(gutter),
     };
-    let mut spans = vec![Span::styled(
-        format!(" {number} "),
-        Style::new().fg(theme.dim).bg(base_bg),
-    )];
+    let mut spans = vec![
+        Span::styled(
+            rail(line),
+            Style::new().fg(rail_color(theme, line)).bg(base_bg),
+        ),
+        Span::styled(format!("{number} "), Style::new().fg(theme.dim).bg(base_bg)),
+    ];
     spans.extend(composite_spans(theme, line, syntax, base_bg, emph_bg));
     clip_pad(spans, col_width, base_bg)
 }
@@ -488,7 +522,7 @@ mod tests {
                 italic: false,
             },
         ];
-        let rendered = render_diff_line(&theme, &added, Some(&syntax), 4, 60, false);
+        let rendered = render_diff_line(&theme, &added, Some(&syntax), 4, 60, false, false);
         let keyword: Vec<_> = rendered
             .spans
             .iter()
@@ -506,6 +540,26 @@ mod tests {
         assert_eq!(emphasized.len(), 1);
         assert_eq!(emphasized[0].content.as_ref(), "42");
         assert_eq!(emphasized[0].style.fg, Some(Color::Rgb(0, 255, 0)));
+    }
+
+    #[test]
+    fn moved_line_shows_a_rail_instead_of_a_full_background() {
+        let theme = Theme::github_dark();
+        let mut moved = line(LineKind::Added, None, Some(2), "    <Form>");
+        moved.moved = true;
+        let rendered = render_diff_line(&theme, &moved, None, 3, 60, false, false);
+        let text: String = rendered.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            text.starts_with('▌'),
+            "a moved line leads with a rail: {text:?}"
+        );
+        assert!(
+            rendered
+                .spans
+                .iter()
+                .all(|s| s.style.bg != Some(theme.add_line_bg)),
+            "a moved line drops the full added background"
+        );
     }
 
     #[test]

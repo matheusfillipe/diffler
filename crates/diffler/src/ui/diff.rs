@@ -16,7 +16,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use crate::app::{
-    App, CommentLine, DiffRow, DiffSource, DiffView, FileHighlights, Pane, SplitRow,
+    App, CommentLine, DiffRow, DiffSource, DiffView, FileHighlights, FileScope, Pane, SplitRow,
     build_split_rows, comment_display,
 };
 use crate::keymap::Action;
@@ -93,7 +93,7 @@ pub(crate) fn init_highlighter(syntax: SyntaxTheme) {
     let _ = HIGHLIGHTER.set(Highlighter::new(syntax));
 }
 
-fn highlighter() -> &'static Highlighter {
+pub(crate) fn highlighter() -> &'static Highlighter {
     HIGHLIGHTER.get_or_init(Highlighter::default)
 }
 
@@ -212,7 +212,7 @@ fn draw_pane(
     };
 
     // header is fixed; the rows scroll beneath it
-    let [header_area, rows_area] =
+    let [header_area, body_area] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
     let viewed = session.is_viewed(&file.path, &file.content_hash());
     let open = open_comment_count(session, &file.path);
@@ -232,10 +232,24 @@ fn draw_pane(
         header_area,
     );
 
+    ensure_file_highlights(&mut diff.highlights, file);
+    ensure_file_scope(&mut diff.scopes, file);
+    // the breadcrumb row is reserved only for files that have definitions, so
+    // plain files keep their full height
+    let has_scope = diff
+        .scopes
+        .get(&file.path)
+        .is_some_and(|s| !s.index.is_empty());
+    let (crumb_area, rows_area) = if has_scope {
+        let [crumb, rows] =
+            Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(body_area);
+        (Some(crumb), rows)
+    } else {
+        (None, body_area)
+    };
+
     diff.viewport = rows_area.height;
     diff.pane = rows_area;
-    // syntax is filled lazily, only for files that actually scroll into view
-    ensure_file_highlights(&mut diff.highlights, file);
 
     if diff.side_by_side {
         let split = build_split_rows(model, session, diff.selected);
@@ -269,6 +283,11 @@ fn draw_pane(
                 )
             })
             .collect();
+        let top = split
+            .iter()
+            .skip(scroll)
+            .find_map(|r| split_right_new_no(file, r));
+        render_scope_crumb(frame, crumb_area, theme, diff.scopes.get(&file.path), top);
         frame.render_widget(Paragraph::new(lines), rows_area);
         return;
     }
@@ -306,6 +325,13 @@ fn draw_pane(
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), rows_area);
+
+    let top = diff
+        .rows()
+        .iter()
+        .skip(scroll)
+        .find_map(|r| row_new_no(file, r));
+    render_scope_crumb(frame, crumb_area, theme, diff.scopes.get(&file.path), top);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -334,6 +360,7 @@ fn split_row_line(
                     (
                         line,
                         highlights.and_then(|hl| split_side_syntax(hl, line, side)),
+                        line_annotated(session, &file.path, line),
                     )
                 })
             };
@@ -575,6 +602,7 @@ fn row_line(
             let syntax = highlights
                 .get(&file.path)
                 .and_then(|cached| line_syntax(&cached.old, &cached.new, line));
+            let annotated = line_annotated(session, &file.path, line);
             render_diff_line(
                 theme,
                 line,
@@ -582,6 +610,7 @@ fn row_line(
                 file_gutter_width(file),
                 width,
                 selected,
+                annotated,
             )
         }
         DiffRow::Comment {
@@ -593,6 +622,88 @@ fn row_line(
             None => Line::default(),
         },
     }
+}
+
+/// One terminal row: the enclosing-definition breadcrumb for the top visible
+/// line, styled like a hunk heading. Blank when the top line is at top level.
+fn scope_line(theme: &Theme, crumbs: &[String], width: u16) -> Line<'static> {
+    let text = if crumbs.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", crumbs.join(" › "))
+    };
+    let pad = (width as usize).saturating_sub(text.chars().count());
+    Line::from(vec![
+        Span::styled(text, Style::new().fg(theme.dim).bg(theme.panel)),
+        Span::styled(" ".repeat(pad), Style::new().bg(theme.panel)),
+    ])
+}
+
+fn render_scope_crumb(
+    frame: &mut Frame<'_>,
+    area: Option<Rect>,
+    theme: &Theme,
+    scope: Option<&FileScope>,
+    top_new_line: Option<u32>,
+) {
+    let Some(area) = area else {
+        return;
+    };
+    let crumbs = match (scope, top_new_line) {
+        (Some(scope), Some(line)) => scope.index.crumbs(line.saturating_sub(1) as usize),
+        _ => Vec::new(),
+    };
+    frame.render_widget(Paragraph::new(scope_line(theme, &crumbs, area.width)), area);
+}
+
+/// Whether `line` falls inside any comment's anchored range for `file_path` —
+/// drives the GitHub-style highlight marking a multi-line comment's scope.
+fn line_annotated(session: &Session, file_path: &str, line: &DiffLine) -> bool {
+    session.comments.iter().any(|c| {
+        if c.anchor.file != file_path {
+            return false;
+        }
+        let Some(start) = c.anchor.line else {
+            return false;
+        };
+        let end = c.anchor.line_end.unwrap_or(start);
+        let no = if c.anchor.on_old_side {
+            line.old_no
+        } else {
+            line.new_no
+        };
+        no.is_some_and(|n| start <= n && n <= end)
+    })
+}
+
+/// New-side line number of a unified diff row, if it has one.
+fn row_new_no(file: &FileDiff, row: &DiffRow) -> Option<u32> {
+    match *row {
+        DiffRow::Line { hunk, line, .. } => file.hunks.get(hunk)?.lines.get(line)?.new_no,
+        _ => None,
+    }
+}
+
+/// New-side line number of a split row's right cell, if any.
+fn split_right_new_no(file: &FileDiff, row: &SplitRow) -> Option<u32> {
+    match *row {
+        SplitRow::Pair { hunk, right, .. } => file.hunks.get(hunk)?.lines.get(right?)?.new_no,
+        _ => None,
+    }
+}
+
+/// Parse and cache the selected file's scope index, invalidated by content hash.
+fn ensure_file_scope(cache: &mut HashMap<String, FileScope>, file: &FileDiff) {
+    let hash = file.sides_hash();
+    if cache.get(&file.path).is_some_and(|c| c.hash == hash) {
+        return;
+    }
+    let index = file
+        .new_text
+        .as_deref()
+        .map(|content| highlighter().scope_index(&file.path, content))
+        .unwrap_or_default();
+    cache.insert(file.path.clone(), FileScope { hash, index });
 }
 
 pub(crate) fn ensure_file_highlights(cache: &mut HashMap<String, FileHighlights>, file: &FileDiff) {
@@ -876,7 +987,16 @@ mod tests {
 
     #[test]
     fn diff_pane_renders_with_syntax_emphasis_and_gutter() {
-        let (_fixture, mut app) = diff_app();
+        // grapheme engine: it char-diffs the `41`→`42` literal so the emphasis
+        // background composites. The syntactic engine treats the whole literal
+        // as changed (no partial highlight); that path is covered by the core
+        // intraline tests.
+        let fixture = standard_fixture();
+        let mut loaded = LoadedConfig::default();
+        loaded.config.ui.semantic_diff = false;
+        let mut app = App::new(fixture.review(), loaded);
+        app.author = "reviewer".to_owned();
+        app.open_working_tree_diff(None);
         open_lib_diff(&mut app);
         let terminal = render(&mut app);
         // emphasis backgrounds composited over the line backgrounds
@@ -895,6 +1015,31 @@ mod tests {
             "rust syntax produced styled ranges"
         );
         insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn comment_range_highlights_its_anchored_lines() {
+        let (_fixture, mut app) = diff_app();
+        open_lib_diff(&mut app);
+        app.review.session.add_comment(
+            "reviewer",
+            diffler_core::session::Anchor {
+                file: "src/lib.rs".to_owned(),
+                line: Some(1),
+                line_end: Some(2),
+                on_old_side: false,
+                hunk: None,
+                line_text: None,
+            },
+            "this whole block",
+        );
+        app.diff.as_mut().unwrap().invalidate();
+        let terminal = render(&mut app);
+        let styles = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            styles.contains(&format!("{:?}", app.theme.annotated)),
+            "a multi-line comment paints its anchored lines with the annotated bg"
+        );
     }
 
     #[test]

@@ -18,6 +18,9 @@ pub struct Theme {
     pub add_line_bg: Color,
     pub del_emph_bg: Color,
     pub add_emph_bg: Color,
+    /// Background for lines a comment is anchored to (GitHub-style amber), so
+    /// the scope of a multi-line review comment is visible in the diff.
+    pub annotated: Color,
     /// Diffstat added foreground (a readable green for `+N` counts). Deletes
     /// reuse `error_fg`, the same red the status accent uses for them.
     pub added: Color,
@@ -48,6 +51,7 @@ impl Theme {
             add_line_bg: Color::Rgb(0x12, 0x35, 0x2a),
             del_emph_bg: Color::Rgb(0x8b, 0x2c, 0x2f),
             add_emph_bg: Color::Rgb(0x1f, 0x6f, 0x48),
+            annotated: Color::Rgb(0x3d, 0x2e, 0x0c),
             added: Color::Rgb(0x3f, 0xb9, 0x50),
             warn_fg: Color::Rgb(0xd2, 0x99, 0x22),
             error_fg: Color::Rgb(0xf8, 0x51, 0x49),
@@ -72,6 +76,7 @@ impl Theme {
             add_line_bg: Color::Rgb(0xda, 0xfb, 0xe1),
             del_emph_bg: Color::Rgb(0xff, 0xc1, 0xbc),
             add_emph_bg: Color::Rgb(0xab, 0xf2, 0xbc),
+            annotated: Color::Rgb(0xff, 0xf8, 0xc5),
             added: Color::Rgb(0x1a, 0x7f, 0x37),
             warn_fg: Color::Rgb(0x9a, 0x67, 0x00),
             error_fg: Color::Rgb(0xcf, 0x22, 0x2e),
@@ -96,6 +101,7 @@ impl Theme {
             add_line_bg: Color::Rgb(0x22, 0x3a, 0x30),
             del_emph_bg: Color::Rgb(0x6e, 0x2a, 0x33),
             add_emph_bg: Color::Rgb(0x2c, 0x5a, 0x3e),
+            annotated: Color::Rgb(0x44, 0x3a, 0x1f),
             added: Color::Rgb(0x50, 0xfa, 0x7b),
             warn_fg: Color::Rgb(0xf1, 0xfa, 0x8c),
             error_fg: Color::Rgb(0xff, 0x55, 0x55),
