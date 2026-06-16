@@ -15,7 +15,10 @@ use crate::theme::Theme;
 use crate::transient::TransientKind;
 use crate::ui::Hint;
 use crate::ui::diff_render::render_hunk_lines;
-use crate::ui::{cursor_line, diffstat_spans, hint_line, proportion_bar, status_bar, status_color};
+use crate::ui::{
+    commit_meta_spans, cursor_line, diffstat_spans, hint_line, proportion_bar, status_bar,
+    status_color,
+};
 
 /// Prefix-only hint entries: top-level keys and the transient prefixes,
 /// rendered against the live keymap so remaps show. Sub-commands stay out of
@@ -44,7 +47,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     .areas(area);
     app.status.viewport = body_area.height;
     frame.render_widget(Paragraph::new(hint_line(app, HINTS)), hint);
-    let (lines, scroll) = body(app, body_area);
+    let (lines, scroll, line_rows) = body(app, body_area);
+    app.status.body = body_area;
+    app.status.scroll = scroll;
+    app.status.line_rows = line_rows;
     frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), body_area);
     frame.render_widget(
         Paragraph::new(status_bar(app, bar.width)).style(Style::new().bg(app.theme.panel)),
@@ -52,8 +58,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     );
 }
 
-/// Body lines plus the vertical scroll keeping the cursor row in view.
-fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16) {
+/// Body lines, the vertical scroll keeping the cursor row in view, and a
+/// per-rendered-line table of the `visible_rows` index each line belongs to
+/// (`None` for headers/blanks) so mouse clicks map back to a row.
+fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16, Vec<Option<usize>>) {
     let mut lines = vec![head_line(app)];
     let (added, deleted) = Section::ALL
         .into_iter()
@@ -78,6 +86,9 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16) {
     }
 
     let mut cursor_line_index = 0usize;
+    // the preamble lines (head, optional changes summary, blanks, empty-state)
+    // belong to no row
+    let mut line_rows: Vec<Option<usize>> = vec![None; lines.len()];
     let mut index = 0;
     while let Some(row) = rows.get(index) {
         match row {
@@ -113,17 +124,20 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16) {
                 lines.extend(render_hunk_lines(
                     &app.theme, hunk, syntax, area.width, selected,
                 ));
+                line_rows.extend((0..span).map(|offset| Some(index + offset)));
                 index += span;
             }
             row => {
                 if index > 0 && matches!(row, Row::SectionHeader { .. } | Row::RecentHeader { .. })
                 {
                     lines.push(Line::default());
+                    line_rows.push(None);
                 }
                 if index == app.status.cursor {
                     cursor_line_index = lines.len();
                 }
                 lines.push(row_line(app, row, index == app.status.cursor, area.width));
+                line_rows.push(Some(index));
                 index += 1;
             }
         }
@@ -131,7 +145,7 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16) {
 
     let height = area.height.max(1) as usize;
     let scroll = cursor_line_index.saturating_sub(height - 1) as u16;
-    (lines, scroll)
+    (lines, scroll, line_rows)
 }
 
 fn centered_line(text: &str, style: Style, width: u16) -> Line<'static> {
@@ -200,7 +214,7 @@ fn row_line(app: &App, row: &Row, selected: bool, width: u16) -> Line<'static> {
             let file = app.section_files(*section).get(*index);
             file_spans(app, file, theme, *depth)
         }
-        Row::Commit { index } => commit_spans(app, *index, theme),
+        Row::Commit { index } => commit_spans(app, *index, theme, width),
         // hunk rows are rendered as blocks in `body`, never through here
         Row::HunkHeader { .. } | Row::DiffLine { .. } => Vec::new(),
     };
@@ -289,14 +303,24 @@ fn file_spans(
     spans
 }
 
-fn commit_spans(app: &App, index: usize, theme: &Theme) -> Vec<Span<'static>> {
+fn commit_spans(app: &App, index: usize, theme: &Theme, width: u16) -> Vec<Span<'static>> {
     let Some(entry) = app.status.recent.get(index) else {
         return Vec::new();
     };
-    vec![Span::styled(
+    let mut spans = vec![Span::styled(
         format!("     {} {}", entry.oid7, entry.subject),
         theme.dim_style(),
-    )]
+    )];
+    let used: usize = spans.iter().map(Span::width).sum();
+    spans.extend(commit_meta_spans(
+        theme,
+        &entry.author,
+        entry.time_unix,
+        app.now_unix,
+        used,
+        width as usize,
+    ));
+    spans
 }
 
 /// Summed `(added, deleted)` over every file in a section.
@@ -315,7 +339,9 @@ mod tests {
     use crate::app::{App, Row, Section};
     use crate::config::LoadedConfig;
     use crate::event::AppEvent;
-    use crate::test_support::{Fixture, key, standard_fixture, two_hunk_fixture};
+    use crate::test_support::{
+        Fixture, key, mouse_click, mouse_scroll, standard_fixture, two_hunk_fixture,
+    };
 
     /// Render through the top-level draw so modal overlays and screen
     /// switching are covered too.
@@ -326,6 +352,104 @@ mod tests {
             .draw(|frame| crate::ui::draw(frame, app))
             .expect("draw");
         terminal
+    }
+
+    /// Screen position rendering `visible_rows()[row]`, via the geometry the
+    /// last render stored.
+    fn screen_pos(app: &App, row: usize) -> (u16, u16) {
+        let line = app
+            .status
+            .line_rows
+            .iter()
+            .position(|r| *r == Some(row))
+            .expect("row is on screen");
+        let y = app.status.body.y + (line as u16 - app.status.scroll);
+        (app.status.body.x + 1, y)
+    }
+
+    #[test]
+    fn mouse_wheel_scrolls_the_status_cursor() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        render(&mut app);
+        let before = app.status.cursor;
+        app.handle(mouse_scroll(true, 5, 5));
+        let after = app.status.cursor;
+        assert!(after > before, "wheel down advanced the cursor");
+        app.handle(mouse_scroll(false, 5, 5));
+        assert!(app.status.cursor < after, "wheel up moved it back");
+    }
+
+    #[test]
+    fn clicking_a_file_row_selects_it() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        render(&mut app);
+        // pick a non-zero file row to prove the click maps there, not just to 0
+        let rows = app.visible_rows();
+        let target = rows
+            .iter()
+            .position(|r| matches!(r, Row::File { .. }))
+            .expect("a file row");
+        let (x, y) = screen_pos(&app, target);
+        app.handle(mouse_click(x, y));
+        assert_eq!(app.status.cursor, target);
+    }
+
+    #[test]
+    fn single_click_on_a_section_header_only_selects() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        render(&mut app);
+        let Some(Row::SectionHeader { section, .. }) = app.visible_rows().first().cloned() else {
+            panic!("first row is a section header");
+        };
+        let folded = app.is_folded(section);
+        let (x, y) = screen_pos(&app, 0);
+        app.handle(mouse_click(x, y));
+        assert_eq!(app.status.cursor, 0);
+        assert_eq!(app.is_folded(section), folded, "single click does not fold");
+    }
+
+    #[test]
+    fn double_clicking_a_section_header_toggles_its_fold() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        render(&mut app);
+        let Some(Row::SectionHeader { section, .. }) = app.visible_rows().first().cloned() else {
+            panic!("first row is a section header");
+        };
+        let folded = app.is_folded(section);
+        let (x, y) = screen_pos(&app, 0);
+        app.handle(mouse_click(x, y));
+        app.handle(mouse_click(x, y));
+        assert_eq!(app.status.cursor, 0);
+        assert_ne!(
+            app.is_folded(section),
+            folded,
+            "double-click toggled the fold"
+        );
+    }
+
+    #[test]
+    fn double_clicking_the_recent_commits_header_toggles_it() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        render(&mut app);
+        let target = app
+            .visible_rows()
+            .iter()
+            .position(|r| matches!(r, Row::RecentHeader { .. }))
+            .expect("a recent-commits header");
+        let folded = app.status.recent_folded;
+        let (x, y) = screen_pos(&app, target);
+        app.handle(mouse_click(x, y));
+        app.handle(mouse_click(x, y));
+        assert_eq!(app.status.cursor, target);
+        assert_ne!(
+            app.status.recent_folded, folded,
+            "double-click toggled the fold"
+        );
     }
 
     fn app_for(fixture: &Fixture) -> App {
@@ -451,6 +575,15 @@ mod tests {
             .position(|row| matches!(row, Row::RecentHeader { .. }))
             .expect("recent header");
         app.handle(key('\t'));
+        // pin "now" an hour past the newest commit so the ages render stably
+        app.now_unix = app
+            .status
+            .recent
+            .iter()
+            .map(|e| e.time_unix)
+            .max()
+            .unwrap_or(0)
+            + 3661;
         insta::assert_snapshot!(render(&mut app).backend());
     }
 

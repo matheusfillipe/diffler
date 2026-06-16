@@ -18,6 +18,8 @@ pub struct LogView {
     pub visual_anchor: Option<usize>,
     /// Body height of the last render, drives half-page motions.
     pub(crate) viewport: u16,
+    /// Entry-area rect of the last render, for mapping mouse clicks to rows.
+    pub(crate) body: ratatui::layout::Rect,
 }
 
 impl LogView {
@@ -38,6 +40,7 @@ impl App {
                     scroll: 0,
                     visual_anchor: None,
                     viewport: 0,
+                    body: ratatui::layout::Rect::default(),
                 });
                 self.screens.push(super::Screen::Log);
             }
@@ -69,7 +72,8 @@ impl App {
             self.open_log_selection();
             return;
         }
-        let half = self.log_half_page();
+        let half = self.log_page(false);
+        let full = self.log_page(true);
         let Some(log) = self.log.as_mut() else {
             return;
         };
@@ -81,6 +85,8 @@ impl App {
             Action::GoBottom => log.cursor = last,
             Action::HalfPageDown => log.cursor = (log.cursor + half).min(last),
             Action::HalfPageUp => log.cursor = log.cursor.saturating_sub(half),
+            Action::FullPageDown => log.cursor = (log.cursor + full).min(last),
+            Action::FullPageUp => log.cursor = log.cursor.saturating_sub(full),
             // V toggles a range selection anchored at the cursor commit
             Action::VisualSelect => {
                 if log.visual_anchor.take().is_none() {
@@ -116,14 +122,71 @@ impl App {
         }
     }
 
-    fn log_half_page(&self) -> usize {
+    pub(super) fn log_mouse(&mut self, gesture: super::MouseGesture) {
+        use super::MouseGesture;
+        match gesture {
+            MouseGesture::Scroll { down, .. } => {
+                let delta = if down { 3 } else { -3 };
+                if let Some(log) = self.log.as_mut() {
+                    let last = log.entries.len().saturating_sub(1);
+                    log.cursor = log.cursor.saturating_add_signed(delta).min(last);
+                }
+            }
+            MouseGesture::Press { col, row } => {
+                if let Some(index) = self.log_row_at(col, row)
+                    && let Some(log) = self.log.as_mut()
+                {
+                    log.cursor = index;
+                    log.visual_anchor = None;
+                }
+            }
+            // double-click opens the commit's diff, like `<cr>`
+            MouseGesture::DoublePress { col, row } => {
+                if let Some(index) = self.log_row_at(col, row) {
+                    if let Some(log) = self.log.as_mut() {
+                        log.cursor = index;
+                    }
+                    self.open_log_selection();
+                }
+            }
+            // drag grows the range selection from the press row
+            MouseGesture::Drag { col, row } => {
+                if let Some(index) = self.log_row_at(col, row)
+                    && let Some(log) = self.log.as_mut()
+                {
+                    if log.visual_anchor.is_none() {
+                        log.visual_anchor = Some(log.cursor);
+                    }
+                    log.cursor = index;
+                }
+            }
+            MouseGesture::Cancel => {
+                if let Some(log) = self.log.as_mut() {
+                    log.visual_anchor = None;
+                }
+            }
+        }
+    }
+
+    fn log_row_at(&self, col: u16, row: u16) -> Option<usize> {
+        let log = self.log.as_ref()?;
+        let index = super::hit_index(log.body, log.scroll, col, row)?;
+        (index < log.entries.len()).then_some(index)
+    }
+
+    fn log_page(&self, full: bool) -> usize {
         let viewport = self.log.as_ref().map_or(0, |l| l.viewport);
-        // before the first render the height is unknown; half a typical
-        // terminal is a fine guess
-        if viewport == 0 {
-            20
+        // before the first render the height is unknown; a typical terminal
+        // is a fine guess
+        let lines = if viewport == 0 {
+            40
         } else {
-            usize::from(viewport / 2).max(1)
+            usize::from(viewport)
+        };
+        if full {
+            lines.saturating_sub(1).max(1)
+        } else {
+            (lines / 2).max(1)
         }
     }
 }

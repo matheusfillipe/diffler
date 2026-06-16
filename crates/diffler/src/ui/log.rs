@@ -11,7 +11,7 @@ use crate::app::App;
 use crate::keymap::Action;
 use crate::theme::Theme;
 use crate::ui::Hint;
-use crate::ui::{cursor_line, hint_line, status_bar};
+use crate::ui::{commit_meta_spans, cursor_line, hint_line, status_bar};
 
 /// Hint entries, rendered against the live keymap so remaps show.
 const HINTS: &[Hint] = &[
@@ -31,8 +31,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     .areas(area);
     frame.render_widget(Paragraph::new(hint_line(app, HINTS)), hint);
 
+    let now = app.now_unix;
     if let Some(log) = app.log.as_mut() {
         log.viewport = body.height;
+        log.body = body;
         let height = body.height.max(1) as usize;
         if log.cursor < log.scroll {
             log.scroll = log.cursor;
@@ -50,7 +52,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             .skip(log.scroll)
             .take(height)
             .map(|(index, entry)| {
-                let line = entry_line(&app.theme, entry);
+                let line = entry_line(&app.theme, entry, now, body.width);
                 // the cursor and every row in the visual range share the
                 // cursor-line tint, mirroring the diff view's selection
                 if index == log.cursor || selected(index) {
@@ -69,7 +71,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     );
 }
 
-fn entry_line(theme: &Theme, entry: &LogEntry) -> Line<'static> {
+fn entry_line(theme: &Theme, entry: &LogEntry, now: i64, width: u16) -> Line<'static> {
     let mut spans = vec![Span::styled(format!(" {} ", entry.oid7), theme.dim_style())];
     if !entry.refs.is_empty() {
         spans.push(Span::styled(
@@ -78,6 +80,15 @@ fn entry_line(theme: &Theme, entry: &LogEntry) -> Line<'static> {
         ));
     }
     spans.push(Span::styled(entry.subject.clone(), theme.base()));
+    let used: usize = spans.iter().map(Span::width).sum();
+    spans.extend(commit_meta_spans(
+        theme,
+        &entry.author,
+        entry.time_unix,
+        now,
+        used,
+        width as usize,
+    ));
     Line::from(spans)
 }
 
@@ -88,7 +99,7 @@ mod tests {
 
     use crate::app::App;
     use crate::config::LoadedConfig;
-    use crate::test_support::{key, standard_fixture};
+    use crate::test_support::{key, mouse_click, standard_fixture};
 
     fn render(app: &mut App) -> Terminal<TestBackend> {
         let backend = TestBackend::new(120, 40);
@@ -97,6 +108,37 @@ mod tests {
             .draw(|frame| crate::ui::draw(frame, app))
             .expect("draw");
         terminal
+    }
+
+    fn newest_commit(app: &App) -> i64 {
+        app.log
+            .as_ref()
+            .unwrap()
+            .entries
+            .iter()
+            .map(|e| e.time_unix)
+            .max()
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn clicking_a_log_row_selects_it() {
+        let fixture = standard_fixture();
+        fixture.write("notes.txt", "a\n");
+        fixture.commit_all("second");
+        fixture.write("notes.txt", "a\nb\n");
+        fixture.commit_all("third");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.handle(key('l'));
+        app.handle(key('l'));
+        render(&mut app);
+        assert!(app.log.as_ref().unwrap().entries.len() >= 2);
+        let (body, scroll) = {
+            let log = app.log.as_ref().unwrap();
+            (log.body, log.scroll as u16)
+        };
+        app.handle(mouse_click(body.x + 1, body.y + 1 - scroll));
+        assert_eq!(app.log.as_ref().unwrap().cursor, 1);
     }
 
     #[test]
@@ -109,9 +151,11 @@ mod tests {
         app.handle(key('l'));
         app.handle(key('l'));
         app.handle(key('j'));
+        app.now_unix = newest_commit(&app) + 3661;
         let terminal = render(&mut app);
         let content = terminal.backend().to_string();
         assert!(content.contains("feat/topic"), "refs decorate: {content}");
+        assert!(content.contains("1h"), "commit age renders: {content}");
         insta::assert_snapshot!(terminal.backend());
     }
 
@@ -129,6 +173,7 @@ mod tests {
         app.handle(key('V'));
         app.handle(key('j'));
         assert_eq!(app.log.as_ref().unwrap().selection(), Some((0, 1)));
+        app.now_unix = newest_commit(&app) + 3661;
         let terminal = render(&mut app);
         // the two-row selection tints more cells than a bare cursor row does
         let bg = format!("{:?}", app.theme.cursor_line);

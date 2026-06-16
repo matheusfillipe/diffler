@@ -121,6 +121,12 @@ pub struct StatusView {
     /// Per-file syntax spans for inline diffs, keyed by path and validated by
     /// the both-sides content hash. Filled lazily, only for expanded files.
     pub(crate) highlights: HashMap<String, FileHighlights>,
+    /// Last render's body rect, line scroll, and per-rendered-line row index
+    /// (rows vary in height, so a screen row maps back to a `visible_rows`
+    /// index only through this table). Drives mouse hit-testing.
+    pub(crate) body: ratatui::layout::Rect,
+    pub(crate) scroll: u16,
+    pub(crate) line_rows: Vec<Option<usize>>,
 }
 
 impl StatusView {
@@ -135,6 +141,9 @@ impl StatusView {
             folded_dirs: [const { BTreeSet::new() }; 3],
             enriched: [const { BTreeSet::new() }; 3],
             highlights: HashMap::new(),
+            body: ratatui::layout::Rect::default(),
+            scroll: 0,
+            line_rows: Vec::new(),
         }
     }
 
@@ -335,19 +344,74 @@ impl App {
     }
 
     /// Move the cursor by half a screenful, clamped to the visible rows.
-    fn status_half_page(&mut self, down: bool) {
-        // before the first render the height is unknown; half a typical
-        // terminal is a fine guess
-        let half = if self.status.viewport == 0 {
-            20
+    fn status_page(&mut self, down: bool, full: bool) {
+        // before the first render the height is unknown; a typical terminal
+        // is a fine guess
+        let viewport = if self.status.viewport == 0 {
+            40
         } else {
-            usize::from(self.status.viewport / 2).max(1)
+            usize::from(self.status.viewport)
+        };
+        let step = if full {
+            viewport.saturating_sub(1).max(1)
+        } else {
+            (viewport / 2).max(1)
         };
         if down {
             let last = self.visible_rows().len().saturating_sub(1);
-            self.status.cursor = (self.status.cursor + half).min(last);
+            self.status.cursor = (self.status.cursor + step).min(last);
         } else {
-            self.status.cursor = self.status.cursor.saturating_sub(half);
+            self.status.cursor = self.status.cursor.saturating_sub(step);
+        }
+    }
+
+    pub(super) fn status_mouse(&mut self, gesture: super::MouseGesture) {
+        use super::MouseGesture;
+        match gesture {
+            MouseGesture::Scroll { down, .. } => {
+                let delta = if down { 3 } else { -3 };
+                let last = self.visible_rows().len().saturating_sub(1);
+                self.status.cursor = self.status.cursor.saturating_add_signed(delta).min(last);
+            }
+            // single-click selects; double-click activates (open file/commit,
+            // or fold the section/dir/recent header) — like `<cr>`/`<tab>`
+            MouseGesture::Press { col, row } => {
+                self.status_select_at(col, row);
+            }
+            MouseGesture::DoublePress { col, row } => {
+                if self.status_select_at(col, row) {
+                    self.status_activate_cursor();
+                }
+            }
+            // the status screen has no line selection to drag or cancel
+            MouseGesture::Drag { .. } | MouseGesture::Cancel => {}
+        }
+    }
+
+    /// Move the cursor to the row under `(col, row)`. Returns whether a row was
+    /// hit (so a double-click only activates on a real row).
+    fn status_select_at(&mut self, col: u16, row: u16) -> bool {
+        let Some(line) = super::hit_index(self.status.body, self.status.scroll as usize, col, row)
+        else {
+            return false;
+        };
+        let Some(Some(index)) = self.status.line_rows.get(line).copied() else {
+            return false;
+        };
+        if index >= self.visible_rows().len() {
+            return false;
+        }
+        self.status.cursor = index;
+        true
+    }
+
+    fn status_activate_cursor(&mut self) {
+        match self.cursor_row() {
+            Some(Row::File { .. } | Row::Commit { .. }) => self.open_at_cursor(),
+            Some(Row::SectionHeader { .. } | Row::Dir { .. } | Row::RecentHeader { .. }) => {
+                self.toggle_fold();
+            }
+            _ => {}
         }
     }
 
@@ -358,8 +422,10 @@ impl App {
                 self.status.cursor = (self.status.cursor + 1).min(last);
             }
             Action::MoveUp => self.status.cursor = self.status.cursor.saturating_sub(1),
-            Action::HalfPageDown => self.status_half_page(true),
-            Action::HalfPageUp => self.status_half_page(false),
+            Action::HalfPageDown => self.status_page(true, false),
+            Action::HalfPageUp => self.status_page(false, false),
+            Action::FullPageDown => self.status_page(true, true),
+            Action::FullPageUp => self.status_page(false, true),
             Action::GoTop => self.status.cursor = 0,
             Action::GoBottom => {
                 self.status.cursor = self.visible_rows().len().saturating_sub(1);

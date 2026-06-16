@@ -120,11 +120,12 @@ fn draw_sidebar(
     theme: &Theme,
     session: &Session,
     review_model: Option<&DiffModel>,
-    diff: &DiffView,
+    diff: &mut DiffView,
 ) {
     let focused = diff.focus == Pane::List;
     let block = pane_block(theme, "Files", focused);
     let inner = block.inner(area);
+    diff.sidebar = inner;
     frame.render_widget(block, area);
     let Some(model) = diff.commit_model.as_ref().or(review_model) else {
         return;
@@ -168,6 +169,7 @@ fn draw_sidebar(
     // stays in view (the sidebar tree can be far taller than the pane)
     let height = inner.height.max(1) as usize;
     let scroll = diff.tree_cursor.saturating_sub(height - 1) as u16;
+    diff.sidebar_scroll = scroll as usize;
     frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), inner);
 }
 
@@ -231,6 +233,7 @@ fn draw_pane(
     );
 
     diff.viewport = rows_area.height;
+    diff.pane = rows_area;
     // syntax is filled lazily, only for files that actually scroll into view
     ensure_file_highlights(&mut diff.highlights, file);
 
@@ -763,7 +766,9 @@ mod tests {
     use super::{clip_name, clip_path};
     use crate::app::{App, DiffRow, Pane};
     use crate::config::LoadedConfig;
-    use crate::test_support::{Fixture, key, standard_fixture};
+    use crate::test_support::{
+        Fixture, key, mouse_click, mouse_drag, mouse_right_click, mouse_scroll, standard_fixture,
+    };
 
     #[test]
     fn basename_shorter_than_room_is_kept_whole() {
@@ -898,6 +903,113 @@ mod tests {
         open_lib_diff(&mut app);
         app.diff.as_mut().unwrap().side_by_side = true;
         insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    /// Sidebar file position on screen for the last render.
+    fn sidebar_file_pos(app: &App) -> (u16, u16, usize) {
+        let diff = app.diff.as_ref().unwrap();
+        let rows = diff.tree_rows(diff.model(&app.review));
+        let target = rows
+            .iter()
+            .position(|r| matches!(r.node, crate::tree::TreeNode::File { .. }))
+            .expect("a file row in the sidebar");
+        let x = diff.sidebar.x + 1;
+        let y = diff.sidebar.y + target as u16 - diff.sidebar_scroll as u16;
+        (x, y, target)
+    }
+
+    #[test]
+    fn single_click_in_the_sidebar_selects_without_focusing() {
+        let (_fixture, mut app) = diff_app();
+        render(&mut app);
+        let (x, y, target) = sidebar_file_pos(&app);
+        app.handle(mouse_click(x, y));
+        let diff = app.diff.as_ref().unwrap();
+        assert_eq!(diff.tree_cursor, target);
+        assert_eq!(diff.focus, Pane::List, "single click keeps sidebar focus");
+    }
+
+    #[test]
+    fn double_click_in_the_sidebar_opens_the_file() {
+        let (_fixture, mut app) = diff_app();
+        render(&mut app);
+        let (x, y, target) = sidebar_file_pos(&app);
+        app.handle(mouse_click(x, y));
+        app.handle(mouse_click(x, y));
+        let diff = app.diff.as_ref().unwrap();
+        assert_eq!(diff.tree_cursor, target);
+        assert_eq!(diff.focus, Pane::Diff, "double-click opens into the pane");
+    }
+
+    #[test]
+    fn mouse_wheel_over_the_pane_scrolls_it() {
+        let (_fixture, mut app) = diff_app();
+        open_lib_diff(&mut app);
+        render(&mut app);
+        let before = app.diff.as_ref().unwrap().cursor;
+        let pane = app.diff.as_ref().unwrap().pane;
+        app.handle(mouse_scroll(true, pane.x + 1, pane.y + 1));
+        assert!(
+            app.diff.as_ref().unwrap().cursor > before,
+            "wheel advanced the pane cursor"
+        );
+    }
+
+    /// The first two `DiffRow::Line` rows and their on-screen y positions.
+    fn first_two_pane_lines(app: &App) -> (u16, u16, u16, usize, usize) {
+        let diff = app.diff.as_ref().unwrap();
+        let lines: Vec<usize> = diff
+            .rows()
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| matches!(r, DiffRow::Line { .. }))
+            .map(|(i, _)| i)
+            .collect();
+        let x = diff.pane.x + 1;
+        let y0 = diff.pane.y + lines[0] as u16 - diff.scroll as u16;
+        let y1 = diff.pane.y + lines[1] as u16 - diff.scroll as u16;
+        (x, y0, y1, lines[0], lines[1])
+    }
+
+    #[test]
+    fn dragging_in_the_pane_selects_a_line_range() {
+        let (_fixture, mut app) = diff_app();
+        open_lib_diff(&mut app);
+        render(&mut app);
+        let (x, y0, y1, line0, line1) = first_two_pane_lines(&app);
+        app.handle(mouse_click(x, y0));
+        app.handle(mouse_drag(x, y1));
+        let diff = app.diff.as_ref().unwrap();
+        assert!(diff.visual_anchor.is_some(), "drag started a selection");
+        assert_eq!(diff.selection(), Some((line0, line1)));
+    }
+
+    #[test]
+    fn double_click_in_the_pane_starts_a_comment() {
+        let (_fixture, mut app) = diff_app();
+        open_lib_diff(&mut app);
+        render(&mut app);
+        let (x, y0, ..) = first_two_pane_lines(&app);
+        app.handle(mouse_click(x, y0));
+        app.handle(mouse_click(x, y0));
+        assert!(app.modal.is_some(), "double-click opened the comment input");
+    }
+
+    #[test]
+    fn right_click_cancels_a_pane_selection() {
+        let (_fixture, mut app) = diff_app();
+        open_lib_diff(&mut app);
+        render(&mut app);
+        let (x, y0, y1, ..) = first_two_pane_lines(&app);
+        app.handle(mouse_click(x, y0));
+        app.handle(mouse_drag(x, y1));
+        assert!(app.diff.as_ref().unwrap().visual_anchor.is_some());
+        app.handle(mouse_right_click(x, y0));
+        assert_eq!(
+            app.diff.as_ref().unwrap().visual_anchor,
+            None,
+            "right-click dropped the selection"
+        );
     }
 
     #[test]

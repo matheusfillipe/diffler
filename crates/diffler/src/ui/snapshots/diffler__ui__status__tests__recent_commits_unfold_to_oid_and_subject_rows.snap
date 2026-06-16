@@ -16,7 +16,7 @@ expression: render(&mut app).backend()
 " A ci.yml +1 -0                                                                                                         "
 "                                                                                                                        "
 " ▾ Recent commits (1)                                                                                                   "
-"     c1ac28f initial commit                                                                                             "
+"     c1ac28f initial commit                                                                                    test  1h "
 "                                                                                                                        "
 "                                                                                                                        "
 "                                                                                                                        "

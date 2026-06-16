@@ -1,11 +1,58 @@
-//! OSC52 clipboard sequences. The escape string is produced here and written
-//! to the terminal stream by the main loop after a draw — never from inside
-//! rendering, so the alternate screen stays intact. OSC52 is the only
-//! clipboard mechanism (works over ssh/tmux, no native deps).
+//! System clipboard. Two mechanisms, used together for reach without native
+//! build deps (so the static musl binaries stay clean): an OSC52 escape
+//! sequence — written to the terminal by the main loop after a draw, never
+//! from rendering — which the terminal forwards even over ssh/tmux; and a
+//! best-effort pipe to the platform clipboard CLI, covering terminals that
+//! don't honor OSC52.
+
+use std::io::Write;
+use std::process::{Command, Stdio};
 
 /// Wrap `text` in an OSC52 set-clipboard sequence for the `c` selection.
 pub fn osc52(text: &str) -> String {
     format!("\x1b]52;c;{}\x07", base64(text.as_bytes()))
+}
+
+/// Pipe `text` to the first available platform clipboard tool. Best-effort: a
+/// host with none installed just relies on OSC52. `wl-copy`/`xclip`/`xsel`
+/// fork a daemon to own the X11/Wayland selection, so it persists after exit;
+/// `clip.exe` also covers WSL.
+pub fn native_copy(text: &str) {
+    let candidates: &[(&str, &[&str])] = if cfg!(target_os = "macos") {
+        &[("pbcopy", &[])]
+    } else if cfg!(target_os = "windows") {
+        &[("clip", &[])]
+    } else {
+        &[
+            ("wl-copy", &[]),
+            ("xclip", &["-selection", "clipboard"]),
+            ("xsel", &["--clipboard", "--input"]),
+            ("clip.exe", &[]),
+        ]
+    };
+    for (cmd, args) in candidates {
+        if pipe_to(cmd, args, text) {
+            break;
+        }
+    }
+}
+
+fn pipe_to(cmd: &str, args: &[&str], text: &str) -> bool {
+    let Ok(mut child) = Command::new(cmd)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(text.as_bytes());
+    }
+    // stdin drops here, signalling EOF; the tool reads it and (for the
+    // X11/Wayland ones) backgrounds itself, so the wait returns promptly
+    child.wait().is_ok()
 }
 
 /// Standard base64 with padding, hand-rolled to avoid a direct dependency

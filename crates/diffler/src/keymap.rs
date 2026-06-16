@@ -53,6 +53,8 @@ pub enum Action {
     PrevComment,
     HalfPageDown,
     HalfPageUp,
+    FullPageDown,
+    FullPageUp,
     Comment,
     VisualSelect,
     Reply,
@@ -112,6 +114,8 @@ impl Action {
             Self::PrevComment => "prev_comment",
             Self::HalfPageDown => "half_page_down",
             Self::HalfPageUp => "half_page_up",
+            Self::FullPageDown => "full_page_down",
+            Self::FullPageUp => "full_page_up",
             Self::Comment => "comment",
             Self::VisualSelect => "visual_select",
             Self::Reply => "reply",
@@ -127,7 +131,7 @@ impl Action {
         }
     }
 
-    const ALL: [Self; 53] = [
+    const ALL: [Self; 55] = [
         Self::MoveDown,
         Self::MoveUp,
         Self::GoTop,
@@ -169,6 +173,8 @@ impl Action {
         Self::PrevComment,
         Self::HalfPageDown,
         Self::HalfPageUp,
+        Self::FullPageDown,
+        Self::FullPageUp,
         Self::Comment,
         Self::VisualSelect,
         Self::Reply,
@@ -266,6 +272,8 @@ const DIFF_DEFAULTS: &[(&str, Action)] = &[
     ("G", Action::GoBottom),
     ("<c-d>", Action::HalfPageDown),
     ("<c-u>", Action::HalfPageUp),
+    ("<c-f>", Action::FullPageDown),
+    ("<c-b>", Action::FullPageUp),
     ("<c-n>", Action::NextFile),
     ("<c-p>", Action::PrevFile),
     ("<tab>", Action::ToggleFocus),
@@ -297,6 +305,8 @@ const LOG_DEFAULTS: &[(&str, Action)] = &[
     ("G", Action::GoBottom),
     ("<c-d>", Action::HalfPageDown),
     ("<c-u>", Action::HalfPageUp),
+    ("<c-f>", Action::FullPageDown),
+    ("<c-b>", Action::FullPageUp),
     ("V", Action::VisualSelect),
     ("<cr>", Action::Open),
     ("<c-r>", Action::Refresh),
@@ -802,9 +812,10 @@ mod tests {
     #[test]
     fn a_prefix_key_is_not_a_leaf() {
         let keymap = keymap(Context::Status);
-        // no top-level chord owns c/b/l; they are prefixes only
+        // no bare c/b/l chord is a leaf; they are prefixes only (ctrl combos
+        // like <c-b> are distinct keys and may be leaves)
         assert!(keymap.bindings.iter().all(|(chord, _)| {
-            !matches!(chord.as_slice(), [k] if matches!(k.code, KeyCode::Char('c' | 'b' | 'l')))
+            !matches!(chord.as_slice(), [k] if matches!(k.code, KeyCode::Char('c' | 'b' | 'l')) && !k.ctrl && !k.alt)
         }));
     }
 

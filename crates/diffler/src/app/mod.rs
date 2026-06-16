@@ -190,9 +190,10 @@ pub struct App {
     pub diff: Option<DiffView>,
     pub modal: Option<Modal>,
     pub message: Option<StatusMessage>,
-    /// Escape sequence (OSC52 copy) the main loop writes raw to the
-    /// terminal after the next draw, then clears.
-    pub pending_osc: Option<String>,
+    /// Text to put on the system clipboard. The main loop, after the next
+    /// draw, emits it as an OSC52 sequence (covers ssh/tmux) and also pipes it
+    /// to the platform clipboard tool, then clears.
+    pub pending_clipboard: Option<String>,
     /// Editor subprocess the main loop runs with the terminal suspended,
     /// then reports back through [`App::editor_finished`].
     pub pending_editor: Option<EditorRequest>,
@@ -219,6 +220,21 @@ pub struct App {
     pending: Vec<KeyPress>,
     pending_ticks: u8,
     tick_count: u32,
+    /// Time and cell of the last left-press, for double-click detection.
+    last_click: Option<(std::time::Instant, u16, u16)>,
+    /// Wall-clock seconds, refreshed with the commit list, for rendering
+    /// commit ages ("3h ago"). A field so tests can pin it.
+    pub now_unix: i64,
+}
+
+/// Current wall-clock time in unix seconds, or 0 if the clock is before the
+/// epoch (it never is).
+pub(crate) fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_secs()).ok())
+        .unwrap_or(0)
 }
 
 impl App {
@@ -298,7 +314,7 @@ impl App {
             diff: None,
             modal: None,
             message,
-            pending_osc: None,
+            pending_clipboard: None,
             pending_editor: None,
             pending_git: None,
             watcher_healthy: None,
@@ -311,6 +327,8 @@ impl App {
             pending: Vec::new(),
             pending_ticks: 0,
             tick_count: 0,
+            last_click: None,
+            now_unix: now_unix(),
         }
     }
 
@@ -398,8 +416,63 @@ impl App {
                 self.git_finished(&label, ok, &output);
                 Flow::Continue
             }
+            // mouse only drives the plain screens; a modal or transient owns
+            // input while open
+            AppEvent::Mouse(mouse) if self.modal.is_none() && self.transient.is_none() => {
+                self.handle_mouse(mouse);
+                Flow::Continue
+            }
             AppEvent::Key(_) | AppEvent::Mouse(_) | AppEvent::Resize => Flow::Continue,
         }
+    }
+
+    /// Translate a raw mouse event into a [`MouseGesture`] and dispatch it to
+    /// the active screen. Each screen implements `*_mouse(MouseGesture)` and
+    /// must handle every variant — so the `match self.screen()` here is the one
+    /// place that forces a new screen to wire up mouse support (it won't
+    /// compile without an arm), and the exhaustive gesture match in each
+    /// handler forces every interaction to be considered.
+    fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
+        use crossterm::event::{MouseButton, MouseEventKind};
+        let (col, row) = (mouse.column, mouse.row);
+        let gesture = match mouse.kind {
+            MouseEventKind::ScrollDown => MouseGesture::Scroll {
+                col,
+                row,
+                down: true,
+            },
+            MouseEventKind::ScrollUp => MouseGesture::Scroll {
+                col,
+                row,
+                down: false,
+            },
+            MouseEventKind::Down(MouseButton::Left) => {
+                if self.is_double_click(col, row) {
+                    MouseGesture::DoublePress { col, row }
+                } else {
+                    MouseGesture::Press { col, row }
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) => MouseGesture::Drag { col, row },
+            MouseEventKind::Down(MouseButton::Right) => MouseGesture::Cancel,
+            _ => return,
+        };
+        match self.screen() {
+            Screen::Status => self.status_mouse(gesture),
+            Screen::Diff => self.diff_mouse(gesture),
+            Screen::Log => self.log_mouse(gesture),
+        }
+    }
+
+    /// A second left-press at (about) the same cell within the double-click
+    /// window. Resets after firing so a third press starts fresh.
+    fn is_double_click(&mut self, col: u16, row: u16) -> bool {
+        let now = std::time::Instant::now();
+        let double = self.last_click.is_some_and(|(at, c, r)| {
+            now.duration_since(at) < DOUBLE_CLICK_WINDOW && c.abs_diff(col) <= 1 && r == row
+        });
+        self.last_click = if double { None } else { Some((now, col, row)) };
+        double
     }
 
     fn handle_key(&mut self, key: &KeyEvent) -> Flow {
@@ -729,6 +802,7 @@ impl App {
     }
 
     pub(crate) fn refresh(&mut self) {
+        self.now_unix = now_unix();
         let status_anchor = self.status_cursor_anchor();
         let diff_anchor_path = self.diff_cursor_path();
         let fingerprint = self.review.model().fingerprint();
@@ -1121,6 +1195,40 @@ fn byte_index(buffer: &str, chars: usize) -> usize {
         .char_indices()
         .nth(chars)
         .map_or(buffer.len(), |(index, _)| index)
+}
+
+/// Two left-presses within this window (at about the same cell) are a
+/// double-click.
+const DOUBLE_CLICK_WINDOW: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// A resolved mouse interaction, screen-independent. Each screen's
+/// `*_mouse` handler matches this exhaustively, so adding an interaction means
+/// every screen is forced to decide how it responds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MouseGesture {
+    /// Wheel notch over `(col, row)`.
+    Scroll { col: u16, row: u16, down: bool },
+    /// Single left-click: select the thing under the pointer.
+    Press { col: u16, row: u16 },
+    /// Double left-click: activate it (open, like `<cr>`).
+    DoublePress { col: u16, row: u16 },
+    /// Left-drag: extend a selection to `(col, row)`.
+    Drag { col: u16, row: u16 },
+    /// Right-click: cancel the in-progress interaction (e.g. drop a selection).
+    Cancel,
+}
+
+/// Map a mouse point to a 0-based index into a list rendered in `area` with
+/// `scroll` rows hidden above the top; `None` when the point falls outside.
+pub(crate) fn hit_index(
+    area: ratatui::layout::Rect,
+    scroll: usize,
+    col: u16,
+    row: u16,
+) -> Option<usize> {
+    let inside =
+        col >= area.x && col < area.x + area.width && row >= area.y && row < area.y + area.height;
+    inside.then(|| scroll + (row - area.y) as usize)
 }
 
 fn empty_head() -> HeadInfo {

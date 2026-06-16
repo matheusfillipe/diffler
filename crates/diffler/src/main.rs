@@ -3,7 +3,7 @@ use std::path::Path;
 use clap::{Parser, Subcommand};
 use diffler::app::{self, App, Flow};
 use diffler::event::AppEvent;
-use diffler::{config, editor, event, mcp, ui, watch};
+use diffler::{clipboard, config, editor, event, mcp, ui, watch};
 use diffler_core::review::Review;
 use ratatui::DefaultTerminal;
 use tokio::sync::mpsc;
@@ -65,11 +65,37 @@ async fn main() -> color_eyre::Result<()> {
             let review = Review::open_with_context(&repo?, loaded.config.ui.context_lines)?;
             let app = App::new(review, loaded);
             let terminal = ratatui::init();
+            set_mouse_capture(true);
+            install_mouse_panic_hook();
             let result = run(terminal, app).await;
+            set_mouse_capture(false);
             ratatui::restore();
             result
         }
     }
+}
+
+/// Toggle SGR mouse reporting (crossterm uses mode 1006, which tmux forwards to
+/// apps that request it). Best-effort: a terminal without mouse support just
+/// ignores it.
+fn set_mouse_capture(on: bool) {
+    use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+    let mut out = std::io::stdout();
+    let _ = if on {
+        crossterm::execute!(out, EnableMouseCapture)
+    } else {
+        crossterm::execute!(out, DisableMouseCapture)
+    };
+}
+
+/// Chain mouse-disable ahead of the existing (ratatui screen-restore) panic
+/// hook, so a crash doesn't leave the terminal emitting mouse escape codes.
+fn install_mouse_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        set_mouse_capture(false);
+        previous(info);
+    }));
 }
 
 // stdout is correct for a non-TUI subcommand; the workspace print_stdout lint
@@ -115,20 +141,23 @@ async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<
     };
     loop {
         terminal.draw(|frame| ui::draw(frame, &mut app))?;
-        if let Some(sequence) = app.pending_osc.take() {
-            // an OSC52 sequence addresses the terminal emulator, not the
-            // screen: it must bypass ratatui's buffer and go out raw,
-            // right after the draw so it cannot interleave with one
+        if let Some(text) = app.pending_clipboard.take() {
+            // OSC52 addresses the terminal emulator, not the screen: it must
+            // bypass ratatui's buffer and go out raw, right after the draw so
+            // it cannot interleave with one. The native CLI pipe (on a blocking
+            // thread, since it spawns a process) covers terminals without OSC52.
             use std::io::Write as _;
             let mut out = std::io::stdout();
-            out.write_all(sequence.as_bytes())?;
+            out.write_all(clipboard::osc52(&text).as_bytes())?;
             out.flush()?;
+            tokio::task::spawn_blocking(move || clipboard::native_copy(&text));
         }
         if let Some(request) = app.pending_editor.take() {
             // the event pump must release the tty before the editor gets
             // it, or both end up reading the same keystrokes
             events.abort();
             let _ = (&mut events).await;
+            set_mouse_capture(false);
             ratatui::restore();
             let editor::EditorRequest { cmd, purpose } = request;
             let outcome = tokio::task::spawn_blocking(move || editor::run(&cmd))
@@ -136,6 +165,7 @@ async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<
                 .map_err(|err| err.to_string())
                 .and_then(|result| result.map_err(|err| err.to_string()));
             terminal = ratatui::init();
+            set_mouse_capture(true);
             terminal.clear()?;
             events = event::spawn_event_loop(tx.clone());
             app.editor_finished(purpose, outcome);

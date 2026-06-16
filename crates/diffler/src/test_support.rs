@@ -138,3 +138,48 @@ pub fn ctrl_key(c: char) -> AppEvent {
 pub fn esc_key() -> AppEvent {
     AppEvent::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
 }
+
+pub fn mouse_scroll(down: bool, col: u16, row: u16) -> AppEvent {
+    use crossterm::event::{MouseEvent, MouseEventKind};
+    let kind = if down {
+        MouseEventKind::ScrollDown
+    } else {
+        MouseEventKind::ScrollUp
+    };
+    AppEvent::Mouse(MouseEvent {
+        kind,
+        column: col,
+        row,
+        modifiers: KeyModifiers::NONE,
+    })
+}
+
+pub fn mouse_click(col: u16, row: u16) -> AppEvent {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    AppEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: col,
+        row,
+        modifiers: KeyModifiers::NONE,
+    })
+}
+
+pub fn mouse_drag(col: u16, row: u16) -> AppEvent {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    AppEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Drag(MouseButton::Left),
+        column: col,
+        row,
+        modifiers: KeyModifiers::NONE,
+    })
+}
+
+pub fn mouse_right_click(col: u16, row: u16) -> AppEvent {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    AppEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Right),
+        column: col,
+        row,
+        modifiers: KeyModifiers::NONE,
+    })
+}
