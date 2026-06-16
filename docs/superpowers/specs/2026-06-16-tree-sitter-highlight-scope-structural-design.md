@@ -132,11 +132,20 @@ pub fn enclosing_scope(parsed: &ParsedFile, line: usize) -> Option<Vec<Crumb>>;
 
 Layout stays per-line. Two stages:
 
-1. **Pairing + change detection** (which old line ↔ which new line; is a hunk
-   format-only). Engine-selectable:
+1. **Pairing + change detection** (which old line ↔ which new line; is a line
+   only reindented; is a hunk format-only). Engine-selectable:
    - `grapheme` — existing textual similarity pairing in `pairing.rs`.
    - `syntactic` — AST-aware via syndiff: align trees, derive changed byte
-     ranges per side, and suppress hunks whose only differences are formatting.
+     ranges per side, and suppress noise. **Reindent + wrap suppression is the
+     headline requirement**: when a block is wrapped in a new parent (e.g. a JSX
+     subtree moved under `{({ values, isValid }) => ( … )}`) and its lines are
+     reindented, the unchanged inner lines must render as *context* (not
+     ±changed) even though their leading whitespace and line numbers shifted —
+     so only the genuinely new/changed lines (the wrapper, and lines whose
+     non-whitespace content actually differs) are signaled. Concretely: lines
+     that match after leading-whitespace normalization AND whose AST nodes align
+     are treated as unchanged. A purely textual diff shows the whole block as
+     63−/60+; the syntactic engine must reduce that to the few real changes.
 2. **Intraline emphasis** — char/grapheme-precise diff on the paired old/new
    line content. Shared by both engines; this is where exact changed characters
    are highlighted. Sharpen the existing grapheme emphasis; map syndiff byte
@@ -159,9 +168,17 @@ XDG-layered TOML (existing system), new key:
 intraline = "auto"   # auto | syntactic | grapheme
 ```
 
-- `auto` (default): syntactic when a parse exists for both sides, else grapheme.
+- `auto` (default): **semantic by default** — syntactic when a parse exists for
+  both sides, else grapheme. The semantic view is what the user sees unless they
+  opt out.
 - `grapheme`: always the textual engine; no tree-sitter pairing.
 - `syntactic`: prefer AST; still falls back to grapheme on parse failure.
+
+syndiff's ability to collapse the reindent+wrap case is validated empirically in
+Stage 3 against the JSX example above. If syndiff alone does not reduce it,
+leading-whitespace-normalized line pairing (trim-equal lines → unchanged) is
+added underneath the AST step — it absorbs pure reindentation cheaply and is the
+fallback that guarantees the headline behavior.
 
 Every flag has a config key per project convention; expose a matching CLI flag.
 
@@ -196,6 +213,10 @@ No panics, no blocking the UI, no user-facing error. This is a hard requirement.
   inside a nested function/class; `None` for unsupported language.
 - intraline: syntactic engine reports no changes for a reformat-only edit;
   grapheme fallback engaged when parse is `None`; emphasis ranges are char-precise.
+- **tsx/jsx reindent+wrap**: a fixture where an inner JSX block is wrapped in a
+  new arrow-function parent and reindented, plus 1-2 genuinely changed lines.
+  Assert the syntactic engine marks the reindented-but-identical inner lines as
+  unchanged and signals only the wrapper + real changes (not the whole block).
 - `parse` returns `None` on garbage / unsupported / oversize input.
 
 `diffler` (TUI): snapshots are text-only (`.backend()`), so the color-engine
