@@ -118,28 +118,7 @@ pub fn render_diff_line(
     selected: bool,
     annotated: bool,
 ) -> Line<'static> {
-    // a semantic move/reindent drops the full +/- background for a thin rail
-    let line_bg = if line.moved {
-        theme.bg
-    } else {
-        match line.kind {
-            LineKind::Added => theme.add_line_bg,
-            LineKind::Deleted => theme.del_line_bg,
-            LineKind::Context => theme.bg,
-        }
-    };
-    let emph_bg = match line.kind {
-        LineKind::Added => theme.add_emph_bg,
-        LineKind::Deleted => theme.del_emph_bg,
-        LineKind::Context => theme.bg,
-    };
-    let base_bg = if selected {
-        theme.cursor_line
-    } else if annotated {
-        theme.annotated
-    } else {
-        line_bg
-    };
+    let (base_bg, emph_bg) = line_backgrounds(theme, line, selected, annotated);
 
     let number = |n: Option<u32>| match n {
         Some(n) => format!("{n:>gutter$}"),
@@ -163,6 +142,30 @@ pub fn render_diff_line(
         spans.push(Span::styled(" ".repeat(pad), Style::new().bg(base_bg)));
     }
     Line::from(spans)
+}
+
+/// The line (base) and emphasis backgrounds, given selection/annotation state.
+/// A moved/reindented line drops its full +/- background for a thin rail.
+fn line_backgrounds(
+    theme: &Theme,
+    line: &DiffLine,
+    selected: bool,
+    annotated: bool,
+) -> (Color, Color) {
+    let (line_bg, emph_bg) = match line.kind {
+        LineKind::Added => (theme.add_line_bg, theme.add_emph_bg),
+        LineKind::Deleted => (theme.del_line_bg, theme.del_emph_bg),
+        LineKind::Context => (theme.bg, theme.bg),
+    };
+    let line_bg = if line.moved { theme.bg } else { line_bg };
+    let base_bg = if selected {
+        theme.cursor_line
+    } else if annotated {
+        theme.annotated
+    } else {
+        line_bg
+    };
+    (base_bg, emph_bg)
 }
 
 /// The gutter's leading cell: a thin colored bar for a moved/reindented line,
@@ -239,27 +242,7 @@ fn side_spans(
         };
         return vec![Span::styled(" ".repeat(col_width), Style::new().bg(bg))];
     };
-    let emph_bg = match line.kind {
-        LineKind::Added => theme.add_emph_bg,
-        LineKind::Deleted => theme.del_emph_bg,
-        LineKind::Context => theme.bg,
-    };
-    let line_bg = if line.moved {
-        theme.bg
-    } else {
-        match line.kind {
-            LineKind::Added => theme.add_line_bg,
-            LineKind::Deleted => theme.del_line_bg,
-            LineKind::Context => theme.bg,
-        }
-    };
-    let base_bg = if selected {
-        theme.cursor_line
-    } else if annotated {
-        theme.annotated
-    } else {
-        line_bg
-    };
+    let (base_bg, emph_bg) = line_backgrounds(theme, line, selected, annotated);
     let number = match side {
         SplitSide::Left => line.old_no,
         SplitSide::Right => line.new_no,

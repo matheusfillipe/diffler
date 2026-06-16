@@ -232,11 +232,10 @@ fn draw_pane(
         header_area,
     );
 
-    // syntax + scope are filled lazily, only for files that scroll into view
     ensure_file_highlights(&mut diff.highlights, file);
     ensure_file_scope(&mut diff.scopes, file);
-    // a sticky breadcrumb row, reserved only when the file has definitions, so
-    // plain files keep full height and code files get a stable layout
+    // the breadcrumb row is reserved only for files that have definitions, so
+    // plain files keep their full height
     let has_scope = diff
         .scopes
         .get(&file.path)

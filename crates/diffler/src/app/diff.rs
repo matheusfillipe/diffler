@@ -177,8 +177,6 @@ impl DiffView {
             return;
         };
         if self.enriched.insert(file.path.clone()) {
-            // semantic (AST) emphasis first; fall back to the textual engine
-            // when the file has no grammar, fails to parse, or is too large
             let done = semantic && crate::ui::diff::highlighter().syntactic_emphasis(file);
             if !done {
                 diffler_core::pairing::enrich_file(file);

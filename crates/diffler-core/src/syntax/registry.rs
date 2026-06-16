@@ -39,7 +39,6 @@ pub const HIGHLIGHT_NAMES: &[&str] = &[
 ];
 
 pub struct LangEntry {
-    pub name: &'static str,
     pub language: Language,
     /// `None` when the grammar's highlight query failed to compile; the file
     /// then renders plain instead of erroring.
@@ -55,9 +54,8 @@ pub struct LanguageRegistry {
 }
 
 impl LanguageRegistry {
-    /// Build the registry with every bundled grammar. Compiling highlight
-    /// queries costs a few milliseconds and happens once.
-    // A flat one-line-per-language registration table; length is inherent.
+    /// Build the registry with every bundled grammar, reused for the session.
+    // flat per-language registration table
     #[allow(clippy::too_many_lines)]
     pub fn build() -> Self {
         let mut r = Self {
@@ -211,7 +209,6 @@ impl LanguageRegistry {
         let tags = tags.and_then(|q| Query::new(&language, q).ok());
         let idx = self.entries.len();
         self.entries.push(LangEntry {
-            name,
             language,
             config,
             tags,

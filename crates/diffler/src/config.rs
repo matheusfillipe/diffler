@@ -337,7 +337,7 @@ fn set_layout(
     origins.insert(key.to_owned(), origin.clone());
 }
 
-// A flat one-block-per-key application list; length is inherent.
+// flat per-key application list
 #[allow(clippy::too_many_lines)]
 fn apply_layer(
     layer: PartialConfig,
