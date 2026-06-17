@@ -209,15 +209,12 @@ impl Model {
             label: None,
         };
         model.edges = vec![
-            // main flow connects only to the group root
+            // the flow connects to the group as a whole; the legs live inside
+            // its container (by membership), not via edges
             edge("lint", "test"),
             edge("typos", "test"),
             edge("deny", "test"),
             edge("test", "build"),
-            // the legs hang off the root (shown only when expanded)
-            edge("test", "test ubuntu"),
-            edge("test", "test macos"),
-            edge("test", "test windows"),
             edge("build", "publish-crates"),
             edge("build", "publish-npm"),
             edge("build", "publish-aur"),

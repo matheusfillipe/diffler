@@ -384,7 +384,13 @@ impl GraphApp {
                 if sy >= body.y + body.height {
                     continue;
                 }
+                // a container colors only its outline, so the member boxes
+                // inside keep their own status colors
+                let border_row = row == 0 || row + 1 == p.h;
                 for col in 0..p.w {
+                    if p.container && !border_row && col != 0 && col + 1 != p.w {
+                        continue;
+                    }
                     let gx = p.x + col;
                     if gx < self.scroll_x {
                         continue;

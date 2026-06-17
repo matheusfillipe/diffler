@@ -23,6 +23,9 @@ pub struct Placement {
     pub y: u16,
     pub w: u16,
     pub h: u16,
+    /// A group container (its members are drawn inside). The view colors only
+    /// its border, leaving the member boxes their own colors.
+    pub container: bool,
 }
 
 /// Engine output: the rendered art grid plus node placements, all owned so the
@@ -110,12 +113,15 @@ impl GraphEngine for Layered {
     }
 }
 
-/// Per-node `(column, row-within-column)`, from ascii-dag's Sugiyama pass.
+/// Per-node `(column, row-within-column)` from ascii-dag's Sugiyama pass. Only
+/// flow nodes (ordinary + group roots) are ranked; group members live inside
+/// their root's container, not in the column flow.
 fn rank_nodes(model: &Model) -> Vec<(usize, usize)> {
-    let labels: Vec<&str> = model.nodes.iter().map(|n| n.label.as_str()).collect();
     let mut dag = Graph::new();
-    for (index, label) in labels.iter().enumerate() {
-        dag.add_node(index, label);
+    for (index, node) in model.nodes.iter().enumerate() {
+        if node.group.is_none() {
+            dag.add_node(index, &node.label);
+        }
     }
     for edge in &model.edges {
         if let (Some(from), Some(to)) = (model.index_of(&edge.from), model.index_of(&edge.to)) {
@@ -132,22 +138,67 @@ fn rank_nodes(model: &Model) -> Vec<(usize, usize)> {
     ranks
 }
 
+// cohesive layout pass: size nodes, place columns, place container members,
+// route, draw — splitting it would only scatter the shared coordinate maps
+#[allow(clippy::too_many_lines)]
 fn place_and_draw(model: &Model, ranks: &[(usize, usize)], zoom: Zoom) -> Layout {
     let (box_h, row_gap, col_gap) = zoom.metrics();
-    let col_count = ranks.iter().map(|(c, _)| c + 1).max().unwrap_or(1);
     let col_of = |index: usize| ranks.get(index).map_or(0, |(c, _)| *c);
 
-    // box label text and width per node; a column's boxes share its widest box
-    // so the rails enter/leave on a clean vertical edge (GitHub-like)
     let text: Vec<String> = model
         .nodes
         .iter()
         .map(|n| label_text(&n.label, n.status, zoom))
         .collect();
-    let mut col_width = vec![0usize; col_count];
+    // members per group root, in model order
+    let mut members: std::collections::HashMap<String, Vec<usize>> =
+        std::collections::HashMap::new();
+    for (index, node) in model.nodes.iter().enumerate() {
+        if let Some(group) = &node.group {
+            members.entry(group.clone()).or_default().push(index);
+        }
+    }
+    let members_of = |index: usize| -> &[usize] {
+        model
+            .nodes
+            .get(index)
+            .and_then(|n| n.foldable.as_ref())
+            .and_then(|g| members.get(g))
+            .map_or(&[][..], Vec::as_slice)
+    };
+
+    // size every node: members get a plain box; a flow node is either a box or,
+    // when it has present members, a container sized to hold them stacked
+    let mut size = vec![(0usize, 0usize); model.nodes.len()];
     for (index, label) in text.iter().enumerate() {
+        if let Some(slot) = size.get_mut(index) {
+            *slot = (label.chars().count() + 4, box_h);
+        }
+    }
+    let flow: Vec<usize> = (0..model.nodes.len())
+        .filter(|&i| model.nodes.get(i).is_some_and(|n| n.group.is_none()))
+        .collect();
+    for &index in &flow {
+        let legs = members_of(index);
+        if !legs.is_empty() {
+            let inner = legs
+                .iter()
+                .map(|&m| size.get(m).map_or(0, |s| s.0))
+                .max()
+                .unwrap_or(0)
+                .max(text.get(index).map_or(0, |t| t.chars().count()));
+            if let Some(slot) = size.get_mut(index) {
+                *slot = (inner + 4, 2 + legs.len() * (box_h + 1));
+            }
+        }
+    }
+
+    // columns over flow nodes; a column shares its widest unit's width
+    let col_count = flow.iter().map(|&i| col_of(i) + 1).max().unwrap_or(1);
+    let mut col_width = vec![0usize; col_count];
+    for &index in &flow {
         if let Some(slot) = col_width.get_mut(col_of(index)) {
-            *slot = (*slot).max(label.chars().count() + 4);
+            *slot = (*slot).max(size.get(index).map_or(0, |s| s.0));
         }
     }
     let width_of = |col: usize| col_width.get(col).copied().unwrap_or(0);
@@ -160,45 +211,57 @@ fn place_and_draw(model: &Model, ranks: &[(usize, usize)], zoom: Zoom) -> Layout
         .collect();
     let x_of = |col: usize| col_x.get(col).copied().unwrap_or(0);
 
-    // stack each column's nodes top-to-bottom in level-position order
-    let mut order: Vec<usize> = (0..model.nodes.len()).collect();
+    // stack flow units top-to-bottom (cumulative — units vary in height)
+    let mut order = flow.clone();
     order.sort_by_key(|&i| ranks.get(i).copied().unwrap_or_default());
-    let mut columns: Vec<Vec<usize>> = vec![Vec::new(); col_count];
-    for &i in &order {
-        if let Some(col) = columns.get_mut(col_of(i)) {
-            col.push(i);
-        }
-    }
     let mut node_box = vec![(0usize, 0usize); model.nodes.len()];
+    let mut col_y = vec![0usize; col_count];
     let mut total_h = 0usize;
-    for (col, members) in columns.iter().enumerate() {
-        for (row, &index) in members.iter().enumerate() {
-            let y = row * (box_h + row_gap);
-            if let Some(slot) = node_box.get_mut(index) {
-                *slot = (x_of(col), y);
+    for &index in &order {
+        let col = col_of(index);
+        let y = col_y.get(col).copied().unwrap_or(0);
+        if let Some(slot) = node_box.get_mut(index) {
+            *slot = (x_of(col), y);
+        }
+        let h = size.get(index).map_or(box_h, |s| s.1);
+        if let Some(slot) = col_y.get_mut(col) {
+            *slot = y + h + row_gap.max(1);
+        }
+        total_h = total_h.max(y + h);
+    }
+    // position members inside their container
+    for &index in &flow {
+        let legs = members_of(index);
+        let (cx, cy) = node_box.get(index).copied().unwrap_or_default();
+        for (k, &m) in legs.iter().enumerate() {
+            if let Some(slot) = node_box.get_mut(m) {
+                *slot = (cx + 2, cy + 1 + k * (box_h + 1));
             }
-            total_h = total_h.max(y + box_h);
         }
     }
-    let box_of = |index: usize| node_box.get(index).copied().unwrap_or_default();
+    let node_h: Vec<usize> = size.iter().map(|s| s.1).collect();
     let total_w = col_x
         .last()
         .copied()
         .map_or(0, |x| x + col_width.last().copied().unwrap_or(0));
 
-    // two extra rows below the boxes carry the return rail for back edges
+    // two extra rows below carry the return rail for back edges
     let mut grid = Grid::new(total_w, total_h + 2);
     route_edges(
-        &mut grid, model, ranks, &col_width, &node_box, box_h, total_h,
+        &mut grid, model, ranks, &col_width, &node_box, &node_h, total_h,
     );
 
     let mut placements = Vec::with_capacity(model.nodes.len());
     for (index, node) in model.nodes.iter().enumerate() {
-        let (x, y) = box_of(index);
-        let w = width_of(col_of(index));
-        if let Some(label) = text.get(index) {
+        let (x, y) = node_box.get(index).copied().unwrap_or_default();
+        let (w, h) = size.get(index).copied().unwrap_or((0, box_h));
+        let label = text.get(index).map_or("", String::as_str);
+        let is_container = !members_of(index).is_empty();
+        if is_container {
+            grid.draw_cluster(x, y, w, h, label);
+        } else {
             let meta = zoom.show_meta().then(|| status_word(node.status));
-            grid.draw_box(x, y, w, box_h, label, meta);
+            grid.draw_box(x, y, w, h, label, meta);
         }
         placements.push(Placement {
             id: node.id.clone(),
@@ -206,7 +269,8 @@ fn place_and_draw(model: &Model, ranks: &[(usize, usize)], zoom: Zoom) -> Layout
             x: u16::try_from(x).unwrap_or(u16::MAX),
             y: u16::try_from(y).unwrap_or(u16::MAX),
             w: u16::try_from(w).unwrap_or(0),
-            h: u16::try_from(box_h).unwrap_or(3),
+            h: u16::try_from(h).unwrap_or(3),
+            container: is_container,
         });
     }
 
@@ -254,12 +318,15 @@ fn route_edges(
     ranks: &[(usize, usize)],
     col_width: &[usize],
     node_box: &[(usize, usize)],
-    box_h: usize,
+    node_h: &[usize],
     rail: usize,
 ) {
     let col_of = |index: usize| ranks.get(index).map_or(0, |(c, _)| *c);
     let width_of = |col: usize| col_width.get(col).copied().unwrap_or(0);
     let box_of = |index: usize| node_box.get(index).copied().unwrap_or_default();
+    let h_of = |index: usize| node_h.get(index).copied().unwrap_or(1);
+    // an edge connects at a node's vertical centre (containers are tall)
+    let mid_of = |index: usize| box_of(index).1 + h_of(index) / 2;
 
     let mut forward: Vec<Vec<usize>> = vec![Vec::new(); model.nodes.len()];
     for edge in &model.edges {
@@ -275,9 +342,10 @@ fn route_edges(
                 grid,
                 box_of(from),
                 width_of(col_of(from)),
+                h_of(from),
                 box_of(to),
                 width_of(col_of(to)),
-                box_h,
+                h_of(to),
                 rail,
             );
         }
@@ -286,11 +354,10 @@ fn route_edges(
         if children.is_empty() {
             continue;
         }
-        let targets: Vec<(usize, usize)> = children
-            .iter()
-            .map(|&c| (box_of(c).0, box_of(c).1 + box_h / 2))
-            .collect();
-        draw_fork(grid, box_of(from), width_of(col_of(from)), box_h, &targets);
+        let parent = (box_of(from).0, mid_of(from));
+        let targets: Vec<(usize, usize)> =
+            children.iter().map(|&c| (box_of(c).0, mid_of(c))).collect();
+        draw_fork(grid, parent, width_of(col_of(from)), &targets);
     }
 }
 
@@ -299,15 +366,9 @@ fn route_edges(
 /// child's row and a stub into it with an arrowhead. One junction per parent —
 /// no independent crossings, no stray stubs (corners terminate every rail).
 /// `targets` are each child's `(left_x, mid_y)`.
-fn draw_fork(
-    grid: &mut Grid,
-    parent: (usize, usize),
-    parent_w: usize,
-    box_h: usize,
-    targets: &[(usize, usize)],
-) {
+fn draw_fork(grid: &mut Grid, parent: (usize, usize), parent_w: usize, targets: &[(usize, usize)]) {
     let sx = parent.0 + parent_w;
-    let sy = parent.1 + box_h / 2;
+    let sy = parent.1;
     let nearest = targets.iter().map(|&(x, _)| x).min().unwrap_or(sx + 2);
     if nearest <= sx + 1 {
         return;
@@ -354,19 +415,22 @@ fn draw_fork(
 
 /// A cycle's back edge: down from the parent's bottom to a rail below all boxes,
 /// left along the rail, up into the child's bottom (arrow points up).
+// endpoints + sizes + rail: a self-contained orthogonal route, not worth a struct
+#[allow(clippy::too_many_arguments)]
 fn route_back_edge(
     grid: &mut Grid,
     from: (usize, usize),
     from_w: usize,
+    from_h: usize,
     to: (usize, usize),
     to_w: usize,
-    box_h: usize,
+    to_h: usize,
     rail: usize,
 ) {
     let fx = from.0 + from_w / 2;
     let tx = to.0 + to_w / 2;
-    let fy = from.1 + box_h;
-    let ty = to.1 + box_h;
+    let fy = from.1 + from_h;
+    let ty = to.1 + to_h;
     for y in fy..rail {
         grid.line(fx, y, Dir::U | Dir::D);
     }
@@ -457,6 +521,32 @@ impl Grid {
             && box_h >= 4
         {
             self.write_centered(x, y + 2, w, meta);
+        }
+    }
+
+    /// Draw a group container: a rounded outline with `title` set into the top
+    /// border (`╭─ ▾ test ✗ ─╮`). Member boxes are drawn separately inside it.
+    fn draw_cluster(&mut self, x: usize, y: usize, w: usize, h: usize, title: &str) {
+        if w < 2 || h < 2 {
+            return;
+        }
+        let bottom = y + h - 1;
+        self.put(x, y, '╭');
+        self.put(x + w - 1, y, '╮');
+        self.put(x, bottom, '╰');
+        self.put(x + w - 1, bottom, '╯');
+        for col in 1..w - 1 {
+            self.put(x + col, y, '─');
+            self.put(x + col, bottom, '─');
+        }
+        for row in y + 1..bottom {
+            self.put(x, row, '│');
+            self.put(x + w - 1, row, '│');
+        }
+        for (i, ch) in format!(" {title} ").chars().enumerate() {
+            if x + 2 + i < x + w - 1 {
+                self.put(x + 2 + i, y, ch);
+            }
         }
     }
 
