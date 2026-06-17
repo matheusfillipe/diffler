@@ -1,16 +1,14 @@
-//! Spike: a GitHub Actions front-end for the graph model. The DAG comes from a
-//! workflow YAML's `jobs.<id>.needs`; live status comes from `gh run view`. The
-//! YAML parse + status overlay is pure and unit-tested; only the `gh` calls do
-//! IO. This is the first `CiBackend`-shaped source; the trait itself lands when
-//! the spike graduates.
+//! GitHub Actions source: builds a `diffler_graph::Model` from a workflow YAML's
+//! `jobs.<id>.needs`, with live status from `gh run view`. The YAML parse +
+//! status overlay are pure and unit-tested; only the `gh` calls do IO. This is
+//! the host-side source — the graph component never does IO itself.
 
 use std::path::Path;
 use std::process::Command;
 
 use color_eyre::eyre::{Context, Result, eyre};
+use diffler_graph::{Edge, Model, Node, NodeId, NodeStatus, RankDir};
 use serde::Deserialize;
-
-use super::model::{Edge, Model, Node, NodeId, NodeStatus, RankDir};
 
 /// One job's live state from `gh run view --json jobs`.
 #[derive(Debug, Clone, Deserialize)]

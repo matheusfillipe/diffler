@@ -11,7 +11,7 @@ use std::cmp::Ordering;
 
 use ascii_dag::graph::Graph;
 
-use super::model::{Model, NodeId, NodeStatus};
+use crate::model::{Model, NodeId, NodeStatus};
 
 /// An owned node rectangle in layout-grid cells, plus what the view needs to
 /// color it.
@@ -641,7 +641,7 @@ mod tests {
 
     #[test]
     fn cyclic_graph_lays_out_without_panicking() {
-        use super::super::model::{Edge, Node, RankDir};
+        use crate::model::{Edge, Node, RankDir};
         let mut model = Model::new(RankDir::LeftRight);
         let n = |id: &str| Node::leaf(id, NodeStatus::Neutral);
         model.nodes = vec![n("a"), n("b")];

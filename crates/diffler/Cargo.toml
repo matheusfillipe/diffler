@@ -20,6 +20,7 @@ pkg-fmt = "zip"
 
 [dependencies]
 diffler-core.workspace = true
+diffler-graph.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
 tokio.workspace = true
@@ -38,10 +39,8 @@ serde_json.workspace = true
 unicode-width.workspace = true
 # pre-staged for the LSP client; validates CI build times across targets
 async-lsp.workspace = true
-# node-graph spike: workflow YAML parse + layout engine bake-off
+# graph: GitHub Actions source parses workflow YAML into a diffler-graph Model
 serde_yaml.workspace = true
-ascii-dag.workspace = true
-tui-nodes.workspace = true
 
 [dev-dependencies]
 git2.workspace = true

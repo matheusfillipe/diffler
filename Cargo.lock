@@ -630,13 +630,13 @@ dependencies = [
 name = "diffler"
 version = "0.1.14"
 dependencies = [
- "ascii-dag",
  "async-lsp",
  "axum",
  "clap",
  "color-eyre",
  "crossterm",
  "diffler-core",
+ "diffler-graph",
  "futures-util",
  "git2",
  "insta",
@@ -652,7 +652,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "toml",
- "tui-nodes",
  "unicode-width",
 ]
 
@@ -685,6 +684,16 @@ dependencies = [
  "tree-sitter-rust",
  "tree-sitter-typescript",
  "uuid",
+]
+
+[[package]]
+name = "diffler-graph"
+version = "0.1.14"
+dependencies = [
+ "ascii-dag",
+ "crossterm",
+ "insta",
+ "ratatui",
 ]
 
 [[package]]
@@ -3210,16 +3219,6 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
-
-[[package]]
-name = "tui-nodes"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32406150d98eeb5655d92ad4af8aee816541d05e16b151b24c6be66190a50899"
-dependencies = [
- "log",
- "ratatui",
-]
 
 [[package]]
 name = "typenum"

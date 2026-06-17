@@ -1,0 +1,18 @@
+[package]
+name = "diffler-graph"
+description = "Navigable orthogonal node-graph TUI component (ratatui)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+# not published yet: the API is still settling behind the binary
+publish = false
+
+[dependencies]
+ratatui.workspace = true
+crossterm.workspace = true
+ascii-dag.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
