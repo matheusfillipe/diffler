@@ -22,7 +22,7 @@ use tokio::sync::mpsc;
 
 use crate::event::{self, AppEvent};
 use crate::theme::Theme;
-use engine::{GraphEngine, Layered, Layout};
+use engine::{GraphEngine, Layered, Layout, Zoom};
 use model::{Model, NodeId, NodeStatus};
 
 pub use model::Model as GraphModel;
@@ -144,11 +144,13 @@ struct GraphApp {
     viewport: Rect,
     theme: Theme,
     watching: bool,
+    zoom: Zoom,
 }
 
 impl GraphApp {
     fn new(model: Model, engine: Box<dyn GraphEngine>, theme: Theme) -> Self {
-        let layout = engine.lay_out(&model);
+        let zoom = Zoom::Normal;
+        let layout = engine.lay_out(&model, zoom);
         let selected = layout.placements.first().map(|p| p.id.clone());
         Self {
             model,
@@ -160,6 +162,20 @@ impl GraphApp {
             viewport: Rect::default(),
             theme,
             watching: false,
+            zoom,
+        }
+    }
+
+    /// Recompute the layout (after a zoom change or a status refresh), keeping
+    /// the selection if its node still exists.
+    fn relayout(&mut self) {
+        self.layout = self.engine.lay_out(&self.model, self.zoom);
+        let gone = self
+            .selected
+            .as_ref()
+            .is_none_or(|id| !self.layout.placements.iter().any(|p| &p.id == id));
+        if gone {
+            self.selected = self.layout.placements.first().map(|p| p.id.clone());
         }
     }
 
@@ -167,17 +183,9 @@ impl GraphApp {
     /// Topology is unchanged during a run, so node positions stay put — only the
     /// status glyphs/colors move. The selection survives by id.
     fn refresh_status(&mut self, yaml: &str, jobs: &[github::JobStatus]) {
-        let Ok(model) = github::build_model(yaml, jobs) else {
-            return;
-        };
-        self.model = model;
-        self.layout = self.engine.lay_out(&self.model);
-        let gone = self
-            .selected
-            .as_ref()
-            .is_none_or(|id| !self.layout.placements.iter().any(|p| &p.id == id));
-        if gone {
-            self.selected = self.layout.placements.first().map(|p| p.id.clone());
+        if let Ok(model) = github::build_model(yaml, jobs) {
+            self.model = model;
+            self.relayout();
         }
     }
 
@@ -193,6 +201,14 @@ impl GraphApp {
             KeyCode::Char('N') => self.follow(false),
             KeyCode::Char('g') => self.select_end(true),
             KeyCode::Char('G') => self.select_end(false),
+            KeyCode::Char('+' | '=') => {
+                self.zoom = self.zoom.in_();
+                self.relayout();
+            }
+            KeyCode::Char('-' | '_') => {
+                self.zoom = self.zoom.out();
+                self.relayout();
+            }
             _ => {}
         }
         self.ensure_visible();
@@ -367,7 +383,7 @@ impl GraphApp {
 
     fn hint_line(&self) -> Line<'static> {
         Line::styled(
-            " hjkl move · n/N follow edge · g/G ends · q quit".to_owned(),
+            " hjkl move · n/N follow edge · g/G ends · +/- zoom · q quit".to_owned(),
             Style::new().fg(self.theme.dim),
         )
     }
@@ -381,8 +397,9 @@ impl GraphApp {
         let watch = if self.watching { "  ⟳ watching" } else { "" };
         Line::styled(
             format!(
-                " GRAPH  engine: {}  nodes: {}  sel: {sel}{watch}",
+                " GRAPH  engine: {}  zoom: {}  nodes: {}  sel: {sel}{watch}",
                 self.engine.name(),
+                self.zoom.label(),
                 self.model.nodes.len(),
             ),
             Style::new().fg(self.theme.fg).bg(self.theme.panel),
@@ -438,6 +455,25 @@ mod tests {
     fn demo_graph_renders() {
         let mut app = app();
         insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn zoom_out_renders_a_compact_overview() {
+        let mut app = app();
+        app.handle_key(&key('-'));
+        assert_eq!(app.zoom, Zoom::Compact);
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn zoom_in_renders_detail_with_status() {
+        let mut app = app();
+        app.handle_key(&key('+'));
+        assert_eq!(app.zoom, Zoom::Detail);
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| app.draw(frame)).expect("draw");
+        insta::assert_snapshot!(terminal.backend());
     }
 
     #[test]

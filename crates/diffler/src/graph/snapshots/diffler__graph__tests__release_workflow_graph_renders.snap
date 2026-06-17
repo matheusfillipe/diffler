@@ -2,7 +2,7 @@
 source: crates/diffler/src/graph/mod.rs
 expression: terminal.backend()
 ---
-" hjkl move · n/N follow edge · g/G ends · q quit                                                                        "
+" hjkl move · n/N follow edge · g/G ends · +/- zoom · q quit                                                             "
 "╭──────────────────╮      ╭─────────╮      ╭───────────────────╮      ╭────────────────────╮                            "
 "│ create-release · │─────▸│ build · │───┬─▸│ publish-release · │───┬─▸│       npm ·        │                            "
 "╰──────────────────╯      ╰─────────╯   │  ╰───────────────────╯   │  ╰────────────────────╯                            "
@@ -41,4 +41,4 @@ expression: terminal.backend()
 "                                                                                                                        "
 "                                                                                                                        "
 "                                                                                                                        "
-" GRAPH  engine: layered  nodes: 6  sel: create-release                                                                  "
+" GRAPH  engine: layered  zoom: normal  nodes: 6  sel: create-release                                                    "

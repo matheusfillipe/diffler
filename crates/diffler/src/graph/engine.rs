@@ -37,14 +37,63 @@ pub struct Layout {
 
 pub trait GraphEngine {
     fn name(&self) -> &'static str;
-    fn lay_out(&self, model: &Model) -> Layout;
+    fn lay_out(&self, model: &Model, zoom: Zoom) -> Layout;
 }
 
-const BOX_H: usize = 3;
-/// Blank rows between stacked boxes in a column.
-const ROW_GAP: usize = 1;
-/// Cells between columns, leaving room for the routing rail + arrow.
-const COL_GAP: usize = 6;
+/// Level-of-detail. Terminal cells can't sub-cell scale, so "zoom" trades box
+/// size + label detail for how much graph fits: out = compact overview, in =
+/// roomy boxes with a status line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Zoom {
+    Compact,
+    Normal,
+    Detail,
+}
+
+impl Zoom {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Compact => "compact",
+            Self::Normal => "normal",
+            Self::Detail => "detail",
+        }
+    }
+
+    pub fn out(self) -> Self {
+        match self {
+            Self::Detail => Self::Normal,
+            _ => Self::Compact,
+        }
+    }
+
+    pub fn in_(self) -> Self {
+        match self {
+            Self::Compact => Self::Normal,
+            _ => Self::Detail,
+        }
+    }
+
+    /// `(box height, row gap, column gap)`.
+    fn metrics(self) -> (usize, usize, usize) {
+        match self {
+            Self::Compact => (1, 0, 3),
+            Self::Normal => (3, 1, 6),
+            Self::Detail => (4, 1, 8),
+        }
+    }
+
+    /// Max label chars before eliding (compact only).
+    fn label_max(self) -> Option<usize> {
+        match self {
+            Self::Compact => Some(12),
+            _ => None,
+        }
+    }
+
+    fn show_meta(self) -> bool {
+        self == Self::Detail
+    }
+}
 
 /// GitHub-style layered renderer: ascii-dag ranks the nodes; we draw rounded
 /// outlined boxes left-to-right and route orthogonal rails between columns.
@@ -55,9 +104,9 @@ impl GraphEngine for Layered {
         "layered"
     }
 
-    fn lay_out(&self, model: &Model) -> Layout {
+    fn lay_out(&self, model: &Model, zoom: Zoom) -> Layout {
         let ranks = rank_nodes(model);
-        place_and_draw(model, &ranks)
+        place_and_draw(model, &ranks, zoom)
     }
 }
 
@@ -83,7 +132,8 @@ fn rank_nodes(model: &Model) -> Vec<(usize, usize)> {
     ranks
 }
 
-fn place_and_draw(model: &Model, ranks: &[(usize, usize)]) -> Layout {
+fn place_and_draw(model: &Model, ranks: &[(usize, usize)], zoom: Zoom) -> Layout {
+    let (box_h, row_gap, col_gap) = zoom.metrics();
     let col_count = ranks.iter().map(|(c, _)| c + 1).max().unwrap_or(1);
     let col_of = |index: usize| ranks.get(index).map_or(0, |(c, _)| *c);
 
@@ -92,14 +142,7 @@ fn place_and_draw(model: &Model, ranks: &[(usize, usize)]) -> Layout {
     let text: Vec<String> = model
         .nodes
         .iter()
-        .map(|n| {
-            let glyph = n.status.glyph();
-            if glyph.is_empty() {
-                n.label.clone()
-            } else {
-                format!("{} {glyph}", n.label)
-            }
-        })
+        .map(|n| label_text(&n.label, n.status, zoom))
         .collect();
     let mut col_width = vec![0usize; col_count];
     for (index, label) in text.iter().enumerate() {
@@ -111,7 +154,7 @@ fn place_and_draw(model: &Model, ranks: &[(usize, usize)]) -> Layout {
     let col_x: Vec<usize> = (0..col_count)
         .scan(0usize, |x, col| {
             let here = *x;
-            *x += width_of(col) + COL_GAP;
+            *x += width_of(col) + col_gap;
             Some(here)
         })
         .collect();
@@ -130,11 +173,11 @@ fn place_and_draw(model: &Model, ranks: &[(usize, usize)]) -> Layout {
     let mut total_h = 0usize;
     for (col, members) in columns.iter().enumerate() {
         for (row, &index) in members.iter().enumerate() {
-            let y = row * (BOX_H + ROW_GAP);
+            let y = row * (box_h + row_gap);
             if let Some(slot) = node_box.get_mut(index) {
                 *slot = (x_of(col), y);
             }
-            total_h = total_h.max(y + BOX_H);
+            total_h = total_h.max(y + box_h);
         }
     }
     let box_of = |index: usize| node_box.get(index).copied().unwrap_or_default();
@@ -145,14 +188,17 @@ fn place_and_draw(model: &Model, ranks: &[(usize, usize)]) -> Layout {
 
     // two extra rows below the boxes carry the return rail for back edges
     let mut grid = Grid::new(total_w, total_h + 2);
-    route_edges(&mut grid, model, ranks, &col_width, &node_box, total_h);
+    route_edges(
+        &mut grid, model, ranks, &col_width, &node_box, box_h, total_h,
+    );
 
     let mut placements = Vec::with_capacity(model.nodes.len());
     for (index, node) in model.nodes.iter().enumerate() {
         let (x, y) = box_of(index);
         let w = width_of(col_of(index));
         if let Some(label) = text.get(index) {
-            grid.draw_box(x, y, w, label);
+            let meta = zoom.show_meta().then(|| status_word(node.status));
+            grid.draw_box(x, y, w, box_h, label, meta);
         }
         placements.push(Placement {
             id: node.id.clone(),
@@ -160,7 +206,7 @@ fn place_and_draw(model: &Model, ranks: &[(usize, usize)]) -> Layout {
             x: u16::try_from(x).unwrap_or(u16::MAX),
             y: u16::try_from(y).unwrap_or(u16::MAX),
             w: u16::try_from(w).unwrap_or(0),
-            h: u16::try_from(BOX_H).unwrap_or(3),
+            h: u16::try_from(box_h).unwrap_or(3),
         });
     }
 
@@ -172,6 +218,34 @@ fn place_and_draw(model: &Model, ranks: &[(usize, usize)]) -> Layout {
     }
 }
 
+/// The box label: the node label plus its status glyph, elided to the zoom's
+/// max width (compact) so overview boxes stay small.
+fn label_text(label: &str, status: NodeStatus, zoom: Zoom) -> String {
+    let mut text = label.to_owned();
+    if let Some(max) = zoom.label_max()
+        && text.chars().count() > max
+    {
+        text = text.chars().take(max.saturating_sub(1)).collect::<String>() + "…";
+    }
+    let glyph = status.glyph();
+    if glyph.is_empty() {
+        text
+    } else {
+        format!("{text} {glyph}")
+    }
+}
+
+fn status_word(status: NodeStatus) -> &'static str {
+    match status {
+        NodeStatus::Ok => "success",
+        NodeStatus::Failed => "failed",
+        NodeStatus::Running => "running",
+        NodeStatus::Queued => "queued",
+        NodeStatus::Skipped => "skipped",
+        NodeStatus::Neutral => "",
+    }
+}
+
 /// Route every edge: group forward edges by parent into one clean fork each;
 /// back edges (cycles) loop under the boxes via the return rail at `rail`.
 fn route_edges(
@@ -180,6 +254,7 @@ fn route_edges(
     ranks: &[(usize, usize)],
     col_width: &[usize],
     node_box: &[(usize, usize)],
+    box_h: usize,
     rail: usize,
 ) {
     let col_of = |index: usize| ranks.get(index).map_or(0, |(c, _)| *c);
@@ -202,6 +277,7 @@ fn route_edges(
                 width_of(col_of(from)),
                 box_of(to),
                 width_of(col_of(to)),
+                box_h,
                 rail,
             );
         }
@@ -212,9 +288,9 @@ fn route_edges(
         }
         let targets: Vec<(usize, usize)> = children
             .iter()
-            .map(|&c| (box_of(c).0, box_of(c).1 + BOX_H / 2))
+            .map(|&c| (box_of(c).0, box_of(c).1 + box_h / 2))
             .collect();
-        draw_fork(grid, box_of(from), width_of(col_of(from)), &targets);
+        draw_fork(grid, box_of(from), width_of(col_of(from)), box_h, &targets);
     }
 }
 
@@ -223,9 +299,15 @@ fn route_edges(
 /// child's row and a stub into it with an arrowhead. One junction per parent —
 /// no independent crossings, no stray stubs (corners terminate every rail).
 /// `targets` are each child's `(left_x, mid_y)`.
-fn draw_fork(grid: &mut Grid, parent: (usize, usize), parent_w: usize, targets: &[(usize, usize)]) {
+fn draw_fork(
+    grid: &mut Grid,
+    parent: (usize, usize),
+    parent_w: usize,
+    box_h: usize,
+    targets: &[(usize, usize)],
+) {
     let sx = parent.0 + parent_w;
-    let sy = parent.1 + BOX_H / 2;
+    let sy = parent.1 + box_h / 2;
     let nearest = targets.iter().map(|&(x, _)| x).min().unwrap_or(sx + 2);
     if nearest <= sx + 1 {
         return;
@@ -278,12 +360,13 @@ fn route_back_edge(
     from_w: usize,
     to: (usize, usize),
     to_w: usize,
+    box_h: usize,
     rail: usize,
 ) {
     let fx = from.0 + from_w / 2;
     let tx = to.0 + to_w / 2;
-    let fy = from.1 + BOX_H;
-    let ty = to.1 + BOX_H;
+    let fy = from.1 + box_h;
+    let ty = to.1 + box_h;
     for y in fy..rail {
         grid.line(fx, y, Dir::U | Dir::D);
     }
@@ -335,27 +418,55 @@ impl Grid {
         *cell = mask_to_char(merged);
     }
 
-    fn draw_box(&mut self, x: usize, y: usize, w: usize, text: &str) {
-        if w < 2 {
+    /// Draw a node box `box_h` rows tall. `box_h == 1` is the compact overview
+    /// form `[ label ]` (no top/bottom rule); taller boxes are rounded outlines
+    /// with the label on the first content row and `meta` on the next, if given.
+    fn draw_box(
+        &mut self,
+        x: usize,
+        y: usize,
+        w: usize,
+        box_h: usize,
+        text: &str,
+        meta: Option<&str>,
+    ) {
+        if w < 2 || box_h == 0 {
             return;
         }
-        let inner = w - 2;
+        if box_h == 1 {
+            self.put(x, y, '[');
+            self.put(x + w - 1, y, ']');
+            self.write_centered(x, y, w, text);
+            return;
+        }
+        let bottom = y + box_h - 1;
         self.put(x, y, '╭');
         self.put(x + w - 1, y, '╮');
-        self.put(x, y + 2, '╰');
-        self.put(x + w - 1, y + 2, '╯');
+        self.put(x, bottom, '╰');
+        self.put(x + w - 1, bottom, '╯');
         for col in 1..w - 1 {
             self.put(x + col, y, '─');
-            self.put(x + col, y + 2, '─');
+            self.put(x + col, bottom, '─');
         }
-        self.put(x, y + 1, '│');
-        self.put(x + w - 1, y + 1, '│');
-        // center the label on the middle row
+        for row in y + 1..bottom {
+            self.put(x, row, '│');
+            self.put(x + w - 1, row, '│');
+        }
+        self.write_centered(x, y + 1, w, text);
+        if let Some(meta) = meta
+            && box_h >= 4
+        {
+            self.write_centered(x, y + 2, w, meta);
+        }
+    }
+
+    /// Center `text` within the box interior (`w - 2`) on row `y`.
+    fn write_centered(&mut self, x: usize, y: usize, w: usize, text: &str) {
         let chars: Vec<char> = text.chars().collect();
-        let pad = inner.saturating_sub(chars.len()) / 2;
+        let pad = (w.saturating_sub(2)).saturating_sub(chars.len()) / 2;
         for (i, ch) in chars.iter().enumerate() {
             if 1 + pad + i < w - 1 {
-                self.put(x + 1 + pad + i, y + 1, *ch);
+                self.put(x + 1 + pad + i, y, *ch);
             }
         }
     }
@@ -409,7 +520,7 @@ mod tests {
     #[test]
     fn layered_draws_boxes_and_places_every_node() {
         let model = Model::demo();
-        let layout = Layered.lay_out(&model);
+        let layout = Layered.lay_out(&model, Zoom::Normal);
         assert_eq!(layout.placements.len(), model.nodes.len());
         let art = layout.lines.join("\n");
         assert!(
@@ -445,6 +556,6 @@ mod tests {
             label: None,
         };
         model.edges = vec![e("a", "b"), e("b", "a")];
-        assert_eq!(Layered.lay_out(&model).placements.len(), 2);
+        assert_eq!(Layered.lay_out(&model, Zoom::Normal).placements.len(), 2);
     }
 }
