@@ -1,0 +1,28 @@
+---
+source: crates/diffler/src/graph/mod.rs
+expression: render(&mut app).backend()
+---
+" hjkl move · n/N edge · c collapse · +/- zoom · g/G ends · q quit               "
+"╭─────────╮      ╭────────────╮      ╭─────────╮      ╭──────────────────╮      "
+"│ lint ✓  │───┬─▸│ test (3) ✗ │─────▸│ build ● │───┬─▸│ publish-crates · │      "
+"╰─────────╯   │  ╰────────────╯      ╰─────────╯   │  ╰──────────────────╯      "
+"              │                                    │                            "
+"╭─────────╮   │                                    │  ╭──────────────────╮      "
+"│ typos ✓ │───┤                                    ├─▸│  publish-npm ·   │      "
+"╰─────────╯   │                                    │  ╰──────────────────╯      "
+"              │                                    │                            "
+"╭─────────╮   │                                    │  ╭──────────────────╮      "
+"│ deny ✓  │───╯                                    ╰─▸│  publish-aur ·   │      "
+"╰─────────╯                                           ╰──────────────────╯      "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+" GRAPH  engine: layered  zoom: normal  nodes: 10  sel: test                     "

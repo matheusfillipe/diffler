@@ -31,6 +31,7 @@ pub fn build_model(workflow_yaml: &str, jobs: &[JobStatus]) -> Result<Model> {
             id: NodeId::new(id.clone()),
             label: label.clone(),
             status: status_for(label, id, jobs),
+            group: None,
         })
         .collect();
     model.edges = edges

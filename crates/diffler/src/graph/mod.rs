@@ -145,6 +145,8 @@ struct GraphApp {
     theme: Theme,
     watching: bool,
     zoom: Zoom,
+    /// Group keys currently collapsed into a single node (matrix folding).
+    collapsed: std::collections::HashSet<String>,
 }
 
 impl GraphApp {
@@ -163,13 +165,15 @@ impl GraphApp {
             theme,
             watching: false,
             zoom,
+            collapsed: std::collections::HashSet::new(),
         }
     }
 
-    /// Recompute the layout (after a zoom change or a status refresh), keeping
+    /// Recompute the layout (after a zoom, collapse, or status change), keeping
     /// the selection if its node still exists.
     fn relayout(&mut self) {
-        self.layout = self.engine.lay_out(&self.model, self.zoom);
+        let view = self.model.collapse(&self.collapsed);
+        self.layout = self.engine.lay_out(&view, self.zoom);
         let gone = self
             .selected
             .as_ref()
@@ -177,6 +181,34 @@ impl GraphApp {
         if gone {
             self.selected = self.layout.placements.first().map(|p| p.id.clone());
         }
+    }
+
+    /// Toggle collapse of the selected node's group (a CI matrix). Selecting the
+    /// group node after collapse keeps the cursor on the same logical thing.
+    fn toggle_collapse(&mut self) {
+        let Some(group) = self
+            .selected
+            .as_ref()
+            .and_then(|id| self.model.group_of(id))
+        else {
+            return;
+        };
+        if !self.model.is_collapsible(&group) {
+            return;
+        }
+        if self.collapsed.remove(&group) {
+            // expanded: land on a member
+            self.selected = self
+                .model
+                .nodes
+                .iter()
+                .find(|n| n.group.as_deref() == Some(group.as_str()))
+                .map(|n| n.id.clone());
+        } else {
+            self.collapsed.insert(group.clone());
+            self.selected = Some(NodeId::new(group));
+        }
+        self.relayout();
     }
 
     /// Re-poll outcome: rebuild the model with fresh statuses and re-lay out.
@@ -209,6 +241,7 @@ impl GraphApp {
                 self.zoom = self.zoom.out();
                 self.relayout();
             }
+            KeyCode::Char('c') => self.toggle_collapse(),
             _ => {}
         }
         self.ensure_visible();
@@ -383,7 +416,7 @@ impl GraphApp {
 
     fn hint_line(&self) -> Line<'static> {
         Line::styled(
-            " hjkl move · n/N follow edge · g/G ends · +/- zoom · q quit".to_owned(),
+            " hjkl move · n/N edge · c collapse · +/- zoom · g/G ends · q quit".to_owned(),
             Style::new().fg(self.theme.dim),
         )
     }
@@ -454,6 +487,27 @@ mod tests {
     #[test]
     fn demo_graph_renders() {
         let mut app = app();
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn collapsing_the_matrix_folds_it_to_one_node() {
+        let mut app = app();
+        // select a test-matrix leg, then collapse the group
+        app.selected = Some(NodeId::new("test ubuntu"));
+        app.handle_key(&key('c'));
+        assert_eq!(app.selected, Some(NodeId::new("test")));
+        // the three legs are now one node; failed leg dominates the status
+        let test = app
+            .model
+            .collapse(&app.collapsed)
+            .nodes
+            .iter()
+            .find(|n| n.id == NodeId::new("test"))
+            .cloned()
+            .expect("collapsed test node");
+        assert_eq!(test.label, "test (3)");
+        assert_eq!(test.status, NodeStatus::Failed);
         insta::assert_snapshot!(render(&mut app).backend());
     }
 

@@ -58,6 +58,20 @@ later **ego-centric/radial** layout will suit "usages of X" better than columns.
 - live watch — background `gh` poll every 5s on a blocking thread → channel →
   in-place status refresh; positions stay put.
 - `tui_nodes` — comparison render (test-only) for the bake-off snapshot.
+- **zoom** (`+`/`-`) — level-of-detail: compact (`[label]` overview), normal
+  (boxes), detail (boxes + status-word line). Metrics drive the renderer; the
+  router handles any box height.
+- **collapse** (`c`) — fold a matrix group (`test`) into one `test (N)` node,
+  worst-status, edges rewired; toggle to expand. Demoed on the `--demo` matrix.
+
+## Still open (the "even more")
+
+- GitHub matrix-leg expansion: the GitHub backend currently aggregates a matrix
+  into one node; to *expand* into legs (`build (aarch64-…)`) it needs leg nodes
+  + fanned edges, then collapse/expand reuses the generic group machinery.
+- Better dense-graph edge routing (track assignment) for code graphs.
+- Zoom-in could show real meta (durations) once the model carries it.
+- Ego-centric/radial layout for LSP reference maps.
 
 ## Confirmed / learned
 

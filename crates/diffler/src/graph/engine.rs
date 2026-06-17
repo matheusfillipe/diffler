@@ -544,11 +544,7 @@ mod tests {
     fn cyclic_graph_lays_out_without_panicking() {
         use super::super::model::{Edge, Node, RankDir};
         let mut model = Model::new(RankDir::LeftRight);
-        let n = |id: &str| Node {
-            id: NodeId::new(id),
-            label: id.to_owned(),
-            status: NodeStatus::Neutral,
-        };
+        let n = |id: &str| Node::leaf(id, NodeStatus::Neutral);
         model.nodes = vec![n("a"), n("b")];
         let e = |a: &str, b: &str| Edge {
             from: NodeId::new(a),

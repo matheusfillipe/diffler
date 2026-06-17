@@ -2,7 +2,7 @@
 source: crates/diffler/src/graph/mod.rs
 expression: terminal.backend()
 ---
-" hjkl move · n/N follow edge · g/G ends · +/- zoom · q quit                                                             "
+" hjkl move · n/N edge · c collapse · +/- zoom · g/G ends · q quit                                                       "
 "╭─────────╮        ╭────────────────╮        ╭─────────╮        ╭──────────────────╮                                    "
 "│ lint ✓  │        │ test windows ✗ │        │ build ● │        │ publish-crates · │                                    "
 "│ success │────┬──▸│     failed     │────┬──▸│ running │────┬──▸│      queued      │                                    "
