@@ -31,6 +31,7 @@ pub enum Action {
     Refresh,
     Open,
     OpenReviewDiff,
+    OpenGraph,
     CommitFlow,
     CommitExtend,
     CommitAmend,
@@ -95,6 +96,7 @@ impl Action {
             Self::Refresh => "refresh",
             Self::Open => "open",
             Self::OpenReviewDiff => "open_review_diff",
+            Self::OpenGraph => "open_graph",
             Self::CommitFlow => "commit_flow",
             Self::CommitExtend => "commit_extend",
             Self::CommitAmend => "commit_amend",
@@ -137,7 +139,7 @@ impl Action {
         }
     }
 
-    const ALL: [Self; 58] = [
+    const ALL: [Self; 59] = [
         Self::MoveDown,
         Self::MoveUp,
         Self::GoTop,
@@ -157,6 +159,7 @@ impl Action {
         Self::Refresh,
         Self::Open,
         Self::OpenReviewDiff,
+        Self::OpenGraph,
         Self::CommitFlow,
         Self::CommitExtend,
         Self::CommitAmend,
@@ -251,6 +254,7 @@ const STATUS_DEFAULTS: &[(&str, Action)] = &[
     ("<c-r>", Action::Refresh),
     ("<cr>", Action::Open),
     ("D", Action::OpenReviewDiff),
+    ("o", Action::OpenGraph),
     ("{", Action::PrevHunk),
     ("}", Action::NextHunk),
     ("e", Action::OpenEditor),

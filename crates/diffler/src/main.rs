@@ -3,7 +3,7 @@ use std::path::Path;
 use clap::{Parser, Subcommand};
 use diffler::app::{self, App, Flow};
 use diffler::event::AppEvent;
-use diffler::{clipboard, config, editor, event, mcp, ui, watch};
+use diffler::{clipboard, config, editor, event, graph, mcp, ui, watch};
 use diffler_core::review::Review;
 use ratatui::DefaultTerminal;
 use tokio::sync::mpsc;
@@ -179,6 +179,17 @@ async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<
             let tx = tx.clone();
             tokio::task::spawn_blocking(move || {
                 let _ = tx.send(run_git(&label, &argv, &repo_root));
+            });
+            continue;
+        }
+        if let Some(poll) = app.pending_graph_poll.take() {
+            // re-poll the watched CI run off-thread; the refreshed model comes
+            // back as an event so the graph stays live without blocking
+            let tx = tx.clone();
+            tokio::task::spawn_blocking(move || {
+                if let Some(model) = graph::refetch(&poll) {
+                    let _ = tx.send(AppEvent::GraphModel(model));
+                }
             });
             continue;
         }

@@ -29,6 +29,9 @@ pub enum AppEvent {
         ok: bool,
         output: String,
     },
+    /// A re-polled CI graph model from `graph::refetch`, fed to the embedded
+    /// `GraphView` so live status updates without blocking the loop.
+    GraphModel(diffler_graph::Model),
     Quit,
 }
 
