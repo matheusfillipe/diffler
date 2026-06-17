@@ -1,6 +1,6 @@
 {
   "name": "diffler-mcp",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "description": "stdio↔HTTP MCP proxy bridging Claude Code (or any stdio MCP client) to a running diffler review session",
   "type": "module",
   "bin": {
