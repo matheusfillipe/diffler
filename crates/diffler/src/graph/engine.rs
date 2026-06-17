@@ -7,6 +7,8 @@
 //! left-to-right, wired by clean orthogonal rails. ascii-dag's own `[label]`
 //! rendering is not used.
 
+use std::cmp::Ordering;
+
 use ascii_dag::graph::Graph;
 
 use super::model::{Model, NodeId, NodeStatus};
@@ -142,22 +144,9 @@ fn place_and_draw(model: &Model, ranks: &[(usize, usize)]) -> Layout {
         .map_or(0, |x| x + col_width.last().copied().unwrap_or(0));
 
     // two extra rows below the boxes carry the return rail for back edges
-    let rail = total_h;
     let mut grid = Grid::new(total_w, total_h + 2);
-    // edges first, boxes on top
-    for edge in &model.edges {
-        let (Some(from), Some(to)) = (model.index_of(&edge.from), model.index_of(&edge.to)) else {
-            continue;
-        };
-        route_edge(
-            &mut grid,
-            box_of(from),
-            width_of(col_of(from)),
-            box_of(to),
-            width_of(col_of(to)),
-            rail,
-        );
-    }
+    route_edges(&mut grid, model, ranks, &col_width, &node_box, total_h);
+
     let mut placements = Vec::with_capacity(model.nodes.len());
     for (index, node) in model.nodes.iter().enumerate() {
         let (x, y) = box_of(index);
@@ -183,65 +172,102 @@ fn place_and_draw(model: &Model, ranks: &[(usize, usize)]) -> Layout {
     }
 }
 
-/// Route an edge. A forward edge (child to the right) runs as a left-to-right
-/// rail through the column gap into the child's left edge. A back edge (child
-/// left of or level with the parent — only possible in a cyclic graph like a
-/// call/reference map) loops down to a return rail below the boxes and back up
-/// into the child, so cycles stay visible.
-fn route_edge(
+/// Route every edge: group forward edges by parent into one clean fork each;
+/// back edges (cycles) loop under the boxes via the return rail at `rail`.
+fn route_edges(
     grid: &mut Grid,
-    from: (usize, usize),
-    from_w: usize,
-    to: (usize, usize),
-    to_w: usize,
-    bottom: usize,
+    model: &Model,
+    ranks: &[(usize, usize)],
+    col_width: &[usize],
+    node_box: &[(usize, usize)],
+    rail: usize,
 ) {
-    let sx = from.0 + from_w;
-    let sy = from.1 + BOX_H / 2;
-    let ex = to.0.saturating_sub(1);
-    let ey = to.1 + BOX_H / 2;
-    if ex <= sx {
-        route_back_edge(grid, from, from_w, to, to_w, bottom);
+    let col_of = |index: usize| ranks.get(index).map_or(0, |(c, _)| *c);
+    let width_of = |col: usize| col_width.get(col).copied().unwrap_or(0);
+    let box_of = |index: usize| node_box.get(index).copied().unwrap_or_default();
+
+    let mut forward: Vec<Vec<usize>> = vec![Vec::new(); model.nodes.len()];
+    for edge in &model.edges {
+        let (Some(from), Some(to)) = (model.index_of(&edge.from), model.index_of(&edge.to)) else {
+            continue;
+        };
+        if col_of(to) > col_of(from) {
+            if let Some(children) = forward.get_mut(from) {
+                children.push(to);
+            }
+        } else {
+            route_back_edge(
+                grid,
+                box_of(from),
+                width_of(col_of(from)),
+                box_of(to),
+                width_of(col_of(to)),
+                rail,
+            );
+        }
+    }
+    for (from, children) in forward.iter().enumerate() {
+        if children.is_empty() {
+            continue;
+        }
+        let targets: Vec<(usize, usize)> = children
+            .iter()
+            .map(|&c| (box_of(c).0, box_of(c).1 + BOX_H / 2))
+            .collect();
+        draw_fork(grid, box_of(from), width_of(col_of(from)), &targets);
+    }
+}
+
+/// Draw one parent's fan-out as a single fork: a stub out of the parent to a
+/// shared channel, one junction there (├ ┬ ┤ …), then a vertical down/up to each
+/// child's row and a stub into it with an arrowhead. One junction per parent —
+/// no independent crossings, no stray stubs (corners terminate every rail).
+/// `targets` are each child's `(left_x, mid_y)`.
+fn draw_fork(grid: &mut Grid, parent: (usize, usize), parent_w: usize, targets: &[(usize, usize)]) {
+    let sx = parent.0 + parent_w;
+    let sy = parent.1 + BOX_H / 2;
+    let nearest = targets.iter().map(|&(x, _)| x).min().unwrap_or(sx + 2);
+    if nearest <= sx + 1 {
         return;
     }
-    let channel = sx + (ex - sx) / 2;
+    let channel = sx + (nearest - sx) / 2;
     for x in sx..channel {
         grid.line(x, sy, Dir::L | Dir::R);
     }
-    if sy == ey {
-        for x in channel..ex {
-            grid.line(x, sy, Dir::L | Dir::R);
+    let mut fork = Dir::L;
+    for &(cx, cy) in targets {
+        let ex = cx.saturating_sub(1);
+        match cy.cmp(&sy) {
+            Ordering::Equal => {
+                fork |= Dir::R;
+                for x in channel..ex {
+                    grid.line(x, sy, Dir::L | Dir::R);
+                }
+            }
+            Ordering::Greater => {
+                fork |= Dir::D;
+                for y in sy + 1..cy {
+                    grid.line(channel, y, Dir::U | Dir::D);
+                }
+                grid.line(channel, cy, Dir::U | Dir::R); // ╰
+                for x in channel + 1..ex {
+                    grid.line(x, cy, Dir::L | Dir::R);
+                }
+            }
+            Ordering::Less => {
+                fork |= Dir::U;
+                for y in cy + 1..sy {
+                    grid.line(channel, y, Dir::U | Dir::D);
+                }
+                grid.line(channel, cy, Dir::D | Dir::R); // ╭
+                for x in channel + 1..ex {
+                    grid.line(x, cy, Dir::L | Dir::R);
+                }
+            }
         }
-    } else {
-        let (lo, hi) = (sy.min(ey), sy.max(ey));
-        for y in lo..=hi {
-            grid.line(channel, y, Dir::U | Dir::D);
-        }
-        // bends at the two ends of the vertical
-        let down = ey > sy;
-        grid.line(
-            channel,
-            sy,
-            if down {
-                Dir::L | Dir::D
-            } else {
-                Dir::L | Dir::U
-            },
-        );
-        grid.line(
-            channel,
-            ey,
-            if down {
-                Dir::U | Dir::R
-            } else {
-                Dir::D | Dir::R
-            },
-        );
-        for x in channel + 1..ex {
-            grid.line(x, ey, Dir::L | Dir::R);
-        }
+        grid.put(ex, cy, '▸');
     }
-    grid.put(ex, ey, '▸');
+    grid.line(channel, sy, fork);
 }
 
 /// A cycle's back edge: down from the parent's bottom to a rail below all boxes,
