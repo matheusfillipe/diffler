@@ -26,6 +26,13 @@ pub struct Placement {
     /// A group container (its members are drawn inside). The view colors only
     /// its border, leaving the member boxes their own colors.
     pub container: bool,
+    /// A top-level nav gate (ordinary node or container). Horizontal moves and
+    /// `g`/`G` only land on these — crossing columns enters a group at its
+    /// container, never a leg.
+    pub selectable: bool,
+    /// A group leg drawn inside a container. Reachable by vertical moves (enter
+    /// the group with `j`/`k`) and by clicking it directly.
+    pub member: bool,
 }
 
 /// Engine output: the rendered art grid plus node placements, all owned so the
@@ -271,6 +278,8 @@ fn place_and_draw(model: &Model, ranks: &[(usize, usize)], zoom: Zoom) -> Layout
             w: u16::try_from(w).unwrap_or(0),
             h: u16::try_from(h).unwrap_or(3),
             container: is_container,
+            selectable: node.group.is_none(),
+            member: node.group.is_some(),
         });
     }
 

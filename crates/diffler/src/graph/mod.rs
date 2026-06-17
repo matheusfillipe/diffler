@@ -59,11 +59,17 @@ pub fn github_source(workflow: &Path, run: Option<String>) -> Result<(Model, Opt
 /// so a relaxed interval keeps `gh` load and rate-limit pressure low.
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Two left-presses within this window (at ~the same cell) are a double-click.
+const DOUBLE_CLICK_WINDOW: std::time::Duration = std::time::Duration::from_millis(400);
+
 /// Run the graph screen to completion. Owns terminal setup/teardown so the
 /// spike stays isolated from the main review loop.
 pub async fn run(model: Model, theme: Theme, live: Option<LiveSource>) -> color_eyre::Result<()> {
+    use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
     let terminal = ratatui::init();
+    let _ = crossterm::execute!(std::io::stdout(), EnableMouseCapture);
     let result = run_loop(terminal, model, theme, live).await;
+    let _ = crossterm::execute!(std::io::stdout(), DisableMouseCapture);
     ratatui::restore();
     result
 }
@@ -99,6 +105,7 @@ async fn run_loop(
                     {
                         break;
                     }
+                    AppEvent::Mouse(mouse) => app.handle_mouse(mouse),
                     _ => {}
                 }
             }
@@ -147,6 +154,8 @@ struct GraphApp {
     zoom: Zoom,
     /// Group keys currently collapsed into a single node (matrix folding).
     collapsed: std::collections::HashSet<String>,
+    /// Time + cell of the last left-press, for double-click detection.
+    last_click: Option<(std::time::Instant, u16, u16)>,
 }
 
 impl GraphApp {
@@ -163,6 +172,7 @@ impl GraphApp {
             watching: false,
             zoom: Zoom::Normal,
             collapsed: std::collections::HashSet::new(),
+            last_click: None,
         };
         // build the first layout through the collapse path so fold markers show
         app.relayout();
@@ -174,12 +184,15 @@ impl GraphApp {
     fn relayout(&mut self) {
         let view = self.model.collapse(&self.collapsed);
         self.layout = self.engine.lay_out(&view, self.zoom);
-        let gone = self
-            .selected
-            .as_ref()
-            .is_none_or(|id| !self.layout.placements.iter().any(|p| &p.id == id));
+        let gone = self.selected.as_ref().is_none_or(|id| {
+            !self
+                .layout
+                .placements
+                .iter()
+                .any(|p| &p.id == id && p.selectable)
+        });
         if gone {
-            self.selected = self.layout.placements.first().map(|p| p.id.clone());
+            self.selected = self.first_selectable();
         }
     }
 
@@ -253,6 +266,15 @@ impl GraphApp {
             .placements
             .iter()
             .filter_map(|p| {
+                // horizontal moves cross columns and land on gates only;
+                // vertical moves can descend into a group's legs
+                let reachable = match dir {
+                    Dir::Left | Dir::Right => p.selectable,
+                    Dir::Up | Dir::Down => p.selectable || p.member,
+                };
+                if !reachable {
+                    return None;
+                }
                 let to = center(p);
                 let (dx, dy) = (
                     i32::from(to.0) - i32::from(from.0),
@@ -299,24 +321,93 @@ impl GraphApp {
         }
     }
 
-    /// Jump to the first (`top`) or last node in layout order.
+    /// Mouse: a left-click selects the node under the pointer; a double-click
+    /// toggles its group (like Enter). Scroll pans vertically.
+    fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
+        use crossterm::event::{MouseButton, MouseEventKind};
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                let double = self.is_double_click(mouse.column, mouse.row);
+                if let Some(id) = self.node_at(mouse.column, mouse.row) {
+                    self.selected = Some(id);
+                    if double {
+                        self.toggle_collapse();
+                    }
+                    self.ensure_visible();
+                }
+            }
+            MouseEventKind::ScrollDown => self.scroll_y = self.scroll_y.saturating_add(2),
+            MouseEventKind::ScrollUp => self.scroll_y = self.scroll_y.saturating_sub(2),
+            _ => {}
+        }
+    }
+
+    /// The node whose box covers screen cell `(col, row)`. A leg inside a
+    /// container wins over the container, so clicking a leg selects the leg.
+    fn node_at(&self, col: u16, row: u16) -> Option<NodeId> {
+        let v = self.viewport;
+        if col < v.x || col >= v.x + v.width || row < v.y || row >= v.y + v.height {
+            return None;
+        }
+        let gx = self.scroll_x + (col - v.x);
+        let gy = self.scroll_y + (row - v.y);
+        let covers =
+            |p: &&engine::Placement| gx >= p.x && gx < p.x + p.w && gy >= p.y && gy < p.y + p.h;
+        self.layout
+            .placements
+            .iter()
+            .find(|p| p.member && covers(p))
+            .or_else(|| {
+                self.layout
+                    .placements
+                    .iter()
+                    .find(|p| p.selectable && covers(p))
+            })
+            .map(|p| p.id.clone())
+    }
+
+    /// A second left-press at (about) the same cell within the double-click
+    /// window. Resets after firing so a third press starts fresh.
+    fn is_double_click(&mut self, col: u16, row: u16) -> bool {
+        let now = std::time::Instant::now();
+        let double = self.last_click.is_some_and(|(at, c, r)| {
+            now.duration_since(at) < DOUBLE_CLICK_WINDOW && c.abs_diff(col) <= 1 && r == row
+        });
+        self.last_click = if double { None } else { Some((now, col, row)) };
+        double
+    }
+
+    /// Jump to the first (`top`) or last navigable node in layout order.
     fn select_end(&mut self, top: bool) {
+        let mut navigable = self.layout.placements.iter().filter(|p| p.selectable);
         let pick = if top {
-            self.layout.placements.first()
+            navigable.next()
         } else {
-            self.layout.placements.last()
+            navigable.next_back()
         };
         if let Some(p) = pick {
             self.selected = Some(p.id.clone());
         }
     }
 
+    /// The first navigable node, for seeding/resetting the selection.
+    fn first_selectable(&self) -> Option<NodeId> {
+        self.layout
+            .placements
+            .iter()
+            .find(|p| p.selectable)
+            .map(|p| p.id.clone())
+    }
+
     /// Scroll so the selected node stays inside the viewport.
     fn ensure_visible(&mut self) {
+        let (vw, vh) = (self.viewport.width, self.viewport.height);
+        if vw == 0 || vh == 0 {
+            return; // no render yet — viewport unknown
+        }
         let Some((x, y, w, h)) = self.selected_placement().map(|p| (p.x, p.y, p.w, p.h)) else {
             return;
         };
-        let (vw, vh) = (self.viewport.width, self.viewport.height);
         if x < self.scroll_x {
             self.scroll_x = x;
         } else if x + w >= self.scroll_x + vw {
@@ -345,6 +436,8 @@ impl GraphApp {
         ])
         .areas(area);
         self.viewport = body;
+        // keep the selection in view; wheel panning sticks until the selection
+        // would scroll off (then this clamps it back)
         self.ensure_visible();
 
         frame.render_widget(Paragraph::new(self.hint_line()), hint);
@@ -444,8 +537,12 @@ enum Dir {
     Down,
 }
 
+/// The point navigation measures from. A container uses its top so that `j`
+/// from it enters the first leg and `j`/`k` then cycle the legs cleanly,
+/// instead of jumping into the middle of the stack.
 fn center(p: &engine::Placement) -> (u16, u16) {
-    (p.x + p.w / 2, p.y + p.h / 2)
+    let cy = if p.container { p.y } else { p.y + p.h / 2 };
+    (p.x + p.w / 2, cy)
 }
 
 fn status_color(theme: &Theme, status: NodeStatus) -> ratatui::style::Color {
@@ -478,6 +575,90 @@ mod tests {
 
     fn key(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), crossterm::event::KeyModifiers::NONE)
+    }
+
+    fn left_click(col: u16, row: u16) -> crossterm::event::MouseEvent {
+        use crossterm::event::{MouseButton, MouseEventKind};
+        crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: col,
+            row,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        }
+    }
+
+    /// A screen cell on a placement: a container's title row (so the click hits
+    /// the container, not a leg inside it), else the box centre.
+    fn cell_of(app: &GraphApp, id: &str) -> (u16, u16) {
+        let p = app
+            .layout
+            .placements
+            .iter()
+            .find(|p| p.id == NodeId::new(id))
+            .expect("placement");
+        let (gx, gy) = if p.container {
+            (p.x + 3, p.y)
+        } else {
+            (p.x + p.w / 2, p.y + p.h / 2)
+        };
+        (
+            app.viewport.x + gx.saturating_sub(app.scroll_x),
+            app.viewport.y + gy.saturating_sub(app.scroll_y),
+        )
+    }
+
+    #[test]
+    fn mouse_click_selects_and_double_click_folds() {
+        let mut app = app();
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| app.draw(frame)).expect("draw");
+
+        // a single click on the container selects it (not a leg inside)
+        let (cx, cy) = cell_of(&app, "test");
+        app.handle_mouse(left_click(cx, cy));
+        assert_eq!(app.selected, Some(NodeId::new("test")));
+        // clicking a leg directly selects the leg, not the container
+        let (lx, ly) = cell_of(&app, "test ubuntu");
+        app.handle_mouse(left_click(lx, ly));
+        assert_eq!(
+            app.selected,
+            Some(NodeId::new("test ubuntu")),
+            "click reaches the leg"
+        );
+
+        // double-click folds the group; do it on the container
+        app.handle_mouse(left_click(cx, cy));
+        app.handle_mouse(left_click(cx, cy));
+        assert!(app.collapsed.contains("test"), "double-click folds");
+    }
+
+    #[test]
+    fn vertical_nav_enters_group_legs_horizontal_stays_on_the_gate() {
+        let mut app = app();
+        render(&mut app); // set the viewport so ensure_visible behaves
+        // from the left column, right lands on the container gate, not a leg
+        app.selected = Some(NodeId::new("lint"));
+        app.handle_key(&key('l'));
+        assert_eq!(
+            app.selected,
+            Some(NodeId::new("test")),
+            "l enters at the gate"
+        );
+        // down descends into the legs
+        app.handle_key(&key('j'));
+        let sel = app.selected.clone().expect("selection");
+        let node = app
+            .model
+            .nodes
+            .iter()
+            .find(|n| n.id == sel)
+            .expect("selected node");
+        assert_eq!(
+            node.group.as_deref(),
+            Some("test"),
+            "j enters a leg of the group"
+        );
     }
 
     #[test]
