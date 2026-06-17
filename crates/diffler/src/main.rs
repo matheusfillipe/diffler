@@ -78,16 +78,16 @@ async fn main() -> color_eyre::Result<()> {
             run,
         }) => {
             let (theme, _) = diffler::theme::Theme::from_name(&loaded.config.ui.theme);
-            let model = if demo {
-                graph::GraphModel::demo()
+            let (model, live) = if demo {
+                (graph::GraphModel::demo(), None)
             } else {
                 let wf = workflow.map_or_else(
                     || Path::new(&cli.path).join(".github/workflows/release.yml"),
                     std::path::PathBuf::from,
                 );
-                graph::github_model(&wf, run)?
+                graph::github_source(&wf, run)?
             };
-            graph::run(model, theme).await
+            graph::run(model, theme, live).await
         }
         None => {
             // fail before touching the terminal so the error stays readable

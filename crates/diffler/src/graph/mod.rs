@@ -25,10 +25,18 @@ use model::{Model, NodeId, NodeStatus};
 
 pub use model::Model as GraphModel;
 
+/// A workflow run that can be re-polled for live status. The YAML is kept so a
+/// status refresh rebuilds the model without re-reading the file.
+pub struct LiveSource {
+    yaml: String,
+    run_id: String,
+}
+
 /// Build a model from a GitHub Actions workflow: the DAG from its `needs`, live
 /// status (best-effort) from the latest run or `run`. Reading the workflow is
 /// required; the `gh` calls are tolerated so the structure shows even offline.
-pub fn github_model(workflow: &Path, run: Option<String>) -> Result<Model> {
+/// Returns a [`LiveSource`] when a run id is known, so the screen can watch it.
+pub fn github_source(workflow: &Path, run: Option<String>) -> Result<(Model, Option<LiveSource>)> {
     let yaml = std::fs::read_to_string(workflow)
         .wrap_err_with(|| format!("read workflow {}", workflow.display()))?;
     let run_id = run.or_else(|| github::latest_run(workflow).ok());
@@ -37,14 +45,23 @@ pub fn github_model(workflow: &Path, run: Option<String>) -> Result<Model> {
         .map(github::fetch_jobs)
         .and_then(Result::ok)
         .unwrap_or_default();
-    github::build_model(&yaml, &jobs)
+    let model = github::build_model(&yaml, &jobs)?;
+    let live = run_id.map(|run_id| LiveSource {
+        yaml: yaml.clone(),
+        run_id,
+    });
+    Ok((model, live))
 }
+
+/// How often to re-poll a watched run for live status. CI state changes slowly,
+/// so a relaxed interval keeps `gh` load and rate-limit pressure low.
+const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Run the graph screen to completion. Owns terminal setup/teardown so the
 /// spike stays isolated from the main review loop.
-pub async fn run(model: Model, theme: Theme) -> color_eyre::Result<()> {
+pub async fn run(model: Model, theme: Theme, live: Option<LiveSource>) -> color_eyre::Result<()> {
     let terminal = ratatui::init();
-    let result = run_loop(terminal, model, theme).await;
+    let result = run_loop(terminal, model, theme, live).await;
     ratatui::restore();
     result
 }
@@ -53,22 +70,66 @@ async fn run_loop(
     mut terminal: ratatui::DefaultTerminal,
     model: Model,
     theme: Theme,
+    live: Option<LiveSource>,
 ) -> color_eyre::Result<()> {
     let mut app = GraphApp::new(model, Box::new(AsciiDag), theme);
+    app.watching = live.is_some();
     let (tx, mut rx) = mpsc::unbounded_channel();
     let _events = event::spawn_event_loop(tx);
+
+    // a watched run is polled on its own task so the gh subprocess never blocks
+    // the event loop; refreshed statuses arrive on this channel
+    let (status_tx, mut status_rx) = mpsc::unbounded_channel();
+    let yaml = live.as_ref().map(|l| l.yaml.clone());
+    if let Some(live) = live {
+        tokio::spawn(poll_run(live.run_id, status_tx));
+    }
+
     loop {
         terminal.draw(|frame| app.draw(frame))?;
-        let Some(ev) = rx.recv().await else { break };
-        match ev {
-            AppEvent::Quit => break,
-            AppEvent::Key(key) if key.kind != KeyEventKind::Release && app.handle_key(&key) => {
-                break;
+        tokio::select! {
+            ev = rx.recv() => {
+                let Some(ev) = ev else { break };
+                match ev {
+                    AppEvent::Quit => break,
+                    AppEvent::Key(key)
+                        if key.kind != KeyEventKind::Release && app.handle_key(&key) =>
+                    {
+                        break;
+                    }
+                    _ => {}
+                }
             }
-            _ => {}
+            jobs = status_rx.recv() => {
+                match jobs {
+                    Some(jobs) => {
+                        if let Some(yaml) = yaml.as_deref() {
+                            app.refresh_status(yaml, &jobs);
+                        }
+                    }
+                    None => break,
+                }
+            }
         }
     }
     Ok(())
+}
+
+/// Poll a run's job statuses forever, emitting each fetch on `tx`. The fetch is
+/// blocking `gh`, so it runs on a blocking thread; failures are skipped (the
+/// last good statuses stay on screen).
+async fn poll_run(run_id: String, tx: mpsc::UnboundedSender<Vec<github::JobStatus>>) {
+    let mut ticker = tokio::time::interval(POLL_INTERVAL);
+    loop {
+        ticker.tick().await;
+        let id = run_id.clone();
+        let fetched = tokio::task::spawn_blocking(move || github::fetch_jobs(&id)).await;
+        if let Ok(Ok(jobs)) = fetched
+            && tx.send(jobs).is_err()
+        {
+            break;
+        }
+    }
 }
 
 struct GraphApp {
@@ -80,6 +141,7 @@ struct GraphApp {
     scroll_y: u16,
     viewport: Rect,
     theme: Theme,
+    watching: bool,
 }
 
 impl GraphApp {
@@ -95,6 +157,25 @@ impl GraphApp {
             scroll_y: 0,
             viewport: Rect::default(),
             theme,
+            watching: false,
+        }
+    }
+
+    /// Re-poll outcome: rebuild the model with fresh statuses and re-lay out.
+    /// Topology is unchanged during a run, so node positions stay put — only the
+    /// status glyphs/colors move. The selection survives by id.
+    fn refresh_status(&mut self, yaml: &str, jobs: &[github::JobStatus]) {
+        let Ok(model) = github::build_model(yaml, jobs) else {
+            return;
+        };
+        self.model = model;
+        self.layout = self.engine.lay_out(&self.model);
+        let gone = self
+            .selected
+            .as_ref()
+            .is_none_or(|id| !self.layout.placements.iter().any(|p| &p.id == id));
+        if gone {
+            self.selected = self.layout.placements.first().map(|p| p.id.clone());
         }
     }
 
@@ -295,9 +376,10 @@ impl GraphApp {
             .as_ref()
             .map_or("-", |id| id.0.as_str())
             .to_owned();
+        let watch = if self.watching { "  ⟳ watching" } else { "" };
         Line::styled(
             format!(
-                " GRAPH  engine: {}  nodes: {}  sel: {sel}",
+                " GRAPH  engine: {}  nodes: {}  sel: {sel}{watch}",
                 self.engine.name(),
                 self.model.nodes.len(),
             ),
