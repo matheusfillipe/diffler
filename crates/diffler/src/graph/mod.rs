@@ -6,6 +6,8 @@
 mod engine;
 mod github;
 mod model;
+#[cfg(test)]
+mod tui_nodes;
 
 use std::path::Path;
 
