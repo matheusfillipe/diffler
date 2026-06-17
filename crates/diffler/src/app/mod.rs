@@ -48,12 +48,16 @@ pub enum Screen {
     Status,
     Log,
     Diff,
+    /// The CI graph view; keys route to the embedded `GraphView`, not the keymap.
+    Graph,
 }
 
 impl Screen {
     fn context(self) -> Context {
         match self {
-            Self::Status => Context::Status,
+            // Graph keys go to the GraphView, so its keymap context is unused;
+            // map it to Status so hint/help lookups stay total.
+            Self::Status | Self::Graph => Context::Status,
             Self::Diff => Context::Diff,
             Self::Log => Context::Log,
         }
@@ -179,6 +183,8 @@ const PENDING_TIMEOUT_TICKS: u8 = 4;
 const REFRESH_FLASH_TICKS: u8 = 4;
 /// Poll interval (in 250ms ticks) when the watcher is missing or broken.
 const FALLBACK_REFRESH_TICKS: u32 = 20;
+/// Re-poll the watched CI graph every this many 250ms ticks (~5s).
+const GRAPH_POLL_TICKS: u32 = 20;
 
 pub struct App {
     pub review: Review,
@@ -191,6 +197,12 @@ pub struct App {
     pub status: StatusView,
     pub log: Option<LogView>,
     pub diff: Option<DiffView>,
+    /// The embedded CI graph component, present while the Graph screen is up.
+    pub graph: Option<diffler_graph::GraphView>,
+    /// The watched workflow run feeding `graph`, re-polled for live status.
+    graph_poll: Option<crate::graph::GraphPoll>,
+    /// A graph re-poll the main loop should run off-thread (mirrors `pending_git`).
+    pub pending_graph_poll: Option<crate::graph::GraphPoll>,
     pub modal: Option<Modal>,
     /// Active `/` search over the focused pane, if any. `search.open` means the
     /// prompt is capturing input; otherwise highlights persist while `n`/`N`
@@ -319,6 +331,9 @@ impl App {
             status: StatusView::new(recent),
             log: None,
             diff: None,
+            graph: None,
+            graph_poll: None,
+            pending_graph_poll: None,
             modal: None,
             search: None,
             message,
@@ -383,7 +398,9 @@ impl App {
         match event {
             AppEvent::Quit => Flow::Quit,
             AppEvent::Key(key) if key.kind != crossterm::event::KeyEventKind::Release => {
-                if self.modal.is_some() {
+                if self.screen() == Screen::Graph {
+                    self.handle_graph_key(&key)
+                } else if self.modal.is_some() {
                     self.handle_modal_key(&key)
                 } else if self.transient.is_some() {
                     self.handle_transient_key(&key)
@@ -404,6 +421,18 @@ impl App {
                     && self.watcher_unhealthy()
                 {
                     self.refresh();
+                }
+                // re-poll the watched CI graph on a relaxed cadence
+                if self.screen() == Screen::Graph
+                    && self.tick_count.is_multiple_of(GRAPH_POLL_TICKS)
+                {
+                    self.pending_graph_poll = self.graph_poll.clone();
+                }
+                Flow::Continue
+            }
+            AppEvent::GraphModel(model) => {
+                if let Some(graph) = self.graph.as_mut() {
+                    graph.set_model(model);
                 }
                 Flow::Continue
             }
@@ -447,6 +476,13 @@ impl App {
     /// handler forces every interaction to be considered.
     fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
         use crossterm::event::{MouseButton, MouseEventKind};
+        // the graph view consumes raw mouse events itself
+        if self.screen() == Screen::Graph {
+            if let Some(action) = self.graph.as_mut().and_then(|g| g.on_mouse(mouse)) {
+                self.on_graph_action(&action);
+            }
+            return;
+        }
         let (col, row) = (mouse.column, mouse.row);
         let gesture = match mouse.kind {
             MouseEventKind::ScrollDown => MouseGesture::Scroll {
@@ -474,6 +510,7 @@ impl App {
             Screen::Status => self.status_mouse(gesture),
             Screen::Diff => self.diff_mouse(gesture),
             Screen::Log => self.log_mouse(gesture),
+            Screen::Graph => {} // handled above
         }
     }
 
@@ -503,7 +540,7 @@ impl App {
                         log.visual_anchor = None;
                     }
                 }
-                Screen::Status => {}
+                Screen::Status | Screen::Graph => {}
             }
             self.pending.clear();
             return Flow::Continue;
@@ -586,7 +623,7 @@ impl App {
                 .as_ref()
                 .is_some_and(|d| d.visual_anchor.is_some()),
             Screen::Log => self.log.as_ref().is_some_and(|l| l.visual_anchor.is_some()),
-            Screen::Status => false,
+            Screen::Status | Screen::Graph => false,
         }
     }
 
@@ -774,13 +811,57 @@ impl App {
             Action::Search => self.search_start(),
             Action::SearchNext => self.search_step(true),
             Action::SearchPrev => self.search_step(false),
+            Action::OpenGraph => self.open_graph(),
             action => match self.screen() {
                 Screen::Status => self.dispatch_status(action),
                 Screen::Log => self.dispatch_log(action),
                 Screen::Diff => self.dispatch_diff(action),
+                // graph keys are routed to the GraphView, never the keymap
+                Screen::Graph => {}
             },
         }
         Flow::Continue
+    }
+
+    /// Open the CI graph for the repo's workflow as a new screen.
+    fn open_graph(&mut self) {
+        let Some(workflow) = crate::graph::discover_workflow(&self.review.repo_root) else {
+            self.info("no .github/workflows to graph");
+            return;
+        };
+        match crate::graph::load(&workflow) {
+            Ok((model, poll)) => {
+                let mut view = diffler_graph::GraphView::new();
+                view.set_model(model);
+                self.graph = Some(view);
+                self.graph_poll = poll.clone();
+                self.pending_graph_poll = poll;
+                self.push_screen(Screen::Graph);
+            }
+            Err(err) => self.error(err.to_string()),
+        }
+    }
+
+    /// While the graph screen is up, keys go to the component; Esc/q leave it.
+    fn handle_graph_key(&mut self, key: &KeyEvent) -> Flow {
+        if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) {
+            return self.pop_screen();
+        }
+        if let Some(action) = self.graph.as_mut().and_then(|g| g.on_key(*key)) {
+            self.on_graph_action(&action);
+        }
+        Flow::Continue
+    }
+
+    /// React to a [`diffler_graph::GraphAction`] from the component.
+    fn on_graph_action(&mut self, action: &diffler_graph::GraphAction) {
+        match action {
+            // a node's per-type action — opening code/logs lands here later
+            diffler_graph::GraphAction::Activated(id) => {
+                self.info(format!("{} (open not wired yet)", id.0));
+            }
+            diffler_graph::GraphAction::Folded { .. } => {}
+        }
     }
 
     /// Enter a screen. Clears any search, whose matches are keyed to the
@@ -798,6 +879,11 @@ impl App {
         match self.screens.pop() {
             Some(Screen::Diff) => self.diff = None,
             Some(Screen::Log) => self.log = None,
+            Some(Screen::Graph) => {
+                self.graph = None;
+                self.graph_poll = None;
+                self.pending_graph_poll = None;
+            }
             Some(Screen::Status) | None => {}
         }
         Flow::Continue
@@ -878,6 +964,7 @@ impl App {
                 Pane::List => d.tree_cursor,
                 Pane::Diff => d.cursor,
             }),
+            Screen::Graph => 0,
         }
     }
 
@@ -892,6 +979,7 @@ impl App {
                     .collect()
             }),
             Screen::Diff => self.diff_search_rows(),
+            Screen::Graph => Vec::new(),
         }
     }
 
@@ -934,6 +1022,7 @@ impl App {
                     }
                 }
             }
+            Screen::Graph => {}
         }
     }
 
@@ -1461,6 +1550,35 @@ mod tests {
         app.handle(key('r'));
         let message = app.message.expect("message");
         assert!(message.text.contains("comment"));
+    }
+
+    #[test]
+    fn open_graph_without_a_workflow_is_a_clean_noop() {
+        // the fixture repo has no .github/workflows, so `o` just informs
+        let (_fixture, mut app) = app();
+        app.handle(key('o'));
+        assert_eq!(app.screen(), Screen::Status, "no screen pushed");
+        assert!(app.graph.is_none());
+        let message = app.message.expect("message");
+        assert!(message.text.contains("workflows"), "{}", message.text);
+    }
+
+    #[test]
+    fn graph_model_event_feeds_the_view_when_open() {
+        let (_fixture, mut app) = app();
+        // stand up a graph screen directly (no gh needed)
+        let mut view = diffler_graph::GraphView::new();
+        view.set_model(diffler_graph::Model::demo());
+        app.graph = Some(view);
+        app.push_screen(Screen::Graph);
+        assert_eq!(app.screen(), Screen::Graph);
+        // a refreshed model from the poll is applied to the live view
+        app.handle(AppEvent::GraphModel(diffler_graph::Model::demo()));
+        assert!(app.graph.is_some());
+        // q backs out and drops the graph state
+        app.handle(key('q'));
+        assert_eq!(app.screen(), Screen::Status);
+        assert!(app.graph.is_none());
     }
 
     #[test]

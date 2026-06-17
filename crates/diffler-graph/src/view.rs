@@ -30,7 +30,9 @@ const DOUBLE_CLICK_WINDOW: std::time::Duration = std::time::Duration::from_milli
 
 pub struct GraphView {
     model: Model,
-    engine: Box<dyn GraphEngine>,
+    // `+ Send` so an embedding host that crosses threads/await points (the
+    // review app is spawned in tests) keeps `App: Send`
+    engine: Box<dyn GraphEngine + Send>,
     layout: Layout,
     selected: Option<NodeId>,
     scroll_x: u16,

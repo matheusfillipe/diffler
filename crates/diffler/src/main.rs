@@ -40,21 +40,6 @@ enum Command {
         #[arg(long)]
         dump: bool,
     },
-    /// Spike: render a graph as a navigable node map (see the node-graph spec)
-    Graph {
-        /// Render the built-in demo pipeline instead of a live source
-        #[arg(long)]
-        demo: bool,
-        /// Render the built-in code call-graph demo (cyclic)
-        #[arg(long)]
-        code: bool,
-        /// Workflow file to graph (default: .github/workflows/release.yml)
-        #[arg(long)]
-        workflow: Option<String>,
-        /// Specific run id for live status (default: the latest run)
-        #[arg(long)]
-        run: Option<String>,
-    },
 }
 
 #[tokio::main]
@@ -75,26 +60,6 @@ async fn main() -> color_eyre::Result<()> {
         Some(Command::Config { dump: false }) => Err(color_eyre::eyre::eyre!(
             "nothing to do: try `diffler config --dump`"
         )),
-        Some(Command::Graph {
-            demo,
-            code,
-            workflow,
-            run,
-        }) => {
-            let (theme, _) = diffler::theme::Theme::from_name(&loaded.config.ui.theme);
-            let (model, live) = if code {
-                (graph::GraphModel::code_demo(), None)
-            } else if demo {
-                (graph::GraphModel::demo(), None)
-            } else {
-                let wf = workflow.map_or_else(
-                    || Path::new(&cli.path).join(".github/workflows/release.yml"),
-                    std::path::PathBuf::from,
-                );
-                graph::github_source(&wf, run)?
-            };
-            graph::run(model, theme, live).await
-        }
         None => {
             // fail before touching the terminal so the error stays readable
             let review = Review::open_with_context(&repo?, loaded.config.ui.context_lines)?;
@@ -214,6 +179,17 @@ async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<
             let tx = tx.clone();
             tokio::task::spawn_blocking(move || {
                 let _ = tx.send(run_git(&label, &argv, &repo_root));
+            });
+            continue;
+        }
+        if let Some(poll) = app.pending_graph_poll.take() {
+            // re-poll the watched CI run off-thread; the refreshed model comes
+            // back as an event so the graph stays live without blocking
+            let tx = tx.clone();
+            tokio::task::spawn_blocking(move || {
+                if let Some(model) = graph::refetch(&poll) {
+                    let _ = tx.send(AppEvent::GraphModel(model));
+                }
             });
             continue;
         }
