@@ -3,37 +3,54 @@
 Date: 2026-06-17
 Spec: 2026-06-17-node-graph-tui-spike-design.md
 
-## Outcome: GO. Build on `ascii-dag`.
+## Outcome: GO. Build the `Layered` engine — ascii-dag ranks, we render.
 
-The spike validates the idea — a navigable orthogonal CI graph in the terminal
-is pleasant and useful — and the engine bake-off is decisive in `ascii-dag`'s
-favour. The `graph` subcommand renders the demo, the real `release.yml`, and
+The spike validates the idea — a navigable orthogonal graph in the terminal is
+pleasant and useful. The decisive engine is **`Layered`**: use `ascii-dag` only
+for **rank/order** (Sugiyama: which column, ordered to reduce crossings) and
+**draw the GitHub look ourselves** — rounded outlined boxes laid out
+left-to-right, wired by clean orthogonal rails with arrowheads, junctions merged
+into `├ ┬ ┼`. ascii-dag's own `[label]` art was rejected (no boxes, squiggly
+fan-in); tui-nodes' own layout is worse and can't scroll. So neither engine's
+*renderer* survives — only ascii-dag's *ranking*. The `graph` subcommand renders
+`--demo` (CI), the real `release.yml`, `--code` (a cyclic call graph), and
 live-watches a run.
 
-## Engine bake-off (same model, both engines, snapshot-compared)
+## Engine bake-off
 
-| | ascii-dag | tui-nodes |
-|---|---|---|
-| Layout | Sugiyama layered, clean, readable | crowds/overlaps; nodes collide on the demo |
-| Edges | tidy orthogonal box-drawing | tangled; a port artifact (`α`) leaked |
-| Coordinates | integer cells, IR aligns with the art (verified) | internal; `split()` gives node rects |
-| Scroll / large graphs | we own a viewport — scrolls | none; lays out into the area, overflows |
-| Status look | colored `[label]` (overlay) | real bordered boxes, per-node border style |
-| Fit to our seam | `lay_out -> cells` trait, we render + navigate | self-rendering widget; different seam, less control |
-| Deps / risk | zero-dep, no_std; young 0.x (pin + wrap) | ratatui 0.30 native; weak layout is the blocker |
+| | Layered (chosen) | ascii-dag art | tui-nodes |
+|---|---|---|---|
+| Layout | ascii-dag Sugiyama ranks | same ranks | crowds/overlaps; collides |
+| Nodes | rounded **outlined boxes** | bare `[label]` (rejected) | bordered boxes |
+| Edges | clean LR rails, merged junctions, arrows | squiggly fan-in | tangled; `α` artifact |
+| Orientation | left-to-right (GitHub-like) | top-down | mixed |
+| Scroll / large | we own a viewport — scrolls | scrolls | none; overflows |
+| Cycles | back-edge return rail | n/a | n/a |
+| Deps | ascii-dag (ranks only) | ascii-dag | dropped |
 
-The two rendered snapshots tell the story: `ascii-dag` produces the orthogonal
-map we want; `tui-nodes` on the same 10-node graph is unreadable and clips with
-no way to scroll. tui-nodes' one real advantage — bordered boxes with per-node
-border colors — does not outweigh layout quality + scrolling, which are the
-whole point for CI graphs and (later) larger call/reference maps.
+The snapshots tell it: the user rejected ascii-dag's `[label]`/squiggly output;
+tui-nodes is unreadable on the same graph and can't scroll. Taking only
+ascii-dag's **ranking** and drawing our own boxes + rails gives the GitHub look
+with full control over boxes, status borders, selection, scroll, and cycles.
+
+## Code graphs (the `--code` demo)
+
+A cyclic call graph (`eval`/`apply` mutual recursion) renders: forward edges as
+LR rails, the back edge as a return rail below the boxes (arrow up). It proves
+non-DAG graphs work. **Caveat:** denser/cyclic graphs show some rail-through-box
+overlap because routing uses one shared channel per column gap and straight
+skip-level runs. CI DAGs (`--demo`, `release.yml`) render cleanly. Productionizing
+the renderer needs **better edge routing** — per-edge channels and simple
+obstacle avoidance — before code graphs look as clean as the CI ones, and a
+later **ego-centric/radial** layout will suit "usages of X" better than columns.
 
 ## What shipped in the spike
 
 - `graph::model` — a general **directed graph** (cycles allowed; a cyclic test
   proves non-DAG layout doesn't panic).
-- `graph::engine` — `GraphEngine` trait + `AsciiDag` (Sugiyama layout, art grid,
-  owned placements). The trait is the swap seam.
+- `graph::engine` — `GraphEngine` trait + `Layered` (ascii-dag ranks → our own
+  box/rail renderer with junction merging + back-edge return rails). The trait
+  is the swap seam.
 - `graph::github` — workflow `needs` → DAG, `gh run view` status overlay (matrix
   legs aggregated worst-wins); YAML parse + overlay are pure + unit-tested.
 - `graph` view — vim nav (`hjkl` nearest, `n/N` follow edges, `g/G` ends),

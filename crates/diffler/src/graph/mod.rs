@@ -22,7 +22,7 @@ use tokio::sync::mpsc;
 
 use crate::event::{self, AppEvent};
 use crate::theme::Theme;
-use engine::{AsciiDag, GraphEngine, Layout};
+use engine::{GraphEngine, Layered, Layout};
 use model::{Model, NodeId, NodeStatus};
 
 pub use model::Model as GraphModel;
@@ -74,7 +74,7 @@ async fn run_loop(
     theme: Theme,
     live: Option<LiveSource>,
 ) -> color_eyre::Result<()> {
-    let mut app = GraphApp::new(model, Box::new(AsciiDag), theme);
+    let mut app = GraphApp::new(model, Box::new(Layered), theme);
     app.watching = live.is_some();
     let (tx, mut rx) = mpsc::unbounded_channel();
     let _events = event::spawn_event_loop(tx);
@@ -420,7 +420,7 @@ mod tests {
     use super::*;
 
     fn app() -> GraphApp {
-        GraphApp::new(Model::demo(), Box::new(AsciiDag), Theme::github_dark())
+        GraphApp::new(Model::demo(), Box::new(Layered), Theme::github_dark())
     }
 
     fn render(app: &mut GraphApp) -> Terminal<TestBackend> {
@@ -441,6 +441,16 @@ mod tests {
     }
 
     #[test]
+    fn code_graph_renders() {
+        // a cyclic call graph (eval/apply recursion) — exercises back-edges
+        let mut app = GraphApp::new(Model::code_demo(), Box::new(Layered), Theme::github_dark());
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| app.draw(frame)).expect("draw");
+        insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
     fn release_workflow_graph_renders() {
         // the real release pipeline, parsed from the checked-in workflow
         let yaml = include_str!(concat!(
@@ -448,7 +458,7 @@ mod tests {
             "/../../.github/workflows/release.yml"
         ));
         let model = github::build_model(yaml, &[]).expect("release.yml parses");
-        let mut app = GraphApp::new(model, Box::new(AsciiDag), Theme::github_dark());
+        let mut app = GraphApp::new(model, Box::new(Layered), Theme::github_dark());
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal.draw(|frame| app.draw(frame)).expect("draw");

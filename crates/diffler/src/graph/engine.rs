@@ -1,7 +1,11 @@
-//! Spike: layout engines behind one trait, so the spike can A/B them on the
-//! same model. The view consumes an owned [`Layout`] (no engine lifetimes leak
-//! out). `ascii-dag` is the favoured engine (real Sugiyama layout + scroll);
-//! `tui-nodes` is added later as the bake-off comparison.
+//! Spike: layout + render engines behind one trait, so the spike can A/B them.
+//! The view consumes an owned [`Layout`] (no engine lifetimes leak out).
+//!
+//! `Layered` is the favoured engine: it uses `ascii-dag` only for rank/order
+//! (Sugiyama: which column each node sits in, ordered to reduce crossings), then
+//! draws the GitHub-style look ourselves — outlined rounded boxes laid out
+//! left-to-right, wired by clean orthogonal rails. ascii-dag's own `[label]`
+//! rendering is not used.
 
 use ascii_dag::graph::Graph;
 
@@ -34,66 +38,341 @@ pub trait GraphEngine {
     fn lay_out(&self, model: &Model) -> Layout;
 }
 
-/// `ascii-dag`: Sugiyama layered layout + orthogonal edge routing, rendered to
-/// an ASCII grid whose cell coordinates match the layout IR (verified) — so the
-/// view can recolor each node's cells from the IR placements.
-pub struct AsciiDag;
+const BOX_H: usize = 3;
+/// Blank rows between stacked boxes in a column.
+const ROW_GAP: usize = 1;
+/// Cells between columns, leaving room for the routing rail + arrow.
+const COL_GAP: usize = 6;
 
-impl GraphEngine for AsciiDag {
+/// GitHub-style layered renderer: ascii-dag ranks the nodes; we draw rounded
+/// outlined boxes left-to-right and route orthogonal rails between columns.
+pub struct Layered;
+
+impl GraphEngine for Layered {
     fn name(&self) -> &'static str {
-        "ascii-dag"
+        "layered"
     }
 
     fn lay_out(&self, model: &Model) -> Layout {
-        // ascii-dag borrows &str labels for the Graph's lifetime; keep the
-        // bracketed labels alive here while we render and lay out.
-        let labels: Vec<String> = model
-            .nodes
-            .iter()
-            .map(|n| {
-                let glyph = n.status.glyph();
-                if glyph.is_empty() {
-                    n.label.clone()
-                } else {
-                    format!("{} {glyph}", n.label)
-                }
-            })
-            .collect();
+        let ranks = rank_nodes(model);
+        place_and_draw(model, &ranks)
+    }
+}
 
-        let mut dag = Graph::new();
-        for (index, label) in labels.iter().enumerate() {
-            dag.add_node(index, label.as_str());
+/// Per-node `(column, row-within-column)`, from ascii-dag's Sugiyama pass.
+fn rank_nodes(model: &Model) -> Vec<(usize, usize)> {
+    let labels: Vec<&str> = model.nodes.iter().map(|n| n.label.as_str()).collect();
+    let mut dag = Graph::new();
+    for (index, label) in labels.iter().enumerate() {
+        dag.add_node(index, label);
+    }
+    for edge in &model.edges {
+        if let (Some(from), Some(to)) = (model.index_of(&edge.from), model.index_of(&edge.to)) {
+            dag.add_edge(from, to, None);
         }
-        for edge in &model.edges {
-            if let (Some(from), Some(to)) = (model.index_of(&edge.from), model.index_of(&edge.to)) {
-                dag.add_edge(from, to, None);
+    }
+    let ir = dag.compute_layout();
+    let mut ranks = vec![(0usize, 0usize); model.nodes.len()];
+    for node in ir.nodes() {
+        if let Some(slot) = ranks.get_mut(node.id) {
+            *slot = (node.level, node.level_position);
+        }
+    }
+    ranks
+}
+
+fn place_and_draw(model: &Model, ranks: &[(usize, usize)]) -> Layout {
+    let col_count = ranks.iter().map(|(c, _)| c + 1).max().unwrap_or(1);
+    let col_of = |index: usize| ranks.get(index).map_or(0, |(c, _)| *c);
+
+    // box label text and width per node; a column's boxes share its widest box
+    // so the rails enter/leave on a clean vertical edge (GitHub-like)
+    let text: Vec<String> = model
+        .nodes
+        .iter()
+        .map(|n| {
+            let glyph = n.status.glyph();
+            if glyph.is_empty() {
+                n.label.clone()
+            } else {
+                format!("{} {glyph}", n.label)
+            }
+        })
+        .collect();
+    let mut col_width = vec![0usize; col_count];
+    for (index, label) in text.iter().enumerate() {
+        if let Some(slot) = col_width.get_mut(col_of(index)) {
+            *slot = (*slot).max(label.chars().count() + 4);
+        }
+    }
+    let width_of = |col: usize| col_width.get(col).copied().unwrap_or(0);
+    let col_x: Vec<usize> = (0..col_count)
+        .scan(0usize, |x, col| {
+            let here = *x;
+            *x += width_of(col) + COL_GAP;
+            Some(here)
+        })
+        .collect();
+    let x_of = |col: usize| col_x.get(col).copied().unwrap_or(0);
+
+    // stack each column's nodes top-to-bottom in level-position order
+    let mut order: Vec<usize> = (0..model.nodes.len()).collect();
+    order.sort_by_key(|&i| ranks.get(i).copied().unwrap_or_default());
+    let mut columns: Vec<Vec<usize>> = vec![Vec::new(); col_count];
+    for &i in &order {
+        if let Some(col) = columns.get_mut(col_of(i)) {
+            col.push(i);
+        }
+    }
+    let mut node_box = vec![(0usize, 0usize); model.nodes.len()];
+    let mut total_h = 0usize;
+    for (col, members) in columns.iter().enumerate() {
+        for (row, &index) in members.iter().enumerate() {
+            let y = row * (BOX_H + ROW_GAP);
+            if let Some(slot) = node_box.get_mut(index) {
+                *slot = (x_of(col), y);
+            }
+            total_h = total_h.max(y + BOX_H);
+        }
+    }
+    let box_of = |index: usize| node_box.get(index).copied().unwrap_or_default();
+    let total_w = col_x
+        .last()
+        .copied()
+        .map_or(0, |x| x + col_width.last().copied().unwrap_or(0));
+
+    // two extra rows below the boxes carry the return rail for back edges
+    let rail = total_h;
+    let mut grid = Grid::new(total_w, total_h + 2);
+    // edges first, boxes on top
+    for edge in &model.edges {
+        let (Some(from), Some(to)) = (model.index_of(&edge.from), model.index_of(&edge.to)) else {
+            continue;
+        };
+        route_edge(
+            &mut grid,
+            box_of(from),
+            width_of(col_of(from)),
+            box_of(to),
+            width_of(col_of(to)),
+            rail,
+        );
+    }
+    let mut placements = Vec::with_capacity(model.nodes.len());
+    for (index, node) in model.nodes.iter().enumerate() {
+        let (x, y) = box_of(index);
+        let w = width_of(col_of(index));
+        if let Some(label) = text.get(index) {
+            grid.draw_box(x, y, w, label);
+        }
+        placements.push(Placement {
+            id: node.id.clone(),
+            status: node.status,
+            x: u16::try_from(x).unwrap_or(u16::MAX),
+            y: u16::try_from(y).unwrap_or(u16::MAX),
+            w: u16::try_from(w).unwrap_or(0),
+            h: u16::try_from(BOX_H).unwrap_or(3),
+        });
+    }
+
+    Layout {
+        lines: grid.into_lines(),
+        width: u16::try_from(total_w).unwrap_or(u16::MAX),
+        height: u16::try_from(total_h + 2).unwrap_or(u16::MAX),
+        placements,
+    }
+}
+
+/// Route an edge. A forward edge (child to the right) runs as a left-to-right
+/// rail through the column gap into the child's left edge. A back edge (child
+/// left of or level with the parent — only possible in a cyclic graph like a
+/// call/reference map) loops down to a return rail below the boxes and back up
+/// into the child, so cycles stay visible.
+fn route_edge(
+    grid: &mut Grid,
+    from: (usize, usize),
+    from_w: usize,
+    to: (usize, usize),
+    to_w: usize,
+    bottom: usize,
+) {
+    let sx = from.0 + from_w;
+    let sy = from.1 + BOX_H / 2;
+    let ex = to.0.saturating_sub(1);
+    let ey = to.1 + BOX_H / 2;
+    if ex <= sx {
+        route_back_edge(grid, from, from_w, to, to_w, bottom);
+        return;
+    }
+    let channel = sx + (ex - sx) / 2;
+    for x in sx..channel {
+        grid.line(x, sy, Dir::L | Dir::R);
+    }
+    if sy == ey {
+        for x in channel..ex {
+            grid.line(x, sy, Dir::L | Dir::R);
+        }
+    } else {
+        let (lo, hi) = (sy.min(ey), sy.max(ey));
+        for y in lo..=hi {
+            grid.line(channel, y, Dir::U | Dir::D);
+        }
+        // bends at the two ends of the vertical
+        let down = ey > sy;
+        grid.line(
+            channel,
+            sy,
+            if down {
+                Dir::L | Dir::D
+            } else {
+                Dir::L | Dir::U
+            },
+        );
+        grid.line(
+            channel,
+            ey,
+            if down {
+                Dir::U | Dir::R
+            } else {
+                Dir::D | Dir::R
+            },
+        );
+        for x in channel + 1..ex {
+            grid.line(x, ey, Dir::L | Dir::R);
+        }
+    }
+    grid.put(ex, ey, '▸');
+}
+
+/// A cycle's back edge: down from the parent's bottom to a rail below all boxes,
+/// left along the rail, up into the child's bottom (arrow points up).
+fn route_back_edge(
+    grid: &mut Grid,
+    from: (usize, usize),
+    from_w: usize,
+    to: (usize, usize),
+    to_w: usize,
+    rail: usize,
+) {
+    let fx = from.0 + from_w / 2;
+    let tx = to.0 + to_w / 2;
+    let fy = from.1 + BOX_H;
+    let ty = to.1 + BOX_H;
+    for y in fy..rail {
+        grid.line(fx, y, Dir::U | Dir::D);
+    }
+    grid.line(fx, rail, Dir::U | Dir::L);
+    let (lo, hi) = (tx.min(fx), tx.max(fx));
+    for x in lo + 1..hi {
+        grid.line(x, rail, Dir::L | Dir::R);
+    }
+    grid.line(tx, rail, Dir::U | Dir::R);
+    for y in ty + 1..rail {
+        grid.line(tx, y, Dir::U | Dir::D);
+    }
+    grid.put(tx, ty, '▴');
+}
+
+struct Grid {
+    cells: Vec<Vec<char>>,
+}
+
+/// Direction bits for merging box-drawing line characters at junctions.
+struct Dir;
+impl Dir {
+    const U: u8 = 1;
+    const D: u8 = 2;
+    const L: u8 = 4;
+    const R: u8 = 8;
+}
+
+impl Grid {
+    fn new(width: usize, height: usize) -> Self {
+        Self {
+            cells: vec![vec![' '; width]; height],
+        }
+    }
+
+    fn put(&mut self, x: usize, y: usize, ch: char) {
+        if let Some(cell) = self.cells.get_mut(y).and_then(|row| row.get_mut(x)) {
+            *cell = ch;
+        }
+    }
+
+    /// Plot a line segment, merging with any line already there so crossings and
+    /// branches render as proper junctions (├ ┬ ┼ …).
+    fn line(&mut self, x: usize, y: usize, mask: u8) {
+        let Some(cell) = self.cells.get_mut(y).and_then(|row| row.get_mut(x)) else {
+            return;
+        };
+        let merged = char_to_mask(*cell) | mask;
+        *cell = mask_to_char(merged);
+    }
+
+    fn draw_box(&mut self, x: usize, y: usize, w: usize, text: &str) {
+        if w < 2 {
+            return;
+        }
+        let inner = w - 2;
+        self.put(x, y, '╭');
+        self.put(x + w - 1, y, '╮');
+        self.put(x, y + 2, '╰');
+        self.put(x + w - 1, y + 2, '╯');
+        for col in 1..w - 1 {
+            self.put(x + col, y, '─');
+            self.put(x + col, y + 2, '─');
+        }
+        self.put(x, y + 1, '│');
+        self.put(x + w - 1, y + 1, '│');
+        // center the label on the middle row
+        let chars: Vec<char> = text.chars().collect();
+        let pad = inner.saturating_sub(chars.len()) / 2;
+        for (i, ch) in chars.iter().enumerate() {
+            if 1 + pad + i < w - 1 {
+                self.put(x + 1 + pad + i, y + 1, *ch);
             }
         }
+    }
 
-        let lines: Vec<String> = dag.render().lines().map(str::to_owned).collect();
-        let ir = dag.compute_layout();
-        let placements = ir
-            .nodes()
-            .iter()
-            .filter_map(|node| {
-                let model_node = model.nodes.get(node.id)?;
-                Some(Placement {
-                    id: model_node.id.clone(),
-                    status: model_node.status,
-                    x: u16::try_from(node.x).unwrap_or(u16::MAX),
-                    y: u16::try_from(node.y).unwrap_or(u16::MAX),
-                    w: u16::try_from(node.width).unwrap_or(0),
-                    h: u16::try_from(node.height).unwrap_or(1),
-                })
-            })
-            .collect();
+    fn into_lines(self) -> Vec<String> {
+        self.cells
+            .into_iter()
+            .map(|row| row.into_iter().collect::<String>().trim_end().to_owned())
+            .collect()
+    }
+}
 
-        Layout {
-            lines,
-            width: u16::try_from(ir.width()).unwrap_or(u16::MAX),
-            height: u16::try_from(ir.height()).unwrap_or(u16::MAX),
-            placements,
-        }
+fn char_to_mask(ch: char) -> u8 {
+    match ch {
+        '─' => Dir::L | Dir::R,
+        '│' => Dir::U | Dir::D,
+        '╭' => Dir::D | Dir::R,
+        '╮' => Dir::D | Dir::L,
+        '╰' => Dir::U | Dir::R,
+        '╯' => Dir::U | Dir::L,
+        '├' => Dir::U | Dir::D | Dir::R,
+        '┤' => Dir::U | Dir::D | Dir::L,
+        '┬' => Dir::D | Dir::L | Dir::R,
+        '┴' => Dir::U | Dir::L | Dir::R,
+        '┼' => Dir::U | Dir::D | Dir::L | Dir::R,
+        _ => 0,
+    }
+}
+
+fn mask_to_char(mask: u8) -> char {
+    match mask {
+        m if m == Dir::L | Dir::R => '─',
+        m if m == Dir::U | Dir::D => '│',
+        m if m == Dir::D | Dir::R => '╭',
+        m if m == Dir::D | Dir::L => '╮',
+        m if m == Dir::U | Dir::R => '╰',
+        m if m == Dir::U | Dir::L => '╯',
+        m if m == Dir::U | Dir::D | Dir::R => '├',
+        m if m == Dir::U | Dir::D | Dir::L => '┤',
+        m if m == Dir::D | Dir::L | Dir::R => '┬',
+        m if m == Dir::U | Dir::L | Dir::R => '┴',
+        0 => ' ',
+        _ => '┼',
     }
 }
 
@@ -102,23 +381,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ascii_dag_lays_out_the_demo_with_aligned_placements() {
+    fn layered_draws_boxes_and_places_every_node() {
         let model = Model::demo();
-        let layout = AsciiDag.lay_out(&model);
-        assert!(!layout.lines.is_empty(), "renders art");
+        let layout = Layered.lay_out(&model);
         assert_eq!(layout.placements.len(), model.nodes.len());
-        // every placement's cell range must sit inside the rendered grid and
-        // land on the node's bracketed label (coordinate alignment)
+        let art = layout.lines.join("\n");
+        assert!(
+            art.contains('╭') && art.contains('╯'),
+            "rounded boxes drawn"
+        );
+        assert!(art.contains('▸'), "edges have arrowheads");
+        // every placement's top-left cell is a box corner
         for p in &layout.placements {
-            let row = layout
-                .lines
-                .get(p.y as usize)
-                .unwrap_or_else(|| panic!("row {} present for {:?}", p.y, p.id));
-            let cells: Vec<char> = row.chars().collect();
-            let start = p.x as usize;
-            assert!(
-                cells.get(start) == Some(&'['),
-                "placement {:?} starts on a node bracket: row={row:?}",
+            let row: Vec<char> = layout.lines[p.y as usize].chars().collect();
+            assert_eq!(
+                row.get(p.x as usize),
+                Some(&'╭'),
+                "{:?} top-left corner",
                 p.id
             );
         }
@@ -126,9 +405,8 @@ mod tests {
 
     #[test]
     fn cyclic_graph_lays_out_without_panicking() {
-        // mutual recursion: a -> b -> a, plus a self loop — not a DAG
         use super::super::model::{Edge, Node, RankDir};
-        let mut model = Model::new(RankDir::TopDown);
+        let mut model = Model::new(RankDir::LeftRight);
         let n = |id: &str| Node {
             id: NodeId::new(id),
             label: id.to_owned(),
@@ -141,7 +419,6 @@ mod tests {
             label: None,
         };
         model.edges = vec![e("a", "b"), e("b", "a")];
-        let layout = AsciiDag.lay_out(&model);
-        assert_eq!(layout.placements.len(), 2, "both cyclic nodes placed");
+        assert_eq!(Layered.lay_out(&model).placements.len(), 2);
     }
 }

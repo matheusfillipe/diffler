@@ -123,4 +123,42 @@ impl Model {
         ];
         model
     }
+
+    /// A small call/reference graph for the `--code` path: not a DAG —
+    /// `eval`/`apply` are mutually recursive — so it exercises back-edge
+    /// routing. Status is `Neutral` (code graphs have no run state).
+    pub fn code_demo() -> Self {
+        let mut model = Self::new(RankDir::LeftRight);
+        let node = |id: &str| Node {
+            id: NodeId::new(id),
+            label: id.to_owned(),
+            status: NodeStatus::Neutral,
+        };
+        model.nodes = [
+            "main", "load", "parse", "tokenize", "eval", "apply", "builtin", "render", "error",
+        ]
+        .into_iter()
+        .map(node)
+        .collect();
+        let edge = |from: &str, to: &str| Edge {
+            from: NodeId::new(from),
+            to: NodeId::new(to),
+            label: None,
+        };
+        model.edges = vec![
+            edge("main", "load"),
+            edge("main", "eval"),
+            edge("main", "render"),
+            edge("load", "parse"),
+            edge("parse", "tokenize"),
+            edge("parse", "error"),
+            edge("eval", "apply"),
+            edge("apply", "eval"), // cycle: mutual recursion
+            edge("apply", "builtin"),
+            edge("eval", "builtin"),
+            edge("render", "error"),
+            edge("builtin", "error"),
+        ];
+        model
+    }
 }

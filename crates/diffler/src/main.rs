@@ -45,6 +45,9 @@ enum Command {
         /// Render the built-in demo pipeline instead of a live source
         #[arg(long)]
         demo: bool,
+        /// Render the built-in code call-graph demo (cyclic)
+        #[arg(long)]
+        code: bool,
         /// Workflow file to graph (default: .github/workflows/release.yml)
         #[arg(long)]
         workflow: Option<String>,
@@ -74,11 +77,14 @@ async fn main() -> color_eyre::Result<()> {
         )),
         Some(Command::Graph {
             demo,
+            code,
             workflow,
             run,
         }) => {
             let (theme, _) = diffler::theme::Theme::from_name(&loaded.config.ui.theme);
-            let (model, live) = if demo {
+            let (model, live) = if code {
+                (graph::GraphModel::code_demo(), None)
+            } else if demo {
                 (graph::GraphModel::demo(), None)
             } else {
                 let wf = workflow.map_or_else(
