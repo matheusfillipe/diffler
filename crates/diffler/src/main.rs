@@ -45,6 +45,12 @@ enum Command {
         /// Render the built-in demo pipeline instead of a live source
         #[arg(long)]
         demo: bool,
+        /// Workflow file to graph (default: .github/workflows/release.yml)
+        #[arg(long)]
+        workflow: Option<String>,
+        /// Specific run id for live status (default: the latest run)
+        #[arg(long)]
+        run: Option<String>,
     },
 }
 
@@ -66,14 +72,22 @@ async fn main() -> color_eyre::Result<()> {
         Some(Command::Config { dump: false }) => Err(color_eyre::eyre::eyre!(
             "nothing to do: try `diffler config --dump`"
         )),
-        Some(Command::Graph { demo }) => {
-            if !demo {
-                return Err(color_eyre::eyre::eyre!(
-                    "graph: pass --demo (live CI source lands in the next spike step)"
-                ));
-            }
+        Some(Command::Graph {
+            demo,
+            workflow,
+            run,
+        }) => {
             let (theme, _) = diffler::theme::Theme::from_name(&loaded.config.ui.theme);
-            graph::run(graph::GraphModel::demo(), theme).await
+            let model = if demo {
+                graph::GraphModel::demo()
+            } else {
+                let wf = workflow.map_or_else(
+                    || Path::new(&cli.path).join(".github/workflows/release.yml"),
+                    std::path::PathBuf::from,
+                );
+                graph::github_model(&wf, run)?
+            };
+            graph::run(model, theme).await
         }
         None => {
             // fail before touching the terminal so the error stays readable

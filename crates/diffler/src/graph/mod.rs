@@ -4,8 +4,12 @@
 //! docs/superpowers/specs/2026-06-17-node-graph-tui-spike-design.md.
 
 mod engine;
+mod github;
 mod model;
 
+use std::path::Path;
+
+use color_eyre::eyre::{Context, Result};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout as LayoutArea, Rect};
@@ -20,6 +24,21 @@ use engine::{AsciiDag, GraphEngine, Layout};
 use model::{Model, NodeId, NodeStatus};
 
 pub use model::Model as GraphModel;
+
+/// Build a model from a GitHub Actions workflow: the DAG from its `needs`, live
+/// status (best-effort) from the latest run or `run`. Reading the workflow is
+/// required; the `gh` calls are tolerated so the structure shows even offline.
+pub fn github_model(workflow: &Path, run: Option<String>) -> Result<Model> {
+    let yaml = std::fs::read_to_string(workflow)
+        .wrap_err_with(|| format!("read workflow {}", workflow.display()))?;
+    let run_id = run.or_else(|| github::latest_run(workflow).ok());
+    let jobs = run_id
+        .as_deref()
+        .map(github::fetch_jobs)
+        .and_then(Result::ok)
+        .unwrap_or_default();
+    github::build_model(&yaml, &jobs)
+}
 
 /// Run the graph screen to completion. Owns terminal setup/teardown so the
 /// spike stays isolated from the main review loop.
@@ -335,6 +354,21 @@ mod tests {
     fn demo_graph_renders() {
         let mut app = app();
         insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn release_workflow_graph_renders() {
+        // the real release pipeline, parsed from the checked-in workflow
+        let yaml = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../.github/workflows/release.yml"
+        ));
+        let model = github::build_model(yaml, &[]).expect("release.yml parses");
+        let mut app = GraphApp::new(model, Box::new(AsciiDag), Theme::github_dark());
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| app.draw(frame)).expect("draw");
+        insta::assert_snapshot!(terminal.backend());
     }
 
     #[test]
