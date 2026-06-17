@@ -3,9 +3,10 @@ source: crates/diffler/src/graph/mod.rs
 expression: render(&mut app).backend()
 ---
 " hjkl move · n/N edge · ⏎ collapse · +/- zoom · g/G ends · q quit               "
-"[ lint ✓  ]─┬▸[ test windows ✗ ]─┬▸[ build ● ]─┬▸[ publish-cra… · ]             "
-"[ typos ✓ ]─┼▸[ test ubuntu ✓  ]─┤             ├▸[ publish-npm ·  ]             "
-"[ deny ✓  ]─┴▸[  test macos ✓  ]─╯             ╰▸[ publish-aur ·  ]             "
+"[ lint ✓  ]─┬▸[ ▾ test ✗ ]─┬▸[ test ubuntu ✓  ] ╭▸[ publish-cra… · ]            "
+"[ typos ✓ ]─┤              ├▸[  test macos ✓  ] ├▸[ publish-npm ·  ]            "
+"[ deny ✓  ]─╯              ├▸[    build ●     ]─┴▸[ publish-aur ·  ]            "
+"                           ╰▸[ test windows ✗ ]                                 "
 "                                                                                "
 "                                                                                "
 "                                                                                "
@@ -24,5 +25,4 @@ expression: render(&mut app).backend()
 "                                                                                "
 "                                                                                "
 "                                                                                "
-"                                                                                "
-" GRAPH  engine: layered  zoom: compact  nodes: 10  sel: lint                    "
+" GRAPH  engine: layered  zoom: compact  nodes: 11  sel: lint                    "

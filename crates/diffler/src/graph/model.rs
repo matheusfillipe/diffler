@@ -52,24 +52,37 @@ pub struct Node {
     pub id: NodeId,
     pub label: String,
     pub status: NodeStatus,
-    /// Members of the same group (e.g. a CI matrix's legs) share this key; a
-    /// collapsed group renders as one node. `None` for ungrouped nodes.
+    /// Set on a member node (a CI matrix leg): the key of the foldable group it
+    /// belongs to. Members hang off their group's root and are hidden when the
+    /// group is collapsed. `None` for ordinary nodes and group roots.
     pub group: Option<String>,
+    /// Set on the one *root* node of a foldable group: the group key. Only a
+    /// root node is foldable (it takes the collapse shortcut); external edges
+    /// connect to the root, and its members branch off it.
+    pub foldable: Option<String>,
 }
 
 impl Node {
-    /// An ungrouped node whose label is its id.
+    /// An ordinary node whose label is its id.
     pub fn leaf(id: &str, status: NodeStatus) -> Self {
         Self {
             id: NodeId::new(id),
             label: id.to_owned(),
             status,
             group: None,
+            foldable: None,
         }
     }
 
+    /// Mark this node a member (leg) of `group`.
     pub fn in_group(mut self, group: &str) -> Self {
         self.group = Some(group.to_owned());
+        self
+    }
+
+    /// Mark this node the foldable root of `group`.
+    pub fn fold_root(mut self, group: &str) -> Self {
+        self.foldable = Some(group.to_owned());
         self
     }
 }
@@ -115,74 +128,58 @@ impl Model {
         self.nodes.iter().position(|n| &n.id == id)
     }
 
-    /// The group a node belongs to, if any.
-    pub fn group_of(&self, id: &NodeId) -> Option<String> {
+    /// The foldable group key of a node, if it is a group root. Only roots are
+    /// foldable; members and ordinary nodes return `None`.
+    pub fn foldable_of(&self, id: &NodeId) -> Option<String> {
         self.nodes
             .iter()
             .find(|n| &n.id == id)
-            .and_then(|n| n.group.clone())
+            .and_then(|n| n.foldable.clone())
     }
 
-    /// Whether a group has more than one member (worth collapsing).
-    pub fn is_collapsible(&self, group: &str) -> bool {
-        self.nodes
-            .iter()
-            .filter(|n| n.group.as_deref() == Some(group))
-            .count()
-            > 1
-    }
-
-    /// Collapse each named group into a single node (label `group (N)`, worst
-    /// member status), rewiring edges to the group and dropping the now-internal
-    /// ones. Ungrouped nodes and uncollapsed groups pass through untouched.
+    /// The render view for a set of collapsed groups. Every foldable root gets a
+    /// fold marker (`▾` open / `▸ … (N)` closed); a collapsed group's members and
+    /// the edges touching them are dropped, so only the root stays in the flow.
+    /// The root's status reflects the worst of its members either way.
     #[must_use]
     pub fn collapse(&self, collapsed: &HashSet<String>) -> Model {
-        if collapsed.is_empty() {
-            return self.clone();
-        }
-        let remap = |id: &NodeId| -> NodeId {
-            match self.group_of(id) {
-                Some(g) if collapsed.contains(&g) => NodeId::new(g),
-                _ => id.clone(),
-            }
-        };
+        let hidden: HashSet<&NodeId> = self
+            .nodes
+            .iter()
+            .filter(|n| n.group.as_deref().is_some_and(|g| collapsed.contains(g)))
+            .map(|n| &n.id)
+            .collect();
+
         let mut out = Model::new(self.rankdir);
-        let mut emitted: HashSet<String> = HashSet::new();
         for node in &self.nodes {
-            match &node.group {
-                Some(g) if collapsed.contains(g) => {
-                    if emitted.insert(g.clone()) {
-                        let members = self.nodes.iter().filter(|n| n.group.as_ref() == Some(g));
-                        let count = members.clone().count();
-                        let status = members
-                            .map(|m| m.status)
-                            .reduce(worse)
-                            .unwrap_or(NodeStatus::Neutral);
-                        out.nodes.push(Node {
-                            id: NodeId::new(g.clone()),
-                            label: format!("{g} ({count})"),
-                            status,
-                            group: Some(g.clone()),
-                        });
-                    }
-                }
-                _ => out.nodes.push(node.clone()),
-            }
-        }
-        let mut seen: HashSet<(String, String)> = HashSet::new();
-        for edge in &self.edges {
-            let (from, to) = (remap(&edge.from), remap(&edge.to));
-            if from == to {
+            if hidden.contains(&node.id) {
                 continue;
             }
-            if seen.insert((from.0.clone(), to.0.clone())) {
-                out.edges.push(Edge {
-                    from,
-                    to,
-                    label: edge.label.clone(),
-                });
+            let mut node = node.clone();
+            if let Some(group) = node.foldable.clone() {
+                let mut worst = node.status;
+                let mut count = 0usize;
+                for member in &self.nodes {
+                    if member.group.as_deref() == Some(group.as_str()) {
+                        worst = worse(worst, member.status);
+                        count += 1;
+                    }
+                }
+                node.status = worst;
+                node.label = if collapsed.contains(&group) {
+                    format!("▸ {} ({count})", node.label)
+                } else {
+                    format!("▾ {}", node.label)
+                };
             }
+            out.nodes.push(node);
         }
+        out.edges = self
+            .edges
+            .iter()
+            .filter(|e| !hidden.contains(&e.from) && !hidden.contains(&e.to))
+            .cloned()
+            .collect();
         out
     }
 
@@ -190,13 +187,14 @@ impl Model {
     /// a test matrix, which fans into the publish jobs — the shape of our own
     /// release pipeline.
     pub fn demo() -> Self {
-        use NodeStatus::{Failed, Ok, Queued, Running};
+        use NodeStatus::{Failed, Neutral, Ok, Queued, Running};
         let mut model = Self::new(RankDir::TopDown);
         model.nodes = vec![
             Node::leaf("lint", Ok),
             Node::leaf("typos", Ok),
             Node::leaf("deny", Ok),
-            // the test matrix is a collapsible group
+            // the test matrix: one foldable root with three legs branching off it
+            Node::leaf("test", Neutral).fold_root("test"),
             Node::leaf("test ubuntu", Ok).in_group("test"),
             Node::leaf("test macos", Ok).in_group("test"),
             Node::leaf("test windows", Failed).in_group("test"),
@@ -211,14 +209,15 @@ impl Model {
             label: None,
         };
         model.edges = vec![
-            edge("lint", "test ubuntu"),
-            edge("typos", "test ubuntu"),
-            edge("deny", "test macos"),
-            edge("lint", "test macos"),
-            edge("lint", "test windows"),
-            edge("test ubuntu", "build"),
-            edge("test macos", "build"),
-            edge("test windows", "build"),
+            // main flow connects only to the group root
+            edge("lint", "test"),
+            edge("typos", "test"),
+            edge("deny", "test"),
+            edge("test", "build"),
+            // the legs hang off the root (shown only when expanded)
+            edge("test", "test ubuntu"),
+            edge("test", "test macos"),
+            edge("test", "test windows"),
             edge("build", "publish-crates"),
             edge("build", "publish-npm"),
             edge("build", "publish-aur"),

@@ -32,6 +32,7 @@ pub fn build_model(workflow_yaml: &str, jobs: &[JobStatus]) -> Result<Model> {
             label: label.clone(),
             status: status_for(label, id, jobs),
             group: None,
+            foldable: None,
         })
         .collect();
     model.edges = edges

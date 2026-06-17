@@ -151,22 +151,22 @@ struct GraphApp {
 
 impl GraphApp {
     fn new(model: Model, engine: Box<dyn GraphEngine>, theme: Theme) -> Self {
-        let zoom = Zoom::Normal;
-        let layout = engine.lay_out(&model, zoom);
-        let selected = layout.placements.first().map(|p| p.id.clone());
-        Self {
+        let mut app = Self {
             model,
             engine,
-            layout,
-            selected,
+            layout: Layout::default(),
+            selected: None,
             scroll_x: 0,
             scroll_y: 0,
             viewport: Rect::default(),
             theme,
             watching: false,
-            zoom,
+            zoom: Zoom::Normal,
             collapsed: std::collections::HashSet::new(),
-        }
+        };
+        // build the first layout through the collapse path so fold markers show
+        app.relayout();
+        app
     }
 
     /// Recompute the layout (after a zoom, collapse, or status change), keeping
@@ -183,34 +183,20 @@ impl GraphApp {
         }
     }
 
-    /// Toggle collapse of the selected node's group (a CI matrix). Selecting the
-    /// group node after collapse keeps the cursor on the same logical thing.
+    /// Toggle the selected node's foldable group. Only a group *root* is
+    /// foldable; the shortcut is a no-op on members and ordinary nodes (whose
+    /// Enter is reserved for a future open action). The root stays selected
+    /// across the toggle since it exists in both states.
     fn toggle_collapse(&mut self) {
-        // the selection is either a member node (find its group) or, once
-        // collapsed, the synthetic group node itself (its id IS the group key)
-        let Some(group) = self.selected.as_ref().and_then(|id| {
-            if self.collapsed.contains(&id.0) {
-                Some(id.0.clone())
-            } else {
-                self.model.group_of(id)
-            }
-        }) else {
+        let Some(group) = self
+            .selected
+            .as_ref()
+            .and_then(|id| self.model.foldable_of(id))
+        else {
             return;
         };
-        if !self.model.is_collapsible(&group) {
-            return;
-        }
-        if self.collapsed.remove(&group) {
-            // expanded: land on a member
-            self.selected = self
-                .model
-                .nodes
-                .iter()
-                .find(|n| n.group.as_deref() == Some(group.as_str()))
-                .map(|n| n.id.clone());
-        } else {
-            self.collapsed.insert(group.clone());
-            self.selected = Some(NodeId::new(group));
+        if !self.collapsed.remove(&group) {
+            self.collapsed.insert(group);
         }
         self.relayout();
     }
@@ -495,39 +481,35 @@ mod tests {
     }
 
     #[test]
-    fn collapsing_the_matrix_folds_it_to_one_node() {
+    fn only_the_group_root_folds_and_round_trips() {
         let mut app = app();
-        // select a test-matrix leg, then collapse the group
+        // a matrix leg is not foldable: the shortcut is a no-op on it
         app.selected = Some(NodeId::new("test ubuntu"));
         app.handle_key(&key('c'));
+        assert!(app.collapsed.is_empty(), "a leg does not accept collapse");
+
+        // the root folds; selection stays on it across the toggle
+        app.selected = Some(NodeId::new("test"));
+        app.handle_key(&key('c'));
+        assert!(app.collapsed.contains("test"));
         assert_eq!(app.selected, Some(NodeId::new("test")));
-        // the three legs are now one node; failed leg dominates the status
-        let test = app
+        let folded = app
             .model
             .collapse(&app.collapsed)
             .nodes
             .iter()
             .find(|n| n.id == NodeId::new("test"))
             .cloned()
-            .expect("collapsed test node");
-        assert_eq!(test.label, "test (3)");
-        assert_eq!(test.status, NodeStatus::Failed);
+            .expect("root node present");
+        assert_eq!(folded.label, "▸ test (3)", "marker + leg count");
+        assert_eq!(folded.status, NodeStatus::Failed, "failed leg dominates");
         insta::assert_snapshot!(render(&mut app).backend());
 
-        // pressing collapse again on the group node expands it back
-        app.handle_key(&key('c'));
-        assert!(app.collapsed.is_empty(), "expanded back");
-        assert_eq!(
-            app.model
-                .group_of(app.selected.as_ref().unwrap())
-                .as_deref(),
-            Some("test"),
-            "selection lands on a matrix leg after expanding"
-        );
-        // Enter toggles collapse too
+        // Enter expands it back; the root stays selected
         let enter = KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::NONE);
         app.handle_key(&enter);
-        assert!(app.collapsed.contains("test"), "enter collapses");
+        assert!(app.collapsed.is_empty(), "expanded back");
+        assert_eq!(app.selected, Some(NodeId::new("test")));
     }
 
     #[test]
