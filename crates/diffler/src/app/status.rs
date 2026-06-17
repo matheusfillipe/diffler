@@ -281,6 +281,33 @@ impl App {
         rows
     }
 
+    /// Searchable `(row index, text)` pairs for the `/` search: section
+    /// titles, directory names, file paths, and recent-commit lines. Inline
+    /// diff rows are left out — the diff view is where code is searched.
+    pub(crate) fn status_search_rows(&self) -> Vec<(usize, String)> {
+        self.visible_rows()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| self.status_row_label(row).map(|text| (index, text)))
+            .collect()
+    }
+
+    fn status_row_label(&self, row: &Row) -> Option<String> {
+        Some(match row {
+            Row::SectionHeader { section, .. } => section.title().to_owned(),
+            Row::RecentHeader { .. } => "Recent commits".to_owned(),
+            Row::Dir { name, .. } => name.clone(),
+            Row::File { section, index, .. } => {
+                self.section_files(*section).get(*index)?.path.clone()
+            }
+            Row::Commit { index } => {
+                let entry = self.status.recent.get(*index)?;
+                format!("{} {} {}", entry.oid7, entry.subject, entry.author)
+            }
+            Row::HunkHeader { .. } | Row::DiffLine { .. } => return None,
+        })
+    }
+
     pub fn section_files(&self, section: Section) -> &[FileDiff] {
         let model = match section {
             Section::Untracked => &self.review.status.untracked,
@@ -1659,5 +1686,49 @@ mod tests {
         app.handle(ctrl_key('r'));
         assert_eq!(app.status.recent.len(), 2);
         assert_eq!(app.status.recent[0].subject, "second commit");
+    }
+
+    fn type_query(app: &mut App, query: &str) {
+        app.handle(key('/'));
+        for c in query.chars() {
+            app.handle(key(c));
+        }
+        app.handle(key('\n'));
+    }
+
+    #[test]
+    fn slash_search_moves_the_cursor_to_a_matching_file_row() {
+        let (_fixture, mut app) = app();
+        type_query(&mut app, "lib");
+        let row = app.visible_rows()[app.status.cursor].clone();
+        let (_, file, _) = app.row_file(&row).expect("cursor on a file row");
+        assert_eq!(file.path, "src/lib.rs");
+    }
+
+    #[test]
+    fn search_next_and_prev_cycle_status_matches() {
+        let (_fixture, mut app) = app();
+        // "changes" hits the Unstaged and Staged section titles
+        type_query(&mut app, "changes");
+        let section_at = |app: &App| match app.visible_rows()[app.status.cursor] {
+            Row::SectionHeader { section, .. } => section,
+            ref other => panic!("expected a section header, got {other:?}"),
+        };
+        assert_eq!(section_at(&app), Section::Unstaged);
+        app.handle(key('n'));
+        assert_eq!(section_at(&app), Section::Staged);
+        app.handle(key('n'));
+        assert_eq!(section_at(&app), Section::Unstaged, "next wraps");
+        app.handle(key('N'));
+        assert_eq!(section_at(&app), Section::Staged, "prev wraps back");
+    }
+
+    #[test]
+    fn escape_clears_a_committed_status_search() {
+        let (_fixture, mut app) = app();
+        type_query(&mut app, "lib");
+        assert!(app.search.is_some());
+        app.handle(esc());
+        assert!(app.search.is_none());
     }
 }

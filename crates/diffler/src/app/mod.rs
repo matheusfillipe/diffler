@@ -882,7 +882,7 @@ impl App {
 
     fn focused_search_rows(&self) -> Vec<(usize, String)> {
         match self.screen() {
-            Screen::Status => Vec::new(),
+            Screen::Status => self.status_search_rows(),
             Screen::Log => self.log.as_ref().map_or_else(Vec::new, |log| {
                 log.entries
                     .iter()
@@ -919,7 +919,7 @@ impl App {
 
     fn focus_searched_row(&mut self, row: usize) {
         match self.screen() {
-            Screen::Status => {}
+            Screen::Status => self.status.cursor = row,
             Screen::Log => {
                 if let Some(l) = self.log.as_mut() {
                     l.cursor = row;

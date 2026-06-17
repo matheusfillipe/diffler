@@ -255,6 +255,9 @@ const STATUS_DEFAULTS: &[(&str, Action)] = &[
     ("}", Action::NextHunk),
     ("e", Action::OpenEditor),
     ("Z", Action::SendFeedback),
+    ("/", Action::Search),
+    ("n", Action::SearchNext),
+    ("N", Action::SearchPrev),
     ("?", Action::Help),
     ("q", Action::Back),
 ];

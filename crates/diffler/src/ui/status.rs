@@ -17,7 +17,7 @@ use crate::ui::Hint;
 use crate::ui::diff_render::render_hunk_lines;
 use crate::ui::{
     commit_meta_spans, cursor_line, diffstat_spans, hint_line, proportion_bar, status_bar,
-    status_color,
+    status_color, tint_search_row,
 };
 
 /// Prefix-only hint entries: top-level keys and the transient prefixes,
@@ -133,10 +133,20 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16, Vec<Option<usize>>) 
                     lines.push(Line::default());
                     line_rows.push(None);
                 }
-                if index == app.status.cursor {
+                let on_cursor = index == app.status.cursor;
+                if on_cursor {
                     cursor_line_index = lines.len();
                 }
-                lines.push(row_line(app, row, index == app.status.cursor, area.width));
+                let mut line = row_line(app, row, on_cursor, area.width);
+                // a non-cursor search match lights up; the cursor row keeps its
+                // own tint (and is the active match while navigating)
+                if !on_cursor
+                    && let Some(ranges) = app.search.as_ref().map(|s| s.ranges_for(index))
+                    && !ranges.is_empty()
+                {
+                    line = tint_search_row(line, ranges.iter().any(|(_, c)| *c), &app.theme);
+                }
+                lines.push(line);
                 line_rows.push(Some(index));
                 index += 1;
             }
@@ -618,6 +628,24 @@ mod tests {
         // sending feedback surfaces an info message in the bar
         app.handle(key('Z'));
         insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn status_search_tints_a_matching_row() {
+        let fixture = standard_fixture();
+        let mut app = app_for(&fixture);
+        // "o" matches todo.md (the cursor lands there) and the Recent commits
+        // header, which is tinted as a non-cursor match
+        app.handle(key('/'));
+        app.handle(key('o'));
+        app.handle(key('\n'));
+        let terminal = render(&mut app);
+        let buffer = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            buffer.contains(&format!("{:?}", app.theme.search)),
+            "a non-cursor match carries the search background"
+        );
+        insta::assert_snapshot!(terminal.backend());
     }
 
     #[test]
