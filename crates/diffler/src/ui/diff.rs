@@ -326,7 +326,12 @@ fn draw_pane(
         .skip(scroll)
         .take(height)
         .map(|(index, row)| {
-            let ranges = search.map(|s| s.ranges_for(index)).unwrap_or_default();
+            // only the focused pane highlights; otherwise the sidebar's
+            // matches (keyed by row index) would bleed onto diff rows
+            let ranges = search
+                .filter(|_| focused)
+                .map(|s| s.ranges_for(index))
+                .unwrap_or_default();
             row_line(
                 theme,
                 session,
@@ -1205,6 +1210,38 @@ mod tests {
         let (_fixture, mut app) = diff_app();
         assert_eq!(app.diff.as_ref().unwrap().focus, Pane::List);
         insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn sidebar_search_does_not_bleed_into_the_diff_pane() {
+        let (_fixture, mut app) = diff_app();
+        assert_eq!(app.diff.as_ref().unwrap().focus, Pane::List);
+        // a filename match while the sidebar is focused must not paint the pane
+        app.handle(key('/'));
+        for c in "lib".chars() {
+            app.handle(key(c));
+        }
+        app.handle(key('\n'));
+        let terminal = render(&mut app);
+        let buffer = terminal.backend().buffer();
+        let sidebar = super::sidebar_width(120);
+        let search_bgs = [app.theme.search, app.theme.search_current];
+        let mut highlighted = 0;
+        for y in 0..40 {
+            for x in 0..120 {
+                if search_bgs.contains(&buffer[(x, y)].bg) {
+                    assert!(
+                        x < sidebar,
+                        "search bg at col {x} bleeds past sidebar {sidebar}"
+                    );
+                    highlighted += 1;
+                }
+            }
+        }
+        assert!(
+            highlighted > 0,
+            "the focused sidebar should still highlight the match"
+        );
     }
 
     #[test]
