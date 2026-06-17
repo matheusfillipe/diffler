@@ -140,7 +140,13 @@ fn draw_sidebar(
         .enumerate()
         .map(|(row_index, row)| {
             let on_cursor = row_index == diff.tree_cursor;
-            let line = match &row.node {
+            // ranges are offsets into the row's name, so the `/` match
+            // highlights the exact substring like the log and diff panes do
+            let ranges = search
+                .filter(|_| focused)
+                .map(|s| s.ranges_for(row_index))
+                .unwrap_or_default();
+            match &row.node {
                 TreeNode::Dir { name, path } => sidebar_dir_line(
                     theme,
                     name,
@@ -148,6 +154,7 @@ fn draw_sidebar(
                     row.depth,
                     inner.width,
                     on_cursor,
+                    &ranges,
                 ),
                 TreeNode::File { index, name } => {
                     let Some(file) = model.files.get(*index) else {
@@ -164,14 +171,9 @@ fn draw_sidebar(
                         row.depth,
                         inner.width,
                         on_cursor,
+                        &ranges,
                     )
                 }
-            };
-            match search.filter(|_| focused).map(|s| s.ranges_for(row_index)) {
-                Some(ranges) if !ranges.is_empty() => {
-                    super::tint_search_row(line, ranges.iter().any(|(_, current)| *current), theme)
-                }
-                _ => line,
             }
         })
         .collect();
@@ -324,7 +326,12 @@ fn draw_pane(
         .skip(scroll)
         .take(height)
         .map(|(index, row)| {
-            let ranges = search.map(|s| s.ranges_for(index)).unwrap_or_default();
+            // only the focused pane highlights; otherwise the sidebar's
+            // matches (keyed by row index) would bleed onto diff rows
+            let ranges = search
+                .filter(|_| focused)
+                .map(|s| s.ranges_for(index))
+                .unwrap_or_default();
             row_line(
                 theme,
                 session,
@@ -463,6 +470,7 @@ fn tree_lead(theme: &Theme, depth: usize, bg: Color, on_cursor: bool) -> Span<'s
 }
 
 /// A directory row: indent, fold arrow, and the dim directory name.
+#[allow(clippy::too_many_arguments)]
 fn sidebar_dir_line(
     theme: &Theme,
     name: &str,
@@ -470,6 +478,7 @@ fn sidebar_dir_line(
     depth: usize,
     width: u16,
     on_cursor: bool,
+    search: &[(std::ops::Range<usize>, bool)],
 ) -> Line<'static> {
     let bg = if on_cursor {
         theme.cursor_line
@@ -477,16 +486,15 @@ fn sidebar_dir_line(
         theme.bg
     };
     let arrow = if folded { "▸ " } else { "▾ " };
-    let spans = vec![
+    let name_style = Style::new()
+        .fg(if on_cursor { theme.accent } else { theme.fg })
+        .bg(bg);
+    let mut spans = vec![
         tree_lead(theme, depth, bg, on_cursor),
         Span::styled(arrow.to_owned(), Style::new().fg(theme.dim).bg(bg)),
-        Span::styled(
-            name.to_owned(),
-            Style::new()
-                .fg(if on_cursor { theme.accent } else { theme.fg })
-                .bg(bg),
-        ),
     ];
+    // dir names are never clipped, so the highlight maps straight onto them
+    spans.extend(super::highlight_spans(name, name_style, search, theme));
     pad_line(spans, bg, width)
 }
 
@@ -503,6 +511,7 @@ fn sidebar_file_line(
     depth: usize,
     width: u16,
     on_cursor: bool,
+    search: &[(std::ops::Range<usize>, bool)],
 ) -> Line<'static> {
     let bg = if on_cursor {
         theme.cursor_line
@@ -531,9 +540,16 @@ fn sidebar_file_line(
     let name_style = Style::new()
         .fg(if on_cursor { theme.accent } else { theme.fg })
         .bg(bg);
-    // the file's identity is its tail (basename); when a flat-list path
-    // overflows, elide from the front so the name stays visible
-    spans.push(Span::styled(clip_path(name, room), name_style));
+    // highlight the whole name, then clip the spans so a match stays lit on the
+    // visible part; a flat-list path (with a `/`) front-elides so its tail —
+    // the basename, the file's identity — stays in view
+    let highlighted = super::highlight_spans(name, name_style, search, theme);
+    spans.extend(clip_spans(
+        highlighted,
+        room,
+        name.contains('/'),
+        name_style,
+    ));
     if viewed {
         spans.push(Span::styled(" ✓".to_owned(), dim));
     }
@@ -556,36 +572,57 @@ fn sidebar_file_line(
     pad_line(spans, bg, width)
 }
 
-/// Clip a basename to `room` cells, end-eliding with `…`. Char-based so it is
-/// multibyte-safe.
-fn clip_name(name: &str, room: usize) -> String {
+/// Clip a name's already-styled `spans` to `room` cells, preserving each span's
+/// style (so a search highlight survives on the visible cells). `front` elides
+/// from the left with a leading `…` — for flat-list paths, keeping the tail
+/// basename in view — otherwise from the right with a trailing `…`. The ellipsis
+/// takes `ellipsis_style`. Char-based, multibyte-safe.
+fn clip_spans(
+    spans: Vec<Span<'static>>,
+    room: usize,
+    front: bool,
+    ellipsis_style: Style,
+) -> Vec<Span<'static>> {
+    let total: usize = spans.iter().map(|s| s.content.chars().count()).sum();
     if room == 0 {
-        return String::new();
+        return Vec::new();
     }
-    if name.chars().count() <= room {
-        return name.to_owned();
+    if total <= room {
+        return spans;
     }
-    let head: String = name.chars().take(room.saturating_sub(1)).collect();
-    format!("{head}…")
-}
-
-/// Clip a file label to `room` cells. A flat-list path (with a directory
-/// prefix) front-elides with a leading `…` so its tail — the basename, the
-/// file's identity — stays visible; a bare basename end-clips via
-/// [`clip_name`], matching the tree layout. Char-based, multibyte-safe.
-fn clip_path(name: &str, room: usize) -> String {
-    if !name.contains('/') {
-        return clip_name(name, room);
+    let keep = room - 1;
+    if front {
+        let skip = total - keep;
+        let mut out = vec![Span::styled("…".to_owned(), ellipsis_style)];
+        let mut seen = 0;
+        for span in spans {
+            let len = span.content.chars().count();
+            let start = seen;
+            seen += len;
+            if seen <= skip {
+                continue;
+            }
+            let drop_here = skip.saturating_sub(start);
+            let kept: String = span.content.chars().skip(drop_here).collect();
+            out.push(Span::styled(kept, span.style));
+        }
+        out
+    } else {
+        let mut out = Vec::new();
+        let mut taken = 0;
+        for span in spans {
+            if taken >= keep {
+                break;
+            }
+            let len = span.content.chars().count();
+            let take = (keep - taken).min(len);
+            let kept: String = span.content.chars().take(take).collect();
+            out.push(Span::styled(kept, span.style));
+            taken += len;
+        }
+        out.push(Span::styled("…".to_owned(), ellipsis_style));
+        out
     }
-    if room == 0 {
-        return String::new();
-    }
-    let count = name.chars().count();
-    if count <= room {
-        return name.to_owned();
-    }
-    let tail: String = name.chars().skip(count - room.saturating_sub(1)).collect();
-    format!("…{tail}")
 }
 
 // mirrors render_diff_line's orthogonal styling inputs plus the search ranges
@@ -891,57 +928,79 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    use super::{clip_name, clip_path};
+    use ratatui::style::Style;
+
+    use super::clip_spans;
     use crate::app::{App, DiffRow, Pane};
     use crate::config::LoadedConfig;
     use crate::test_support::{
         Fixture, key, mouse_click, mouse_drag, mouse_right_click, mouse_scroll, standard_fixture,
     };
+    use crate::theme::Theme;
 
-    #[test]
-    fn basename_shorter_than_room_is_kept_whole() {
-        assert_eq!(clip_name("lib.rs", 32), "lib.rs");
+    fn plain(text: &str) -> Vec<ratatui::text::Span<'static>> {
+        vec![ratatui::text::Span::raw(text.to_owned())]
+    }
+
+    fn joined(spans: &[ratatui::text::Span<'static>]) -> String {
+        spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
     #[test]
-    fn basename_exactly_filling_room_is_not_clipped() {
-        assert_eq!(clip_name("lib.rs", 6), "lib.rs");
-    }
-
-    #[test]
-    fn basename_longer_than_room_is_end_clipped_with_ellipsis() {
-        let clipped = clip_name("a_very_long_filename_indeed.rs", 12);
-        assert_eq!(clipped.chars().count(), 12);
-        assert!(clipped.ends_with('…'), "clipped at the end: {clipped:?}");
-        assert!(
-            clipped.starts_with("a_very"),
-            "kept from the start: {clipped:?}"
+    fn clip_spans_keeps_a_short_name_whole() {
+        let style = ratatui::style::Style::new();
+        assert_eq!(
+            joined(&clip_spans(plain("lib.rs"), 32, false, style)),
+            "lib.rs"
         );
     }
 
     #[test]
-    fn zero_room_yields_an_empty_name() {
-        assert_eq!(clip_name("lib.rs", 0), "");
+    fn clip_spans_end_elides_a_long_basename() {
+        let style = ratatui::style::Style::new();
+        let clipped = clip_spans(plain("a_very_long_filename_indeed.rs"), 12, false, style);
+        let text = joined(&clipped);
+        assert_eq!(text.chars().count(), 12);
+        assert!(text.ends_with('…'), "clipped at the end: {text:?}");
+        assert!(text.starts_with("a_very"), "kept from the start: {text:?}");
     }
 
     #[test]
-    fn clip_path_keeps_a_bare_basename_end_clipped() {
-        // no directory prefix: defers to clip_name's end-elision
-        assert_eq!(clip_path("lib.rs", 32), "lib.rs");
-        let clipped = clip_path("a_very_long_filename_indeed.rs", 12);
-        assert_eq!(clipped.chars().count(), 12);
-        assert!(clipped.ends_with('…'), "end-clipped: {clipped:?}");
+    fn clip_spans_front_elides_a_path_to_keep_the_basename() {
+        let style = ratatui::style::Style::new();
+        assert_eq!(
+            joined(&clip_spans(plain("src/lib.rs"), 32, true, style)),
+            "src/lib.rs"
+        );
+        let clipped = clip_spans(plain("deep/nested/dir/module.rs"), 12, true, style);
+        let text = joined(&clipped);
+        assert_eq!(text.chars().count(), 12);
+        assert!(text.starts_with('…'), "front-elided: {text:?}");
+        assert!(text.ends_with("module.rs"), "basename kept: {text:?}");
     }
 
     #[test]
-    fn clip_path_front_elides_a_path_to_keep_the_basename() {
-        // a path that fits is untouched
-        assert_eq!(clip_path("src/lib.rs", 32), "src/lib.rs");
-        // an overflowing path drops the head, keeping the basename visible
-        let clipped = clip_path("deep/nested/dir/module.rs", 12);
-        assert_eq!(clipped.chars().count(), 12);
-        assert!(clipped.starts_with('…'), "front-elided: {clipped:?}");
-        assert!(clipped.ends_with("module.rs"), "basename kept: {clipped:?}");
+    fn clip_spans_zero_room_yields_nothing() {
+        let style = ratatui::style::Style::new();
+        assert!(clip_spans(plain("lib.rs"), 0, false, style).is_empty());
+    }
+
+    #[test]
+    fn clip_spans_keeps_a_highlight_lit_on_the_visible_part() {
+        let theme = Theme::github_dark();
+        // "status" starts at byte 13 of this name and survives an end-clip
+        let name = "diffler__ui__status__tests__foo";
+        let spans = super::super::highlight_spans(name, Style::new(), &[(13..19, true)], &theme);
+        let clipped = clip_spans(spans, 20, false, Style::new());
+        let lit: String = clipped
+            .iter()
+            .filter(|s| s.style.bg == Some(theme.search_current))
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(
+            lit, "status",
+            "the match stays lit after clipping: {clipped:?}"
+        );
     }
 
     fn render(app: &mut App) -> Terminal<TestBackend> {
@@ -1179,6 +1238,73 @@ mod tests {
         let (_fixture, mut app) = diff_app();
         assert_eq!(app.diff.as_ref().unwrap().focus, Pane::List);
         insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn sidebar_search_does_not_bleed_into_the_diff_pane() {
+        let (_fixture, mut app) = diff_app();
+        assert_eq!(app.diff.as_ref().unwrap().focus, Pane::List);
+        // a filename match while the sidebar is focused must not paint the pane
+        app.handle(key('/'));
+        for c in "lib".chars() {
+            app.handle(key(c));
+        }
+        app.handle(key('\n'));
+        let terminal = render(&mut app);
+        let buffer = terminal.backend().buffer();
+        let sidebar = super::sidebar_width(120);
+        let search_bgs = [app.theme.search, app.theme.search_current];
+        let mut highlighted = 0;
+        for y in 0..40 {
+            for x in 0..120 {
+                if search_bgs.contains(&buffer[(x, y)].bg) {
+                    assert!(
+                        x < sidebar,
+                        "search bg at col {x} bleeds past sidebar {sidebar}"
+                    );
+                    highlighted += 1;
+                }
+            }
+        }
+        assert!(
+            highlighted > 0,
+            "the focused sidebar should still highlight the match"
+        );
+    }
+
+    #[test]
+    fn sidebar_file_row_highlights_only_the_matched_substring() {
+        let (_fixture, app) = diff_app();
+        let file = app
+            .review
+            .model()
+            .files
+            .iter()
+            .find(|f| f.path == "src/lib.rs")
+            .cloned()
+            .expect("src/lib.rs present");
+        // a wide row so the name is not clipped; "lib" is bytes 0..3 of "lib.rs"
+        let spans = super::sidebar_file_line(
+            &app.theme,
+            &file,
+            "lib.rs",
+            false,
+            0,
+            0,
+            80,
+            false,
+            &[(0..3, true)],
+        );
+        let highlighted: Vec<&str> = spans
+            .iter()
+            .filter(|s| s.style.bg == Some(app.theme.search_current))
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(
+            highlighted,
+            vec!["lib"],
+            "only the matched word lights up, not the whole row: {spans:?}"
+        );
     }
 
     #[test]

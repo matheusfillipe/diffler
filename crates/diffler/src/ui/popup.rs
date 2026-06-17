@@ -19,10 +19,16 @@ pub struct Popup {
     pub entries: Vec<(String, String)>,
 }
 
+/// Cells between columns when the help popup wraps into multiple columns.
+const POPUP_COLUMN_GAP: usize = 2;
+
 impl Popup {
     pub fn render(&self, frame: &mut Frame<'_>, theme: &Theme) {
         let area = frame.area();
-        let lines = self.lines(theme);
+        // rows available under the top border; entries wrap into columns to
+        // fit rather than overflowing off the top of the screen
+        let body_rows = area.height.saturating_sub(1) as usize;
+        let lines = self.lines(theme, body_rows.max(1));
         // +1 for the top border carrying the title
         let height = (lines.len() as u16 + 1).min(area.height);
         let popup_area = Rect {
@@ -50,7 +56,7 @@ impl Popup {
         );
     }
 
-    fn lines(&self, theme: &Theme) -> Vec<Line<'static>> {
+    fn lines(&self, theme: &Theme, body_rows: usize) -> Vec<Line<'static>> {
         let key_style = Style::new()
             .fg(theme.purple)
             .bg(theme.panel)
@@ -59,11 +65,50 @@ impl Popup {
         let fg = Style::new().fg(theme.fg).bg(theme.panel);
 
         let mut lines = vec![Line::styled("Actions", dim)];
-        for (key, description) in &self.entries {
-            lines.push(Line::from(vec![
-                Span::styled(format!(" {key}"), key_style),
-                Span::styled(format!("  {description}"), fg),
-            ]));
+        // one row goes to the "Actions" heading
+        let rows = body_rows.saturating_sub(1).max(1);
+        if self.entries.len() <= rows {
+            for (key, description) in &self.entries {
+                lines.push(Line::from(vec![
+                    Span::styled(format!(" {key}"), key_style),
+                    Span::styled(format!("  {description}"), fg),
+                ]));
+            }
+            return lines;
+        }
+        // too tall for one column: wrap column-major into the fewest columns
+        // that fit the height, each padded to its own widest cell
+        let columns = self.entries.len().div_ceil(rows);
+        let per_column = self.entries.len().div_ceil(columns);
+        let cell_width =
+            |entry: &(String, String)| 1 + entry.0.chars().count() + 2 + entry.1.chars().count();
+        let widths: Vec<usize> = (0..columns)
+            .map(|column| {
+                (0..per_column)
+                    .filter_map(|row| self.entries.get(column * per_column + row))
+                    .map(cell_width)
+                    .max()
+                    .unwrap_or(0)
+            })
+            .collect();
+        for row in 0..per_column {
+            let mut spans = Vec::new();
+            for column in 0..columns {
+                let Some(entry) = self.entries.get(column * per_column + row) else {
+                    continue;
+                };
+                let width = widths
+                    .get(column)
+                    .copied()
+                    .unwrap_or_else(|| cell_width(entry));
+                let pad = width.saturating_sub(cell_width(entry)) + POPUP_COLUMN_GAP;
+                spans.push(Span::styled(format!(" {}", entry.0), key_style));
+                spans.push(Span::styled(
+                    format!("  {}{}", entry.1, " ".repeat(pad)),
+                    fg,
+                ));
+            }
+            lines.push(Line::from(spans));
         }
         lines
     }
@@ -535,6 +580,25 @@ mod tests {
             ],
         };
         let terminal = render(|frame, theme| popup.render(frame, theme));
+        insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn popup_wraps_into_columns_when_too_tall_to_fit() {
+        // more entries than the 40-row test screen can stack in one column
+        let entries: Vec<(String, String)> = (0..60)
+            .map(|i| (format!("k{i}"), format!("action_{i}")))
+            .collect();
+        let popup = Popup {
+            title: "Many keys".to_owned(),
+            entries,
+        };
+        let terminal = render(|frame, theme| popup.render(frame, theme));
+        let content = terminal.backend().to_string();
+        // the last entry would overflow a single column but a second column
+        // keeps every binding on screen
+        assert!(content.contains("action_0"), "{content}");
+        assert!(content.contains("action_59"), "{content}");
         insta::assert_snapshot!(terminal.backend());
     }
 

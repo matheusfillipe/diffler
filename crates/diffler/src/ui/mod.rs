@@ -72,25 +72,6 @@ pub(super) fn highlight_spans(
     spans
 }
 
-/// Tint a whole row's background as a search match (the active one stronger).
-/// Used where a row's text is clipped or multi-span, so a precise substring
-/// highlight can't map — the row still lights up in the focused pane.
-pub(super) fn tint_search_row(
-    mut line: Line<'static>,
-    current: bool,
-    theme: &Theme,
-) -> Line<'static> {
-    let bg = if current {
-        theme.search_current
-    } else {
-        theme.search
-    };
-    for span in &mut line.spans {
-        span.style = span.style.bg(bg);
-    }
-    line
-}
-
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     match app.screen() {
         Screen::Status => {

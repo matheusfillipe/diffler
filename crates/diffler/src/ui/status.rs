@@ -8,7 +8,9 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
-use crate::app::{App, Row, Section};
+use std::ops::Range;
+
+use crate::app::{App, RECENT_TITLE, Row, Section};
 use crate::config::FileLayout;
 use crate::keymap::Action;
 use crate::theme::Theme;
@@ -16,8 +18,8 @@ use crate::transient::TransientKind;
 use crate::ui::Hint;
 use crate::ui::diff_render::render_hunk_lines;
 use crate::ui::{
-    commit_meta_spans, cursor_line, diffstat_spans, hint_line, proportion_bar, status_bar,
-    status_color,
+    commit_meta_spans, cursor_line, diffstat_spans, highlight_spans, hint_line, proportion_bar,
+    status_bar, status_color,
 };
 
 /// Prefix-only hint entries: top-level keys and the transient prefixes,
@@ -133,10 +135,16 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16, Vec<Option<usize>>) 
                     lines.push(Line::default());
                     line_rows.push(None);
                 }
-                if index == app.status.cursor {
+                let on_cursor = index == app.status.cursor;
+                if on_cursor {
                     cursor_line_index = lines.len();
                 }
-                lines.push(row_line(app, row, index == app.status.cursor, area.width));
+                let ranges = app
+                    .search
+                    .as_ref()
+                    .map(|search| search.ranges_for(index))
+                    .unwrap_or_default();
+                lines.push(row_line(app, row, on_cursor, area.width, &ranges));
                 line_rows.push(Some(index));
                 index += 1;
             }
@@ -188,33 +196,55 @@ fn changes_line(theme: &Theme, added: usize, deleted: usize) -> Line<'static> {
     Line::from(spans)
 }
 
-fn row_line(app: &App, row: &Row, selected: bool, width: u16) -> Line<'static> {
+fn row_line(
+    app: &App,
+    row: &Row,
+    selected: bool,
+    width: u16,
+    search: &[(Range<usize>, bool)],
+) -> Line<'static> {
     let theme = &app.theme;
     let spans = match row {
         Row::SectionHeader { section, count } => {
-            let mut spans = header_spans(theme, section.title(), *count, app.is_folded(*section));
+            let mut spans = header_spans(
+                theme,
+                section.title(),
+                *count,
+                app.is_folded(*section),
+                search,
+            );
             let (added, deleted) = section_diffstat(app, *section);
             spans.extend(diffstat_spans(theme, added, deleted, theme.bg));
             spans
         }
-        Row::RecentHeader { count } => {
-            header_spans(theme, "Recent commits", *count, app.status.recent_folded)
-        }
+        Row::RecentHeader { count } => header_spans(
+            theme,
+            RECENT_TITLE,
+            *count,
+            app.status.recent_folded,
+            search,
+        ),
         Row::Dir {
             section,
             path,
             name,
             depth,
-        } => dir_spans(theme, name, app.is_dir_folded(*section, path), *depth),
+        } => dir_spans(
+            theme,
+            name,
+            app.is_dir_folded(*section, path),
+            *depth,
+            search,
+        ),
         Row::File {
             section,
             index,
             depth,
         } => {
             let file = app.section_files(*section).get(*index);
-            file_spans(app, file, theme, *depth)
+            file_spans(app, file, theme, *depth, search)
         }
-        Row::Commit { index } => commit_spans(app, *index, theme, width),
+        Row::Commit { index } => commit_spans(app, *index, theme, width, search),
         // hunk rows are rendered as blocks in `body`, never through here
         Row::HunkHeader { .. } | Row::DiffLine { .. } => Vec::new(),
     };
@@ -226,18 +256,24 @@ fn row_line(app: &App, row: &Row, selected: bool, width: u16) -> Line<'static> {
     }
 }
 
-fn header_spans(theme: &Theme, title: &str, count: usize, folded: bool) -> Vec<Span<'static>> {
-    vec![
-        Span::styled(if folded { " ▸ " } else { " ▾ " }, theme.dim_style()),
-        Span::styled(
-            title.to_owned(),
-            Style::new()
-                .fg(theme.accent)
-                .bg(theme.bg)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(format!(" ({count})"), theme.dim_style()),
-    ]
+fn header_spans(
+    theme: &Theme,
+    title: &str,
+    count: usize,
+    folded: bool,
+    search: &[(Range<usize>, bool)],
+) -> Vec<Span<'static>> {
+    let title_style = Style::new()
+        .fg(theme.accent)
+        .bg(theme.bg)
+        .add_modifier(Modifier::BOLD);
+    let mut spans = vec![Span::styled(
+        if folded { " ▸ " } else { " ▾ " },
+        theme.dim_style(),
+    )];
+    spans.extend(highlight_spans(title, title_style, search, theme));
+    spans.push(Span::styled(format!(" ({count})"), theme.dim_style()));
+    spans
 }
 
 /// Indentation for a tree row at `depth` within a section: a base indent that
@@ -247,15 +283,22 @@ fn tree_indent(depth: usize) -> String {
 }
 
 /// A directory row: indent, fold arrow, the dim directory name.
-fn dir_spans(theme: &Theme, name: &str, folded: bool, depth: usize) -> Vec<Span<'static>> {
-    vec![
+fn dir_spans(
+    theme: &Theme,
+    name: &str,
+    folded: bool,
+    depth: usize,
+    search: &[(Range<usize>, bool)],
+) -> Vec<Span<'static>> {
+    let mut spans = vec![
         Span::styled(tree_indent(depth), theme.base()),
         Span::styled(
             if folded { "▸ " } else { "▾ " }.to_owned(),
             theme.dim_style(),
         ),
-        Span::styled(name.to_owned(), theme.base()),
-    ]
+    ];
+    spans.extend(highlight_spans(name, theme.base(), search, theme));
+    spans
 }
 
 /// A file row. In the tree layout: indent, status glyph (colored), basename —
@@ -267,19 +310,14 @@ fn file_spans(
     file: Option<&FileDiff>,
     theme: &Theme,
     depth: usize,
+    search: &[(Range<usize>, bool)],
 ) -> Vec<Span<'static>> {
     let Some(file) = file else {
         return Vec::new();
     };
     let glyph = file.status.glyph();
     let flat = app.config.ui.status_file_layout == FileLayout::List;
-    // flat list shows the whole path (no dir rows to carry it); the tree shows
-    // just the basename, nested under its directory rows
-    let name = if flat {
-        file.path.as_str()
-    } else {
-        file.path.rsplit('/').next().unwrap_or(&file.path)
-    };
+    let name = app.status_file_name(file);
     let indent = if flat {
         " ".to_owned()
     } else {
@@ -293,8 +331,8 @@ fn file_spans(
                 .fg(status_color(theme, file.status))
                 .bg(theme.bg),
         ),
-        Span::styled(name.to_owned(), theme.base()),
     ];
+    spans.extend(highlight_spans(name, theme.base(), search, theme));
     if app.is_path_viewed(&file.path) {
         spans.push(Span::styled(" ✓", theme.dim_style()));
     }
@@ -303,14 +341,26 @@ fn file_spans(
     spans
 }
 
-fn commit_spans(app: &App, index: usize, theme: &Theme, width: u16) -> Vec<Span<'static>> {
+fn commit_spans(
+    app: &App,
+    index: usize,
+    theme: &Theme,
+    width: u16,
+    search: &[(Range<usize>, bool)],
+) -> Vec<Span<'static>> {
     let Some(entry) = app.status.recent.get(index) else {
         return Vec::new();
     };
     let mut spans = vec![Span::styled(
-        format!("     {} {}", entry.oid7, entry.subject),
+        format!("     {} ", entry.oid7),
         theme.dim_style(),
     )];
+    spans.extend(highlight_spans(
+        &entry.subject,
+        theme.dim_style(),
+        search,
+        theme,
+    ));
     let used: usize = spans.iter().map(Span::width).sum();
     spans.extend(commit_meta_spans(
         theme,
@@ -621,6 +671,44 @@ mod tests {
     }
 
     #[test]
+    fn status_search_highlights_a_matching_row() {
+        let fixture = standard_fixture();
+        let mut app = app_for(&fixture);
+        // "o" matches todo.md (the cursor lands there) and the Recent commits
+        // header, whose matched letters carry the search background
+        app.handle(key('/'));
+        app.handle(key('o'));
+        app.handle(key('\n'));
+        let terminal = render(&mut app);
+        let buffer = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            buffer.contains(&format!("{:?}", app.theme.search)),
+            "a non-cursor match carries the search background"
+        );
+        insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn file_row_highlights_only_the_matched_substring() {
+        let fixture = standard_fixture();
+        // flat layout renders the whole path "src/lib.rs"
+        let app = app_for(&fixture);
+        let file = app.section_files(Section::Unstaged).first().expect("file");
+        // "lib" sits at bytes 4..7 of "src/lib.rs"
+        let spans = super::file_spans(&app, Some(file), &app.theme, 0, &[(4..7, true)]);
+        let highlighted: Vec<&str> = spans
+            .iter()
+            .filter(|s| s.style.bg == Some(app.theme.search_current))
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(
+            highlighted,
+            vec!["lib"],
+            "only the matched word, not the whole row: {spans:?}"
+        );
+    }
+
+    #[test]
     fn help_popup_lists_the_active_keymap_and_transient_groups() {
         let fixture = standard_fixture();
         let mut app = app_for(&fixture);
@@ -839,7 +927,7 @@ mod tests {
         let app = App::new(fixture.review(), loaded);
         // the unstaged section holds a modified file in the standard fixture
         let file = app.section_files(Section::Unstaged).first().expect("file");
-        let spans = super::file_spans(&app, Some(file), &app.theme, 1);
+        let spans = super::file_spans(&app, Some(file), &app.theme, 1, &[]);
         let glyph = spans
             .iter()
             .find(|s| s.content.trim() == file.status.glyph().to_string())
@@ -862,7 +950,7 @@ mod tests {
         // default layout is the flat magit list
         let app = app_for(&fixture);
         let file = app.section_files(Section::Unstaged).first().expect("file");
-        let spans = super::file_spans(&app, Some(file), &app.theme, 0);
+        let spans = super::file_spans(&app, Some(file), &app.theme, 0, &[]);
         // the whole path shows, not just the basename
         assert!(
             spans.iter().any(|s| s.content == file.path),

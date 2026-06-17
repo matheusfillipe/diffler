@@ -13,6 +13,10 @@ use crate::config::FileLayout;
 use crate::keymap::Action;
 use crate::tree::{self, TreeNode, TreeRow};
 
+/// Heading for the trailing recent-commits section, shared by the renderer and
+/// the search labels so a `/` match lines up with the displayed text.
+pub(crate) const RECENT_TITLE: &str = "Recent commits";
+
 /// Status screen sections, in display order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
@@ -279,6 +283,42 @@ impl App {
             }
         }
         rows
+    }
+
+    /// Searchable `(row index, text)` pairs for the `/` search: section
+    /// titles, directory names, file paths, and recent-commit lines. Inline
+    /// diff rows are left out — the diff view is where code is searched.
+    pub(crate) fn status_search_rows(&self) -> Vec<(usize, String)> {
+        self.visible_rows()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| self.status_row_label(row).map(|text| (index, text)))
+            .collect()
+    }
+
+    fn status_row_label(&self, row: &Row) -> Option<String> {
+        Some(match row {
+            Row::SectionHeader { section, .. } => section.title().to_owned(),
+            Row::RecentHeader { .. } => RECENT_TITLE.to_owned(),
+            Row::Dir { name, .. } => name.clone(),
+            Row::File { section, index, .. } => self
+                .status_file_name(self.section_files(*section).get(*index)?)
+                .to_owned(),
+            Row::Commit { index } => self.status.recent.get(*index)?.subject.clone(),
+            Row::HunkHeader { .. } | Row::DiffLine { .. } => return None,
+        })
+    }
+
+    /// The text a file row displays: the basename in the tree layout (the
+    /// directory rows above carry the path), the whole repo-relative path in
+    /// the flat list. The search labels and the renderer share it so a `/`
+    /// match highlights exactly the displayed substring.
+    pub(crate) fn status_file_name<'a>(&self, file: &'a FileDiff) -> &'a str {
+        if self.config.ui.status_file_layout == FileLayout::List {
+            file.path.as_str()
+        } else {
+            file.path.rsplit('/').next().unwrap_or(&file.path)
+        }
     }
 
     pub fn section_files(&self, section: Section) -> &[FileDiff] {
@@ -1659,5 +1699,49 @@ mod tests {
         app.handle(ctrl_key('r'));
         assert_eq!(app.status.recent.len(), 2);
         assert_eq!(app.status.recent[0].subject, "second commit");
+    }
+
+    fn type_query(app: &mut App, query: &str) {
+        app.handle(key('/'));
+        for c in query.chars() {
+            app.handle(key(c));
+        }
+        app.handle(key('\n'));
+    }
+
+    #[test]
+    fn slash_search_moves_the_cursor_to_a_matching_file_row() {
+        let (_fixture, mut app) = app();
+        type_query(&mut app, "lib");
+        let row = app.visible_rows()[app.status.cursor].clone();
+        let (_, file, _) = app.row_file(&row).expect("cursor on a file row");
+        assert_eq!(file.path, "src/lib.rs");
+    }
+
+    #[test]
+    fn search_next_and_prev_cycle_status_matches() {
+        let (_fixture, mut app) = app();
+        // "changes" hits the Unstaged and Staged section titles
+        type_query(&mut app, "changes");
+        let section_at = |app: &App| match app.visible_rows()[app.status.cursor] {
+            Row::SectionHeader { section, .. } => section,
+            ref other => panic!("expected a section header, got {other:?}"),
+        };
+        assert_eq!(section_at(&app), Section::Unstaged);
+        app.handle(key('n'));
+        assert_eq!(section_at(&app), Section::Staged);
+        app.handle(key('n'));
+        assert_eq!(section_at(&app), Section::Unstaged, "next wraps");
+        app.handle(key('N'));
+        assert_eq!(section_at(&app), Section::Staged, "prev wraps back");
+    }
+
+    #[test]
+    fn escape_clears_a_committed_status_search() {
+        let (_fixture, mut app) = app();
+        type_query(&mut app, "lib");
+        assert!(app.search.is_some());
+        app.handle(esc());
+        assert!(app.search.is_none());
     }
 }
