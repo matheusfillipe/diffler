@@ -38,6 +38,10 @@ serde_json.workspace = true
 unicode-width.workspace = true
 # pre-staged for the LSP client; validates CI build times across targets
 async-lsp.workspace = true
+# node-graph spike: workflow YAML parse + layout engine bake-off
+serde_yaml.workspace = true
+ascii-dag.workspace = true
+tui-nodes.workspace = true
 
 [dev-dependencies]
 git2.workspace = true

@@ -3,7 +3,7 @@ use std::path::Path;
 use clap::{Parser, Subcommand};
 use diffler::app::{self, App, Flow};
 use diffler::event::AppEvent;
-use diffler::{clipboard, config, editor, event, mcp, ui, watch};
+use diffler::{clipboard, config, editor, event, graph, mcp, ui, watch};
 use diffler_core::review::Review;
 use ratatui::DefaultTerminal;
 use tokio::sync::mpsc;
@@ -40,6 +40,12 @@ enum Command {
         #[arg(long)]
         dump: bool,
     },
+    /// Spike: render a graph as a navigable node map (see the node-graph spec)
+    Graph {
+        /// Render the built-in demo pipeline instead of a live source
+        #[arg(long)]
+        demo: bool,
+    },
 }
 
 #[tokio::main]
@@ -60,6 +66,15 @@ async fn main() -> color_eyre::Result<()> {
         Some(Command::Config { dump: false }) => Err(color_eyre::eyre::eyre!(
             "nothing to do: try `diffler config --dump`"
         )),
+        Some(Command::Graph { demo }) => {
+            if !demo {
+                return Err(color_eyre::eyre::eyre!(
+                    "graph: pass --demo (live CI source lands in the next spike step)"
+                ));
+            }
+            let (theme, _) = diffler::theme::Theme::from_name(&loaded.config.ui.theme);
+            graph::run(graph::GraphModel::demo(), theme).await
+        }
         None => {
             // fail before touching the terminal so the error stays readable
             let review = Review::open_with_context(&repo?, loaded.config.ui.context_lines)?;
