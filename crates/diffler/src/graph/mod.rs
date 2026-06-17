@@ -186,11 +186,15 @@ impl GraphApp {
     /// Toggle collapse of the selected node's group (a CI matrix). Selecting the
     /// group node after collapse keeps the cursor on the same logical thing.
     fn toggle_collapse(&mut self) {
-        let Some(group) = self
-            .selected
-            .as_ref()
-            .and_then(|id| self.model.group_of(id))
-        else {
+        // the selection is either a member node (find its group) or, once
+        // collapsed, the synthetic group node itself (its id IS the group key)
+        let Some(group) = self.selected.as_ref().and_then(|id| {
+            if self.collapsed.contains(&id.0) {
+                Some(id.0.clone())
+            } else {
+                self.model.group_of(id)
+            }
+        }) else {
             return;
         };
         if !self.model.is_collapsible(&group) {
@@ -241,7 +245,7 @@ impl GraphApp {
                 self.zoom = self.zoom.out();
                 self.relayout();
             }
-            KeyCode::Char('c') => self.toggle_collapse(),
+            KeyCode::Enter | KeyCode::Char('c') => self.toggle_collapse(),
             _ => {}
         }
         self.ensure_visible();
@@ -416,7 +420,7 @@ impl GraphApp {
 
     fn hint_line(&self) -> Line<'static> {
         Line::styled(
-            " hjkl move · n/N edge · c collapse · +/- zoom · g/G ends · q quit".to_owned(),
+            " hjkl move · n/N edge · ⏎ collapse · +/- zoom · g/G ends · q quit".to_owned(),
             Style::new().fg(self.theme.dim),
         )
     }
@@ -509,6 +513,21 @@ mod tests {
         assert_eq!(test.label, "test (3)");
         assert_eq!(test.status, NodeStatus::Failed);
         insta::assert_snapshot!(render(&mut app).backend());
+
+        // pressing collapse again on the group node expands it back
+        app.handle_key(&key('c'));
+        assert!(app.collapsed.is_empty(), "expanded back");
+        assert_eq!(
+            app.model
+                .group_of(app.selected.as_ref().unwrap())
+                .as_deref(),
+            Some("test"),
+            "selection lands on a matrix leg after expanding"
+        );
+        // Enter toggles collapse too
+        let enter = KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::NONE);
+        app.handle_key(&enter);
+        assert!(app.collapsed.contains("test"), "enter collapses");
     }
 
     #[test]
