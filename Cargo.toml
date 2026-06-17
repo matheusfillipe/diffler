@@ -54,10 +54,9 @@ tree-sitter-css = "0.25"
 serde = { version = "1", features = ["derive"] }
 serde_ignored = "0.1"
 serde_json = "1"
-# spike (node-graph): graph layout engines under bake-off + CI workflow YAML
+# diffler-graph: ascii-dag for node rank/order; serde_norway parses workflow YAML
 ascii-dag = "0.9"
-tui-nodes = "0.10"
-serde_yaml = "0.9"
+serde_norway = "0.9"
 toml = "1"
 uuid = { version = "1", features = ["v4"] }
 unicode-width = "0.2"

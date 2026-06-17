@@ -856,7 +856,6 @@ impl App {
     /// React to a [`diffler_graph::GraphAction`] from the component.
     fn on_graph_action(&mut self, action: &diffler_graph::GraphAction) {
         match action {
-            // a node's per-type action — opening code/logs lands here later
             diffler_graph::GraphAction::Activated(id) => {
                 self.info(format!("{} (open not wired yet)", id.0));
             }

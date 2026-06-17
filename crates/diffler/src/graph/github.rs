@@ -52,11 +52,11 @@ type EdgeDef = (String, String);
 /// Parse a workflow YAML into `(jobs, edges)`. Jobs keep their declaration
 /// order; an edge runs from each `needs` entry to the job.
 fn parse_workflow(yaml: &str) -> Result<(Vec<JobDef>, Vec<EdgeDef>)> {
-    let value: serde_yaml::Value =
-        serde_yaml::from_str(yaml).wrap_err("workflow YAML did not parse")?;
+    let value: serde_norway::Value =
+        serde_norway::from_str(yaml).wrap_err("workflow YAML did not parse")?;
     let jobs = value
         .get("jobs")
-        .and_then(serde_yaml::Value::as_mapping)
+        .and_then(serde_norway::Value::as_mapping)
         .ok_or_else(|| eyre!("workflow has no `jobs` mapping"))?;
 
     let mut job_ids = Vec::new();
@@ -65,7 +65,7 @@ fn parse_workflow(yaml: &str) -> Result<(Vec<JobDef>, Vec<EdgeDef>)> {
         let Some(id) = key.as_str() else { continue };
         let label = job
             .get("name")
-            .and_then(serde_yaml::Value::as_str)
+            .and_then(serde_norway::Value::as_str)
             .unwrap_or(id)
             .to_owned();
         job_ids.push((id.to_owned(), label));
@@ -77,10 +77,10 @@ fn parse_workflow(yaml: &str) -> Result<(Vec<JobDef>, Vec<EdgeDef>)> {
 }
 
 /// `needs` is either a single job id or a list of them.
-fn needs_of(job: &serde_yaml::Value) -> Vec<String> {
+fn needs_of(job: &serde_norway::Value) -> Vec<String> {
     match job.get("needs") {
-        Some(serde_yaml::Value::String(one)) => vec![one.clone()],
-        Some(serde_yaml::Value::Sequence(many)) => many
+        Some(serde_norway::Value::String(one)) => vec![one.clone()],
+        Some(serde_norway::Value::Sequence(many)) => many
             .iter()
             .filter_map(|v| v.as_str().map(str::to_owned))
             .collect(),
@@ -100,22 +100,9 @@ fn status_for(label: &str, id: &str, jobs: &[JobStatus]) -> NodeStatus {
                 || j.name.starts_with(&format!("{id} ("))
         })
         .map(|j| map_status(&j.status, j.conclusion.as_deref()))
-        .reduce(worst)
+        .reduce(NodeStatus::worse)
         // no matching run job yet (or no run at all) reads as queued
         .unwrap_or(NodeStatus::Queued)
-}
-
-/// Severity order so a failing matrix leg dominates the aggregate.
-fn worst(a: NodeStatus, b: NodeStatus) -> NodeStatus {
-    let rank = |s: NodeStatus| match s {
-        NodeStatus::Failed => 5,
-        NodeStatus::Running => 4,
-        NodeStatus::Queued => 3,
-        NodeStatus::Skipped => 2,
-        NodeStatus::Neutral => 1,
-        NodeStatus::Ok => 0,
-    };
-    if rank(a) >= rank(b) { a } else { b }
 }
 
 fn map_status(status: &str, conclusion: Option<&str>) -> NodeStatus {

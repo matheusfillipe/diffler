@@ -1,4 +1,4 @@
-//! Spike: the engine-agnostic graph model. A plain directed graph — cycles are
+//! The engine-agnostic graph model. A plain directed graph — cycles are
 //! allowed (CI pipelines are DAGs, but call/reference maps are not), so layout
 //! engines, not the model, decide how to handle back-edges. Front-ends (GitHub
 //! Actions today; DOT/mermaid/LSP later) all build this same shape.
@@ -37,6 +37,25 @@ impl NodeStatus {
             Self::Queued => "·",
             Self::Skipped => "–",
             Self::Neutral => "",
+        }
+    }
+
+    /// The more severe of two statuses, so a failing matrix leg dominates a
+    /// collapsed group's (or aggregate run's) status.
+    #[must_use]
+    pub fn worse(self, other: Self) -> Self {
+        let rank = |s: Self| match s {
+            Self::Failed => 5,
+            Self::Running => 4,
+            Self::Queued => 3,
+            Self::Skipped => 2,
+            Self::Neutral => 1,
+            Self::Ok => 0,
+        };
+        if rank(self) >= rank(other) {
+            self
+        } else {
+            other
         }
     }
 }
@@ -85,19 +104,6 @@ impl Node {
         self.foldable = Some(group.to_owned());
         self
     }
-}
-
-/// Severity order so a failing matrix leg dominates a collapsed group's status.
-fn worse(a: NodeStatus, b: NodeStatus) -> NodeStatus {
-    let rank = |s: NodeStatus| match s {
-        NodeStatus::Failed => 5,
-        NodeStatus::Running => 4,
-        NodeStatus::Queued => 3,
-        NodeStatus::Skipped => 2,
-        NodeStatus::Neutral => 1,
-        NodeStatus::Ok => 0,
-    };
-    if rank(a) >= rank(b) { a } else { b }
 }
 
 #[derive(Debug, Clone)]
@@ -161,7 +167,7 @@ impl Model {
                 let mut count = 0usize;
                 for member in &self.nodes {
                     if member.group.as_deref() == Some(group.as_str()) {
-                        worst = worse(worst, member.status);
+                        worst = worst.worse(member.status);
                         count += 1;
                     }
                 }
@@ -183,9 +189,8 @@ impl Model {
         out
     }
 
-    /// A small CI-shaped sample for the `--demo` path: lint/typos/deny fan into
-    /// a test matrix, which fans into the publish jobs — the shape of our own
-    /// release pipeline.
+    /// A CI-shaped sample used by tests and snapshots: lint/typos/deny fan into
+    /// a foldable test matrix, which fans into the publish jobs.
     pub fn demo() -> Self {
         use NodeStatus::{Failed, Neutral, Ok, Queued, Running};
         let mut model = Self::new(RankDir::TopDown);
@@ -218,39 +223,6 @@ impl Model {
             edge("build", "publish-crates"),
             edge("build", "publish-npm"),
             edge("build", "publish-aur"),
-        ];
-        model
-    }
-
-    /// A small call/reference graph for the `--code` path: not a DAG —
-    /// `eval`/`apply` are mutually recursive — so it exercises back-edge
-    /// routing. Status is `Neutral` (code graphs have no run state).
-    pub fn code_demo() -> Self {
-        let mut model = Self::new(RankDir::LeftRight);
-        model.nodes = [
-            "main", "load", "parse", "tokenize", "eval", "apply", "builtin", "render", "error",
-        ]
-        .into_iter()
-        .map(|id| Node::leaf(id, NodeStatus::Neutral))
-        .collect();
-        let edge = |from: &str, to: &str| Edge {
-            from: NodeId::new(from),
-            to: NodeId::new(to),
-            label: None,
-        };
-        model.edges = vec![
-            edge("main", "load"),
-            edge("main", "eval"),
-            edge("main", "render"),
-            edge("load", "parse"),
-            edge("parse", "tokenize"),
-            edge("parse", "error"),
-            edge("eval", "apply"),
-            edge("apply", "eval"), // cycle: mutual recursion
-            edge("apply", "builtin"),
-            edge("eval", "builtin"),
-            edge("render", "error"),
-            edge("builtin", "error"),
         ];
         model
     }

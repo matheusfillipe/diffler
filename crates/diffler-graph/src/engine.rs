@@ -1,4 +1,5 @@
-//! Spike: layout + render engines behind one trait, so the spike can A/B them.
+//! Layout + render engines behind one trait, so the renderer is swappable
+//! (ego-centric/radial for LSP maps later) without touching the view.
 //! The view consumes an owned [`Layout`] (no engine lifetimes leak out).
 //!
 //! `Layered` is the favoured engine: it uses `ascii-dag` only for rank/order

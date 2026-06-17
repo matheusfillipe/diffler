@@ -40,7 +40,7 @@ unicode-width.workspace = true
 # pre-staged for the LSP client; validates CI build times across targets
 async-lsp.workspace = true
 # graph: GitHub Actions source parses workflow YAML into a diffler-graph Model
-serde_yaml.workspace = true
+serde_norway.workspace = true
 
 [dev-dependencies]
 git2.workspace = true
