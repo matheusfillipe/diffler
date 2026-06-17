@@ -140,7 +140,13 @@ fn draw_sidebar(
         .enumerate()
         .map(|(row_index, row)| {
             let on_cursor = row_index == diff.tree_cursor;
-            let line = match &row.node {
+            // ranges are offsets into the row's name, so the `/` match
+            // highlights the exact substring like the log and diff panes do
+            let ranges = search
+                .filter(|_| focused)
+                .map(|s| s.ranges_for(row_index))
+                .unwrap_or_default();
+            match &row.node {
                 TreeNode::Dir { name, path } => sidebar_dir_line(
                     theme,
                     name,
@@ -148,6 +154,7 @@ fn draw_sidebar(
                     row.depth,
                     inner.width,
                     on_cursor,
+                    &ranges,
                 ),
                 TreeNode::File { index, name } => {
                     let Some(file) = model.files.get(*index) else {
@@ -164,14 +171,9 @@ fn draw_sidebar(
                         row.depth,
                         inner.width,
                         on_cursor,
+                        &ranges,
                     )
                 }
-            };
-            match search.filter(|_| focused).map(|s| s.ranges_for(row_index)) {
-                Some(ranges) if !ranges.is_empty() => {
-                    super::tint_search_row(line, ranges.iter().any(|(_, current)| *current), theme)
-                }
-                _ => line,
             }
         })
         .collect();
@@ -463,6 +465,7 @@ fn tree_lead(theme: &Theme, depth: usize, bg: Color, on_cursor: bool) -> Span<'s
 }
 
 /// A directory row: indent, fold arrow, and the dim directory name.
+#[allow(clippy::too_many_arguments)]
 fn sidebar_dir_line(
     theme: &Theme,
     name: &str,
@@ -470,6 +473,7 @@ fn sidebar_dir_line(
     depth: usize,
     width: u16,
     on_cursor: bool,
+    search: &[(std::ops::Range<usize>, bool)],
 ) -> Line<'static> {
     let bg = if on_cursor {
         theme.cursor_line
@@ -477,17 +481,32 @@ fn sidebar_dir_line(
         theme.bg
     };
     let arrow = if folded { "▸ " } else { "▾ " };
-    let spans = vec![
+    let name_style = Style::new()
+        .fg(if on_cursor { theme.accent } else { theme.fg })
+        .bg(bg);
+    let mut spans = vec![
         tree_lead(theme, depth, bg, on_cursor),
         Span::styled(arrow.to_owned(), Style::new().fg(theme.dim).bg(bg)),
-        Span::styled(
-            name.to_owned(),
-            Style::new()
-                .fg(if on_cursor { theme.accent } else { theme.fg })
-                .bg(bg),
-        ),
     ];
+    spans.extend(name_spans(name, name.to_owned(), name_style, search, theme));
     pad_line(spans, bg, width)
+}
+
+/// Highlight `displayed` (a possibly-clipped name) with the search ranges, but
+/// only while it still equals the full `name` — a clipped name's bytes no
+/// longer line up with the match offsets, so it renders plain.
+fn name_spans(
+    name: &str,
+    displayed: String,
+    style: Style,
+    search: &[(std::ops::Range<usize>, bool)],
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    if displayed == name {
+        super::highlight_spans(&displayed, style, search, theme)
+    } else {
+        vec![Span::styled(displayed, style)]
+    }
 }
 
 /// A file row: indent, status glyph (colored), basename, then the viewed and
@@ -503,6 +522,7 @@ fn sidebar_file_line(
     depth: usize,
     width: u16,
     on_cursor: bool,
+    search: &[(std::ops::Range<usize>, bool)],
 ) -> Line<'static> {
     let bg = if on_cursor {
         theme.cursor_line
@@ -533,7 +553,13 @@ fn sidebar_file_line(
         .bg(bg);
     // the file's identity is its tail (basename); when a flat-list path
     // overflows, elide from the front so the name stays visible
-    spans.push(Span::styled(clip_path(name, room), name_style));
+    spans.extend(name_spans(
+        name,
+        clip_path(name, room),
+        name_style,
+        search,
+        theme,
+    ));
     if viewed {
         spans.push(Span::styled(" ✓".to_owned(), dim));
     }
@@ -1179,6 +1205,41 @@ mod tests {
         let (_fixture, mut app) = diff_app();
         assert_eq!(app.diff.as_ref().unwrap().focus, Pane::List);
         insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn sidebar_file_row_highlights_only_the_matched_substring() {
+        let (_fixture, app) = diff_app();
+        let file = app
+            .review
+            .model()
+            .files
+            .iter()
+            .find(|f| f.path == "src/lib.rs")
+            .cloned()
+            .expect("src/lib.rs present");
+        // a wide row so the name is not clipped; "lib" is bytes 0..3 of "lib.rs"
+        let spans = super::sidebar_file_line(
+            &app.theme,
+            &file,
+            "lib.rs",
+            false,
+            0,
+            0,
+            80,
+            false,
+            &[(0..3, true)],
+        );
+        let highlighted: Vec<&str> = spans
+            .iter()
+            .filter(|s| s.style.bg == Some(app.theme.search_current))
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(
+            highlighted,
+            vec!["lib"],
+            "only the matched word lights up, not the whole row: {spans:?}"
+        );
     }
 
     #[test]

@@ -18,6 +18,7 @@ pub use diff::{
     comment_display,
 };
 pub use log::LogView;
+pub(crate) use status::RECENT_TITLE;
 pub use status::{Row, Section, StatusView};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};

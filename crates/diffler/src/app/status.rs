@@ -13,6 +13,10 @@ use crate::config::FileLayout;
 use crate::keymap::Action;
 use crate::tree::{self, TreeNode, TreeRow};
 
+/// Heading for the trailing recent-commits section, shared by the renderer and
+/// the search labels so a `/` match lines up with the displayed text.
+pub(crate) const RECENT_TITLE: &str = "Recent commits";
+
 /// Status screen sections, in display order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
@@ -295,17 +299,26 @@ impl App {
     fn status_row_label(&self, row: &Row) -> Option<String> {
         Some(match row {
             Row::SectionHeader { section, .. } => section.title().to_owned(),
-            Row::RecentHeader { .. } => "Recent commits".to_owned(),
+            Row::RecentHeader { .. } => RECENT_TITLE.to_owned(),
             Row::Dir { name, .. } => name.clone(),
-            Row::File { section, index, .. } => {
-                self.section_files(*section).get(*index)?.path.clone()
-            }
-            Row::Commit { index } => {
-                let entry = self.status.recent.get(*index)?;
-                format!("{} {} {}", entry.oid7, entry.subject, entry.author)
-            }
+            Row::File { section, index, .. } => self
+                .status_file_name(self.section_files(*section).get(*index)?)
+                .to_owned(),
+            Row::Commit { index } => self.status.recent.get(*index)?.subject.clone(),
             Row::HunkHeader { .. } | Row::DiffLine { .. } => return None,
         })
+    }
+
+    /// The text a file row displays: the basename in the tree layout (the
+    /// directory rows above carry the path), the whole repo-relative path in
+    /// the flat list. The search labels and the renderer share it so a `/`
+    /// match highlights exactly the displayed substring.
+    pub(crate) fn status_file_name<'a>(&self, file: &'a FileDiff) -> &'a str {
+        if self.config.ui.status_file_layout == FileLayout::List {
+            file.path.as_str()
+        } else {
+            file.path.rsplit('/').next().unwrap_or(&file.path)
+        }
     }
 
     pub fn section_files(&self, section: Section) -> &[FileDiff] {
