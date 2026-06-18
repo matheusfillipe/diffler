@@ -165,7 +165,7 @@ jobs:
           mkdir -p /tmp/assets
           gh release download "$TAG" --dir /tmp/assets --repo "$GITHUB_REPOSITORY"
           bash scripts/packaging.sh "${TAG#v}" /tmp/assets
-      - uses: cachix/install-nix-action@v30
+      - uses: cachix/install-nix-action@v31
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
