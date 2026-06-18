@@ -198,6 +198,16 @@ mod tests {
     }
 
     #[test]
+    fn yaml_is_highlighted() {
+        let hl = Highlighter::default();
+        let lines = hl.highlight("ci.yml", "name: CI\non: push\njobs:\n  lint: {}\n");
+        assert!(
+            lines.iter().any(|line| !line.is_empty()),
+            "expected styled ranges for a .yml file"
+        );
+    }
+
+    #[test]
     fn ranges_cover_within_line_bounds() {
         let hl = Highlighter::default();
         let src = "fn main() { let x = \"hi\"; }\n";

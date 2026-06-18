@@ -188,6 +188,13 @@ impl LanguageRegistry {
             tree_sitter_css::HIGHLIGHTS_QUERY,
             None,
         );
+        r.add(
+            "yaml",
+            &["yml", "yaml"],
+            tree_sitter_yaml::LANGUAGE.into(),
+            tree_sitter_yaml::HIGHLIGHTS_QUERY,
+            None,
+        );
 
         r
     }
