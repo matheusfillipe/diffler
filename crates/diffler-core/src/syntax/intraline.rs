@@ -8,7 +8,7 @@ use std::ops::Range;
 
 use syndiff::{SyntaxDiffOptions, build_tree, diff_trees};
 
-use crate::model::{FileDiff, LineKind};
+use crate::model::{FileDiff, Hunk, LineKind};
 use crate::syntax::registry::LanguageRegistry;
 use crate::syntax::{MAX_PARSE_BYTES, line_bounds, parse, split_range_by_line};
 
@@ -72,8 +72,61 @@ impl LanguageRegistry {
                 line.moved = moved;
                 line.emphasis = emphasis;
             }
+            refine_partial_changes(hunk);
         }
         true
+    }
+}
+
+/// Where the AST diff flagged a *partial* line change (some token ranges, not
+/// the whole line and not a reformat), replace the coarse token ranges with a
+/// grapheme-level diff of the paired lines, so only the characters that actually
+/// changed are emphasized (an edit inside a string scalar shouldn't light up the
+/// whole scalar). Whole-line changes and reformat-only lines keep the AST result.
+fn refine_partial_changes(hunk: &mut Hunk) {
+    let kinds: Vec<Option<LineKind>> = hunk.lines.iter().map(|l| Some(l.kind)).collect();
+    let kind_at = |i: usize| kinds.get(i).copied().flatten();
+    let mut i = 0;
+    while i < hunk.lines.len() {
+        if kind_at(i) != Some(LineKind::Deleted) {
+            i += 1;
+            continue;
+        }
+        let del_start = i;
+        while kind_at(i) == Some(LineKind::Deleted) {
+            i += 1;
+        }
+        let add_start = i;
+        while kind_at(i) == Some(LineKind::Added) {
+            i += 1;
+        }
+        for p in 0..(add_start - del_start).min(i - add_start) {
+            let (del_idx, add_idx) = (del_start + p, add_start + p);
+            let partial = hunk
+                .lines
+                .get(del_idx)
+                .is_some_and(|l| !l.emphasis.is_empty())
+                || hunk
+                    .lines
+                    .get(add_idx)
+                    .is_some_and(|l| !l.emphasis.is_empty());
+            let (Some(old), Some(new)) = (
+                hunk.lines.get(del_idx).map(|l| l.text.clone()),
+                hunk.lines.get(add_idx).map(|l| l.text.clone()),
+            ) else {
+                continue;
+            };
+            if !partial {
+                continue;
+            }
+            let (old_emph, new_emph) = crate::diff::intraline(&old, &new);
+            if let Some(line) = hunk.lines.get_mut(del_idx) {
+                line.emphasis = old_emph;
+            }
+            if let Some(line) = hunk.lines.get_mut(add_idx) {
+                line.emphasis = new_emph;
+            }
+        }
     }
 }
 
@@ -169,6 +222,50 @@ mod tests {
         assert!(
             new_e[signature].is_empty(),
             "the unchanged signature line is not"
+        );
+    }
+
+    #[test]
+    fn in_string_edit_is_char_precise_not_whole_token() {
+        use crate::model::{DiffLine, FileDiff, FileStatus, Hunk, HunkId, LineKind};
+        let old_line = "fn f() { let s = \"foo/bar\"; }";
+        let new_line = "fn f() { let s = \"foo/EXTRA/bar\"; }";
+        let mut file = FileDiff {
+            path: "a.rs".into(),
+            old_path: None,
+            status: FileStatus::Modified,
+            binary: false,
+            old_text: Some(format!("{old_line}\n")),
+            new_text: Some(format!("{new_line}\n")),
+            hunks: vec![Hunk {
+                id: HunkId("h".into()),
+                old_start: 1,
+                old_lines: 1,
+                new_start: 1,
+                new_lines: 1,
+                context: String::new(),
+                lines: vec![
+                    DiffLine::new(LineKind::Deleted, Some(1), None, old_line.to_owned()),
+                    DiffLine::new(LineKind::Added, None, Some(1), new_line.to_owned()),
+                ],
+            }],
+        };
+        assert!(LanguageRegistry::build().syntactic_emphasis(&mut file));
+        let added = &file.hunks[0].lines[1];
+        assert!(!added.emphasis.is_empty(), "the changed line is emphasized");
+        let covered: String = added
+            .emphasis
+            .iter()
+            .filter_map(|r| new_line.get(r.clone()))
+            .collect();
+        // only the inserted run is emphasized, not the whole "foo/EXTRA/bar" token
+        assert!(
+            covered.contains("EXTRA"),
+            "covers the insertion: {covered:?}"
+        );
+        assert!(
+            !covered.contains("foo"),
+            "the unchanged prefix is not emphasized: {covered:?}"
         );
     }
 
