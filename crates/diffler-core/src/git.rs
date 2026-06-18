@@ -431,6 +431,15 @@ impl Vcs for GitVcs {
     fn workdir(&self) -> Result<PathBuf, VcsError> {
         Ok(self.workdir_path()?.to_path_buf())
     }
+
+    fn remote_url(&self, name: &str) -> Result<Option<String>, VcsError> {
+        match self.repo.find_remote(name) {
+            // url() errs only on a non-UTF-8 remote URL; treat that as no URL
+            Ok(remote) => Ok(remote.url().ok().map(str::to_owned)),
+            Err(err) if err.code() == git2::ErrorCode::NotFound => Ok(None),
+            Err(err) => Err(err.into()),
+        }
+    }
 }
 
 /// Render one hunk of `rel` as a unified patch libgit2 can apply to the

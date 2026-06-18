@@ -1,0 +1,10 @@
+---
+source: crates/diffler/src/ui/runs.rs
+expression: terminal.backend()
+---
+" jk move · ⏎ open graph · q back                                                "
+"  no runs yet…                                                                  "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+" STATUS  fixture@main  mcp off  3 files, 0 viewed                               "

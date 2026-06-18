@@ -48,16 +48,20 @@ pub enum Screen {
     Status,
     Log,
     Diff,
+    /// The CI runs start page (list of recent runs for the repo's provider).
+    Runs,
     /// The CI graph view; keys route to the embedded `GraphView`, not the keymap.
     Graph,
+    /// A single job's log view.
+    Logs,
 }
 
 impl Screen {
     fn context(self) -> Context {
         match self {
-            // Graph keys go to the GraphView, so its keymap context is unused;
-            // map it to Status so hint/help lookups stay total.
-            Self::Status | Self::Graph => Context::Status,
+            // the CI screens drive their own input, so their keymap context is
+            // unused; map them to Status so hint/help lookups stay total.
+            Self::Status | Self::Runs | Self::Graph | Self::Logs => Context::Status,
             Self::Diff => Context::Diff,
             Self::Log => Context::Log,
         }
@@ -183,8 +187,27 @@ const PENDING_TIMEOUT_TICKS: u8 = 4;
 const REFRESH_FLASH_TICKS: u8 = 4;
 /// Poll interval (in 250ms ticks) when the watcher is missing or broken.
 const FALLBACK_REFRESH_TICKS: u32 = 20;
-/// Re-poll the watched CI graph every this many 250ms ticks (~5s).
-const GRAPH_POLL_TICKS: u32 = 20;
+
+/// What the main loop should fetch from the CI provider off-thread. Mirrors
+/// `GitOp`/`pending_git`: set by the app, taken once by the loop, result
+/// returned as an `AppEvent`.
+#[derive(Debug, Clone)]
+pub enum CiRequest {
+    Runs,
+    Detail(diffler_ci::RunId),
+    Log {
+        run: diffler_ci::RunId,
+        job: diffler_ci::JobId,
+        offset: u64,
+    },
+}
+
+/// Detect the repo's CI provider from its `origin` remote (via the `Vcs` trait,
+/// not a subprocess) and config-file presence.
+fn detect_ci(review: &Review, ci: &crate::config::CiConfig) -> Option<diffler_ci::Detected> {
+    let remote = review.vcs.remote_url("origin").ok().flatten();
+    crate::ci::detect_for_repo(&review.repo_root, remote.as_deref(), ci)
+}
 
 pub struct App {
     pub review: Review,
@@ -199,10 +222,25 @@ pub struct App {
     pub diff: Option<DiffView>,
     /// The embedded CI graph component, present while the Graph screen is up.
     pub graph: Option<diffler_graph::GraphView>,
-    /// The watched workflow run feeding `graph`, re-polled for live status.
-    graph_poll: Option<crate::graph::GraphPoll>,
-    /// A graph re-poll the main loop should run off-thread (mirrors `pending_git`).
-    pub pending_graph_poll: Option<crate::graph::GraphPoll>,
+    /// Detected CI provider for the repo, computed at startup. `None` when no
+    /// provider could be determined (no recognized remote or config file).
+    ci_detected: Option<diffler_ci::Detected>,
+    /// Recent CI runs shown on the Runs screen.
+    pub runs: Vec<diffler_ci::CiRun>,
+    runs_cursor: usize,
+    /// The run opened into the graph, re-polled for live status.
+    open_run: Option<diffler_ci::RunId>,
+    /// The job whose log is on the Logs screen.
+    open_job: Option<diffler_ci::JobId>,
+    /// Accumulated job-log text and the byte offset the next poll resumes from.
+    log_text: String,
+    log_offset: u64,
+    log_scroll: u16,
+    /// Set once a log chunk reports the job's log is complete, so polling stops
+    /// (a dump-mode provider returns the whole log in one chunk).
+    log_done: bool,
+    /// A CI provider call the main loop should run off-thread (mirrors `pending_git`).
+    pub pending_ci: Option<CiRequest>,
     pub modal: Option<Modal>,
     /// Active `/` search over the focused pane, if any. `search.open` means the
     /// prompt is capturing input; otherwise highlights persist while `n`/`N`
@@ -319,6 +357,8 @@ impl App {
             }
         };
 
+        let ci_detected = detect_ci(&review, &config.ci);
+
         Self {
             review,
             head,
@@ -332,8 +372,16 @@ impl App {
             log: None,
             diff: None,
             graph: None,
-            graph_poll: None,
-            pending_graph_poll: None,
+            ci_detected,
+            runs: Vec::new(),
+            runs_cursor: 0,
+            open_run: None,
+            open_job: None,
+            log_text: String::new(),
+            log_offset: 0,
+            log_scroll: 0,
+            log_done: false,
+            pending_ci: None,
             modal: None,
             search: None,
             message,
@@ -359,6 +407,27 @@ impl App {
     /// on the last screen quits instead of popping.
     pub fn screen(&self) -> Screen {
         self.screens.last().copied().unwrap_or(Screen::Status)
+    }
+
+    /// Index of the selected run on the Runs screen.
+    pub fn runs_selected(&self) -> usize {
+        self.runs_cursor
+    }
+
+    /// The accumulated job-log text on the Logs screen.
+    pub fn log_text(&self) -> &str {
+        &self.log_text
+    }
+
+    /// Vertical scroll offset of the Logs screen.
+    pub fn log_scroll(&self) -> u16 {
+        self.log_scroll
+    }
+
+    /// The detected CI provider for the repo, if any (the main loop builds a
+    /// provider from this to service a `pending_ci` request).
+    pub fn ci_detected(&self) -> Option<diffler_ci::Detected> {
+        self.ci_detected.clone()
     }
 
     /// Keymap of the active screen, with config remaps applied — what the
@@ -400,6 +469,10 @@ impl App {
             AppEvent::Key(key) if key.kind != crossterm::event::KeyEventKind::Release => {
                 if self.screen() == Screen::Graph {
                     self.handle_graph_key(&key)
+                } else if self.screen() == Screen::Runs {
+                    self.handle_runs_key(&key)
+                } else if self.screen() == Screen::Logs {
+                    self.handle_logs_key(&key)
                 } else if self.modal.is_some() {
                     self.handle_modal_key(&key)
                 } else if self.transient.is_some() {
@@ -422,18 +495,40 @@ impl App {
                 {
                     self.refresh();
                 }
-                // re-poll the watched CI graph on a relaxed cadence
-                if self.screen() == Screen::Graph
-                    && self.tick_count.is_multiple_of(GRAPH_POLL_TICKS)
-                {
-                    self.pending_graph_poll = self.graph_poll.clone();
+                // re-poll the active CI screen on a relaxed cadence (250ms ticks);
+                // saturating + clamp so a pathological config can't zero or overflow it
+                let poll_ticks =
+                    u32::try_from(self.config.ci.poll_seconds.max(1).saturating_mul(4))
+                        .unwrap_or(u32::MAX);
+                if self.tick_count.is_multiple_of(poll_ticks) {
+                    self.queue_ci_poll();
                 }
                 Flow::Continue
             }
-            AppEvent::GraphModel(model) => {
+            AppEvent::CiRuns(runs) => {
+                self.runs = runs;
+                self.runs_cursor = self.runs_cursor.min(self.runs.len().saturating_sub(1));
+                Flow::Continue
+            }
+            AppEvent::CiRunDetail(detail) => {
+                let model = crate::ci::to_model(&detail);
                 if let Some(graph) = self.graph.as_mut() {
                     graph.set_model(model);
                 }
+                Flow::Continue
+            }
+            AppEvent::CiLog {
+                text,
+                next_offset,
+                done,
+            } => {
+                self.log_text.push_str(&text);
+                self.log_offset = next_offset;
+                self.log_done = done;
+                Flow::Continue
+            }
+            AppEvent::CiError(message) => {
+                self.error(message);
                 Flow::Continue
             }
             AppEvent::RepoChanged => {
@@ -510,7 +605,8 @@ impl App {
             Screen::Status => self.status_mouse(gesture),
             Screen::Diff => self.diff_mouse(gesture),
             Screen::Log => self.log_mouse(gesture),
-            Screen::Graph => {} // handled above
+            // the CI screens are keyboard-driven; Graph consumes mouse above
+            Screen::Graph | Screen::Runs | Screen::Logs => {}
         }
     }
 
@@ -540,7 +636,7 @@ impl App {
                         log.visual_anchor = None;
                     }
                 }
-                Screen::Status | Screen::Graph => {}
+                Screen::Status | Screen::Graph | Screen::Runs | Screen::Logs => {}
             }
             self.pending.clear();
             return Flow::Continue;
@@ -623,7 +719,7 @@ impl App {
                 .as_ref()
                 .is_some_and(|d| d.visual_anchor.is_some()),
             Screen::Log => self.log.as_ref().is_some_and(|l| l.visual_anchor.is_some()),
-            Screen::Status | Screen::Graph => false,
+            Screen::Status | Screen::Graph | Screen::Runs | Screen::Logs => false,
         }
     }
 
@@ -811,35 +907,108 @@ impl App {
             Action::Search => self.search_start(),
             Action::SearchNext => self.search_step(true),
             Action::SearchPrev => self.search_step(false),
-            Action::OpenGraph => self.open_graph(),
+            Action::OpenRuns => self.open_runs(),
             action => match self.screen() {
                 Screen::Status => self.dispatch_status(action),
                 Screen::Log => self.dispatch_log(action),
                 Screen::Diff => self.dispatch_diff(action),
-                // graph keys are routed to the GraphView, never the keymap
-                Screen::Graph => {}
+                // CI screens drive their own input, never the keymap
+                Screen::Graph | Screen::Runs | Screen::Logs => {}
             },
         }
         Flow::Continue
     }
 
-    /// Open the CI graph for the repo's workflow as a new screen.
-    fn open_graph(&mut self) {
-        let Some(workflow) = crate::graph::discover_workflow(&self.review.repo_root) else {
-            self.info("no .github/workflows to graph");
+    /// Open the CI runs start page for the repo's detected provider.
+    fn open_runs(&mut self) {
+        if self.ci_detected.is_none() {
+            self.info("no CI provider detected for this repo");
+            return;
+        }
+        self.runs_cursor = 0;
+        self.push_screen(Screen::Runs);
+        self.pending_ci = Some(CiRequest::Runs);
+    }
+
+    /// Open the selected run's graph: fetch its detail, which arrives as
+    /// `AppEvent::CiRunDetail` and feeds the graph view.
+    fn open_selected_run(&mut self) {
+        let Some(run) = self.runs.get(self.runs_cursor) else {
             return;
         };
-        match crate::graph::load(&workflow) {
-            Ok((model, poll)) => {
-                let mut view = diffler_graph::GraphView::new();
-                view.set_model(model);
-                self.graph = Some(view);
-                self.graph_poll = poll.clone();
-                self.pending_graph_poll = poll;
-                self.push_screen(Screen::Graph);
+        let id = run.id.clone();
+        self.open_run = Some(id.clone());
+        self.graph = Some(diffler_graph::GraphView::new());
+        self.push_screen(Screen::Graph);
+        self.pending_ci = Some(CiRequest::Detail(id));
+    }
+
+    /// Open a job's log view from a graph node activation.
+    fn open_logs(&mut self, job: diffler_ci::JobId) {
+        let Some(run) = self.open_run.clone() else {
+            return;
+        };
+        self.open_job = Some(job.clone());
+        self.log_text.clear();
+        self.log_offset = 0;
+        self.log_scroll = 0;
+        self.log_done = false;
+        self.push_screen(Screen::Logs);
+        self.pending_ci = Some(CiRequest::Log {
+            run,
+            job,
+            offset: 0,
+        });
+    }
+
+    /// Queue the poll for the active CI screen onto `pending_ci`.
+    fn queue_ci_poll(&mut self) {
+        self.pending_ci = match self.screen() {
+            Screen::Runs => Some(CiRequest::Runs),
+            Screen::Graph => self.open_run.clone().map(CiRequest::Detail),
+            // stop once the log is complete (a dump provider sends it all at once)
+            Screen::Logs if self.log_done => None,
+            Screen::Logs => match (self.open_run.clone(), self.open_job.clone()) {
+                (Some(run), Some(job)) => Some(CiRequest::Log {
+                    run,
+                    job,
+                    offset: self.log_offset,
+                }),
+                _ => None,
+            },
+            _ => None,
+        };
+    }
+
+    /// While the runs screen is up: navigate the list, Enter opens a run.
+    fn handle_runs_key(&mut self, key: &KeyEvent) -> Flow {
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => return self.pop_screen(),
+            KeyCode::Char('j') | KeyCode::Down => {
+                if !self.runs.is_empty() {
+                    self.runs_cursor = (self.runs_cursor + 1).min(self.runs.len() - 1);
+                }
             }
-            Err(err) => self.error(err.to_string()),
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.runs_cursor = self.runs_cursor.saturating_sub(1);
+            }
+            KeyCode::Enter => self.open_selected_run(),
+            _ => {}
         }
+        Flow::Continue
+    }
+
+    /// While the logs screen is up: scroll the text, q/Esc leave it.
+    fn handle_logs_key(&mut self, key: &KeyEvent) -> Flow {
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => return self.pop_screen(),
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.log_scroll = self.log_scroll.saturating_add(1);
+            }
+            KeyCode::Char('k') | KeyCode::Up => self.log_scroll = self.log_scroll.saturating_sub(1),
+            _ => {}
+        }
+        Flow::Continue
     }
 
     /// While the graph screen is up, keys go to the component; Esc/q leave it.
@@ -853,11 +1022,12 @@ impl App {
         Flow::Continue
     }
 
-    /// React to a [`diffler_graph::GraphAction`] from the component.
+    /// React to a [`diffler_graph::GraphAction`] from the component: activating a
+    /// node opens that job's log.
     fn on_graph_action(&mut self, action: &diffler_graph::GraphAction) {
         match action {
             diffler_graph::GraphAction::Activated(id) => {
-                self.info(format!("{} (open not wired yet)", id.0));
+                self.open_logs(diffler_ci::JobId(id.0.clone()));
             }
             diffler_graph::GraphAction::Folded { .. } => {}
         }
@@ -880,9 +1050,13 @@ impl App {
             Some(Screen::Log) => self.log = None,
             Some(Screen::Graph) => {
                 self.graph = None;
-                self.graph_poll = None;
-                self.pending_graph_poll = None;
+                self.open_run = None;
             }
+            Some(Screen::Logs) => {
+                self.open_job = None;
+                self.log_text.clear();
+            }
+            Some(Screen::Runs) => self.runs.clear(),
             Some(Screen::Status) | None => {}
         }
         Flow::Continue
@@ -963,7 +1137,7 @@ impl App {
                 Pane::List => d.tree_cursor,
                 Pane::Diff => d.cursor,
             }),
-            Screen::Graph => 0,
+            Screen::Graph | Screen::Runs | Screen::Logs => 0,
         }
     }
 
@@ -978,7 +1152,7 @@ impl App {
                     .collect()
             }),
             Screen::Diff => self.diff_search_rows(),
-            Screen::Graph => Vec::new(),
+            Screen::Graph | Screen::Runs | Screen::Logs => Vec::new(),
         }
     }
 
@@ -1021,7 +1195,7 @@ impl App {
                     }
                 }
             }
-            Screen::Graph => {}
+            Screen::Graph | Screen::Runs | Screen::Logs => {}
         }
     }
 
@@ -1552,27 +1726,44 @@ mod tests {
     }
 
     #[test]
-    fn open_graph_without_a_workflow_is_a_clean_noop() {
-        // the fixture repo has no .github/workflows, so `o` just informs
+    fn open_runs_without_a_provider_is_a_clean_noop() {
+        // the fixture repo has no remote or CI config, so `o` just informs
         let (_fixture, mut app) = app();
         app.handle(key('o'));
         assert_eq!(app.screen(), Screen::Status, "no screen pushed");
-        assert!(app.graph.is_none());
+        assert!(app.runs.is_empty());
         let message = app.message.expect("message");
-        assert!(message.text.contains("workflows"), "{}", message.text);
+        assert!(message.text.contains("provider"), "{}", message.text);
     }
 
     #[test]
-    fn graph_model_event_feeds_the_view_when_open() {
+    fn run_detail_event_feeds_the_graph_view() {
+        use diffler_ci::{CiJob, CiRun, JobId, JobStatus, RunDetail, RunId};
         let (_fixture, mut app) = app();
-        // stand up a graph screen directly (no gh needed)
-        let mut view = diffler_graph::GraphView::new();
-        view.set_model(diffler_graph::Model::demo());
-        app.graph = Some(view);
+        app.graph = Some(diffler_graph::GraphView::new());
+        app.open_run = Some(RunId("1".into()));
         app.push_screen(Screen::Graph);
         assert_eq!(app.screen(), Screen::Graph);
-        // a refreshed model from the poll is applied to the live view
-        app.handle(AppEvent::GraphModel(diffler_graph::Model::demo()));
+        // a run detail from the poll is mapped onto the live graph
+        let detail = RunDetail {
+            run: CiRun {
+                id: RunId("1".into()),
+                name: "CI".into(),
+                branch: "main".into(),
+                commit: "abc".into(),
+                author: String::new(),
+                created: None,
+                status: JobStatus::Running,
+                url: None,
+            },
+            jobs: vec![CiJob {
+                id: JobId("lint".into()),
+                name: "lint".into(),
+                status: JobStatus::Ok,
+                needs: vec![],
+            }],
+        };
+        app.handle(AppEvent::CiRunDetail(detail));
         assert!(app.graph.is_some());
         // q backs out and drops the graph state
         app.handle(key('q'));

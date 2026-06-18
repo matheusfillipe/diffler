@@ -1,0 +1,12 @@
+---
+source: crates/diffler/src/ui/runs.rs
+expression: terminal.backend()
+---
+" jk move · ⏎ open graph · q back                                                "
+"▌ ✓ CI                    main              abc1234                             "
+"  ✗ Release               feature/x         9988776                             "
+"  ● Nightly               main              0011223                             "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+" STATUS  fixture@main  mcp off  3 files, 0 viewed                               "

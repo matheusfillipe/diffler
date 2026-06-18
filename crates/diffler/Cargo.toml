@@ -21,6 +21,7 @@ pkg-fmt = "zip"
 [dependencies]
 diffler-core.workspace = true
 diffler-graph.workspace = true
+diffler-ci.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
 tokio.workspace = true

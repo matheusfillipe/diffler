@@ -34,7 +34,7 @@ expression: terminal.backend()
 " <c-r>  refresh            p  Push                                                                                      "
 " <cr>  open                u  Push and set upstream                                                                     "
 " D  open_review_diff     p  Pull …                                                                                      "
-" o  open_graph             p  Pull                                                                                      "
+" o  open_runs              p  Pull                                                                                      "
 " {  prev_hunk            f  Fetch …                                                                                     "
 " }  next_hunk              f  Fetch                                                                                     "
 " e  open_editor            a  Fetch all remotes                                                                         "

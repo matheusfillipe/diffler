@@ -1,0 +1,10 @@
+---
+source: crates/diffler/src/ui/logs.rs
+expression: terminal.backend()
+---
+" jk scroll · q back                                         "
+"  waiting for logs…                                         "
+"                                                            "
+"                                                            "
+"                                                            "
+" STATUS  fixture@main  mcp off  3 files, 0 viewed           "

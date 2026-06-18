@@ -3,6 +3,7 @@
 //! surface is the binary's: nothing here is a stable API.
 
 pub mod app;
+pub mod ci;
 pub mod clipboard;
 pub mod config;
 pub mod editor;

@@ -129,4 +129,7 @@ pub trait Vcs: Send {
     fn network_argv(&self, op: NetworkOp) -> Vec<String>;
     /// Working directory to run [`Vcs::network_argv`] in.
     fn workdir(&self) -> Result<PathBuf, VcsError>;
+    /// URL of the named remote (e.g. `origin`), if it exists. Used to detect the
+    /// CI provider's host without shelling out.
+    fn remote_url(&self, name: &str) -> Result<Option<String>, VcsError>;
 }

@@ -23,6 +23,7 @@ pub struct Config {
     pub ui: UiConfig,
     pub mcp: McpConfig,
     pub editor: EditorConfig,
+    pub ci: CiConfig,
     pub keys: KeysConfig,
 }
 
@@ -116,6 +117,35 @@ pub struct EditorConfig {
     /// at the point of use, not at config load time.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
+}
+
+/// CI monitoring: which provider to use for the repo's runs and how often to
+/// re-poll. `provider = "auto"` detects from the remote/config files.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CiConfig {
+    pub provider: String,
+    pub poll_seconds: u64,
+    pub gitlab: CiGitLabConfig,
+}
+
+impl Default for CiConfig {
+    fn default() -> Self {
+        Self {
+            provider: "auto".to_owned(),
+            poll_seconds: 5,
+            gitlab: CiGitLabConfig::default(),
+        }
+    }
+}
+
+/// GitLab-specific CI settings. `host` overrides remote detection for a
+/// self-hosted instance.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CiGitLabConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
 }
 
 /// Key remaps per screen and per transient: action (or sub-key) name → chord
@@ -268,6 +298,7 @@ struct PartialConfig {
     ui: PartialUi,
     mcp: PartialMcp,
     editor: PartialEditor,
+    ci: PartialCi,
     keys: KeysConfig,
 }
 
@@ -296,6 +327,20 @@ struct PartialMcp {
 #[serde(default)]
 struct PartialEditor {
     command: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct PartialCi {
+    provider: Option<String>,
+    poll_seconds: Option<u64>,
+    gitlab: PartialCiGitLab,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct PartialCiGitLab {
+    host: Option<String>,
 }
 
 fn read_layer(path: &Path, warnings: &mut Vec<String>) -> Result<PartialConfig, ConfigError> {
@@ -428,6 +473,24 @@ fn apply_layer(
         config.editor.command = Some(command);
         origins.insert("editor.command".to_owned(), origin.clone());
     }
+    set(
+        layer.ci.provider,
+        &mut config.ci.provider,
+        "ci.provider",
+        origin,
+        origins,
+    );
+    set(
+        layer.ci.poll_seconds,
+        &mut config.ci.poll_seconds,
+        "ci.poll_seconds",
+        origin,
+        origins,
+    );
+    if let Some(host) = layer.ci.gitlab.host {
+        config.ci.gitlab.host = Some(host);
+        origins.insert("ci.gitlab.host".to_owned(), origin.clone());
+    }
 
     let key_sections = [
         (layer.keys.status, &mut config.keys.status, "status"),
@@ -471,7 +534,7 @@ fn apply_cli(cli: &CliOverrides, config: &mut Config, origins: &mut BTreeMap<Str
 
 /// Scalar keys always listed in the `--dump` origins block; `keys.*` entries
 /// are appended dynamically since their names come from the user.
-const SCALAR_KEYS: [&str; 10] = [
+const SCALAR_KEYS: [&str; 13] = [
     "ui.theme",
     "ui.context_lines",
     "ui.recent_commits",
@@ -482,6 +545,9 @@ const SCALAR_KEYS: [&str; 10] = [
     "mcp.enabled",
     "mcp.port",
     "editor.command",
+    "ci.provider",
+    "ci.poll_seconds",
+    "ci.gitlab.host",
 ];
 
 /// Render the merged config as TOML followed by a comment block with the
