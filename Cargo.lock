@@ -629,6 +629,7 @@ dependencies = [
  "clap",
  "color-eyre",
  "crossterm",
+ "diffler-ci",
  "diffler-core",
  "diffler-graph",
  "futures-util",
