@@ -2,15 +2,12 @@
 //! (ego-centric/radial for LSP maps later) without touching the view.
 //! The view consumes an owned [`Layout`] (no engine lifetimes leak out).
 //!
-//! `Layered` is the favoured engine: it uses `ascii-dag` only for rank/order
-//! (Sugiyama: which column each node sits in, ordered to reduce crossings), then
-//! draws the GitHub-style look ourselves — outlined rounded boxes laid out
-//! left-to-right, wired by clean orthogonal rails. ascii-dag's own `[label]`
-//! rendering is not used.
+//! `Layered` is the favoured engine: longest-path layering assigns each node a
+//! column, then it draws the GitHub-style look — outlined rounded boxes laid out
+//! left-to-right, wired by clean orthogonal rails.
 
 use std::cmp::Ordering;
-
-use ascii_dag::graph::Graph;
+use std::collections::{HashMap, HashSet};
 
 use crate::model::{Model, NodeId, NodeStatus};
 
@@ -106,8 +103,8 @@ impl Zoom {
     }
 }
 
-/// GitHub-style layered renderer: ascii-dag ranks the nodes; we draw rounded
-/// outlined boxes left-to-right and route orthogonal rails between columns.
+/// GitHub-style layered renderer: longest-path layering ranks the nodes; we draw
+/// rounded outlined boxes left-to-right and route orthogonal rails between columns.
 pub struct Layered;
 
 impl GraphEngine for Layered {
@@ -121,29 +118,72 @@ impl GraphEngine for Layered {
     }
 }
 
-/// Per-node `(column, row-within-column)` from ascii-dag's Sugiyama pass. Only
-/// flow nodes (ordinary + group roots) are ranked; group members live inside
-/// their root's container, not in the column flow.
+/// Per-node `(column, row-within-column)` from a layered pass: the column is the
+/// longest path from a source; within a column, nodes keep declaration order.
+/// Only flow nodes (ordinary + group roots) are ranked — group members live
+/// inside their root's container, not in the column flow. Cycles (call/reference
+/// graphs) are tolerated: a back-edge to a node already on the path adds no depth.
 fn rank_nodes(model: &Model) -> Vec<(usize, usize)> {
-    let mut dag = Graph::new();
-    for (index, node) in model.nodes.iter().enumerate() {
-        if node.group.is_none() {
-            dag.add_node(index, &node.label);
-        }
-    }
+    let is_flow = |index: usize| model.nodes.get(index).is_some_and(|n| n.group.is_none());
+
+    let mut preds: HashMap<usize, Vec<usize>> = HashMap::new();
     for edge in &model.edges {
-        if let (Some(from), Some(to)) = (model.index_of(&edge.from), model.index_of(&edge.to)) {
-            dag.add_edge(from, to, None);
+        if let (Some(from), Some(to)) = (model.index_of(&edge.from), model.index_of(&edge.to))
+            && from != to
+            && is_flow(from)
+            && is_flow(to)
+        {
+            preds.entry(to).or_default().push(from);
         }
     }
-    let ir = dag.compute_layout();
-    let mut ranks = vec![(0usize, 0usize); model.nodes.len()];
-    for node in ir.nodes() {
-        if let Some(slot) = ranks.get_mut(node.id) {
-            *slot = (node.level, node.level_position);
+
+    let mut level: HashMap<usize, usize> = HashMap::new();
+    let mut path: HashSet<usize> = HashSet::new();
+    for index in 0..model.nodes.len() {
+        if is_flow(index) {
+            longest_path(index, &preds, &mut level, &mut path);
         }
+    }
+
+    let mut next_row: HashMap<usize, usize> = HashMap::new();
+    let mut ranks = vec![(0usize, 0usize); model.nodes.len()];
+    for index in 0..model.nodes.len() {
+        if !is_flow(index) {
+            continue;
+        }
+        let column = level.get(&index).copied().unwrap_or(0);
+        let row = next_row.entry(column).or_default();
+        if let Some(slot) = ranks.get_mut(index) {
+            *slot = (column, *row);
+        }
+        *row += 1;
     }
     ranks
+}
+
+/// Longest path from a source to `node`, memoized into `level`. A predecessor
+/// already on the current `path` is a cycle back-edge and contributes no depth.
+fn longest_path(
+    node: usize,
+    preds: &HashMap<usize, Vec<usize>>,
+    level: &mut HashMap<usize, usize>,
+    path: &mut HashSet<usize>,
+) -> usize {
+    if let Some(&cached) = level.get(&node) {
+        return cached;
+    }
+    path.insert(node);
+    let parents = preds.get(&node).cloned().unwrap_or_default();
+    let mut depth = 0;
+    for parent in parents {
+        if path.contains(&parent) {
+            continue;
+        }
+        depth = depth.max(longest_path(parent, preds, level, path) + 1);
+    }
+    path.remove(&node);
+    level.insert(node, depth);
+    depth
 }
 
 // cohesive layout pass: size nodes, place columns, place container members,

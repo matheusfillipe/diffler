@@ -12,7 +12,6 @@ publish = false
 [dependencies]
 ratatui.workspace = true
 crossterm.workspace = true
-ascii-dag.workspace = true
 
 [dev-dependencies]
 insta.workspace = true
