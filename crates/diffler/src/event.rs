@@ -29,9 +29,18 @@ pub enum AppEvent {
         ok: bool,
         output: String,
     },
-    /// A re-polled CI graph model from `graph::refetch`, fed to the embedded
-    /// `GraphView` so live status updates without blocking the loop.
-    GraphModel(diffler_graph::Model),
+    /// CI run list from a `diffler-ci` provider poll (`ci` module).
+    CiRuns(Vec<diffler_ci::CiRun>),
+    /// A run's jobs + dependency DAG, mapped onto the graph view.
+    CiRunDetail(diffler_ci::RunDetail),
+    /// An incremental job-log slice from a provider poll.
+    CiLog {
+        text: String,
+        next_offset: u64,
+        done: bool,
+    },
+    /// A CI provider call failed; surfaced as a status-bar message.
+    CiError(String),
     Quit,
 }
 

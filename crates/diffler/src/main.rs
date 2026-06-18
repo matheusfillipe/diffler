@@ -1,9 +1,9 @@
 use std::path::Path;
 
 use clap::{Parser, Subcommand};
-use diffler::app::{self, App, Flow};
+use diffler::app::{self, App, CiRequest, Flow};
 use diffler::event::AppEvent;
-use diffler::{clipboard, config, editor, event, graph, mcp, ui, watch};
+use diffler::{ci, clipboard, config, editor, event, mcp, ui, watch};
 use diffler_core::review::Review;
 use ratatui::DefaultTerminal;
 use tokio::sync::mpsc;
@@ -182,15 +182,17 @@ async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<
             });
             continue;
         }
-        if let Some(poll) = app.pending_graph_poll.take() {
-            // re-poll the watched CI run off-thread; the refreshed model comes
-            // back as an event so the graph stays live without blocking
-            let tx = tx.clone();
-            tokio::task::spawn_blocking(move || {
-                if let Some(model) = graph::refetch(&poll) {
-                    let _ = tx.send(AppEvent::GraphModel(model));
-                }
-            });
+        if let Some(request) = app.pending_ci.take() {
+            // service the CI provider call off-thread; the result returns as an
+            // event so the active CI screen stays live without blocking the loop
+            if let Some(detected) = app.ci_detected()
+                && let Some(provider) = ci::provider(&detected, &app.review.repo_root)
+            {
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    let _ = tx.send(run_ci_request(provider, request).await);
+                });
+            }
             continue;
         }
         let Some(event) = rx.recv().await else { break };
@@ -205,6 +207,32 @@ async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<
     }
     drop(watcher);
     Ok(())
+}
+
+/// Service a CI provider request off the event loop, turning the result (or
+/// error) into the matching [`AppEvent`] the loop folds back into the screen.
+async fn run_ci_request(
+    provider: Box<dyn diffler_ci::CiProvider + Send>,
+    request: CiRequest,
+) -> AppEvent {
+    match request {
+        CiRequest::Runs => match provider.list_runs(30).await {
+            Ok(runs) => AppEvent::CiRuns(runs),
+            Err(err) => AppEvent::CiError(err.to_string()),
+        },
+        CiRequest::Detail(id) => match provider.run_detail(&id).await {
+            Ok(detail) => AppEvent::CiRunDetail(detail),
+            Err(err) => AppEvent::CiError(err.to_string()),
+        },
+        CiRequest::Log { run, job, offset } => match provider.job_log(&run, &job, offset).await {
+            Ok(chunk) => AppEvent::CiLog {
+                text: chunk.text,
+                next_offset: chunk.next_offset,
+                done: chunk.done,
+            },
+            Err(err) => AppEvent::CiError(err.to_string()),
+        },
+    }
 }
 
 /// Run a network git op as a child process in `repo_root`, capturing its

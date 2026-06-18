@@ -6,7 +6,9 @@ pub mod diff;
 pub mod diff_render;
 pub mod graph;
 pub mod log;
+pub mod logs;
 pub mod popup;
+pub mod runs;
 pub mod status;
 
 use diffler_core::model::FileStatus;
@@ -85,6 +87,8 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         Screen::Log => log::draw(frame, app),
         Screen::Diff => diff::draw(frame, app),
         Screen::Graph => graph::draw(frame, app),
+        Screen::Runs => runs::draw(frame, app),
+        Screen::Logs => logs::draw(frame, app),
     }
     match &app.modal {
         Some(Modal::Confirm { message, .. }) => {
@@ -112,6 +116,8 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
                 Screen::Diff => "diff",
                 Screen::Log => "log",
                 Screen::Graph => "graph",
+                Screen::Runs => "runs",
+                Screen::Logs => "logs",
             };
             popup::Popup {
                 title: format!("Help — {screen} keys"),
@@ -355,6 +361,8 @@ pub(super) fn status_bar(app: &App, width: u16) -> Line<'static> {
         Screen::Diff => " DIFF ",
         Screen::Log => " LOG ",
         Screen::Graph => " GRAPH ",
+        Screen::Runs => " RUNS ",
+        Screen::Logs => " LOGS ",
     };
     let repo = app
         .review

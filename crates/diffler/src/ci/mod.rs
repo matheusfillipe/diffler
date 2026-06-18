@@ -4,12 +4,58 @@
 //! (`diffler-ci`) and rendering (`diffler-graph`).
 
 use std::path::Path;
+use std::process::Command;
 
 use diffler_ci::{
     CiProvider, Detected, GitHubProvider, GitLabProvider, JobStatus, ProviderKind, RealRunner,
-    RunDetail,
+    RunDetail, detect,
 };
 use diffler_graph::{Edge, Model, Node, NodeId, NodeStatus, RankDir};
+
+use crate::config::CiConfig;
+
+/// Detect the repo's CI provider: the configured `provider` (or auto), the
+/// `origin` remote host, and config-file presence. A configured GitLab `host`
+/// overrides remote detection for a self-hosted instance.
+pub fn detect_for_repo(repo_root: &Path, config: &CiConfig) -> Option<Detected> {
+    let forced = match config.provider.as_str() {
+        "github" => Some(ProviderKind::GitHub),
+        "gitlab" => Some(ProviderKind::GitLab),
+        _ => None,
+    };
+    let remote = remote_host(repo_root);
+    let mut detected = detect(repo_root, remote.as_deref(), forced)?;
+    if detected.kind == ProviderKind::GitLab && config.gitlab.host.is_some() {
+        detected.host.clone_from(&config.gitlab.host);
+    }
+    Some(detected)
+}
+
+/// The host of the repo's `origin` remote, via `git remote get-url`.
+fn remote_host(repo_root: &Path) -> Option<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["remote", "get-url", "origin"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let url = String::from_utf8(out.stdout).ok()?;
+    parse_host(url.trim())
+}
+
+/// Pull the host out of a git remote URL: `git@host:owner/repo.git`,
+/// `https://host/owner/repo`, or `ssh://git@host:port/owner/repo`.
+fn parse_host(url: &str) -> Option<String> {
+    if let Some(rest) = url.strip_prefix("git@") {
+        return rest.split(':').next().map(str::to_owned);
+    }
+    let authority = url.split("://").nth(1)?.split('/').next()?;
+    let host = authority.rsplit('@').next()?.split(':').next()?;
+    (!host.is_empty()).then(|| host.to_owned())
+}
 
 /// Construct the provider for a detected forge. GitHub is scoped to the repo's
 /// discovered workflow (its YAML supplies the DAG); GitLab targets the detected
@@ -89,6 +135,23 @@ mod tests {
             status: JobStatus::Running,
             url: None,
         }
+    }
+
+    #[test]
+    fn parse_host_handles_scp_https_and_ssh_urls() {
+        assert_eq!(
+            parse_host("git@github.com:o/r.git").as_deref(),
+            Some("github.com")
+        );
+        assert_eq!(
+            parse_host("https://gitlab.com/o/r").as_deref(),
+            Some("gitlab.com")
+        );
+        assert_eq!(
+            parse_host("ssh://git@git.example.com:2222/o/r.git").as_deref(),
+            Some("git.example.com")
+        );
+        assert_eq!(parse_host("not a url"), None);
     }
 
     #[test]
