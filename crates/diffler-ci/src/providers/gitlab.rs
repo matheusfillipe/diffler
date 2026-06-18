@@ -86,15 +86,18 @@ impl CiProvider for GitLabProvider {
         let trace = self
             .api(&format!("projects/:fullpath/jobs/{}/trace", job.0))
             .await?;
-        let start = usize::try_from(offset).unwrap_or(usize::MAX);
-        let text = if trace.is_char_boundary(start) {
-            trace.get(start..).unwrap_or("").to_owned()
-        } else {
-            trace.clone()
-        };
+        // resume from the saved offset, clamped to the end and floored to a char
+        // boundary, so a multibyte split or a shrunk/replaced trace yields the
+        // correct tail (or empty) instead of re-emitting the whole trace
+        let mut start = usize::try_from(offset)
+            .unwrap_or(usize::MAX)
+            .min(trace.len());
+        while start > 0 && !trace.is_char_boundary(start) {
+            start -= 1;
+        }
         Ok(LogChunk {
             next_offset: trace.len() as u64,
-            text,
+            text: trace[start..].to_owned(),
             done: false,
         })
     }
@@ -238,5 +241,16 @@ mod tests {
             .expect("log");
         assert_eq!(chunk.text, "world");
         assert_eq!(chunk.next_offset, 11);
+    }
+
+    #[tokio::test]
+    async fn job_log_past_the_end_yields_empty_not_a_duplicate() {
+        // a shrunk/replaced trace (offset > len) must not re-emit the whole trace
+        let chunk = provider(&[("/trace", "short")])
+            .job_log(&RunId("100".into()), &JobId("1".into()), 999)
+            .await
+            .expect("log");
+        assert_eq!(chunk.text, "");
+        assert_eq!(chunk.next_offset, 5);
     }
 }

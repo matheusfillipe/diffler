@@ -4,7 +4,6 @@
 //! (`diffler-ci`) and rendering (`diffler-graph`).
 
 use std::path::Path;
-use std::process::Command;
 
 use diffler_ci::{
     CiProvider, Detected, GitHubProvider, GitLabProvider, JobStatus, ProviderKind, RealRunner,
@@ -15,35 +14,25 @@ use diffler_graph::{Edge, Model, Node, NodeId, NodeStatus, RankDir};
 use crate::config::CiConfig;
 
 /// Detect the repo's CI provider: the configured `provider` (or auto), the
-/// `origin` remote host, and config-file presence. A configured GitLab `host`
-/// overrides remote detection for a self-hosted instance.
-pub fn detect_for_repo(repo_root: &Path, config: &CiConfig) -> Option<Detected> {
+/// `origin` remote host (from `remote_url`), and config-file presence. A
+/// configured GitLab `host` overrides remote detection for a self-hosted
+/// instance.
+pub fn detect_for_repo(
+    repo_root: &Path,
+    remote_url: Option<&str>,
+    config: &CiConfig,
+) -> Option<Detected> {
     let forced = match config.provider.as_str() {
         "github" => Some(ProviderKind::GitHub),
         "gitlab" => Some(ProviderKind::GitLab),
         _ => None,
     };
-    let remote = remote_host(repo_root);
-    let mut detected = detect(repo_root, remote.as_deref(), forced)?;
+    let host = remote_url.and_then(parse_host);
+    let mut detected = detect(repo_root, host.as_deref(), forced)?;
     if detected.kind == ProviderKind::GitLab && config.gitlab.host.is_some() {
         detected.host.clone_from(&config.gitlab.host);
     }
     Some(detected)
-}
-
-/// The host of the repo's `origin` remote, via `git remote get-url`.
-fn remote_host(repo_root: &Path) -> Option<String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(repo_root)
-        .args(["remote", "get-url", "origin"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let url = String::from_utf8(out.stdout).ok()?;
-    parse_host(url.trim())
 }
 
 /// Pull the host out of a git remote URL: `git@host:owner/repo.git`,

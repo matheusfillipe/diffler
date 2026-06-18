@@ -202,6 +202,13 @@ pub enum CiRequest {
     },
 }
 
+/// Detect the repo's CI provider from its `origin` remote (via the `Vcs` trait,
+/// not a subprocess) and config-file presence.
+fn detect_ci(review: &Review, ci: &crate::config::CiConfig) -> Option<diffler_ci::Detected> {
+    let remote = review.vcs.remote_url("origin").ok().flatten();
+    crate::ci::detect_for_repo(&review.repo_root, remote.as_deref(), ci)
+}
+
 pub struct App {
     pub review: Review,
     pub head: HeadInfo,
@@ -229,6 +236,9 @@ pub struct App {
     log_text: String,
     log_offset: u64,
     log_scroll: u16,
+    /// Set once a log chunk reports the job's log is complete, so polling stops
+    /// (a dump-mode provider returns the whole log in one chunk).
+    log_done: bool,
     /// A CI provider call the main loop should run off-thread (mirrors `pending_git`).
     pub pending_ci: Option<CiRequest>,
     pub modal: Option<Modal>,
@@ -347,7 +357,7 @@ impl App {
             }
         };
 
-        let ci_detected = crate::ci::detect_for_repo(&review.repo_root, &config.ci);
+        let ci_detected = detect_ci(&review, &config.ci);
 
         Self {
             review,
@@ -370,6 +380,7 @@ impl App {
             log_text: String::new(),
             log_offset: 0,
             log_scroll: 0,
+            log_done: false,
             pending_ci: None,
             modal: None,
             search: None,
@@ -484,8 +495,11 @@ impl App {
                 {
                     self.refresh();
                 }
-                // re-poll the active CI screen on a relaxed cadence
-                let poll_ticks = (self.config.ci.poll_seconds.max(1) * 4) as u32;
+                // re-poll the active CI screen on a relaxed cadence (250ms ticks);
+                // saturating + clamp so a pathological config can't zero or overflow it
+                let poll_ticks =
+                    u32::try_from(self.config.ci.poll_seconds.max(1).saturating_mul(4))
+                        .unwrap_or(u32::MAX);
                 if self.tick_count.is_multiple_of(poll_ticks) {
                     self.queue_ci_poll();
                 }
@@ -506,10 +520,11 @@ impl App {
             AppEvent::CiLog {
                 text,
                 next_offset,
-                done: _,
+                done,
             } => {
                 self.log_text.push_str(&text);
                 self.log_offset = next_offset;
+                self.log_done = done;
                 Flow::Continue
             }
             AppEvent::CiError(message) => {
@@ -937,6 +952,7 @@ impl App {
         self.log_text.clear();
         self.log_offset = 0;
         self.log_scroll = 0;
+        self.log_done = false;
         self.push_screen(Screen::Logs);
         self.pending_ci = Some(CiRequest::Log {
             run,
@@ -950,6 +966,8 @@ impl App {
         self.pending_ci = match self.screen() {
             Screen::Runs => Some(CiRequest::Runs),
             Screen::Graph => self.open_run.clone().map(CiRequest::Detail),
+            // stop once the log is complete (a dump provider sends it all at once)
+            Screen::Logs if self.log_done => None,
             Screen::Logs => match (self.open_run.clone(), self.open_job.clone()) {
                 (Some(run), Some(job)) => Some(CiRequest::Log {
                     run,
