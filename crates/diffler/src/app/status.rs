@@ -17,6 +17,13 @@ use crate::tree::{self, TreeNode, TreeRow};
 /// the search labels so a `/` match lines up with the displayed text.
 pub(crate) const RECENT_TITLE: &str = "Recent commits";
 
+/// Heading for the leading CI-runs section (when a provider is detected).
+pub(crate) const CI_TITLE: &str = "CI runs";
+
+/// How many recent runs the inline status section shows (the full list lives on
+/// the Runs screen).
+const CI_INLINE_LIMIT: usize = 5;
+
 /// Status screen sections, in display order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
@@ -86,6 +93,14 @@ pub enum Row {
     Commit {
         index: usize,
     },
+    /// Header of the leading CI-runs section.
+    CiHeader {
+        count: usize,
+    },
+    /// One CI run in the inline section; `index` into `App::runs`.
+    CiRun {
+        index: usize,
+    },
 }
 
 /// Where the cursor logically sits, so it can be restored after a refresh
@@ -104,6 +119,8 @@ pub(super) enum CursorAnchor {
     },
     Recent,
     Commit(usize),
+    Ci,
+    CiRun(usize),
 }
 
 /// All state owned by the status screen.
@@ -112,6 +129,8 @@ pub struct StatusView {
     pub folded: [bool; 3],
     pub recent: Vec<LogEntry>,
     pub recent_folded: bool,
+    /// Whether the leading CI-runs section is collapsed.
+    pub ci_folded: bool,
     /// Body height of the last render, so half-page motions step by a screenful.
     pub(crate) viewport: u16,
     /// Per-section set of file paths whose inline diff is expanded.
@@ -140,6 +159,7 @@ impl StatusView {
             folded: [false; 3],
             recent,
             recent_folded: true,
+            ci_folded: false,
             viewport: 0,
             expanded: [const { BTreeSet::new() }; 3],
             folded_dirs: [const { BTreeSet::new() }; 3],
@@ -222,6 +242,15 @@ impl App {
     /// rendering concern, so j/k skip them by construction.
     pub fn visible_rows(&self) -> Vec<Row> {
         let mut rows = Vec::new();
+        if !self.runs.is_empty() {
+            rows.push(Row::CiHeader {
+                count: self.runs.len(),
+            });
+            if !self.status.ci_folded {
+                let shown = self.runs.len().min(CI_INLINE_LIMIT);
+                rows.extend((0..shown).map(|index| Row::CiRun { index }));
+            }
+        }
         for section in Section::ALL {
             let files = self.section_files(section);
             if files.is_empty() {
@@ -305,6 +334,8 @@ impl App {
                 .status_file_name(self.section_files(*section).get(*index)?)
                 .to_owned(),
             Row::Commit { index } => self.status.recent.get(*index)?.subject.clone(),
+            Row::CiHeader { .. } => CI_TITLE.to_owned(),
+            Row::CiRun { index } => self.runs.get(*index)?.name.clone(),
             Row::HunkHeader { .. } | Row::DiffLine { .. } => return None,
         })
     }
@@ -448,7 +479,16 @@ impl App {
     fn status_activate_cursor(&mut self) {
         match self.cursor_row() {
             Some(Row::File { .. } | Row::Commit { .. }) => self.open_at_cursor(),
-            Some(Row::SectionHeader { .. } | Row::Dir { .. } | Row::RecentHeader { .. }) => {
+            Some(Row::CiRun { index }) => {
+                self.runs_cursor = index;
+                self.open_selected_run();
+            }
+            Some(
+                Row::SectionHeader { .. }
+                | Row::Dir { .. }
+                | Row::RecentHeader { .. }
+                | Row::CiHeader { .. },
+            ) => {
                 self.toggle_fold();
             }
             _ => {}
@@ -565,7 +605,9 @@ impl App {
             Row::Dir { .. }
             | Row::SectionHeader { .. }
             | Row::RecentHeader { .. }
-            | Row::Commit { .. } => None,
+            | Row::Commit { .. }
+            | Row::CiHeader { .. }
+            | Row::CiRun { .. } => None,
         }
     }
 
@@ -809,6 +851,16 @@ impl App {
                     self.status.cursor = position;
                 }
             }
+            Row::CiHeader { .. } | Row::CiRun { .. } => {
+                self.status.ci_folded ^= true;
+                let position = self
+                    .visible_rows()
+                    .iter()
+                    .position(|row| matches!(row, Row::CiHeader { .. }));
+                if let Some(position) = position {
+                    self.status.cursor = position;
+                }
+            }
         }
         self.clamp_cursor();
     }
@@ -854,6 +906,8 @@ impl App {
             },
             Row::RecentHeader { .. } => CursorAnchor::Recent,
             Row::Commit { index } => CursorAnchor::Commit(*index),
+            Row::CiHeader { .. } => CursorAnchor::Ci,
+            Row::CiRun { index } => CursorAnchor::CiRun(*index),
             Row::File { .. } | Row::HunkHeader { .. } | Row::DiffLine { .. } => {
                 let (section, file, hunk) = self.row_file(&row)?;
                 CursorAnchor::File {
@@ -887,6 +941,11 @@ impl App {
                     rows.iter()
                         .position(|r| matches!(r, Row::RecentHeader { .. }))
                 }),
+            CursorAnchor::Ci => rows.iter().position(|r| matches!(r, Row::CiHeader { .. })),
+            CursorAnchor::CiRun(index) => rows
+                .iter()
+                .position(|r| matches!(r, Row::CiRun { index: i } if i == index))
+                .or_else(|| rows.iter().position(|r| matches!(r, Row::CiHeader { .. }))),
             // a folded dir survives a refresh by its path; fall back to the
             // section header when the directory is gone
             CursorAnchor::Dir { section, path } => rows
@@ -961,7 +1020,10 @@ fn is_hunk_header(row: &Row) -> bool {
 }
 
 fn is_section_header(row: &Row) -> bool {
-    matches!(row, Row::SectionHeader { .. } | Row::RecentHeader { .. })
+    matches!(
+        row,
+        Row::SectionHeader { .. } | Row::RecentHeader { .. } | Row::CiHeader { .. }
+    )
 }
 
 #[cfg(test)]
@@ -1110,7 +1172,12 @@ mod tests {
                 )
             })
             .skip(1)
-            .take_while(|r| !matches!(r, Row::SectionHeader { .. } | Row::RecentHeader { .. }))
+            .take_while(|r| {
+                !matches!(
+                    r,
+                    Row::SectionHeader { .. } | Row::RecentHeader { .. } | Row::CiHeader { .. }
+                )
+            })
             .collect();
         assert!(
             matches!(unstaged.first(), Some(Row::Dir { path, depth: 0, .. }) if path == "src"),
@@ -1182,7 +1249,12 @@ mod tests {
                 )
             })
             .skip(1)
-            .take_while(|r| !matches!(r, Row::SectionHeader { .. } | Row::RecentHeader { .. }))
+            .take_while(|r| {
+                !matches!(
+                    r,
+                    Row::SectionHeader { .. } | Row::RecentHeader { .. } | Row::CiHeader { .. }
+                )
+            })
             .map(|r| match r {
                 Row::Dir { path, depth, .. } => format!("dir:{path}@{depth}"),
                 Row::File { index, depth, .. } => format!("file:{index}@{depth}"),
