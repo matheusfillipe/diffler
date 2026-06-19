@@ -398,15 +398,24 @@ fn ci_run_spans(
     )];
     spans.extend(highlight_spans(
         &run.name,
-        Style::new().fg(theme.fg),
+        Style::new().fg(theme.accent),
         search,
         theme,
     ));
+    let pad = 14usize.saturating_sub(run.name.chars().count());
+    spans.push(Span::raw(" ".repeat(pad)));
     let short: String = run.commit.chars().take(7).collect();
-    let title = elide(&run.title, 32);
     spans.push(Span::styled(
-        format!("  {title}  {}  {short}", run.branch),
-        theme.dim_style(),
+        format!("  {:<32}", elide(&run.title, 32)),
+        Style::new().fg(theme.fg),
+    ));
+    spans.push(Span::styled(
+        format!("  {:<18}", elide(&run.branch, 18)),
+        Style::new().fg(theme.purple),
+    ));
+    spans.push(Span::styled(
+        format!("  {short}"),
+        Style::new().fg(theme.warn_fg),
     ));
     spans
 }
