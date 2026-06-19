@@ -1013,7 +1013,7 @@ impl App {
         }
     }
 
-    fn clamp_cursor(&mut self) {
+    pub(super) fn clamp_cursor(&mut self) {
         self.status.cursor = self
             .status
             .cursor

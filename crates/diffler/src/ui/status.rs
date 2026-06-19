@@ -387,18 +387,11 @@ fn ci_run_spans(
     theme: &Theme,
     search: &[(Range<usize>, bool)],
 ) -> Vec<Span<'static>> {
-    use diffler_ci::JobStatus;
     let Some(run) = app.runs.get(index) else {
         return Vec::new();
     };
-    let (glyph, color) = match run.status {
-        JobStatus::Ok => ("✓", theme.added),
-        JobStatus::Failed => ("✗", theme.error_fg),
-        JobStatus::Running => ("●", theme.warn_fg),
-        JobStatus::Queued => ("·", theme.dim),
-        JobStatus::Skipped => ("–", theme.dim),
-        JobStatus::Neutral => ("○", theme.dim),
-    };
+    let glyph = run.status.glyph();
+    let color = super::ci_status_color(theme, run.status);
     let mut spans = vec![Span::styled(
         format!("     {glyph} "),
         Style::new().fg(color),

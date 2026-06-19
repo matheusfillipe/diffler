@@ -510,6 +510,8 @@ impl App {
             AppEvent::CiRuns(runs) => {
                 self.runs = runs;
                 self.runs_cursor = self.runs_cursor.min(self.runs.len().saturating_sub(1));
+                // the inline Status section grew/shrank; keep the row cursor valid
+                self.clamp_cursor();
                 Flow::Continue
             }
             AppEvent::CiRunDetail(detail) => {

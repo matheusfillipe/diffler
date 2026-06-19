@@ -26,6 +26,19 @@ pub enum JobStatus {
 }
 
 impl JobStatus {
+    /// A compact status glyph for list/section rows.
+    #[must_use]
+    pub fn glyph(self) -> &'static str {
+        match self {
+            Self::Ok => "✓",
+            Self::Failed => "✗",
+            Self::Running => "●",
+            Self::Queued => "·",
+            Self::Skipped => "–",
+            Self::Neutral => "○",
+        }
+    }
+
     /// The more severe of two statuses, so one failing matrix leg dominates an
     /// aggregate (a run's status, a collapsed group).
     #[must_use]
