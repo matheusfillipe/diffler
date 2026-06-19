@@ -242,15 +242,6 @@ impl App {
     /// rendering concern, so j/k skip them by construction.
     pub fn visible_rows(&self) -> Vec<Row> {
         let mut rows = Vec::new();
-        if !self.runs.is_empty() {
-            rows.push(Row::CiHeader {
-                count: self.runs.len(),
-            });
-            if !self.status.ci_folded {
-                let shown = self.runs.len().min(CI_INLINE_LIMIT);
-                rows.extend((0..shown).map(|index| Row::CiRun { index }));
-            }
-        }
         for section in Section::ALL {
             let files = self.section_files(section);
             if files.is_empty() {
@@ -309,6 +300,17 @@ impl App {
             });
             if !self.status.recent_folded {
                 rows.extend((0..self.status.recent.len()).map(|index| Row::Commit { index }));
+            }
+        }
+        // CI runs trail the view so the section appearing after its async fetch
+        // (or refreshing) never shifts the rows above it or moves the cursor
+        if !self.runs.is_empty() {
+            rows.push(Row::CiHeader {
+                count: self.runs.len(),
+            });
+            if !self.status.ci_folded {
+                let shown = self.runs.len().min(CI_INLINE_LIMIT);
+                rows.extend((0..shown).map(|index| Row::CiRun { index }));
             }
         }
         rows
