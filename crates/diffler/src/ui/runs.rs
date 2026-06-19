@@ -47,23 +47,26 @@ fn draw_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
             let color = super::ci_status_color(&app.theme, run.status);
             let short = run.commit.chars().take(7).collect::<String>();
             let marker = if selected { "▌ " } else { "  " };
-            let mut style = Style::new().fg(app.theme.fg);
-            if selected {
-                style = style.add_modifier(Modifier::BOLD);
-            }
+            let name_style = if selected {
+                Style::new()
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::new().fg(app.theme.accent)
+            };
             Line::from(vec![
                 Span::styled(marker, Style::new().fg(app.theme.warn_fg)),
                 Span::styled(format!("{glyph} "), Style::new().fg(color)),
-                Span::styled(format!("{:<16}", truncate(&run.name, 16)), style),
+                Span::styled(format!("{:<16}", truncate(&run.name, 16)), name_style),
                 Span::styled(
                     format!("  {:<32}", truncate(&run.title, 32)),
-                    app.theme.dim_style(),
+                    Style::new().fg(app.theme.fg),
                 ),
                 Span::styled(
                     format!("  {:<14}", truncate(&run.branch, 14)),
-                    app.theme.dim_style(),
+                    Style::new().fg(app.theme.purple),
                 ),
-                Span::styled(format!("  {short}"), app.theme.dim_style()),
+                Span::styled(format!("  {short}"), Style::new().fg(app.theme.warn_fg)),
             ])
         })
         .collect();
