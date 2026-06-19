@@ -188,6 +188,18 @@ pub(super) fn status_color(theme: &Theme, status: FileStatus) -> Color {
     }
 }
 
+/// Theme color for a CI job/run status, shared by the runs list and the inline
+/// status section so the palette stays in one place.
+pub(super) fn ci_status_color(theme: &Theme, status: diffler_ci::JobStatus) -> Color {
+    use diffler_ci::JobStatus;
+    match status {
+        JobStatus::Ok => theme.added,
+        JobStatus::Failed => theme.error_fg,
+        JobStatus::Running => theme.warn_fg,
+        JobStatus::Queued | JobStatus::Skipped | JobStatus::Neutral => theme.dim,
+    }
+}
+
 /// GitHub-style ` +A -B` diffstat spans over `bg`. A zero side is dimmed so it
 /// reads as inactive; both-zero yields no spans.
 pub(super) fn diffstat_spans(

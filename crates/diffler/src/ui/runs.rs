@@ -1,10 +1,9 @@
 //! The CI runs start page: a hint line, the list of recent runs for the repo's
 //! provider, and the shared status bar. Selecting a run opens its graph.
 
-use diffler_ci::JobStatus;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
@@ -44,8 +43,8 @@ fn draw_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .enumerate()
         .map(|(i, run)| {
             let selected = i == app.runs_selected();
-            let glyph = status_glyph(run.status);
-            let color = status_color(app, run.status);
+            let glyph = run.status.glyph();
+            let color = super::ci_status_color(&app.theme, run.status);
             let short = run.commit.chars().take(7).collect::<String>();
             let marker = if selected { "▌ " } else { "  " };
             let mut style = Style::new().fg(app.theme.fg);
@@ -76,30 +75,10 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-fn status_glyph(status: JobStatus) -> &'static str {
-    match status {
-        JobStatus::Ok => "✓",
-        JobStatus::Failed => "✗",
-        JobStatus::Running => "●",
-        JobStatus::Queued => "·",
-        JobStatus::Skipped => "–",
-        JobStatus::Neutral => "○",
-    }
-}
-
-fn status_color(app: &App, status: JobStatus) -> Color {
-    match status {
-        JobStatus::Ok => app.theme.added,
-        JobStatus::Failed => app.theme.error_fg,
-        JobStatus::Running => app.theme.warn_fg,
-        JobStatus::Queued | JobStatus::Skipped | JobStatus::Neutral => app.theme.dim,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use diffler_ci::{CiRun, RunId};
+    use diffler_ci::{CiRun, JobStatus, RunId};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
