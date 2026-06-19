@@ -478,10 +478,8 @@ impl App {
 
     fn status_activate_cursor(&mut self) {
         match self.cursor_row() {
-            Some(Row::File { .. } | Row::Commit { .. }) => self.open_at_cursor(),
-            Some(Row::CiRun { index }) => {
-                self.runs_cursor = index;
-                self.open_selected_run();
+            Some(Row::File { .. } | Row::Commit { .. } | Row::CiRun { .. }) => {
+                self.open_at_cursor();
             }
             Some(
                 Row::SectionHeader { .. }
@@ -729,6 +727,12 @@ impl App {
                 };
                 self.open_commit_diff(&oid);
             }
+            // a CI run opens its graph directly; the header opens the full Runs list
+            Row::CiRun { index } => {
+                self.runs_cursor = *index;
+                self.open_selected_run();
+            }
+            Row::CiHeader { .. } => self.open_runs(),
             // a section header opens the full review diff, starting the
             // walk at the section's first file (when the review covers it)
             Row::SectionHeader { section, .. } => {
@@ -1066,6 +1070,29 @@ mod tests {
 
     fn esc() -> AppEvent {
         AppEvent::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+    }
+
+    #[test]
+    fn enter_on_a_ci_run_opens_its_graph() {
+        use diffler_ci::{CiRun, JobStatus, RunId};
+        let (_fixture, mut app) = app();
+        app.runs = vec![CiRun {
+            id: RunId("1".into()),
+            name: "CI".into(),
+            branch: "main".into(),
+            commit: "abc".into(),
+            author: String::new(),
+            created: None,
+            status: JobStatus::Running,
+            url: None,
+        }];
+        cursor_to(&mut app, |row| matches!(row, Row::CiRun { .. }));
+        app.handle(AppEvent::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(app.screen(), crate::app::Screen::Graph);
+        assert!(app.graph.is_some());
     }
 
     #[test]
