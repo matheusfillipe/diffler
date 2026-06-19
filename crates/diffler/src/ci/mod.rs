@@ -47,10 +47,14 @@ fn parse_host(url: &str) -> Option<String> {
 }
 
 /// Construct the provider for a detected forge. GitLab targets the detected host;
-/// GitHub reads each run's own workflow on demand for the DAG.
-pub fn provider(detected: &Detected, _repo_root: &Path) -> Box<dyn CiProvider + Send> {
+/// GitHub takes the repo's discovered workflow YAML for the run DAG.
+pub fn provider(detected: &Detected, repo_root: &Path) -> Box<dyn CiProvider + Send> {
     match detected.kind {
-        ProviderKind::GitHub => Box::new(GitHubProvider::new(Box::new(RealRunner))),
+        ProviderKind::GitHub => {
+            let yaml = crate::graph::discover_workflow(repo_root)
+                .and_then(|path| std::fs::read_to_string(path).ok());
+            Box::new(GitHubProvider::new(Box::new(RealRunner), yaml))
+        }
         ProviderKind::GitLab => Box::new(GitLabProvider::new(
             Box::new(RealRunner),
             detected.host.clone(),
