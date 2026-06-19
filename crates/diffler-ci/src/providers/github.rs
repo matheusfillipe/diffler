@@ -1,6 +1,6 @@
-//! GitHub Actions adapter (CLI-only via `gh`). The dependency DAG comes from the
-//! workflow YAML's `jobs.<id>.needs` (GitHub's run API omits it); live status
-//! overlays from `gh run view`. Logs are a whole-job dump (`gh run view --log`).
+//! GitHub Actions adapter (CLI-only via `gh`). The dependency DAG comes from a
+//! run's workflow YAML `jobs.<id>.needs` (the run API omits it); status overlays
+//! from `gh run view`. Logs come from the REST job-logs endpoint via `gh api`.
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -12,25 +12,55 @@ use crate::model::{
 };
 use crate::provider::{CiProvider, ProviderKind};
 
-/// Talks to GitHub Actions through `gh`, scoped to one workflow file (its YAML
-/// supplies the DAG structure).
+/// Talks to GitHub Actions through `gh`. Lists every workflow's runs; the DAG
+/// for a run is read from that run's own workflow file (fetched on demand).
 pub struct GitHubProvider {
     runner: Box<dyn CommandRunner>,
-    workflow_yaml: String,
-    workflow_file: String,
 }
 
 impl GitHubProvider {
-    pub fn new(
-        runner: Box<dyn CommandRunner>,
-        workflow_yaml: String,
-        workflow_file: String,
-    ) -> Self {
-        Self {
-            runner,
-            workflow_yaml,
-            workflow_file,
-        }
+    pub fn new(runner: Box<dyn CommandRunner>) -> Self {
+        Self { runner }
+    }
+
+    /// The `needs` DAG for a run, from its workflow file at the run's commit.
+    /// Falls back to a flat job list (no edges) when the workflow can't be read.
+    async fn workflow_specs(&self, wf_db_id: u64, sha: &str) -> Vec<JobSpec> {
+        let meta = self
+            .api(&format!(
+                "repos/{{owner}}/{{repo}}/actions/workflows/{wf_db_id}"
+            ))
+            .await
+            .ok();
+        let path = meta
+            .as_deref()
+            .and_then(|m| serde_json::from_str::<WorkflowMeta>(m).ok())
+            .map(|m| m.path);
+        let Some(path) = path else {
+            return Vec::new();
+        };
+        let yaml = self
+            .runner
+            .run(
+                "gh",
+                &[
+                    "api",
+                    "-H",
+                    "Accept: application/vnd.github.raw",
+                    &format!("repos/{{owner}}/{{repo}}/contents/{path}?ref={sha}"),
+                ]
+                .map(str::to_owned),
+            )
+            .await;
+        yaml.ok()
+            .and_then(|y| parse_workflow(&y).ok())
+            .unwrap_or_default()
+    }
+
+    async fn api(&self, path: &str) -> Result<String> {
+        self.runner
+            .run("gh", &["api".to_owned(), path.to_owned()])
+            .await
     }
 }
 
@@ -51,8 +81,6 @@ impl CiProvider for GitHubProvider {
         let args = [
             "run",
             "list",
-            "--workflow",
-            &self.workflow_file,
             "-L",
             &limit.to_string(),
             "--json",
@@ -73,7 +101,7 @@ impl CiProvider for GitHubProvider {
             "view",
             &run.0,
             "--json",
-            "jobs,headBranch,headSha,status,conclusion,workflowName,createdAt,url",
+            "jobs,displayTitle,headBranch,headSha,status,conclusion,workflowName,workflowDatabaseId,createdAt,url",
         ]
         .map(str::to_owned);
         let out = self.runner.run("gh", &args).await?;
@@ -82,16 +110,31 @@ impl CiProvider for GitHubProvider {
             message: e.to_string(),
         })?;
 
-        let specs = parse_workflow(&self.workflow_yaml)?;
-        let jobs = specs
-            .iter()
-            .map(|spec| CiJob {
-                id: JobId(spec.id.clone()),
-                name: spec.label.clone(),
-                status: aggregate_status(&spec.id, &spec.label, &view.jobs),
-                needs: spec.needs.iter().cloned().map(JobId).collect(),
-            })
-            .collect();
+        let specs = self
+            .workflow_specs(view.workflow_database_id, &view.head_sha)
+            .await;
+        let jobs = if specs.is_empty() {
+            // no workflow file: a flat, edgeless node per run job
+            view.jobs
+                .iter()
+                .map(|j| CiJob {
+                    id: JobId(j.name.clone()),
+                    name: j.name.clone(),
+                    status: map_status(&j.status, j.conclusion.as_deref()),
+                    needs: Vec::new(),
+                })
+                .collect()
+        } else {
+            specs
+                .iter()
+                .map(|spec| CiJob {
+                    id: JobId(spec.id.clone()),
+                    name: spec.label.clone(),
+                    status: aggregate_status(&spec.id, &spec.label, &view.jobs),
+                    needs: spec.needs.iter().cloned().map(JobId).collect(),
+                })
+                .collect()
+        };
         Ok(RunDetail {
             run: view.into_run(run.clone()),
             jobs,
@@ -99,14 +142,8 @@ impl CiProvider for GitHubProvider {
     }
 
     async fn job_log(&self, run: &RunId, job: &JobId, _offset: u64) -> Result<LogChunk> {
-        // resolve the run-job database id for this workflow job (matrix jobs
-        // expand into several; the first matching leg is shown)
-        let specs = parse_workflow(&self.workflow_yaml)?;
-        let label = specs
-            .iter()
-            .find(|s| s.id == job.0)
-            .map_or(job.0.clone(), |s| s.label.clone());
-
+        // resolve the run-job database id for this job (matrix jobs expand into
+        // several legs; the first matching leg is shown)
         let view_args = ["run", "view", &run.0, "--json", "jobs"].map(str::to_owned);
         let out = self.runner.run("gh", &view_args).await?;
         let view: JobList = serde_json::from_str(&out).map_err(|e| CiError::Parse {
@@ -116,12 +153,17 @@ impl CiProvider for GitHubProvider {
         let db_id = view
             .jobs
             .iter()
-            .find(|j| job_matches(&j.name, &job.0, &label))
-            .map(|j| j.database_id.to_string())
+            .find(|j| j.name == job.0 || job_matches(&j.name, &job.0, &job.0))
+            .map(|j| j.database_id)
             .ok_or_else(|| CiError::NotFound(format!("job {} in run {}", job.0, run.0)))?;
 
-        let log_args = ["run", "view", &run.0, "--log", "--job", &db_id].map(str::to_owned);
-        let text = self.runner.run("gh", &log_args).await?;
+        // the REST job-logs endpoint returns the raw runner log (group markers
+        // intact), a stabler contract than `gh run view --log`'s text format
+        let text = self
+            .api(&format!(
+                "repos/{{owner}}/{{repo}}/actions/jobs/{db_id}/logs"
+            ))
+            .await?;
         let next_offset = text.len() as u64;
         Ok(LogChunk {
             text,
@@ -239,13 +281,14 @@ struct RunListItem {
 impl RunListItem {
     fn into_run(self) -> CiRun {
         let name = if self.workflow_name.is_empty() {
-            self.display_title
+            self.display_title.clone()
         } else {
             self.workflow_name
         };
         CiRun {
             id: RunId(self.database_id.to_string()),
             name,
+            title: self.display_title,
             branch: self.head_branch,
             commit: self.head_sha,
             author: String::new(),
@@ -266,6 +309,8 @@ struct JobList {
 #[derive(Deserialize)]
 struct RunView {
     jobs: Vec<RunJob>,
+    #[serde(rename = "displayTitle")]
+    display_title: String,
     #[serde(rename = "headBranch")]
     head_branch: String,
     #[serde(rename = "headSha")]
@@ -274,6 +319,8 @@ struct RunView {
     conclusion: Option<String>,
     #[serde(rename = "workflowName")]
     workflow_name: String,
+    #[serde(rename = "workflowDatabaseId")]
+    workflow_database_id: u64,
     #[serde(rename = "createdAt")]
     created_at: String,
     url: String,
@@ -284,6 +331,7 @@ impl RunView {
         CiRun {
             id,
             name: self.workflow_name,
+            title: self.display_title,
             branch: self.head_branch,
             commit: self.head_sha,
             author: String::new(),
@@ -292,6 +340,12 @@ impl RunView {
             url: Some(self.url),
         }
     }
+}
+
+/// `gh api .../workflows/{id}` — only the file path is needed (to fetch the YAML).
+#[derive(Deserialize)]
+struct WorkflowMeta {
+    path: String,
 }
 
 #[derive(Deserialize)]
@@ -324,11 +378,7 @@ jobs:
 ";
 
     fn provider(responses: &[(&'static str, &str)]) -> GitHubProvider {
-        GitHubProvider::new(
-            Box::new(RecordingRunner::new(responses)),
-            WORKFLOW.to_owned(),
-            "ci.yml".to_owned(),
-        )
+        GitHubProvider::new(Box::new(RecordingRunner::new(responses)))
     }
 
     #[tokio::test]
@@ -353,18 +403,25 @@ jobs:
     #[tokio::test]
     async fn run_detail_builds_dag_with_matrix_aggregation() {
         let view = r#"{
-          "headBranch":"main","headSha":"abc","status":"in_progress","conclusion":null,
-          "workflowName":"CI","createdAt":"2026-06-18T10:00:00Z","url":"https://gh/run/42",
+          "displayTitle":"fix things","headBranch":"main","headSha":"abc","status":"in_progress",
+          "conclusion":null,"workflowName":"CI","workflowDatabaseId":99,
+          "createdAt":"2026-06-18T10:00:00Z","url":"https://gh/run/42",
           "jobs":[
             {"databaseId":1,"name":"lint","status":"completed","conclusion":"success"},
             {"databaseId":2,"name":"test (ubuntu-latest)","status":"completed","conclusion":"success"},
             {"databaseId":3,"name":"test (windows-latest)","status":"in_progress","conclusion":null}
           ]
         }"#;
-        let detail = provider(&[("run view", view)])
-            .run_detail(&RunId("42".into()))
-            .await
-            .expect("detail");
+        let meta = r#"{"path":".github/workflows/ci.yml"}"#;
+        // run detail → run view (jobs+status), then the workflow file for the DAG
+        let detail = provider(&[
+            ("run view", view),
+            ("actions/workflows/", meta),
+            ("contents/", WORKFLOW),
+        ])
+        .run_detail(&RunId("42".into()))
+        .await
+        .expect("detail");
         let ids: Vec<&str> = detail.jobs.iter().map(|j| j.id.0.as_str()).collect();
         assert_eq!(ids, ["lint", "test", "publish"]);
         assert_eq!(detail.jobs[2].name, "Publish");
@@ -386,7 +443,7 @@ jobs:
         // `gh run view --json jobs` returns only the jobs array — parsing must
         // not require the run meta fields (headBranch, …)
         let view = r#"{"jobs":[{"databaseId":7,"name":"lint","status":"completed","conclusion":"success"}]}"#;
-        let chunk = provider(&[("--log", "line one\nline two\n"), ("run view", view)])
+        let chunk = provider(&[("/logs", "line one\nline two\n"), ("run view", view)])
             .job_log(&RunId("42".into()), &JobId("lint".into()), 0)
             .await
             .expect("log");

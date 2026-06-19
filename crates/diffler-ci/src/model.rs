@@ -64,6 +64,9 @@ impl JobStatus {
 pub struct CiRun {
     pub id: RunId,
     pub name: String,
+    /// The run's headline (the triggering commit's subject), if the provider
+    /// exposes one.
+    pub title: String,
     pub branch: String,
     pub commit: String,
     pub author: String,

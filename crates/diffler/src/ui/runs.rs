@@ -54,9 +54,13 @@ fn draw_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
             Line::from(vec![
                 Span::styled(marker, Style::new().fg(app.theme.warn_fg)),
                 Span::styled(format!("{glyph} "), Style::new().fg(color)),
-                Span::styled(format!("{:<20}", truncate(&run.name, 20)), style),
+                Span::styled(format!("{:<16}", truncate(&run.name, 16)), style),
                 Span::styled(
-                    format!("  {:<16}", truncate(&run.branch, 16)),
+                    format!("  {:<32}", truncate(&run.title, 32)),
+                    app.theme.dim_style(),
+                ),
+                Span::styled(
+                    format!("  {:<14}", truncate(&run.branch, 14)),
                     app.theme.dim_style(),
                 ),
                 Span::styled(format!("  {short}"), app.theme.dim_style()),
@@ -89,6 +93,7 @@ mod tests {
         CiRun {
             id: RunId(name.to_owned()),
             name: name.to_owned(),
+            title: "fix the thing".to_owned(),
             branch: branch.to_owned(),
             commit: sha.to_owned(),
             author: String::new(),

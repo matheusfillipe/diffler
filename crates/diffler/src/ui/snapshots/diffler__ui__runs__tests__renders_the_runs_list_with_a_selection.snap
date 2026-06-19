@@ -3,9 +3,9 @@ source: crates/diffler/src/ui/runs.rs
 expression: terminal.backend()
 ---
 " jk move · ⏎ open graph · q back                                                "
-"▌ ✓ CI                    main              abc1234                             "
-"  ✗ Release               feature/x         9988776                             "
-"  ● Nightly               main              0011223                             "
+"▌ ✓ CI                fix the thing                     main            abc1234 "
+"  ✗ Release           fix the thing                     feature/x       9988776 "
+"  ● Nightly           fix the thing                     main            0011223 "
 "                                                                                "
 "                                                                                "
 "                                                                                "

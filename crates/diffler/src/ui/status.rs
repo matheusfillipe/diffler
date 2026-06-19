@@ -403,11 +403,22 @@ fn ci_run_spans(
         theme,
     ));
     let short: String = run.commit.chars().take(7).collect();
+    let title = elide(&run.title, 32);
     spans.push(Span::styled(
-        format!("  {}  {short}", run.branch),
+        format!("  {title}  {}  {short}", run.branch),
         theme.dim_style(),
     ));
     spans
+}
+
+/// Truncate to `max` graphemes with an ellipsis.
+fn elide(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_owned()
+    } else {
+        let kept: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{kept}…")
+    }
 }
 
 /// Summed `(added, deleted)` over every file in a section.
@@ -449,6 +460,7 @@ mod tests {
         let run = |name: &str, branch: &str, sha: &str, status| CiRun {
             id: RunId(name.to_owned()),
             name: name.to_owned(),
+            title: "ci run".to_owned(),
             branch: branch.to_owned(),
             commit: sha.to_owned(),
             author: String::new(),
