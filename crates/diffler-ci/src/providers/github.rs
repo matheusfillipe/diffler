@@ -109,7 +109,7 @@ impl CiProvider for GitHubProvider {
 
         let view_args = ["run", "view", &run.0, "--json", "jobs"].map(str::to_owned);
         let out = self.runner.run("gh", &view_args).await?;
-        let view: RunView = serde_json::from_str(&out).map_err(|e| CiError::Parse {
+        let view: JobList = serde_json::from_str(&out).map_err(|e| CiError::Parse {
             what: "gh run view".into(),
             message: e.to_string(),
         })?;
@@ -256,6 +256,13 @@ impl RunListItem {
     }
 }
 
+/// `gh run view --json jobs` returns only the jobs array, so logs parse this
+/// narrow shape rather than the full [`RunView`] (which needs the meta fields).
+#[derive(Deserialize)]
+struct JobList {
+    jobs: Vec<RunJob>,
+}
+
 #[derive(Deserialize)]
 struct RunView {
     jobs: Vec<RunJob>,
@@ -376,9 +383,9 @@ jobs:
 
     #[tokio::test]
     async fn job_log_resolves_the_run_job_and_dumps() {
-        let view = r#"{"jobs":[{"databaseId":7,"name":"lint","status":"completed","conclusion":"success"}],
-          "headBranch":"m","headSha":"a","status":"completed","conclusion":"success",
-          "workflowName":"CI","createdAt":"2026-06-18T10:00:00Z","url":"u"}"#;
+        // `gh run view --json jobs` returns only the jobs array — parsing must
+        // not require the run meta fields (headBranch, …)
+        let view = r#"{"jobs":[{"databaseId":7,"name":"lint","status":"completed","conclusion":"success"}]}"#;
         let chunk = provider(&[("--log", "line one\nline two\n"), ("run view", view)])
             .job_log(&RunId("42".into()), &JobId("lint".into()), 0)
             .await
