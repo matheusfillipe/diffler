@@ -18,7 +18,7 @@ pub use diff::{
     comment_display,
 };
 pub use log::LogView;
-pub(crate) use status::RECENT_TITLE;
+pub(crate) use status::{CI_TITLE, RECENT_TITLE};
 pub use status::{Row, Section, StatusView};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -372,6 +372,9 @@ impl App {
             log: None,
             diff: None,
             graph: None,
+            // kick an initial CI fetch so the Status section populates at launch
+            // (evaluated before `ci_detected` is moved into the struct below)
+            pending_ci: ci_detected.is_some().then_some(CiRequest::Runs),
             ci_detected,
             runs: Vec::new(),
             runs_cursor: 0,
@@ -381,7 +384,6 @@ impl App {
             log_offset: 0,
             log_scroll: 0,
             log_done: false,
-            pending_ci: None,
             modal: None,
             search: None,
             message,
@@ -964,7 +966,8 @@ impl App {
     /// Queue the poll for the active CI screen onto `pending_ci`.
     fn queue_ci_poll(&mut self) {
         self.pending_ci = match self.screen() {
-            Screen::Runs => Some(CiRequest::Runs),
+            // the Status screen shows an inline CI-runs section, kept live
+            Screen::Status | Screen::Runs => Some(CiRequest::Runs),
             Screen::Graph => self.open_run.clone().map(CiRequest::Detail),
             // stop once the log is complete (a dump provider sends it all at once)
             Screen::Logs if self.log_done => None,

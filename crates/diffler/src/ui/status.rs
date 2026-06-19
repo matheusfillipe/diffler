@@ -10,7 +10,7 @@ use ratatui::widgets::{Block, Paragraph};
 
 use std::ops::Range;
 
-use crate::app::{App, RECENT_TITLE, Row, Section};
+use crate::app::{App, CI_TITLE, RECENT_TITLE, Row, Section};
 use crate::config::FileLayout;
 use crate::keymap::Action;
 use crate::theme::Theme;
@@ -130,7 +130,11 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16, Vec<Option<usize>>) 
                 index += span;
             }
             row => {
-                if index > 0 && matches!(row, Row::SectionHeader { .. } | Row::RecentHeader { .. })
+                if index > 0
+                    && matches!(
+                        row,
+                        Row::SectionHeader { .. } | Row::RecentHeader { .. } | Row::CiHeader { .. }
+                    )
                 {
                     lines.push(Line::default());
                     line_rows.push(None);
@@ -245,6 +249,10 @@ fn row_line(
             file_spans(app, file, theme, *depth, search)
         }
         Row::Commit { index } => commit_spans(app, *index, theme, width, search),
+        Row::CiHeader { count } => {
+            header_spans(theme, CI_TITLE, *count, app.status.ci_folded, search)
+        }
+        Row::CiRun { index } => ci_run_spans(app, *index, theme, search),
         // hunk rows are rendered as blocks in `body`, never through here
         Row::HunkHeader { .. } | Row::DiffLine { .. } => Vec::new(),
     };
@@ -373,6 +381,42 @@ fn commit_spans(
     spans
 }
 
+fn ci_run_spans(
+    app: &App,
+    index: usize,
+    theme: &Theme,
+    search: &[(Range<usize>, bool)],
+) -> Vec<Span<'static>> {
+    use diffler_ci::JobStatus;
+    let Some(run) = app.runs.get(index) else {
+        return Vec::new();
+    };
+    let (glyph, color) = match run.status {
+        JobStatus::Ok => ("✓", theme.added),
+        JobStatus::Failed => ("✗", theme.error_fg),
+        JobStatus::Running => ("●", theme.warn_fg),
+        JobStatus::Queued => ("·", theme.dim),
+        JobStatus::Skipped => ("–", theme.dim),
+        JobStatus::Neutral => ("○", theme.dim),
+    };
+    let mut spans = vec![Span::styled(
+        format!("     {glyph} "),
+        Style::new().fg(color),
+    )];
+    spans.extend(highlight_spans(
+        &run.name,
+        Style::new().fg(theme.fg),
+        search,
+        theme,
+    ));
+    let short: String = run.commit.chars().take(7).collect();
+    spans.push(Span::styled(
+        format!("  {}  {short}", run.branch),
+        theme.dim_style(),
+    ));
+    spans
+}
+
 /// Summed `(added, deleted)` over every file in a section.
 fn section_diffstat(app: &App, section: Section) -> (usize, usize) {
     app.section_files(section)
@@ -402,6 +446,28 @@ mod tests {
             .draw(|frame| crate::ui::draw(frame, app))
             .expect("draw");
         terminal
+    }
+
+    #[test]
+    fn status_shows_inline_ci_section() {
+        use diffler_ci::{CiRun, JobStatus, RunId};
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let run = |name: &str, branch: &str, sha: &str, status| CiRun {
+            id: RunId(name.to_owned()),
+            name: name.to_owned(),
+            branch: branch.to_owned(),
+            commit: sha.to_owned(),
+            author: String::new(),
+            created: None,
+            status,
+            url: None,
+        };
+        app.runs = vec![
+            run("CI", "main", "abc1234def", JobStatus::Failed),
+            run("Release", "main", "9988776655", JobStatus::Ok),
+        ];
+        insta::assert_snapshot!(render(&mut app).backend());
     }
 
     /// Screen position rendering `visible_rows()[row]`, via the geometry the
