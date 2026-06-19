@@ -167,6 +167,7 @@ impl PipelineItem {
         CiRun {
             id: RunId(self.id.to_string()),
             name: self.source.unwrap_or_else(|| "pipeline".to_owned()),
+            title: String::new(),
             branch: self.git_ref.unwrap_or_default(),
             commit: self.sha.unwrap_or_default(),
             author: String::new(),

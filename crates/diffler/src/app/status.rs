@@ -1081,6 +1081,7 @@ mod tests {
         app.runs = vec![CiRun {
             id: RunId("1".into()),
             name: "CI".into(),
+            title: String::new(),
             branch: "main".into(),
             commit: "abc".into(),
             author: String::new(),

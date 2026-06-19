@@ -46,25 +46,15 @@ fn parse_host(url: &str) -> Option<String> {
     (!host.is_empty()).then(|| host.to_owned())
 }
 
-/// Construct the provider for a detected forge. GitHub is scoped to the repo's
-/// discovered workflow (its YAML supplies the DAG); GitLab targets the detected
-/// host. `None` when the prerequisites are missing (e.g. no workflow file).
-pub fn provider(detected: &Detected, repo_root: &Path) -> Option<Box<dyn CiProvider + Send>> {
+/// Construct the provider for a detected forge. GitLab targets the detected host;
+/// GitHub reads each run's own workflow on demand for the DAG.
+pub fn provider(detected: &Detected, _repo_root: &Path) -> Box<dyn CiProvider + Send> {
     match detected.kind {
-        ProviderKind::GitHub => {
-            let workflow = crate::graph::discover_workflow(repo_root)?;
-            let yaml = std::fs::read_to_string(&workflow).ok()?;
-            let file = workflow.file_name()?.to_str()?.to_owned();
-            Some(Box::new(GitHubProvider::new(
-                Box::new(RealRunner),
-                yaml,
-                file,
-            )))
-        }
-        ProviderKind::GitLab => Some(Box::new(GitLabProvider::new(
+        ProviderKind::GitHub => Box::new(GitHubProvider::new(Box::new(RealRunner))),
+        ProviderKind::GitLab => Box::new(GitLabProvider::new(
             Box::new(RealRunner),
             detected.host.clone(),
-        ))),
+        )),
     }
 }
 
@@ -117,6 +107,7 @@ mod tests {
         CiRun {
             id: RunId("1".into()),
             name: "CI".into(),
+            title: String::new(),
             branch: "main".into(),
             commit: "abc".into(),
             author: String::new(),
