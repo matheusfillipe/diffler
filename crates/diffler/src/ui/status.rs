@@ -361,11 +361,11 @@ fn commit_spans(
     };
     let mut spans = vec![Span::styled(
         format!("     {} ", entry.oid7),
-        theme.dim_style(),
+        Style::new().fg(theme.warn_fg),
     )];
     spans.extend(highlight_spans(
         &entry.subject,
-        theme.dim_style(),
+        Style::new().fg(theme.fg),
         search,
         theme,
     ));
