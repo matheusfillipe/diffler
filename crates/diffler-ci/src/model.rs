@@ -101,6 +101,51 @@ pub struct LogChunk {
     pub done: bool,
 }
 
+/// The pull/merge request for the checked-out branch, shown beside the runs so
+/// the section reflects "the branch and PR I'm on", not just a workflow.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequest {
+    pub number: u64,
+    pub title: String,
+    pub url: Option<String>,
+}
+
+/// A build artifact a run produced, as listed on the run page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Artifact {
+    pub name: String,
+    pub size_bytes: u64,
+    /// Past its retention window: still listed, no longer downloadable.
+    pub expired: bool,
+}
+
+/// Severity of a run annotation, driving its glyph and color.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnnotationLevel {
+    Notice,
+    Warning,
+    Failure,
+}
+
+/// One annotation a job emitted (a `::warning`/`::error` workflow command or a
+/// check failure), tied to a file location when the provider gives one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Annotation {
+    pub level: AnnotationLevel,
+    pub title: String,
+    pub message: String,
+    pub path: String,
+    pub start_line: Option<u64>,
+}
+
+/// A run's page extras: the artifacts it produced and the annotations its jobs
+/// emitted. Shown below the DAG; empty for providers that don't expose them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RunExtras {
+    pub artifacts: Vec<Artifact>,
+    pub annotations: Vec<Annotation>,
+}
+
 /// What a provider can actually do, so the UI degrades honestly instead of
 /// failing at runtime (hide the graph when `DagSource::None`, the follow toggle
 /// when `LogMode::Dump`, …).

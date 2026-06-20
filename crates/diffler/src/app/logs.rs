@@ -1,11 +1,14 @@
 //! The CI job-log view: the `gh ... --log` output parsed into collapsible
-//! steps. Each line of that output is `<job>\t<step>\t<timestamp> <text>`, so
-//! consecutive lines are grouped by their step column. Folded by default. The
+//! sections. Each line is `<job>\t<step>\t<timestamp> <text>`, but the step
+//! column is unreliable (`gh` emits a literal `UNKNOWN STEP`), so sections come
+//! from the runner's own `##[group]`/`##[endgroup]` markers in the text — the
+//! same collapsible units the GitHub web log shows. Folded by default. The
 //! screen is keymap-driven (motions/search/visual/yank) like the diff screen.
 
 use ratatui::layout::Rect;
 
-/// One collapsible step: its name and the log lines under it.
+/// One collapsible section: its `##[group]` name and the log lines under it.
+/// The name is empty for lines that precede the first group.
 pub struct LogStep {
     pub name: String,
     pub lines: Vec<String>,
@@ -30,20 +33,40 @@ pub struct LogsView {
 }
 
 impl LogsView {
-    /// Parse `gh ... --log` output into steps, folded by default.
+    /// Parse `gh ... --log` output into collapsible sections by `##[group]`
+    /// markers, folded by default. A `##[group]NAME` opens a section; an
+    /// `##[endgroup]` marker is dropped; lines before the first group collect
+    /// into a leading unnamed section.
     pub fn parse(raw: &str) -> Self {
         let mut steps: Vec<LogStep> = Vec::new();
+        let mut leading: Vec<String> = Vec::new();
         for raw_line in raw.lines() {
-            let (step, text) = split_log_line(raw_line);
-            let text = strip_ansi(&text);
-            match steps.last_mut() {
-                Some(last) if last.name == step => last.lines.push(text),
-                _ => steps.push(LogStep {
-                    name: step,
-                    lines: vec![text],
+            let content = strip_ansi(&line_content(raw_line));
+            if let Some(name) = content.strip_prefix("##[group]") {
+                steps.push(LogStep {
+                    name: name.trim().to_owned(),
+                    lines: Vec::new(),
                     folded: true,
-                }),
+                });
+                continue;
             }
+            if content.trim_end() == "##[endgroup]" {
+                continue;
+            }
+            match steps.last_mut() {
+                Some(step) => step.lines.push(content),
+                None => leading.push(content),
+            }
+        }
+        if !leading.is_empty() {
+            steps.insert(
+                0,
+                LogStep {
+                    name: String::new(),
+                    lines: leading,
+                    folded: true,
+                },
+            );
         }
         Self {
             steps,
@@ -62,6 +85,11 @@ impl LogsView {
     #[must_use]
     pub fn carry_into(self, mut next: LogsView) -> LogsView {
         for step in &mut next.steps {
+            // match by name, but never by the empty name — the leading section
+            // and an unlabeled `##[group]` would otherwise share fold state
+            if step.name.is_empty() {
+                continue;
+            }
             if let Some(prev) = self.steps.iter().find(|p| p.name == step.name) {
                 step.folded = prev.folded;
             }
@@ -142,13 +170,14 @@ impl LogsView {
     }
 }
 
-/// Split a `gh --log` line `<job>\t<step>\t<timestamp> <text>` into
-/// `(step, text)`. A line without that tab structure goes to an empty step.
-fn split_log_line(line: &str) -> (String, String) {
+/// The displayable text of a `gh --log` line `<job>\t<step>\t<timestamp> <text>`:
+/// drop the job/step prefix (the step column is unreliable) and the timestamp.
+/// A line without that tab structure is timestamp-stripped as-is.
+fn line_content(line: &str) -> String {
     let mut fields = line.splitn(3, '\t');
     match (fields.next(), fields.next(), fields.next()) {
-        (Some(_job), Some(step), Some(rest)) => (step.to_owned(), strip_timestamp(rest)),
-        _ => (String::new(), strip_timestamp(line)),
+        (Some(_job), Some(_step), Some(rest)) => strip_timestamp(rest),
+        _ => strip_timestamp(line),
     }
 }
 
@@ -187,59 +216,79 @@ pub fn strip_ansi(s: &str) -> String {
 mod tests {
     use super::*;
 
-    const RAW: &str = "job\tBuild\t2026-06-20T00:00:01Z compiling…\n\
-                       job\tBuild\t2026-06-20T00:00:02Z \u{1b}[32mok\u{1b}[0m\n\
-                       job\tTest\t2026-06-20T00:00:03Z running\n";
+    // mirrors the real `gh --log` shape: a `<job>\t<step>\t<ts>` prefix (the step
+    // column is the literal junk `gh` emits), `##[group]`/`##[endgroup]` markers,
+    // ANSI, and a line that precedes the first group
+    const RAW: &str = "lint\tUNKNOWN STEP\t2026-06-20T00:00:00Z runner v2.335.1\n\
+                       lint\tUNKNOWN STEP\t2026-06-20T00:00:01Z ##[group]Build\n\
+                       lint\tUNKNOWN STEP\t2026-06-20T00:00:02Z compiling…\n\
+                       lint\tUNKNOWN STEP\t2026-06-20T00:00:03Z \u{1b}[32mok\u{1b}[0m\n\
+                       lint\tUNKNOWN STEP\t2026-06-20T00:00:04Z ##[endgroup]\n\
+                       lint\tUNKNOWN STEP\t2026-06-20T00:00:05Z ##[group]Test\n\
+                       lint\tUNKNOWN STEP\t2026-06-20T00:00:06Z running\n";
 
     #[test]
-    fn parse_groups_by_step_strips_prefix_and_ansi() {
+    fn parse_sections_by_group_strips_prefix_and_ansi() {
         let view = LogsView::parse(RAW);
-        assert_eq!(view.steps.len(), 2);
-        assert_eq!(view.steps[0].name, "Build");
-        assert_eq!(view.steps[0].lines, vec!["compiling…", "ok"]);
-        assert_eq!(view.steps[1].lines, vec!["running"]);
+        assert_eq!(view.steps.len(), 3);
+        assert_eq!(view.steps[0].name, "", "pre-group lines lead unnamed");
+        assert_eq!(view.steps[0].lines, vec!["runner v2.335.1"]);
+        assert_eq!(view.steps[1].name, "Build");
+        assert_eq!(view.steps[1].lines, vec!["compiling…", "ok"]);
+        assert_eq!(view.steps[2].name, "Test");
+        assert_eq!(view.steps[2].lines, vec!["running"]);
         assert!(view.steps.iter().all(|s| s.folded));
     }
 
     #[test]
     fn folded_view_shows_only_headers() {
         let view = LogsView::parse(RAW);
-        assert_eq!(view.rows(), vec![LogsRow::Step(0), LogsRow::Step(1)]);
+        assert_eq!(
+            view.rows(),
+            vec![LogsRow::Step(0), LogsRow::Step(1), LogsRow::Step(2)]
+        );
     }
 
     #[test]
     fn toggle_fold_reveals_lines_and_reseats_cursor() {
         let mut view = LogsView::parse(RAW);
+        view.cursor = 1; // the Build section header
         view.toggle_fold_at_cursor();
         assert_eq!(
             view.rows(),
             vec![
                 LogsRow::Step(0),
-                LogsRow::Line { step: 0, line: 0 },
-                LogsRow::Line { step: 0, line: 1 },
                 LogsRow::Step(1),
+                LogsRow::Line { step: 1, line: 0 },
+                LogsRow::Line { step: 1, line: 1 },
+                LogsRow::Step(2),
             ]
         );
-        view.cursor = 2;
+        view.cursor = 3; // a Build line
         view.toggle_fold_at_cursor();
-        assert_eq!(view.cursor, 0, "cursor re-seats on the folded step header");
+        assert_eq!(
+            view.cursor, 1,
+            "cursor re-seats on the folded section header"
+        );
     }
 
     #[test]
     fn selection_text_joins_the_visual_range() {
         let mut view = LogsView::parse(RAW);
+        view.cursor = 1;
         view.toggle_fold_at_cursor();
-        view.visual_anchor = Some(1);
-        view.cursor = 2;
+        view.visual_anchor = Some(2);
+        view.cursor = 3;
         assert_eq!(view.selection_text(), "compiling…\nok");
     }
 
     #[test]
     fn folding_clamps_a_stale_visual_anchor() {
         let mut view = LogsView::parse(RAW);
+        view.cursor = 1;
         view.toggle_fold_at_cursor();
-        view.visual_anchor = Some(2);
-        view.cursor = 2;
+        view.visual_anchor = Some(3);
+        view.cursor = 3;
         view.toggle_fold_at_cursor();
         let last = view.rows().len() - 1;
         assert!(view.visual_anchor.is_some_and(|a| a <= last));
@@ -248,9 +297,10 @@ mod tests {
     #[test]
     fn carry_into_preserves_fold_state_by_name() {
         let mut prev = LogsView::parse(RAW);
+        prev.cursor = 1;
         prev.toggle_fold_at_cursor();
         let next = prev.carry_into(LogsView::parse(RAW));
-        assert!(!next.steps[0].folded, "Build stays unfolded across re-poll");
-        assert!(next.steps[1].folded);
+        assert!(!next.steps[1].folded, "Build stays unfolded across re-poll");
+        assert!(next.steps[2].folded);
     }
 }

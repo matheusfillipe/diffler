@@ -1,0 +1,28 @@
+---
+source: crates/diffler/src/ui/graph.rs
+expression: terminal.backend()
+---
+" hjkl move · n/N edge · ⏎ open/fold · +/- zoom · g/G ends · q back              "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+" run extras ────────────────────────────────────────────────────────────────────"
+"artifacts                                                                       "
+"  coverage  2.0 KB                                                              "
+"annotations                                                                     "
+"  ⚠ src/lib.rs:12  unused import                                                "
+"                                                                                "
+" GRAPH  zoom: normal                                                            "

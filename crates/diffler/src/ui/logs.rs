@@ -92,12 +92,16 @@ fn row_line(
                 format!(" {marker} "),
                 Style::new().fg(theme.accent),
             )];
-            spans.extend(super::highlight_spans(
-                &step.name,
-                Style::new().fg(theme.fg).bg(theme.panel),
-                search,
-                theme,
-            ));
+            if step.name.is_empty() {
+                spans.push(Span::styled("log", theme.dim_style()));
+            } else {
+                spans.extend(super::highlight_spans(
+                    &step.name,
+                    Style::new().fg(theme.fg).bg(theme.panel),
+                    search,
+                    theme,
+                ));
+            }
             spans.push(Span::styled(
                 format!("  {} lines", step.lines.len()),
                 theme.dim_style(),
@@ -135,10 +139,12 @@ mod tests {
         let fixture = standard_fixture();
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         app.handle(log_event(
-            "job\tBuild\t2026-06-20T00:00:01Z compiling…\n\
-             job\tBuild\t2026-06-20T00:00:02Z done\n\
-             job\tTest\t2026-06-20T00:00:03Z running tests\n\
-             job\tTest\t2026-06-20T00:00:04Z ok\n",
+            "lint\tUNKNOWN STEP\t2026-06-20T00:00:01Z ##[group]Build\n\
+             lint\tUNKNOWN STEP\t2026-06-20T00:00:02Z compiling…\n\
+             lint\tUNKNOWN STEP\t2026-06-20T00:00:03Z ##[endgroup]\n\
+             lint\tUNKNOWN STEP\t2026-06-20T00:00:04Z ##[group]Test\n\
+             lint\tUNKNOWN STEP\t2026-06-20T00:00:05Z running tests\n\
+             lint\tUNKNOWN STEP\t2026-06-20T00:00:06Z ok\n",
         ));
         app
     }
@@ -163,7 +169,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_steps_grouped_by_column() {
+    fn parses_sections_by_group_marker() {
         let app = build_app();
         let view = app.logs().expect("logs view");
         assert_eq!(view.steps.len(), 2);

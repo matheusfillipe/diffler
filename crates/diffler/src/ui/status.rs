@@ -250,7 +250,15 @@ fn row_line(
         }
         Row::Commit { index } => commit_spans(app, *index, theme, width, search),
         Row::CiHeader { count } => {
-            header_spans(theme, CI_TITLE, *count, app.status.ci_folded, search)
+            let mut spans = header_spans(theme, CI_TITLE, *count, app.status.ci_folded, search);
+            if let Some(pr) = &app.pr {
+                spans.push(Span::styled(
+                    format!("  PR #{}", pr.number),
+                    theme.dim_style(),
+                ));
+                spans.push(Span::styled(format!(" {}", pr.title), theme.dim_style()));
+            }
+            spans
         }
         Row::CiRun { index } => ci_run_spans(app, *index, theme, width, search),
         // hunk rows are rendered as blocks in `body`, never through here
@@ -492,6 +500,31 @@ mod tests {
             run("Release", "main", "9988776655", JobStatus::Ok),
         ];
         insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn ci_header_shows_the_branch_pr() {
+        use diffler_ci::{CiRun, JobStatus, PullRequest, RunId};
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.runs = vec![CiRun {
+            id: RunId("CI".into()),
+            name: "CI".into(),
+            title: "ci run".into(),
+            branch: "feat/x".into(),
+            commit: "abc1234def".into(),
+            author: String::new(),
+            created: None,
+            status: JobStatus::Ok,
+            url: None,
+        }];
+        app.pr = Some(PullRequest {
+            number: 28,
+            title: "Inline CI runs".into(),
+            url: None,
+        });
+        let rendered = format!("{:?}", render(&mut app).backend());
+        assert!(rendered.contains("PR #28"), "header shows the PR number");
     }
 
     /// Screen position rendering `visible_rows()[row]`, via the geometry the

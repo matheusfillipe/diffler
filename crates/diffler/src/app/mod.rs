@@ -214,7 +214,9 @@ const FALLBACK_REFRESH_TICKS: u32 = 20;
 #[derive(Debug, Clone)]
 pub enum CiRequest {
     Runs,
+    Pr,
     Detail(diffler_ci::RunId),
+    Extras(diffler_ci::RunId),
     Log {
         run: diffler_ci::RunId,
         job: diffler_ci::JobId,
@@ -247,9 +249,16 @@ pub struct App {
     ci_detected: Option<diffler_ci::Detected>,
     /// Recent CI runs shown on the Runs screen.
     pub runs: Vec<diffler_ci::CiRun>,
+    /// The checked-out branch's PR, shown beside the runs section header.
+    pub pr: Option<diffler_ci::PullRequest>,
+    /// Whether the PR has been resolved for the current branch, so it's fetched
+    /// once per branch instead of on every runs poll (reset on a repo change).
+    pr_checked: bool,
     runs_cursor: usize,
     /// The run opened into the graph, re-polled for live status.
     open_run: Option<diffler_ci::RunId>,
+    /// The open run's artifacts + annotations, shown below the DAG.
+    pub extras: Option<diffler_ci::RunExtras>,
     /// The job whose log is on the Logs screen.
     open_job: Option<diffler_ci::JobId>,
     /// Accumulated raw job-log text and the byte offset the next poll resumes
@@ -390,8 +399,11 @@ impl App {
             pending_ci: ci_detected.is_some().then_some(CiRequest::Runs),
             ci_detected,
             runs: Vec::new(),
+            pr: None,
+            pr_checked: false,
             runs_cursor: 0,
             open_run: None,
+            extras: None,
             open_job: None,
             log_text: String::new(),
             log_offset: 0,
@@ -520,17 +532,20 @@ impl App {
                 Flow::Continue
             }
             AppEvent::CiRuns(runs) => {
-                self.runs = runs;
-                self.runs_cursor = self.runs_cursor.min(self.runs.len().saturating_sub(1));
-                // the inline Status section grew/shrank; keep the row cursor valid
-                self.clamp_cursor();
+                self.on_ci_runs(runs);
+                Flow::Continue
+            }
+            AppEvent::CiPr(pr) => {
+                self.pr = pr;
+                self.pr_checked = true;
                 Flow::Continue
             }
             AppEvent::CiRunDetail(detail) => {
-                let model = crate::ci::to_model(&detail);
-                if let Some(graph) = self.graph.as_mut() {
-                    graph.set_model(model);
-                }
+                self.on_run_detail(&detail);
+                Flow::Continue
+            }
+            AppEvent::CiExtras(extras) => {
+                self.extras = Some(extras);
                 Flow::Continue
             }
             AppEvent::CiLog {
@@ -555,6 +570,8 @@ impl App {
             AppEvent::RepoChanged => {
                 self.refresh();
                 self.refresh_flash = REFRESH_FLASH_TICKS;
+                // a checkout may have changed the branch; re-resolve its PR
+                self.pr_checked = false;
                 Flow::Continue
             }
             AppEvent::Mcp(request) => {
@@ -964,9 +981,38 @@ impl App {
         };
         let id = run.id.clone();
         self.open_run = Some(id.clone());
+        self.extras = None;
         self.graph = Some(diffler_graph::GraphView::new());
         self.push_screen(Screen::Graph);
         self.pending_ci = Some(CiRequest::Detail(id));
+    }
+
+    /// Fold a branch-scoped runs poll into the inline section, then resolve the
+    /// branch's PR once (not every poll) via the single `pending_ci` slot.
+    fn on_ci_runs(&mut self, runs: Vec<diffler_ci::CiRun>) {
+        self.runs = runs;
+        self.runs_cursor = self.runs_cursor.min(self.runs.len().saturating_sub(1));
+        // the inline Status section grew/shrank; keep the row cursor valid
+        self.clamp_cursor();
+        if !self.pr_checked {
+            self.pending_ci = Some(CiRequest::Pr);
+        }
+    }
+
+    /// Fold a run's detail into the graph, then queue its extras once: a single
+    /// `pending_ci` slot means the extras request only displaces a run-detail
+    /// poll until the extras land, after which the poll keeps the slot.
+    fn on_run_detail(&mut self, detail: &diffler_ci::RunDetail) {
+        let model = crate::ci::to_model(detail);
+        if let Some(graph) = self.graph.as_mut() {
+            graph.set_model(model);
+        }
+        if self.extras.is_none()
+            && self.screen() == Screen::Graph
+            && let Some(run) = self.open_run.clone()
+        {
+            self.pending_ci = Some(CiRequest::Extras(run));
+        }
     }
 
     /// Open a job's log view from a graph node activation.
@@ -1115,6 +1161,7 @@ impl App {
             Some(Screen::Graph) => {
                 self.graph = None;
                 self.open_run = None;
+                self.extras = None;
             }
             Some(Screen::Logs) => {
                 self.open_job = None;
@@ -1848,6 +1895,51 @@ mod tests {
         app.handle(key('q'));
         assert_eq!(app.screen(), Screen::Status);
         assert!(app.graph.is_none());
+    }
+
+    #[test]
+    fn graph_run_detail_queues_extras_once_then_stops() {
+        use diffler_ci::{Artifact, CiRun, JobStatus, RunDetail, RunExtras, RunId};
+        let (_fixture, mut app) = app();
+        app.graph = Some(diffler_graph::GraphView::new());
+        app.open_run = Some(RunId("1".into()));
+        app.push_screen(Screen::Graph);
+        let detail = || RunDetail {
+            run: CiRun {
+                id: RunId("1".into()),
+                name: "CI".into(),
+                title: String::new(),
+                branch: "main".into(),
+                commit: "abc".into(),
+                author: String::new(),
+                created: None,
+                status: JobStatus::Running,
+                url: None,
+            },
+            jobs: vec![],
+        };
+        app.handle(AppEvent::CiRunDetail(detail()));
+        assert!(
+            matches!(app.pending_ci, Some(CiRequest::Extras(_))),
+            "first detail queues the extras fetch"
+        );
+        app.pending_ci = None;
+        app.handle(AppEvent::CiExtras(RunExtras {
+            artifacts: vec![Artifact {
+                name: "a".into(),
+                size_bytes: 1,
+                expired: false,
+            }],
+            annotations: vec![],
+        }));
+        assert!(app.extras.is_some());
+        app.handle(AppEvent::CiRunDetail(detail()));
+        assert!(
+            app.pending_ci.is_none(),
+            "extras already present: no re-queue"
+        );
+        app.handle(key('q'));
+        assert!(app.extras.is_none(), "leaving the graph clears extras");
     }
 
     #[test]

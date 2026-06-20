@@ -47,22 +47,42 @@ fn parse_host(url: &str) -> Option<String> {
 }
 
 /// Construct the provider for a detected forge. GitLab targets the detected host;
-/// GitHub takes the repo's discovered workflow YAML for the run DAG.
-pub fn provider(detected: &Detected, repo_root: &Path) -> Box<dyn CiProvider + Send> {
+/// GitHub scopes the runs list to `branch` and carries every workflow YAML so
+/// each run's DAG is built from its own workflow.
+pub fn provider(
+    detected: &Detected,
+    repo_root: &Path,
+    branch: Option<&str>,
+) -> Box<dyn CiProvider + Send> {
     match detected.kind {
-        ProviderKind::GitHub => {
-            let workflow = crate::graph::discover_workflow(repo_root);
-            let file = workflow
-                .as_ref()
-                .and_then(|p| p.file_name()?.to_str().map(str::to_owned));
-            let yaml = workflow.and_then(|path| std::fs::read_to_string(path).ok());
-            Box::new(GitHubProvider::new(Box::new(RealRunner), yaml, file))
-        }
+        ProviderKind::GitHub => Box::new(GitHubProvider::new(
+            Box::new(RealRunner),
+            read_workflows(repo_root),
+            branch.map(str::to_owned),
+        )),
         ProviderKind::GitLab => Box::new(GitLabProvider::new(
             Box::new(RealRunner),
             detected.host.clone(),
         )),
     }
+}
+
+/// Every `.github/workflows/*.{yml,yaml}` body, for per-run DAG matching.
+fn read_workflows(repo_root: &Path) -> Vec<String> {
+    let dir = repo_root.join(".github/workflows");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|e| {
+            e.path()
+                .extension()
+                .and_then(|x| x.to_str())
+                .is_some_and(|x| x == "yml" || x == "yaml")
+        })
+        .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+        .collect()
 }
 
 /// Map a run's jobs + dependency edges onto a graph model (top-down layered).
