@@ -33,12 +33,6 @@ impl GitHubProvider {
             workflow_file,
         }
     }
-
-    async fn api(&self, path: &str) -> Result<String> {
-        self.runner
-            .run("gh", &["api".to_owned(), path.to_owned()])
-            .await
-    }
 }
 
 #[async_trait]
@@ -141,13 +135,11 @@ impl CiProvider for GitHubProvider {
             .map(|j| j.database_id)
             .ok_or_else(|| CiError::NotFound(format!("job {} in run {}", job.0, run.0)))?;
 
-        // the REST job-logs endpoint returns the raw runner log (group markers
-        // intact), a stabler contract than `gh run view --log`'s text format
-        let text = self
-            .api(&format!(
-                "repos/{{owner}}/{{repo}}/actions/jobs/{db_id}/logs"
-            ))
-            .await?;
+        // `--log` prefixes each line with `<job>\t<step>\t<timestamp>`, so the
+        // host can group the log into collapsible steps
+        let log_args =
+            ["run", "view", &run.0, "--log", "--job", &db_id.to_string()].map(str::to_owned);
+        let text = self.runner.run("gh", &log_args).await?;
         let next_offset = text.len() as u64;
         Ok(LogChunk {
             text,
@@ -417,7 +409,7 @@ jobs:
         // `gh run view --json jobs` returns only the jobs array — parsing must
         // not require the run meta fields (headBranch, …)
         let view = r#"{"jobs":[{"databaseId":7,"name":"lint","status":"completed","conclusion":"success"}]}"#;
-        let chunk = provider(&[("/logs", "line one\nline two\n"), ("run view", view)])
+        let chunk = provider(&[("--log", "line one\nline two\n"), ("run view", view)])
             .job_log(&RunId("42".into()), &JobId("lint".into()), 0)
             .await
             .expect("log");

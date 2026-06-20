@@ -5,6 +5,7 @@
 
 mod diff;
 mod log;
+pub mod logs;
 mod mcp;
 mod status;
 
@@ -59,9 +60,10 @@ pub enum Screen {
 impl Screen {
     fn context(self) -> Context {
         match self {
-            // the CI screens drive their own input, so their keymap context is
-            // unused; map them to Status so hint/help lookups stay total.
-            Self::Status | Self::Runs | Self::Graph | Self::Logs => Context::Status,
+            // the Runs/Graph screens drive their own input, so their keymap
+            // context is unused; map them to Status so hint/help lookups stay total.
+            Self::Status | Self::Runs | Self::Graph => Context::Status,
+            Self::Logs => Context::Logs,
             Self::Diff => Context::Diff,
             Self::Log => Context::Log,
         }
@@ -142,6 +144,24 @@ struct Keymaps {
     status: Keymap,
     diff: Keymap,
     log: Keymap,
+    logs: Keymap,
+}
+
+impl Keymaps {
+    /// Build the per-context keymaps, draining any binding warnings into `sink`.
+    fn build(keys: &crate::config::KeysConfig, sink: &mut Vec<String>) -> Self {
+        let mut build = |context| {
+            let (keymap, warnings) = Keymap::for_context(context, keys);
+            sink.extend(warnings);
+            keymap
+        };
+        Self {
+            status: build(Context::Status),
+            diff: build(Context::Diff),
+            log: build(Context::Log),
+            logs: build(Context::Logs),
+        }
+    }
 }
 
 /// Built transients, applied with config overrides once at startup.
@@ -232,10 +252,12 @@ pub struct App {
     open_run: Option<diffler_ci::RunId>,
     /// The job whose log is on the Logs screen.
     open_job: Option<diffler_ci::JobId>,
-    /// Accumulated job-log text and the byte offset the next poll resumes from.
+    /// Accumulated raw job-log text and the byte offset the next poll resumes
+    /// from. Parsed into [`logs`](Self::logs) for the foldable view.
     log_text: String,
     log_offset: u64,
-    log_scroll: u16,
+    /// The foldable step view over `log_text`, present while the Logs screen is up.
+    pub logs: Option<logs::LogsView>,
     /// Set once a log chunk reports the job's log is complete, so polling stops
     /// (a dump-mode provider returns the whole log in one chunk).
     log_done: bool,
@@ -304,16 +326,7 @@ impl App {
         let (theme, theme_warning) = Theme::from_name(&config.ui.theme);
         startup_warnings.extend(theme_warning);
         crate::ui::diff::init_highlighter(theme.syntax);
-        let mut build = |context| {
-            let (keymap, warnings) = Keymap::for_context(context, &config.keys);
-            startup_warnings.extend(warnings);
-            keymap
-        };
-        let keymaps = Keymaps {
-            status: build(Context::Status),
-            diff: build(Context::Diff),
-            log: build(Context::Log),
-        };
+        let keymaps = Keymaps::build(&config.keys, &mut startup_warnings);
         let mut build_transient = |kind| {
             let (transient, warnings) = Transient::build(kind, &config.keys);
             startup_warnings.extend(warnings);
@@ -382,7 +395,7 @@ impl App {
             open_job: None,
             log_text: String::new(),
             log_offset: 0,
-            log_scroll: 0,
+            logs: None,
             log_done: false,
             modal: None,
             search: None,
@@ -421,9 +434,9 @@ impl App {
         &self.log_text
     }
 
-    /// Vertical scroll offset of the Logs screen.
-    pub fn log_scroll(&self) -> u16 {
-        self.log_scroll
+    /// The foldable step view over the Logs screen, once a log chunk arrived.
+    pub fn logs(&self) -> Option<&logs::LogsView> {
+        self.logs.as_ref()
     }
 
     /// The detected CI provider for the repo, if any (the main loop builds a
@@ -439,6 +452,7 @@ impl App {
             Context::Status => &self.keymaps.status,
             Context::Diff => &self.keymaps.diff,
             Context::Log => &self.keymaps.log,
+            Context::Logs => &self.keymaps.logs,
         }
     }
 
@@ -473,8 +487,6 @@ impl App {
                     self.handle_graph_key(&key)
                 } else if self.screen() == Screen::Runs {
                     self.handle_runs_key(&key)
-                } else if self.screen() == Screen::Logs {
-                    self.handle_logs_key(&key)
                 } else if self.modal.is_some() {
                     self.handle_modal_key(&key)
                 } else if self.transient.is_some() {
@@ -529,6 +541,11 @@ impl App {
                 self.log_text.push_str(&text);
                 self.log_offset = next_offset;
                 self.log_done = done;
+                let rebuilt = logs::LogsView::parse(&self.log_text);
+                self.logs = Some(match self.logs.take() {
+                    Some(prev) => prev.carry_into(rebuilt),
+                    None => rebuilt,
+                });
                 Flow::Continue
             }
             AppEvent::CiError(message) => {
@@ -640,20 +657,20 @@ impl App {
                         log.visual_anchor = None;
                     }
                 }
-                Screen::Status | Screen::Graph | Screen::Runs | Screen::Logs => {}
+                Screen::Logs => {
+                    if let Some(view) = self.logs.as_mut() {
+                        view.visual_anchor = None;
+                    }
+                }
+                Screen::Status | Screen::Graph | Screen::Runs => {}
             }
             self.pending.clear();
             return Flow::Continue;
         }
         self.pending_ticks = 0;
         let press = keymap::press_from_event(key);
-        let keymap = match self.screen().context() {
-            Context::Status => &self.keymaps.status,
-            Context::Diff => &self.keymaps.diff,
-            Context::Log => &self.keymaps.log,
-        };
         let mut pending = std::mem::take(&mut self.pending);
-        let resolved = keymap.resolve(&mut pending, press);
+        let resolved = self.active_keymap().resolve(&mut pending, press);
         self.pending = pending;
         match resolved {
             Resolved::Action(action) => self.dispatch(action),
@@ -723,7 +740,11 @@ impl App {
                 .as_ref()
                 .is_some_and(|d| d.visual_anchor.is_some()),
             Screen::Log => self.log.as_ref().is_some_and(|l| l.visual_anchor.is_some()),
-            Screen::Status | Screen::Graph | Screen::Runs | Screen::Logs => false,
+            Screen::Logs => self
+                .logs
+                .as_ref()
+                .is_some_and(|v| v.visual_anchor.is_some()),
+            Screen::Status | Screen::Graph | Screen::Runs => false,
         }
     }
 
@@ -916,8 +937,9 @@ impl App {
                 Screen::Status => self.dispatch_status(action),
                 Screen::Log => self.dispatch_log(action),
                 Screen::Diff => self.dispatch_diff(action),
-                // CI screens drive their own input, never the keymap
-                Screen::Graph | Screen::Runs | Screen::Logs => {}
+                Screen::Logs => self.dispatch_logs(action),
+                // the Runs/Graph screens drive their own input, never the keymap
+                Screen::Graph | Screen::Runs => {}
             },
         }
         Flow::Continue
@@ -955,7 +977,7 @@ impl App {
         self.open_job = Some(job.clone());
         self.log_text.clear();
         self.log_offset = 0;
-        self.log_scroll = 0;
+        self.logs = None;
         self.log_done = false;
         self.push_screen(Screen::Logs);
         self.pending_ci = Some(CiRequest::Log {
@@ -1003,17 +1025,54 @@ impl App {
         Flow::Continue
     }
 
-    /// While the logs screen is up: scroll the text, q/Esc leave it.
-    fn handle_logs_key(&mut self, key: &KeyEvent) -> Flow {
-        match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => return self.pop_screen(),
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.log_scroll = self.log_scroll.saturating_add(1);
+    /// Drive the foldable logs view from a keymap [`Action`]: motions, fold,
+    /// visual select, and yank. The Logs screen reuses the diff/log keymap.
+    fn dispatch_logs(&mut self, action: Action) {
+        let Some(view) = self.logs.as_mut() else {
+            return;
+        };
+        let last = view.rows().len().saturating_sub(1);
+        match action {
+            Action::MoveDown => view.cursor = (view.cursor + 1).min(last),
+            Action::MoveUp => view.cursor = view.cursor.saturating_sub(1),
+            Action::GoTop => view.cursor = 0,
+            Action::GoBottom => view.cursor = last,
+            Action::HalfPageDown => self.logs_page(false, false),
+            Action::HalfPageUp => self.logs_page(true, false),
+            Action::FullPageDown => self.logs_page(false, true),
+            Action::FullPageUp => self.logs_page(true, true),
+            Action::ToggleFold => view.toggle_fold_at_cursor(),
+            Action::VisualSelect => {
+                view.visual_anchor = match view.visual_anchor {
+                    Some(_) => None,
+                    None => Some(view.cursor),
+                };
             }
-            KeyCode::Char('k') | KeyCode::Up => self.log_scroll = self.log_scroll.saturating_sub(1),
+            Action::CopyFileFeedback | Action::CopyAllFeedback => {
+                self.pending_clipboard = Some(view.selection_text());
+                let view = self.logs.as_mut();
+                if let Some(view) = view {
+                    view.visual_anchor = None;
+                }
+                self.info("yanked log selection");
+            }
             _ => {}
         }
-        Flow::Continue
+    }
+
+    /// Half/full-page cursor jump over the logs view, mirroring `log_page`.
+    fn logs_page(&mut self, up: bool, full: bool) {
+        let Some(view) = self.logs.as_mut() else {
+            return;
+        };
+        let last = view.rows().len().saturating_sub(1);
+        let page = usize::from(view.viewport).max(1);
+        let step = if full { page } else { (page / 2).max(1) };
+        view.cursor = if up {
+            view.cursor.saturating_sub(step)
+        } else {
+            (view.cursor + step).min(last)
+        };
     }
 
     /// While the graph screen is up, keys go to the component; Esc/q leave it.
@@ -1060,6 +1119,7 @@ impl App {
             Some(Screen::Logs) => {
                 self.open_job = None;
                 self.log_text.clear();
+                self.logs = None;
             }
             Some(Screen::Runs) => self.runs.clear(),
             Some(Screen::Status) | None => {}
@@ -1142,7 +1202,8 @@ impl App {
                 Pane::List => d.tree_cursor,
                 Pane::Diff => d.cursor,
             }),
-            Screen::Graph | Screen::Runs | Screen::Logs => 0,
+            Screen::Logs => self.logs.as_ref().map_or(0, |v| v.cursor),
+            Screen::Graph | Screen::Runs => 0,
         }
     }
 
@@ -1157,7 +1218,14 @@ impl App {
                     .collect()
             }),
             Screen::Diff => self.diff_search_rows(),
-            Screen::Graph | Screen::Runs | Screen::Logs => Vec::new(),
+            Screen::Logs => self.logs.as_ref().map_or_else(Vec::new, |view| {
+                view.rows()
+                    .iter()
+                    .enumerate()
+                    .map(|(i, row)| (i, view.row_text(*row).to_owned()))
+                    .collect()
+            }),
+            Screen::Graph | Screen::Runs => Vec::new(),
         }
     }
 
@@ -1200,7 +1268,12 @@ impl App {
                     }
                 }
             }
-            Screen::Graph | Screen::Runs | Screen::Logs => {}
+            Screen::Logs => {
+                if let Some(v) = self.logs.as_mut() {
+                    v.cursor = row;
+                }
+            }
+            Screen::Graph | Screen::Runs => {}
         }
     }
 

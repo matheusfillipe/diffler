@@ -212,6 +212,8 @@ pub enum Context {
     Status,
     Diff,
     Log,
+    /// The CI job-log screen (foldable steps).
+    Logs,
 }
 
 /// Outcome of feeding one key press into a keymap.
@@ -336,6 +338,27 @@ const LOG_DEFAULTS: &[(&str, Action)] = &[
     ("q", Action::Back),
 ];
 
+const LOGS_DEFAULTS: &[(&str, Action)] = &[
+    ("j", Action::MoveDown),
+    ("k", Action::MoveUp),
+    ("gg", Action::GoTop),
+    ("G", Action::GoBottom),
+    ("<c-d>", Action::HalfPageDown),
+    ("<c-u>", Action::HalfPageUp),
+    ("<c-f>", Action::FullPageDown),
+    ("<c-b>", Action::FullPageUp),
+    ("<tab>", Action::ToggleFold),
+    ("<cr>", Action::ToggleFold),
+    ("V", Action::VisualSelect),
+    ("y", Action::CopyFileFeedback),
+    ("Y", Action::CopyAllFeedback),
+    ("/", Action::Search),
+    ("n", Action::SearchNext),
+    ("N", Action::SearchPrev),
+    ("?", Action::Help),
+    ("q", Action::Back),
+];
+
 impl Keymap {
     /// Build the keymap for one screen: built-in defaults, then config
     /// overrides (action name → chord). Returns user-facing warnings for
@@ -345,6 +368,7 @@ impl Keymap {
             Context::Status => (STATUS_DEFAULTS, STATUS_PREFIXES, &keys.status, "status"),
             Context::Diff => (DIFF_DEFAULTS, NO_PREFIXES, &keys.diff, "diff"),
             Context::Log => (LOG_DEFAULTS, NO_PREFIXES, &keys.log, "log"),
+            Context::Logs => (LOGS_DEFAULTS, NO_PREFIXES, &keys.logs, "logs"),
         };
         let mut keymap = Self {
             // defaults are static strings validated by tests; a default that
@@ -734,6 +758,7 @@ mod tests {
             (STATUS_DEFAULTS, Context::Status),
             (DIFF_DEFAULTS, Context::Diff),
             (LOG_DEFAULTS, Context::Log),
+            (LOGS_DEFAULTS, Context::Logs),
         ] {
             let (keymap, _) = Keymap::for_context(context, &KeysConfig::default());
             assert_eq!(keymap.bindings.len(), defaults.len(), "{context:?}");
@@ -1091,10 +1116,10 @@ mod tests {
 
     #[test]
     fn defaults_remain_conflict_free_under_stricter_check() {
-        // All three default contexts must produce zero warnings under the new
+        // Every default context must produce zero warnings under the new
         // checks. In particular: `g` (first key of `gg`) is not a transient
         // prefix by default, so `gg` must not false-positive.
-        for context in [Context::Status, Context::Diff, Context::Log] {
+        for context in [Context::Status, Context::Diff, Context::Log, Context::Logs] {
             let (_, warnings) = Keymap::for_context(context, &KeysConfig::default());
             assert!(
                 warnings.is_empty(),

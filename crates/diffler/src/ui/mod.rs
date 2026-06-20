@@ -344,6 +344,19 @@ pub(super) fn commit_meta_spans(
     ]
 }
 
+/// Scroll offset that keeps `cursor` inside a `height`-row viewport: pull the
+/// top down to the cursor when it scrolls above, push it up when below. Shared
+/// by every row-list pane so scrolling behaves identically.
+pub(super) fn scroll_to_cursor(cursor: usize, scroll: usize, height: usize) -> usize {
+    if cursor < scroll {
+        cursor
+    } else if cursor >= scroll + height {
+        cursor + 1 - height
+    } else {
+        scroll
+    }
+}
+
 pub(super) fn cursor_line(line: Line<'static>, theme: &Theme, width: u16) -> Line<'static> {
     let pad = (width as usize).saturating_sub(line.width());
     let mut spans: Vec<Span<'static>> = line
