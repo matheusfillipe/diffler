@@ -54,7 +54,7 @@ fn draw_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
             } else {
                 Style::new().fg(app.theme.accent)
             };
-            Line::from(vec![
+            let mut spans = vec![
                 Span::styled(marker, Style::new().fg(app.theme.warn_fg)),
                 Span::styled(format!("{glyph} "), Style::new().fg(color)),
                 Span::styled(format!("{:<16}", truncate(&run.name, 16)), name_style),
@@ -67,7 +67,17 @@ fn draw_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
                     Style::new().fg(app.theme.purple),
                 ),
                 Span::styled(format!("  {short}"), Style::new().fg(app.theme.warn_fg)),
-            ])
+            ];
+            if let Some(created) = run.created {
+                let age = super::relative_time(app.now_unix, created.unix_timestamp());
+                let used: usize = spans.iter().map(ratatui::text::Span::width).sum();
+                if used + age.chars().count() + 1 < area.width as usize {
+                    let gap = area.width as usize - used - age.chars().count() - 1;
+                    spans.push(Span::raw(" ".repeat(gap)));
+                    spans.push(Span::styled(age, app.theme.dim_style()));
+                }
+            }
+            Line::from(spans)
         })
         .collect();
     frame.render_widget(Paragraph::new(rows), area);
