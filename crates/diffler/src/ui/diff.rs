@@ -306,12 +306,7 @@ fn draw_pane(
     }
 
     let height = rows_area.height.max(1) as usize;
-    if diff.cursor < diff.scroll {
-        diff.scroll = diff.cursor;
-    }
-    if diff.cursor >= diff.scroll + height {
-        diff.scroll = diff.cursor + 1 - height;
-    }
+    diff.scroll = super::scroll_to_cursor(diff.cursor, diff.scroll, height);
     let scroll = diff.scroll;
     let cursor = diff.cursor;
     let selection = diff.selection();

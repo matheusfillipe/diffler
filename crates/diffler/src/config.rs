@@ -158,6 +158,7 @@ pub struct KeysConfig {
     pub status: BTreeMap<String, String>,
     pub diff: BTreeMap<String, String>,
     pub log: BTreeMap<String, String>,
+    pub logs: BTreeMap<String, String>,
     pub commit: BTreeMap<String, String>,
     pub branch: BTreeMap<String, String>,
     pub log_menu: BTreeMap<String, String>,
