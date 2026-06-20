@@ -252,7 +252,7 @@ fn row_line(
         Row::CiHeader { count } => {
             header_spans(theme, CI_TITLE, *count, app.status.ci_folded, search)
         }
-        Row::CiRun { index } => ci_run_spans(app, *index, theme, search),
+        Row::CiRun { index } => ci_run_spans(app, *index, theme, width, search),
         // hunk rows are rendered as blocks in `body`, never through here
         Row::HunkHeader { .. } | Row::DiffLine { .. } => Vec::new(),
     };
@@ -385,6 +385,7 @@ fn ci_run_spans(
     app: &App,
     index: usize,
     theme: &Theme,
+    width: u16,
     search: &[(Range<usize>, bool)],
 ) -> Vec<Span<'static>> {
     let Some(run) = app.runs.get(index) else {
@@ -417,6 +418,15 @@ fn ci_run_spans(
         format!("  {short}"),
         Style::new().fg(theme.warn_fg),
     ));
+    if let Some(created) = run.created {
+        let age = super::relative_time(app.now_unix, created.unix_timestamp());
+        let used: usize = spans.iter().map(Span::width).sum();
+        if used + age.chars().count() + 1 < width as usize {
+            let gap = width as usize - used - age.chars().count() - 1;
+            spans.push(Span::raw(" ".repeat(gap)));
+            spans.push(Span::styled(age, theme.dim_style()));
+        }
+    }
     spans
 }
 

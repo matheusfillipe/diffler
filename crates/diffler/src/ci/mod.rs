@@ -51,9 +51,12 @@ fn parse_host(url: &str) -> Option<String> {
 pub fn provider(detected: &Detected, repo_root: &Path) -> Box<dyn CiProvider + Send> {
     match detected.kind {
         ProviderKind::GitHub => {
-            let yaml = crate::graph::discover_workflow(repo_root)
-                .and_then(|path| std::fs::read_to_string(path).ok());
-            Box::new(GitHubProvider::new(Box::new(RealRunner), yaml))
+            let workflow = crate::graph::discover_workflow(repo_root);
+            let file = workflow
+                .as_ref()
+                .and_then(|p| p.file_name()?.to_str().map(str::to_owned));
+            let yaml = workflow.and_then(|path| std::fs::read_to_string(path).ok());
+            Box::new(GitHubProvider::new(Box::new(RealRunner), yaml, file))
         }
         ProviderKind::GitLab => Box::new(GitLabProvider::new(
             Box::new(RealRunner),

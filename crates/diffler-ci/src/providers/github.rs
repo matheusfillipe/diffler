@@ -12,19 +12,25 @@ use crate::model::{
 };
 use crate::provider::{CiProvider, ProviderKind};
 
-/// Talks to GitHub Actions through `gh`. Lists every workflow's runs; the DAG
-/// comes from the repo's workflow file on disk (`workflow_yaml`), matched to a
-/// run's jobs by name.
+/// Talks to GitHub Actions through `gh`, scoped to one workflow (`workflow_file`)
+/// so the runs list, DAG, and logs stay consistent: the runs are that workflow's,
+/// and the DAG comes from its YAML on disk (`workflow_yaml`).
 pub struct GitHubProvider {
     runner: Box<dyn CommandRunner>,
     workflow_yaml: Option<String>,
+    workflow_file: Option<String>,
 }
 
 impl GitHubProvider {
-    pub fn new(runner: Box<dyn CommandRunner>, workflow_yaml: Option<String>) -> Self {
+    pub fn new(
+        runner: Box<dyn CommandRunner>,
+        workflow_yaml: Option<String>,
+        workflow_file: Option<String>,
+    ) -> Self {
         Self {
             runner,
             workflow_yaml,
+            workflow_file,
         }
     }
 
@@ -49,15 +55,20 @@ impl CiProvider for GitHubProvider {
     }
 
     async fn list_runs(&self, limit: usize) -> Result<Vec<CiRun>> {
-        let args = [
-            "run",
-            "list",
-            "-L",
-            &limit.to_string(),
-            "--json",
-            "databaseId,displayTitle,headBranch,headSha,status,conclusion,workflowName,createdAt,url",
-        ]
-        .map(str::to_owned);
+        let mut args = vec!["run".to_owned(), "list".to_owned()];
+        if let Some(file) = &self.workflow_file {
+            args.push("--workflow".to_owned());
+            args.push(file.clone());
+        }
+        args.extend(
+            [
+                "-L",
+                &limit.to_string(),
+                "--json",
+                "databaseId,displayTitle,headBranch,headSha,status,conclusion,workflowName,createdAt,url",
+            ]
+            .map(str::to_owned),
+        );
         let out = self.runner.run("gh", &args).await?;
         let raw: Vec<RunListItem> = serde_json::from_str(&out).map_err(|e| CiError::Parse {
             what: "gh run list".into(),
@@ -346,6 +357,7 @@ jobs:
         GitHubProvider::new(
             Box::new(RecordingRunner::new(responses)),
             Some(WORKFLOW.to_owned()),
+            Some("ci.yml".to_owned()),
         )
     }
 
