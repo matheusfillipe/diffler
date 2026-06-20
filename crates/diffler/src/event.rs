@@ -29,10 +29,14 @@ pub enum AppEvent {
         ok: bool,
         output: String,
     },
-    /// CI run list from a `diffler-ci` provider poll (`ci` module).
+    /// Branch-scoped CI run list from a provider poll.
     CiRuns(Vec<diffler_ci::CiRun>),
+    /// The checked-out branch's PR, fetched once per branch (not every poll).
+    CiPr(Option<diffler_ci::PullRequest>),
     /// A run's jobs + dependency DAG, mapped onto the graph view.
     CiRunDetail(diffler_ci::RunDetail),
+    /// A run's artifacts + annotations for the graph page's extras panel.
+    CiExtras(diffler_ci::RunExtras),
     /// An incremental job-log slice from a provider poll.
     CiLog {
         text: String,

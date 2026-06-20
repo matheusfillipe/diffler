@@ -4,7 +4,9 @@
 use async_trait::async_trait;
 
 use crate::error::Result;
-use crate::model::{Capabilities, CiRun, JobId, LogChunk, RunDetail, RunId};
+use crate::model::{
+    Capabilities, CiRun, JobId, LogChunk, PullRequest, RunDetail, RunExtras, RunId,
+};
 
 /// Which forge an adapter talks to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,4 +31,12 @@ pub trait CiProvider: Send {
     /// A slice of a job's log starting at `offset`. For `LogMode::Dump`
     /// providers the whole log returns once the job completes.
     async fn job_log(&self, run: &RunId, job: &JobId, offset: u64) -> Result<LogChunk>;
+
+    /// A run's artifacts and annotations, for the graph page's extras panel.
+    /// A provider that exposes neither returns the empty default.
+    async fn run_extras(&self, run: &RunId) -> Result<RunExtras>;
+
+    /// The pull/merge request for the checked-out branch, if one is open.
+    /// `None` when there's no PR or the provider can't resolve one.
+    async fn current_pr(&self) -> Result<Option<PullRequest>>;
 }

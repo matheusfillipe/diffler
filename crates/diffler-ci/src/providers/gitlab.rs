@@ -9,7 +9,8 @@ use serde::Deserialize;
 use crate::error::{CiError, Result};
 use crate::exec::CommandRunner;
 use crate::model::{
-    Capabilities, CiJob, CiRun, DagSource, JobId, JobStatus, LogChunk, LogMode, RunDetail, RunId,
+    Capabilities, CiJob, CiRun, DagSource, JobId, JobStatus, LogChunk, LogMode, PullRequest,
+    RunDetail, RunExtras, RunId,
 };
 use crate::provider::{CiProvider, ProviderKind};
 
@@ -100,6 +101,16 @@ impl CiProvider for GitLabProvider {
             text: trace[start..].to_owned(),
             done: false,
         })
+    }
+
+    /// GitLab exposes neither run artifacts nor annotations through this adapter.
+    async fn run_extras(&self, _run: &RunId) -> Result<RunExtras> {
+        Ok(RunExtras::default())
+    }
+
+    /// Merge-request resolution isn't wired for the GitLab adapter yet.
+    async fn current_pr(&self) -> Result<Option<PullRequest>> {
+        Ok(None)
     }
 }
 
