@@ -1,7 +1,8 @@
-//! GitHub Actions adapter (CLI-only via `gh`). The dependency DAG comes from a
-//! run's workflow YAML `jobs.<id>.needs` (the run API omits it); status overlays
-//! from `gh run view`. Logs come from `gh run view --log` paired with the jobs
-//! API's step list (for step boundaries); artifacts and annotations from `gh api`.
+//! GitHub Actions adapter (via `gh`). The dependency DAG comes from a run's
+//! workflow YAML `jobs.<id>.needs` (the run API omits it); status overlays from
+//! `gh run view`. Logs, steps, artifacts, and annotations all come from the REST
+//! API via `gh api` — the job-log archive 404s until the job finishes, so an
+//! in-progress job returns its live step states with the content still empty.
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -178,12 +179,16 @@ impl CiProvider for GitHubProvider {
     }
 
     async fn job_log(&self, run: &RunId, job: &JobId, offset: u64) -> Result<LogChunk> {
-        // resolve the run-job database id for this job (matrix jobs expand into
-        // several legs; the first matching leg is shown)
-        let view_args = ["run", "view", &run.0, "--json", "jobs"].map(str::to_owned);
-        let out = self.runner.run("gh", &view_args).await?;
+        // resolve the run-job (matrix jobs expand into several legs; the first
+        // matching leg is shown) and its live step states straight from the API
+        let out = self
+            .api(&format!(
+                "repos/{{owner}}/{{repo}}/actions/runs/{}/jobs",
+                run.0
+            ))
+            .await?;
         let view: JobList = serde_json::from_str(&out).map_err(|e| CiError::Parse {
-            what: "gh run view".into(),
+            what: "gh api jobs".into(),
             message: e.to_string(),
         })?;
         let job = view
@@ -192,34 +197,41 @@ impl CiProvider for GitHubProvider {
             .find(|j| j.name == job.0 || job_matches(&j.name, &job.0, &job.0))
             .ok_or_else(|| CiError::NotFound(format!("job {} in run {}", job.0, run.0)))?;
         let steps = job.steps.iter().map(RunStep::to_meta).collect();
+        let done = job.status == "completed";
 
-        // the `--log` step column is the literal junk `UNKNOWN STEP`, so the host
-        // groups by step via `steps` (timestamp-bucketed), not that column
-        let log_args = [
-            "run",
-            "view",
-            &run.0,
-            "--log",
-            "--job",
-            &job.database_id.to_string(),
-        ]
-        .map(str::to_owned);
-        let full = self.runner.run("gh", &log_args).await?;
-        // dump providers re-send the whole log; honor `offset` so a re-poll that
-        // races `done` yields the tail (empty), never a duplicated transcript
-        let mut start = usize::try_from(offset)
-            .unwrap_or(usize::MAX)
-            .min(full.len());
-        while start > 0 && !full.is_char_boundary(start) {
-            start -= 1;
+        // the log archive (`jobs/{id}/logs`) only exists once the job finishes —
+        // it 404s while running. so for an in-progress job, return the live step
+        // states with no text and keep polling; the content fills in on completion
+        let log_path = format!(
+            "repos/{{owner}}/{{repo}}/actions/jobs/{}/logs",
+            job.database_id
+        );
+        match self.api(&log_path).await {
+            Ok(full) => {
+                // honor `offset` so a re-poll racing `done` yields the tail
+                // (empty), never a duplicated transcript
+                let mut start = usize::try_from(offset)
+                    .unwrap_or(usize::MAX)
+                    .min(full.len());
+                while start > 0 && !full.is_char_boundary(start) {
+                    start -= 1;
+                }
+                let next_offset = full.len() as u64;
+                Ok(LogChunk {
+                    text: full.get(start..).unwrap_or_default().to_owned(),
+                    steps,
+                    next_offset,
+                    done,
+                })
+            }
+            Err(_) if !done => Ok(LogChunk {
+                text: String::new(),
+                steps,
+                next_offset: offset,
+                done: false,
+            }),
+            Err(err) => Err(err),
         }
-        let next_offset = full.len() as u64;
-        Ok(LogChunk {
-            text: full.get(start..).unwrap_or_default().to_owned(),
-            steps,
-            next_offset,
-            done: true,
-        })
     }
 
     async fn run_extras(&self, run: &RunId) -> Result<RunExtras> {
@@ -389,8 +401,8 @@ impl RunListItem {
     }
 }
 
-/// `gh run view --json jobs` returns only the jobs array, so logs parse this
-/// narrow shape rather than the full [`RunView`] (which needs the meta fields).
+/// The jobs array alone (from the REST `actions/runs/{id}/jobs` response, whose
+/// `total_count` is ignored) — the run meta in [`RunView`] isn't needed for logs.
 #[derive(Deserialize)]
 struct JobList {
     jobs: Vec<RunJob>,
@@ -430,9 +442,11 @@ impl RunView {
     }
 }
 
+// Parses both `gh run view --json jobs` (camelCase) and the REST jobs API
+// (snake_case `id`/`started_at`/…), so the same shape serves the DAG and logs.
 #[derive(Deserialize)]
 struct RunJob {
-    #[serde(rename = "databaseId")]
+    #[serde(rename = "databaseId", alias = "id")]
     database_id: u64,
     name: String,
     status: String,
@@ -446,9 +460,9 @@ struct RunStep {
     name: String,
     status: String,
     conclusion: Option<String>,
-    #[serde(rename = "startedAt")]
+    #[serde(rename = "startedAt", alias = "started_at")]
     started_at: Option<String>,
-    #[serde(rename = "completedAt")]
+    #[serde(rename = "completedAt", alias = "completed_at")]
     completed_at: Option<String>,
 }
 
@@ -673,17 +687,37 @@ jobs:
     }
 
     #[tokio::test]
-    async fn job_log_resolves_the_run_job_and_dumps() {
-        // `gh run view --json jobs` returns only the jobs array — parsing must
-        // not require the run meta fields (headBranch, …)
-        let view = r#"{"jobs":[{"databaseId":7,"name":"lint","status":"completed","conclusion":"success"}]}"#;
-        let chunk = provider(&[("--log", "line one\nline two\n"), ("run view", view)])
+    async fn job_log_fetches_a_completed_job_from_the_rest_api() {
+        // the REST jobs response uses `id` (not `databaseId`) — the alias covers it
+        let jobs = r#"{"jobs":[{"id":7,"name":"lint","status":"completed","conclusion":"success",
+            "steps":[{"name":"Run x","status":"completed","conclusion":"success",
+                      "started_at":"2026-06-20T00:00:00Z","completed_at":"2026-06-20T00:00:03Z"}]}]}"#;
+        let chunk = provider(&[("runs/42/jobs", jobs), ("/logs", "line one\nline two\n")])
             .job_log(&RunId("42".into()), &JobId("lint".into()), 0)
             .await
             .expect("log");
         assert!(chunk.text.contains("line one"));
         assert!(chunk.done);
+        assert_eq!(chunk.steps.len(), 1);
+        assert_eq!(chunk.steps[0].duration_secs, Some(3));
         assert_eq!(chunk.next_offset, chunk.text.len() as u64);
+    }
+
+    #[tokio::test]
+    async fn job_log_in_progress_returns_live_steps_without_text() {
+        // the log archive 404s mid-run (here: no `/logs` response, so empty); the
+        // job stays in_progress → live steps but no text, and polling continues
+        let jobs = r#"{"jobs":[{"id":7,"name":"lint","status":"in_progress","conclusion":null,
+            "steps":[{"name":"Run x","status":"in_progress","conclusion":null,
+                      "started_at":"2026-06-20T00:00:00Z","completed_at":null}]}]}"#;
+        let chunk = provider(&[("runs/42/jobs", jobs)])
+            .job_log(&RunId("42".into()), &JobId("lint".into()), 0)
+            .await
+            .expect("log");
+        assert!(chunk.text.is_empty(), "no log archive while running");
+        assert!(!chunk.done, "keep polling until the job completes");
+        assert_eq!(chunk.steps.len(), 1, "live step states are shown");
+        assert_eq!(chunk.steps[0].status, JobStatus::Running);
     }
 
     #[tokio::test]

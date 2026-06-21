@@ -1,10 +1,10 @@
-//! The CI job-log view: the `gh ... --log` output grouped into the job's real
-//! steps. Each line is `<job>\t<step>\t<timestamp> <text>`, but the step column
-//! is junk (`gh` emits a literal `UNKNOWN STEP`) and no API exposes per-step log
-//! content — so lines are bucketed into the step metadata (name/status/timing
-//! from the jobs API) by timestamp: a line belongs to the last step whose start
-//! it's at or after. Without step metadata (e.g. GitLab) it falls back to the
-//! runner's `##[group]` markers. Folded by default; keymap-driven like the diff.
+//! The CI job-log view: a job's log grouped into its real steps. Each line is
+//! `<timestamp> <text>` (the REST log; the parser also tolerates `gh`'s
+//! `<job>\t<step>\t<timestamp>` form). No API exposes per-step log content, so
+//! lines are bucketed into the step metadata (name/status/timing from the jobs
+//! API) by timestamp: a line belongs to the last step whose start it's at or
+//! after. Without step metadata (e.g. GitLab) it falls back to the runner's
+//! `##[group]` markers. Folded by default; keymap-driven like the diff.
 
 use diffler_ci::{JobStatus, LogStepMeta, ts_sort_key};
 use ratatui::layout::Rect;
@@ -37,9 +37,9 @@ pub struct LogsView {
 }
 
 impl LogsView {
-    /// Group `gh ... --log` output into folded steps. With step metadata, lines
-    /// are bucketed by timestamp into the real steps; without it, sections come
-    /// from `##[group]` markers. Folded by default.
+    /// Group a job's log into folded steps. With step metadata, lines are
+    /// bucketed by timestamp into the real steps; without it, sections come from
+    /// `##[group]` markers. Folded by default.
     pub fn parse(raw: &str, metas: &[LogStepMeta]) -> Self {
         let steps = if metas.is_empty() {
             sections_by_group(raw)
