@@ -265,6 +265,8 @@ pub struct App {
     /// from. Parsed into [`logs`](Self::logs) for the foldable view.
     log_text: String,
     log_offset: u64,
+    /// The opened job's step boundaries, used to bucket `log_text` into steps.
+    log_steps: Vec<diffler_ci::LogStepMeta>,
     /// The foldable step view over `log_text`, present while the Logs screen is up.
     pub logs: Option<logs::LogsView>,
     /// Set once a log chunk reports the job's log is complete, so polling stops
@@ -407,6 +409,7 @@ impl App {
             open_job: None,
             log_text: String::new(),
             log_offset: 0,
+            log_steps: Vec::new(),
             logs: None,
             log_done: false,
             modal: None,
@@ -550,17 +553,11 @@ impl App {
             }
             AppEvent::CiLog {
                 text,
+                steps,
                 next_offset,
                 done,
             } => {
-                self.log_text.push_str(&text);
-                self.log_offset = next_offset;
-                self.log_done = done;
-                let rebuilt = logs::LogsView::parse(&self.log_text);
-                self.logs = Some(match self.logs.take() {
-                    Some(prev) => prev.carry_into(rebuilt),
-                    None => rebuilt,
-                });
+                self.on_ci_log(&text, steps, next_offset, done);
                 Flow::Continue
             }
             AppEvent::CiError(message) => {
@@ -643,8 +640,49 @@ impl App {
             Screen::Status => self.status_mouse(gesture),
             Screen::Diff => self.diff_mouse(gesture),
             Screen::Log => self.log_mouse(gesture),
-            // the CI screens are keyboard-driven; Graph consumes mouse above
-            Screen::Graph | Screen::Runs | Screen::Logs => {}
+            Screen::Logs => self.logs_mouse(gesture),
+            // the Runs/Graph screens are keyboard-driven
+            Screen::Graph | Screen::Runs => {}
+        }
+    }
+
+    /// Mouse on the logs screen: wheel scrolls the cursor, click positions it,
+    /// double-click folds the step, drag extends a selection — mirroring the
+    /// diff/log screens so the foldable log behaves the same under the pointer.
+    fn logs_mouse(&mut self, gesture: MouseGesture) {
+        let Some(view) = self.logs.as_mut() else {
+            return;
+        };
+        let last = view.rows().len().saturating_sub(1);
+        match gesture {
+            MouseGesture::Scroll { down, .. } => {
+                let delta = if down { 3 } else { -3 };
+                view.cursor = view.cursor.saturating_add_signed(delta).min(last);
+            }
+            MouseGesture::Press { col, row } => {
+                if let Some(i) = hit_index(view.body, view.scroll, col, row).filter(|i| *i <= last)
+                {
+                    view.cursor = i;
+                    view.visual_anchor = None;
+                }
+            }
+            MouseGesture::DoublePress { col, row } => {
+                if let Some(i) = hit_index(view.body, view.scroll, col, row).filter(|i| *i <= last)
+                {
+                    view.cursor = i;
+                    view.toggle_fold_at_cursor();
+                }
+            }
+            MouseGesture::Drag { col, row } => {
+                if let Some(i) = hit_index(view.body, view.scroll, col, row).filter(|i| *i <= last)
+                {
+                    if view.visual_anchor.is_none() {
+                        view.visual_anchor = Some(view.cursor);
+                    }
+                    view.cursor = i;
+                }
+            }
+            MouseGesture::Cancel => view.visual_anchor = None,
         }
     }
 
@@ -987,6 +1025,28 @@ impl App {
         self.pending_ci = Some(CiRequest::Detail(id));
     }
 
+    /// Append a job-log chunk, refresh the step metadata, and rebuild the
+    /// foldable view, carrying the prior fold state across the re-poll.
+    fn on_ci_log(
+        &mut self,
+        text: &str,
+        steps: Vec<diffler_ci::LogStepMeta>,
+        offset: u64,
+        done: bool,
+    ) {
+        self.log_text.push_str(text);
+        self.log_offset = offset;
+        self.log_done = done;
+        if !steps.is_empty() {
+            self.log_steps = steps;
+        }
+        let rebuilt = logs::LogsView::parse(&self.log_text, &self.log_steps);
+        self.logs = Some(match self.logs.take() {
+            Some(prev) => prev.carry_into(rebuilt),
+            None => rebuilt,
+        });
+    }
+
     /// Fold a branch-scoped runs poll into the inline section, then resolve the
     /// branch's PR once (not every poll) via the single `pending_ci` slot.
     fn on_ci_runs(&mut self, runs: Vec<diffler_ci::CiRun>) {
@@ -1023,6 +1083,7 @@ impl App {
         self.open_job = Some(job.clone());
         self.log_text.clear();
         self.log_offset = 0;
+        self.log_steps.clear();
         self.logs = None;
         self.log_done = false;
         self.push_screen(Screen::Logs);
@@ -1813,6 +1874,35 @@ mod tests {
         let fixture = standard_fixture();
         let app = App::new(fixture.review(), LoadedConfig::default());
         (fixture, app)
+    }
+
+    #[test]
+    fn logs_mouse_scrolls_and_double_click_folds() {
+        let (_fixture, mut app) = app();
+        let raw = "j\tUNKNOWN STEP\t2026-06-20T00:00:00Z ##[group]Build\n\
+                   j\tUNKNOWN STEP\t2026-06-20T00:00:01Z compiling\n\
+                   j\tUNKNOWN STEP\t2026-06-20T00:00:02Z ##[group]Test\n\
+                   j\tUNKNOWN STEP\t2026-06-20T00:00:03Z running\n";
+        let mut view = logs::LogsView::parse(raw, &[]);
+        view.body = ratatui::layout::Rect::new(0, 1, 40, 10);
+        app.logs = Some(view);
+
+        app.logs_mouse(MouseGesture::Scroll {
+            col: 1,
+            row: 2,
+            down: true,
+        });
+        assert_eq!(
+            app.logs.as_ref().expect("view").cursor,
+            1,
+            "wheel moved cursor"
+        );
+
+        // double-click the Build header (top body row) unfolds it
+        app.logs_mouse(MouseGesture::DoublePress { col: 2, row: 1 });
+        let view = app.logs.as_ref().expect("view");
+        assert_eq!(view.cursor, 0, "click re-seated the cursor on Build");
+        assert!(!view.steps[0].folded, "double-click unfolded the step");
     }
 
     fn type_text(app: &mut App, text: &str) {

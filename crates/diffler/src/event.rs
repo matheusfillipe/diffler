@@ -37,9 +37,11 @@ pub enum AppEvent {
     CiRunDetail(diffler_ci::RunDetail),
     /// A run's artifacts + annotations for the graph page's extras panel.
     CiExtras(diffler_ci::RunExtras),
-    /// An incremental job-log slice from a provider poll.
+    /// An incremental job-log slice from a provider poll, with the job's step
+    /// boundaries (empty when the provider exposes none).
     CiLog {
         text: String,
+        steps: Vec<diffler_ci::LogStepMeta>,
         next_offset: u64,
         done: bool,
     },

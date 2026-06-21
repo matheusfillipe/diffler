@@ -91,14 +91,42 @@ pub struct RunDetail {
     pub jobs: Vec<CiJob>,
 }
 
+/// One step of a job, for grouping the log into the same collapsible units the
+/// forge UI shows. The public API exposes no per-step log *content*, so the host
+/// buckets log lines into steps by timestamp (`start_key` ≤ a line's timestamp).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogStepMeta {
+    pub name: String,
+    pub status: JobStatus,
+    /// [`ts_sort_key`] of the step's start, the lower bound of its log lines.
+    pub start_key: u64,
+    /// Wall-clock seconds the step ran, when both endpoints are known.
+    pub duration_secs: Option<i64>,
+}
+
 /// An incremental slice of a job log. `next_offset` is where the next poll
 /// resumes; `done` is set once the job has finished and the log is complete.
-/// This unifies streaming, polling, and one-shot-dump log sources.
+/// `steps` carries the job's step boundaries when the provider exposes them
+/// (empty otherwise). This unifies streaming, polling, and one-shot-dump sources.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogChunk {
     pub text: String,
+    pub steps: Vec<LogStepMeta>,
     pub next_offset: u64,
     pub done: bool,
+}
+
+/// A coarse chronological sort key from an ISO-8601 timestamp: its first 14
+/// digits (`YYYYMMDDHHMMSS`), so a fractional-second line key compares against a
+/// second-resolution step key without parsing. `0` when there aren't 14 digits.
+#[must_use]
+pub fn ts_sort_key(iso: &str) -> u64 {
+    let digits: String = iso.chars().filter(char::is_ascii_digit).take(14).collect();
+    if digits.len() == 14 {
+        digits.parse().unwrap_or(0)
+    } else {
+        0
+    }
 }
 
 /// The pull/merge request for the checked-out branch, shown beside the runs so

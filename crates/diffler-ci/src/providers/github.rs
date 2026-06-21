@@ -1,7 +1,7 @@
 //! GitHub Actions adapter (CLI-only via `gh`). The dependency DAG comes from a
 //! run's workflow YAML `jobs.<id>.needs` (the run API omits it); status overlays
-//! from `gh run view`. Logs come from `gh run view --log` (step-delimited);
-//! artifacts and annotations from the REST API via `gh api`.
+//! from `gh run view`. Logs come from `gh run view --log` paired with the jobs
+//! API's step list (for step boundaries); artifacts and annotations from `gh api`.
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -10,7 +10,7 @@ use crate::error::{CiError, Result};
 use crate::exec::CommandRunner;
 use crate::model::{
     Annotation, AnnotationLevel, Artifact, Capabilities, CiJob, CiRun, DagSource, JobId, JobStatus,
-    LogChunk, LogMode, PullRequest, RunDetail, RunExtras, RunId,
+    LogChunk, LogMode, LogStepMeta, PullRequest, RunDetail, RunExtras, RunId, ts_sort_key,
 };
 use crate::provider::{CiProvider, ProviderKind};
 
@@ -177,7 +177,7 @@ impl CiProvider for GitHubProvider {
         })
     }
 
-    async fn job_log(&self, run: &RunId, job: &JobId, _offset: u64) -> Result<LogChunk> {
+    async fn job_log(&self, run: &RunId, job: &JobId, offset: u64) -> Result<LogChunk> {
         // resolve the run-job database id for this job (matrix jobs expand into
         // several legs; the first matching leg is shown)
         let view_args = ["run", "view", &run.0, "--json", "jobs"].map(str::to_owned);
@@ -186,21 +186,37 @@ impl CiProvider for GitHubProvider {
             what: "gh run view".into(),
             message: e.to_string(),
         })?;
-        let db_id = view
+        let job = view
             .jobs
             .iter()
             .find(|j| j.name == job.0 || job_matches(&j.name, &job.0, &job.0))
-            .map(|j| j.database_id)
             .ok_or_else(|| CiError::NotFound(format!("job {} in run {}", job.0, run.0)))?;
+        let steps = job.steps.iter().map(RunStep::to_meta).collect();
 
-        // `--log` prefixes each line with `<job>\t<step>\t<timestamp>`, so the
-        // host can group the log into collapsible steps
-        let log_args =
-            ["run", "view", &run.0, "--log", "--job", &db_id.to_string()].map(str::to_owned);
-        let text = self.runner.run("gh", &log_args).await?;
-        let next_offset = text.len() as u64;
+        // the `--log` step column is the literal junk `UNKNOWN STEP`, so the host
+        // groups by step via `steps` (timestamp-bucketed), not that column
+        let log_args = [
+            "run",
+            "view",
+            &run.0,
+            "--log",
+            "--job",
+            &job.database_id.to_string(),
+        ]
+        .map(str::to_owned);
+        let full = self.runner.run("gh", &log_args).await?;
+        // dump providers re-send the whole log; honor `offset` so a re-poll that
+        // races `done` yields the tail (empty), never a duplicated transcript
+        let mut start = usize::try_from(offset)
+            .unwrap_or(usize::MAX)
+            .min(full.len());
+        while start > 0 && !full.is_char_boundary(start) {
+            start -= 1;
+        }
+        let next_offset = full.len() as u64;
         Ok(LogChunk {
-            text,
+            text: full.get(start..).unwrap_or_default().to_owned(),
+            steps,
             next_offset,
             done: true,
         })
@@ -421,6 +437,42 @@ struct RunJob {
     name: String,
     status: String,
     conclusion: Option<String>,
+    #[serde(default)]
+    steps: Vec<RunStep>,
+}
+
+#[derive(Deserialize)]
+struct RunStep {
+    name: String,
+    status: String,
+    conclusion: Option<String>,
+    #[serde(rename = "startedAt")]
+    started_at: Option<String>,
+    #[serde(rename = "completedAt")]
+    completed_at: Option<String>,
+}
+
+impl RunStep {
+    fn to_meta(&self) -> LogStepMeta {
+        let started = self.started_at.as_deref().and_then(parse_created);
+        let dur = started
+            .zip(self.completed_at.as_deref().and_then(parse_created))
+            .map(|(start, end)| (end - start).whole_seconds());
+        // a skipped/not-started step gets key 0 so it claims no log lines: GitHub
+        // gives those a null or zero (`0001-…`) start that would otherwise sort
+        // below real steps and, mid-list, swallow an earlier step's output
+        let ran = started.is_some_and(|t| t.year() >= 2000);
+        LogStepMeta {
+            name: self.name.clone(),
+            status: map_status(&self.status, self.conclusion.as_deref()),
+            start_key: if ran {
+                self.started_at.as_deref().map(ts_sort_key).unwrap_or(0)
+            } else {
+                0
+            },
+            duration_secs: dur,
+        }
+    }
 }
 
 #[derive(Deserialize)]
