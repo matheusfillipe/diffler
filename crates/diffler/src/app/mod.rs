@@ -228,7 +228,9 @@ pub enum CiRequest {
 /// not a subprocess) and config-file presence.
 fn detect_ci(review: &Review, ci: &crate::config::CiConfig) -> Option<diffler_ci::Detected> {
     let remote = review.vcs.remote_url("origin").ok().flatten();
+    // a forge with no usable CLI installed degrades to no CI, not a poll-error loop
     crate::ci::detect_for_repo(&review.repo_root, remote.as_deref(), ci)
+        .filter(crate::ci::provider_available)
 }
 
 pub struct App {

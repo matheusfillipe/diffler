@@ -35,6 +35,24 @@ pub fn detect_for_repo(
     Some(detected)
 }
 
+/// Whether the forge CLI a provider drives is installed, so detection can
+/// disable CI (hide the section, stop polling) instead of erroring on every
+/// poll when `gh`/`glab` isn't on the host.
+pub fn provider_available(detected: &Detected) -> bool {
+    let cli = match detected.kind {
+        ProviderKind::GitHub => "gh",
+        ProviderKind::GitLab => "glab",
+    };
+    std::env::var_os("PATH").is_some_and(|path| on_path(cli, &path))
+}
+
+/// Whether `program` resolves in one of `path`'s directories (with a `.exe`
+/// fallback on Windows). Split from [`provider_available`] for testability.
+fn on_path(program: &str, path: &std::ffi::OsStr) -> bool {
+    std::env::split_paths(path)
+        .any(|dir| dir.join(program).is_file() || dir.join(format!("{program}.exe")).is_file())
+}
+
 /// Pull the host out of a git remote URL: `git@host:owner/repo.git`,
 /// `https://host/owner/repo`, or `ssh://git@host:port/owner/repo`.
 fn parse_host(url: &str) -> Option<String> {
@@ -129,6 +147,13 @@ fn node_status(status: JobStatus) -> NodeStatus {
 mod tests {
     use super::*;
     use diffler_ci::{CiJob, CiRun, JobId, RunId};
+
+    #[test]
+    fn on_path_finds_files_in_listed_dirs_only() {
+        let dir = std::ffi::OsString::from(env!("CARGO_MANIFEST_DIR"));
+        assert!(on_path("Cargo.toml", &dir), "a file in the dir resolves");
+        assert!(!on_path("definitely-not-a-binary-xyz", &dir));
+    }
 
     fn run() -> CiRun {
         CiRun {
