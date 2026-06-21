@@ -1,16 +1,20 @@
-//! The CI job-log view: the `gh ... --log` output parsed into collapsible
-//! sections. Each line is `<job>\t<step>\t<timestamp> <text>`, but the step
-//! column is unreliable (`gh` emits a literal `UNKNOWN STEP`), so sections come
-//! from the runner's own `##[group]`/`##[endgroup]` markers in the text — the
-//! same collapsible units the GitHub web log shows. Folded by default. The
-//! screen is keymap-driven (motions/search/visual/yank) like the diff screen.
+//! The CI job-log view: the `gh ... --log` output grouped into the job's real
+//! steps. Each line is `<job>\t<step>\t<timestamp> <text>`, but the step column
+//! is junk (`gh` emits a literal `UNKNOWN STEP`) and no API exposes per-step log
+//! content — so lines are bucketed into the step metadata (name/status/timing
+//! from the jobs API) by timestamp: a line belongs to the last step whose start
+//! it's at or after. Without step metadata (e.g. GitLab) it falls back to the
+//! runner's `##[group]` markers. Folded by default; keymap-driven like the diff.
 
+use diffler_ci::{JobStatus, LogStepMeta, ts_sort_key};
 use ratatui::layout::Rect;
 
-/// One collapsible section: its `##[group]` name and the log lines under it.
-/// The name is empty for lines that precede the first group.
+/// One collapsible step: its name, status, run time, and log lines. `name` is
+/// empty (and `status` `None`) for the leading section of pre-step output.
 pub struct LogStep {
     pub name: String,
+    pub status: Option<JobStatus>,
+    pub duration_secs: Option<i64>,
     pub lines: Vec<String>,
     pub folded: bool,
 }
@@ -33,41 +37,15 @@ pub struct LogsView {
 }
 
 impl LogsView {
-    /// Parse `gh ... --log` output into collapsible sections by `##[group]`
-    /// markers, folded by default. A `##[group]NAME` opens a section; an
-    /// `##[endgroup]` marker is dropped; lines before the first group collect
-    /// into a leading unnamed section.
-    pub fn parse(raw: &str) -> Self {
-        let mut steps: Vec<LogStep> = Vec::new();
-        let mut leading: Vec<String> = Vec::new();
-        for raw_line in raw.lines() {
-            let content = strip_ansi(&line_content(raw_line));
-            if let Some(name) = content.strip_prefix("##[group]") {
-                steps.push(LogStep {
-                    name: name.trim().to_owned(),
-                    lines: Vec::new(),
-                    folded: true,
-                });
-                continue;
-            }
-            if content.trim_end() == "##[endgroup]" {
-                continue;
-            }
-            match steps.last_mut() {
-                Some(step) => step.lines.push(content),
-                None => leading.push(content),
-            }
-        }
-        if !leading.is_empty() {
-            steps.insert(
-                0,
-                LogStep {
-                    name: String::new(),
-                    lines: leading,
-                    folded: true,
-                },
-            );
-        }
+    /// Group `gh ... --log` output into folded steps. With step metadata, lines
+    /// are bucketed by timestamp into the real steps; without it, sections come
+    /// from `##[group]` markers. Folded by default.
+    pub fn parse(raw: &str, metas: &[LogStepMeta]) -> Self {
+        let steps = if metas.is_empty() {
+            sections_by_group(raw)
+        } else {
+            sections_by_step(raw, metas)
+        };
         Self {
             steps,
             cursor: 0,
@@ -170,27 +148,106 @@ impl LogsView {
     }
 }
 
-/// The displayable text of a `gh --log` line `<job>\t<step>\t<timestamp> <text>`:
-/// drop the job/step prefix (the step column is unreliable) and the timestamp.
-/// A line without that tab structure is timestamp-stripped as-is.
-fn line_content(line: &str) -> String {
-    let mut fields = line.splitn(3, '\t');
-    match (fields.next(), fields.next(), fields.next()) {
-        (Some(_job), Some(_step), Some(rest)) => strip_timestamp(rest),
-        _ => strip_timestamp(line),
+/// Bucket lines into the job's real steps by timestamp: a line joins the last
+/// step whose start it's at or after; earlier lines form a leading section.
+fn sections_by_step(raw: &str, metas: &[LogStepMeta]) -> Vec<LogStep> {
+    let mut leading: Vec<String> = Vec::new();
+    let mut buckets: Vec<Vec<String>> = vec![Vec::new(); metas.len()];
+    for raw_line in raw.lines() {
+        let (key, content) = line_key_and_content(raw_line);
+        // a line joins the last step that *ran* (key > 0) at or before it; skipped
+        // steps (key 0) claim nothing, and started steps are in ascending order
+        match metas
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.start_key > 0 && m.start_key <= key)
+            .map(|(i, _)| i)
+            .next_back()
+        {
+            Some(i) => {
+                if let Some(bucket) = buckets.get_mut(i) {
+                    bucket.push(content);
+                }
+            }
+            None => leading.push(content),
+        }
     }
+    let mut steps = Vec::new();
+    if !leading.is_empty() {
+        steps.push(LogStep {
+            name: String::new(),
+            status: None,
+            duration_secs: None,
+            lines: leading,
+            folded: true,
+        });
+    }
+    for (meta, lines) in metas.iter().zip(buckets) {
+        steps.push(LogStep {
+            name: meta.name.clone(),
+            status: Some(meta.status),
+            duration_secs: meta.duration_secs,
+            lines,
+            folded: true,
+        });
+    }
+    steps
 }
 
-/// Drop a leading ISO-8601 timestamp token (`2026-…Z `) if present.
-fn strip_timestamp(s: &str) -> String {
-    if let Some((head, rest)) = s.split_once(' ')
-        && head.ends_with('Z')
-        && head.len() >= 20
-        && head.starts_with(|c: char| c.is_ascii_digit())
-    {
-        rest.to_owned()
-    } else {
-        s.to_owned()
+/// Fallback grouping by the runner's `##[group]`/`##[endgroup]` markers, for
+/// providers that don't expose step metadata.
+fn sections_by_group(raw: &str) -> Vec<LogStep> {
+    let mut steps: Vec<LogStep> = Vec::new();
+    let mut leading: Vec<String> = Vec::new();
+    for raw_line in raw.lines() {
+        let (_, content) = line_key_and_content(raw_line);
+        if let Some(name) = content.strip_prefix("##[group]") {
+            steps.push(LogStep {
+                name: name.trim().to_owned(),
+                status: None,
+                duration_secs: None,
+                lines: Vec::new(),
+                folded: true,
+            });
+            continue;
+        }
+        if content.trim_end() == "##[endgroup]" {
+            continue;
+        }
+        match steps.last_mut() {
+            Some(step) => step.lines.push(content),
+            None => leading.push(content),
+        }
+    }
+    if !leading.is_empty() {
+        steps.insert(
+            0,
+            LogStep {
+                name: String::new(),
+                status: None,
+                duration_secs: None,
+                lines: leading,
+                folded: true,
+            },
+        );
+    }
+    steps
+}
+
+/// A `gh --log` line `<job>\t<step>\t<timestamp> <text>` split into its
+/// timestamp sort key (for step bucketing) and display text (prefix, timestamp,
+/// and ANSI removed). A line without the tab/timestamp structure keys to 0.
+fn line_key_and_content(line: &str) -> (u64, String) {
+    let field = line.splitn(3, '\t').nth(2).unwrap_or(line);
+    match field.split_once(' ') {
+        Some((head, rest))
+            if head.ends_with('Z')
+                && head.len() >= 20
+                && head.starts_with(|c: char| c.is_ascii_digit()) =>
+        {
+            (ts_sort_key(head), strip_ansi(rest))
+        }
+        _ => (0, strip_ansi(field)),
     }
 }
 
@@ -229,7 +286,7 @@ mod tests {
 
     #[test]
     fn parse_sections_by_group_strips_prefix_and_ansi() {
-        let view = LogsView::parse(RAW);
+        let view = LogsView::parse(RAW, &[]);
         assert_eq!(view.steps.len(), 3);
         assert_eq!(view.steps[0].name, "", "pre-group lines lead unnamed");
         assert_eq!(view.steps[0].lines, vec!["runner v2.335.1"]);
@@ -242,7 +299,7 @@ mod tests {
 
     #[test]
     fn folded_view_shows_only_headers() {
-        let view = LogsView::parse(RAW);
+        let view = LogsView::parse(RAW, &[]);
         assert_eq!(
             view.rows(),
             vec![LogsRow::Step(0), LogsRow::Step(1), LogsRow::Step(2)]
@@ -251,7 +308,7 @@ mod tests {
 
     #[test]
     fn toggle_fold_reveals_lines_and_reseats_cursor() {
-        let mut view = LogsView::parse(RAW);
+        let mut view = LogsView::parse(RAW, &[]);
         view.cursor = 1; // the Build section header
         view.toggle_fold_at_cursor();
         assert_eq!(
@@ -274,7 +331,7 @@ mod tests {
 
     #[test]
     fn selection_text_joins_the_visual_range() {
-        let mut view = LogsView::parse(RAW);
+        let mut view = LogsView::parse(RAW, &[]);
         view.cursor = 1;
         view.toggle_fold_at_cursor();
         view.visual_anchor = Some(2);
@@ -284,7 +341,7 @@ mod tests {
 
     #[test]
     fn folding_clamps_a_stale_visual_anchor() {
-        let mut view = LogsView::parse(RAW);
+        let mut view = LogsView::parse(RAW, &[]);
         view.cursor = 1;
         view.toggle_fold_at_cursor();
         view.visual_anchor = Some(3);
@@ -296,11 +353,76 @@ mod tests {
 
     #[test]
     fn carry_into_preserves_fold_state_by_name() {
-        let mut prev = LogsView::parse(RAW);
+        let mut prev = LogsView::parse(RAW, &[]);
         prev.cursor = 1;
         prev.toggle_fold_at_cursor();
-        let next = prev.carry_into(LogsView::parse(RAW));
+        let next = prev.carry_into(LogsView::parse(RAW, &[]));
         assert!(!next.steps[1].folded, "Build stays unfolded across re-poll");
         assert!(next.steps[2].folded);
+    }
+
+    #[test]
+    fn step_metadata_buckets_lines_by_timestamp() {
+        let metas = vec![
+            LogStepMeta {
+                name: "Set up job".into(),
+                status: JobStatus::Ok,
+                start_key: ts_sort_key("2026-06-20T00:00:00Z"),
+                duration_secs: Some(1),
+            },
+            LogStepMeta {
+                name: "Run build".into(),
+                status: JobStatus::Failed,
+                start_key: ts_sort_key("2026-06-20T00:00:05Z"),
+                duration_secs: Some(13),
+            },
+        ];
+        // the `##[group]` markers are ignored when real steps drive the grouping
+        let view = LogsView::parse(RAW, &metas);
+        assert_eq!(view.steps.len(), 2, "one section per real step, no leading");
+        assert_eq!(view.steps[0].name, "Set up job");
+        assert_eq!(view.steps[0].status, Some(JobStatus::Ok));
+        // lines ts 00→04 fall in step 1; ts 05+ in step 2
+        assert!(view.steps[0].lines.iter().any(|l| l == "runner v2.335.1"));
+        assert!(view.steps[0].lines.iter().any(|l| l == "compiling…"));
+        assert_eq!(view.steps[1].name, "Run build");
+        assert_eq!(view.steps[1].duration_secs, Some(13));
+        assert!(view.steps[1].lines.iter().any(|l| l == "running"));
+    }
+
+    #[test]
+    fn a_skipped_step_mid_list_claims_no_lines() {
+        // a skipped step (start_key 0) sits between two real steps; its zero key
+        // must not swallow the first step's output
+        let metas = vec![
+            LogStepMeta {
+                name: "Set up job".into(),
+                status: JobStatus::Ok,
+                start_key: ts_sort_key("2026-06-20T00:00:00Z"),
+                duration_secs: Some(1),
+            },
+            LogStepMeta {
+                name: "Cleanup (skipped)".into(),
+                status: JobStatus::Skipped,
+                start_key: 0,
+                duration_secs: None,
+            },
+            LogStepMeta {
+                name: "Run build".into(),
+                status: JobStatus::Ok,
+                start_key: ts_sort_key("2026-06-20T00:00:05Z"),
+                duration_secs: Some(13),
+            },
+        ];
+        let view = LogsView::parse(RAW, &metas);
+        assert!(
+            view.steps[0].lines.iter().any(|l| l == "compiling…"),
+            "early lines stay with the first real step, not the skipped one"
+        );
+        assert!(
+            view.steps[1].lines.is_empty(),
+            "skipped step claims nothing"
+        );
+        assert!(view.steps[2].lines.iter().any(|l| l == "running"));
     }
 }

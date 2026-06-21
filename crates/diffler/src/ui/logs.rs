@@ -92,6 +92,12 @@ fn row_line(
                 format!(" {marker} "),
                 Style::new().fg(theme.accent),
             )];
+            if let Some(status) = step.status {
+                spans.push(Span::styled(
+                    format!("{} ", status.glyph()),
+                    Style::new().fg(super::ci_status_color(theme, status)),
+                ));
+            }
             if step.name.is_empty() {
                 spans.push(Span::styled("log", theme.dim_style()));
             } else {
@@ -100,6 +106,12 @@ fn row_line(
                     Style::new().fg(theme.fg).bg(theme.panel),
                     search,
                     theme,
+                ));
+            }
+            if let Some(secs) = step.duration_secs {
+                spans.push(Span::styled(
+                    format!("  {}", fmt_duration(secs)),
+                    theme.dim_style(),
                 ));
             }
             spans.push(Span::styled(
@@ -117,6 +129,16 @@ fn row_line(
     }
 }
 
+/// A step's run time as `13s` or `1m03s`.
+fn fmt_duration(secs: i64) -> String {
+    let secs = secs.max(0);
+    if secs < 60 {
+        format!("{secs}s")
+    } else {
+        format!("{}m{:02}s", secs / 60, secs % 60)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -130,6 +152,7 @@ mod tests {
     fn log_event(text: &str) -> AppEvent {
         AppEvent::CiLog {
             text: text.to_owned(),
+            steps: Vec::new(),
             next_offset: text.len() as u64,
             done: true,
         }
@@ -176,5 +199,37 @@ mod tests {
         assert_eq!(view.steps[0].name, "Build");
         assert_eq!(view.steps[1].name, "Test");
         assert!(view.steps.iter().all(|s| s.folded));
+    }
+
+    #[test]
+    fn renders_real_steps_with_status_and_duration() {
+        use diffler_ci::{JobStatus, LogStepMeta, ts_sort_key};
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.handle(AppEvent::CiLog {
+            text: "lint\tUNKNOWN STEP\t2026-06-20T00:00:00Z setting up\n\
+                   lint\tUNKNOWN STEP\t2026-06-20T00:00:05Z running clippy\n"
+                .to_owned(),
+            steps: vec![
+                LogStepMeta {
+                    name: "Set up job".into(),
+                    status: JobStatus::Ok,
+                    start_key: ts_sort_key("2026-06-20T00:00:00Z"),
+                    duration_secs: Some(2),
+                },
+                LogStepMeta {
+                    name: "Run cargo clippy".into(),
+                    status: JobStatus::Failed,
+                    start_key: ts_sort_key("2026-06-20T00:00:05Z"),
+                    duration_secs: Some(73),
+                },
+            ],
+            next_offset: 0,
+            done: true,
+        });
+        let backend = TestBackend::new(60, 6);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|f| draw(f, &mut app)).expect("draw");
+        insta::assert_snapshot!(terminal.backend());
     }
 }

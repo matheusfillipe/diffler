@@ -99,6 +99,7 @@ impl CiProvider for GitLabProvider {
         Ok(LogChunk {
             next_offset: trace.len() as u64,
             text: trace[start..].to_owned(),
+            steps: Vec::new(),
             done: false,
         })
     }

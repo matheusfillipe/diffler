@@ -17,7 +17,7 @@ pub use error::{CiError, Result};
 pub use exec::{CommandRunner, RealRunner};
 pub use model::{
     Annotation, AnnotationLevel, Artifact, Capabilities, CiJob, CiRun, DagSource, JobId, JobStatus,
-    LogChunk, LogMode, PullRequest, RunDetail, RunExtras, RunId,
+    LogChunk, LogMode, LogStepMeta, PullRequest, RunDetail, RunExtras, RunId, ts_sort_key,
 };
 pub use provider::{CiProvider, ProviderKind};
 pub use providers::{GitHubProvider, GitLabProvider};
