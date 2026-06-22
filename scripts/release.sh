@@ -47,9 +47,9 @@ if git rev-parse "v$new" >/dev/null 2>&1; then
 fi
 echo "release: $cur -> $new"
 
-# --- bump in lockstep: workspace version, the diffler-core dep, the npm pkg ---
+# --- bump in lockstep: workspace version, every internal crate dep, the npm pkg ---
 perl -0pi -e "s/^version = \"\Q$cur\E\"/version = \"$new\"/m" Cargo.toml
-perl -0pi -e "s/(diffler-core = \{ path = \"crates\/diffler-core\", version = )\"\Q$cur\E\"/\${1}\"$new\"/" Cargo.toml
+perl -0pi -e "s/(diffler-\w+ = \{ path = \"[^\"]+\", version = )\"\Q$cur\E\"/\${1}\"$new\"/g" Cargo.toml
 perl -0pi -e "s/(\"version\": )\"[^\"]*\"/\${1}\"$new\"/" npm/diffler/package.json
 perl -0pi -e "s/(\"version\": )\"[^\"]*\"/\${1}\"$new\"/" npm/diffler-mcp/package.json
 
