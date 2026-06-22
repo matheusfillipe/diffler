@@ -203,7 +203,7 @@ mod tests {
 
     #[test]
     fn renders_real_steps_with_status_and_duration() {
-        use diffler_ci::{JobStatus, LogStepMeta, ts_sort_key};
+        use crate::ci::{JobStatus, LogStepMeta, ts_sort_key};
         let fixture = standard_fixture();
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         app.handle(AppEvent::CiLog {

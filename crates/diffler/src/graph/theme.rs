@@ -20,8 +20,8 @@ pub struct GraphTheme {
 
 impl GraphTheme {
     /// The color for a node status.
-    pub(crate) fn status(&self, status: crate::model::NodeStatus) -> Color {
-        use crate::model::NodeStatus;
+    pub(crate) fn status(&self, status: crate::graph::model::NodeStatus) -> Color {
+        use crate::graph::model::NodeStatus;
         match status {
             NodeStatus::Ok => self.ok,
             NodeStatus::Failed => self.failed,

@@ -1,4 +1,4 @@
-//! Per-forge adapters implementing [`crate::CiProvider`].
+//! Per-forge adapters implementing [`crate::ci::CiProvider`].
 
 mod github;
 mod gitlab;

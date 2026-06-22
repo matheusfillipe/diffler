@@ -481,7 +481,7 @@ mod tests {
 
     #[test]
     fn status_shows_inline_ci_section() {
-        use diffler_ci::{CiRun, JobStatus, RunId};
+        use crate::ci::{CiRun, JobStatus, RunId};
         let fixture = standard_fixture();
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         let run = |name: &str, branch: &str, sha: &str, status| CiRun {
@@ -504,7 +504,7 @@ mod tests {
 
     #[test]
     fn ci_header_shows_the_branch_pr() {
-        use diffler_ci::{CiRun, JobStatus, PullRequest, RunId};
+        use crate::ci::{CiRun, JobStatus, PullRequest, RunId};
         let fixture = standard_fixture();
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         app.runs = vec![CiRun {

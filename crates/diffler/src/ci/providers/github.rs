@@ -7,13 +7,13 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::error::{CiError, Result};
-use crate::exec::CommandRunner;
-use crate::model::{
+use crate::ci::error::{CiError, Result};
+use crate::ci::exec::CommandRunner;
+use crate::ci::model::{
     Annotation, AnnotationLevel, Artifact, Capabilities, CiJob, CiRun, DagSource, JobId, JobStatus,
     LogChunk, LogMode, LogStepMeta, PullRequest, RunDetail, RunExtras, RunId, ts_sort_key,
 };
-use crate::provider::{CiProvider, ProviderKind};
+use crate::ci::provider::{CiProvider, ProviderKind};
 
 /// Talks to GitHub Actions through `gh`. The runs list is scoped to the current
 /// `branch` (across all of its workflows); each run's DAG comes from whichever
@@ -480,7 +480,7 @@ impl RunStep {
             name: self.name.clone(),
             status: map_status(&self.status, self.conclusion.as_deref()),
             start_key: if ran {
-                self.started_at.as_deref().map(ts_sort_key).unwrap_or(0)
+                self.started_at.as_deref().map_or(0, ts_sort_key)
             } else {
                 0
             },
@@ -562,7 +562,7 @@ impl From<AnnotationItem> for Annotation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::exec::test_support::RecordingRunner;
+    use crate::ci::exec::test_support::RecordingRunner;
 
     const WORKFLOW: &str = r"
 name: CI

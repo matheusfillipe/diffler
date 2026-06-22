@@ -1,5 +1,5 @@
 ---
-source: crates/diffler-graph/src/view.rs
+source: crates/diffler/src/graph/view.rs
 expression: render(&mut v).backend()
 ---
 "╭────────╮       ╭─ ▾ test ✗ ─────────╮      ╭─────────╮      ╭──────────────────╮                                      "

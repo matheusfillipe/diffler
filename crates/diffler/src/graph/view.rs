@@ -12,9 +12,9 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Widget};
 
-use crate::engine::{GraphEngine, Layered, Layout, Placement, Zoom};
-use crate::model::{Model, NodeId, NodeStatus};
-use crate::theme::GraphTheme;
+use crate::graph::engine::{GraphEngine, Layered, Layout, Placement, Zoom};
+use crate::graph::model::{Model, NodeId, NodeStatus};
+use crate::graph::theme::GraphTheme;
 
 /// What the component asks the host to do. The host owns the side effects.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,7 +53,7 @@ impl GraphView {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            model: Model::new(crate::model::RankDir::LeftRight),
+            model: Model::new(crate::graph::model::RankDir::LeftRight),
             engine: Box::new(Layered),
             layout: Layout::default(),
             selected: None,

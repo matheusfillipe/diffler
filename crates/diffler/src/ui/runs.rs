@@ -95,7 +95,7 @@ fn truncate(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use diffler_ci::{CiRun, JobStatus, RunId};
+    use crate::ci::{CiRun, JobStatus, RunId};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 

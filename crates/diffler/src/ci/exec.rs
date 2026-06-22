@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use tokio::process::Command;
 
-use crate::error::{CiError, Result};
+use crate::ci::error::{CiError, Result};
 
 /// Runs a CLI and returns its stdout.
 #[async_trait]

@@ -1076,7 +1076,7 @@ mod tests {
 
     #[test]
     fn enter_on_a_ci_run_opens_its_graph() {
-        use diffler_ci::{CiRun, JobStatus, RunId};
+        use crate::ci::{CiRun, JobStatus, RunId};
         let (_fixture, mut app) = app();
         app.runs = vec![CiRun {
             id: RunId("1".into()),

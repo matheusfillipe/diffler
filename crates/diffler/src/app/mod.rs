@@ -215,18 +215,18 @@ const FALLBACK_REFRESH_TICKS: u32 = 20;
 pub enum CiRequest {
     Runs,
     Pr,
-    Detail(diffler_ci::RunId),
-    Extras(diffler_ci::RunId),
+    Detail(crate::ci::RunId),
+    Extras(crate::ci::RunId),
     Log {
-        run: diffler_ci::RunId,
-        job: diffler_ci::JobId,
+        run: crate::ci::RunId,
+        job: crate::ci::JobId,
         offset: u64,
     },
 }
 
 /// Detect the repo's CI provider from its `origin` remote (via the `Vcs` trait,
 /// not a subprocess) and config-file presence.
-fn detect_ci(review: &Review, ci: &crate::config::CiConfig) -> Option<diffler_ci::Detected> {
+fn detect_ci(review: &Review, ci: &crate::config::CiConfig) -> Option<crate::ci::Detected> {
     let remote = review.vcs.remote_url("origin").ok().flatten();
     // a forge with no usable CLI installed degrades to no CI, not a poll-error loop
     crate::ci::detect_for_repo(&review.repo_root, remote.as_deref(), ci)
@@ -245,30 +245,30 @@ pub struct App {
     pub log: Option<LogView>,
     pub diff: Option<DiffView>,
     /// The embedded CI graph component, present while the Graph screen is up.
-    pub graph: Option<diffler_graph::GraphView>,
+    pub graph: Option<crate::graph::GraphView>,
     /// Detected CI provider for the repo, computed at startup. `None` when no
     /// provider could be determined (no recognized remote or config file).
-    ci_detected: Option<diffler_ci::Detected>,
+    ci_detected: Option<crate::ci::Detected>,
     /// Recent CI runs shown on the Runs screen.
-    pub runs: Vec<diffler_ci::CiRun>,
+    pub runs: Vec<crate::ci::CiRun>,
     /// The checked-out branch's PR, shown beside the runs section header.
-    pub pr: Option<diffler_ci::PullRequest>,
+    pub pr: Option<crate::ci::PullRequest>,
     /// Whether the PR has been resolved for the current branch, so it's fetched
     /// once per branch instead of on every runs poll (reset on a repo change).
     pr_checked: bool,
     runs_cursor: usize,
     /// The run opened into the graph, re-polled for live status.
-    open_run: Option<diffler_ci::RunId>,
+    open_run: Option<crate::ci::RunId>,
     /// The open run's artifacts + annotations, shown below the DAG.
-    pub extras: Option<diffler_ci::RunExtras>,
+    pub extras: Option<crate::ci::RunExtras>,
     /// The job whose log is on the Logs screen.
-    open_job: Option<diffler_ci::JobId>,
+    open_job: Option<crate::ci::JobId>,
     /// Accumulated raw job-log text and the byte offset the next poll resumes
     /// from. Parsed into [`logs`](Self::logs) for the foldable view.
     log_text: String,
     log_offset: u64,
     /// The opened job's step boundaries, used to bucket `log_text` into steps.
-    log_steps: Vec<diffler_ci::LogStepMeta>,
+    log_steps: Vec<crate::ci::LogStepMeta>,
     /// The foldable step view over `log_text`, present while the Logs screen is up.
     pub logs: Option<logs::LogsView>,
     /// Set once a log chunk reports the job's log is complete, so polling stops
@@ -458,7 +458,7 @@ impl App {
 
     /// The detected CI provider for the repo, if any (the main loop builds a
     /// provider from this to service a `pending_ci` request).
-    pub fn ci_detected(&self) -> Option<diffler_ci::Detected> {
+    pub fn ci_detected(&self) -> Option<crate::ci::Detected> {
         self.ci_detected.clone()
     }
 
@@ -1022,7 +1022,7 @@ impl App {
         let id = run.id.clone();
         self.open_run = Some(id.clone());
         self.extras = None;
-        self.graph = Some(diffler_graph::GraphView::new());
+        self.graph = Some(crate::graph::GraphView::new());
         self.push_screen(Screen::Graph);
         self.pending_ci = Some(CiRequest::Detail(id));
     }
@@ -1032,7 +1032,7 @@ impl App {
     fn on_ci_log(
         &mut self,
         text: &str,
-        steps: Vec<diffler_ci::LogStepMeta>,
+        steps: Vec<crate::ci::LogStepMeta>,
         offset: u64,
         done: bool,
     ) {
@@ -1051,7 +1051,7 @@ impl App {
 
     /// Fold a branch-scoped runs poll into the inline section, then resolve the
     /// branch's PR once (not every poll) via the single `pending_ci` slot.
-    fn on_ci_runs(&mut self, runs: Vec<diffler_ci::CiRun>) {
+    fn on_ci_runs(&mut self, runs: Vec<crate::ci::CiRun>) {
         self.runs = runs;
         self.runs_cursor = self.runs_cursor.min(self.runs.len().saturating_sub(1));
         // the inline Status section grew/shrank; keep the row cursor valid
@@ -1064,7 +1064,7 @@ impl App {
     /// Fold a run's detail into the graph, then queue its extras once: a single
     /// `pending_ci` slot means the extras request only displaces a run-detail
     /// poll until the extras land, after which the poll keeps the slot.
-    fn on_run_detail(&mut self, detail: &diffler_ci::RunDetail) {
+    fn on_run_detail(&mut self, detail: &crate::ci::RunDetail) {
         let model = crate::ci::to_model(detail);
         if let Some(graph) = self.graph.as_mut() {
             graph.set_model(model);
@@ -1078,7 +1078,7 @@ impl App {
     }
 
     /// Open a job's log view from a graph node activation.
-    fn open_logs(&mut self, job: diffler_ci::JobId) {
+    fn open_logs(&mut self, job: crate::ci::JobId) {
         let Some(run) = self.open_run.clone() else {
             return;
         };
@@ -1195,14 +1195,14 @@ impl App {
         Flow::Continue
     }
 
-    /// React to a [`diffler_graph::GraphAction`] from the component: activating a
+    /// React to a [`crate::graph::GraphAction`] from the component: activating a
     /// node opens that job's log.
-    fn on_graph_action(&mut self, action: &diffler_graph::GraphAction) {
+    fn on_graph_action(&mut self, action: &crate::graph::GraphAction) {
         match action {
-            diffler_graph::GraphAction::Activated(id) => {
-                self.open_logs(diffler_ci::JobId(id.0.clone()));
+            crate::graph::GraphAction::Activated(id) => {
+                self.open_logs(crate::ci::JobId(id.0.clone()));
             }
-            diffler_graph::GraphAction::Folded { .. } => {}
+            crate::graph::GraphAction::Folded { .. } => {}
         }
     }
 
@@ -1955,9 +1955,9 @@ mod tests {
 
     #[test]
     fn run_detail_event_feeds_the_graph_view() {
-        use diffler_ci::{CiJob, CiRun, JobId, JobStatus, RunDetail, RunId};
+        use crate::ci::{CiJob, CiRun, JobId, JobStatus, RunDetail, RunId};
         let (_fixture, mut app) = app();
-        app.graph = Some(diffler_graph::GraphView::new());
+        app.graph = Some(crate::graph::GraphView::new());
         app.open_run = Some(RunId("1".into()));
         app.push_screen(Screen::Graph);
         assert_eq!(app.screen(), Screen::Graph);
@@ -1991,9 +1991,9 @@ mod tests {
 
     #[test]
     fn graph_run_detail_queues_extras_once_then_stops() {
-        use diffler_ci::{Artifact, CiRun, JobStatus, RunDetail, RunExtras, RunId};
+        use crate::ci::{Artifact, CiRun, JobStatus, RunDetail, RunExtras, RunId};
         let (_fixture, mut app) = app();
-        app.graph = Some(diffler_graph::GraphView::new());
+        app.graph = Some(crate::graph::GraphView::new());
         app.open_run = Some(RunId("1".into()));
         app.push_screen(Screen::Graph);
         let detail = || RunDetail {

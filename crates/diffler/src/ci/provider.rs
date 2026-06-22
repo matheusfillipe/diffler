@@ -3,8 +3,8 @@
 
 use async_trait::async_trait;
 
-use crate::error::Result;
-use crate::model::{
+use crate::ci::error::Result;
+use crate::ci::model::{
     Capabilities, CiRun, JobId, LogChunk, PullRequest, RunDetail, RunExtras, RunId,
 };
 

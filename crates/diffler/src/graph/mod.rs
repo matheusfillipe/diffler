@@ -1,8 +1,17 @@
-//! Host-side glue for the `diffler-graph` component: map the app theme onto the
-//! component palette. CI data acquisition (runs, jobs, logs) lives in
-//! `diffler-ci` and the `ci` module; this module is just the rendering bridge.
+//! A navigable orthogonal node-graph component for ratatui, plus the host glue
+//! mapping the app theme onto its palette. The component is IO-free (no terminal
+//! setup, event loop, or network); the host builds a [`Model`] (from CI, …),
+//! pushes it into a [`GraphView`], renders it, and reacts to [`GraphAction`]s.
 
-use diffler_graph::GraphTheme;
+mod engine;
+mod model;
+mod theme;
+mod view;
+
+pub use engine::{GraphEngine, Layered, Zoom};
+pub use model::{Edge, Model, Node, NodeId, NodeStatus, RankDir};
+pub use theme::GraphTheme;
+pub use view::{GraphAction, GraphView};
 
 use crate::theme::Theme;
 

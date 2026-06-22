@@ -1,6 +1,6 @@
 //! The provider-agnostic CI model. Adapters normalize each forge's runs, jobs,
 //! dependency edges, and logs into these types; the host maps `RunDetail` onto a
-//! `diffler_graph::Model` for rendering.
+//! `crate::graph::Model` for rendering.
 
 use time::OffsetDateTime;
 

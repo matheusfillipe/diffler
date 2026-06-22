@@ -30,18 +30,18 @@ pub enum AppEvent {
         output: String,
     },
     /// Branch-scoped CI run list from a provider poll.
-    CiRuns(Vec<diffler_ci::CiRun>),
+    CiRuns(Vec<crate::ci::CiRun>),
     /// The checked-out branch's PR, fetched once per branch (not every poll).
-    CiPr(Option<diffler_ci::PullRequest>),
+    CiPr(Option<crate::ci::PullRequest>),
     /// A run's jobs + dependency DAG, mapped onto the graph view.
-    CiRunDetail(diffler_ci::RunDetail),
+    CiRunDetail(crate::ci::RunDetail),
     /// A run's artifacts + annotations for the graph page's extras panel.
-    CiExtras(diffler_ci::RunExtras),
+    CiExtras(crate::ci::RunExtras),
     /// An incremental job-log slice from a provider poll, with the job's step
     /// boundaries (empty when the provider exposes none).
     CiLog {
         text: String,
-        steps: Vec<diffler_ci::LogStepMeta>,
+        steps: Vec<crate::ci::LogStepMeta>,
         next_offset: u64,
         done: bool,
     },

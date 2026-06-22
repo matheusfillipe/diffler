@@ -19,8 +19,10 @@ crates/diffler-core/   pure logic, no terminal (errors via thiserror):
   store.rs             .diffler/ persistence
   feedback.rs          markdown feedback export
 
-crates/diffler/        binary (errors via color-eyre):
+crates/diffler/        binary (color-eyre at the top; thiserror for typed errors):
   ui/ app/ tree.rs     ratatui TUI: screens, file sidebar, state
+  ci/                  provider-agnostic CI acquisition (CiProvider trait, gh/glab)
+  graph/               navigable orthogonal node-graph ratatui component
   keymap.rs config.rs  configurable keybindings, layered TOML config
   theme.rs transient.rs  rendering theme, popup/modal model
   mcp.rs               rmcp/axum MCP server
@@ -41,7 +43,7 @@ crates/diffler/        binary (errors via color-eyre):
 
 - Code is done only when `just ci` passes. Run it, don't assume.
 - No `unwrap`/`panic!`/`todo!` in non-test code (clippy denies). `expect` needs justification.
-- Errors: `thiserror` in diffler-core; `color-eyre` only in the binary.
+- Errors: `thiserror` for typed library-style errors (diffler-core, the `ci` module); `color-eyre` for the binary's top level only.
 - No `println!`/stdout writes in the TUI (corrupts the screen; clippy denies it).
 - Async: never block in async fns; `spawn_blocking` for CPU/IO-heavy work.
 - TUI changes need TestBackend + insta snapshot coverage. A changed snapshot is a

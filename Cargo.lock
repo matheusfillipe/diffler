@@ -625,13 +625,12 @@ name = "diffler"
 version = "0.2.2"
 dependencies = [
  "async-lsp",
+ "async-trait",
  "axum",
  "clap",
  "color-eyre",
  "crossterm",
- "diffler-ci",
  "diffler-core",
- "diffler-graph",
  "futures-util",
  "git2",
  "insta",
@@ -645,22 +644,10 @@ dependencies = [
  "serde_norway",
  "tempfile",
  "thiserror 2.0.18",
+ "time",
  "tokio",
  "toml",
  "unicode-width",
-]
-
-[[package]]
-name = "diffler-ci"
-version = "0.2.2"
-dependencies = [
- "async-trait",
- "serde",
- "serde_json",
- "serde_norway",
- "thiserror 2.0.18",
- "time",
- "tokio",
 ]
 
 [[package]]
@@ -693,15 +680,6 @@ dependencies = [
  "tree-sitter-typescript",
  "tree-sitter-yaml",
  "uuid",
-]
-
-[[package]]
-name = "diffler-graph"
-version = "0.2.2"
-dependencies = [
- "crossterm",
- "insta",
- "ratatui",
 ]
 
 [[package]]

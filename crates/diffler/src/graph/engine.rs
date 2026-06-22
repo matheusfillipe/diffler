@@ -9,7 +9,7 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
-use crate::model::{Model, NodeId, NodeStatus};
+use crate::graph::model::{Model, NodeId, NodeStatus};
 
 /// An owned node rectangle in layout-grid cells, plus what the view needs to
 /// color it.
@@ -67,6 +67,7 @@ impl Zoom {
         }
     }
 
+    #[must_use]
     pub fn out(self) -> Self {
         match self {
             Self::Detail => Self::Normal,
@@ -74,6 +75,7 @@ impl Zoom {
         }
     }
 
+    #[must_use]
     pub fn in_(self) -> Self {
         match self {
             Self::Compact => Self::Normal,
@@ -682,7 +684,7 @@ mod tests {
 
     #[test]
     fn cyclic_graph_lays_out_without_panicking() {
-        use crate::model::{Edge, Node, RankDir};
+        use crate::graph::model::{Edge, Node, RankDir};
         let mut model = Model::new(RankDir::LeftRight);
         let n = |id: &str| Node::leaf(id, NodeStatus::Neutral);
         model.nodes = vec![n("a"), n("b")];

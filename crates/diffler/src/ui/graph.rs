@@ -1,10 +1,10 @@
-//! Graph screen chrome: a hint line, the embedded `diffler_graph::GraphView`,
+//! Graph screen chrome: a hint line, the embedded `crate::graph::GraphView`,
 //! and a status bar. The component draws the graph body; the host draws the
 //! chrome and supplies the palette. When the open run has artifacts or
 //! annotations, a read-only panel for them is carved off the bottom of the body
 //! — the graph keeps the full body otherwise, so it renders exactly as before.
 
-use diffler_ci::{AnnotationLevel, RunExtras};
+use crate::ci::{AnnotationLevel, RunExtras};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
@@ -132,7 +132,7 @@ fn extras_lines(extras: &RunExtras, theme: &Theme) -> Vec<Line<'static>> {
     lines
 }
 
-fn annotation_location(annotation: &diffler_ci::Annotation) -> String {
+fn annotation_location(annotation: &crate::ci::Annotation) -> String {
     match (annotation.path.as_str(), annotation.start_line) {
         ("", _) => String::new(),
         (path, Some(line)) => format!("{path}:{line}"),
@@ -140,7 +140,7 @@ fn annotation_location(annotation: &diffler_ci::Annotation) -> String {
     }
 }
 
-fn annotation_text(annotation: &diffler_ci::Annotation) -> String {
+fn annotation_text(annotation: &crate::ci::Annotation) -> String {
     let body = if annotation.message.is_empty() {
         annotation.title.clone()
     } else {
@@ -171,7 +171,7 @@ fn human_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use diffler_ci::{Annotation, Artifact};
+    use crate::ci::{Annotation, Artifact};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -183,7 +183,7 @@ mod tests {
     fn graph_app_with_extras(extras: RunExtras) -> App {
         let fixture = standard_fixture();
         let mut app = App::new(fixture.review(), LoadedConfig::default());
-        app.graph = Some(diffler_graph::GraphView::new());
+        app.graph = Some(crate::graph::GraphView::new());
         app.handle(AppEvent::CiExtras(extras));
         app
     }
@@ -199,7 +199,7 @@ mod tests {
     fn no_panel_without_extras_keeps_full_body() {
         let fixture = standard_fixture();
         let mut app = App::new(fixture.review(), LoadedConfig::default());
-        app.graph = Some(diffler_graph::GraphView::new());
+        app.graph = Some(crate::graph::GraphView::new());
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal.draw(|f| draw(f, &mut app)).expect("draw");

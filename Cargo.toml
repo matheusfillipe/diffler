@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/diffler", "crates/diffler-core", "crates/diffler-graph", "crates/diffler-ci"]
+members = ["crates/diffler", "crates/diffler-core"]
 
 [workspace.package]
 version = "0.2.2"
@@ -17,8 +17,6 @@ keywords = ["diff", "tui", "code-review", "mcp", "agents"]
 # (musl, arm64, windows) are validated before the real implementation lands.
 [workspace.dependencies]
 diffler-core = { path = "crates/diffler-core", version = "0.2.2" }
-diffler-graph = { path = "crates/diffler-graph", version = "0.2.2" }
-diffler-ci = { path = "crates/diffler-ci", version = "0.2.2" }
 ratatui = "0.30"
 async-trait = "0.1"
 time = { version = "0.3", features = ["formatting", "parsing"] }
@@ -58,7 +56,7 @@ tree-sitter-yaml = "0.7"
 serde = { version = "1", features = ["derive"] }
 serde_ignored = "0.1"
 serde_json = "1"
-# diffler-graph: serde_norway parses GitHub Actions workflow YAML
+# serde_norway parses GitHub Actions workflow YAML for the CI dependency graph
 serde_norway = "0.9"
 toml = "1"
 uuid = { version = "1", features = ["v4"] }

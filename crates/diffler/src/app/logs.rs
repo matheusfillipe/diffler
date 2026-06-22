@@ -6,7 +6,7 @@
 //! after. Without step metadata (e.g. GitLab) it falls back to the runner's
 //! `##[group]` markers. Folded by default; keymap-driven like the diff.
 
-use diffler_ci::{JobStatus, LogStepMeta, ts_sort_key};
+use crate::ci::{JobStatus, LogStepMeta, ts_sort_key};
 use ratatui::layout::Rect;
 
 /// One collapsible step: its name, status, run time, and log lines. `name` is

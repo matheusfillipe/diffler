@@ -1,17 +1,29 @@
-//! Host glue for `diffler-ci`: pick a provider for the repo, and map a normalized
-//! `RunDetail` onto the `diffler_graph::Model` the graph screen renders. The
-//! provider does the IO; this module is the composition seam between acquisition
-//! (`diffler-ci`) and rendering (`diffler-graph`).
+//! Provider-agnostic CI run/job/log acquisition, plus the host glue that picks a
+//! provider for the repo and maps a normalized `RunDetail` onto the graph model.
+//! Adapters (`providers/`) implement [`CiProvider`] over each forge (CLI-only via
+//! `gh`/`glab` through the [`CommandRunner`] seam) and never touch the terminal.
+
+mod detect;
+mod error;
+mod exec;
+mod model;
+mod provider;
+mod providers;
+
+pub use detect::{Detected, detect};
+pub use error::{CiError, Result};
+pub use exec::{CommandRunner, RealRunner};
+pub use model::{
+    Annotation, AnnotationLevel, Artifact, Capabilities, CiJob, CiRun, DagSource, JobId, JobStatus,
+    LogChunk, LogMode, LogStepMeta, PullRequest, RunDetail, RunExtras, RunId, ts_sort_key,
+};
+pub use provider::{CiProvider, ProviderKind};
+pub use providers::{GitHubProvider, GitLabProvider};
 
 use std::path::Path;
 
-use diffler_ci::{
-    CiProvider, Detected, GitHubProvider, GitLabProvider, JobStatus, ProviderKind, RealRunner,
-    RunDetail, detect,
-};
-use diffler_graph::{Edge, Model, Node, NodeId, NodeStatus, RankDir};
-
 use crate::config::CiConfig;
+use crate::graph::{Edge, Model, Node, NodeId, NodeStatus, RankDir};
 
 /// Detect the repo's CI provider: the configured `provider` (or auto), the
 /// `origin` remote host (from `remote_url`), and config-file presence. A
@@ -67,7 +79,7 @@ fn parse_host(url: &str) -> Option<String> {
 /// Construct the provider for a detected forge. GitLab targets the detected host;
 /// GitHub scopes the runs list to `branch` and carries every workflow YAML so
 /// each run's DAG is built from its own workflow.
-pub fn provider(
+pub fn build_provider(
     detected: &Detected,
     repo_root: &Path,
     branch: Option<&str>,
@@ -146,7 +158,7 @@ fn node_status(status: JobStatus) -> NodeStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use diffler_ci::{CiJob, CiRun, JobId, RunId};
+    use super::{CiJob, CiRun, JobId, RunId};
 
     #[test]
     fn on_path_finds_files_in_listed_dirs_only() {

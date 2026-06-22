@@ -94,12 +94,14 @@ impl Node {
     }
 
     /// Mark this node a member (leg) of `group`.
+    #[must_use]
     pub fn in_group(mut self, group: &str) -> Self {
         self.group = Some(group.to_owned());
         self
     }
 
     /// Mark this node the foldable root of `group`.
+    #[must_use]
     pub fn fold_root(mut self, group: &str) -> Self {
         self.foldable = Some(group.to_owned());
         self

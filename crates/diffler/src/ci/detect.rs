@@ -5,10 +5,10 @@
 
 use std::path::Path;
 
-use crate::provider::ProviderKind;
+use crate::ci::provider::ProviderKind;
 
 /// Detected provider plus an optional self-hosted host override (set only when
-/// the remote isn't a known SaaS host).
+/// the remote isn't a known `SaaS` host).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Detected {
     pub kind: ProviderKind,

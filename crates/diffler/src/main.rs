@@ -186,8 +186,11 @@ async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<
             // service the CI provider call off-thread; the result returns as an
             // event so the active CI screen stays live without blocking the loop
             if let Some(detected) = app.ci_detected() {
-                let provider =
-                    ci::provider(&detected, &app.review.repo_root, app.head.branch.as_deref());
+                let provider = ci::build_provider(
+                    &detected,
+                    &app.review.repo_root,
+                    app.head.branch.as_deref(),
+                );
                 let tx = tx.clone();
                 tokio::spawn(async move {
                     let _ = tx.send(run_ci_request(provider, request).await);
@@ -212,7 +215,7 @@ async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<
 /// Service a CI provider request off the event loop, turning the result (or
 /// error) into the matching [`AppEvent`] the loop folds back into the screen.
 async fn run_ci_request(
-    provider: Box<dyn diffler_ci::CiProvider + Send>,
+    provider: Box<dyn crate::ci::CiProvider + Send>,
     request: CiRequest,
 ) -> AppEvent {
     match request {

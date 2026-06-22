@@ -6,13 +6,13 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::error::{CiError, Result};
-use crate::exec::CommandRunner;
-use crate::model::{
+use crate::ci::error::{CiError, Result};
+use crate::ci::exec::CommandRunner;
+use crate::ci::model::{
     Capabilities, CiJob, CiRun, DagSource, JobId, JobStatus, LogChunk, LogMode, PullRequest,
     RunDetail, RunExtras, RunId,
 };
-use crate::provider::{CiProvider, ProviderKind};
+use crate::ci::provider::{CiProvider, ProviderKind};
 
 /// Talks to GitLab CI through `glab api`. `glab` resolves the project from the
 /// repo via the `:fullpath` placeholder; an explicit `host` targets a
@@ -79,7 +79,7 @@ impl CiProvider for GitLabProvider {
         })?;
         Ok(RunDetail {
             run: pipeline.into_run(),
-            jobs: jobs_with_stage_edges(raw),
+            jobs: jobs_with_stage_edges(&raw),
         })
     }
 
@@ -117,9 +117,9 @@ impl CiProvider for GitLabProvider {
 
 /// Order jobs into stages (by first appearance) and link each job to every job
 /// in the previous stage — GitLab's stage-sequenced pipeline graph.
-fn jobs_with_stage_edges(raw: Vec<JobItem>) -> Vec<CiJob> {
+fn jobs_with_stage_edges(raw: &[JobItem]) -> Vec<CiJob> {
     let mut stage_order: Vec<String> = Vec::new();
-    for job in &raw {
+    for job in raw {
         if !stage_order.contains(&job.stage) {
             stage_order.push(job.stage.clone());
         }
@@ -135,7 +135,8 @@ fn jobs_with_stage_edges(raw: Vec<JobItem>) -> Vec<CiJob> {
             let stage_idx = stage_order.iter().position(|s| *s == job.stage);
             let needs = stage_idx
                 .and_then(|i| i.checked_sub(1))
-                .map(|prev| ids_in(&stage_order[prev]))
+                .and_then(|prev| stage_order.get(prev))
+                .map(|stage| ids_in(stage))
                 .unwrap_or_default();
             CiJob {
                 id: JobId(job.id.to_string()),
@@ -201,7 +202,7 @@ struct JobItem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::exec::test_support::RecordingRunner;
+    use crate::ci::exec::test_support::RecordingRunner;
 
     fn provider(responses: &[(&'static str, &str)]) -> GitLabProvider {
         GitLabProvider::new(Box::new(RecordingRunner::new(responses)), None)
