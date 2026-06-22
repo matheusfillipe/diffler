@@ -1,6 +1,6 @@
 {
   "name": "@mattfillipe/diffler",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Terminal code review for AI coding agents",
   "license": "(MIT OR Apache-2.0)",
   "repository": {
