@@ -6,8 +6,6 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-# not published yet: the API is still settling behind the binary
-publish = false
 
 [dependencies]
 async-trait.workspace = true
