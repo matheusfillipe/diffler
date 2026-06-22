@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/diffler", "crates/diffler-core", "crates/diffler-graph", "crates/diffler-ci"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
@@ -16,9 +16,9 @@ keywords = ["diff", "tui", "code-review", "mcp", "agents"]
 # Deps for M1-M4 are pre-staged here so CI build times and target coverage
 # (musl, arm64, windows) are validated before the real implementation lands.
 [workspace.dependencies]
-diffler-core = { path = "crates/diffler-core", version = "0.2.0" }
-diffler-graph = { path = "crates/diffler-graph", version = "0.2.0" }
-diffler-ci = { path = "crates/diffler-ci", version = "0.2.0" }
+diffler-core = { path = "crates/diffler-core", version = "0.2.1" }
+diffler-graph = { path = "crates/diffler-graph", version = "0.2.1" }
+diffler-ci = { path = "crates/diffler-ci", version = "0.2.1" }
 ratatui = "0.30"
 async-trait = "0.1"
 time = { version = "0.3", features = ["formatting", "parsing"] }
