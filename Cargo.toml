@@ -88,6 +88,14 @@ missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 cast_possible_truncation = "allow"
 
+# keep panic backtraces for our own code, but drop the heavy debuginfo from
+# dependencies (we never step-debug into them) — cuts target/debug ~3-4x
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
