@@ -96,6 +96,7 @@ pub enum PendingOp {
 pub enum InputOp {
     Comment { anchor: Anchor },
     Reply { comment_id: String },
+    EditComment { comment_id: String },
     CreateBranch { checkout: bool },
 }
 
@@ -883,6 +884,17 @@ impl App {
     }
 
     /// An empty buffer submits as a cancel — comments and replies must say
+    /// Open the text-input modal with the cursor at the end of `buffer` (so a
+    /// prefilled edit lands ready to append). An empty buffer starts at column 0.
+    pub(crate) fn open_input(&mut self, title: String, buffer: String, on_submit: InputOp) {
+        self.modal = Some(Modal::Input {
+            cursor: buffer.chars().count(),
+            buffer,
+            title,
+            on_submit,
+        });
+    }
+
     /// something to be worth persisting.
     fn submit_input(&mut self) {
         let Some(Modal::Input {
@@ -915,6 +927,17 @@ impl App {
                     self.after_session_change();
                 } else {
                     self.error("comment is gone; reply dropped");
+                }
+            }
+            InputOp::EditComment { comment_id } => {
+                if self
+                    .review
+                    .session_for_mut(&source)
+                    .edit_comment(&comment_id, body)
+                {
+                    self.after_session_change();
+                } else {
+                    self.error("comment is gone; edit dropped");
                 }
             }
             InputOp::CreateBranch { checkout } => {
@@ -1458,12 +1481,11 @@ impl App {
         } else {
             "New branch"
         };
-        self.modal = Some(Modal::Input {
-            title: title.to_owned(),
-            buffer: String::new(),
-            cursor: 0,
-            on_submit: InputOp::CreateBranch { checkout },
-        });
+        self.open_input(
+            title.to_owned(),
+            String::new(),
+            InputOp::CreateBranch { checkout },
+        );
     }
 
     fn open_branch_list(&mut self, action: BranchAction) {
