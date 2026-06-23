@@ -236,11 +236,14 @@ mod tests {
     #[test]
     fn edit_comment_replaces_body_and_keeps_status() {
         let mut s = Session::default();
-        let id = s.add_comment("mattf", anchor("a.txt"), "frist").id.clone();
+        let id = s
+            .add_comment("mattf", anchor("a.txt"), "old body")
+            .id
+            .clone();
         assert!(s.reply(&id, "agent", "ack"));
-        assert!(s.edit_comment(&id, "first"));
+        assert!(s.edit_comment(&id, "new body"));
         let c = s.comments.iter().find(|c| c.id == id).expect("comment");
-        assert_eq!(c.body, "first");
+        assert_eq!(c.body, "new body");
         assert_eq!(c.status, CommentStatus::Replied, "status is untouched");
         assert_eq!(c.replies.len(), 1, "replies are untouched");
         assert!(!s.edit_comment("nope", "x"));

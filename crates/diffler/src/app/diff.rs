@@ -2097,7 +2097,7 @@ mod tests {
         let position = added_line_position(&app);
         app.diff.as_mut().unwrap().cursor = position;
         app.handle(key('c'));
-        type_text(&mut app, "frist draft");
+        type_text(&mut app, "old note");
         app.handle(key('\n'));
 
         // move onto the comment row; `c` edits, prefilled with the body
@@ -2106,16 +2106,16 @@ mod tests {
         let Some(Modal::Input { buffer, .. }) = &app.modal else {
             panic!("edit modal with the current body");
         };
-        assert_eq!(buffer, "frist draft", "prefilled with the existing body");
+        assert_eq!(buffer, "old note", "prefilled with the existing body");
         // clear and retype
-        for _ in 0.."frist draft".len() {
+        for _ in 0.."old note".len() {
             app.handle(crate::test_support::key_backspace());
         }
-        type_text(&mut app, "first draft");
+        type_text(&mut app, "new note");
         app.handle(key('\n'));
 
         assert_eq!(app.review.session.comments.len(), 1, "edited, not added");
-        assert_eq!(app.review.session.comments[0].body, "first draft");
+        assert_eq!(app.review.session.comments[0].body, "new note");
     }
 
     #[test]
