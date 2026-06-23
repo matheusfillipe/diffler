@@ -1,8 +1,6 @@
 #!/usr/bin/env node
-// stdio↔HTTP MCP proxy: Claude Code spawns this over stdio, and it forwards
-// every tool call to the streamable-HTTP MCP server embedded in a running
-// diffler TUI. diffler's MCP serves the live review state, so the proxy never
-// owns state — it only bridges transports.
+// stdio↔HTTP MCP proxy bridging Claude Code to a running diffler TUI, lazily
+// (re)connecting so it survives diffler quitting and restarting on a new port.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -22,9 +20,8 @@ const DEFAULT_PORT = 8417;
 function parseArgs(argv) {
   const opts = {};
   for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i];
     const take = () => argv[(i += 1)];
-    switch (arg) {
+    switch (argv[i]) {
       case "--url":
         opts.url = take();
         break;
@@ -38,27 +35,22 @@ function parseArgs(argv) {
         opts.repo = take();
         break;
       default:
-        // unknown flags are ignored so future diffler args don't break older proxies
         break;
     }
   }
   return opts;
 }
 
-// The port may differ from the configured one after an ephemeral fallback, so
-// diffler publishes the live endpoint to .diffler/mcp.json in the repo.
 function discoverPort(repo) {
   try {
-    const raw = readFileSync(join(repo, ".diffler", "mcp.json"), "utf8");
-    const port = JSON.parse(raw).port;
+    const port = JSON.parse(readFileSync(join(repo, ".diffler", "mcp.json"), "utf8")).port;
     return typeof port === "number" ? port : undefined;
   } catch {
     return undefined;
   }
 }
 
-function resolveUrl() {
-  const opts = parseArgs(process.argv.slice(2));
+function resolveUrl(opts) {
   const env = process.env;
   const explicit = opts.url || env.DIFFLER_MCP_URL;
   if (explicit) {
@@ -66,40 +58,83 @@ function resolveUrl() {
   }
   const host = opts.host || env.DIFFLER_MCP_HOST || DEFAULT_HOST;
   const repo = opts.repo || process.cwd();
-  const port =
-    opts.port || env.DIFFLER_MCP_PORT || discoverPort(repo) || DEFAULT_PORT;
+  const port = opts.port || env.DIFFLER_MCP_PORT || discoverPort(repo) || DEFAULT_PORT;
   return `http://${host}:${port}/mcp`;
 }
 
 async function main() {
-  const url = resolveUrl();
-
-  const client = new Client({ name: "diffler-mcp-proxy", version: "0.1.0" });
-  try {
-    await client.connect(new StreamableHTTPClientTransport(new URL(url)));
-  } catch (err) {
-    process.stderr.write(
-      `diffler-mcp: cannot reach a diffler MCP server at ${url}\n` +
-        `Is diffler running in this repo? (${err.message ?? err})\n`,
-    );
-    process.exit(1);
-  }
-
+  const opts = parseArgs(process.argv.slice(2));
   const server = new Server(
     { name: "diffler", version: "0.1.0" },
     { capabilities: { tools: {} } },
   );
-  server.setRequestHandler(ListToolsRequestSchema, () => client.listTools());
-  server.setRequestHandler(CallToolRequestSchema, (request) =>
-    client.callTool(request.params),
-  );
 
-  // when diffler exits the HTTP side drops; tear down so Claude sees the close
-  client.onclose = () => {
-    void server.close().finally(() => process.exit(0));
+  let upstream = null;
+  let connecting = null;
+
+  const connect = async () => {
+    const client = new Client({ name: "diffler-mcp-proxy", version: "0.1.0" });
+    await client.connect(new StreamableHTTPClientTransport(new URL(resolveUrl(opts))));
+    // cache synchronously after the await so a later close can't race ahead of it
+    upstream = client;
+    const drop = () => {
+      if (upstream === client) {
+        upstream = null;
+      }
+    };
+    client.onclose = drop;
+    client.onerror = drop;
+    server.sendToolListChanged?.().catch(() => {});
+    return client;
   };
 
+  const ensureUpstream = () => {
+    if (upstream) {
+      return Promise.resolve(upstream);
+    }
+    if (!connecting) {
+      connecting = connect().finally(() => {
+        connecting = null;
+      });
+    }
+    return connecting;
+  };
+
+  const withUpstream = async (fn) => {
+    try {
+      return await fn(await ensureUpstream());
+    } catch {
+      upstream = null;
+      return await fn(await ensureUpstream());
+    }
+  };
+
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    try {
+      return await withUpstream((client) => client.listTools());
+    } catch {
+      return { tools: [] };
+    }
+  });
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    try {
+      return await withUpstream((client) => client.callTool(request.params));
+    } catch (err) {
+      upstream = null;
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text",
+            text: `diffler isn't reachable — is it running in this repo? (${err.message ?? err})`,
+          },
+        ],
+      };
+    }
+  });
+
   await server.connect(new StdioServerTransport());
+  void ensureUpstream().catch(() => {});
 }
 
 main().catch((err) => {
