@@ -27,6 +27,7 @@
     "claude"
   ],
   "scripts": {
+    "test": "node --test",
     "prepublishOnly": "node --check index.js"
   },
   "publishConfig": {
