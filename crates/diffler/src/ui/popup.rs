@@ -345,18 +345,24 @@ pub struct InputModal {
 /// Buffer lines visible at once before the modal stops growing.
 const INPUT_MAX_LINES: usize = 8;
 
+/// Width of the input box (clamped to the terminal), comfortable for prose.
+const INPUT_WIDTH: u16 = 72;
+
 impl InputModal {
     pub fn render(&self, frame: &mut Frame<'_>, theme: &Theme) {
-        let mut lines = self.input_lines(theme);
+        let box_w = INPUT_WIDTH.min(frame.area().width.max(8));
+        let inner = (box_w as usize).saturating_sub(2).max(1);
+        let mut lines = self.wrapped_lines(theme, inner);
+        // keep the tail visible (the cursor sits where you're typing)
         let overflow = lines.len().saturating_sub(INPUT_MAX_LINES);
         lines.drain(..overflow);
         lines.push(Line::styled(
-            "enter submit  a-enter newline  esc cancel",
+            "enter submit  ·  a-enter newline  ·  esc cancel",
             Style::new().fg(theme.dim).bg(theme.panel),
         ));
         // +2 for the borders
         let height = lines.len() as u16 + 2;
-        let area = centered(frame.area(), frame.area().width.min(60), height);
+        let area = centered(frame.area(), box_w, height);
         frame.render_widget(Clear, area);
         let block = bordered_block(theme, &format!(" {} ", self.title));
         frame.render_widget(
@@ -367,36 +373,76 @@ impl InputModal {
         );
     }
 
-    fn input_lines(&self, theme: &Theme) -> Vec<Line<'static>> {
+    /// The buffer as display lines, each logical line word-wrapped to `width`,
+    /// with the cursor drawn as a highlighted cell at its char position. A
+    /// cursor at a line's end (on the newline) renders as a trailing cell.
+    fn wrapped_lines(&self, theme: &Theme, width: usize) -> Vec<Line<'static>> {
         let fg = Style::new().fg(theme.fg).bg(theme.panel);
         let cursor_cell = Style::new().fg(theme.bg).bg(theme.accent);
         let mut lines = Vec::new();
-        // char offset of the current line's start within the buffer; the
-        // cursor at a line's end (on the newline itself) renders as a
-        // trailing placeholder cell
         let mut offset = 0usize;
-        for text in self.buffer.split('\n') {
-            let len = text.chars().count();
-            if (offset..=offset + len).contains(&self.cursor) {
-                let column = self.cursor - offset;
-                let before: String = text.chars().take(column).collect();
-                let at: String = text
-                    .chars()
-                    .nth(column)
-                    .map_or_else(|| " ".to_owned(), |c| c.to_string());
-                let after: String = text.chars().skip(column + 1).collect();
-                lines.push(Line::from(vec![
-                    Span::styled(before, fg),
-                    Span::styled(at, cursor_cell),
-                    Span::styled(after, fg),
-                ]));
-            } else {
-                lines.push(Line::styled(text.to_owned(), fg));
+        for logical in self.buffer.split('\n') {
+            let chars: Vec<char> = logical.chars().collect();
+            let len = chars.len();
+            let cursor_here = (offset..=offset + len).contains(&self.cursor);
+            let cursor_col = self.cursor.saturating_sub(offset);
+            for (start, end) in wrap_ranges(&chars, width) {
+                let last = end >= len;
+                let owns = cursor_here
+                    && cursor_col >= start
+                    && (cursor_col < end || (last && cursor_col == len));
+                if owns {
+                    let col = cursor_col - start;
+                    let before: String = chars
+                        .get(start..start + col)
+                        .unwrap_or(&[])
+                        .iter()
+                        .collect();
+                    let at = chars
+                        .get(start + col)
+                        .map_or_else(|| " ".to_owned(), char::to_string);
+                    let rest = (start + col + 1).min(end);
+                    let after: String = chars.get(rest..end).unwrap_or(&[]).iter().collect();
+                    lines.push(Line::from(vec![
+                        Span::styled(before, fg),
+                        Span::styled(at, cursor_cell),
+                        Span::styled(after, fg),
+                    ]));
+                } else {
+                    let seg: String = chars.get(start..end).unwrap_or(&[]).iter().collect();
+                    lines.push(Line::styled(seg, fg));
+                }
             }
             offset += len + 1;
         }
         lines
     }
+}
+
+/// Char ranges to break a logical line into display segments of at most `width`,
+/// preferring a break after the last space so words stay intact (long words hard
+/// break). Every char lands in exactly one range, so cursor offsets stay exact.
+/// An empty line yields a single empty range so it still renders (and can hold
+/// the cursor).
+fn wrap_ranges(chars: &[char], width: usize) -> Vec<(usize, usize)> {
+    let len = chars.len();
+    if len == 0 {
+        return vec![(0, 0)];
+    }
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    while start < len {
+        let mut end = (start + width).min(len);
+        if end < len
+            && let Some(space) = (start..end).rev().find(|&i| chars.get(i) == Some(&' '))
+            && space > start
+        {
+            end = space + 1; // keep the space on this line, wrap the next word
+        }
+        ranges.push((start, end));
+        start = end;
+    }
+    ranges
 }
 
 /// Centered pick-one list (branches) with a j/k cursor.
@@ -630,6 +676,24 @@ mod tests {
             cursor: 17,
         };
         let terminal = render(|frame, theme| modal.render(frame, theme));
+        insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn input_modal_wraps_a_long_line_onto_multiple_rows() {
+        // a single logical line longer than the box wraps instead of overflowing
+        let long = "the quick brown fox jumps over the lazy dog and then keeps on \
+                    running well past the right edge of the comment box";
+        let modal = InputModal {
+            title: "Comment".to_owned(),
+            buffer: long.to_owned(),
+            cursor: long.chars().count(),
+        };
+        let terminal = render(|frame, theme| modal.render(frame, theme));
+        let content = terminal.backend().to_string();
+        // the long line wrapped across rows with words kept intact
+        assert!(content.contains("keeps on running"), "{content}");
+        assert!(content.contains("well past the right edge"), "{content}");
         insta::assert_snapshot!(terminal.backend());
     }
 

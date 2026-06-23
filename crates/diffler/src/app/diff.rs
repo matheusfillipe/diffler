@@ -13,7 +13,9 @@ use diffler_core::session::{Anchor, Comment, CommentStatus, Session};
 pub use diffler_core::source::ReviewSource as DiffSource;
 use diffler_core::syntax::ScopeIndex;
 
-use super::{App, InputOp, Modal, Screen};
+#[cfg(test)]
+use super::Modal;
+use super::{App, InputOp, Screen};
 use crate::config::FileLayout;
 use crate::keymap::Action;
 use crate::tree::{self, TreeNode, TreeRow};
@@ -705,7 +707,10 @@ impl App {
             // copy is file/all scoped, not line scoped: works from the list
             Action::CopyFileFeedback => self.copy_file_or_selection(),
             Action::CopyAllFeedback => self.copy_feedback(false),
-            Action::Comment | Action::VisualSelect | Action::Reply | Action::Resolve => {
+            // a file in the sidebar takes a whole-file comment; the line-scoped
+            // actions still need the diff pane
+            Action::Comment => self.comment_on_selected_file(),
+            Action::VisualSelect | Action::Reply | Action::Resolve => {
                 self.info("move into the diff to comment");
             }
             _ => {}
@@ -1193,6 +1198,17 @@ impl App {
     }
 
     fn comment_at_cursor(&mut self) {
+        // `c` over an existing comment edits it; otherwise it starts a new one
+        if let Some(comment) = self.comment_at_cursor_row() {
+            let comment_id = comment.id.clone();
+            let body = comment.body.clone();
+            self.open_input(
+                "Edit comment".to_owned(),
+                body,
+                InputOp::EditComment { comment_id },
+            );
+            return;
+        }
         let Some(anchor) = self.comment_anchor() else {
             self.info("move to a diff line to comment");
             return;
@@ -1202,12 +1218,33 @@ impl App {
             (Some(line), None) => format!("Comment {}:{line}", anchor.file),
             _ => format!("Comment {}", anchor.file),
         };
-        self.modal = Some(Modal::Input {
-            title,
-            buffer: String::new(),
-            cursor: 0,
-            on_submit: InputOp::Comment { anchor },
-        });
+        self.open_input(title, String::new(), InputOp::Comment { anchor });
+    }
+
+    /// `c` in the file sidebar: a whole-file comment (a line-less anchor) on the
+    /// selected file, rendered above that file's diff.
+    fn comment_on_selected_file(&mut self) {
+        let Some(path) = self
+            .diff
+            .as_ref()
+            .and_then(|d| d.selected_path(&self.review))
+        else {
+            self.info("select a file to comment on");
+            return;
+        };
+        let anchor = Anchor {
+            file: path.clone(),
+            line: None,
+            line_end: None,
+            on_old_side: false,
+            hunk: None,
+            line_text: None,
+        };
+        self.open_input(
+            format!("Comment {path}"),
+            String::new(),
+            InputOp::Comment { anchor },
+        );
     }
 
     fn comment_at_cursor_row(&self) -> Option<&Comment> {
@@ -1225,12 +1262,11 @@ impl App {
         };
         let comment_id = comment.id.clone();
         let author = comment.author.clone();
-        self.modal = Some(Modal::Input {
-            title: format!("Reply to {author}"),
-            buffer: String::new(),
-            cursor: 0,
-            on_submit: InputOp::Reply { comment_id },
-        });
+        self.open_input(
+            format!("Reply to {author}"),
+            String::new(),
+            InputOp::Reply { comment_id },
+        );
     }
 
     fn resolve_at_cursor(&mut self) {
@@ -2054,6 +2090,35 @@ mod tests {
     }
 
     #[test]
+    fn c_over_a_comment_edits_it() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        select_file(&mut app, "src/lib.rs");
+        let position = added_line_position(&app);
+        app.diff.as_mut().unwrap().cursor = position;
+        app.handle(key('c'));
+        type_text(&mut app, "old note");
+        app.handle(key('\n'));
+
+        // move onto the comment row; `c` edits, prefilled with the body
+        app.diff.as_mut().unwrap().cursor = added_line_position(&app) + 1;
+        app.handle(key('c'));
+        let Some(Modal::Input { buffer, .. }) = &app.modal else {
+            panic!("edit modal with the current body");
+        };
+        assert_eq!(buffer, "old note", "prefilled with the existing body");
+        // clear and retype
+        for _ in 0.."old note".len() {
+            app.handle(crate::test_support::key_backspace());
+        }
+        type_text(&mut app, "new note");
+        app.handle(key('\n'));
+
+        assert_eq!(app.review.session.comments.len(), 1, "edited, not added");
+        assert_eq!(app.review.session.comments[0].body, "new note");
+    }
+
+    #[test]
     fn reply_off_a_comment_row_hints() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
@@ -2064,14 +2129,30 @@ mod tests {
     }
 
     #[test]
-    fn comment_keys_in_the_list_hint_to_move_into_the_diff() {
+    fn c_in_the_file_list_comments_on_the_whole_file() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
         assert_eq!(focus(&app), Pane::List);
         app.handle(key('c'));
+        assert!(
+            matches!(app.modal, Some(Modal::Input { .. })),
+            "c on a file opens a comment, not a hint"
+        );
+        type_text(&mut app, "whole-file note");
+        app.handle(key('\n'));
+        let comment = app.review.session.comments.first().expect("a file comment");
+        assert_eq!(comment.anchor.line, None, "file-level anchor (no line)");
+        assert!(comment.body.contains("whole-file note"));
+    }
+
+    #[test]
+    fn line_scoped_keys_in_the_list_hint_to_move_into_the_diff() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        assert_eq!(focus(&app), Pane::List);
+        app.handle(key('r')); // reply needs a comment row, only in the diff pane
         let message = app.message.expect("message");
         assert!(message.text.contains("move into the diff"));
-        assert!(app.review.session.comments.is_empty());
     }
 
     #[test]

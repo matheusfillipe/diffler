@@ -106,8 +106,12 @@ impl Session {
         self.comments.last().expect("just pushed")
     }
 
+    fn comment_mut(&mut self, comment_id: &str) -> Option<&mut Comment> {
+        self.comments.iter_mut().find(|c| c.id == comment_id)
+    }
+
     pub fn reply(&mut self, comment_id: &str, author: &str, body: &str) -> bool {
-        let Some(comment) = self.comments.iter_mut().find(|c| c.id == comment_id) else {
+        let Some(comment) = self.comment_mut(comment_id) else {
             return false;
         };
         comment.replies.push(Reply {
@@ -122,10 +126,19 @@ impl Session {
     }
 
     pub fn resolve(&mut self, comment_id: &str) -> bool {
-        let Some(comment) = self.comments.iter_mut().find(|c| c.id == comment_id) else {
+        let Some(comment) = self.comment_mut(comment_id) else {
             return false;
         };
         comment.status = CommentStatus::Resolved;
+        true
+    }
+
+    /// Replace a comment's body in place (status, replies, and anchor are kept).
+    pub fn edit_comment(&mut self, comment_id: &str, body: &str) -> bool {
+        let Some(comment) = self.comment_mut(comment_id) else {
+            return false;
+        };
+        body.clone_into(&mut comment.body);
         true
     }
 
@@ -218,6 +231,22 @@ mod tests {
     fn resolve_missing_comment_returns_false() {
         let mut s = Session::default();
         assert!(!s.resolve("nope"));
+    }
+
+    #[test]
+    fn edit_comment_replaces_body_and_keeps_status() {
+        let mut s = Session::default();
+        let id = s
+            .add_comment("mattf", anchor("a.txt"), "old body")
+            .id
+            .clone();
+        assert!(s.reply(&id, "agent", "ack"));
+        assert!(s.edit_comment(&id, "new body"));
+        let c = s.comments.iter().find(|c| c.id == id).expect("comment");
+        assert_eq!(c.body, "new body");
+        assert_eq!(c.status, CommentStatus::Replied, "status is untouched");
+        assert_eq!(c.replies.len(), 1, "replies are untouched");
+        assert!(!s.edit_comment("nope", "x"));
     }
 
     #[test]

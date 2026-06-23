@@ -139,6 +139,10 @@ pub fn esc_key() -> AppEvent {
     AppEvent::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
 }
 
+pub fn key_backspace() -> AppEvent {
+    AppEvent::Key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE))
+}
+
 pub fn mouse_scroll(down: bool, col: u16, row: u16) -> AppEvent {
     use crossterm::event::{MouseEvent, MouseEventKind};
     let kind = if down {
