@@ -58,9 +58,7 @@ async fn start(seed: impl FnOnce(&mut App)) -> Harness {
             }
         }
     });
-    let handle = mcp::spawn_mcp(tx.clone(), feedback_rx, 0)
-        .await
-        .expect("mcp server");
+    let handle = mcp::spawn_mcp(tx.clone(), feedback_rx, 0).expect("mcp server");
 
     let transport =
         StreamableHttpClientTransport::from_uri(format!("http://127.0.0.1:{}/mcp", handle.port));

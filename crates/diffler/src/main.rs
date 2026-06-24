@@ -120,7 +120,7 @@ async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<
         app.watcher_healthy = Some(handle.healthy.clone());
     }
     let mcp = if app.config.mcp.enabled {
-        match mcp::spawn_mcp(tx.clone(), app.feedback_tx.subscribe(), app.config.mcp.port).await {
+        match mcp::spawn_mcp(tx.clone(), app.feedback_tx.subscribe(), app.config.mcp.port) {
             Ok(handle) => {
                 app.mcp_port = Some(handle.port);
                 let _ = mcp::write_endpoint(&app.review.repo_root, handle.port);

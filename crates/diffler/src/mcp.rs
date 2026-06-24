@@ -6,6 +6,7 @@
 
 use std::fmt;
 use std::io::ErrorKind;
+use std::net::SocketAddr;
 use std::path::Path;
 use std::time::Duration;
 
@@ -546,18 +547,27 @@ pub struct McpHandle {
     pub handle: JoinHandle<()>,
 }
 
+// SO_REUSEADDR lets a restart reclaim the same port while the prior socket is
+// still in TIME_WAIT, so the published URL stays valid across restarts.
+fn bind_reusable(addr: SocketAddr) -> std::io::Result<tokio::net::TcpListener> {
+    let socket = tokio::net::TcpSocket::new_v4()?;
+    socket.set_reuseaddr(true)?;
+    socket.bind(addr)?;
+    socket.listen(1024)
+}
+
 /// Serve the MCP tools over streamable HTTP at `127.0.0.1:{port}/mcp`.
 /// A taken port falls back to an ephemeral one instead of failing the TUI;
 /// the returned handle carries the port that actually bound.
-pub async fn spawn_mcp(
+pub fn spawn_mcp(
     tx: UnboundedSender<AppEvent>,
     feedback_rx: watch::Receiver<u64>,
     port: u16,
 ) -> std::io::Result<McpHandle> {
-    let listener = match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+    let listener = match bind_reusable(SocketAddr::from(([127, 0, 0, 1], port))) {
         Ok(listener) => listener,
         Err(e) if e.kind() == ErrorKind::AddrInUse => {
-            tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?
+            bind_reusable(SocketAddr::from(([127, 0, 0, 1], 0)))?
         }
         Err(e) => return Err(e),
     };
@@ -898,7 +908,7 @@ mod tests {
         let busy_port = holder.local_addr().unwrap().port();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let (_feedback_tx, feedback_rx) = tokio::sync::watch::channel(0u64);
-        let handle = spawn_mcp(tx, feedback_rx, busy_port).await.unwrap();
+        let handle = spawn_mcp(tx, feedback_rx, busy_port).unwrap();
         assert_ne!(
             handle.port, busy_port,
             "should have bound to a different ephemeral port"
