@@ -12,3 +12,6 @@ flake.lock
 *.bun-build
 .claude/
 .diffler/
+
+# local design docs / plans, not for the public repo
+docs/superpowers/

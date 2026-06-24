@@ -2,9 +2,7 @@
 
 [![crates.io](https://img.shields.io/crates/v/diffler.svg)](https://crates.io/crates/diffler)
 [![npm](https://img.shields.io/npm/v/@mattfillipe/diffler.svg)](https://www.npmjs.com/package/@mattfillipe/diffler)
-[![IRC](https://img.shields.io/badge/IRC-irc.h4ks.com-blue.svg)](ircs://irc.h4ks.com:6697)
-
-> Work in progress. Not published yet.
+[![IRC](https://img.shields.io/badge/IRC-chat.h4ks.com-blue.svg)](https://chat.h4ks.com)
 
 Terminal code review for AI coding agents. A neogit-style TUI you launch in a
 repo alongside Claude Code or any MCP-compatible agent: it shows a live diff of
@@ -101,8 +99,8 @@ capture means the terminal's own text selection needs the usual override
 
 ## MCP tools
 
-`review_status`, `get_diff`, `get_comments`, `reply_comment`,
-`propose_resolve`, `mark_viewed`, `wait_for_feedback`.
+While the TUI is running, diffler serves an MCP server the agent uses to read
+your review and respond in place. See [docs/mcp.md](docs/mcp.md).
 
 ## Configuration
 
