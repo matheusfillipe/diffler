@@ -1,5 +1,9 @@
 # diffler
 
+[![crates.io](https://img.shields.io/crates/v/diffler.svg)](https://crates.io/crates/diffler)
+[![npm](https://img.shields.io/npm/v/@mattfillipe/diffler.svg)](https://www.npmjs.com/package/@mattfillipe/diffler)
+[![IRC](https://img.shields.io/badge/IRC-irc.h4ks.com-blue.svg)](ircs://irc.h4ks.com:6697)
+
 > Work in progress. Not published yet.
 
 Terminal code review for AI coding agents. A neogit-style TUI you launch in a
