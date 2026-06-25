@@ -3,6 +3,10 @@
 //! `gh run view`. Logs, steps, artifacts, and annotations all come from the REST
 //! API via `gh api` — the job-log archive 404s until the job finishes, so an
 //! in-progress job returns its live step states with the content still empty.
+//! A `uses:` job calls a reusable workflow whose jobs the caller YAML doesn't
+//! list; that workflow is fetched and inlined so its jobs appear with real edges.
+
+use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -45,6 +49,96 @@ impl GitHubProvider {
         self.runner
             .run("gh", &["api".to_owned(), path.to_owned()])
             .await
+    }
+
+    /// `gh api` returning the raw file body (not the base64 contents envelope).
+    async fn api_raw(&self, path: &str) -> Result<String> {
+        self.runner
+            .run(
+                "gh",
+                &[
+                    "api".to_owned(),
+                    "-H".to_owned(),
+                    "Accept: application/vnd.github.raw".to_owned(),
+                    path.to_owned(),
+                ],
+            )
+            .await
+    }
+
+    /// Fetch and parse the workflow a `uses:` points at — a local `./path` (read
+    /// at the run's commit) or a remote `owner/repo/path@ref`.
+    async fn fetch_reusable(&self, uses: &str, head_sha: &str) -> Result<Vec<JobSpec>> {
+        let path = reusable_contents_path(uses, head_sha).ok_or_else(|| CiError::Parse {
+            what: "reusable uses".into(),
+            message: uses.to_owned(),
+        })?;
+        parse_workflow(&self.api_raw(&path).await?)
+    }
+
+    /// Map the caller workflow's specs onto run jobs, inlining each reusable
+    /// `uses:` job's fetched children with edges rewired across the boundary. A
+    /// reusable call whose workflow can't be fetched stays a single node.
+    async fn expand_jobs(
+        &self,
+        specs: &[JobSpec],
+        run_jobs: &[RunJob],
+        head_sha: &str,
+    ) -> Vec<CiJob> {
+        // value carries the caller's label: child node ids scope by it (not the
+        // id) because that's what GitHub prefixes run-job names with, keeping the
+        // ids matchable for status and log lookup
+        let mut children: HashMap<&str, (&str, Vec<JobSpec>)> = HashMap::new();
+        for spec in specs {
+            if let Some(uses) = &spec.uses
+                && let Ok(fetched) = self.fetch_reusable(uses, head_sha).await
+                && !fetched.is_empty()
+            {
+                children.insert(spec.id.as_str(), (spec.label.as_str(), fetched));
+            }
+        }
+
+        let mut jobs = Vec::new();
+        for spec in specs {
+            match children.get(spec.id.as_str()) {
+                Some((_, kids)) => {
+                    for kid in kids {
+                        let id = scope(&spec.label, &kid.id);
+                        let status_label = scope(&spec.label, &kid.label);
+                        let needs = if kid.needs.is_empty() {
+                            spec.needs
+                                .iter()
+                                .flat_map(|d| resolve_dep(d, &children))
+                                .map(JobId)
+                                .collect()
+                        } else {
+                            kid.needs
+                                .iter()
+                                .map(|n| JobId(scope(&spec.label, n)))
+                                .collect()
+                        };
+                        jobs.push(CiJob {
+                            name: child_display(&id, &status_label, run_jobs),
+                            status: aggregate_status(&id, &status_label, run_jobs),
+                            id: JobId(id),
+                            needs,
+                        });
+                    }
+                }
+                None => jobs.push(CiJob {
+                    id: JobId(spec.id.clone()),
+                    name: spec.label.clone(),
+                    status: aggregate_status(&spec.id, &spec.label, run_jobs),
+                    needs: spec
+                        .needs
+                        .iter()
+                        .flat_map(|d| resolve_dep(d, &children))
+                        .map(JobId)
+                        .collect(),
+                }),
+            }
+        }
+        jobs
     }
 
     async fn artifacts(&self, run: &RunId) -> Result<Vec<Artifact>> {
@@ -162,15 +256,7 @@ impl CiProvider for GitHubProvider {
                 })
                 .collect()
         } else {
-            specs
-                .iter()
-                .map(|spec| CiJob {
-                    id: JobId(spec.id.clone()),
-                    name: spec.label.clone(),
-                    status: aggregate_status(&spec.id, &spec.label, &view.jobs),
-                    needs: spec.needs.iter().cloned().map(JobId).collect(),
-                })
-                .collect()
+            self.expand_jobs(&specs, &view.jobs, &view.head_sha).await
         };
         Ok(RunDetail {
             run: view.into_run(run.clone()),
@@ -265,11 +351,13 @@ impl CiProvider for GitHubProvider {
     }
 }
 
-/// A workflow job's structure from the YAML.
+/// A workflow job's structure from the YAML. `uses` is set when the job calls a
+/// reusable workflow instead of running steps.
 struct JobSpec {
     id: String,
     label: String,
     needs: Vec<String>,
+    uses: Option<String>,
 }
 
 /// The workflow's display `name:` (what `gh run list` reports as `workflowName`),
@@ -309,6 +397,10 @@ fn parse_workflow(yaml: &str) -> Result<Vec<JobSpec>> {
             id: id.to_owned(),
             label,
             needs: needs_of(job),
+            uses: job
+                .get("uses")
+                .and_then(serde_norway::Value::as_str)
+                .map(str::to_owned),
         });
     }
     Ok(specs)
@@ -325,13 +417,79 @@ fn needs_of(job: &serde_norway::Value) -> Vec<String> {
     }
 }
 
-/// A matrix job (`test`) expands into several run jobs (`test (ubuntu-latest)`).
-/// Match by exact name/id or the `name (` matrix prefix.
+/// GitHub's naming for a reusable workflow's job, under its caller.
+fn scope(caller: &str, child: &str) -> String {
+    format!("{caller} / {child}")
+}
+
+/// The `gh api` contents path for a `uses:` target — a local `./path` resolved
+/// at the run's commit, or a remote `owner/repo/path@ref`. `None` if malformed.
+fn reusable_contents_path(uses: &str, head_sha: &str) -> Option<String> {
+    if let Some(local) = uses.strip_prefix("./") {
+        return Some(format!(
+            "repos/{{owner}}/{{repo}}/contents/{local}?ref={head_sha}"
+        ));
+    }
+    let (path, git_ref) = uses.rsplit_once('@')?;
+    let mut segments = path.splitn(3, '/');
+    let owner = segments.next()?;
+    let repo = segments.next()?;
+    let file = segments.next()?;
+    Some(format!(
+        "repos/{owner}/{repo}/contents/{file}?ref={git_ref}"
+    ))
+}
+
+/// The terminal children of an expanded caller (those no sibling needs), so a
+/// downstream dependent attaches to the reusable workflow's exit, not its entry.
+fn reusable_terminals(caller: &str, children: &[JobSpec]) -> Vec<String> {
+    let needed: HashSet<&str> = children
+        .iter()
+        .flat_map(|c| c.needs.iter().map(String::as_str))
+        .collect();
+    children
+        .iter()
+        .filter(|c| !needed.contains(c.id.as_str()))
+        .map(|c| scope(caller, &c.id))
+        .collect()
+}
+
+/// Resolve one `needs` entry to the node ids satisfying it: an expanded caller's
+/// terminal children (scoped by its label, matching their node ids), or the
+/// dependency unchanged.
+fn resolve_dep(dep: &str, expanded: &HashMap<&str, (&str, Vec<JobSpec>)>) -> Vec<String> {
+    match expanded.get(dep) {
+        Some((label, children)) => reusable_terminals(label, children),
+        None => vec![dep.to_owned()],
+    }
+}
+
+/// The child's run-job name (resolves a `${{ }}` `name:` to its runtime value),
+/// or the scoped id before the job exists.
+fn child_display(scoped_id: &str, scoped_label: &str, jobs: &[RunJob]) -> String {
+    if scoped_label.contains("${{") {
+        return jobs
+            .iter()
+            .find(|j| job_matches(&j.name, scoped_id, scoped_label))
+            .map_or_else(|| scoped_id.to_owned(), |j| j.name.clone());
+    }
+    scoped_label.to_owned()
+}
+
+/// Whether a run job belongs to a spec. Beyond an exact name/id match this
+/// covers a matrix leg (`name (os)`), a reusable child (`caller / child`, with
+/// further ` / ` for nested calls), and a `${{ }}` name (matched by its prefix).
+fn name_matches(run_job_name: &str, candidate: &str) -> bool {
+    if let Some((prefix, _)) = candidate.split_once("${{") {
+        return !prefix.is_empty() && run_job_name.starts_with(prefix);
+    }
+    run_job_name == candidate
+        || run_job_name.starts_with(&format!("{candidate} ("))
+        || run_job_name.starts_with(&format!("{candidate} / "))
+}
+
 fn job_matches(run_job_name: &str, id: &str, label: &str) -> bool {
-    run_job_name == label
-        || run_job_name == id
-        || run_job_name.starts_with(&format!("{label} ("))
-        || run_job_name.starts_with(&format!("{id} ("))
+    name_matches(run_job_name, label) || name_matches(run_job_name, id)
 }
 
 /// Worst status across a job's matching run jobs, so one red leg shows red.
@@ -587,6 +745,37 @@ jobs:
     runs-on: ubuntu-latest
 ";
 
+    // caller with a reusable `deploy` job, and the reusable workflow it fetches —
+    // mirrors a real deploy pipeline (a nested `uses:` and a `${{ }}` job name)
+    const DEPLOY_WORKFLOW: &str = r"
+name: Auth Service Deploy
+on: push
+jobs:
+  audit:
+    name: Audit dependencies
+    runs-on: ubuntu-latest
+  deploy:
+    name: Build and deploy
+    needs: audit
+    uses: syte-tech/syte-ci-tooling/.github/workflows/app-deploy.yml@main
+";
+
+    const APP_DEPLOY_WORKFLOW: &str = r"
+name: Build and Deploy Application
+on:
+  workflow_call:
+jobs:
+  prepare-deployment:
+    runs-on: ubuntu-latest
+  build-and-push:
+    needs: [prepare-deployment]
+    uses: syte-tech/syte-ci-tooling/.github/workflows/docker-build-push.yml@main
+  deploy:
+    name: Deploy to ${{ needs.prepare-deployment.outputs.env }}
+    needs: [prepare-deployment, build-and-push]
+    runs-on: ubuntu-latest
+";
+
     fn provider(responses: &[(&'static str, &str)]) -> GitHubProvider {
         GitHubProvider::new(
             Box::new(RecordingRunner::new(responses)),
@@ -684,6 +873,100 @@ jobs:
             JobStatus::Queued,
             "publish not started"
         );
+    }
+
+    #[tokio::test]
+    async fn run_detail_inlines_a_reusable_workflows_jobs_with_edges() {
+        let view = r#"{
+          "displayTitle":"deploy","headBranch":"main","headSha":"abc","status":"in_progress",
+          "conclusion":null,"workflowName":"Auth Service Deploy",
+          "createdAt":"2026-06-18T10:00:00Z","url":"https://gh/run/9",
+          "jobs":[
+            {"databaseId":1,"name":"Audit dependencies","status":"completed","conclusion":"success"},
+            {"databaseId":2,"name":"Build and deploy / prepare-deployment","status":"completed","conclusion":"success"},
+            {"databaseId":3,"name":"Build and deploy / build-and-push / build-and-push-to-registry","status":"in_progress","conclusion":null},
+            {"databaseId":4,"name":"Build and deploy / Deploy to staging","status":"queued","conclusion":null}
+          ]
+        }"#;
+        let detail = GitHubProvider::new(
+            Box::new(RecordingRunner::new(&[
+                ("run view", view),
+                (
+                    "contents/.github/workflows/app-deploy.yml",
+                    APP_DEPLOY_WORKFLOW,
+                ),
+            ])),
+            vec![DEPLOY_WORKFLOW.to_owned()],
+            None,
+        )
+        .run_detail(&RunId("9".into()))
+        .await
+        .expect("detail");
+
+        let by_id = |id: &str| detail.jobs.iter().find(|j| j.id.0 == id).cloned();
+        let ids: Vec<&str> = detail.jobs.iter().map(|j| j.id.0.as_str()).collect();
+        // node ids scope by the caller's label, matching GitHub's run-job names
+        assert_eq!(
+            ids,
+            [
+                "audit",
+                "Build and deploy / prepare-deployment",
+                "Build and deploy / build-and-push",
+                "Build and deploy / deploy"
+            ],
+            "the reusable `deploy` job is replaced by the fetched workflow's jobs"
+        );
+
+        // the entry child inherits the caller's upstream (`audit`)
+        assert_eq!(
+            by_id("Build and deploy / prepare-deployment")
+                .unwrap()
+                .needs,
+            vec![JobId("audit".into())]
+        );
+        // internal edges from the reusable workflow's own `needs`
+        assert_eq!(
+            by_id("Build and deploy / deploy").unwrap().needs,
+            vec![
+                JobId("Build and deploy / prepare-deployment".into()),
+                JobId("Build and deploy / build-and-push".into())
+            ]
+        );
+        // a `${{ }}` job name resolves to its run-job value
+        assert_eq!(
+            by_id("Build and deploy / deploy").unwrap().name,
+            "Build and deploy / Deploy to staging"
+        );
+        // a nested reusable child takes the worst status of its run legs
+        assert_eq!(
+            by_id("Build and deploy / build-and-push").unwrap().status,
+            JobStatus::Running
+        );
+        assert_eq!(
+            by_id("Build and deploy / prepare-deployment")
+                .unwrap()
+                .status,
+            JobStatus::Ok
+        );
+        assert_eq!(by_id("audit").unwrap().status, JobStatus::Ok);
+    }
+
+    #[tokio::test]
+    async fn job_log_resolves_an_inlined_reusable_child_node() {
+        // the node id is the label-scoped child; the run job is the nested leaf,
+        // matched by the `caller / child / ...` prefix
+        let jobs = r#"{"jobs":[{"id":7,
+            "name":"Build and deploy / build-and-push / build-and-push-to-registry",
+            "status":"completed","conclusion":"success","steps":[]}]}"#;
+        let chunk = provider(&[("runs/9/jobs", jobs), ("/logs", "pushed\n")])
+            .job_log(
+                &RunId("9".into()),
+                &JobId("Build and deploy / build-and-push".into()),
+                0,
+            )
+            .await
+            .expect("log resolves for an inlined child");
+        assert!(chunk.text.contains("pushed"));
     }
 
     #[tokio::test]
