@@ -76,18 +76,17 @@ impl GitHubProvider {
         parse_workflow(&self.api_raw(&path).await?)
     }
 
-    /// Map the caller workflow's specs onto run jobs, inlining each reusable
-    /// `uses:` job's fetched children with edges rewired across the boundary. A
-    /// reusable call whose workflow can't be fetched stays a single node.
+    /// Inline each reusable `uses:` job's fetched children with edges rewired
+    /// across the boundary; one that can't be fetched stays a single node.
     async fn expand_jobs(
         &self,
         specs: &[JobSpec],
         run_jobs: &[RunJob],
         head_sha: &str,
     ) -> Vec<CiJob> {
-        // value carries the caller's label: child node ids scope by it (not the
-        // id) because that's what GitHub prefixes run-job names with, keeping the
-        // ids matchable for status and log lookup
+        // child node ids scope by the caller's label (the value here), not its
+        // id: that's what GitHub prefixes run-job names with, so the ids stay
+        // matchable for status and log lookup
         let mut children: HashMap<&str, (&str, Vec<JobSpec>)> = HashMap::new();
         for spec in specs {
             if let Some(uses) = &spec.uses

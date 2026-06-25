@@ -547,10 +547,9 @@ pub struct McpHandle {
     pub handle: JoinHandle<()>,
 }
 
-// SO_REUSEADDR lets a restart reclaim the same port while the prior socket is
-// still in TIME_WAIT, so the published URL stays valid across restarts. Unix
-// only: on Windows it instead permits hijacking a live port (and errors
-// WSAEACCES rather than AddrInUse), which would defeat the busy-port fallback.
+// SO_REUSEADDR lets a restart reclaim the port while the old socket lingers in
+// TIME_WAIT. Unix only: on Windows it instead allows hijacking a live port and
+// errors WSAEACCES, defeating the busy-port fallback.
 fn bind_reusable(addr: SocketAddr) -> std::io::Result<tokio::net::TcpListener> {
     let socket = tokio::net::TcpSocket::new_v4()?;
     #[cfg(unix)]
