@@ -13,6 +13,7 @@ use crate::ci::model::{
 pub enum ProviderKind {
     GitHub,
     GitLab,
+    Forgejo,
 }
 
 #[async_trait]

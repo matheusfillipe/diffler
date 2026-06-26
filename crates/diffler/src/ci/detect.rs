@@ -58,6 +58,14 @@ fn classify(
                 host: self_hosted(Some(host)),
             });
         }
+        if host.eq_ignore_ascii_case("codeberg.org")
+            || host.to_ascii_lowercase().contains("forgejo")
+        {
+            return Some(Detected {
+                kind: ProviderKind::Forgejo,
+                host: Some(host.to_owned()),
+            });
+        }
     }
 
     // unknown host: fall back to config-file presence
@@ -87,6 +95,17 @@ mod tests {
             Some(Detected {
                 kind: ProviderKind::GitHub,
                 host: None
+            })
+        );
+    }
+
+    #[test]
+    fn codeberg_is_forgejo_and_carries_its_host() {
+        assert_eq!(
+            classify(Some("codeberg.org"), false, false, None),
+            Some(Detected {
+                kind: ProviderKind::Forgejo,
+                host: Some("codeberg.org".to_owned())
             })
         );
     }
