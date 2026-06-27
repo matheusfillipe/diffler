@@ -132,4 +132,6 @@ pub trait Vcs: Send {
     /// URL of the named remote (e.g. `origin`), if it exists. Used to detect the
     /// CI provider's host without shelling out.
     fn remote_url(&self, name: &str) -> Result<Option<String>, VcsError>;
+    /// Names of every configured remote, for multi-remote CI detection.
+    fn remotes(&self) -> Result<Vec<String>, VcsError>;
 }

@@ -158,6 +158,7 @@ impl WorkflowRun {
             }),
             status: map_status(&self.status, self.conclusion.as_deref()),
             url: (!self.url.is_empty()).then_some(self.url),
+            remote: None,
         }
     }
 }

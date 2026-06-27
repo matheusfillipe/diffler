@@ -185,19 +185,7 @@ async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<
         if let Some(request) = app.pending_ci.take() {
             // service the CI provider call off-thread; the result returns as an
             // event so the active CI screen stays live without blocking the loop
-            if let Some(detected) = app.ci_detected() {
-                let remote = app.review.vcs.remote_url("origin").ok().flatten();
-                let provider = ci::build_provider(
-                    &detected,
-                    &app.review.repo_root,
-                    app.head.branch.as_deref(),
-                    remote.as_deref(),
-                );
-                let tx = tx.clone();
-                tokio::spawn(async move {
-                    let _ = tx.send(run_ci_request(provider, request).await);
-                });
-            }
+            dispatch_ci(&app, request, &tx);
             continue;
         }
         let Some(event) = rx.recv().await else { break };
@@ -216,6 +204,60 @@ async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<
 
 /// Service a CI provider request off the event loop, turning the result (or
 /// error) into the matching [`AppEvent`] the loop folds back into the screen.
+/// Spawn the off-thread provider call(s) for a CI request: `Runs` aggregates
+/// every remote (tagging each run when more than one); detail/log/extras route
+/// to the run's remote, `Pr` to the primary.
+fn dispatch_ci(app: &App, request: CiRequest, tx: &mpsc::UnboundedSender<AppEvent>) {
+    let remotes = app.ci_remotes();
+    if remotes.is_empty() {
+        return;
+    }
+    let repo_root = app.review.repo_root.clone();
+    let branch = app.head.branch.clone();
+    let tx = tx.clone();
+    if matches!(request, CiRequest::Runs) {
+        let multi = remotes.len() > 1;
+        tokio::spawn(async move {
+            let mut all = Vec::new();
+            for remote in &remotes {
+                let provider = ci::build_provider(
+                    &remote.detected,
+                    &repo_root,
+                    branch.as_deref(),
+                    remote.url.as_deref(),
+                );
+                if let Ok(mut runs) = provider.list_runs(30).await {
+                    if multi {
+                        for run in &mut runs {
+                            run.remote = Some(remote.name.clone());
+                        }
+                    }
+                    all.extend(runs);
+                }
+            }
+            all.sort_by_key(|run| std::cmp::Reverse(run.created));
+            let _ = tx.send(AppEvent::CiRuns(all));
+        });
+        return;
+    }
+    let remote = match &request {
+        CiRequest::Detail(id) | CiRequest::Extras(id) => app.ci_remote_for_run(id),
+        CiRequest::Log { run, .. } => app.ci_remote_for_run(run),
+        _ => remotes.first().cloned(),
+    };
+    if let Some(remote) = remote {
+        let provider = ci::build_provider(
+            &remote.detected,
+            &repo_root,
+            branch.as_deref(),
+            remote.url.as_deref(),
+        );
+        tokio::spawn(async move {
+            let _ = tx.send(run_ci_request(provider, request).await);
+        });
+    }
+}
+
 async fn run_ci_request(
     provider: Box<dyn crate::ci::CiProvider + Send>,
     request: CiRequest,

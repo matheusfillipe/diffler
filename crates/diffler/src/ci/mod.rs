@@ -212,6 +212,7 @@ mod tests {
             created: None,
             status: JobStatus::Running,
             url: None,
+            remote: None,
         }
     }
 

@@ -554,6 +554,7 @@ impl RunListItem {
             created: parse_created(&self.created_at),
             status: map_status(&self.status, self.conclusion.as_deref()),
             url: Some(self.url),
+            remote: None,
         }
     }
 }
@@ -595,6 +596,7 @@ impl RunView {
             created: parse_created(&self.created_at),
             status: map_status(&self.status, self.conclusion.as_deref()),
             url: Some(self.url),
+            remote: None,
         }
     }
 }

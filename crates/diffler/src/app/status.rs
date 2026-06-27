@@ -1088,6 +1088,7 @@ mod tests {
             created: None,
             status: JobStatus::Running,
             url: None,
+            remote: None,
         }];
         cursor_to(&mut app, |row| matches!(row, Row::CiRun { .. }));
         app.handle(AppEvent::Key(KeyEvent::new(
