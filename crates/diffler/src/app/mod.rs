@@ -286,6 +286,9 @@ pub struct App {
     runs_cursor: usize,
     /// The run opened into the graph, re-polled for live status.
     open_run: Option<crate::ci::RunId>,
+    /// The remote the open run came from, so its detail/log/extras route to the
+    /// right forge (run ids aren't unique across forges).
+    open_run_remote: Option<String>,
     /// The open run's artifacts + annotations, shown below the DAG.
     pub extras: Option<crate::ci::RunExtras>,
     /// The job whose log is on the Logs screen.
@@ -434,6 +437,7 @@ impl App {
             pr_checked: false,
             runs_cursor: 0,
             open_run: None,
+            open_run_remote: None,
             extras: None,
             open_job: None,
             log_text: String::new(),
@@ -489,16 +493,11 @@ impl App {
         self.ci_remotes.clone()
     }
 
-    /// The CI remote a run came from (for routing detail/log requests), or the
-    /// primary remote when the run isn't tagged.
-    pub fn ci_remote_for_run(&self, id: &crate::ci::RunId) -> Option<CiRemote> {
-        let tagged = self
-            .runs
-            .iter()
-            .find(|run| &run.id == id)
-            .and_then(|run| run.remote.clone());
-        match tagged {
-            Some(name) => self.ci_remotes.iter().find(|r| r.name == name).cloned(),
+    /// The CI remote the open run came from (for routing its detail/log/extras),
+    /// or the primary remote when the run isn't tagged or none is open.
+    pub fn ci_remote_for_open_run(&self) -> Option<CiRemote> {
+        match &self.open_run_remote {
+            Some(name) => self.ci_remotes.iter().find(|r| &r.name == name).cloned(),
             None => self.ci_remotes.first().cloned(),
         }
     }
@@ -1083,6 +1082,7 @@ impl App {
             return;
         };
         let id = run.id.clone();
+        self.open_run_remote = run.remote.clone();
         self.open_run = Some(id.clone());
         self.extras = None;
         self.graph = Some(crate::graph::GraphView::new());
@@ -1287,6 +1287,7 @@ impl App {
             Some(Screen::Graph) => {
                 self.graph = None;
                 self.open_run = None;
+                self.open_run_remote = None;
                 self.extras = None;
             }
             Some(Screen::Logs) => {

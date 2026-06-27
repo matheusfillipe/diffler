@@ -241,8 +241,9 @@ fn dispatch_ci(app: &App, request: CiRequest, tx: &mpsc::UnboundedSender<AppEven
         return;
     }
     let remote = match &request {
-        CiRequest::Detail(id) | CiRequest::Extras(id) => app.ci_remote_for_run(id),
-        CiRequest::Log { run, .. } => app.ci_remote_for_run(run),
+        CiRequest::Detail(_) | CiRequest::Extras(_) | CiRequest::Log { .. } => {
+            app.ci_remote_for_open_run()
+        }
         _ => remotes.first().cloned(),
     };
     if let Some(remote) = remote {
