@@ -57,7 +57,18 @@ impl ForgejoProvider {
             "https://{}/api/v1/repos/{}/{path}",
             self.host, self.repo
         ));
-        self.runner.run("curl", &args).await
+        // a failed exec embeds the argv in the error, which the status bar
+        // renders — never let the token through
+        self.runner.run("curl", &args).await.map_err(|err| {
+            let Some(token) = &self.token else { return err };
+            match err {
+                CiError::Exec { cmd, message } => CiError::Exec {
+                    cmd: cmd.replace(token.as_str(), "***"),
+                    message: message.replace(token.as_str(), "***"),
+                },
+                other => other,
+            }
+        })
     }
 }
 
@@ -215,6 +226,33 @@ mod tests {
         assert_eq!(runs[0].commit, "abc1234");
         assert_eq!(runs[0].status, JobStatus::Ok);
         assert!(runs[0].created.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_failed_call_never_leaks_the_token() {
+        struct FailingRunner;
+        #[async_trait::async_trait]
+        impl crate::ci::exec::CommandRunner for FailingRunner {
+            async fn run(&self, program: &'static str, args: &[String]) -> Result<String> {
+                Err(CiError::Exec {
+                    cmd: format!("{program} {}", args.join(" ")),
+                    message: "curl: (22) The requested URL returned error: 401".into(),
+                })
+            }
+        }
+        let err = ForgejoProvider::new(
+            Box::new(FailingRunner),
+            "codeberg.org".into(),
+            "mattf/diffler".into(),
+            Some("sekret-token".into()),
+            None,
+        )
+        .list_runs(10)
+        .await
+        .expect_err("fails");
+        let text = err.to_string();
+        assert!(!text.contains("sekret-token"), "token redacted: {text}");
+        assert!(text.contains("***"));
     }
 
     #[tokio::test]
