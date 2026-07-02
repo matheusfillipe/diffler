@@ -21,6 +21,18 @@ pub enum AppEvent {
     RepoChanged,
     /// A background enrichment (emphasis/highlight/scope) finished.
     Enriched(Box<crate::app::enrich::EnrichOutcome>),
+    /// An off-thread repo refresh finished (status + working diff), or failed.
+    RefreshDone(
+        Box<
+            Result<
+                (
+                    diffler_core::vcs::StatusModel,
+                    diffler_core::model::DiffModel,
+                ),
+                String,
+            >,
+        >,
+    ),
     /// Agent tool call routed through the event channel so the app stays
     /// the single owner of the review state (`mcp` module).
     Mcp(McpRequest),

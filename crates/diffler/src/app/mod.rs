@@ -228,6 +228,55 @@ pub enum CiRequest {
     },
 }
 
+fn build_transients(
+    keys: &crate::config::KeysConfig,
+    startup_warnings: &mut Vec<String>,
+) -> Transients {
+    let mut build = |kind| {
+        let (transient, warnings) = Transient::build(kind, keys);
+        startup_warnings.extend(warnings);
+        transient
+    };
+    Transients {
+        commit: build(TransientKind::Commit),
+        branch: build(TransientKind::Branch),
+        log: build(TransientKind::Log),
+        push: build(TransientKind::Push),
+        pull: build(TransientKind::Pull),
+        fetch: build(TransientKind::Fetch),
+        stash: build(TransientKind::Stash),
+    }
+}
+
+/// Lifecycle of the off-thread repo refresh: changes queue while a worker
+/// runs, so bursts collapse into at most one follow-up run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RefreshState {
+    #[default]
+    Idle,
+    Queued,
+    Running,
+    RunningQueued,
+}
+
+impl RefreshState {
+    #[must_use]
+    pub fn queue(self) -> Self {
+        match self {
+            Self::Idle | Self::Queued => Self::Queued,
+            Self::Running | Self::RunningQueued => Self::RunningQueued,
+        }
+    }
+
+    #[must_use]
+    pub fn finish(self) -> Self {
+        match self {
+            Self::RunningQueued => Self::Queued,
+            _ => Self::Idle,
+        }
+    }
+}
+
 /// A git remote diffler can pull CI from: its name, the detected forge, and the
 /// remote URL the provider is built from.
 #[derive(Debug, Clone)]
@@ -298,6 +347,8 @@ pub struct App {
     /// once per source (agent polls must not stall the render loop).
     source_models:
         std::collections::HashMap<String, std::sync::Arc<diffler_core::model::DiffModel>>,
+    /// Off-thread refresh lifecycle: repo changes queue one worker at a time.
+    pub refresh_state: RefreshState,
     /// Enrichment jobs waiting for a blocking-pool worker; drained by the
     /// main loop like the other pending slots.
     pub pending_enrich: Vec<enrich::EnrichJob>,
@@ -400,20 +451,7 @@ impl App {
         startup_warnings.extend(theme_warning);
         crate::ui::diff::init_highlighter(theme.syntax);
         let keymaps = Keymaps::build(&config.keys, &mut startup_warnings);
-        let mut build_transient = |kind| {
-            let (transient, warnings) = Transient::build(kind, &config.keys);
-            startup_warnings.extend(warnings);
-            transient
-        };
-        let transients = Transients {
-            commit: build_transient(TransientKind::Commit),
-            branch: build_transient(TransientKind::Branch),
-            log: build_transient(TransientKind::Log),
-            push: build_transient(TransientKind::Push),
-            pull: build_transient(TransientKind::Pull),
-            fetch: build_transient(TransientKind::Fetch),
-            stash: build_transient(TransientKind::Stash),
-        };
+        let transients = build_transients(&config.keys, &mut startup_warnings);
 
         let mut message = startup_warnings
             .into_iter()
@@ -463,6 +501,7 @@ impl App {
             pending_ci: (!ci_remotes.is_empty()).then_some(CiRequest::Runs),
             ci_remotes,
             source_models: std::collections::HashMap::new(),
+            refresh_state: RefreshState::Idle,
             pending_enrich: Vec::new(),
             enrich_inflight: std::collections::HashSet::new(),
             ci_yaml_cache: crate::ci::YamlCache::default(),
@@ -617,6 +656,10 @@ impl App {
                 }
                 Flow::Continue
             }
+            AppEvent::RefreshDone(result) => {
+                self.on_refresh_done(*result);
+                Flow::Continue
+            }
             AppEvent::Enriched(outcome) => {
                 self.on_enriched(*outcome);
                 Flow::Continue
@@ -652,7 +695,7 @@ impl App {
                 Flow::Continue
             }
             AppEvent::RepoChanged => {
-                self.refresh();
+                self.refresh_state = self.refresh_state.queue();
                 self.refresh_flash = REFRESH_FLASH_TICKS;
                 // a checkout may have changed the branch; re-resolve its PR
                 self.pr_checked = false;
@@ -977,22 +1020,46 @@ impl App {
     }
 
     pub(crate) fn refresh(&mut self) {
+        match Review::compute_refresh(&self.review.repo_root, self.config.ui.context_lines) {
+            Ok((status, model)) => self.apply_refresh(status, model),
+            Err(err) => self.error(err.to_string()),
+        }
+    }
+
+    fn on_refresh_done(
+        &mut self,
+        result: Result<
+            (
+                diffler_core::vcs::StatusModel,
+                diffler_core::model::DiffModel,
+            ),
+            String,
+        >,
+    ) {
+        self.refresh_state = self.refresh_state.finish();
+        match result {
+            Ok((status, model)) => self.apply_refresh(status, model),
+            Err(message) => self.error(message),
+        }
+    }
+
+    /// Install a computed refresh (from the sync path or the worker).
+    pub(crate) fn apply_refresh(
+        &mut self,
+        status: diffler_core::vcs::StatusModel,
+        model: diffler_core::model::DiffModel,
+    ) {
         self.now_unix = now_unix();
         let status_anchor = self.status_cursor_anchor();
         let diff_anchor_path = self.diff_cursor_path();
-        let old_model = self.review.model().clone();
-        let fingerprint = old_model.fingerprint();
-        if let Err(err) = self.review.refresh() {
-            self.error(err.to_string());
-            return;
-        }
         // a no-op refresh (poll tick, watcher echo) keeps the old model: the
         // rebuild carries no emphasis, so swapping it in would force the whole
         // enrichment pipeline to re-run for nothing
-        let unchanged = self.review.model().fingerprint() == fingerprint;
+        let unchanged = self.review.model().fingerprint() == model.fingerprint();
         if unchanged {
-            self.review.restore_model(old_model);
+            self.review.status = status;
         } else {
+            self.review.install_refresh(status, model);
             self.status.clear_enriched();
         }
         match self.review.vcs.head() {
@@ -2068,6 +2135,7 @@ mod tests {
         assert_eq!(app.section_files(Section::Untracked).len(), 1);
         fixture.write("zzz.md", "new\n");
         app.handle(AppEvent::RepoChanged);
+        app.refresh();
         assert_eq!(app.section_files(Section::Untracked).len(), 2);
         assert_eq!(app.refresh_flash, REFRESH_FLASH_TICKS);
         app.handle(AppEvent::Tick);

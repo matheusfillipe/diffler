@@ -86,9 +86,27 @@ impl Review {
     pub fn refresh(&mut self) -> Result<(), ReviewError> {
         self.status = self.vcs.status()?;
         let model = self.vcs.working_tree_diff()?;
+        self.install_refresh(self.status.clone(), model);
+        Ok(())
+    }
+
+    /// Compute a refresh on a separate repo handle, so it can run off the UI
+    /// thread; the result is applied later with [`Review::install_refresh`].
+    pub fn compute_refresh(
+        repo_root: &Path,
+        context_lines: u32,
+    ) -> Result<(StatusModel, DiffModel), ReviewError> {
+        let vcs = GitVcs::open_with_context(repo_root, context_lines)?;
+        let status = vcs.status()?;
+        let model = vcs.working_tree_diff()?;
+        Ok((status, model))
+    }
+
+    /// Swap in freshly computed status + diff and reconcile viewed marks.
+    pub fn install_refresh(&mut self, status: StatusModel, model: DiffModel) {
+        self.status = status;
         self.session.reconcile(&model);
         self.model = OnceCell::from(model);
-        Ok(())
     }
 
     pub fn save(&self) -> Result<(), ReviewError> {

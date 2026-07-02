@@ -2361,6 +2361,7 @@ mod tests {
         // nothing changed on disk: a watcher echo or poll tick refresh
         // must not kill the selection
         app.handle(AppEvent::RepoChanged);
+        app.refresh();
         assert!(
             app.diff.as_ref().unwrap().visual_anchor.is_some(),
             "no-op refresh keeps the selection"
@@ -2376,6 +2377,7 @@ mod tests {
         app.handle(key('V'));
         fixture.write("zzz.md", "new\n");
         app.handle(AppEvent::RepoChanged);
+        app.refresh();
         assert!(
             app.diff.as_ref().unwrap().visual_anchor.is_none(),
             "rows shifted: a stale anchor would dangle"

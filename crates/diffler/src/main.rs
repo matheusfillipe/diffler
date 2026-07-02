@@ -183,6 +183,7 @@ async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<
             continue;
         }
         dispatch_enrich(&mut app, &tx);
+        dispatch_refresh(&mut app, &tx);
         if let Some(request) = app.pending_ci.take() {
             // service the CI provider call off-thread; the result returns as an
             // event so the active CI screen stays live without blocking the loop
@@ -221,6 +222,22 @@ async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<
     }
     drop(watcher);
     Ok(())
+}
+
+/// Start the off-thread repo refresh when one is queued and none is running.
+fn dispatch_refresh(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
+    if app.refresh_state != app::RefreshState::Queued {
+        return;
+    }
+    app.refresh_state = app::RefreshState::Running;
+    let root = app.review.repo_root.clone();
+    let context = app.config.ui.context_lines;
+    let tx = tx.clone();
+    tokio::task::spawn_blocking(move || {
+        let result = diffler_core::review::Review::compute_refresh(&root, context)
+            .map_err(|err| err.to_string());
+        let _ = tx.send(AppEvent::RefreshDone(Box::new(result)));
+    });
 }
 
 /// Spawn a blocking-pool worker per queued enrichment job; results return as
