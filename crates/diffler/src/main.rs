@@ -214,6 +214,7 @@ fn dispatch_ci(app: &App, request: CiRequest, tx: &mpsc::UnboundedSender<AppEven
     }
     let repo_root = app.review.repo_root.clone();
     let branch = app.head.branch.clone();
+    let yaml_cache = app.ci_yaml_cache.clone();
     let tx = tx.clone();
     if matches!(request, CiRequest::Runs) {
         let multi = remotes.len() > 1;
@@ -225,6 +226,7 @@ fn dispatch_ci(app: &App, request: CiRequest, tx: &mpsc::UnboundedSender<AppEven
                     &repo_root,
                     branch.as_deref(),
                     remote.url.as_deref(),
+                    yaml_cache.clone(),
                 );
                 if let Ok(mut runs) = provider.list_runs(30).await {
                     if multi {
@@ -252,6 +254,7 @@ fn dispatch_ci(app: &App, request: CiRequest, tx: &mpsc::UnboundedSender<AppEven
             &repo_root,
             branch.as_deref(),
             remote.url.as_deref(),
+            yaml_cache,
         );
         tokio::spawn(async move {
             let _ = tx.send(run_ci_request(provider, request).await);

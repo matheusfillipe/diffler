@@ -87,22 +87,37 @@ impl App {
     }
 
     /// The diff a source is reviewing, used to render comment context and judge
-    /// outdated-ness. Backend errors degrade to an empty diff.
-    fn source_model(&self, source: &ReviewSource) -> DiffModel {
-        match source {
-            ReviewSource::WorkingTree => self.review.model().clone(),
-            ReviewSource::Commit { oid } => self.review.vcs.commit_diff(oid).unwrap_or_default(),
-            ReviewSource::Range { oldest, newest } => self
-                .review
-                .vcs
-                .range_diff(oldest, newest)
-                .unwrap_or_default(),
+    /// outdated-ness. Commit and range diffs are immutable, so they compute
+    /// once and stay cached — agent polls must not stall the render loop.
+    /// Backend errors degrade to an empty diff.
+    pub(crate) fn source_model(&mut self, source: &ReviewSource) -> std::sync::Arc<DiffModel> {
+        let key = match source {
+            ReviewSource::WorkingTree => {
+                return std::sync::Arc::new(self.review.model().clone());
+            }
+            ReviewSource::Commit { .. } | ReviewSource::Range { .. } => source.key(),
+        };
+        if !self.source_models.contains_key(&key) {
+            let model = match source {
+                ReviewSource::WorkingTree => DiffModel::default(),
+                ReviewSource::Commit { oid } => {
+                    self.review.vcs.commit_diff(oid).unwrap_or_default()
+                }
+                ReviewSource::Range { oldest, newest } => self
+                    .review
+                    .vcs
+                    .range_diff(oldest, newest)
+                    .unwrap_or_default(),
+            };
+            self.source_models
+                .insert(key.clone(), std::sync::Arc::new(model));
         }
+        self.source_models.get(&key).cloned().unwrap_or_default()
     }
 
     /// Comments across every review, each tagged with its source so the agent
     /// knows what the human reviewed and where the change came from.
-    fn comments_response(&self, keep: impl Fn(CommentStatus) -> bool) -> Vec<CommentInfo> {
+    fn comments_response(&mut self, keep: impl Fn(CommentStatus) -> bool) -> Vec<CommentInfo> {
         let mut out = Vec::new();
         for (source, session) in self.review.all_reviews().unwrap_or_default() {
             let model = self.source_model(&source);
@@ -250,6 +265,20 @@ mod tests {
             .id
             .clone();
         (fixture, app, id)
+    }
+
+    #[test]
+    fn commit_models_are_computed_once_and_cached() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let oid = app.status.recent[0].oid.clone();
+        let source = ReviewSource::commit(&oid);
+        let first = app.source_model(&source);
+        let second = app.source_model(&source);
+        assert!(
+            std::sync::Arc::ptr_eq(&first, &second),
+            "second lookup reuses the cached model"
+        );
     }
 
     #[test]

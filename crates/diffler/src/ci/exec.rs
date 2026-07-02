@@ -52,6 +52,7 @@ pub(crate) mod test_support {
     /// order so the most specific can win.
     pub struct RecordingRunner {
         responses: Vec<(&'static str, String)>,
+        calls: std::sync::Mutex<Vec<String>>,
     }
 
     impl RecordingRunner {
@@ -61,7 +62,21 @@ pub(crate) mod test_support {
                     .iter()
                     .map(|(k, v)| (*k, (*v).to_owned()))
                     .collect(),
+                calls: std::sync::Mutex::new(Vec::new()),
             }
+        }
+
+        /// Joined argv of every call, for asserting how often an endpoint
+        /// was actually hit.
+        pub fn calls(&self) -> Vec<String> {
+            self.calls.lock().map(|c| c.clone()).unwrap_or_default()
+        }
+    }
+
+    #[async_trait]
+    impl CommandRunner for std::sync::Arc<RecordingRunner> {
+        async fn run(&self, program: &'static str, args: &[String]) -> Result<String> {
+            self.as_ref().run(program, args).await
         }
     }
 
@@ -69,6 +84,9 @@ pub(crate) mod test_support {
     impl CommandRunner for RecordingRunner {
         async fn run(&self, _program: &'static str, args: &[String]) -> Result<String> {
             let joined = args.join(" ");
+            if let Ok(mut calls) = self.calls.lock() {
+                calls.push(joined.clone());
+            }
             let hit = self
                 .responses
                 .iter()

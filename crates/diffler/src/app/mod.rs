@@ -291,6 +291,13 @@ pub struct App {
     /// CI remotes for the repo — one per distinct forge across all git remotes,
     /// computed at startup. Empty when no provider could be determined.
     ci_remotes: Vec<CiRemote>,
+    /// Immutable commit/range diff models the MCP handlers serve, computed
+    /// once per source (agent polls must not stall the render loop).
+    source_models:
+        std::collections::HashMap<String, std::sync::Arc<diffler_core::model::DiffModel>>,
+    /// Fetched reusable-workflow YAML shared across per-request provider
+    /// rebuilds, so graph polls don't refetch immutable files.
+    pub ci_yaml_cache: crate::ci::YamlCache,
     /// Recent CI runs shown on the Runs screen.
     pub runs: Vec<crate::ci::CiRun>,
     /// The checked-out branch's PR, shown beside the runs section header.
@@ -447,6 +454,8 @@ impl App {
             // (evaluated before `ci_remotes` is moved into the struct below)
             pending_ci: (!ci_remotes.is_empty()).then_some(CiRequest::Runs),
             ci_remotes,
+            source_models: std::collections::HashMap::new(),
+            ci_yaml_cache: crate::ci::YamlCache::default(),
             runs: Vec::new(),
             pr: None,
             pr_checked: false,

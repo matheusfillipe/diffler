@@ -18,7 +18,7 @@ pub use model::{
     LogChunk, LogMode, LogStepMeta, PullRequest, RunDetail, RunExtras, RunId, ts_sort_key,
 };
 pub use provider::{CiProvider, ProviderKind};
-pub use providers::{ForgejoProvider, GitHubProvider, GitLabProvider};
+pub use providers::{ForgejoProvider, GitHubProvider, GitLabProvider, YamlCache};
 
 use std::path::Path;
 
@@ -93,12 +93,14 @@ pub fn build_provider(
     repo_root: &Path,
     branch: Option<&str>,
     remote_url: Option<&str>,
+    yaml_cache: YamlCache,
 ) -> Box<dyn CiProvider + Send> {
     match detected.kind {
         ProviderKind::GitHub => Box::new(GitHubProvider::new(
             Box::new(RealRunner),
             read_workflows(repo_root),
             branch.map(str::to_owned),
+            yaml_cache,
         )),
         ProviderKind::GitLab => Box::new(GitLabProvider::new(
             Box::new(RealRunner),
