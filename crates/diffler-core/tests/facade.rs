@@ -10,7 +10,6 @@ fn anchor(file: &str, line: u32) -> Anchor {
         line: Some(line),
         line_end: None,
         on_old_side: false,
-        hunk: None,
         line_text: None,
     }
 }

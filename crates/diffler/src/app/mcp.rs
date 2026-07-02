@@ -243,7 +243,6 @@ mod tests {
                     line: Some(2),
                     line_end: None,
                     on_old_side: false,
-                    hunk: None,
                     line_text: Some("    42".to_owned()),
                 },
                 "why 42?",
@@ -440,7 +439,6 @@ mod tests {
             line: Some(1),
             line_end: None,
             on_old_side: false,
-            hunk: None,
             line_text: None,
         }
     }
@@ -572,7 +570,6 @@ mod tests {
                 line: None,
                 line_end: None,
                 on_old_side: false,
-                hunk: None,
                 line_text: None,
             },
             "second",

@@ -1019,20 +1019,8 @@ impl App {
     }
 
     fn diff_page(&self, full: bool) -> isize {
-        let viewport = self.diff.as_ref().map_or(0, |d| d.viewport);
-        // before the first render the height is unknown; a typical terminal
-        // is a fine guess
-        let lines = if viewport == 0 {
-            40
-        } else {
-            i64::from(viewport)
-        };
-        let step = if full {
-            (lines - 1).max(1)
-        } else {
-            (lines / 2).max(1)
-        };
-        isize::try_from(step).unwrap_or(20).max(1)
+        let step = super::page_step(self.diff.as_ref().map_or(0, |d| d.viewport), full);
+        isize::try_from(step).unwrap_or(20)
     }
 
     /// Jump the pane cursor to the next/previous comment block, landing on its
@@ -1147,7 +1135,7 @@ impl App {
             Some((*file, hunk_data, hunk_data.lines.get(*line)?))
         };
         let anchor_row = diff.visual_anchor.unwrap_or(diff.cursor);
-        let (file_idx, hunk, line) = line_at(diff.rows.get(anchor_row)?)?;
+        let (file_idx, _, line) = line_at(diff.rows.get(anchor_row)?)?;
         let file = model.files.get(file_idx)?;
         // deletions only exist on the old side; everything else anchors to
         // the new-side line number
@@ -1162,7 +1150,6 @@ impl App {
                 line: Some(number(line)?),
                 line_end: None,
                 on_old_side,
-                hunk: Some(hunk.id.clone()),
                 line_text: Some(line.text.clone()),
             });
         };
@@ -1190,7 +1177,6 @@ impl App {
             line: Some(first),
             line_end: (last > first).then_some(last),
             on_old_side,
-            hunk: Some(hunk.id.clone()),
             // the display target is the range end, so that is the line
             // whose drift marks the comment outdated
             line_text: Some(last_text),
@@ -1237,7 +1223,6 @@ impl App {
             line: None,
             line_end: None,
             on_old_side: false,
-            hunk: None,
             line_text: None,
         };
         self.open_input(
@@ -1831,7 +1816,6 @@ mod tests {
             line: Some(line),
             line_end: None,
             on_old_side: false,
-            hunk: None,
             line_text: None,
         };
         app.review.session.add_comment("r", anchor(1), "first");
@@ -1886,7 +1870,6 @@ mod tests {
         assert_eq!(comment.anchor.file, "src/lib.rs");
         assert_eq!(comment.anchor.line, Some(2));
         assert!(!comment.anchor.on_old_side);
-        assert!(comment.anchor.hunk.is_some(), "anchor carries the hunk id");
         assert_eq!(comment.anchor.line_text.as_deref(), Some("    42"));
 
         let diff = app.diff.as_mut().unwrap();
@@ -1924,7 +1907,6 @@ mod tests {
                 line: Some(2),
                 line_end: None,
                 on_old_side: false,
-                hunk: None,
                 line_text: Some("    43".to_owned()),
             },
             "stale snapshot",
@@ -1952,7 +1934,6 @@ mod tests {
                 line: Some(99),
                 line_end: None,
                 on_old_side: false,
-                hunk: None,
                 line_text: None,
             },
             "moved on",
@@ -2241,7 +2222,6 @@ mod tests {
                 line: None,
                 line_end: None,
                 on_old_side: false,
-                hunk: None,
                 line_text: None,
             },
             "other file",
@@ -2514,7 +2494,6 @@ mod tests {
                 line: Some(1),
                 line_end: None,
                 on_old_side: false,
-                hunk: None,
                 line_text: None,
             },
             "working-tree decoy",
@@ -2565,7 +2544,6 @@ mod tests {
                     line: Some(1),
                     line_end: None,
                     on_old_side: false,
-                    hunk: None,
                     line_text: None,
                 },
                 "first\nsecond",

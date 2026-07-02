@@ -27,7 +27,6 @@ fn anchor_on_line_two() -> Anchor {
         line: Some(2),
         line_end: None,
         on_old_side: false,
-        hunk: None,
         line_text: Some("    42".to_owned()),
     }
 }
@@ -259,7 +258,6 @@ async fn comment_payloads_carry_range_and_old_side_anchors() {
                 line: Some(1),
                 line_end: Some(3),
                 on_old_side: false,
-                hunk: None,
                 line_text: Some("}".to_owned()),
             },
             "whole function",
@@ -272,7 +270,6 @@ async fn comment_payloads_carry_range_and_old_side_anchors() {
                 line: Some(2),
                 line_end: None,
                 on_old_side: true,
-                hunk: None,
                 line_text: Some("    41".to_owned()),
             },
             "why drop 41?",

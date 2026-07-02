@@ -148,7 +148,6 @@ mod tests {
             line,
             line_end: None,
             on_old_side: false,
-            hunk: None,
             line_text: None,
         }
     }

@@ -175,19 +175,7 @@ impl App {
     }
 
     fn log_page(&self, full: bool) -> usize {
-        let viewport = self.log.as_ref().map_or(0, |l| l.viewport);
-        // before the first render the height is unknown; a typical terminal
-        // is a fine guess
-        let lines = if viewport == 0 {
-            40
-        } else {
-            usize::from(viewport)
-        };
-        if full {
-            lines.saturating_sub(1).max(1)
-        } else {
-            (lines / 2).max(1)
-        }
+        super::page_step(self.log.as_ref().map_or(0, |l| l.viewport), full)
     }
 }
 

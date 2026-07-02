@@ -1,7 +1,7 @@
 //! Provider-agnostic CI run/job/log acquisition, plus the host glue that picks a
 //! provider for the repo and maps a normalized `RunDetail` onto the graph model.
-//! Adapters (`providers/`) implement [`CiProvider`] over each forge (CLI-only via
-//! `gh`/`glab` through the [`CommandRunner`] seam) and never touch the terminal.
+//! Adapters (`providers/`) implement [`CiProvider`] over each forge (via
+//! `gh`/`glab`/`curl` through the [`CommandRunner`] seam) and never touch the terminal.
 
 mod detect;
 mod error;

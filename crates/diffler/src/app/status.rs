@@ -17,7 +17,7 @@ use crate::tree::{self, TreeNode, TreeRow};
 /// the search labels so a `/` match lines up with the displayed text.
 pub(crate) const RECENT_TITLE: &str = "Recent commits";
 
-/// Heading for the leading CI-runs section (when a provider is detected).
+/// Heading for the trailing CI-runs section (when a provider is detected).
 pub(crate) const CI_TITLE: &str = "CI runs";
 
 /// How many recent runs the inline status section shows (the full list lives on
@@ -93,7 +93,7 @@ pub enum Row {
     Commit {
         index: usize,
     },
-    /// Header of the leading CI-runs section.
+    /// Header of the trailing CI-runs section.
     CiHeader {
         count: usize,
     },
@@ -129,7 +129,7 @@ pub struct StatusView {
     pub folded: [bool; 3],
     pub recent: Vec<LogEntry>,
     pub recent_folded: bool,
-    /// Whether the leading CI-runs section is collapsed.
+    /// Whether the trailing CI-runs section is collapsed.
     pub ci_folded: bool,
     /// Body height of the last render, so half-page motions step by a screenful.
     pub(crate) viewport: u16,
@@ -418,18 +418,7 @@ impl App {
 
     /// Move the cursor by half a screenful, clamped to the visible rows.
     fn status_page(&mut self, down: bool, full: bool) {
-        // before the first render the height is unknown; a typical terminal
-        // is a fine guess
-        let viewport = if self.status.viewport == 0 {
-            40
-        } else {
-            usize::from(self.status.viewport)
-        };
-        let step = if full {
-            viewport.saturating_sub(1).max(1)
-        } else {
-            (viewport / 2).max(1)
-        };
+        let step = super::page_step(self.status.viewport, full);
         if down {
             let last = self.visible_rows().len().saturating_sub(1);
             self.status.cursor = (self.status.cursor + step).min(last);

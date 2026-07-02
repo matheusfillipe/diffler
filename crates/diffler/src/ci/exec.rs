@@ -1,4 +1,4 @@
-//! The subprocess seam. Adapters shell to provider CLIs (`gh`, `glab`) through
+//! The subprocess seam. Adapters shell to `gh`/`glab`/`curl` through
 //! `CommandRunner` so tests can inject recorded output instead of running a live
 //! CLI — this is what makes the adapters fully unit-testable. The runner is
 //! async (tokio process) so adapter futures never block the executor.

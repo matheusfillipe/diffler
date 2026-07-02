@@ -260,6 +260,21 @@ fn detect_ci_remotes(review: &Review, ci: &crate::config::CiConfig) -> Vec<CiRem
     remotes
 }
 
+/// Cursor step for half/full page motions. Before the first render the
+/// viewport is unknown; a typical terminal height is a fine guess.
+pub(crate) fn page_step(viewport: u16, full: bool) -> usize {
+    let lines = if viewport == 0 {
+        40
+    } else {
+        usize::from(viewport)
+    };
+    if full {
+        lines.saturating_sub(1).max(1)
+    } else {
+        (lines / 2).max(1)
+    }
+}
+
 pub struct App {
     pub review: Review,
     pub head: HeadInfo,
@@ -1245,8 +1260,7 @@ impl App {
             return;
         };
         let last = view.rows().len().saturating_sub(1);
-        let page = usize::from(view.viewport).max(1);
-        let step = if full { page } else { (page / 2).max(1) };
+        let step = page_step(view.viewport, full);
         view.cursor = if up {
             view.cursor.saturating_sub(step)
         } else {
@@ -2162,7 +2176,6 @@ mod tests {
                     line: Some(2),
                     line_end: None,
                     on_old_side: false,
-                    hunk: None,
                     line_text: None,
                 },
             },
@@ -2194,7 +2207,6 @@ mod tests {
                     line: Some(2),
                     line_end: None,
                     on_old_side: false,
-                    hunk: None,
                     line_text: None,
                 },
                 "why?",
@@ -2989,7 +3001,6 @@ mod tests {
                     line: Some(2),
                     line_end: None,
                     on_old_side: false,
-                    hunk: None,
                     line_text: None,
                 },
             },
