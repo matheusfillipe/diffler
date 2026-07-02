@@ -63,11 +63,13 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   backend is built or stubbed (YAGNI).
 - **Runtime.** One tokio runtime: MCP server (axum, `127.0.0.1:{port}/mcp`),
   notify watcher (debounce ~200ms → refresh), main task = the ratatui loop.
-  `App` owns all state; workers (git, CI, editor, clipboard) are spawned off
-  "pending" slots and answer over the event channel. Refresh recomputes the
-  status/diff synchronously in the handler; pairing and highlighting run
-  lazily at first draw and are then cached (hash-validated). Immutable
-  commit/range models and fetched CI workflow YAML cache in `App` for reuse.
+  `App` owns all state; workers (git, CI, editor, clipboard, refresh,
+  enrichment) are spawned off "pending" slots and answer over the event
+  channel. Watcher refreshes and per-file enrichment (emphasis/highlight/
+  scope) run on the blocking pool — the pane renders plain until results
+  land; draw never computes. Caches: hash-memoized per-file hashes, enriched
+  models, commit/range models, CI workflow YAML. Perf guard: `just bench`
+  (criterion, recorded on main by CI) + `tests/e2e/test_perf.py` ceilings.
 - **Review state is per diff source.** A `ReviewSource` is `WorkingTree`,
   `Commit{oid}`, or `Range{oldest,newest}`. Comments (anchored to file + line +
   a `line_text` snapshot so stale anchors show as outdated; visual mode anchors a
