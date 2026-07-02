@@ -47,11 +47,11 @@ def test_first_frame_and_file_switch_stay_interactive(tmp_path, home):
 
         tui.send("j")
         tui.send("\r")  # open the diff screen on the first file
-        tui.wait_for("file_0.rs")
+        tui.wait_for("item_0_9(")  # pane content, not the sidebar name
         for step in range(1, 6):
             began = time.monotonic()
-            tui.send("j")
-            tui.wait_for(f"file_{step}.rs")
+            tui.send("\x0e")  # ctrl-n: next file
+            tui.wait_for(f"item_{step}_9(")
             took = time.monotonic() - began
             assert took < SWITCH_CEILING, f"switch to file_{step} took {took:.2f}s"
     finally:
