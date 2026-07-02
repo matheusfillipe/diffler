@@ -180,6 +180,7 @@ mod tests {
                         diff_line(LineKind::Context, Some(3), Some(3), "three"),
                     ],
                 }],
+                hashes: crate::model::HashCache::default(),
             }],
         }
     }

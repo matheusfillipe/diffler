@@ -617,10 +617,12 @@ mod tests {
                     lines: vec![],
                 },
             ],
+            hashes: diffler_core::model::HashCache::default(),
         };
         assert_eq!(file_gutter_width(&file), 6);
         let empty = FileDiff {
             hunks: vec![],
+            hashes: diffler_core::model::HashCache::default(),
             ..file
         };
         assert_eq!(file_gutter_width(&empty), 4);

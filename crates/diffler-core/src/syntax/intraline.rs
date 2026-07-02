@@ -231,6 +231,7 @@ mod tests {
                     DiffLine::new(LineKind::Added, None, Some(1), new_line.to_owned()),
                 ],
             }],
+            hashes: crate::model::HashCache::default(),
         };
         assert!(LanguageRegistry::build().syntactic_emphasis(&mut file));
         let added = &file.hunks[0].lines[1];

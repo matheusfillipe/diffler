@@ -193,6 +193,7 @@ mod tests {
             old_text: None,
             new_text: Some(new_text.to_owned()),
             hunks: vec![],
+            hashes: crate::model::HashCache::default(),
         }
     }
 
@@ -314,6 +315,7 @@ mod tests {
                         DiffLine::new(LineKind::Context, Some(3), Some(3), "three".into()),
                     ],
                 }],
+                hashes: crate::model::HashCache::default(),
             }],
         }
     }

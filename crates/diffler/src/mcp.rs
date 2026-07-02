@@ -654,6 +654,7 @@ mod tests {
                             diff_line(LineKind::Context, Some(3), Some(3), "three"),
                         ],
                     }],
+                    hashes: diffler_core::model::HashCache::default(),
                 },
                 FileDiff {
                     path: "logo.png".into(),
@@ -663,6 +664,7 @@ mod tests {
                     old_text: None,
                     new_text: None,
                     hunks: vec![],
+                    hashes: diffler_core::model::HashCache::default(),
                 },
             ],
         }

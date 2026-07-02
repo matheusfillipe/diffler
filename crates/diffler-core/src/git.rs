@@ -616,6 +616,7 @@ fn build_file(
         old_text,
         new_text,
         hunks,
+        hashes: crate::model::HashCache::default(),
     }))
 }
 
@@ -668,6 +669,7 @@ fn build_binary_file(diff: &git2::Diff<'_>, idx: usize) -> Option<FileDiff> {
         old_text: None,
         new_text: None,
         hunks: Vec::new(),
+        hashes: crate::model::HashCache::default(),
     })
 }
 

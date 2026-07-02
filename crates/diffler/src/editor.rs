@@ -254,6 +254,7 @@ mod tests {
             old_text: None,
             new_text: None,
             hunks: Vec::new(),
+            hashes: diffler_core::model::HashCache::default(),
         }
     }
 

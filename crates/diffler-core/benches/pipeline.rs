@@ -4,7 +4,7 @@
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use diffler_core::highlight::{Highlighter, SyntaxTheme};
-use diffler_core::model::{DiffLine, FileDiff, FileStatus, Hunk, LineKind, hunk_id};
+use diffler_core::model::{DiffLine, FileDiff, FileStatus, HashCache, Hunk, LineKind, hunk_id};
 use diffler_core::pairing;
 use similar::TextDiff;
 
@@ -81,6 +81,7 @@ fn file_diff(old: &str, new: &str) -> FileDiff {
             context: String::new(),
             lines,
         }],
+        hashes: HashCache::default(),
     }
 }
 

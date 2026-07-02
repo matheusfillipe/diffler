@@ -57,12 +57,34 @@ pub struct FileDiff {
     pub old_text: Option<String>,
     pub new_text: Option<String>,
     pub hunks: Vec<Hunk>,
+    /// Lazily memoized content hashes; texts never change after construction.
+    pub hashes: HashCache,
 }
+
+/// Memo slots for [`FileDiff::content_hash`]/[`FileDiff::sides_hash`], which
+/// the UI probes every frame — hashing full file contents per frame is the
+/// cost this avoids. Compares equal always so `FileDiff` equality is on data.
+#[derive(Debug, Clone, Default)]
+pub struct HashCache {
+    content: std::sync::OnceLock<String>,
+    sides: std::sync::OnceLock<String>,
+}
+
+impl PartialEq for HashCache {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for HashCache {}
 
 impl FileDiff {
     /// Content identity of the new side, used for viewed-mark invalidation.
     pub fn content_hash(&self) -> String {
-        stable_hash(self.new_text.as_deref().unwrap_or("").as_bytes())
+        self.hashes
+            .content
+            .get_or_init(|| stable_hash(self.new_text.as_deref().unwrap_or("").as_bytes()))
+            .clone()
     }
 
     /// `(added, deleted)` line counts across the file's hunks.
@@ -83,10 +105,15 @@ impl FileDiff {
     /// text (e.g. syntax highlighting). Viewed marks key on `content_hash`
     /// instead: they only care about the side the reviewer reads.
     pub fn sides_hash(&self) -> String {
-        let mut bytes = Vec::from(self.old_text.as_deref().unwrap_or("").as_bytes());
-        bytes.push(0);
-        bytes.extend_from_slice(self.new_text.as_deref().unwrap_or("").as_bytes());
-        stable_hash(&bytes)
+        self.hashes
+            .sides
+            .get_or_init(|| {
+                let mut bytes = Vec::from(self.old_text.as_deref().unwrap_or("").as_bytes());
+                bytes.push(0);
+                bytes.extend_from_slice(self.new_text.as_deref().unwrap_or("").as_bytes());
+                stable_hash(&bytes)
+            })
+            .clone()
     }
 }
 
@@ -300,6 +327,7 @@ mod tests {
             old_text: None,
             new_text: Some("fn main() {}".into()),
             hunks: vec![],
+            hashes: HashCache::default(),
         };
         let mut changed = base.clone();
         changed.new_text = Some("fn main() { let x = 1; }".into());
@@ -316,6 +344,7 @@ mod tests {
             old_text: None,
             new_text: Some("same content".into()),
             hunks: vec![],
+            hashes: HashCache::default(),
         };
         assert_eq!(file.content_hash(), file.content_hash());
     }
@@ -330,6 +359,7 @@ mod tests {
             old_text: Some("fn main() {}".into()),
             new_text: Some("fn main() { let x = 1; }".into()),
             hunks: vec![],
+            hashes: HashCache::default(),
         };
         let mut changed = base.clone();
         changed.old_text = Some("fn main() { unreachable!() }".into());
@@ -351,6 +381,7 @@ mod tests {
                 old_text: Some(old_text.to_owned()),
                 new_text: Some(new_text.to_owned()),
                 hunks: vec![],
+                hashes: HashCache::default(),
             }],
         }
     }
@@ -406,6 +437,7 @@ mod tests {
                         DiffLine::new(LineKind::Added, None, Some(2), "TWO".into()),
                     ],
                 }],
+                hashes: HashCache::default(),
             }],
         }
     }
@@ -450,6 +482,7 @@ mod tests {
                     ],
                 },
             ],
+            hashes: HashCache::default(),
         };
         assert_eq!(file.diffstat(), (2, 1));
     }
@@ -480,6 +513,7 @@ mod tests {
             old_text: None,
             new_text: None,
             hunks: vec![],
+            hashes: HashCache::default(),
         };
         // must not panic, must return a non-empty string (git hash of empty blob)
         let hash = file.content_hash();
