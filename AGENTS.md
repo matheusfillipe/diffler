@@ -62,9 +62,12 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   backend exists; the trait is there because jj is planned — but no second
   backend is built or stubbed (YAGNI).
 - **Runtime.** One tokio runtime: MCP server (axum, `127.0.0.1:{port}/mcp`),
-  notify watcher (debounce ~200ms → refresh), diff/highlight recompute (swaps
-  `Arc` models), main task = the ratatui loop. The render loop never computes;
-  diff pairing and highlighting are deferred to first use.
+  notify watcher (debounce ~200ms → refresh), main task = the ratatui loop.
+  `App` owns all state; workers (git, CI, editor, clipboard) are spawned off
+  "pending" slots and answer over the event channel. Refresh recomputes the
+  status/diff synchronously in the handler; pairing and highlighting run
+  lazily at first draw and are then cached (hash-validated). Immutable
+  commit/range models and fetched CI workflow YAML cache in `App` for reuse.
 - **Review state is per diff source.** A `ReviewSource` is `WorkingTree`,
   `Commit{oid}`, or `Range{oldest,newest}`. Comments (anchored to file + line +
   a `line_text` snapshot so stale anchors show as outdated; visual mode anchors a
