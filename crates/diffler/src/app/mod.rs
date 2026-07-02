@@ -6,6 +6,7 @@
 mod ci;
 mod commit;
 mod diff;
+pub mod enrich;
 mod log;
 pub mod logs;
 mod mcp;
@@ -297,6 +298,11 @@ pub struct App {
     /// once per source (agent polls must not stall the render loop).
     source_models:
         std::collections::HashMap<String, std::sync::Arc<diffler_core::model::DiffModel>>,
+    /// Enrichment jobs waiting for a blocking-pool worker; drained by the
+    /// main loop like the other pending slots.
+    pub pending_enrich: Vec<enrich::EnrichJob>,
+    /// Content hashes with a worker in flight, so bursts don't duplicate work.
+    enrich_inflight: std::collections::HashSet<String>,
     /// Fetched reusable-workflow YAML shared across per-request provider
     /// rebuilds, so graph polls don't refetch immutable files.
     pub ci_yaml_cache: crate::ci::YamlCache,
@@ -457,6 +463,8 @@ impl App {
             pending_ci: (!ci_remotes.is_empty()).then_some(CiRequest::Runs),
             ci_remotes,
             source_models: std::collections::HashMap::new(),
+            pending_enrich: Vec::new(),
+            enrich_inflight: std::collections::HashSet::new(),
             ci_yaml_cache: crate::ci::YamlCache::default(),
             runs: Vec::new(),
             pr: None,
@@ -607,6 +615,10 @@ impl App {
                 if self.tick_count.is_multiple_of(poll_ticks) {
                     self.queue_ci_poll();
                 }
+                Flow::Continue
+            }
+            AppEvent::Enriched(outcome) => {
+                self.on_enriched(*outcome);
                 Flow::Continue
             }
             AppEvent::CiRuns(runs) => {

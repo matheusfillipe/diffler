@@ -19,6 +19,8 @@ pub enum AppEvent {
     Tick,
     /// Debounced filesystem change from the watcher (`watch` module).
     RepoChanged,
+    /// A background enrichment (emphasis/highlight/scope) finished.
+    Enriched(Box<crate::app::enrich::EnrichOutcome>),
     /// Agent tool call routed through the event channel so the app stays
     /// the single owner of the review state (`mcp` module).
     Mcp(McpRequest),

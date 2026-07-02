@@ -59,9 +59,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     .areas(area);
     frame.render_widget(Paragraph::new(hint_line(app, HINTS)), hint);
 
-    // attach intra-line emphasis to the selected file once, before the
-    // read-only borrows below; the model is computed here on first access
-    app.enrich_diff_selected_file();
+    // enrichment (emphasis/highlight/scope) runs on the blocking pool; this
+    // only queues work, and the pane renders plain until the result lands
+    app.queue_enrich_selected();
 
     // disjoint field borrows: the diff view mutates (scroll, highlight
     // cache) while theme and review stay read-only
@@ -95,7 +95,7 @@ pub(crate) fn init_highlighter(syntax: SyntaxTheme) {
     let _ = HIGHLIGHTER.set(Highlighter::new(syntax));
 }
 
-pub(crate) fn highlighter() -> &'static Highlighter {
+pub fn highlighter() -> &'static Highlighter {
     HIGHLIGHTER.get_or_init(Highlighter::default)
 }
 
@@ -134,10 +134,17 @@ fn draw_sidebar(
     let Some(model) = diff.commit_model.as_ref().or(review_model) else {
         return;
     };
+    // build only the visible slice: the tree can be far taller than the pane
+    // and styling every row per frame is O(files)
+    let height = inner.height.max(1) as usize;
+    let scroll = diff.tree_cursor.saturating_sub(height - 1);
+    diff.sidebar_scroll = scroll;
     let lines: Vec<Line<'static>> = diff
         .tree_rows(model)
         .iter()
         .enumerate()
+        .skip(scroll)
+        .take(height)
         .map(|(row_index, row)| {
             let on_cursor = row_index == diff.tree_cursor;
             // ranges are offsets into the row's name, so the `/` match
@@ -177,12 +184,7 @@ fn draw_sidebar(
             }
         })
         .collect();
-    // follow the cursor: once it passes the last visible row, scroll so it
-    // stays in view (the sidebar tree can be far taller than the pane)
-    let height = inner.height.max(1) as usize;
-    let scroll = diff.tree_cursor.saturating_sub(height - 1) as u16;
-    diff.sidebar_scroll = scroll as usize;
-    frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), inner);
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 /// Right pane: the selected file's header then the visible slice of its rows,
@@ -245,8 +247,6 @@ fn draw_pane(
         header_area,
     );
 
-    ensure_file_highlights(&mut diff.highlights, file);
-    ensure_file_scope(&mut diff.scopes, file);
     // the breadcrumb row is reserved only for files that have definitions, so
     // plain files keep their full height
     let has_scope = diff
@@ -741,20 +741,6 @@ fn split_right_new_no(file: &FileDiff, row: &SplitRow) -> Option<u32> {
     }
 }
 
-/// Parse and cache the selected file's scope index, invalidated by content hash.
-fn ensure_file_scope(cache: &mut HashMap<String, FileScope>, file: &FileDiff) {
-    let hash = file.sides_hash();
-    if cache.get(&file.path).is_some_and(|c| c.hash == hash) {
-        return;
-    }
-    let index = file
-        .new_text
-        .as_deref()
-        .map(|content| highlighter().scope_index(&file.path, content))
-        .unwrap_or_default();
-    cache.insert(file.path.clone(), FileScope { hash, index });
-}
-
 pub(crate) fn ensure_file_highlights(cache: &mut HashMap<String, FileHighlights>, file: &FileDiff) {
     // both sides are highlighted, so the validity hash must cover both:
     // an old-side-only change (e.g. a rebase) must invalidate the entry
@@ -1001,6 +987,12 @@ mod tests {
     fn render(app: &mut App) -> Terminal<TestBackend> {
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| crate::ui::draw(frame, app))
+            .expect("draw");
+        // the first draw only queues enrichment; run it and draw again so the
+        // snapshot captures the settled frame, as the app converges to
+        app.enrich_now();
         terminal
             .draw(|frame| crate::ui::draw(frame, app))
             .expect("draw");
@@ -1557,6 +1549,7 @@ mod tests {
 
         let top = render(&mut app);
         assert!(top.contains("line 1"), "{top}");
+        app.enrich_now();
         let diff = app.diff.as_ref().unwrap();
         assert_eq!(diff.scroll, 0);
         assert!(diff.highlights.contains_key("big.txt"));

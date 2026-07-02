@@ -56,6 +56,7 @@ pub enum DiffRow {
 /// Per-line syntax spans for both sides of one file, keyed by the
 /// both-sides content hash so edits to either side invalidate naturally.
 /// Filled lazily by the renderer.
+#[derive(Debug)]
 pub struct FileHighlights {
     pub hash: String,
     pub old: Vec<Vec<StyledRange>>,
@@ -64,6 +65,7 @@ pub struct FileHighlights {
 
 /// Enclosing-definition index for one file's new-side content, keyed by the
 /// both-sides hash so edits invalidate it. Drives the sticky scope breadcrumb.
+#[derive(Debug)]
 pub struct FileScope {
     pub hash: String,
     pub index: ScopeIndex,
@@ -94,10 +96,6 @@ pub struct DiffView {
     /// Side-by-side (old left / new right) pane; pinned at open from
     /// `ui.side_by_side`, then `|` toggles it live.
     pub side_by_side: bool,
-    /// Prefer AST-diff (semantic) intra-line emphasis over the textual engine;
-    /// pinned at open from `ui.semantic_diff`. Falls back to textual per file
-    /// when no grammar/parse is available.
-    semantic: bool,
     /// First visible split row while `side_by_side` is on; the renderer keeps
     /// the cursor's line in view.
     pub(crate) split_scroll: usize,
@@ -130,7 +128,6 @@ impl DiffView {
         review: &Review,
         layout: FileLayout,
         side_by_side: bool,
-        semantic: bool,
     ) -> Self {
         let mut view = Self {
             source,
@@ -143,7 +140,6 @@ impl DiffView {
             cursor: 0,
             scroll: 0,
             side_by_side,
-            semantic,
             split_scroll: 0,
             sidebar: ratatui::layout::Rect::default(),
             sidebar_scroll: 0,
@@ -168,25 +164,12 @@ impl DiffView {
     /// Attach intra-line emphasis to the selected file once, just before it
     /// is rendered. `review_model` is the live working-tree model, used only
     /// when this view is not pinned to an immutable commit model.
-    pub(crate) fn enrich_selected(&mut self, review_model: Option<&mut DiffModel>) {
-        let selected = self.selected;
-        let semantic = self.semantic;
-        let model = match self.commit_model.as_mut() {
-            Some(model) => model,
-            None => match review_model {
-                Some(model) => model,
-                None => return,
-            },
-        };
-        let Some(file) = model.files.get_mut(selected) else {
-            return;
-        };
-        if self.enriched.insert(file.path.clone()) {
-            let done = semantic && crate::ui::diff::highlighter().syntactic_emphasis(file);
-            if !done {
-                diffler_core::pairing::enrich_file(file);
-            }
-        }
+    pub(crate) fn is_enriched(&self, path: &str) -> bool {
+        self.enriched.contains(path)
+    }
+
+    pub(crate) fn mark_enriched(&mut self, path: &str) {
+        self.enriched.insert(path.to_owned());
     }
 
     /// Forget which files have been enriched (after the model is rebuilt).
@@ -584,7 +567,6 @@ impl App {
             &self.review,
             self.config.ui.diff_file_layout,
             self.config.ui.side_by_side,
-            self.config.ui.semantic_diff,
         );
         if let Some(path) = scope
             && let Some(index) = self
@@ -617,7 +599,6 @@ impl App {
                     &self.review,
                     self.config.ui.diff_file_layout,
                     self.config.ui.side_by_side,
-                    self.config.ui.semantic_diff,
                 );
                 self.diff = Some(view);
                 self.push_screen(Screen::Diff);
@@ -642,7 +623,6 @@ impl App {
                     &self.review,
                     self.config.ui.diff_file_layout,
                     self.config.ui.side_by_side,
-                    self.config.ui.semantic_diff,
                 );
                 self.diff = Some(view);
                 self.push_screen(Screen::Diff);
@@ -1064,29 +1044,6 @@ impl App {
     pub(crate) fn diff_cursor_path(&self) -> Option<String> {
         let diff = self.diff.as_ref()?;
         diff.selected_path(&self.review)
-    }
-
-    /// Enrich the diff view's selected file with intra-line emphasis before
-    /// it is rendered. A commit view enriches its own immutable model; the
-    /// working-tree view enriches the live review model (computing it if this
-    /// is the first access). Called by the renderer, memoized per file.
-    pub(crate) fn enrich_diff_selected_file(&mut self) {
-        let on_commit = self
-            .diff
-            .as_ref()
-            .is_some_and(|diff| diff.commit_model.is_some());
-        if on_commit {
-            if let Some(diff) = self.diff.as_mut() {
-                diff.enrich_selected(None);
-            }
-        } else if self.diff.is_some() {
-            // disjoint field borrows: the live model from `review`, the
-            // selection + memo from `diff`
-            let model = self.review.model_mut();
-            if let Some(diff) = self.diff.as_mut() {
-                diff.enrich_selected(Some(model));
-            }
-        }
     }
 
     /// After a refresh, keep the selected file by path; clamp if it is gone.

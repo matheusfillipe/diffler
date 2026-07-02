@@ -182,6 +182,7 @@ async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<
             });
             continue;
         }
+        dispatch_enrich(&mut app, &tx);
         if let Some(request) = app.pending_ci.take() {
             // service the CI provider call off-thread; the result returns as an
             // event so the active CI screen stays live without blocking the loop
@@ -220,6 +221,18 @@ async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<
     }
     drop(watcher);
     Ok(())
+}
+
+/// Spawn a blocking-pool worker per queued enrichment job; results return as
+/// events so the pane fills in without blocking input.
+fn dispatch_enrich(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
+    for job in app.pending_enrich.drain(..) {
+        let tx = tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let outcome = app::enrich::run_enrich(ui::diff::highlighter(), job);
+            let _ = tx.send(AppEvent::Enriched(Box::new(outcome)));
+        });
+    }
 }
 
 /// Service a CI provider request off the event loop, turning the result (or
