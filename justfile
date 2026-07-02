@@ -58,3 +58,7 @@ ci:
     cargo clippy --workspace --all-targets --all-features -- -D warnings
     cargo nextest run --workspace --all-features
     cargo test --doc --workspace
+
+# diff-pipeline benches (criterion)
+bench:
+    cargo bench -p diffler-core --bench pipeline

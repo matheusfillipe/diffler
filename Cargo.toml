@@ -58,6 +58,8 @@ serde_ignored = "0.1"
 serde_json = "1"
 # serde_norway parses GitHub Actions workflow YAML for the CI dependency graph
 serde_norway = "0.9"
+# perf benches for the diff pipeline (core hot paths)
+criterion = "0.7"
 toml = "1"
 uuid = { version = "1", features = ["v4"] }
 unicode-width = "0.2"

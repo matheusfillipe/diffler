@@ -36,5 +36,12 @@ tree-sitter-yaml.workspace = true
 # runtime dependency: store's atomic save writes through a NamedTempFile
 tempfile.workspace = true
 
+[dev-dependencies]
+criterion.workspace = true
+
 [lints]
 workspace = true
+
+[[bench]]
+name = "pipeline"
+harness = false
