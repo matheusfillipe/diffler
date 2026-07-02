@@ -41,4 +41,4 @@ expression: render(&mut app).backend()
 "│                            ││                                                                                        │"
 "│                            ││                                                                                        │"
 "╰────────────────────────────╯╰────────────────────────────────────────────────────────────────────────────────────────╯"
-" DIFF  fixture@main  mcp off                                                                                            "
+" DIFF  fixture@main  mcp off  viewed 0/5 files                                                                          "

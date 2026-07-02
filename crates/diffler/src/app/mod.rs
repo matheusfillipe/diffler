@@ -524,14 +524,21 @@ impl App {
             .is_some_and(|f| self.review.session.is_viewed(path, &f.content_hash()))
     }
 
-    /// `(files in the review diff, files marked viewed)` for the status bar.
+    /// `(files in the shown diff, files marked viewed)` for the status bar,
+    /// against the open diff's source (working tree when none is open).
     pub fn viewed_counts(&self) -> (usize, usize) {
-        let model = self.review.model();
+        let source = self.active_review_source();
+        let model = self
+            .diff
+            .as_ref()
+            .and_then(|diff| diff.commit_model.as_ref())
+            .unwrap_or_else(|| self.review.model());
+        let session = self.review.session_for(&source);
         let total = model.files.len();
         let viewed = model
             .files
             .iter()
-            .filter(|f| self.review.session.is_viewed(&f.path, &f.content_hash()))
+            .filter(|f| session.is_viewed(&f.path, &f.content_hash()))
             .count();
         (total, viewed)
     }
@@ -1295,7 +1302,7 @@ impl App {
                 self.log_text.clear();
                 self.logs = None;
             }
-            Some(Screen::Runs) => self.runs.clear(),
+            Some(Screen::Runs) => self.runs_cursor = 0,
             Some(Screen::Status) | None => {}
         }
         Flow::Continue
@@ -2003,6 +2010,28 @@ mod tests {
         app.handle(key('r'));
         let message = app.message.expect("message");
         assert!(message.text.contains("comment"));
+    }
+
+    #[test]
+    fn popping_the_runs_screen_keeps_the_status_ci_section() {
+        use crate::ci::{CiRun, JobStatus, RunId};
+        let (_fixture, mut app) = app();
+        app.runs = vec![CiRun {
+            id: RunId("1".into()),
+            name: "CI".into(),
+            title: String::new(),
+            branch: "main".into(),
+            commit: "abc".into(),
+            author: String::new(),
+            created: None,
+            status: JobStatus::Ok,
+            url: None,
+            remote: None,
+        }];
+        app.push_screen(Screen::Runs);
+        app.pop_screen();
+        assert_eq!(app.screen(), Screen::Status);
+        assert_eq!(app.runs.len(), 1, "runs survive leaving the Runs screen");
     }
 
     #[test]

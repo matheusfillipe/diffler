@@ -1659,6 +1659,27 @@ mod tests {
     }
 
     #[test]
+    fn viewed_counts_follow_the_open_commit_diff() {
+        let (_fixture, mut app) = app();
+        let oid = app.status.recent[0].oid.clone();
+        app.open_commit_diff(&oid);
+        let total = app
+            .diff
+            .as_ref()
+            .and_then(|d| d.commit_model.as_ref())
+            .expect("commit model")
+            .files
+            .len();
+        assert_eq!(app.viewed_counts(), (total, 0));
+        app.handle(key('v'));
+        assert_eq!(
+            app.viewed_counts(),
+            (total, 1),
+            "counts read the commit source, not the working tree"
+        );
+    }
+
+    #[test]
     fn e_requests_the_editor_on_the_cursor_file() {
         let (fixture, mut app) = app();
         // pin the editor through config so the test ignores $EDITOR

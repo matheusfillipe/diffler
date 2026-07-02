@@ -87,6 +87,17 @@ impl CiProvider for GitLabProvider {
         let trace = self
             .api(&format!("projects/:fullpath/jobs/{}/trace", job.0))
             .await?;
+        let done = self
+            .api(&format!("projects/:fullpath/jobs/{}", job.0))
+            .await
+            .ok()
+            .and_then(|raw| serde_json::from_str::<JobState>(&raw).ok())
+            .is_some_and(|job| {
+                matches!(
+                    map_status(&job.status),
+                    JobStatus::Ok | JobStatus::Failed | JobStatus::Skipped | JobStatus::Neutral
+                )
+            });
         // resume from the saved offset, clamped to the end and floored to a char
         // boundary, so a multibyte split or a shrunk/replaced trace yields the
         // correct tail (or empty) instead of re-emitting the whole trace
@@ -100,7 +111,7 @@ impl CiProvider for GitLabProvider {
             next_offset: trace.len() as u64,
             text: trace[start..].to_owned(),
             steps: Vec::new(),
-            done: false,
+            done,
         })
     }
 
@@ -200,6 +211,11 @@ struct JobItem {
     status: String,
 }
 
+#[derive(Deserialize)]
+struct JobState {
+    status: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,6 +262,24 @@ mod tests {
         assert_eq!(detail.jobs[1].needs, vec![JobId("1".into())]);
         assert_eq!(detail.jobs[2].needs, vec![JobId("1".into())]);
         assert_eq!(detail.jobs[1].status, JobStatus::Running);
+    }
+
+    #[tokio::test]
+    async fn job_log_marks_a_finished_job_done() {
+        let chunk = provider(&[
+            ("/trace", "all good"),
+            ("jobs/7", r#"{"status":"success"}"#),
+        ])
+        .job_log(&RunId("1".into()), &JobId("7".into()), 0)
+        .await
+        .expect("log");
+        assert!(chunk.done, "finished job stops the poll loop");
+
+        let chunk = provider(&[("/trace", "..."), ("jobs/7", r#"{"status":"running"}"#)])
+            .job_log(&RunId("1".into()), &JobId("7".into()), 0)
+            .await
+            .expect("log");
+        assert!(!chunk.done);
     }
 
     #[tokio::test]
