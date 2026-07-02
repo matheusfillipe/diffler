@@ -113,6 +113,8 @@ pub struct DiffView {
     /// Rows for the selected file only.
     pub(crate) rows: Vec<DiffRow>,
     rows_dirty: bool,
+    /// Side-by-side row model, rebuilt with `rows` (not per frame).
+    pub(crate) split_rows: Vec<SplitRow>,
     pub(crate) highlights: HashMap<String, FileHighlights>,
     pub(crate) scopes: HashMap<String, FileScope>,
     /// Paths whose intra-line emphasis has been computed, so the per-file
@@ -150,6 +152,7 @@ impl DiffView {
             viewport: 0,
             rows: Vec::new(),
             rows_dirty: true,
+            split_rows: Vec::new(),
             highlights: HashMap::new(),
             scopes: HashMap::new(),
             enriched: HashSet::new(),
@@ -266,7 +269,9 @@ impl DiffView {
         }
         let model = self.commit_model.as_ref().unwrap_or_else(|| review.model());
         self.selected = self.selected.min(model.files.len().saturating_sub(1));
-        self.rows = build_rows(model, review.session_for(&self.source), self.selected);
+        let session = review.session_for(&self.source);
+        self.rows = build_rows(model, session, self.selected);
+        self.split_rows = build_split_rows(model, session, self.selected);
         self.rows_dirty = false;
         self.cursor = self.cursor.min(self.rows.len().saturating_sub(1));
         self.scroll = self.scroll.min(self.rows.len().saturating_sub(1));

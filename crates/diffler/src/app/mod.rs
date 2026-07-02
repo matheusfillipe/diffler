@@ -16,7 +16,6 @@ mod status;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-pub(crate) use diff::build_split_rows;
 pub use diff::{
     CommentLine, DiffRow, DiffSource, DiffView, FileHighlights, FileScope, Pane, SplitRow,
     comment_display,
@@ -969,13 +968,21 @@ impl App {
         self.now_unix = now_unix();
         let status_anchor = self.status_cursor_anchor();
         let diff_anchor_path = self.diff_cursor_path();
-        let fingerprint = self.review.model().fingerprint();
+        let old_model = self.review.model().clone();
+        let fingerprint = old_model.fingerprint();
         if let Err(err) = self.review.refresh() {
             self.error(err.to_string());
             return;
         }
-        // rebuilt models carry no emphasis; reset the per-file enrich memos
-        self.status.clear_enriched();
+        // a no-op refresh (poll tick, watcher echo) keeps the old model: the
+        // rebuild carries no emphasis, so swapping it in would force the whole
+        // enrichment pipeline to re-run for nothing
+        let unchanged = self.review.model().fingerprint() == fingerprint;
+        if unchanged {
+            self.review.restore_model(old_model);
+        } else {
+            self.status.clear_enriched();
+        }
         match self.review.vcs.head() {
             Ok(head) => self.head = head,
             Err(err) => self.error(err.to_string()),
@@ -987,12 +994,10 @@ impl App {
         self.restore_status_cursor(status_anchor);
         self.refresh_log();
         if let Some(diff) = self.diff.as_mut() {
-            // a no-op refresh keeps the rows (and visual selection) but still
-            // rebuilt the model unenriched, so the emphasis memo must reset
-            diff.clear_enriched();
             // invalidating drops the visual selection, so a no-op refresh
-            // (poll tick, watcher echo) must leave the rows alone
-            if self.review.model().fingerprint() != fingerprint {
+            // must leave rows, emphasis, and memos alone
+            if !unchanged {
+                diff.clear_enriched();
                 diff.invalidate();
             }
             diff.ensure_rows(&self.review);

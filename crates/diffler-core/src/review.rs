@@ -159,6 +159,13 @@ impl Review {
         Ok(by_key.into_values().collect())
     }
 
+    /// Swap a previously computed model back in. Used when a refresh proved
+    /// a no-op (same fingerprint): the old model carries render-time emphasis
+    /// the rebuilt one lacks.
+    pub fn restore_model(&mut self, model: DiffModel) {
+        self.model = OnceCell::from(model);
+    }
+
     /// Whether the working-tree model has been computed yet.
     #[cfg(test)]
     fn model_is_cached(&self) -> bool {

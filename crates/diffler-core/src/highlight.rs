@@ -56,6 +56,9 @@ impl Highlighter {
         let bounds = crate::syntax::line_bounds(content);
         let mut out: Vec<Vec<StyledRange>> = vec![Vec::new(); bounds.len()];
 
+        if content.len() > crate::syntax::MAX_PARSE_BYTES {
+            return out;
+        }
         let Some(entry) = self.registry.for_path(path) else {
             return out;
         };

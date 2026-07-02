@@ -17,7 +17,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use crate::app::{
     App, CommentLine, DiffRow, DiffSource, DiffView, FileHighlights, FileScope, Pane, SplitRow,
-    build_split_rows, comment_display,
+    comment_display,
 };
 use crate::keymap::Action;
 use crate::search::Search;
@@ -265,7 +265,7 @@ fn draw_pane(
     diff.pane = rows_area;
 
     if diff.side_by_side {
-        let split = build_split_rows(model, session, diff.selected);
+        let split = diff.split_rows.clone();
         let (sel, side) = diff.split_cursor(&split);
         let height = rows_area.height.max(1) as usize;
         if sel < diff.split_scroll {

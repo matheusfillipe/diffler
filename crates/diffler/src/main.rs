@@ -192,6 +192,26 @@ async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<
         if app.handle(event) == Flow::Quit {
             break;
         }
+        // drain whatever queued while handling so one draw covers the batch:
+        // held-down keys and watcher bursts otherwise pay a full draw (and its
+        // first-view enrichment) per event and the UI lags behind the input
+        let mut quit = false;
+        while let Ok(event) = rx.try_recv() {
+            if app.handle(event) == Flow::Quit {
+                quit = true;
+                break;
+            }
+            if app.pending_editor.is_some()
+                || app.pending_git.is_some()
+                || app.pending_ci.is_some()
+                || app.pending_clipboard.is_some()
+            {
+                break;
+            }
+        }
+        if quit {
+            break;
+        }
     }
     events.abort();
     if let Some(mcp) = mcp {
