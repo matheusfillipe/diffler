@@ -154,7 +154,7 @@ fn hunk_context_captures_the_enclosing_section() {
     );
     // context must not leak into the hunk id, which keys on lines alone
     let lines = hunk.lines.clone();
-    let id = diffler_core::model::hunk_id("a.rs", &lines).expect("id");
+    let id = diffler_core::model::hunk_id("a.rs", &lines);
     assert_eq!(id, hunk.id, "context does not perturb the hunk id");
 }
 

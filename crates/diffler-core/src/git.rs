@@ -473,7 +473,7 @@ fn synthesize_patch(
             continue;
         }
         for h in 0..patch.num_hunks() {
-            if hunk_id(&rel, &hunk_model_lines(&patch, h)?)? == *target {
+            if hunk_id(&rel, &hunk_model_lines(&patch, h)?) == *target {
                 return render_hunk_patch(&patch, h, &rel, delta.status(), reverse);
             }
         }
@@ -596,7 +596,7 @@ fn build_file(
     for h in 0..patch.num_hunks() {
         let (hunk, _) = patch.hunk(h)?;
         let lines = hunk_model_lines(&patch, h)?;
-        let id = hunk_id(&file_path, &lines)?;
+        let id = hunk_id(&file_path, &lines);
         hunks.push(Hunk {
             id,
             old_start: hunk.old_start(),
