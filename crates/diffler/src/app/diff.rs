@@ -998,7 +998,7 @@ impl App {
                 }
                 Some(DiffRow::Comment { comment, .. }) => self
                     .review
-                    .session
+                    .session_for(&diff.source)
                     .comments
                     .get(*comment)
                     .map(|c| (c.anchor.file.clone(), c.anchor.line_end.or(c.anchor.line))),
@@ -1364,7 +1364,8 @@ impl App {
         } else {
             None
         };
-        let session = &self.review.session;
+        let source = self.active_review_source();
+        let session = self.review.session_for(&source);
         let count = session
             .comments
             .iter()
@@ -1384,9 +1385,14 @@ impl App {
             .unwrap_or_default();
         let branch = self.head.branch.clone().unwrap_or_else(|| "?".to_owned());
         let title = format!("Review feedback — {repo} @ {branch} ({count} {noun})");
+        let model = self
+            .diff
+            .as_ref()
+            .and_then(|diff| diff.commit_model.as_ref())
+            .unwrap_or_else(|| self.review.model());
         let markdown = feedback::to_markdown(
             session,
-            self.review.model(),
+            model,
             &FeedbackOptions {
                 title: &title,
                 file_filter: filter.as_deref(),
@@ -2494,6 +2500,57 @@ mod tests {
                 .session_for(&source)
                 .viewed
                 .contains_key(&path)
+        );
+    }
+
+    #[test]
+    fn yank_and_editor_on_a_commit_diff_use_that_sources_comments() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.review.session.add_comment(
+            "reviewer",
+            diffler_core::session::Anchor {
+                file: "todo.md".into(),
+                line: Some(1),
+                line_end: None,
+                on_old_side: false,
+                hunk: None,
+                line_text: None,
+            },
+            "working-tree decoy",
+        );
+        let oid = app.status.recent[0].oid.clone();
+        app.open_commit_diff(&oid);
+        select_file(&mut app, "src/lib.rs");
+        let line_row = rows(&app)
+            .iter()
+            .position(|row| matches!(row, DiffRow::Line { .. }))
+            .expect("a diff line in the commit");
+        app.diff.as_mut().unwrap().focus = Pane::Diff;
+        app.diff.as_mut().unwrap().cursor = line_row;
+        app.handle(key('c'));
+        type_text(&mut app, "commit note");
+        app.handle(key('\n'));
+
+        app.handle(key('Y'));
+        let markdown = app.pending_clipboard.take().expect("yanked feedback");
+        assert!(markdown.contains("commit note"), "commit comment exported");
+        assert!(
+            !markdown.contains("working-tree decoy"),
+            "working-tree comments stay out of a commit yank"
+        );
+
+        let comment_row = rows(&app)
+            .iter()
+            .position(|row| matches!(row, DiffRow::Comment { .. }))
+            .expect("comment row present");
+        app.diff.as_mut().unwrap().cursor = comment_row;
+        app.handle(key('e'));
+        let request = app.pending_editor.take().expect("editor request");
+        let argv = request.cmd.join(" ");
+        assert!(
+            argv.contains("src/lib.rs") && !argv.contains("todo.md"),
+            "editor resolves the commit comment, not the working-tree one: {argv}"
         );
     }
 

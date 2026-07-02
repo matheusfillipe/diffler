@@ -45,6 +45,13 @@ pub fn detect_for_repo(
     if detected.kind == ProviderKind::GitLab && config.gitlab.host.is_some() {
         detected.host.clone_from(&config.gitlab.host);
     }
+    if detected.kind == ProviderKind::Forgejo {
+        if config.forgejo.host.is_some() {
+            detected.host.clone_from(&config.forgejo.host);
+        } else if detected.host.is_none() {
+            detected.host = host;
+        }
+    }
     Some(detected)
 }
 
@@ -105,6 +112,7 @@ pub fn build_provider(
                 .unwrap_or_else(|| "codeberg.org".to_owned()),
             remote_url.and_then(parse_owner_repo).unwrap_or_default(),
             forgejo_token(),
+            branch.map(str::to_owned),
         )),
     }
 }
@@ -214,6 +222,43 @@ mod tests {
             url: None,
             remote: None,
         }
+    }
+
+    #[test]
+    fn forced_forgejo_targets_the_remote_host_not_codeberg() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = CiConfig {
+            provider: "forgejo".to_owned(),
+            ..CiConfig::default()
+        };
+        let detected =
+            detect_for_repo(dir.path(), Some("git@git.example.com:me/repo.git"), &config)
+                .expect("detected");
+        assert_eq!(detected.kind, ProviderKind::Forgejo);
+        assert_eq!(detected.host.as_deref(), Some("git.example.com"));
+
+        config.forgejo.host = Some("forge.corp.io".to_owned());
+        let detected =
+            detect_for_repo(dir.path(), Some("git@git.example.com:me/repo.git"), &config)
+                .expect("detected");
+        assert_eq!(detected.host.as_deref(), Some("forge.corp.io"));
+    }
+
+    #[test]
+    fn parse_owner_repo_handles_common_url_shapes() {
+        assert_eq!(
+            parse_owner_repo("git@codeberg.org:mattf/diffler.git").as_deref(),
+            Some("mattf/diffler")
+        );
+        assert_eq!(
+            parse_owner_repo("https://codeberg.org/mattf/diffler").as_deref(),
+            Some("mattf/diffler")
+        );
+        assert_eq!(
+            parse_owner_repo("ssh://git@codeberg.org:2222/mattf/diffler.git").as_deref(),
+            Some("mattf/diffler")
+        );
+        assert_eq!(parse_owner_repo("https://codeberg.org/"), None);
     }
 
     #[test]

@@ -20,6 +20,7 @@ pub struct ForgejoProvider {
     /// `owner/name`.
     repo: String,
     token: Option<String>,
+    branch: Option<String>,
 }
 
 impl ForgejoProvider {
@@ -28,18 +29,21 @@ impl ForgejoProvider {
         host: String,
         repo: String,
         token: Option<String>,
+        branch: Option<String>,
     ) -> Self {
         Self {
             runner,
             host,
             repo,
             token,
+            branch,
         }
     }
 
     async fn get(&self, path: &str) -> Result<String> {
         let mut args = vec![
-            "-s".to_owned(),
+            "-sS".to_owned(),
+            "--fail".to_owned(),
             "--max-time".to_owned(),
             "20".to_owned(),
             "-H".to_owned(),
@@ -80,6 +84,11 @@ impl CiProvider for ForgejoProvider {
             .workflow_runs
             .into_iter()
             .map(WorkflowRun::into_run)
+            .filter(|run| {
+                self.branch
+                    .as_deref()
+                    .is_none_or(|branch| run.branch == branch)
+            })
             .collect())
     }
 
@@ -195,6 +204,7 @@ mod tests {
             "codeberg.org".into(),
             "mattf/diffler".into(),
             None,
+            None,
         )
         .list_runs(10)
         .await
@@ -205,5 +215,24 @@ mod tests {
         assert_eq!(runs[0].commit, "abc1234");
         assert_eq!(runs[0].status, JobStatus::Ok);
         assert!(runs[0].created.is_some());
+    }
+
+    #[tokio::test]
+    async fn list_runs_scopes_to_the_branch() {
+        let json = r#"{"total_count":2,"workflow_runs":[
+            {"id":7,"name":"CI","head_branch":"main","status":"completed","conclusion":"success"},
+            {"id":8,"name":"CI","head_branch":"feat/x","status":"completed","conclusion":"success"}]}"#;
+        let runs = ForgejoProvider::new(
+            Box::new(RecordingRunner::new(&[("actions/tasks", json)])),
+            "codeberg.org".into(),
+            "mattf/diffler".into(),
+            None,
+            Some("feat/x".into()),
+        )
+        .list_runs(10)
+        .await
+        .expect("runs");
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].id, RunId("8".into()));
     }
 }
