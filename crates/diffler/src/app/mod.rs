@@ -225,13 +225,39 @@ pub enum CiRequest {
     },
 }
 
-/// Detect the repo's CI provider from its `origin` remote (via the `Vcs` trait,
-/// not a subprocess) and config-file presence.
-fn detect_ci(review: &Review, ci: &crate::config::CiConfig) -> Option<crate::ci::Detected> {
-    let remote = review.vcs.remote_url("origin").ok().flatten();
-    // a forge with no usable CLI installed degrades to no CI, not a poll-error loop
-    crate::ci::detect_for_repo(&review.repo_root, remote.as_deref(), ci)
-        .filter(crate::ci::provider_available)
+/// A git remote diffler can pull CI from: its name, the detected forge, and the
+/// remote URL the provider is built from.
+#[derive(Debug, Clone)]
+pub struct CiRemote {
+    pub name: String,
+    pub detected: crate::ci::Detected,
+    pub url: Option<String>,
+}
+
+/// Detect a CI provider for every git remote (via the `Vcs` trait, not a
+/// subprocess), `origin` first, deduped so two remotes on the same forge yield
+/// one section. A forge whose CLI isn't installed degrades to no CI.
+fn detect_ci_remotes(review: &Review, ci: &crate::config::CiConfig) -> Vec<CiRemote> {
+    let mut names = review.vcs.remotes().unwrap_or_default();
+    names.sort_by_key(|name| (name != "origin", name.clone()));
+    let mut remotes: Vec<CiRemote> = Vec::new();
+    for name in names {
+        let url = review.vcs.remote_url(&name).ok().flatten();
+        let Some(detected) = crate::ci::detect_for_repo(&review.repo_root, url.as_deref(), ci)
+            .filter(crate::ci::provider_available)
+        else {
+            continue;
+        };
+        if remotes.iter().any(|r| r.detected == detected) {
+            continue;
+        }
+        remotes.push(CiRemote {
+            name,
+            detected,
+            url,
+        });
+    }
+    remotes
 }
 
 pub struct App {
@@ -247,9 +273,9 @@ pub struct App {
     pub diff: Option<DiffView>,
     /// The embedded CI graph component, present while the Graph screen is up.
     pub graph: Option<crate::graph::GraphView>,
-    /// Detected CI provider for the repo, computed at startup. `None` when no
-    /// provider could be determined (no recognized remote or config file).
-    ci_detected: Option<crate::ci::Detected>,
+    /// CI remotes for the repo — one per distinct forge across all git remotes,
+    /// computed at startup. Empty when no provider could be determined.
+    ci_remotes: Vec<CiRemote>,
     /// Recent CI runs shown on the Runs screen.
     pub runs: Vec<crate::ci::CiRun>,
     /// The checked-out branch's PR, shown beside the runs section header.
@@ -260,6 +286,9 @@ pub struct App {
     runs_cursor: usize,
     /// The run opened into the graph, re-polled for live status.
     open_run: Option<crate::ci::RunId>,
+    /// The remote the open run came from, so its detail/log/extras route to the
+    /// right forge (run ids aren't unique across forges).
+    open_run_remote: Option<String>,
     /// The open run's artifacts + annotations, shown below the DAG.
     pub extras: Option<crate::ci::RunExtras>,
     /// The job whose log is on the Logs screen.
@@ -384,7 +413,7 @@ impl App {
             }
         };
 
-        let ci_detected = detect_ci(&review, &config.ci);
+        let ci_remotes = detect_ci_remotes(&review, &config.ci);
 
         Self {
             review,
@@ -400,14 +429,15 @@ impl App {
             diff: None,
             graph: None,
             // kick an initial CI fetch so the Status section populates at launch
-            // (evaluated before `ci_detected` is moved into the struct below)
-            pending_ci: ci_detected.is_some().then_some(CiRequest::Runs),
-            ci_detected,
+            // (evaluated before `ci_remotes` is moved into the struct below)
+            pending_ci: (!ci_remotes.is_empty()).then_some(CiRequest::Runs),
+            ci_remotes,
             runs: Vec::new(),
             pr: None,
             pr_checked: false,
             runs_cursor: 0,
             open_run: None,
+            open_run_remote: None,
             extras: None,
             open_job: None,
             log_text: String::new(),
@@ -457,10 +487,19 @@ impl App {
         self.logs.as_ref()
     }
 
-    /// The detected CI provider for the repo, if any (the main loop builds a
-    /// provider from this to service a `pending_ci` request).
-    pub fn ci_detected(&self) -> Option<crate::ci::Detected> {
-        self.ci_detected.clone()
+    /// The CI remotes for the repo (the main loop builds a provider per remote
+    /// to service a `pending_ci` request).
+    pub fn ci_remotes(&self) -> Vec<CiRemote> {
+        self.ci_remotes.clone()
+    }
+
+    /// The CI remote the open run came from (for routing its detail/log/extras),
+    /// or the primary remote when the run isn't tagged or none is open.
+    pub fn ci_remote_for_open_run(&self) -> Option<CiRemote> {
+        match &self.open_run_remote {
+            Some(name) => self.ci_remotes.iter().find(|r| &r.name == name).cloned(),
+            None => self.ci_remotes.first().cloned(),
+        }
     }
 
     /// Keymap of the active screen, with config remaps applied — what the
@@ -1027,7 +1066,7 @@ impl App {
 
     /// Open the CI runs start page for the repo's detected provider.
     fn open_runs(&mut self) {
-        if self.ci_detected.is_none() {
+        if self.ci_remotes.is_empty() {
             self.info("no CI provider detected for this repo");
             return;
         }
@@ -1043,6 +1082,7 @@ impl App {
             return;
         };
         let id = run.id.clone();
+        self.open_run_remote = run.remote.clone();
         self.open_run = Some(id.clone());
         self.extras = None;
         self.graph = Some(crate::graph::GraphView::new());
@@ -1247,6 +1287,7 @@ impl App {
             Some(Screen::Graph) => {
                 self.graph = None;
                 self.open_run = None;
+                self.open_run_remote = None;
                 self.extras = None;
             }
             Some(Screen::Logs) => {
@@ -1995,6 +2036,7 @@ mod tests {
                 created: None,
                 status: JobStatus::Running,
                 url: None,
+                remote: None,
             },
             jobs: vec![CiJob {
                 id: JobId("lint".into()),
@@ -2029,6 +2071,7 @@ mod tests {
                 created: None,
                 status: JobStatus::Running,
                 url: None,
+                remote: None,
             },
             jobs: vec![],
         };

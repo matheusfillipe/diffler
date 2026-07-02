@@ -113,6 +113,7 @@ mod tests {
             created: None,
             status,
             url: None,
+            remote: None,
         }
     }
 

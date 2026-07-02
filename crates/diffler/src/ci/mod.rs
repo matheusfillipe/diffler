@@ -18,7 +18,7 @@ pub use model::{
     LogChunk, LogMode, LogStepMeta, PullRequest, RunDetail, RunExtras, RunId, ts_sort_key,
 };
 pub use provider::{CiProvider, ProviderKind};
-pub use providers::{GitHubProvider, GitLabProvider};
+pub use providers::{ForgejoProvider, GitHubProvider, GitLabProvider};
 
 use std::path::Path;
 
@@ -37,12 +37,20 @@ pub fn detect_for_repo(
     let forced = match config.provider.as_str() {
         "github" => Some(ProviderKind::GitHub),
         "gitlab" => Some(ProviderKind::GitLab),
+        "forgejo" | "codeberg" => Some(ProviderKind::Forgejo),
         _ => None,
     };
     let host = remote_url.and_then(parse_host);
     let mut detected = detect(repo_root, host.as_deref(), forced)?;
     if detected.kind == ProviderKind::GitLab && config.gitlab.host.is_some() {
         detected.host.clone_from(&config.gitlab.host);
+    }
+    if detected.kind == ProviderKind::Forgejo {
+        if config.forgejo.host.is_some() {
+            detected.host.clone_from(&config.forgejo.host);
+        } else if detected.host.is_none() {
+            detected.host = host;
+        }
     }
     Some(detected)
 }
@@ -54,6 +62,7 @@ pub fn provider_available(detected: &Detected) -> bool {
     let cli = match detected.kind {
         ProviderKind::GitHub => "gh",
         ProviderKind::GitLab => "glab",
+        ProviderKind::Forgejo => "curl",
     };
     std::env::var_os("PATH").is_some_and(|path| on_path(cli, &path))
 }
@@ -83,6 +92,7 @@ pub fn build_provider(
     detected: &Detected,
     repo_root: &Path,
     branch: Option<&str>,
+    remote_url: Option<&str>,
 ) -> Box<dyn CiProvider + Send> {
     match detected.kind {
         ProviderKind::GitHub => Box::new(GitHubProvider::new(
@@ -94,7 +104,39 @@ pub fn build_provider(
             Box::new(RealRunner),
             detected.host.clone(),
         )),
+        ProviderKind::Forgejo => Box::new(ForgejoProvider::new(
+            Box::new(RealRunner),
+            detected
+                .host
+                .clone()
+                .unwrap_or_else(|| "codeberg.org".to_owned()),
+            remote_url.and_then(parse_owner_repo).unwrap_or_default(),
+            forgejo_token(),
+            branch.map(str::to_owned),
+        )),
     }
+}
+
+/// `owner/name` from a git remote URL: `git@host:owner/name.git` or
+/// `https://host/owner/name(.git)`. Extra path segments are dropped.
+fn parse_owner_repo(url: &str) -> Option<String> {
+    let path = if let Some(rest) = url.strip_prefix("git@") {
+        rest.split_once(':').map(|(_, p)| p)?
+    } else {
+        url.split("://").nth(1)?.split_once('/').map(|(_, p)| p)?
+    };
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let mut segments = path.split('/');
+    let owner = segments.next()?;
+    let name = segments.next()?;
+    (!owner.is_empty() && !name.is_empty()).then(|| format!("{owner}/{name}"))
+}
+
+/// A Forgejo PAT for private repos; public repos need none.
+fn forgejo_token() -> Option<String> {
+    std::env::var("FORGEJO_TOKEN")
+        .or_else(|_| std::env::var("CODEBERG_TOKEN"))
+        .ok()
 }
 
 /// Every `.github/workflows/*.{yml,yaml}` body, for per-run DAG matching.
@@ -178,7 +220,45 @@ mod tests {
             created: None,
             status: JobStatus::Running,
             url: None,
+            remote: None,
         }
+    }
+
+    #[test]
+    fn forced_forgejo_targets_the_remote_host_not_codeberg() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = CiConfig {
+            provider: "forgejo".to_owned(),
+            ..CiConfig::default()
+        };
+        let detected =
+            detect_for_repo(dir.path(), Some("git@git.example.com:me/repo.git"), &config)
+                .expect("detected");
+        assert_eq!(detected.kind, ProviderKind::Forgejo);
+        assert_eq!(detected.host.as_deref(), Some("git.example.com"));
+
+        config.forgejo.host = Some("forge.corp.io".to_owned());
+        let detected =
+            detect_for_repo(dir.path(), Some("git@git.example.com:me/repo.git"), &config)
+                .expect("detected");
+        assert_eq!(detected.host.as_deref(), Some("forge.corp.io"));
+    }
+
+    #[test]
+    fn parse_owner_repo_handles_common_url_shapes() {
+        assert_eq!(
+            parse_owner_repo("git@codeberg.org:mattf/diffler.git").as_deref(),
+            Some("mattf/diffler")
+        );
+        assert_eq!(
+            parse_owner_repo("https://codeberg.org/mattf/diffler").as_deref(),
+            Some("mattf/diffler")
+        );
+        assert_eq!(
+            parse_owner_repo("ssh://git@codeberg.org:2222/mattf/diffler.git").as_deref(),
+            Some("mattf/diffler")
+        );
+        assert_eq!(parse_owner_repo("https://codeberg.org/"), None);
     }
 
     #[test]

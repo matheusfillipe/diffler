@@ -187,6 +187,7 @@ impl PipelineItem {
             created: self.created_at.as_deref().and_then(parse_created),
             status: map_status(&self.status),
             url: self.web_url,
+            remote: None,
         }
     }
 }

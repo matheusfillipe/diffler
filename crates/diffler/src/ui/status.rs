@@ -405,13 +405,24 @@ fn ci_run_spans(
         format!("     {glyph} "),
         Style::new().fg(color),
     )];
+    // tag the source remote when runs from several forges are aggregated
+    if let Some(remote) = &run.remote {
+        spans.push(Span::styled(
+            format!("{remote}/"),
+            Style::new().fg(theme.fg),
+        ));
+    }
     spans.extend(highlight_spans(
         &run.name,
         Style::new().fg(theme.accent),
         search,
         theme,
     ));
-    let pad = 14usize.saturating_sub(run.name.chars().count());
+    let tag_width = run
+        .remote
+        .as_ref()
+        .map_or(0, |remote| remote.chars().count() + 1);
+    let pad = 14usize.saturating_sub(tag_width + run.name.chars().count());
     spans.push(Span::raw(" ".repeat(pad)));
     let short: String = run.commit.chars().take(7).collect();
     spans.push(Span::styled(
@@ -494,10 +505,35 @@ mod tests {
             created: None,
             status,
             url: None,
+            remote: None,
         };
         app.runs = vec![
             run("CI", "main", "abc1234def", JobStatus::Failed),
             run("Release", "main", "9988776655", JobStatus::Ok),
+        ];
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn status_tags_ci_runs_by_remote_when_aggregated() {
+        use crate::ci::{CiRun, JobStatus, RunId};
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let run = |remote: &str, status| CiRun {
+            id: RunId(format!("{remote}-CI")),
+            name: "CI".to_owned(),
+            title: "ci run".to_owned(),
+            branch: "main".to_owned(),
+            commit: "abc1234def".to_owned(),
+            author: String::new(),
+            created: None,
+            status,
+            url: None,
+            remote: Some(remote.to_owned()),
+        };
+        app.runs = vec![
+            run("origin", JobStatus::Ok),
+            run("codeberg", JobStatus::Running),
         ];
         insta::assert_snapshot!(render(&mut app).backend());
     }
@@ -517,6 +553,7 @@ mod tests {
             created: None,
             status: JobStatus::Ok,
             url: None,
+            remote: None,
         }];
         app.pr = Some(PullRequest {
             number: 28,

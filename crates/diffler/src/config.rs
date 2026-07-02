@@ -127,6 +127,7 @@ pub struct CiConfig {
     pub provider: String,
     pub poll_seconds: u64,
     pub gitlab: CiGitLabConfig,
+    pub forgejo: CiForgejoConfig,
 }
 
 impl Default for CiConfig {
@@ -135,6 +136,7 @@ impl Default for CiConfig {
             provider: "auto".to_owned(),
             poll_seconds: 5,
             gitlab: CiGitLabConfig::default(),
+            forgejo: CiForgejoConfig::default(),
         }
     }
 }
@@ -144,6 +146,15 @@ impl Default for CiConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CiGitLabConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+}
+
+/// Forgejo-specific CI settings. `host` overrides remote detection for a
+/// self-hosted instance (without it, a forced provider targets codeberg.org).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CiForgejoConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
 }
@@ -336,11 +347,18 @@ struct PartialCi {
     provider: Option<String>,
     poll_seconds: Option<u64>,
     gitlab: PartialCiGitLab,
+    forgejo: PartialCiForgejo,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct PartialCiGitLab {
+    host: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct PartialCiForgejo {
     host: Option<String>,
 }
 
@@ -492,6 +510,10 @@ fn apply_layer(
         config.ci.gitlab.host = Some(host);
         origins.insert("ci.gitlab.host".to_owned(), origin.clone());
     }
+    if let Some(host) = layer.ci.forgejo.host {
+        config.ci.forgejo.host = Some(host);
+        origins.insert("ci.forgejo.host".to_owned(), origin.clone());
+    }
 
     let key_sections = [
         (layer.keys.status, &mut config.keys.status, "status"),
@@ -535,7 +557,7 @@ fn apply_cli(cli: &CliOverrides, config: &mut Config, origins: &mut BTreeMap<Str
 
 /// Scalar keys always listed in the `--dump` origins block; `keys.*` entries
 /// are appended dynamically since their names come from the user.
-const SCALAR_KEYS: [&str; 13] = [
+const SCALAR_KEYS: [&str; 14] = [
     "ui.theme",
     "ui.context_lines",
     "ui.recent_commits",
@@ -549,6 +571,7 @@ const SCALAR_KEYS: [&str; 13] = [
     "ci.provider",
     "ci.poll_seconds",
     "ci.gitlab.host",
+    "ci.forgejo.host",
 ];
 
 /// Render the merged config as TOML followed by a comment block with the

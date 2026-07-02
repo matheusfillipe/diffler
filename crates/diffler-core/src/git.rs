@@ -440,6 +440,17 @@ impl Vcs for GitVcs {
             Err(err) => Err(err.into()),
         }
     }
+
+    fn remotes(&self) -> Result<Vec<String>, VcsError> {
+        let array = self.repo.remotes()?;
+        let mut names = Vec::new();
+        for i in 0..array.len() {
+            if let Ok(Some(name)) = array.get(i) {
+                names.push(name.to_owned());
+            }
+        }
+        Ok(names)
+    }
 }
 
 /// Render one hunk of `rel` as a unified patch libgit2 can apply to the

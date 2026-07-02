@@ -73,6 +73,9 @@ pub struct CiRun {
     pub created: Option<OffsetDateTime>,
     pub status: JobStatus,
     pub url: Option<String>,
+    /// The git remote this run came from, set when several remotes are
+    /// aggregated; `None` for a single-remote repo.
+    pub remote: Option<String>,
 }
 
 /// One job within a run, with its upstream dependencies (the DAG edges).
