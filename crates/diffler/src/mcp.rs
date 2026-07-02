@@ -674,7 +674,6 @@ mod tests {
             line,
             line_end: None,
             on_old_side: false,
-            hunk: None,
             line_text: None,
         }
     }
@@ -817,7 +816,6 @@ mod tests {
             line: Some(1),
             line_end: Some(3),
             on_old_side: false,
-            hunk: None,
             line_text: Some("three".to_owned()),
         };
         // sanity: start text differs from end text

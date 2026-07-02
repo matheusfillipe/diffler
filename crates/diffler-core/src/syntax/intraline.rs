@@ -25,7 +25,7 @@ impl LanguageRegistry {
     /// full old/new content. `None` (caller falls back to the textual engine)
     /// when the language is unsupported, content is too large, parsing fails,
     /// or the diff exceeds its graph budget.
-    pub fn line_emphasis(
+    fn line_emphasis(
         &self,
         path: &str,
         old_src: &str,
@@ -84,48 +84,30 @@ impl LanguageRegistry {
 /// changed are emphasized (an edit inside a string scalar shouldn't light up the
 /// whole scalar). Whole-line changes and reformat-only lines keep the AST result.
 fn refine_partial_changes(hunk: &mut Hunk) {
-    let kinds: Vec<Option<LineKind>> = hunk.lines.iter().map(|l| Some(l.kind)).collect();
-    let kind_at = |i: usize| kinds.get(i).copied().flatten();
-    let mut i = 0;
-    while i < hunk.lines.len() {
-        if kind_at(i) != Some(LineKind::Deleted) {
-            i += 1;
+    for (del_idx, add_idx) in crate::pairing::paired_run_indices(&hunk.lines) {
+        let partial = hunk
+            .lines
+            .get(del_idx)
+            .is_some_and(|l| !l.emphasis.is_empty())
+            || hunk
+                .lines
+                .get(add_idx)
+                .is_some_and(|l| !l.emphasis.is_empty());
+        if !partial {
             continue;
         }
-        let del_start = i;
-        while kind_at(i) == Some(LineKind::Deleted) {
-            i += 1;
+        let (Some(old), Some(new)) = (
+            hunk.lines.get(del_idx).map(|l| l.text.clone()),
+            hunk.lines.get(add_idx).map(|l| l.text.clone()),
+        ) else {
+            continue;
+        };
+        let (old_emph, new_emph) = crate::diff::intraline(&old, &new);
+        if let Some(line) = hunk.lines.get_mut(del_idx) {
+            line.emphasis = old_emph;
         }
-        let add_start = i;
-        while kind_at(i) == Some(LineKind::Added) {
-            i += 1;
-        }
-        for p in 0..(add_start - del_start).min(i - add_start) {
-            let (del_idx, add_idx) = (del_start + p, add_start + p);
-            let partial = hunk
-                .lines
-                .get(del_idx)
-                .is_some_and(|l| !l.emphasis.is_empty())
-                || hunk
-                    .lines
-                    .get(add_idx)
-                    .is_some_and(|l| !l.emphasis.is_empty());
-            let (Some(old), Some(new)) = (
-                hunk.lines.get(del_idx).map(|l| l.text.clone()),
-                hunk.lines.get(add_idx).map(|l| l.text.clone()),
-            ) else {
-                continue;
-            };
-            if !partial {
-                continue;
-            }
-            let (old_emph, new_emph) = crate::diff::intraline(&old, &new);
-            if let Some(line) = hunk.lines.get_mut(del_idx) {
-                line.emphasis = old_emph;
-            }
-            if let Some(line) = hunk.lines.get_mut(add_idx) {
-                line.emphasis = new_emph;
-            }
+        if let Some(line) = hunk.lines.get_mut(add_idx) {
+            line.emphasis = new_emph;
         }
     }
 }

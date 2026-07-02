@@ -4,6 +4,17 @@ use std::ops::Range;
 
 use serde::{Deserialize, Serialize};
 
+/// FNV-1a 64 as lowercase hex. Content hashes key persisted viewed marks and
+/// derived caches, so the algorithm is pinned forever (tested below).
+fn stable_hash(bytes: &[u8]) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DiffModel {
     pub files: Vec<FileDiff>,
@@ -21,9 +32,7 @@ impl DiffModel {
             buf.extend_from_slice(file.sides_hash().as_bytes());
             buf.push(b'\n');
         }
-        git2::Oid::hash_object(git2::ObjectType::Blob, &buf)
-            .map(|o| o.to_string())
-            .unwrap_or_default()
+        stable_hash(&buf)
     }
 
     /// The diff line carrying number `line` on the requested side of
@@ -53,10 +62,7 @@ pub struct FileDiff {
 impl FileDiff {
     /// Content identity of the new side, used for viewed-mark invalidation.
     pub fn content_hash(&self) -> String {
-        let bytes = self.new_text.as_deref().unwrap_or("").as_bytes();
-        git2::Oid::hash_object(git2::ObjectType::Blob, bytes)
-            .map(|o| o.to_string())
-            .unwrap_or_default()
+        stable_hash(self.new_text.as_deref().unwrap_or("").as_bytes())
     }
 
     /// `(added, deleted)` line counts across the file's hunks.
@@ -80,9 +86,7 @@ impl FileDiff {
         let mut bytes = Vec::from(self.old_text.as_deref().unwrap_or("").as_bytes());
         bytes.push(0);
         bytes.extend_from_slice(self.new_text.as_deref().unwrap_or("").as_bytes());
-        git2::Oid::hash_object(git2::ObjectType::Blob, &bytes)
-            .map(|o| o.to_string())
-            .unwrap_or_default()
+        stable_hash(&bytes)
     }
 }
 
@@ -195,16 +199,12 @@ impl DiffLine {
     }
 }
 
-/// Hash the hunk's content (kinds + text) into a stable id using git's
-/// blob hashing, so no extra hash dependency is needed.
-pub fn hunk_id(file_path: &str, lines: &[DiffLine]) -> Result<HunkId, git2::Error> {
+/// Hash the hunk's content (kinds + text) into a stable id.
+pub fn hunk_id(file_path: &str, lines: &[DiffLine]) -> HunkId {
     let mut buf = String::new();
     buf.push_str(file_path);
     buf.push('\n');
     for line in lines {
-        // the tags mirror LineKind::origin but stay hard-coded: hunk ids are
-        // persisted in sessions, so changing the mapping would orphan every
-        // existing comment anchor
         let tag = match line.kind {
             LineKind::Context => ' ',
             LineKind::Deleted => '-',
@@ -214,13 +214,20 @@ pub fn hunk_id(file_path: &str, lines: &[DiffLine]) -> Result<HunkId, git2::Erro
         buf.push_str(&line.text);
         buf.push('\n');
     }
-    let oid = git2::Oid::hash_object(git2::ObjectType::Blob, buf.as_bytes())?;
-    Ok(HunkId(oid.to_string()))
+    HunkId(stable_hash(buf.as_bytes()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // hashes key persisted viewed marks: the algorithm must stay stable
+    // across releases, so pin known FNV-1a 64 values
+    #[test]
+    fn stable_hash_is_fnv1a64_and_never_changes() {
+        assert_eq!(stable_hash(b""), "cbf29ce484222325");
+        assert_eq!(stable_hash(b"hello"), "a430d84680aabd0b");
+    }
 
     #[test]
     fn file_status_glyph_and_label_cover_all_variants() {
@@ -244,8 +251,8 @@ mod tests {
     #[test]
     fn hunk_id_is_stable() {
         let lines = vec![line(LineKind::Deleted, "a"), line(LineKind::Added, "b")];
-        let id1 = hunk_id("src/x.rs", &lines).expect("hash");
-        let id2 = hunk_id("src/x.rs", &lines).expect("hash");
+        let id1 = hunk_id("src/x.rs", &lines);
+        let id2 = hunk_id("src/x.rs", &lines);
         assert_eq!(id1, id2);
     }
 
@@ -253,29 +260,20 @@ mod tests {
     fn hunk_id_changes_with_content() {
         let a = vec![line(LineKind::Added, "x")];
         let b = vec![line(LineKind::Added, "y")];
-        assert_ne!(
-            hunk_id("f", &a).expect("hash"),
-            hunk_id("f", &b).expect("hash")
-        );
+        assert_ne!(hunk_id("f", &a), hunk_id("f", &b));
     }
 
     #[test]
     fn hunk_id_changes_with_kind() {
         let a = vec![line(LineKind::Added, "x")];
         let b = vec![line(LineKind::Deleted, "x")];
-        assert_ne!(
-            hunk_id("f", &a).expect("hash"),
-            hunk_id("f", &b).expect("hash")
-        );
+        assert_ne!(hunk_id("f", &a), hunk_id("f", &b));
     }
 
     #[test]
     fn hunk_id_changes_with_file() {
         let lines = vec![line(LineKind::Added, "x")];
-        assert_ne!(
-            hunk_id("a", &lines).expect("hash"),
-            hunk_id("b", &lines).expect("hash")
-        );
+        assert_ne!(hunk_id("a", &lines), hunk_id("b", &lines));
     }
 
     #[test]

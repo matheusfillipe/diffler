@@ -22,8 +22,14 @@ use crate::ci::provider::{CiProvider, ProviderKind};
 /// Talks to GitHub Actions through `gh`. The runs list is scoped to the current
 /// `branch` (across all of its workflows); each run's DAG comes from whichever
 /// of the repo's `workflows` YAMLs matches that run's workflow name.
+pub type YamlCache = std::sync::Arc<std::sync::Mutex<HashMap<String, String>>>;
+
 pub struct GitHubProvider {
     runner: Box<dyn CommandRunner>,
+    /// Fetched reusable-workflow bodies keyed by contents path (which embeds
+    /// the ref, so entries are immutable). Shared across provider rebuilds so
+    /// the graph poll doesn't refetch per cycle.
+    yaml_cache: YamlCache,
     /// Every `.github/workflows/*.yml` body, so a run's DAG is built from its own
     /// workflow (matched by the YAML `name:`), not a single guessed file.
     workflows: Vec<String>,
@@ -36,9 +42,11 @@ impl GitHubProvider {
         runner: Box<dyn CommandRunner>,
         workflows: Vec<String>,
         branch: Option<String>,
+        yaml_cache: YamlCache,
     ) -> Self {
         Self {
             runner,
+            yaml_cache,
             workflows,
             branch,
         }
@@ -73,7 +81,21 @@ impl GitHubProvider {
             what: "reusable uses".into(),
             message: uses.to_owned(),
         })?;
-        parse_workflow(&self.api_raw(&path).await?)
+        let cached = self
+            .yaml_cache
+            .lock()
+            .ok()
+            .and_then(|cache| cache.get(&path).cloned());
+        let body = if let Some(body) = cached {
+            body
+        } else {
+            let body = self.api_raw(&path).await?;
+            if let Ok(mut cache) = self.yaml_cache.lock() {
+                cache.insert(path, body.clone());
+            }
+            body
+        };
+        parse_workflow(&body)
     }
 
     /// Inline each reusable `uses:` job's fetched children with edges rewired
@@ -782,6 +804,7 @@ jobs:
             Box::new(RecordingRunner::new(responses)),
             vec![WORKFLOW.to_owned()],
             None,
+            YamlCache::default(),
         )
     }
 
@@ -795,6 +818,7 @@ jobs:
             Box::new(RecordingRunner::new(&[("list --branch feat/x", json)])),
             vec![WORKFLOW.to_owned()],
             Some("feat/x".to_owned()),
+            YamlCache::default(),
         )
         .list_runs(10)
         .await
@@ -817,6 +841,7 @@ jobs:
             Box::new(RecordingRunner::new(&[("run view", view)])),
             vec![WORKFLOW.to_owned(), RELEASE_WORKFLOW.to_owned()],
             None,
+            YamlCache::default(),
         )
         .run_detail(&RunId("9".into()))
         .await
@@ -899,6 +924,7 @@ jobs:
             ])),
             vec![DEPLOY_WORKFLOW.to_owned()],
             None,
+            YamlCache::default(),
         )
         .run_detail(&RunId("9".into()))
         .await
@@ -950,6 +976,40 @@ jobs:
             JobStatus::Ok
         );
         assert_eq!(by_id("audit").unwrap().status, JobStatus::Ok);
+    }
+
+    #[tokio::test]
+    async fn reusable_workflows_fetch_once_across_provider_rebuilds() {
+        let view = r#"{
+          "displayTitle":"deploy","headBranch":"main","headSha":"abc","status":"in_progress",
+          "conclusion":null,"workflowName":"Auth Service Deploy",
+          "createdAt":"2026-06-18T10:00:00Z","url":"https://gh/run/9","jobs":[]
+        }"#;
+        let runner = std::sync::Arc::new(RecordingRunner::new(&[
+            ("run view", view),
+            (
+                "contents/.github/workflows/app-deploy.yml",
+                APP_DEPLOY_WORKFLOW,
+            ),
+        ]));
+        let cache = YamlCache::default();
+        for _ in 0..2 {
+            GitHubProvider::new(
+                Box::new(runner.clone()),
+                vec![DEPLOY_WORKFLOW.to_owned()],
+                None,
+                cache.clone(),
+            )
+            .run_detail(&RunId("9".into()))
+            .await
+            .expect("detail");
+        }
+        let fetches = runner
+            .calls()
+            .iter()
+            .filter(|c| c.contains("contents/"))
+            .count();
+        assert_eq!(fetches, 1, "second poll served from the cache");
     }
 
     #[tokio::test]
@@ -1059,6 +1119,7 @@ jobs:
             Box::new(RecordingRunner::new(&[("pr view feat/x", json)])),
             vec![],
             Some("feat/x".to_owned()),
+            YamlCache::default(),
         )
         .current_pr()
         .await

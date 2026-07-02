@@ -20,42 +20,47 @@ pub fn enrich_file(file: &mut FileDiff) {
 }
 
 fn enrich_hunk(hunk: &mut Hunk) {
-    let mut i = 0;
-    while i < hunk.lines.len() {
-        if kind_at(&hunk.lines, i) != Some(LineKind::Deleted) {
-            i += 1;
+    for (del_idx, add_idx) in paired_run_indices(&hunk.lines) {
+        let (Some(old), Some(new)) = (hunk.lines.get(del_idx), hunk.lines.get(add_idx)) else {
+            continue;
+        };
+        if similarity(&old.text, &new.text) < MIN_SIMILARITY {
             continue;
         }
-        let del_start = i;
-        while kind_at(&hunk.lines, i) == Some(LineKind::Deleted) {
-            i += 1;
+        let (old_emphasis, new_emphasis) = intraline(&old.text, &new.text);
+        if let Some(line) = hunk.lines.get_mut(del_idx) {
+            line.emphasis = old_emphasis;
         }
-        let add_start = i;
-        while kind_at(&hunk.lines, i) == Some(LineKind::Added) {
-            i += 1;
-        }
-        let pairs = (add_start - del_start).min(i - add_start);
-        for p in 0..pairs {
-            let (del_idx, add_idx) = (del_start + p, add_start + p);
-            let (Some(old), Some(new)) = (hunk.lines.get(del_idx), hunk.lines.get(add_idx)) else {
-                continue;
-            };
-            if similarity(&old.text, &new.text) < MIN_SIMILARITY {
-                continue;
-            }
-            let (old_emphasis, new_emphasis) = intraline(&old.text, &new.text);
-            if let Some(line) = hunk.lines.get_mut(del_idx) {
-                line.emphasis = old_emphasis;
-            }
-            if let Some(line) = hunk.lines.get_mut(add_idx) {
-                line.emphasis = new_emphasis;
-            }
+        if let Some(line) = hunk.lines.get_mut(add_idx) {
+            line.emphasis = new_emphasis;
         }
     }
 }
 
-fn kind_at(lines: &[DiffLine], i: usize) -> Option<LineKind> {
-    lines.get(i).map(|l| l.kind)
+/// `(deleted, added)` index pairs for a hunk's del/add runs, paired
+/// positionally within each run — the shared homologous-line model.
+pub(crate) fn paired_run_indices(lines: &[DiffLine]) -> Vec<(usize, usize)> {
+    let kind_at = |i: usize| lines.get(i).map(|l| l.kind);
+    let mut pairs = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if kind_at(i) != Some(LineKind::Deleted) {
+            i += 1;
+            continue;
+        }
+        let del_start = i;
+        while kind_at(i) == Some(LineKind::Deleted) {
+            i += 1;
+        }
+        let add_start = i;
+        while kind_at(i) == Some(LineKind::Added) {
+            i += 1;
+        }
+        for p in 0..(add_start - del_start).min(i - add_start) {
+            pairs.push((del_start + p, add_start + p));
+        }
+    }
+    pairs
 }
 
 fn similarity(old: &str, new: &str) -> f32 {

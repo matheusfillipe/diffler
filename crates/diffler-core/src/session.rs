@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::{DiffModel, HunkId};
+use crate::model::DiffModel;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -35,8 +35,6 @@ pub struct Anchor {
     pub line_end: Option<u32>,
     #[serde(default)]
     pub on_old_side: bool,
-    #[serde(default)]
-    pub hunk: Option<HunkId>,
     /// Snapshot of the anchored line's text, so the UI can mark the
     /// comment outdated when the agent rewrites the line.
     #[serde(default)]
@@ -142,12 +140,6 @@ impl Session {
         true
     }
 
-    pub fn unresolved_comments(&self) -> impl Iterator<Item = &Comment> {
-        self.comments
-            .iter()
-            .filter(|c| c.status != CommentStatus::Resolved)
-    }
-
     pub fn mark_viewed(&mut self, path: &str, hash: &str) {
         self.viewed.insert(path.to_owned(), hash.to_owned());
     }
@@ -188,7 +180,6 @@ mod tests {
             line: Some(3),
             line_end: None,
             on_old_side: false,
-            hunk: None,
             line_text: None,
         }
     }
@@ -218,7 +209,11 @@ mod tests {
         assert_eq!(s.comments[0].status, CommentStatus::Replied);
         assert!(s.resolve(&id));
         assert_eq!(s.comments[0].status, CommentStatus::Resolved);
-        assert_eq!(s.unresolved_comments().count(), 0);
+        assert!(
+            s.comments
+                .iter()
+                .all(|c| c.status == CommentStatus::Resolved)
+        );
     }
 
     #[test]
@@ -255,7 +250,12 @@ mod tests {
         let keep = s.add_comment("mattf", anchor("a.txt"), "open").id.clone();
         let done = s.add_comment("mattf", anchor("a.txt"), "done").id.clone();
         assert!(s.resolve(&done));
-        let unresolved: Vec<_> = s.unresolved_comments().map(|c| c.id.clone()).collect();
+        let unresolved: Vec<_> = s
+            .comments
+            .iter()
+            .filter(|c| c.status != CommentStatus::Resolved)
+            .map(|c| c.id.clone())
+            .collect();
         assert_eq!(unresolved, vec![keep]);
     }
 
@@ -324,7 +324,6 @@ mod tests {
             line,
             line_end: None,
             on_old_side: false,
-            hunk: None,
             line_text: None,
         }
     }
