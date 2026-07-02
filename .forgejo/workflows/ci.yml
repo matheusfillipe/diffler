@@ -6,7 +6,7 @@ on:
 
 jobs:
   lint:
-    runs-on: docker
+    runs-on: codeberg-tiny
     steps:
       - uses: https://github.com/actions/checkout@v6
       - uses: https://github.com/dtolnay/rust-toolchain@stable
@@ -16,7 +16,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   test:
-    runs-on: docker
+    runs-on: codeberg-tiny
     steps:
       - uses: https://github.com/actions/checkout@v6
       - uses: https://github.com/dtolnay/rust-toolchain@stable
