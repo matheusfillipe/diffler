@@ -30,7 +30,7 @@ similar = { version = "3", features = ["inline", "unicode"] }
 notify = "8.2"
 notify-debouncer-full = "0.7"
 futures-util = { version = "0.3", default-features = false }
-rmcp = { version = "1", features = ["server", "transport-streamable-http-server"] }
+rmcp = { version = "2", features = ["server", "transport-streamable-http-server"] }
 axum = "0.8"
 async-lsp = { version = "0.2", features = ["tokio"] }
 tree-sitter = "0.26"
