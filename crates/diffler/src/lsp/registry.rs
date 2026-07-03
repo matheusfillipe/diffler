@@ -51,17 +51,28 @@ const BASH: &[ServerSpec] = &[ServerSpec {
     install_hint: "npm i -g bash-language-server",
 }];
 
-pub fn candidates(extension: &str) -> Option<&'static [ServerSpec]> {
+/// The one extension table: which servers can handle a file and the LSP
+/// `languageId` its documents open with.
+fn language(extension: &str) -> Option<(&'static [ServerSpec], &'static str)> {
     Some(match extension {
-        "rs" => RUST,
-        "go" => GO,
-        "py" | "pyi" => PYTHON,
-        "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" => TYPESCRIPT,
-        "c" | "h" | "cpp" | "cc" | "hpp" => C_CPP,
-        "rb" => RUBY,
-        "sh" | "bash" => BASH,
+        "rs" => (RUST, "rust"),
+        "go" => (GO, "go"),
+        "py" | "pyi" => (PYTHON, "python"),
+        "ts" | "tsx" => (TYPESCRIPT, "typescript"),
+        "js" | "jsx" | "mjs" | "cjs" => (TYPESCRIPT, "javascript"),
+        "c" | "h" => (C_CPP, "c"),
+        "cpp" | "cc" | "hpp" => (C_CPP, "cpp"),
+        "rb" => (RUBY, "ruby"),
+        "sh" | "bash" => (BASH, "shellscript"),
         _ => return None,
     })
+}
+
+pub(crate) fn language_id(path: &std::path::Path) -> &'static str {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .and_then(language)
+        .map_or("plaintext", |(_, id)| id)
 }
 
 pub enum Resolution {
@@ -71,7 +82,7 @@ pub enum Resolution {
 }
 
 pub fn resolve(extension: &str) -> Resolution {
-    let Some(specs) = candidates(extension) else {
+    let Some((specs, _)) = language(extension) else {
         return Resolution::Unsupported;
     };
     let hint = specs.first().map_or("", |s| s.install_hint);

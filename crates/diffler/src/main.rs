@@ -1,9 +1,10 @@
 use std::path::Path;
 
 use clap::{Parser, Subcommand};
+use diffler::app::blast::LspPool;
 use diffler::app::{self, App, CiRequest, Flow};
 use diffler::event::AppEvent;
-use diffler::{ci, clipboard, config, editor, event, lsp, mcp, ui, watch};
+use diffler::{ci, clipboard, config, editor, event, mcp, ui, watch};
 use diffler_core::review::Review;
 use ratatui::DefaultTerminal;
 use tokio::sync::mpsc;
@@ -108,6 +109,7 @@ fn print_config_dump(loaded: &config::LoadedConfig) -> color_eyre::Result<()> {
 
 async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel();
+    let lsp_pool = LspPool::default();
     let mut events = event::spawn_event_loop(tx.clone());
     // a missing watcher is not fatal: the app falls back to periodic polling
     let git_dir = app
@@ -182,7 +184,7 @@ async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<
             });
             continue;
         }
-        dispatch_workers(&mut app, &tx);
+        dispatch_workers(&mut app, &tx, &lsp_pool);
         if let Some(request) = app.pending_ci.take() {
             // service the CI provider call off-thread; the result returns as an
             // event so the active CI screen stays live without blocking the loop
@@ -239,215 +241,39 @@ fn dispatch_refresh(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     });
 }
 
-type LspPool = std::sync::Arc<
-    tokio::sync::Mutex<
-        std::collections::HashMap<&'static str, std::sync::Arc<tokio::sync::Mutex<lsp::LspClient>>>,
-    >,
->;
-
-fn dispatch_workers(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
+fn dispatch_workers(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>, lsp_pool: &LspPool) {
     dispatch_enrich(app, tx);
-    dispatch_blast(app, tx);
-    dispatch_chain(app, tx);
+    dispatch_blast(app, tx, lsp_pool);
+    dispatch_chain(app, tx, lsp_pool);
     dispatch_refresh(app, tx);
 }
 
-fn dispatch_chain(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
+fn dispatch_chain(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>, pool: &LspPool) {
     let Some(job) = app.pending_chain.take() else {
         return;
     };
     let tx = tx.clone();
-    let pool = lsp_pool().clone();
+    let pool = pool.clone();
     let root = app.review.repo_root.clone();
     tokio::spawn(async move {
-        let outcome =
-            chain_calls(&pool, &root, &job)
-                .await
-                .unwrap_or_else(|| app::blast::ChainOutcome {
-                    file: job.path.clone(),
-                    nodes: Vec::new(),
-                    edges: Vec::new(),
-                });
+        let outcome = app::blast::chain_calls(&pool, &root, &job).await;
         let _ = tx.send(AppEvent::Chain(Box::new(outcome)));
     });
-}
-
-/// Innermost changed symbol under the cursor, then its callers, then theirs:
-/// a breadth-first walk of `incomingCalls` up to a small depth and node cap.
-async fn chain_calls(
-    pool: &LspPool,
-    root: &std::path::Path,
-    job: &app::blast::ChainJob,
-) -> Option<app::blast::ChainOutcome> {
-    use app::blast::{ChainNode, ChainOutcome};
-    let lsp::Resolution::Found(spec) = lsp::resolve(&job.extension) else {
-        return None;
-    };
-    let path = std::path::Path::new(&job.path);
-    let (client, symbols) = file_symbols(pool, spec, root, path, &job.new_text).await?;
-    let mut client = client.lock().await;
-    let target = symbols
-        .iter()
-        .filter(|s| (s.start_line..=s.end_line).contains(&job.cursor_line))
-        .min_by_key(|s| s.end_line - s.start_line)?
-        .clone();
-
-    let root_id = format!("{}:{}", job.path, target.select_line);
-    let mut nodes = vec![ChainNode {
-        id: root_id.clone(),
-        label: format!("{} — {}", target.name, job.path),
-        path: job.path.clone(),
-        line: target.select_line,
-    }];
-    let mut edges = Vec::new();
-    let mut frontier = vec![(
-        root_id,
-        job.path.clone(),
-        target.select_line,
-        target.select_character,
-    )];
-    let mut seen: std::collections::HashSet<String> = nodes.iter().map(|n| n.id.clone()).collect();
-    for _depth in 0..3 {
-        let mut next = Vec::new();
-        for (callee_id, callee_path, line, character) in frontier {
-            let callers = client
-                .incoming_calls(std::path::Path::new(&callee_path), line, character)
-                .await
-                .unwrap_or_default();
-            for caller in callers {
-                let id = format!("{}:{}", caller.path, caller.select_line);
-                edges.push((callee_id.clone(), id.clone()));
-                if !seen.insert(id.clone()) {
-                    continue;
-                }
-                nodes.push(ChainNode {
-                    id: id.clone(),
-                    label: format!("{} — {}", caller.name, caller.path),
-                    path: caller.path.clone(),
-                    line: caller.line,
-                });
-                next.push((id, caller.path, caller.select_line, caller.select_character));
-            }
-            if nodes.len() >= 40 {
-                break;
-            }
-        }
-        if next.is_empty() || nodes.len() >= 40 {
-            break;
-        }
-        frontier = next;
-    }
-    Some(ChainOutcome {
-        file: job.path.clone(),
-        nodes,
-        edges,
-    })
-}
-
-fn lsp_pool() -> &'static LspPool {
-    static POOL: std::sync::OnceLock<LspPool> = std::sync::OnceLock::new();
-    POOL.get_or_init(LspPool::default)
-}
-
-/// Reuse or spawn the language's pooled client and load the file's symbols.
-/// A transport failure (dead or wedged server — every request is capped by
-/// the client's timeout) evicts the client so the next job respawns fresh.
-async fn file_symbols(
-    pool: &LspPool,
-    spec: &'static lsp::ServerSpec,
-    root: &std::path::Path,
-    path: &std::path::Path,
-    text: &str,
-) -> Option<(
-    std::sync::Arc<tokio::sync::Mutex<lsp::LspClient>>,
-    Vec<lsp::Symbol>,
-)> {
-    let client = {
-        let mut clients = pool.lock().await;
-        if let Some(client) = clients.get(spec.bin) {
-            client.clone()
-        } else {
-            let spawned = lsp::LspClient::spawn(spec.bin, spec.argv, root)
-                .await
-                .ok()?;
-            let client = std::sync::Arc::new(tokio::sync::Mutex::new(spawned));
-            clients.insert(spec.bin, client.clone());
-            client
-        }
-    };
-    let symbols = {
-        let mut guard = client.lock().await;
-        match guard.sync_document(path, text).await {
-            Ok(()) => guard.document_symbols(path).await,
-            Err(err) => Err(err),
-        }
-    };
-    if let Ok(symbols) = symbols {
-        Some((client, symbols))
-    } else {
-        pool.lock().await.remove(spec.bin);
-        None
-    }
 }
 
 /// One task per queued blast job: resolve the language server, reuse or spawn
 /// its client, then symbols ∩ changed lines → references. Unsupported or
 /// missing servers complete with an empty outcome so the job isn't retried.
-fn dispatch_blast(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
+fn dispatch_blast(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>, pool: &LspPool) {
     for job in app.pending_blast.drain(..) {
         let tx = tx.clone();
-        let pool = lsp_pool().clone();
+        let pool = pool.clone();
         let root = app.review.repo_root.clone();
         tokio::spawn(async move {
-            let symbols = blast_symbols(&pool, &root, &job).await.unwrap_or_default();
-            let _ = tx.send(AppEvent::Blast(Box::new(app::blast::BlastOutcome {
-                path: job.path,
-                hash: job.hash,
-                symbols,
-                diff_files: job.diff_files,
-            })));
+            let outcome = app::blast::blast_refs(&pool, &root, job).await;
+            let _ = tx.send(AppEvent::Blast(Box::new(outcome)));
         });
     }
-}
-
-async fn blast_symbols(
-    pool: &LspPool,
-    root: &std::path::Path,
-    job: &app::blast::BlastJob,
-) -> Option<Vec<(String, Vec<lsp::RefSite>)>> {
-    let lsp::Resolution::Found(spec) = lsp::resolve(&job.extension) else {
-        return None;
-    };
-    let path = std::path::Path::new(&job.path);
-    let (client, symbols) = file_symbols(pool, spec, root, path, &job.new_text).await?;
-    let mut client = client.lock().await;
-    let touched: Vec<_> = symbols
-        .into_iter()
-        .filter(|s| {
-            job.changed_lines
-                .iter()
-                .any(|l| (s.start_line..=s.end_line).contains(l))
-        })
-        .take(8)
-        .collect();
-    let mut out = Vec::new();
-    for attempt in 0..30 {
-        out.clear();
-        for symbol in &touched {
-            let refs = client
-                .references(path, symbol.select_line, symbol.select_character)
-                .await
-                .unwrap_or_default();
-            out.push((symbol.name.clone(), refs));
-        }
-        if out.iter().any(|(_, refs)| !refs.is_empty()) || touched.is_empty() {
-            break;
-        }
-        if attempt < 29 {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        }
-    }
-    Some(out)
 }
 
 /// Spawn a blocking-pool worker per queued enrichment job; results return as

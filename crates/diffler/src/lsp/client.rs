@@ -75,7 +75,7 @@ impl LspClient {
                     "textDocument/didOpen",
                     json!({"textDocument": {
                         "uri": uri(&abs),
-                        "languageId": language_id(path),
+                        "languageId": crate::lsp::registry::language_id(path),
                         "version": 1,
                         "text": text,
                     }}),
@@ -127,7 +127,6 @@ impl LspClient {
                 }),
             )
             .await?;
-        let root_prefix = format!("{}/", uri(&self.root));
         Ok(result
             .as_array()
             .unwrap_or(&Vec::new())
@@ -135,7 +134,7 @@ impl LspClient {
             .filter_map(|loc| {
                 let target = loc.get("uri")?.as_str()?;
                 let line = loc.pointer("/range/start/line")?.as_u64()? as u32;
-                let path = decode_uri_path(target.strip_prefix(&root_prefix)?);
+                let path = rel_path(&self.root, target)?;
                 Some(RefSite { path, line })
             })
             .collect())
@@ -163,7 +162,6 @@ impl LspClient {
         let calls = self
             .request("callHierarchy/incomingCalls", json!({"item": item}))
             .await?;
-        let root_prefix = format!("{}/", uri(&self.root));
         Ok(calls
             .as_array()
             .unwrap_or(&Vec::new())
@@ -172,7 +170,7 @@ impl LspClient {
                 let from = call.get("from")?;
                 let name = from.get("name")?.as_str()?.to_owned();
                 let target = from.get("uri")?.as_str()?;
-                let path = decode_uri_path(target.strip_prefix(&root_prefix)?);
+                let path = rel_path(&self.root, target)?;
                 let at = |ptr: &str| from.pointer(ptr).and_then(Value::as_u64).map(|v| v as u32);
                 Some(Caller {
                     name,
@@ -279,58 +277,20 @@ fn server_request_result(message: &Value) -> Value {
     Value::Null
 }
 
-/// A `file://` URI with the path percent-encoded the way servers emit them,
-/// so prefix-matching server URIs back to repo-relative paths stays exact.
+/// A `file://` URI with the path percent-encoded the way servers emit them.
 fn uri(path: &Path) -> String {
-    use std::fmt::Write;
-    let mut out = String::from("file://");
-    for byte in path.to_string_lossy().bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
-                out.push(char::from(byte));
-            }
-            _ => {
-                let _ = write!(out, "%{byte:02X}");
-            }
-        }
-    }
-    out
+    url::Url::from_file_path(path).map_or_else(
+        |()| format!("file://{}", path.display()),
+        |url| url.to_string(),
+    )
 }
 
-/// Decode `%XX` escapes in a URI path back into the on-disk path.
-fn decode_uri_path(encoded: &str) -> String {
-    let bytes = encoded.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        let escaped = (bytes.get(i) == Some(&b'%'))
-            .then(|| encoded.get(i + 1..i + 3))
-            .flatten()
-            .and_then(|hex| u8::from_str_radix(hex, 16).ok());
-        if let Some(byte) = escaped {
-            out.push(byte);
-            i += 3;
-        } else {
-            out.extend(bytes.get(i..=i).unwrap_or_default());
-            i += 1;
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-fn language_id(path: &Path) -> &'static str {
-    match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
-        "rs" => "rust",
-        "go" => "go",
-        "py" | "pyi" => "python",
-        "ts" | "tsx" => "typescript",
-        "js" | "jsx" | "mjs" | "cjs" => "javascript",
-        "c" | "h" => "c",
-        "cpp" | "cc" | "hpp" => "cpp",
-        "rb" => "ruby",
-        "sh" | "bash" => "shellscript",
-        _ => "plaintext",
-    }
+/// A server-reported URI back to a repo-relative path, or `None` when it
+/// points outside `root` (stdlib, dependencies).
+fn rel_path(root: &Path, uri: &str) -> Option<String> {
+    let path = url::Url::parse(uri).ok()?.to_file_path().ok()?;
+    let rel = path.strip_prefix(root).ok()?;
+    Some(rel.to_string_lossy().into_owned())
 }
 
 const FUNCTION_KINDS: &[u64] = &[6, 9, 12];
@@ -367,18 +327,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn uri_percent_encodes_and_decode_reverses_it() {
-        let uri = uri(Path::new("/repo dir/src/a file.rs"));
+    fn uri_and_rel_path_round_trip_spaces() {
+        let root = Path::new("/repo dir");
+        let uri = uri(&root.join("src/a file.rs"));
         assert_eq!(uri, "file:///repo%20dir/src/a%20file.rs");
-        let path = uri.strip_prefix("file:///repo%20dir/").expect("prefix");
-        assert_eq!(decode_uri_path(path), "src/a file.rs");
+        assert_eq!(rel_path(root, &uri).as_deref(), Some("src/a file.rs"));
     }
 
     #[test]
-    fn decode_leaves_malformed_escapes_alone() {
-        assert_eq!(decode_uri_path("a%2"), "a%2");
-        assert_eq!(decode_uri_path("a%zz"), "a%zz");
-        assert_eq!(decode_uri_path("plain"), "plain");
+    fn rel_path_rejects_locations_outside_the_root() {
+        assert_eq!(rel_path(Path::new("/repo"), "file:///elsewhere/x.rs"), None);
+        assert_eq!(rel_path(Path::new("/repo"), "not a uri"), None);
     }
 
     #[test]

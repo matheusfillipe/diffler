@@ -1092,7 +1092,6 @@ mod tests {
             FileBlast {
                 hash,
                 symbols: vec![SymbolImpact {
-                    name: "answer".into(),
                     total_refs: 4,
                     outside: vec![RefSite {
                         path: "src/other.rs".into(),

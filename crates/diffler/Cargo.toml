@@ -39,7 +39,7 @@ notify-debouncer-full.workspace = true
 serde_json.workspace = true
 unicode-width.workspace = true
 # pre-staged for the LSP client; validates CI build times across targets
-async-lsp.workspace = true
+url.workspace = true
 # the GitHub CI source parses workflow YAML into the graph Model
 serde_norway.workspace = true
 

@@ -32,7 +32,7 @@ notify-debouncer-full = "0.7"
 futures-util = { version = "0.3", default-features = false }
 rmcp = { version = "1", features = ["server", "transport-streamable-http-server"] }
 axum = "0.8"
-async-lsp = { version = "0.2", features = ["tokio"] }
+url = "2"
 tree-sitter = "0.26"
 tree-sitter-highlight = "0.26"
 syndiff = "0.2"

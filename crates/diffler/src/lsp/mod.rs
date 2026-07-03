@@ -2,10 +2,10 @@
 //! symbol has beyond the diff. One client per language, spawned on demand.
 
 mod client;
-mod registry;
+pub(crate) mod registry;
 
 pub use client::LspClient;
-pub use registry::{Resolution, ServerSpec, candidates, resolve};
+pub use registry::{Resolution, ServerSpec, resolve};
 
 use thiserror::Error;
 

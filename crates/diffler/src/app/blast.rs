@@ -50,7 +50,6 @@ pub struct BlastOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SymbolImpact {
-    pub name: String,
     pub total_refs: usize,
     pub outside: Vec<RefSite>,
 }
@@ -137,8 +136,7 @@ impl App {
         let symbols = outcome
             .symbols
             .into_iter()
-            .map(|(name, refs)| SymbolImpact {
-                name,
+            .map(|(_, refs)| SymbolImpact {
                 total_refs: refs.len(),
                 outside: refs
                     .into_iter()
@@ -153,10 +151,6 @@ impl App {
                 symbols,
             },
         );
-    }
-
-    pub fn blast_computing(&self, hash: &str) -> bool {
-        self.blast_inflight.contains(hash)
     }
 
     pub(crate) fn open_impact(&mut self) {
@@ -251,6 +245,192 @@ impl App {
             self.push_screen(super::Screen::Graph);
         }
     }
+}
+
+/// One pooled client per language server, shared by every blast/chain worker.
+pub type LspPool = std::sync::Arc<
+    tokio::sync::Mutex<
+        std::collections::HashMap<
+            &'static str,
+            std::sync::Arc<tokio::sync::Mutex<crate::lsp::LspClient>>,
+        >,
+    >,
+>;
+
+/// Reuse or spawn the language's pooled client and load the file's symbols.
+/// A transport failure (dead or wedged server — every request is capped by
+/// the client's timeout) evicts the client so the next job respawns fresh.
+async fn file_symbols(
+    pool: &LspPool,
+    spec: &'static crate::lsp::ServerSpec,
+    root: &std::path::Path,
+    path: &std::path::Path,
+    text: &str,
+) -> Option<(
+    std::sync::Arc<tokio::sync::Mutex<crate::lsp::LspClient>>,
+    Vec<crate::lsp::Symbol>,
+)> {
+    let client = {
+        let mut clients = pool.lock().await;
+        if let Some(client) = clients.get(spec.bin) {
+            client.clone()
+        } else {
+            let spawned = crate::lsp::LspClient::spawn(spec.bin, spec.argv, root)
+                .await
+                .ok()?;
+            let client = std::sync::Arc::new(tokio::sync::Mutex::new(spawned));
+            clients.insert(spec.bin, client.clone());
+            client
+        }
+    };
+    let symbols = {
+        let mut guard = client.lock().await;
+        match guard.sync_document(path, text).await {
+            Ok(()) => guard.document_symbols(path).await,
+            Err(err) => Err(err),
+        }
+    };
+    if let Ok(symbols) = symbols {
+        Some((client, symbols))
+    } else {
+        pool.lock().await.remove(spec.bin);
+        None
+    }
+}
+
+/// Innermost changed symbol under the cursor, then its callers, then theirs:
+/// a breadth-first walk of `incomingCalls` up to a small depth and node cap.
+/// Failures come back as an empty outcome so the press still resolves.
+pub async fn chain_calls(pool: &LspPool, root: &std::path::Path, job: &ChainJob) -> ChainOutcome {
+    walk_chain(pool, root, job)
+        .await
+        .unwrap_or_else(|| ChainOutcome {
+            file: job.path.clone(),
+            nodes: Vec::new(),
+            edges: Vec::new(),
+        })
+}
+
+async fn walk_chain(
+    pool: &LspPool,
+    root: &std::path::Path,
+    job: &ChainJob,
+) -> Option<ChainOutcome> {
+    let crate::lsp::Resolution::Found(spec) = crate::lsp::resolve(&job.extension) else {
+        return None;
+    };
+    let path = std::path::Path::new(&job.path);
+    let (client, symbols) = file_symbols(pool, spec, root, path, &job.new_text).await?;
+    let mut client = client.lock().await;
+    let target = symbols
+        .iter()
+        .filter(|s| (s.start_line..=s.end_line).contains(&job.cursor_line))
+        .min_by_key(|s| s.end_line - s.start_line)?
+        .clone();
+
+    let root_id = format!("{}:{}", job.path, target.select_line);
+    let mut nodes = vec![ChainNode {
+        id: root_id.clone(),
+        label: format!("{} — {}", target.name, job.path),
+        path: job.path.clone(),
+        line: target.select_line,
+    }];
+    let mut edges = Vec::new();
+    let mut frontier = vec![(
+        root_id,
+        job.path.clone(),
+        target.select_line,
+        target.select_character,
+    )];
+    let mut seen: HashSet<String> = nodes.iter().map(|n| n.id.clone()).collect();
+    for _depth in 0..3 {
+        let mut next = Vec::new();
+        for (callee_id, callee_path, line, character) in frontier {
+            let callers = client
+                .incoming_calls(std::path::Path::new(&callee_path), line, character)
+                .await
+                .unwrap_or_default();
+            for caller in callers {
+                let id = format!("{}:{}", caller.path, caller.select_line);
+                edges.push((callee_id.clone(), id.clone()));
+                if !seen.insert(id.clone()) {
+                    continue;
+                }
+                nodes.push(ChainNode {
+                    id: id.clone(),
+                    label: format!("{} — {}", caller.name, caller.path),
+                    path: caller.path.clone(),
+                    line: caller.line,
+                });
+                next.push((id, caller.path, caller.select_line, caller.select_character));
+            }
+            if nodes.len() >= 40 {
+                break;
+            }
+        }
+        if next.is_empty() || nodes.len() >= 40 {
+            break;
+        }
+        frontier = next;
+    }
+    Some(ChainOutcome {
+        file: job.path.clone(),
+        nodes,
+        edges,
+    })
+}
+
+/// Changed symbols → their references, batch-retried while the server is
+/// still indexing. Unsupported or missing servers complete with an empty
+/// outcome so the job isn't retried.
+pub async fn blast_refs(pool: &LspPool, root: &std::path::Path, job: BlastJob) -> BlastOutcome {
+    let symbols = blast_symbols(pool, root, &job).await.unwrap_or_default();
+    BlastOutcome {
+        path: job.path,
+        hash: job.hash,
+        symbols,
+        diff_files: job.diff_files,
+    }
+}
+
+async fn blast_symbols(
+    pool: &LspPool,
+    root: &std::path::Path,
+    job: &BlastJob,
+) -> Option<Vec<(String, Vec<RefSite>)>> {
+    let crate::lsp::Resolution::Found(spec) = crate::lsp::resolve(&job.extension) else {
+        return None;
+    };
+    let path = std::path::Path::new(&job.path);
+    let (client, symbols) = file_symbols(pool, spec, root, path, &job.new_text).await?;
+    let mut client = client.lock().await;
+    let touched: Vec<_> = symbols
+        .into_iter()
+        .filter(|s| {
+            job.changed_lines
+                .iter()
+                .any(|l| (s.start_line..=s.end_line).contains(l))
+        })
+        .take(8)
+        .collect();
+    let mut out = Vec::new();
+    for attempt in 0..30 {
+        out.clear();
+        for symbol in &touched {
+            let refs = client
+                .references(path, symbol.select_line, symbol.select_character)
+                .await
+                .unwrap_or_default();
+            out.push((symbol.name.clone(), refs));
+        }
+        if out.iter().any(|(_, refs)| !refs.is_empty()) || touched.is_empty() {
+            break;
+        }
+        if attempt < 29 {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+    }
+    Some(out)
 }
 
 #[cfg(test)]
