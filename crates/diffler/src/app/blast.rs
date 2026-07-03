@@ -78,8 +78,8 @@ impl App {
         let changed_lines: Vec<u32> = file
             .hunks
             .iter()
+            .filter(|h| h.lines.iter().any(|l| l.kind != LineKind::Context))
             .flat_map(|h| &h.lines)
-            .filter(|l| l.kind == LineKind::Added)
             .filter_map(|l| l.new_no.map(|n| n.saturating_sub(1)))
             .collect();
         if changed_lines.is_empty() {
