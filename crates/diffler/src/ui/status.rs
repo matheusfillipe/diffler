@@ -574,6 +574,8 @@ mod tests {
             number: 28,
             title: "Inline CI runs".into(),
             url: None,
+            head_ref: "feat/x".into(),
+            author: String::new(),
             base_ref: "main".into(),
             head_oid: "feedc0de".into(),
         });

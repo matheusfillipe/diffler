@@ -158,7 +158,7 @@ impl App {
                 }),
                 _ => None,
             },
-            Screen::Log => None,
+            Screen::Log | Screen::Prs => None,
         };
     }
 

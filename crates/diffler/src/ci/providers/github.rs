@@ -352,6 +352,21 @@ impl CiProvider for GitHubProvider {
         })
     }
 
+    async fn list_prs(&self) -> Result<Vec<PullRequest>> {
+        let args = [
+            "pr",
+            "list",
+            "--limit",
+            "50",
+            "--json",
+            "number,title,url,baseRefName,headRefName,headRefOid,author",
+        ]
+        .map(str::to_owned);
+        let raw = self.runner.run("gh", &args).await?;
+        let items: Vec<PrListItem> = serde_json::from_str(&raw).unwrap_or_default();
+        Ok(items.into_iter().map(PrListItem::into_pr).collect())
+    }
+
     async fn pr_comments(&self, number: u64) -> Result<Vec<PrComment>> {
         let args = [
             "api".to_owned(),
@@ -430,7 +445,9 @@ impl CiProvider for GitHubProvider {
             title: pr.title,
             url: (!pr.url.is_empty()).then_some(pr.url),
             base_ref: pr.base_ref_name,
+            head_ref: pr.head_ref_name,
             head_oid: pr.head_ref_oid,
+            author: String::new(),
         }))
     }
 }
@@ -824,6 +841,43 @@ fn chrono_free_epoch(iso: &str) -> u64 {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct PrListItem {
+    number: u64,
+    title: String,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    base_ref_name: String,
+    #[serde(default)]
+    head_ref_name: String,
+    #[serde(default)]
+    head_ref_oid: String,
+    #[serde(default)]
+    author: AuthorApi,
+}
+
+#[derive(Deserialize, Default)]
+struct AuthorApi {
+    #[serde(default)]
+    login: String,
+}
+
+impl PrListItem {
+    fn into_pr(self) -> PullRequest {
+        PullRequest {
+            number: self.number,
+            title: self.title,
+            url: (!self.url.is_empty()).then_some(self.url),
+            base_ref: self.base_ref_name,
+            head_ref: self.head_ref_name,
+            head_oid: self.head_ref_oid,
+            author: self.author.login,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct PrView {
     number: u64,
     title: String,
@@ -831,6 +885,8 @@ struct PrView {
     url: String,
     #[serde(default)]
     base_ref_name: String,
+    #[serde(default)]
+    head_ref_name: String,
     #[serde(default)]
     head_ref_oid: String,
 }

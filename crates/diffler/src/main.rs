@@ -425,6 +425,10 @@ async fn run_ci_request(
             Err(err) => AppEvent::CiError(err.to_string()),
         },
         CiRequest::Pr => AppEvent::CiPr(provider.current_pr().await.unwrap_or(None)),
+        CiRequest::Prs => match provider.list_prs().await {
+            Ok(prs) => AppEvent::CiPrs(prs),
+            Err(err) => AppEvent::CiError(err.to_string()),
+        },
         CiRequest::PrComments(number) => match provider.pr_comments(number).await {
             Ok(comments) => AppEvent::PrComments { number, comments },
             Err(err) => AppEvent::CiError(err.to_string()),

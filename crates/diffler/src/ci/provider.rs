@@ -41,6 +41,9 @@ pub trait CiProvider: Send {
     /// `None` when there's no PR or the provider can't resolve one.
     async fn current_pr(&self) -> Result<Option<PullRequest>>;
 
+    /// The repo's open pull/merge requests, newest first.
+    async fn list_prs(&self) -> Result<Vec<PullRequest>>;
+
     /// Line-anchored review comments on a PR; empty when the provider has no
     /// review API.
     async fn pr_comments(&self, number: u64) -> Result<Vec<PrComment>>;

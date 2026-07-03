@@ -120,6 +120,10 @@ impl CiProvider for GitLabProvider {
         Ok(RunExtras::default())
     }
 
+    async fn list_prs(&self) -> Result<Vec<PullRequest>> {
+        Ok(Vec::new())
+    }
+
     async fn pr_comments(&self, _number: u64) -> Result<Vec<PrComment>> {
         Ok(Vec::new())
     }

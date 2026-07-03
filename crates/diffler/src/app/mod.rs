@@ -58,6 +58,8 @@ pub enum Screen {
     Runs,
     /// The node-graph view (CI pipeline, caller chains).
     Graph,
+    /// The open pull requests of the repo's forge.
+    Prs,
     /// A single job's log view.
     Logs,
 }
@@ -71,6 +73,7 @@ impl Screen {
             Self::Logs => Context::Logs,
             Self::Diff => Context::Diff,
             Self::Graph => Context::Graph,
+            Self::Prs => Context::Prs,
         }
     }
 }
@@ -152,6 +155,7 @@ struct Keymaps {
     log: Keymap,
     logs: Keymap,
     graph: Keymap,
+    prs: Keymap,
 }
 
 impl Keymaps {
@@ -168,6 +172,7 @@ impl Keymaps {
             log: build(Context::Log),
             logs: build(Context::Logs),
             graph: build(Context::Graph),
+            prs: build(Context::Prs),
         }
     }
 }
@@ -223,6 +228,7 @@ const FALLBACK_REFRESH_TICKS: u32 = 20;
 pub enum CiRequest {
     Runs,
     Pr,
+    Prs,
     PrComments(u64),
     Detail(crate::ci::RunId),
     Extras(crate::ci::RunId),
@@ -383,7 +389,11 @@ pub struct App {
     /// Resolved `(merge_base, head_oid)` per opened PR, feeding its diff model.
     pub(crate) pr_ranges: std::collections::HashMap<u64, (String, String)>,
     /// A PR open waiting on its head fetch; retried when the fetch lands.
-    pub(crate) pending_pr_open: Option<u64>,
+    pub(crate) pending_pr_open: Option<crate::ci::PullRequest>,
+    /// A branch to switch to once its PR fetch lands.
+    pub(crate) pending_pr_switch: Option<String>,
+    pub prs: Vec<crate::ci::PullRequest>,
+    pub prs_cursor: usize,
     /// Outbound forge posts drained by the runtime each frame.
     pub pending_pr_posts: Vec<pr::PrPost>,
     pub(crate) pr_posts_inflight: std::collections::HashSet<String>,
@@ -467,6 +477,8 @@ pub(crate) fn now_unix() -> i64 {
 }
 
 impl App {
+    // a flat constructor: one init line per field of owned state
+    #[allow(clippy::too_many_lines)]
     pub fn new(review: Review, loaded: LoadedConfig) -> Self {
         let LoadedConfig {
             config,
@@ -543,6 +555,9 @@ impl App {
             pr_checked: false,
             pr_ranges: std::collections::HashMap::new(),
             pending_pr_open: None,
+            pending_pr_switch: None,
+            prs: Vec::new(),
+            prs_cursor: 0,
             pending_pr_posts: Vec::new(),
             pr_posts_inflight: std::collections::HashSet::new(),
             runs_cursor: 0,
@@ -634,6 +649,7 @@ impl App {
             Context::Log => &self.keymaps.log,
             Context::Logs => &self.keymaps.logs,
             Context::Graph => &self.keymaps.graph,
+            Context::Prs => &self.keymaps.prs,
         }
     }
 
@@ -718,6 +734,7 @@ impl App {
                 Flow::Continue
             }
             AppEvent::CiPr(pr) => self.on_pr_event(pr),
+            AppEvent::CiPrs(prs) => self.on_prs_event(prs),
             AppEvent::PrComments { number, comments } => {
                 self.on_pr_comments_event(number, &comments)
             }
@@ -821,7 +838,7 @@ impl App {
             Screen::Log => self.log_mouse(gesture),
             Screen::Logs => self.logs_mouse(gesture),
             // the Runs/Graph screens are keyboard-driven
-            Screen::Graph | Screen::Runs => {}
+            Screen::Graph | Screen::Runs | Screen::Prs => {}
         }
     }
 
@@ -857,7 +874,7 @@ impl App {
                         view.visual_anchor = None;
                     }
                 }
-                Screen::Status | Screen::Graph | Screen::Runs => {}
+                Screen::Status | Screen::Graph | Screen::Runs | Screen::Prs => {}
             }
             self.pending.clear();
             return Flow::Continue;
@@ -939,7 +956,7 @@ impl App {
                 .logs
                 .as_ref()
                 .is_some_and(|v| v.visual_anchor.is_some()),
-            Screen::Status | Screen::Graph | Screen::Runs => false,
+            Screen::Status | Screen::Graph | Screen::Runs | Screen::Prs => false,
         }
     }
 
@@ -1002,6 +1019,7 @@ impl App {
             Action::SearchNext => self.search_step_or_follow(true),
             Action::SearchPrev => self.search_step_or_follow(false),
             Action::OpenRuns => self.open_runs(),
+            Action::OpenPrs => self.open_prs(),
             action => match self.screen() {
                 Screen::Status => self.dispatch_status(action),
                 Screen::Log => self.dispatch_log(action),
@@ -1009,6 +1027,7 @@ impl App {
                 Screen::Logs => self.dispatch_logs(action),
                 Screen::Runs => self.dispatch_runs(action),
                 Screen::Graph => self.dispatch_graph(action),
+                Screen::Prs => self.dispatch_prs(action),
             },
         }
         Flow::Continue
@@ -1044,6 +1063,7 @@ impl App {
                 self.logs = None;
             }
             Some(Screen::Runs) => self.runs_cursor = 0,
+            Some(Screen::Prs) => self.prs_cursor = 0,
             Some(Screen::Status) | None => {}
         }
         Flow::Continue
@@ -1164,13 +1184,18 @@ impl App {
     }
 
     fn git_finished(&mut self, label: &str, ok: bool, output: &str) {
-        if self.pending_pr_open.take().is_some()
-            && let Some(pr) = self.pr.clone().filter(|_| ok)
-        {
+        if let Some(pr) = self.pending_pr_open.take().filter(|_| ok) {
             match self.resolve_pr_range(&pr) {
                 Some((base, head)) => self.open_pr_diff(pr.number, &base, &head),
                 None => self.error("PR head still missing after fetch"),
             }
+            return;
+        }
+        if let Some(branch) = self.pending_pr_switch.take().filter(|_| ok) {
+            self.pending_git = Some(GitOp {
+                label: format!("switch {branch}"),
+                argv: vec!["git".to_owned(), "switch".to_owned(), branch],
+            });
             return;
         }
         let summary = output

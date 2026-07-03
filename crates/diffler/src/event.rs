@@ -58,6 +58,7 @@ pub enum AppEvent {
         post: Box<crate::app::pr::PrPost>,
         result: Result<crate::ci::PrComment, String>,
     },
+    CiPrs(Vec<crate::ci::PullRequest>),
     CiPr(Option<crate::ci::PullRequest>),
     /// A run's jobs + dependency DAG, mapped onto the graph view.
     CiRunDetail(crate::ci::RunDetail),

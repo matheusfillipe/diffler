@@ -139,6 +139,12 @@ impl CiProvider for ForgejoProvider {
         Ok(RunExtras::default())
     }
 
+    async fn list_prs(&self) -> Result<Vec<PullRequest>> {
+        let raw = self.get("pulls?state=open&limit=50").await?;
+        let pulls: Vec<PullItem> = serde_json::from_str(&raw).unwrap_or_default();
+        Ok(pulls.into_iter().map(PullItem::into_pr).collect())
+    }
+
     async fn pr_comments(&self, _number: u64) -> Result<Vec<PrComment>> {
         Ok(Vec::new())
     }
@@ -165,13 +171,7 @@ impl CiProvider for ForgejoProvider {
         Ok(pulls
             .into_iter()
             .find(|p| p.head.r#ref == *branch)
-            .map(|p| PullRequest {
-                number: p.number,
-                title: p.title,
-                url: (!p.html_url.is_empty()).then_some(p.html_url),
-                base_ref: p.base.r#ref,
-                head_oid: p.head.sha,
-            }))
+            .map(PullItem::into_pr))
     }
 }
 
@@ -184,6 +184,28 @@ struct PullItem {
     html_url: String,
     head: PullSide,
     base: PullSide,
+    #[serde(default)]
+    user: ForgejoUser,
+}
+
+#[derive(Deserialize, Default)]
+struct ForgejoUser {
+    #[serde(default)]
+    login: String,
+}
+
+impl PullItem {
+    fn into_pr(self) -> PullRequest {
+        PullRequest {
+            number: self.number,
+            title: self.title,
+            url: (!self.html_url.is_empty()).then_some(self.html_url),
+            base_ref: self.base.r#ref,
+            head_ref: self.head.r#ref,
+            head_oid: self.head.sha,
+            author: self.user.login,
+        }
+    }
 }
 
 #[derive(Deserialize)]

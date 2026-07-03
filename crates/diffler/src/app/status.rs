@@ -1111,6 +1111,8 @@ mod tests {
             number: 7,
             title: "Add widgets".into(),
             url: None,
+            head_ref: "feat/x".into(),
+            author: String::new(),
             base_ref: "main".into(),
             head_oid: "0000000000000000000000000000000000000abc".into(),
         });
@@ -1127,7 +1129,7 @@ mod tests {
             "{:?}",
             git.argv
         );
-        assert_eq!(app.pending_pr_open, Some(7));
+        assert_eq!(app.pending_pr_open.as_ref().map(|p| p.number), Some(7));
     }
 
     #[test]

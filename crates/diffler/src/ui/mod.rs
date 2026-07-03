@@ -8,7 +8,8 @@ pub mod graph;
 pub mod log;
 pub mod logs;
 pub mod popup;
-pub mod runs;
+pub mod prs;
+mod runs;
 pub mod status;
 
 use diffler_core::model::FileStatus;
@@ -88,6 +89,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         Screen::Diff => diff::draw(frame, app),
         Screen::Graph => graph::draw(frame, app),
         Screen::Runs => runs::draw(frame, app),
+        Screen::Prs => prs::draw(frame, app),
         Screen::Logs => logs::draw(frame, app),
     }
     match &app.modal {
@@ -117,6 +119,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
                 Screen::Log => "log",
                 Screen::Graph => "graph",
                 Screen::Runs => "runs",
+                Screen::Prs => "prs",
                 Screen::Logs => "logs",
             };
             popup::Popup {
@@ -387,6 +390,7 @@ pub(super) fn status_bar(app: &App, width: u16) -> Line<'static> {
         Screen::Log => " LOG ",
         Screen::Graph => " GRAPH ",
         Screen::Runs => " RUNS ",
+        Screen::Prs => " PRS ",
         Screen::Logs => " LOGS ",
     };
     let repo = app

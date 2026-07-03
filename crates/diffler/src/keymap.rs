@@ -37,6 +37,7 @@ pub enum Action {
     Open,
     OpenReviewDiff,
     OpenRuns,
+    OpenPrs,
     CommitFlow,
     CommitExtend,
     CommitAmend,
@@ -107,6 +108,7 @@ impl Action {
             Self::Open => "open",
             Self::OpenReviewDiff => "open_review_diff",
             Self::OpenRuns => "open_runs",
+            Self::OpenPrs => "open_prs",
             Self::CommitFlow => "commit_flow",
             Self::CommitExtend => "commit_extend",
             Self::CommitAmend => "commit_amend",
@@ -149,7 +151,8 @@ impl Action {
         }
     }
 
-    const ALL: [Self; 64] = [
+    const ALL: [Self; 65] = [
+        Self::OpenPrs,
         Self::MoveDown,
         Self::MoveUp,
         Self::MoveLeft,
@@ -231,6 +234,8 @@ pub enum Context {
     Logs,
     /// The node-graph screen (CI pipeline, caller chains).
     Graph,
+    /// The pull-request list.
+    Prs,
 }
 
 /// Outcome of feeding one key press into a keymap.
@@ -377,6 +382,25 @@ const LOGS_DEFAULTS: &[(&str, Action)] = &[
     ("q", Action::Back),
 ];
 
+const PRS_DEFAULTS: &[(&str, Action)] = &[
+    ("j", Action::MoveDown),
+    ("k", Action::MoveUp),
+    ("gg", Action::GoTop),
+    ("G", Action::GoBottom),
+    ("<c-d>", Action::HalfPageDown),
+    ("<c-u>", Action::HalfPageUp),
+    ("<c-f>", Action::FullPageDown),
+    ("<c-b>", Action::FullPageUp),
+    ("<cr>", Action::Open),
+    ("b", Action::BranchCheckout),
+    ("<c-r>", Action::Refresh),
+    ("/", Action::Search),
+    ("n", Action::SearchNext),
+    ("N", Action::SearchPrev),
+    ("?", Action::Help),
+    ("q", Action::Back),
+];
+
 const GRAPH_DEFAULTS: &[(&str, Action)] = &[
     ("j", Action::MoveDown),
     ("k", Action::MoveUp),
@@ -407,6 +431,7 @@ impl Keymap {
             Context::Log => (LOG_DEFAULTS, NO_PREFIXES, &keys.log, "log"),
             Context::Logs => (LOGS_DEFAULTS, NO_PREFIXES, &keys.logs, "logs"),
             Context::Graph => (GRAPH_DEFAULTS, NO_PREFIXES, &keys.graph, "graph"),
+            Context::Prs => (PRS_DEFAULTS, NO_PREFIXES, &keys.prs, "prs"),
         };
         let mut keymap = Self {
             // defaults are static strings validated by tests; a default that
@@ -798,6 +823,7 @@ mod tests {
             (LOG_DEFAULTS, Context::Log),
             (LOGS_DEFAULTS, Context::Logs),
             (GRAPH_DEFAULTS, Context::Graph),
+            (PRS_DEFAULTS, Context::Prs),
         ] {
             let (keymap, _) = Keymap::for_context(context, &KeysConfig::default());
             assert_eq!(keymap.bindings.len(), defaults.len(), "{context:?}");
@@ -1164,6 +1190,7 @@ mod tests {
             Context::Log,
             Context::Logs,
             Context::Graph,
+            Context::Prs,
         ] {
             let (_, warnings) = Keymap::for_context(context, &KeysConfig::default());
             assert!(

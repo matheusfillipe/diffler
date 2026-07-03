@@ -29,6 +29,89 @@ pub enum PrPost {
 }
 
 impl App {
+    /// Open the forge's PR list; the entries arrive as an event.
+    pub(crate) fn open_prs(&mut self) {
+        if self.ci_remotes().is_empty() {
+            self.info("no forge detected for this repo");
+            return;
+        }
+        self.prs_cursor = 0;
+        self.push_screen(super::Screen::Prs);
+        self.pending_ci = Some(super::CiRequest::Prs);
+    }
+
+    pub(crate) fn on_prs_event(&mut self, prs: Vec<crate::ci::PullRequest>) -> super::Flow {
+        self.prs = prs;
+        self.prs_cursor = self.prs_cursor.min(self.prs.len().saturating_sub(1));
+        super::Flow::Continue
+    }
+
+    /// The PR list from keymap actions: list motions, Enter reviews the PR
+    /// (its branch never needs to be checked out), `b` checks the branch out.
+    pub(crate) fn dispatch_prs(&mut self, action: crate::keymap::Action) {
+        use crate::keymap::Action;
+        let last = self.prs.len().saturating_sub(1);
+        match action {
+            Action::MoveDown => self.prs_cursor = (self.prs_cursor + 1).min(last),
+            Action::MoveUp => self.prs_cursor = self.prs_cursor.saturating_sub(1),
+            Action::GoTop => self.prs_cursor = 0,
+            Action::GoBottom => self.prs_cursor = last,
+            Action::HalfPageDown | Action::FullPageDown => {
+                self.prs_cursor = (self.prs_cursor + 20).min(last);
+            }
+            Action::HalfPageUp | Action::FullPageUp => {
+                self.prs_cursor = self.prs_cursor.saturating_sub(20);
+            }
+            Action::Refresh => self.pending_ci = Some(super::CiRequest::Prs),
+            Action::Open => {
+                if let Some(pr) = self.prs.get(self.prs_cursor).cloned() {
+                    self.open_pr_review_for(pr);
+                }
+            }
+            Action::BranchCheckout => self.checkout_selected_pr(),
+            _ => {}
+        }
+    }
+
+    /// Fetch the PR's head into a local branch and switch to it. GitHub's CLI
+    /// does both (and handles forks); other forges fetch the pull ref into a
+    /// branch named after the PR head and switch when the fetch lands.
+    pub(crate) fn checkout_selected_pr(&mut self) {
+        let Some(pr) = self.prs.get(self.prs_cursor).cloned() else {
+            return;
+        };
+        let github = self
+            .ci_remotes()
+            .first()
+            .is_some_and(|r| matches!(r.detected.kind, crate::ci::ProviderKind::GitHub));
+        if github {
+            self.pending_git = Some(super::GitOp {
+                label: format!("checkout PR #{}", pr.number),
+                argv: vec![
+                    "gh".to_owned(),
+                    "pr".to_owned(),
+                    "checkout".to_owned(),
+                    pr.number.to_string(),
+                ],
+            });
+            return;
+        }
+        let remote = self
+            .ci_remotes()
+            .first()
+            .map_or_else(|| "origin".to_owned(), |r| r.name.clone());
+        self.pending_pr_switch = Some(pr.head_ref.clone());
+        self.pending_git = Some(super::GitOp {
+            label: format!("fetch PR #{}", pr.number),
+            argv: vec![
+                "git".to_owned(),
+                "fetch".to_owned(),
+                remote,
+                format!("+refs/pull/{}/head:refs/heads/{}", pr.number, pr.head_ref),
+            ],
+        });
+    }
+
     pub(crate) fn on_pr_comments_event(
         &mut self,
         number: u64,
@@ -213,6 +296,30 @@ mod tests {
     use super::*;
     use crate::config::LoadedConfig;
     use crate::test_support::standard_fixture;
+
+    #[test]
+    fn reviewing_a_listed_pr_never_needs_a_checkout() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.prs = vec![crate::ci::PullRequest {
+            number: 9,
+            title: "remote only".into(),
+            url: None,
+            base_ref: "main".into(),
+            head_ref: "feat/remote".into(),
+            head_oid: "0000000000000000000000000000000000000abc".into(),
+            author: "alice".into(),
+        }];
+        app.dispatch_prs(crate::keymap::Action::Open);
+        // the head isn't local: the open fetches the pull ref, not a branch
+        let git = app.pending_git.take().expect("fetch queued");
+        assert!(
+            git.argv.iter().any(|a| a == "refs/pull/9/head"),
+            "{:?}",
+            git.argv
+        );
+        assert_eq!(app.pending_pr_open.as_ref().map(|p| p.number), Some(9));
+    }
 
     #[test]
     fn sync_maps_threads_and_posting_stamps_remote_ids() {

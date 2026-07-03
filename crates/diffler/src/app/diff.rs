@@ -639,6 +639,12 @@ impl App {
             self.info("no open PR detected for this branch");
             return;
         };
+        self.open_pr_review_for(pr);
+    }
+
+    /// Review any PR — including one whose branch was never checked out; the
+    /// diff needs only the fetched objects, not a local branch.
+    pub(crate) fn open_pr_review_for(&mut self, pr: crate::ci::PullRequest) {
         if let Some((base, head)) = self.resolve_pr_range(&pr) {
             self.open_pr_diff(pr.number, &base, &head);
         } else {
@@ -647,15 +653,12 @@ impl App {
                     .ci_remotes
                     .first()
                     .map_or_else(|| "origin".to_owned(), |r| r.name.clone());
-                self.pending_pr_open = Some(pr.number);
+                let refspec = format!("refs/pull/{}/head", pr.number);
+                let label = format!("fetch PR #{}", pr.number);
+                self.pending_pr_open = Some(pr);
                 self.pending_git = Some(super::GitOp {
-                    label: format!("fetch PR #{}", pr.number),
-                    argv: vec![
-                        "git".to_owned(),
-                        "fetch".to_owned(),
-                        remote,
-                        format!("refs/pull/{}/head", pr.number),
-                    ],
+                    label,
+                    argv: vec!["git".to_owned(), "fetch".to_owned(), remote, refspec],
                 });
             }
         }

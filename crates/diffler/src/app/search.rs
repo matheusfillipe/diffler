@@ -97,6 +97,7 @@ impl App {
             }),
             Screen::Logs => self.logs.as_ref().map_or(0, |v| v.cursor),
             Screen::Runs => self.runs_cursor,
+            Screen::Prs => self.prs_cursor,
             Screen::Graph => self.graph.as_ref().map_or(0, GraphView::selected_index),
         }
     }
@@ -117,6 +118,12 @@ impl App {
                 .iter()
                 .enumerate()
                 .map(|(i, run)| (i, format!("{} {}", run.name, run.title)))
+                .collect(),
+            Screen::Prs => self
+                .prs
+                .iter()
+                .enumerate()
+                .map(|(i, pr)| (i, format!("#{} {} {}", pr.number, pr.title, pr.author)))
                 .collect(),
             Screen::Logs => self.logs.as_ref().map_or_else(Vec::new, |view| {
                 view.rows()
@@ -159,6 +166,7 @@ impl App {
         match self.screen() {
             Screen::Status => self.status.cursor = row,
             Screen::Runs => self.runs_cursor = row,
+            Screen::Prs => self.prs_cursor = row,
             Screen::Log => {
                 if let Some(l) = self.log.as_mut() {
                     l.cursor = row;

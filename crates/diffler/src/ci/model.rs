@@ -169,8 +169,11 @@ pub struct PullRequest {
     pub url: Option<String>,
     /// Branch the PR merges into.
     pub base_ref: String,
+    /// The PR's source branch.
+    pub head_ref: String,
     /// The PR head commit at fetch time; the diff is `merge-base..head`.
     pub head_oid: String,
+    pub author: String,
 }
 
 /// A line-anchored PR review comment from the forge.
