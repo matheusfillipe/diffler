@@ -32,6 +32,23 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     frame.render_widget(Paragraph::new(super::status_bar(app, bar.width)), bar);
 }
 
+/// Ranges within `[start, start+len)` of the search-row text, rebased to the
+/// segment, so each display column highlights its own slice of the match.
+fn clip_ranges(
+    ranges: &[(std::ops::Range<usize>, bool)],
+    start: usize,
+    len: usize,
+) -> Vec<(std::ops::Range<usize>, bool)> {
+    ranges
+        .iter()
+        .filter_map(|(r, current)| {
+            let s = r.start.max(start);
+            let e = r.end.min(start + len);
+            (s < e).then(|| (s - start..e - start, *current))
+        })
+        .collect()
+}
+
 fn draw_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
     if app.runs.is_empty() {
         frame.render_widget(
@@ -61,20 +78,43 @@ fn draw_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
             } else {
                 Style::new().fg(app.theme.accent)
             };
+            // search rows are "{name} {title}": rebase the match ranges onto
+            // the two display segments so `/` highlights like other screens
+            let ranges = app
+                .search
+                .as_ref()
+                .map(|s| s.ranges_for(i))
+                .unwrap_or_default();
+            let name_txt = format!("{:<16}", truncate(&run.name, 16));
+            let title_txt = format!("{:<32}", truncate(&run.title, 32));
             let mut spans = vec![
                 Span::styled(marker, Style::new().fg(app.theme.warn_fg)),
                 Span::styled(format!("{glyph} "), Style::new().fg(color)),
-                Span::styled(format!("{:<16}", truncate(&run.name, 16)), name_style),
-                Span::styled(
-                    format!("  {:<32}", truncate(&run.title, 32)),
-                    Style::new().fg(app.theme.fg),
+            ];
+            spans.extend(super::highlight_spans(
+                &name_txt,
+                name_style,
+                &clip_ranges(&ranges, 0, run.name.chars().count()),
+                &app.theme,
+            ));
+            spans.push(Span::raw("  "));
+            spans.extend(super::highlight_spans(
+                &title_txt,
+                Style::new().fg(app.theme.fg),
+                &clip_ranges(
+                    &ranges,
+                    run.name.chars().count() + 1,
+                    run.title.chars().count(),
                 ),
+                &app.theme,
+            ));
+            spans.extend([
                 Span::styled(
                     format!("  {:<14}", truncate(&run.branch, 14)),
                     Style::new().fg(app.theme.purple),
                 ),
                 Span::styled(format!("  {short}"), Style::new().fg(app.theme.warn_fg)),
-            ];
+            ]);
             if let Some(created) = run.created {
                 let age = super::relative_time(app.now_unix, created.unix_timestamp());
                 let used: usize = spans.iter().map(ratatui::text::Span::width).sum();
