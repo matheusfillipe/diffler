@@ -193,7 +193,8 @@ impl Model {
 
     /// A CI-shaped sample used by tests and snapshots: lint/typos/deny fan into
     /// a foldable test matrix, which fans into the publish jobs.
-    pub fn demo() -> Self {
+    #[cfg(test)]
+    pub(crate) fn demo() -> Self {
         use NodeStatus::{Failed, Neutral, Ok, Queued, Running};
         let mut model = Self::new(RankDir::TopDown);
         model.nodes = vec![
