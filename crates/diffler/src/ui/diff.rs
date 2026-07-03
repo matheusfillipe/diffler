@@ -808,15 +808,14 @@ fn pane_header_line(
         spans.push(Span::styled(" ✓ viewed".to_owned(), dim));
     }
     if computing && impact.is_none() {
-        spans.push(Span::styled(" · impact computing…".to_owned(), dim));
+        spans.push(Span::styled(" · scanning refs…".to_owned(), dim));
     }
     if let Some(blast) = impact {
         let refs: usize = blast.symbols.iter().map(|s| s.total_refs).sum();
         if refs > 0 {
             spans.push(Span::styled(
                 format!(
-                    " · impact {} fns → {refs} refs · {} files outside",
-                    blast.symbols.len(),
+                    " · referenced {refs}× · {} files outside diff",
                     blast.outside_files()
                 ),
                 Style::new().fg(theme.warn_fg).bg(bg),
@@ -1104,7 +1103,7 @@ mod tests {
         );
         let content = render(&mut app).backend().to_string();
         assert!(
-            content.contains("impact 1 fns → 4 refs · 1 files outside"),
+            content.contains("referenced 4× · 1 files outside diff"),
             "{content}"
         );
     }

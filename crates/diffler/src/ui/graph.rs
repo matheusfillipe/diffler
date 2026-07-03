@@ -61,6 +61,15 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
 /// One-line provenance for the open run: where it ran, which workflow,
 /// what commit — the graph alone doesn't say what you're looking at.
 pub(crate) fn run_header(app: &App, theme: &Theme) -> Line<'static> {
+    if let Some(file) = &app.impact_title {
+        return Line::from(vec![
+            Span::styled(
+                format!(" references — {file}"),
+                Style::new().fg(theme.accent),
+            ),
+            Span::styled("  ⏎ open call site".to_owned(), theme.dim_style()),
+        ]);
+    }
     let Some(run) = app.open_run_summary() else {
         return Line::default();
     };

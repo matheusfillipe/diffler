@@ -113,10 +113,6 @@ pub enum BranchAction {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Modal {
-    Impact {
-        title: String,
-        lines: Vec<String>,
-    },
     Confirm {
         message: String,
         on_confirm: PendingOp,
@@ -356,6 +352,10 @@ pub struct App {
     pub refresh_state: RefreshState,
     /// Blast-radius results per file path, keyed valid by content hash.
     pub blast: std::collections::HashMap<String, blast::FileBlast>,
+    /// Graph screen shows a reference graph for this file (instead of a CI run).
+    pub impact_title: Option<String>,
+    /// Reference-graph node id → jump target (path, 0-based line).
+    pub impact_targets: std::collections::HashMap<String, (String, u32)>,
     /// Blast jobs waiting for the runtime's LSP pool.
     pub pending_blast: Vec<blast::BlastJob>,
     pub(crate) blast_inflight: std::collections::HashSet<String>,
@@ -513,6 +513,8 @@ impl App {
             source_models: std::collections::HashMap::new(),
             refresh_state: RefreshState::Idle,
             blast: std::collections::HashMap::new(),
+            impact_title: None,
+            impact_targets: std::collections::HashMap::new(),
             pending_blast: Vec::new(),
             blast_inflight: std::collections::HashSet::new(),
             pending_enrich: Vec::new(),
@@ -1010,6 +1012,8 @@ impl App {
                 self.graph = None;
                 self.open_run = None;
                 self.open_run_remote = None;
+                self.impact_title = None;
+                self.impact_targets.clear();
                 self.extras = None;
             }
             Some(Screen::Logs) => {

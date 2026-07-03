@@ -16,7 +16,7 @@ impl App {
             },
             Some(Modal::Input { .. }) => self.handle_input_key(key),
             Some(Modal::BranchList { .. }) => self.handle_branch_list_key(key),
-            Some(Modal::Impact { .. } | Modal::Help) => match key.code {
+            Some(Modal::Help) => match key.code {
                 KeyCode::Esc | KeyCode::Char('q' | '?') => self.modal = None,
                 _ => {}
             },

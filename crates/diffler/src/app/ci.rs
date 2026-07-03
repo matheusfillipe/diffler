@@ -250,7 +250,11 @@ impl App {
     pub(super) fn on_graph_action(&mut self, action: &crate::graph::GraphAction) {
         match action {
             crate::graph::GraphAction::Activated(id) => {
-                self.open_logs(crate::ci::JobId(id.0.clone()));
+                if let Some((path, line)) = self.impact_targets.get(&id.0).cloned() {
+                    self.request_editor(&path, Some(line + 1));
+                } else if self.impact_title.is_none() {
+                    self.open_logs(crate::ci::JobId(id.0.clone()));
+                }
             }
             crate::graph::GraphAction::Folded { .. } => {}
         }

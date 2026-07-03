@@ -131,6 +131,7 @@ impl App {
     }
 
     pub(crate) fn open_impact(&mut self) {
+        use crate::graph::{Edge, Model, Node, NodeId, NodeStatus, RankDir};
         let Some(path) = self
             .diff
             .as_ref()
@@ -140,28 +141,61 @@ impl App {
         };
         let Some(blast) = self.blast.get(&path) else {
             if self.blast_inflight.is_empty() {
-                self.info("no impact for this file (unsupported language or no changes)");
+                self.info("no references for this file (unsupported language or no changes)");
             } else {
-                self.info("impact still computing — the language server is indexing");
+                self.info("still scanning references — the language server is indexing");
             }
             return;
         };
-        let mut lines = Vec::new();
+        let mut model = Model::new(RankDir::LeftRight);
+        self.impact_targets.clear();
         for symbol in &blast.symbols {
-            lines.push(format!(
-                "{} — {} refs, {} outside this diff",
-                symbol.name,
-                symbol.total_refs,
-                symbol.outside.len()
-            ));
-            for site in symbol.outside.iter().take(8) {
-                lines.push(format!("    {}:{}", site.path, site.line + 1));
+            let sym_id = format!("sym:{}", symbol.name);
+            model.nodes.push(Node {
+                id: NodeId::new(sym_id.clone()),
+                label: format!("{} ({} refs)", symbol.name, symbol.total_refs),
+                status: if symbol.outside.is_empty() {
+                    NodeStatus::Neutral
+                } else {
+                    NodeStatus::Ok
+                },
+                group: None,
+                foldable: None,
+            });
+            let mut per_file: Vec<(&str, u32, usize)> = Vec::new();
+            for site in &symbol.outside {
+                match per_file.iter_mut().find(|(p, ..)| *p == site.path) {
+                    Some((.., count)) => *count += 1,
+                    None => per_file.push((&site.path, site.line, 1)),
+                }
+            }
+            for (ref_path, line, count) in per_file {
+                let node_id = format!("ref:{sym_id}:{ref_path}");
+                self.impact_targets
+                    .insert(node_id.clone(), (ref_path.to_owned(), line));
+                model.nodes.push(Node {
+                    id: NodeId::new(node_id.clone()),
+                    label: format!("{ref_path} ({count})"),
+                    status: NodeStatus::Neutral,
+                    group: None,
+                    foldable: None,
+                });
+                model.edges.push(Edge {
+                    from: NodeId::new(sym_id.clone()),
+                    to: NodeId::new(node_id),
+                    label: None,
+                });
             }
         }
-        if lines.is_empty() {
-            lines.push("no changed symbols with references".to_owned());
+        if model.nodes.is_empty() {
+            self.info("no changed symbols with references");
+            return;
         }
-        self.modal = Some(super::Modal::Impact { title: path, lines });
+        self.impact_title = Some(path);
+        let mut view = crate::graph::GraphView::new();
+        view.set_model(model);
+        self.graph = Some(view);
+        self.push_screen(super::Screen::Graph);
     }
 }
 
@@ -202,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn open_impact_shows_the_cached_summary() {
+    fn open_impact_builds_the_reference_graph() {
         let fixture = standard_fixture();
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         app.open_working_tree_diff(Some("src/lib.rs"));
@@ -221,11 +255,9 @@ mod tests {
             },
         );
         app.open_impact();
-        let Some(super::super::Modal::Impact { title, lines }) = &app.modal else {
-            panic!("impact modal");
-        };
-        assert_eq!(title, "src/lib.rs");
-        assert!(lines[0].contains("answer — 3 refs, 1 outside"));
-        assert!(lines[1].contains("src/other.rs:5"));
+        assert_eq!(app.screen(), crate::app::Screen::Graph);
+        assert_eq!(app.impact_title.as_deref(), Some("src/lib.rs"));
+        let target = app.impact_targets.values().next().expect("jump target");
+        assert_eq!(target, &("src/other.rs".to_owned(), 4));
     }
 }
