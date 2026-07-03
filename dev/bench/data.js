@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1783075153597,
+  "lastUpdate": 1783099548095,
   "repoUrl": "https://github.com/matheusfillipe/diffler",
   "entries": {
     "Benchmark": [
@@ -1151,6 +1151,102 @@ window.BENCHMARK_DATA = {
             "name": "scope_index/20000",
             "value": 92789899,
             "range": "± 1073108",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "committer": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "distinct": true,
+          "id": "bd3c0dd52f72798fea16f877a68b65013d730047",
+          "message": "feat(graph): drive the graph screen from the configurable keymap\n\nThe graph gets its own keymap context ([keys.graph]) built from the same\ngeneric actions as every list: move/go/search/open/back, plus zoom_in/out\nand move_left/right for the 2D layout. GraphView drops its internal key\nhandling for semantic operations the dispatcher calls, the hint line is\nbuilt from live bindings like other screens, and ? shows the real keymap.\nn/N stay SearchNext/Prev and fall back to edge-follow when no search is\nup, so a remap moves both. Esc now only clears search (q backs out),\nmatching every other screen. Also merges the [keys.logs] config section,\nwhich was missing from the layer merge.",
+          "timestamp": "2026-07-03T18:32:54+02:00",
+          "tree_id": "6af3f657f2ca4c16fddf571f920d30fded015bbf",
+          "url": "https://github.com/matheusfillipe/diffler/commit/bd3c0dd52f72798fea16f877a68b65013d730047"
+        },
+        "date": 1783099547244,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "syndiff_emphasis/1000",
+            "value": 8154842,
+            "range": "± 161874",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/1000",
+            "value": 19120,
+            "range": "± 293",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/1000",
+            "value": 5777813,
+            "range": "± 519016",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/1000",
+            "value": 4455044,
+            "range": "± 26426",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/5000",
+            "value": 44455375,
+            "range": "± 798639",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/5000",
+            "value": 97695,
+            "range": "± 1591",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/5000",
+            "value": 29243833,
+            "range": "± 290881",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/5000",
+            "value": 22467598,
+            "range": "± 333516",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/20000",
+            "value": 180039643,
+            "range": "± 2967253",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/20000",
+            "value": 394625,
+            "range": "± 2579",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/20000",
+            "value": 121269321,
+            "range": "± 1412622",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/20000",
+            "value": 92263403,
+            "range": "± 1162131",
             "unit": "ns/iter"
           }
         ]
