@@ -8,11 +8,12 @@ A tool for taking ownership of agentic code: review what your agent writes,
 together with the agent, while it happens. The code that lands is code you
 have actually reviewed.
 
-diffler is a neogit-style TUI you launch in a repo alongside Claude Code or
-any MCP-compatible agent. It shows a live diff of what the agent is doing;
-you read, comment, stage, and commit; the agent picks your feedback up over
-the embedded MCP server and responds in place. One binary, no browser, no
-daemon.
+If you know Emacs' [magit](https://magit.vc), diffler is basically a
+standalone magit with an MCP server built in — the same fast, keyboard-driven
+git UI, no Emacs required. Launch it in a repo alongside Claude Code or any
+MCP-compatible agent: it shows a live diff of what the agent is doing; you
+read, comment, stage, and commit; the agent picks your feedback up over MCP
+and responds in place. One binary, no browser, no daemon.
 
 ## Install
 
@@ -66,7 +67,7 @@ rather paste it into a prompt.
 
 ## Keys
 
-Vim-like, neogit-flavored: `j`/`k`/`gg`/`G` motions, `/` search, and
+Vim-like, magit-flavored: `j`/`k`/`gg`/`G` motions, `/` search, and
 `<c-d>`/`<c-u>` paging work in every list. The basics:
 
 | Key | Action |
