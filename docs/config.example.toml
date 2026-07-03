@@ -70,6 +70,11 @@
 # open = "<cr>"
 # refresh = "<c-r>"
 
+[keys.prs]
+# open = "<cr>"
+# branch_checkout = "b"
+# refresh = "<c-r>"
+
 [keys.graph]
 # move_left = "h"
 # move_right = "l"
