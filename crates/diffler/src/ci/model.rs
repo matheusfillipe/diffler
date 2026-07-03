@@ -139,6 +139,10 @@ pub struct PullRequest {
     pub number: u64,
     pub title: String,
     pub url: Option<String>,
+    /// Branch the PR merges into.
+    pub base_ref: String,
+    /// The PR head commit at fetch time; the diff is `merge-base..head`.
+    pub head_oid: String,
 }
 
 /// A build artifact a run produced, as listed on the run page.

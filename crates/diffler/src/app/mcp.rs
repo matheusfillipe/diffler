@@ -95,7 +95,9 @@ impl App {
             ReviewSource::WorkingTree => {
                 return std::sync::Arc::new(self.review.model().clone());
             }
-            ReviewSource::Commit { .. } | ReviewSource::Range { .. } => source.key(),
+            ReviewSource::Commit { .. } | ReviewSource::Range { .. } | ReviewSource::Pr { .. } => {
+                source.key()
+            }
         };
         if !self.source_models.contains_key(&key) {
             let model = match source {
@@ -107,6 +109,12 @@ impl App {
                     .review
                     .vcs
                     .range_diff(oldest, newest)
+                    .unwrap_or_default(),
+                // resolved when the PR view opened; unknown PRs degrade empty
+                ReviewSource::Pr { number } => self
+                    .pr_ranges
+                    .get(number)
+                    .and_then(|(base, head)| self.review.vcs.tree_diff(base, head).ok())
                     .unwrap_or_default(),
             };
             self.source_models

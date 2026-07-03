@@ -93,6 +93,8 @@ pub enum Row {
     Commit {
         index: usize,
     },
+    /// The branch's open pull request; Enter reviews it.
+    Pr,
     /// Header of the trailing CI-runs section.
     CiHeader {
         count: usize,
@@ -119,6 +121,7 @@ pub(super) enum CursorAnchor {
     },
     Recent,
     Commit(usize),
+    Pr,
     Ci,
     CiRun(usize),
 }
@@ -304,6 +307,9 @@ impl App {
         }
         // CI runs trail the view so the section appearing after its async fetch
         // (or refreshing) never shifts the rows above it or moves the cursor
+        if self.pr.is_some() {
+            rows.push(Row::Pr);
+        }
         if !self.runs.is_empty() {
             rows.push(Row::CiHeader {
                 count: self.runs.len(),
@@ -337,6 +343,10 @@ impl App {
                 .to_owned(),
             Row::Commit { index } => self.status.recent.get(*index)?.subject.clone(),
             Row::CiHeader { .. } => CI_TITLE.to_owned(),
+            Row::Pr => {
+                let pr = self.pr.as_ref()?;
+                format!("PR #{} {}", pr.number, pr.title)
+            }
             Row::CiRun { index } => self.runs.get(*index)?.name.clone(),
             Row::HunkHeader { .. } | Row::DiffLine { .. } => return None,
         })
@@ -595,6 +605,7 @@ impl App {
             | Row::SectionHeader { .. }
             | Row::RecentHeader { .. }
             | Row::Commit { .. }
+            | Row::Pr
             | Row::CiHeader { .. }
             | Row::CiRun { .. } => None,
         }
@@ -718,6 +729,7 @@ impl App {
                 };
                 self.open_commit_diff(&oid);
             }
+            Row::Pr => self.open_pr_review(),
             // a CI run opens its graph directly; the header opens the full Runs list
             Row::CiRun { index } => {
                 self.runs_cursor = *index;
@@ -847,6 +859,7 @@ impl App {
                     self.status.cursor = position;
                 }
             }
+            Row::Pr => {}
             Row::CiHeader { .. } | Row::CiRun { .. } => {
                 self.status.ci_folded ^= true;
                 let position = self
@@ -902,6 +915,7 @@ impl App {
             },
             Row::RecentHeader { .. } => CursorAnchor::Recent,
             Row::Commit { index } => CursorAnchor::Commit(*index),
+            Row::Pr => CursorAnchor::Pr,
             Row::CiHeader { .. } => CursorAnchor::Ci,
             Row::CiRun { index } => CursorAnchor::CiRun(*index),
             Row::File { .. } | Row::HunkHeader { .. } | Row::DiffLine { .. } => {
@@ -937,6 +951,7 @@ impl App {
                     rows.iter()
                         .position(|r| matches!(r, Row::RecentHeader { .. }))
                 }),
+            CursorAnchor::Pr => rows.iter().position(|r| matches!(r, Row::Pr)),
             CursorAnchor::Ci => rows.iter().position(|r| matches!(r, Row::CiHeader { .. })),
             CursorAnchor::CiRun(index) => rows
                 .iter()
@@ -1087,6 +1102,32 @@ mod tests {
         )));
         assert_eq!(app.screen(), crate::app::Screen::Graph);
         assert!(app.graph.is_some());
+    }
+
+    #[test]
+    fn enter_on_the_pr_row_queues_the_head_fetch() {
+        let (_fixture, mut app) = app();
+        app.pr = Some(crate::ci::PullRequest {
+            number: 7,
+            title: "Add widgets".into(),
+            url: None,
+            base_ref: "main".into(),
+            head_oid: "0000000000000000000000000000000000000abc".into(),
+        });
+        cursor_to(&mut app, |row| matches!(row, Row::Pr));
+        app.handle(AppEvent::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        // the head isn't local, so the open waits on a forge fetch
+        let git = app.pending_git.take().expect("fetch queued");
+        assert_eq!(git.argv[..2], ["git".to_owned(), "fetch".to_owned()]);
+        assert!(
+            git.argv.iter().any(|a| a == "refs/pull/7/head"),
+            "{:?}",
+            git.argv
+        );
+        assert_eq!(app.pending_pr_open, Some(7));
     }
 
     #[test]

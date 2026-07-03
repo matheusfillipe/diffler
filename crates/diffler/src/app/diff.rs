@@ -631,6 +631,78 @@ impl App {
         }
     }
 
+    /// Review the branch's open PR: diff `merge-base..head` under the stable
+    /// `pr-<n>` source. A head we don't have yet is fetched first (forges
+    /// serve `refs/pull/<n>/head`) and the open retries when the fetch lands.
+    pub(crate) fn open_pr_review(&mut self) {
+        let Some(pr) = self.pr.clone() else {
+            self.info("no open PR detected for this branch");
+            return;
+        };
+        if let Some((base, head)) = self.resolve_pr_range(&pr) {
+            self.open_pr_diff(pr.number, &base, &head);
+        } else {
+            {
+                let remote = self
+                    .ci_remotes
+                    .first()
+                    .map_or_else(|| "origin".to_owned(), |r| r.name.clone());
+                self.pending_pr_open = Some(pr.number);
+                self.pending_git = Some(super::GitOp {
+                    label: format!("fetch PR #{}", pr.number),
+                    argv: vec![
+                        "git".to_owned(),
+                        "fetch".to_owned(),
+                        remote,
+                        format!("refs/pull/{}/head", pr.number),
+                    ],
+                });
+            }
+        }
+    }
+
+    /// `(merge_base, head)` for the PR against the local objects; `None` when
+    /// the head hasn't been fetched yet.
+    pub(super) fn resolve_pr_range(&self, pr: &crate::ci::PullRequest) -> Option<(String, String)> {
+        let head = self.review.vcs.resolve(&pr.head_oid).ok()?;
+        let base_tip = self
+            .ci_remotes
+            .first()
+            .and_then(|r| {
+                self.review
+                    .vcs
+                    .resolve(&format!("refs/remotes/{}/{}", r.name, pr.base_ref))
+                    .ok()
+            })
+            .or_else(|| self.review.vcs.resolve(&pr.base_ref).ok())?;
+        let base = self.review.vcs.merge_base(&base_tip, &head).ok()?;
+        Some((base, head))
+    }
+
+    pub(crate) fn open_pr_diff(&mut self, number: u64, base: &str, head: &str) {
+        match self.review.vcs.tree_diff(base, head) {
+            Ok(model) => {
+                self.pr_ranges
+                    .insert(number, (base.to_owned(), head.to_owned()));
+                let source = DiffSource::pr(number);
+                if let Err(err) = self.review.ensure_source(&source) {
+                    self.error(err.to_string());
+                    return;
+                }
+                let view = DiffView::new(
+                    source,
+                    Some(model),
+                    &self.review,
+                    self.config.ui.diff_file_layout,
+                    self.config.ui.side_by_side,
+                );
+                self.diff = Some(view);
+                self.push_screen(Screen::Diff);
+            }
+            Err(err) => self.error(err.to_string()),
+        }
+    }
+
     pub(super) fn dispatch_diff(&mut self, action: Action) {
         // a file or focus change moves search onto different rows, so drop it
         let scope = self.diff.as_ref().map(|d| (d.selected, d.focus));

@@ -378,6 +378,10 @@ pub struct App {
     pub runs: Vec<crate::ci::CiRun>,
     /// The checked-out branch's PR, shown beside the runs section header.
     pub pr: Option<crate::ci::PullRequest>,
+    /// Resolved `(merge_base, head_oid)` per opened PR, feeding its diff model.
+    pub(crate) pr_ranges: std::collections::HashMap<u64, (String, String)>,
+    /// A PR open waiting on its head fetch; retried when the fetch lands.
+    pub(crate) pending_pr_open: Option<u64>,
     /// Whether the PR has been resolved for the current branch, so it's fetched
     /// once per branch instead of on every runs poll (reset on a repo change).
     pr_checked: bool,
@@ -532,6 +536,8 @@ impl App {
             runs: Vec::new(),
             pr: None,
             pr_checked: false,
+            pr_ranges: std::collections::HashMap::new(),
+            pending_pr_open: None,
             runs_cursor: 0,
             open_run: None,
             open_run_remote: None,
@@ -1144,6 +1150,15 @@ impl App {
     /// first (head/log/ahead-behind may have moved), then set the toast so a
     /// clean refresh does not clobber it.
     fn git_finished(&mut self, label: &str, ok: bool, output: &str) {
+        if self.pending_pr_open.take().is_some()
+            && let Some(pr) = self.pr.clone().filter(|_| ok)
+        {
+            match self.resolve_pr_range(&pr) {
+                Some((base, head)) => self.open_pr_diff(pr.number, &base, &head),
+                None => self.error("PR head still missing after fetch"),
+            }
+            return;
+        }
         let summary = output
             .lines()
             .map(str::trim)

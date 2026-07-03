@@ -357,7 +357,14 @@ impl CiProvider for GitHubProvider {
         };
         // `gh pr view` exits non-zero when the branch has no PR; that's a normal
         // state, not an error, so a failed call resolves to "no PR"
-        let args = ["pr", "view", branch, "--json", "number,title,url"].map(str::to_owned);
+        let args = [
+            "pr",
+            "view",
+            branch,
+            "--json",
+            "number,title,url,baseRefName,headRefOid",
+        ]
+        .map(str::to_owned);
         let Ok(raw) = self.runner.run("gh", &args).await else {
             return Ok(None);
         };
@@ -368,6 +375,8 @@ impl CiProvider for GitHubProvider {
             number: pr.number,
             title: pr.title,
             url: (!pr.url.is_empty()).then_some(pr.url),
+            base_ref: pr.base_ref_name,
+            head_oid: pr.head_ref_oid,
         }))
     }
 }
@@ -702,11 +711,16 @@ struct JobsApi {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct PrView {
     number: u64,
     title: String,
     #[serde(default)]
     url: String,
+    #[serde(default)]
+    base_ref_name: String,
+    #[serde(default)]
+    head_ref_oid: String,
 }
 
 #[derive(Deserialize)]
@@ -1114,7 +1128,7 @@ jobs:
 
     #[tokio::test]
     async fn current_pr_parses_the_branch_pr() {
-        let json = r#"{"number":28,"title":"Inline CI runs","url":"https://gh/pull/28"}"#;
+        let json = r#"{"number":28,"title":"Inline CI runs","url":"https://gh/pull/28","baseRefName":"main","headRefOid":"abc123"}"#;
         let pr = GitHubProvider::new(
             Box::new(RecordingRunner::new(&[("pr view feat/x", json)])),
             vec![],

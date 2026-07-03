@@ -156,6 +156,32 @@ impl Vcs for GitVcs {
         diff_to_model(&self.repo, &mut diff)
     }
 
+    fn tree_diff(&self, base_oid: &str, newest_oid: &str) -> Result<DiffModel, VcsError> {
+        let base = self.repo.find_commit(git2::Oid::from_str(base_oid)?)?;
+        let newest = self.repo.find_commit(git2::Oid::from_str(newest_oid)?)?;
+        let mut opts = git2::DiffOptions::new();
+        opts.context_lines(self.context_lines);
+        let mut diff = self.repo.diff_tree_to_tree(
+            Some(&base.tree()?),
+            Some(&newest.tree()?),
+            Some(&mut opts),
+        )?;
+        diff_to_model(&self.repo, &mut diff)
+    }
+
+    fn merge_base(&self, a: &str, b: &str) -> Result<String, VcsError> {
+        let base = self
+            .repo
+            .merge_base(git2::Oid::from_str(a)?, git2::Oid::from_str(b)?)?;
+        Ok(base.to_string())
+    }
+
+    fn resolve(&self, revision: &str) -> Result<String, VcsError> {
+        let object = self.repo.revparse_single(revision)?;
+        let commit = object.peel_to_commit()?;
+        Ok(commit.id().to_string())
+    }
+
     fn range_diff(&self, oldest_oid: &str, newest_oid: &str) -> Result<DiffModel, VcsError> {
         let oldest = self.repo.find_commit(git2::Oid::from_str(oldest_oid)?)?;
         let newest = self.repo.find_commit(git2::Oid::from_str(newest_oid)?)?;

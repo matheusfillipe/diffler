@@ -441,6 +441,7 @@ fn pane_title(source: &DiffSource) -> String {
             let short = |oid: &str| oid.get(..7).unwrap_or(oid).to_owned();
             format!("Diff {}..{}", short(oldest), short(newest))
         }
+        DiffSource::Pr { number } => format!("PR #{number}"),
     }
 }
 

@@ -140,8 +140,41 @@ impl CiProvider for ForgejoProvider {
     }
 
     async fn current_pr(&self) -> Result<Option<PullRequest>> {
-        Ok(None)
+        let Some(branch) = &self.branch else {
+            return Ok(None);
+        };
+        let raw = self.get("pulls?state=open&limit=50").await?;
+        let pulls: Vec<PullItem> = serde_json::from_str(&raw).unwrap_or_default();
+        Ok(pulls
+            .into_iter()
+            .find(|p| p.head.r#ref == *branch)
+            .map(|p| PullRequest {
+                number: p.number,
+                title: p.title,
+                url: (!p.html_url.is_empty()).then_some(p.html_url),
+                base_ref: p.base.r#ref,
+                head_oid: p.head.sha,
+            }))
     }
+}
+
+#[derive(Deserialize)]
+struct PullItem {
+    number: u64,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    html_url: String,
+    head: PullSide,
+    base: PullSide,
+}
+
+#[derive(Deserialize)]
+struct PullSide {
+    #[serde(default)]
+    r#ref: String,
+    #[serde(default)]
+    sha: String,
 }
 
 #[derive(Deserialize)]

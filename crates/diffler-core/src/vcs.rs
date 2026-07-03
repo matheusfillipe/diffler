@@ -88,6 +88,13 @@ pub trait Vcs: Send {
     /// `oldest` is a root commit its first-parent tree is the empty tree, so
     /// the range includes everything `oldest` introduced.
     fn range_diff(&self, oldest_oid: &str, newest_oid: &str) -> Result<DiffModel, VcsError>;
+    /// Diff between two trees as-is (`git diff <base> <newest>` semantics);
+    /// with `base` a merge base this is a PR-style three-dot diff.
+    fn tree_diff(&self, base_oid: &str, newest_oid: &str) -> Result<DiffModel, VcsError>;
+    /// Best common ancestor of two commits.
+    fn merge_base(&self, a: &str, b: &str) -> Result<String, VcsError>;
+    /// Resolve a revision (oid, ref name, remote ref) to a full commit oid.
+    fn resolve(&self, revision: &str) -> Result<String, VcsError>;
     /// History from HEAD, newest first.
     fn log(&self, limit: usize) -> Result<Vec<LogEntry>, VcsError>;
     /// Local branches.

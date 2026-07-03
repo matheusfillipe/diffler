@@ -250,16 +250,9 @@ fn row_line(
         }
         Row::Commit { index } => commit_spans(app, *index, theme, width, search),
         Row::CiHeader { count } => {
-            let mut spans = header_spans(theme, CI_TITLE, *count, app.status.ci_folded, search);
-            if let Some(pr) = &app.pr {
-                spans.push(Span::styled(
-                    format!("  PR #{}", pr.number),
-                    theme.dim_style(),
-                ));
-                spans.push(Span::styled(format!(" {}", pr.title), theme.dim_style()));
-            }
-            spans
+            header_spans(theme, CI_TITLE, *count, app.status.ci_folded, search)
         }
+        Row::Pr => pr_spans(app, theme, search),
         Row::CiRun { index } => ci_run_spans(app, *index, theme, width, search),
         // hunk rows are rendered as blocks in `body`, never through here
         Row::HunkHeader { .. } | Row::DiffLine { .. } => Vec::new(),
@@ -385,6 +378,28 @@ fn commit_spans(
         app.now_unix,
         used,
         width as usize,
+    ));
+    spans
+}
+
+/// The branch's open PR as a selectable row: `⇄ PR #12 title → base`.
+fn pr_spans(app: &App, theme: &Theme, search: &[(Range<usize>, bool)]) -> Vec<Span<'static>> {
+    let Some(pr) = &app.pr else {
+        return Vec::new();
+    };
+    let mut spans = vec![Span::styled(
+        "  ⇄ ".to_owned(),
+        Style::new().fg(theme.accent),
+    )];
+    spans.extend(highlight_spans(
+        &format!("PR #{} {}", pr.number, pr.title),
+        Style::new().fg(theme.fg),
+        search,
+        theme,
+    ));
+    spans.push(Span::styled(
+        format!(" → {}", pr.base_ref),
+        theme.dim_style(),
     ));
     spans
 }
@@ -559,6 +574,8 @@ mod tests {
             number: 28,
             title: "Inline CI runs".into(),
             url: None,
+            base_ref: "main".into(),
+            head_oid: "feedc0de".into(),
         });
         let rendered = format!("{:?}", render(&mut app).backend());
         assert!(rendered.contains("PR #28"), "header shows the PR number");
