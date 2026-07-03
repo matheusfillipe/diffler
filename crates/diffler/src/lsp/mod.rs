@@ -33,3 +33,12 @@ pub struct RefSite {
     pub path: String,
     pub line: u32,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Caller {
+    pub name: String,
+    pub path: String,
+    pub line: u32,
+    pub select_line: u32,
+    pub select_character: u32,
+}

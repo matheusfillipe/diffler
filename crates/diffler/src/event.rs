@@ -19,6 +19,8 @@ pub enum AppEvent {
     Tick,
     /// Debounced filesystem change from the watcher (`watch` module).
     RepoChanged,
+    /// A call-chain trace finished for the symbol under the cursor.
+    Chain(Box<crate::app::blast::ChainOutcome>),
     /// A blast-radius computation finished for one file.
     Blast(Box<crate::app::blast::BlastOutcome>),
     /// A background enrichment (emphasis/highlight/scope) finished.

@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
-use crate::lsp::{LspError, RefSite, Symbol};
+use crate::lsp::{Caller, LspError, RefSite, Symbol};
 
 pub struct LspClient {
     _child: Child,
@@ -55,7 +55,8 @@ impl LspClient {
                     "capabilities": {
                         "textDocument": {
                             "documentSymbol": {"hierarchicalDocumentSymbolSupport": true},
-                            "references": {}
+                            "references": {},
+                            "callHierarchy": {}
                         }
                     }
                 }),
@@ -136,6 +137,50 @@ impl LspClient {
                 let line = loc.pointer("/range/start/line")?.as_u64()? as u32;
                 let path = target.strip_prefix(&root_prefix)?.to_owned();
                 Some(RefSite { path, line })
+            })
+            .collect())
+    }
+
+    pub async fn incoming_calls(
+        &mut self,
+        path: &Path,
+        line: u32,
+        character: u32,
+    ) -> Result<Vec<Caller>, LspError> {
+        let abs = self.root.join(path);
+        let items = self
+            .request(
+                "textDocument/prepareCallHierarchy",
+                json!({
+                    "textDocument": {"uri": uri(&abs)},
+                    "position": {"line": line, "character": character},
+                }),
+            )
+            .await?;
+        let Some(item) = items.as_array().and_then(|a| a.first()).cloned() else {
+            return Ok(Vec::new());
+        };
+        let calls = self
+            .request("callHierarchy/incomingCalls", json!({"item": item}))
+            .await?;
+        let root_prefix = format!("{}/", uri(&self.root));
+        Ok(calls
+            .as_array()
+            .unwrap_or(&Vec::new())
+            .iter()
+            .filter_map(|call| {
+                let from = call.get("from")?;
+                let name = from.get("name")?.as_str()?.to_owned();
+                let target = from.get("uri")?.as_str()?;
+                let path = target.strip_prefix(&root_prefix)?.to_owned();
+                let at = |ptr: &str| from.pointer(ptr).and_then(Value::as_u64).map(|v| v as u32);
+                Some(Caller {
+                    name,
+                    path,
+                    line: at("/range/start/line")?,
+                    select_line: at("/selectionRange/start/line")?,
+                    select_character: at("/selectionRange/start/character")?,
+                })
             })
             .collect())
     }

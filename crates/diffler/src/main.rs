@@ -248,7 +248,114 @@ type LspPool = std::sync::Arc<
 fn dispatch_workers(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     dispatch_enrich(app, tx);
     dispatch_blast(app, tx);
+    dispatch_chain(app, tx);
     dispatch_refresh(app, tx);
+}
+
+fn dispatch_chain(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
+    let Some(job) = app.pending_chain.take() else {
+        return;
+    };
+    let tx = tx.clone();
+    let pool = lsp_pool().clone();
+    let root = app.review.repo_root.clone();
+    tokio::spawn(async move {
+        let outcome =
+            chain_calls(&pool, &root, &job)
+                .await
+                .unwrap_or_else(|| app::blast::ChainOutcome {
+                    file: job.path.clone(),
+                    nodes: Vec::new(),
+                    edges: Vec::new(),
+                });
+        let _ = tx.send(AppEvent::Chain(Box::new(outcome)));
+    });
+}
+
+/// Innermost changed symbol under the cursor, then its callers, then theirs:
+/// a breadth-first walk of `incomingCalls` up to a small depth and node cap.
+async fn chain_calls(
+    pool: &LspPool,
+    root: &std::path::Path,
+    job: &app::blast::ChainJob,
+) -> Option<app::blast::ChainOutcome> {
+    use app::blast::{ChainNode, ChainOutcome};
+    let lsp::Resolution::Found(spec) = lsp::resolve(&job.extension) else {
+        return None;
+    };
+    let client = {
+        let mut clients = pool.lock().await;
+        if let Some(client) = clients.get(spec.bin) {
+            client.clone()
+        } else {
+            let spawned = lsp::LspClient::spawn(spec.bin, spec.argv, root)
+                .await
+                .ok()?;
+            let client = std::sync::Arc::new(tokio::sync::Mutex::new(spawned));
+            clients.insert(spec.bin, client.clone());
+            client
+        }
+    };
+    let mut client = client.lock().await;
+    let path = std::path::Path::new(&job.path);
+    client.sync_document(path, &job.new_text).await.ok()?;
+    let symbols = client.document_symbols(path).await.ok()?;
+    let target = symbols
+        .iter()
+        .filter(|s| (s.start_line..=s.end_line).contains(&job.cursor_line))
+        .min_by_key(|s| s.end_line - s.start_line)?
+        .clone();
+
+    let root_id = format!("{}:{}", job.path, target.select_line);
+    let mut nodes = vec![ChainNode {
+        id: root_id.clone(),
+        label: format!("{} — {}", target.name, job.path),
+        path: job.path.clone(),
+        line: target.select_line,
+    }];
+    let mut edges = Vec::new();
+    let mut frontier = vec![(
+        root_id,
+        job.path.clone(),
+        target.select_line,
+        target.select_character,
+    )];
+    let mut seen: std::collections::HashSet<String> = nodes.iter().map(|n| n.id.clone()).collect();
+    for _depth in 0..3 {
+        let mut next = Vec::new();
+        for (callee_id, callee_path, line, character) in frontier {
+            let callers = client
+                .incoming_calls(std::path::Path::new(&callee_path), line, character)
+                .await
+                .unwrap_or_default();
+            for caller in callers {
+                let id = format!("{}:{}", caller.path, caller.select_line);
+                edges.push((id.clone(), callee_id.clone()));
+                if !seen.insert(id.clone()) {
+                    continue;
+                }
+                nodes.push(ChainNode {
+                    id: id.clone(),
+                    label: format!("{} — {}", caller.name, caller.path),
+                    path: caller.path.clone(),
+                    line: caller.line,
+                });
+                next.push((id, caller.path, caller.select_line, caller.select_character));
+            }
+            if nodes.len() >= 40 {
+                break;
+            }
+        }
+        if next.is_empty() || nodes.len() >= 40 {
+            break;
+        }
+        frontier = next;
+    }
+    Some(ChainOutcome {
+        file: job.path.clone(),
+        nodes,
+        edges,
+    })
 }
 
 fn lsp_pool() -> &'static LspPool {

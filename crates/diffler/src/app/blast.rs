@@ -9,6 +9,28 @@ use diffler_core::model::LineKind;
 use super::App;
 use crate::lsp::RefSite;
 
+pub struct ChainJob {
+    pub path: String,
+    pub new_text: String,
+    pub cursor_line: u32,
+    pub extension: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainNode {
+    pub id: String,
+    pub label: String,
+    pub path: String,
+    pub line: u32,
+}
+
+#[derive(Debug)]
+pub struct ChainOutcome {
+    pub file: String,
+    pub nodes: Vec<ChainNode>,
+    pub edges: Vec<(String, String)>,
+}
+
 pub struct BlastJob {
     pub path: String,
     pub hash: String,
@@ -131,71 +153,87 @@ impl App {
     }
 
     pub(crate) fn open_impact(&mut self) {
-        use crate::graph::{Edge, Model, Node, NodeId, NodeStatus, RankDir};
-        let Some(path) = self
-            .diff
+        let Some(diff) = self.diff.as_ref() else {
+            return;
+        };
+        let model = diff
+            .commit_model
             .as_ref()
-            .and_then(|d| d.selected_path(&self.review))
-        else {
+            .unwrap_or_else(|| self.review.model());
+        let Some(file) = model.files.get(diff.selected) else {
             return;
         };
-        let Some(blast) = self.blast.get(&path) else {
-            if self.blast_inflight.is_empty() {
-                self.info("no references for this file (unsupported language or no changes)");
-            } else {
-                self.info("still scanning references — the language server is indexing");
-            }
+        let cursor_line = diff
+            .rows
+            .get(diff.cursor)
+            .and_then(|row| match row {
+                super::diff::DiffRow::Line { hunk, line, .. } => file
+                    .hunks
+                    .get(*hunk)
+                    .and_then(|h| h.lines.get(*line))
+                    .and_then(|l| l.new_no.or(l.old_no)),
+                _ => None,
+            })
+            .unwrap_or(1)
+            .saturating_sub(1);
+        let (Some(extension), Some(new_text)) = (
+            file.path.rsplit_once('.').map(|(_, e)| e.to_owned()),
+            file.new_text.clone(),
+        ) else {
+            self.info("no reference data for this file");
             return;
         };
+        self.pending_chain = Some(ChainJob {
+            path: file.path.clone(),
+            new_text,
+            cursor_line,
+            extension,
+        });
+        self.info("tracing who calls this…");
+    }
+
+    pub(crate) fn on_chain_event(&mut self, outcome: ChainOutcome) -> super::Flow {
+        self.on_chain(outcome);
+        super::Flow::Continue
+    }
+
+    pub(crate) fn on_chain(&mut self, outcome: ChainOutcome) {
+        use crate::graph::{Edge, Model, Node, NodeId, NodeStatus, RankDir};
+        if outcome.nodes.is_empty() {
+            self.info("no callers found for the symbol under the cursor");
+            return;
+        }
         let mut model = Model::new(RankDir::LeftRight);
         self.impact_targets.clear();
-        for symbol in &blast.symbols {
-            let sym_id = format!("sym:{}", symbol.name);
+        for (index, node) in outcome.nodes.iter().enumerate() {
+            self.impact_targets
+                .insert(node.id.clone(), (node.path.clone(), node.line));
             model.nodes.push(Node {
-                id: NodeId::new(sym_id.clone()),
-                label: format!("{} ({} refs)", symbol.name, symbol.total_refs),
-                status: if symbol.outside.is_empty() {
-                    NodeStatus::Neutral
-                } else {
+                id: NodeId::new(node.id.clone()),
+                label: node.label.clone(),
+                status: if index == 0 {
                     NodeStatus::Ok
+                } else {
+                    NodeStatus::Neutral
                 },
                 group: None,
                 foldable: None,
             });
-            let mut per_file: Vec<(&str, u32, usize)> = Vec::new();
-            for site in &symbol.outside {
-                match per_file.iter_mut().find(|(p, ..)| *p == site.path) {
-                    Some((.., count)) => *count += 1,
-                    None => per_file.push((&site.path, site.line, 1)),
-                }
-            }
-            for (ref_path, line, count) in per_file {
-                let node_id = format!("ref:{sym_id}:{ref_path}");
-                self.impact_targets
-                    .insert(node_id.clone(), (ref_path.to_owned(), line));
-                model.nodes.push(Node {
-                    id: NodeId::new(node_id.clone()),
-                    label: format!("{ref_path} ({count})"),
-                    status: NodeStatus::Neutral,
-                    group: None,
-                    foldable: None,
-                });
-                model.edges.push(Edge {
-                    from: NodeId::new(sym_id.clone()),
-                    to: NodeId::new(node_id),
-                    label: None,
-                });
-            }
         }
-        if model.nodes.is_empty() {
-            self.info("no changed symbols with references");
-            return;
+        for (from, to) in &outcome.edges {
+            model.edges.push(Edge {
+                from: NodeId::new(from.clone()),
+                to: NodeId::new(to.clone()),
+                label: None,
+            });
         }
-        self.impact_title = Some(path);
+        self.impact_title = Some(outcome.file);
         let mut view = crate::graph::GraphView::new();
         view.set_model(model);
         self.graph = Some(view);
-        self.push_screen(super::Screen::Graph);
+        if self.screen() != super::Screen::Graph {
+            self.push_screen(super::Screen::Graph);
+        }
     }
 }
 
@@ -236,28 +274,37 @@ mod tests {
     }
 
     #[test]
-    fn open_impact_builds_the_reference_graph() {
+    fn x_queues_a_chain_job_and_the_outcome_opens_the_graph() {
         let fixture = standard_fixture();
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         app.open_working_tree_diff(Some("src/lib.rs"));
-        app.blast.insert(
-            "src/lib.rs".into(),
-            FileBlast {
-                hash: "h".into(),
-                symbols: vec![SymbolImpact {
-                    name: "answer".into(),
-                    total_refs: 3,
-                    outside: vec![RefSite {
-                        path: "src/other.rs".into(),
-                        line: 4,
-                    }],
-                }],
-            },
-        );
         app.open_impact();
+        let job = app.pending_chain.as_ref().expect("chain queued");
+        assert_eq!(job.path, "src/lib.rs");
+
+        app.on_chain(ChainOutcome {
+            file: "src/lib.rs".into(),
+            nodes: vec![
+                ChainNode {
+                    id: "src/lib.rs:0".into(),
+                    label: "answer — src/lib.rs".into(),
+                    path: "src/lib.rs".into(),
+                    line: 0,
+                },
+                ChainNode {
+                    id: "src/other.rs:4".into(),
+                    label: "caller — src/other.rs".into(),
+                    path: "src/other.rs".into(),
+                    line: 4,
+                },
+            ],
+            edges: vec![("src/other.rs:4".into(), "src/lib.rs:0".into())],
+        });
         assert_eq!(app.screen(), crate::app::Screen::Graph);
         assert_eq!(app.impact_title.as_deref(), Some("src/lib.rs"));
-        let target = app.impact_targets.values().next().expect("jump target");
-        assert_eq!(target, &("src/other.rs".to_owned(), 4));
+        assert_eq!(
+            app.impact_targets.get("src/other.rs:4"),
+            Some(&("src/other.rs".to_owned(), 4))
+        );
     }
 }

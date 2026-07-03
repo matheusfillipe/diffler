@@ -68,4 +68,27 @@ async fn finds_references_for_a_changed_function() {
     }
     assert_eq!(refs.len(), 2, "two callers of target(): {refs:?}");
     assert!(refs.iter().all(|r| r.path == "src/main.rs"));
+
+    let callers = client
+        .incoming_calls(
+            Path::new("src/main.rs"),
+            target.select_line,
+            target.select_character,
+        )
+        .await
+        .expect("incoming calls");
+    let mut names: Vec<&str> = callers.iter().map(|c| c.name.as_str()).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["caller_one", "main"], "direct callers of target()");
+
+    let one = callers
+        .iter()
+        .find(|c| c.name == "caller_one")
+        .expect("caller_one");
+    let second = client
+        .incoming_calls(Path::new(&one.path), one.select_line, one.select_character)
+        .await
+        .expect("second hop");
+    assert_eq!(second.len(), 1);
+    assert_eq!(second[0].name, "main", "the chain continues past depth 1");
 }

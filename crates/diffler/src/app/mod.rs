@@ -356,6 +356,8 @@ pub struct App {
     pub impact_title: Option<String>,
     /// Reference-graph node id → jump target (path, 0-based line).
     pub impact_targets: std::collections::HashMap<String, (String, u32)>,
+    /// A cursor-scoped call-chain request waiting for the LSP pool.
+    pub pending_chain: Option<blast::ChainJob>,
     /// Blast jobs waiting for the runtime's LSP pool.
     pub pending_blast: Vec<blast::BlastJob>,
     pub(crate) blast_inflight: std::collections::HashSet<String>,
@@ -515,6 +517,7 @@ impl App {
             blast: std::collections::HashMap::new(),
             impact_title: None,
             impact_targets: std::collections::HashMap::new(),
+            pending_chain: None,
             pending_blast: Vec::new(),
             blast_inflight: std::collections::HashSet::new(),
             pending_enrich: Vec::new(),
@@ -687,6 +690,7 @@ impl App {
                 Flow::Continue
             }
             AppEvent::Blast(outcome) => self.on_blast_event(*outcome),
+            AppEvent::Chain(outcome) => self.on_chain_event(*outcome),
             AppEvent::Enriched(outcome) => {
                 self.on_enriched(*outcome);
                 Flow::Continue
