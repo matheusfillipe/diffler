@@ -4,11 +4,13 @@
 [![npm](https://img.shields.io/npm/v/@mattfillipe/diffler.svg)](https://www.npmjs.com/package/@mattfillipe/diffler)
 [![IRC](https://img.shields.io/badge/IRC-chat.h4ks.com-blue.svg)](https://chat.h4ks.com)
 
-Terminal code review for AI coding agents. A neogit-style TUI you launch in a
-repo alongside Claude Code or any MCP-compatible agent: it shows a live diff of
-what the agent is doing, you stage, commit, and leave comments, and the agent
-reads your feedback over the embedded MCP server and responds in place. One
-binary, no browser, no daemon.
+A tool for taking ownership of agentic code: review what your agent writes,
+together with the agent, while it happens. diffler is a neogit-style TUI you
+launch in a repo alongside Claude Code or any MCP-compatible agent — it shows a
+live diff of what the agent is doing; you read, comment, stage, and commit; the
+agent picks your feedback up over the embedded MCP server and responds in
+place. The code that lands is code you have actually reviewed. One binary, no
+browser, no daemon.
 
 ## Install
 
@@ -62,34 +64,17 @@ rather paste it into a prompt.
 
 ## Keys
 
-| Key | Action |
-| --- | --- |
-| `j` / `k` | move down / up (status rows, sidebar files, or diff lines) |
-| `TAB` | fold (status) / switch sidebar ⇄ diff focus (diff view) |
-| `<cr>` | open diff for the file, section, or commit; in the diff view, switch pane focus |
-| `D` | open the full review diff |
-| `<c-n>` / `<c-p>` | next / previous file in the diff view |
-| `s` / `u` | stage / unstage |
-| `S` / `U` | stage all / unstage all |
-| `x` | discard (status, with confirmation); in the diff view: graph who calls the symbol under the cursor (needs the language server on `PATH`) |
-| `cc` | commit |
-| `b` | branch popup |
-| `ll` | log |
-| `c` | comment on the cursor line |
-| `V` | select a line range, then `c` to comment it |
-| `r` / `R` | reply to / resolve a comment |
-| `v` | mark file viewed |
-| `y` / `Y` | copy feedback markdown (file / all) |
-| `e` | open the file in `$EDITOR` |
-| `Z` | send feedback to the agent |
-| `q` | back / quit |
+Vim-like, neogit-flavored: `j`/`k` motions, `gg`/`G`, `/` search, and `<c-d>`/
+`<c-u>` paging work in every list; `s`/`u` stage and unstage, `cc` commits,
+`c` comments the diff line under the cursor (`V` selects a range first), `Z`
+sends the feedback to the agent, and `x` in the diff view graphs who calls the
+symbol under the cursor (needs the language's LSP server on `PATH`). `?` shows
+the full keymap for the current screen, and every binding is remappable — see
+[docs/config.example.toml](docs/config.example.toml).
 
 The diff view is two panes: a file sidebar and the selected file's diff. `TAB`
 moves focus between them; `j`/`k` change the selected file from the sidebar or
 scroll the diff when focused there; `<c-n>`/`<c-p>` switch files from either.
-
-`?` shows the full keymap for the current screen. `<c-d>`/`<c-u>` scroll a half
-page; `<c-f>`/`<c-b>` scroll a full page in the diff and log views.
 
 The mouse works too (including over tmux): the wheel scrolls the pane under the
 pointer, and a left click selects a row — clicking a section, directory, or
@@ -105,14 +90,14 @@ your review and respond in place. See [docs/mcp.md](docs/mcp.md).
 ## Configuration
 
 Layered TOML: defaults, then `~/.config/diffler/config.toml` (XDG respected,
-macOS included), then `<repo>/.diffler/config.toml`, then CLI flags. Inspect
-the merged result and where each value came from:
+macOS included), then `<repo>/.diffler/config.toml`, then CLI flags. Every
+option and key remap, documented with its default, lives in
+[docs/config.example.toml](docs/config.example.toml). Inspect the merged
+result and where each value came from:
 
 ```sh
 diffler config --dump
 ```
-
-All keys with their defaults: [docs/config.example.toml](docs/config.example.toml).
 
 ## Development
 
