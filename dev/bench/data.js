@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1783100190389,
+  "lastUpdate": 1783100608130,
   "repoUrl": "https://github.com/matheusfillipe/diffler",
   "entries": {
     "Benchmark": [
@@ -1535,6 +1535,102 @@ window.BENCHMARK_DATA = {
             "name": "scope_index/20000",
             "value": 89833194,
             "range": "± 1040508",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "committer": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "distinct": true,
+          "id": "a9f9d99cb06aaf974edd4958fa3d507b7fcd6dc1",
+          "message": "fix(ci): rustup's rust-analyzer proxy is not the server\n\nThe runners (and any rustup install without the component) put a proxy on\nPATH that spawns and dies at initialize, so the PATH probe reads as Found.\nCI now installs the real component so the integration test runs; the test\nskips when spawn fails; and an x trace whose server never comes up surfaces\nthe install hint instead of 'no callers found'.",
+          "timestamp": "2026-07-03T19:39:52+02:00",
+          "tree_id": "2abfdf81e04000a245498303b71efdf53658fef2",
+          "url": "https://github.com/matheusfillipe/diffler/commit/a9f9d99cb06aaf974edd4958fa3d507b7fcd6dc1"
+        },
+        "date": 1783100607854,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "syndiff_emphasis/1000",
+            "value": 8028486,
+            "range": "± 173081",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/1000",
+            "value": 18226,
+            "range": "± 727",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/1000",
+            "value": 5767965,
+            "range": "± 142223",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/1000",
+            "value": 4425436,
+            "range": "± 11386",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/5000",
+            "value": 41764054,
+            "range": "± 394117",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/5000",
+            "value": 97437,
+            "range": "± 368",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/5000",
+            "value": 28909820,
+            "range": "± 369199",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/5000",
+            "value": 22118362,
+            "range": "± 178802",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/20000",
+            "value": 174930739,
+            "range": "± 3051014",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/20000",
+            "value": 392049,
+            "range": "± 5166",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/20000",
+            "value": 117505022,
+            "range": "± 1691684",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/20000",
+            "value": 88855358,
+            "range": "± 911140",
             "unit": "ns/iter"
           }
         ]
