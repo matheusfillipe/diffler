@@ -264,6 +264,14 @@ impl App {
         if let Some(action) = self.graph.as_mut().and_then(|g| g.on_key(*key)) {
             self.on_graph_action(&action);
         }
+        // folds and zooms relayout the placements the committed match rows
+        // index into; recompute so highlights and n/N track the live nodes
+        if self.search.is_some() {
+            let rows = self.focused_search_rows();
+            if let Some(search) = self.search.as_mut() {
+                search.recompute(&rows);
+            }
+        }
         Flow::Continue
     }
 

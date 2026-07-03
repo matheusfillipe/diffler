@@ -358,6 +358,9 @@ pub struct App {
     pub impact_targets: std::collections::HashMap<String, (String, u32)>,
     /// A cursor-scoped call-chain request waiting for the LSP pool.
     pub pending_chain: Option<blast::ChainJob>,
+    /// The file an `x` trace is outstanding for; a landing outcome that
+    /// doesn't match (or arrives after the user moved on) is dropped.
+    pub(crate) chain_inflight: Option<String>,
     /// Blast jobs waiting for the runtime's LSP pool.
     pub pending_blast: Vec<blast::BlastJob>,
     pub(crate) blast_inflight: std::collections::HashSet<String>,
@@ -518,6 +521,7 @@ impl App {
             impact_title: None,
             impact_targets: std::collections::HashMap::new(),
             pending_chain: None,
+            chain_inflight: None,
             pending_blast: Vec::new(),
             blast_inflight: std::collections::HashSet::new(),
             pending_enrich: Vec::new(),

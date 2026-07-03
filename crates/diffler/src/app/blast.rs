@@ -70,6 +70,44 @@ impl FileBlast {
     }
 }
 
+/// 0-based new-side lines the diff actually touches: added lines directly,
+/// deletions via the nearest preceding new-side line so a pure removal still
+/// lands inside its enclosing symbol. Context lines never count.
+fn changed_new_lines(hunks: &[diffler_core::model::Hunk]) -> Vec<u32> {
+    let mut out = Vec::new();
+    for hunk in hunks {
+        let mut last_new = hunk.new_start;
+        for line in &hunk.lines {
+            if let Some(new_no) = line.new_no {
+                if line.kind != LineKind::Context {
+                    out.push(new_no.saturating_sub(1));
+                }
+                last_new = new_no;
+            } else if line.kind == LineKind::Deleted {
+                out.push(last_new.saturating_sub(1));
+            }
+        }
+    }
+    out.dedup();
+    out
+}
+
+/// The new-side line for the cursor at `index` of `hunk`: the line's own
+/// number, or for a deletion the nearest preceding new-side line — old-side
+/// numbers don't index the new text the server sees.
+fn new_side_line(hunk: &diffler_core::model::Hunk, index: usize) -> Option<u32> {
+    let line = hunk.lines.get(index)?;
+    line.new_no.or_else(|| {
+        hunk.lines
+            .get(..index)
+            .into_iter()
+            .flatten()
+            .rev()
+            .find_map(|l| l.new_no)
+            .or(Some(hunk.new_start))
+    })
+}
+
 fn extension_of(path: &str) -> Option<String> {
     std::path::Path::new(path)
         .extension()
@@ -103,13 +141,7 @@ impl App {
         if cached || !self.blast_inflight.insert(hash.clone()) {
             return;
         }
-        let changed_lines: Vec<u32> = file
-            .hunks
-            .iter()
-            .filter(|h| h.lines.iter().any(|l| l.kind != LineKind::Context))
-            .flat_map(|h| &h.lines)
-            .filter_map(|l| l.new_no.map(|n| n.saturating_sub(1)))
-            .collect();
+        let changed_lines = changed_new_lines(&file.hunks);
         if changed_lines.is_empty() {
             self.blast_inflight.remove(&hash);
             return;
@@ -168,11 +200,9 @@ impl App {
             .rows
             .get(diff.cursor)
             .and_then(|row| match row {
-                super::diff::DiffRow::Line { hunk, line, .. } => file
-                    .hunks
-                    .get(*hunk)
-                    .and_then(|h| h.lines.get(*line))
-                    .and_then(|l| l.new_no.or(l.old_no)),
+                super::diff::DiffRow::Line { hunk, line, .. } => {
+                    file.hunks.get(*hunk).and_then(|h| new_side_line(h, *line))
+                }
                 _ => None,
             })
             .unwrap_or(1)
@@ -193,6 +223,7 @@ impl App {
                 return;
             }
         }
+        self.chain_inflight = Some(file.path.clone());
         self.pending_chain = Some(ChainJob {
             path: file.path.clone(),
             new_text,
@@ -209,6 +240,15 @@ impl App {
 
     pub(crate) fn on_chain(&mut self, outcome: ChainOutcome) {
         use crate::graph::{Edge, Model, Node, NodeId, NodeStatus, RankDir};
+        if self.chain_inflight.take().as_deref() != Some(outcome.file.as_str()) {
+            return;
+        }
+        let showing_other_graph =
+            self.screen() == super::Screen::Graph && self.impact_title.is_none();
+        if showing_other_graph {
+            self.info("caller trace ready — press x again from the diff");
+            return;
+        }
         if outcome.nodes.is_empty() {
             self.info("no callers found for the symbol under the cursor");
             return;
@@ -247,53 +287,48 @@ impl App {
     }
 }
 
-/// One pooled client per language server, shared by every blast/chain worker.
-pub type LspPool = std::sync::Arc<
-    tokio::sync::Mutex<
-        std::collections::HashMap<
-            &'static str,
-            std::sync::Arc<tokio::sync::Mutex<crate::lsp::LspClient>>,
-        >,
-    >,
->;
+/// One slot per language server, shared by every blast/chain worker. The
+/// outer map lock is held only to fetch a slot, so one language's slow spawn
+/// or long query never blocks another's.
+type LspSlot = std::sync::Arc<tokio::sync::Mutex<Option<crate::lsp::LspClient>>>;
+pub type LspPool =
+    std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<&'static str, LspSlot>>>;
 
-/// Reuse or spawn the language's pooled client and load the file's symbols.
-/// A transport failure (dead or wedged server — every request is capped by
-/// the client's timeout) evicts the client so the next job respawns fresh.
+/// The language's slot, created empty on first use.
+async fn slot_for(pool: &LspPool, bin: &'static str) -> LspSlot {
+    pool.lock().await.entry(bin).or_default().clone()
+}
+
+/// Spawn into an empty slot, reuse an existing client otherwise, then load
+/// the file's symbols. A transport failure (dead or wedged server — every
+/// request is capped by the client's timeout) empties the slot so the next
+/// job respawns fresh.
 async fn file_symbols(
     pool: &LspPool,
     spec: &'static crate::lsp::ServerSpec,
     root: &std::path::Path,
     path: &std::path::Path,
     text: &str,
-) -> Option<(
-    std::sync::Arc<tokio::sync::Mutex<crate::lsp::LspClient>>,
-    Vec<crate::lsp::Symbol>,
-)> {
-    let client = {
-        let mut clients = pool.lock().await;
-        if let Some(client) = clients.get(spec.bin) {
-            client.clone()
-        } else {
-            let spawned = crate::lsp::LspClient::spawn(spec.bin, spec.argv, root)
+) -> Option<(LspSlot, Vec<crate::lsp::Symbol>)> {
+    let slot = slot_for(pool, spec.bin).await;
+    let mut guard = slot.lock().await;
+    if guard.is_none() {
+        *guard = Some(
+            crate::lsp::LspClient::spawn(spec.bin, spec.argv, root)
                 .await
-                .ok()?;
-            let client = std::sync::Arc::new(tokio::sync::Mutex::new(spawned));
-            clients.insert(spec.bin, client.clone());
-            client
-        }
-    };
-    let symbols = {
-        let mut guard = client.lock().await;
-        match guard.sync_document(path, text).await {
-            Ok(()) => guard.document_symbols(path).await,
-            Err(err) => Err(err),
-        }
+                .ok()?,
+        );
+    }
+    let client = guard.as_mut()?;
+    let symbols = match client.sync_document(path, text).await {
+        Ok(()) => client.document_symbols(path).await,
+        Err(err) => Err(err),
     };
     if let Ok(symbols) = symbols {
-        Some((client, symbols))
+        drop(guard);
+        Some((slot, symbols))
     } else {
-        pool.lock().await.remove(spec.bin);
+        *guard = None;
         None
     }
 }
@@ -320,8 +355,8 @@ async fn walk_chain(
         return None;
     };
     let path = std::path::Path::new(&job.path);
-    let (client, symbols) = file_symbols(pool, spec, root, path, &job.new_text).await?;
-    let mut client = client.lock().await;
+    let (slot, symbols) = file_symbols(pool, spec, root, path, &job.new_text).await?;
+    let mut guard = slot.lock().await;
     let target = symbols
         .iter()
         .filter(|s| (s.start_line..=s.end_line).contains(&job.cursor_line))
@@ -343,14 +378,21 @@ async fn walk_chain(
         target.select_character,
     )];
     let mut seen: HashSet<String> = nodes.iter().map(|n| n.id.clone()).collect();
-    for _depth in 0..3 {
+    'walk: for _depth in 0..3 {
         let mut next = Vec::new();
         for (callee_id, callee_path, line, character) in frontier {
-            let callers = client
+            let client = guard.as_mut()?;
+            let Ok(callers) = client
                 .incoming_calls(std::path::Path::new(&callee_path), line, character)
                 .await
-                .unwrap_or_default();
+            else {
+                *guard = None;
+                break 'walk;
+            };
             for caller in callers {
+                if nodes.len() >= 40 {
+                    break 'walk;
+                }
                 let id = format!("{}:{}", caller.path, caller.select_line);
                 edges.push((callee_id.clone(), id.clone()));
                 if !seen.insert(id.clone()) {
@@ -364,11 +406,8 @@ async fn walk_chain(
                 });
                 next.push((id, caller.path, caller.select_line, caller.select_character));
             }
-            if nodes.len() >= 40 {
-                break;
-            }
         }
-        if next.is_empty() || nodes.len() >= 40 {
+        if next.is_empty() {
             break;
         }
         frontier = next;
@@ -402,8 +441,7 @@ async fn blast_symbols(
         return None;
     };
     let path = std::path::Path::new(&job.path);
-    let (client, symbols) = file_symbols(pool, spec, root, path, &job.new_text).await?;
-    let mut client = client.lock().await;
+    let (slot, symbols) = file_symbols(pool, spec, root, path, &job.new_text).await?;
     let touched: Vec<_> = symbols
         .into_iter()
         .filter(|s| {
@@ -413,17 +451,26 @@ async fn blast_symbols(
         })
         .take(8)
         .collect();
+    if touched.is_empty() {
+        return Some(Vec::new());
+    }
     let mut out = Vec::new();
     for attempt in 0..30 {
         out.clear();
+        let mut guard = slot.lock().await;
         for symbol in &touched {
-            let refs = client
+            let client = guard.as_mut()?;
+            let Ok(refs) = client
                 .references(path, symbol.select_line, symbol.select_character)
                 .await
-                .unwrap_or_default();
+            else {
+                *guard = None;
+                return None;
+            };
             out.push((symbol.name.clone(), refs));
         }
-        if out.iter().any(|(_, refs)| !refs.is_empty()) || touched.is_empty() {
+        drop(guard);
+        if out.iter().any(|(_, refs)| !refs.is_empty()) {
             break;
         }
         if attempt < 29 {
@@ -484,6 +531,7 @@ mod tests {
             assert!(app.pending_chain.is_none());
         }
 
+        app.chain_inflight = Some("src/lib.rs".into());
         app.on_chain(ChainOutcome {
             file: "src/lib.rs".into(),
             nodes: vec![
@@ -516,6 +564,7 @@ mod tests {
         let fixture = standard_fixture();
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         app.open_working_tree_diff(Some("src/lib.rs"));
+        app.chain_inflight = Some("src/lib.rs".into());
         app.on_chain(ChainOutcome {
             file: "src/lib.rs".into(),
             nodes: vec![
@@ -563,6 +612,59 @@ mod tests {
         press(&mut app, KeyCode::Esc);
         assert_ne!(app.screen(), crate::app::Screen::Graph, "second Esc leaves");
     }
+    fn hunk(
+        new_start: u32,
+        lines: Vec<(LineKind, Option<u32>, Option<u32>)>,
+    ) -> diffler_core::model::Hunk {
+        diffler_core::model::Hunk {
+            id: diffler_core::model::HunkId("h".into()),
+            old_start: 1,
+            old_lines: 0,
+            new_start,
+            new_lines: 0,
+            context: String::new(),
+            lines: lines
+                .into_iter()
+                .map(|(kind, old_no, new_no)| {
+                    diffler_core::model::DiffLine::new(kind, old_no, new_no, String::new())
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn changed_new_lines_skips_context_and_anchors_deletions() {
+        use LineKind::{Added, Context, Deleted};
+        let hunks = [hunk(
+            10,
+            vec![
+                (Context, Some(9), Some(10)),
+                (Added, None, Some(11)),
+                (Deleted, Some(11), None),
+                (Context, Some(12), Some(12)),
+            ],
+        )];
+        // 0-based: the added line 11 and the deletion anchor to the same
+        // line (deduped); the context lines 10 and 12 never count
+        assert_eq!(changed_new_lines(&hunks), vec![10]);
+    }
+
+    #[test]
+    fn new_side_line_maps_deletions_to_the_preceding_new_line() {
+        use LineKind::{Context, Deleted};
+        let h = hunk(
+            100,
+            vec![
+                (Context, Some(149), Some(100)),
+                (Deleted, Some(150), None),
+                (Deleted, Some(151), None),
+            ],
+        );
+        assert_eq!(new_side_line(&h, 0), Some(100));
+        assert_eq!(new_side_line(&h, 1), Some(100), "deletion, not old_no 150");
+        assert_eq!(new_side_line(&h, 2), Some(100));
+    }
+
     #[test]
     fn extension_of_ignores_dotted_directories() {
         assert_eq!(extension_of("src/foo.d/main.rs").as_deref(), Some("rs"));
