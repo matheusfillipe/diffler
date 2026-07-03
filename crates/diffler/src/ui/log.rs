@@ -3,7 +3,7 @@
 use diffler_core::vcs::LogEntry;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
@@ -49,13 +49,24 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             .take(height)
             .map(|(index, entry)| {
                 let ranges = search.map(|s| s.ranges_for(index)).unwrap_or_default();
-                let line = entry_line(&app.theme, entry, now, body.width, &ranges);
-                // the cursor and every row in the visual range share the
-                // cursor-line tint, mirroring the diff view's selection
+                // the cursor and every row in the visual range get the marker
+                // bar, bold text, and cursor-line tint, like the runs list
                 if index == log.cursor || selected(index) {
+                    let mut line = entry_line(
+                        &app.theme,
+                        entry,
+                        now,
+                        body.width.saturating_sub(1),
+                        &ranges,
+                    );
+                    for span in &mut line.spans {
+                        span.style = span.style.add_modifier(Modifier::BOLD);
+                    }
+                    line.spans
+                        .insert(0, Span::styled("▌", Style::new().fg(app.theme.warn_fg)));
                     cursor_line(line, &app.theme, body.width)
                 } else {
-                    line
+                    entry_line(&app.theme, entry, now, body.width, &ranges)
                 }
             })
             .collect();

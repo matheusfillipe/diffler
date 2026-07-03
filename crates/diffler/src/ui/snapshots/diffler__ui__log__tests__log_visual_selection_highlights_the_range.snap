@@ -3,8 +3,8 @@ source: crates/diffler/src/ui/log.rs
 expression: terminal.backend()
 ---
 " Hint: <cr> open commit  j/k move  q back                                                                               "
-" db08b32 [main] add gamma note                                                                                 test  1h "
-" d9516cb add beta note                                                                                         test  1h "
+"▌ db08b32 [main] add gamma note                                                                                test  1h "
+"▌ d9516cb add beta note                                                                                        test  1h "
 " c1ac28f initial commit                                                                                        test  1h "
 "                                                                                                                        "
 "                                                                                                                        "

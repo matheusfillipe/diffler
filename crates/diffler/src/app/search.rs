@@ -82,7 +82,8 @@ impl App {
                 Pane::Diff => d.cursor,
             }),
             Screen::Logs => self.logs.as_ref().map_or(0, |v| v.cursor),
-            Screen::Graph | Screen::Runs => 0,
+            Screen::Runs => self.runs_cursor,
+            Screen::Graph => 0,
         }
     }
 
@@ -97,6 +98,12 @@ impl App {
                     .collect()
             }),
             Screen::Diff => self.diff_search_rows(),
+            Screen::Runs => self
+                .runs
+                .iter()
+                .enumerate()
+                .map(|(i, run)| (i, format!("{} {}", run.name, run.title)))
+                .collect(),
             Screen::Logs => self.logs.as_ref().map_or_else(Vec::new, |view| {
                 view.rows()
                     .iter()
@@ -104,7 +111,7 @@ impl App {
                     .map(|(i, row)| (i, view.row_text(*row).to_owned()))
                     .collect()
             }),
-            Screen::Graph | Screen::Runs => Vec::new(),
+            Screen::Graph => Vec::new(),
         }
     }
 
@@ -134,6 +141,7 @@ impl App {
     pub(super) fn focus_searched_row(&mut self, row: usize) {
         match self.screen() {
             Screen::Status => self.status.cursor = row,
+            Screen::Runs => self.runs_cursor = row,
             Screen::Log => {
                 if let Some(l) = self.log.as_mut() {
                     l.cursor = row;
@@ -152,7 +160,7 @@ impl App {
                     v.cursor = row;
                 }
             }
-            Screen::Graph | Screen::Runs => {}
+            Screen::Graph => {}
         }
     }
 }

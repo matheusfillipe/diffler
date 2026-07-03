@@ -8,6 +8,15 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
 use crate::app::App;
+use crate::keymap::Action;
+use crate::ui::{Hint, hint_line};
+
+const HINTS: &[Hint] = &[
+    Hint::Leaf(&[Action::MoveDown, Action::MoveUp], "move"),
+    Hint::Leaf(&[Action::Open], "open graph"),
+    Hint::Leaf(&[Action::Search], "search"),
+    Hint::Leaf(&[Action::Back], "back"),
+];
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let area = frame.area();
@@ -18,13 +27,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         Constraint::Length(1),
     ])
     .areas(area);
-    frame.render_widget(
-        Paragraph::new(Line::styled(
-            " jk move · ⏎ open graph · q back",
-            app.theme.dim_style(),
-        )),
-        hint,
-    );
+    frame.render_widget(Paragraph::new(hint_line(app, HINTS)), hint);
     draw_list(frame, app, body);
     frame.render_widget(Paragraph::new(super::status_bar(app, bar.width)), bar);
 }
@@ -37,10 +40,14 @@ fn draw_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
         );
         return;
     }
+    let height = area.height.max(1) as usize;
+    let scroll = app.runs_selected().saturating_sub(height - 1);
     let rows: Vec<Line<'static>> = app
         .runs
         .iter()
         .enumerate()
+        .skip(scroll)
+        .take(height)
         .map(|(i, run)| {
             let selected = i == app.runs_selected();
             let glyph = run.status.glyph();

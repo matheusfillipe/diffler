@@ -63,12 +63,12 @@ pub enum Screen {
 impl Screen {
     fn context(self) -> Context {
         match self {
-            // the Runs/Graph screens drive their own input, so their keymap
-            // context is unused; map them to Status so hint/help lookups stay total.
-            Self::Status | Self::Runs | Self::Graph => Context::Status,
+            // the Graph screen drives its own input; its context is only for
+            // hint/help lookups. Runs is a plain list: it shares Log's motions.
+            Self::Status | Self::Graph => Context::Status,
+            Self::Runs | Self::Log => Context::Log,
             Self::Logs => Context::Logs,
             Self::Diff => Context::Diff,
-            Self::Log => Context::Log,
         }
     }
 }
@@ -635,8 +635,6 @@ impl App {
             AppEvent::Key(key) if key.kind != crossterm::event::KeyEventKind::Release => {
                 if self.screen() == Screen::Graph {
                     self.handle_graph_key(&key)
-                } else if self.screen() == Screen::Runs {
-                    self.handle_runs_key(&key)
                 } else if self.modal.is_some() {
                     self.handle_modal_key(&key)
                 } else if self.transient.is_some() {
@@ -970,8 +968,9 @@ impl App {
                 Screen::Log => self.dispatch_log(action),
                 Screen::Diff => self.dispatch_diff(action),
                 Screen::Logs => self.dispatch_logs(action),
-                // the Runs/Graph screens drive their own input, never the keymap
-                Screen::Graph | Screen::Runs => {}
+                Screen::Runs => self.dispatch_runs(action),
+                // the Graph screen drives its own input, never the keymap
+                Screen::Graph => {}
             },
         }
         Flow::Continue

@@ -2,7 +2,7 @@
 source: crates/diffler/src/ui/runs.rs
 expression: terminal.backend()
 ---
-" jk move · ⏎ open graph · q back                                                "
+" Hint: j/k move  <cr> open graph  / search  q back                              "
 "  no runs yet…                                                                  "
 "                                                                                "
 "                                                                                "

@@ -160,21 +160,29 @@ impl App {
     }
 
     /// While the runs screen is up: navigate the list, Enter opens a run.
-    pub(super) fn handle_runs_key(&mut self, key: &KeyEvent) -> Flow {
-        match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => return self.pop_screen(),
-            KeyCode::Char('j') | KeyCode::Down => {
-                if !self.runs.is_empty() {
-                    self.runs_cursor = (self.runs_cursor + 1).min(self.runs.len() - 1);
-                }
+    /// The runs list from keymap actions: standard list motions plus Enter.
+    pub(super) fn dispatch_runs(&mut self, action: Action) {
+        let last = self.runs.len().saturating_sub(1);
+        match action {
+            Action::MoveDown => self.runs_cursor = (self.runs_cursor + 1).min(last),
+            Action::MoveUp => self.runs_cursor = self.runs_cursor.saturating_sub(1),
+            Action::GoTop => self.runs_cursor = 0,
+            Action::GoBottom => self.runs_cursor = last,
+            Action::HalfPageDown => {
+                self.runs_cursor = (self.runs_cursor + page_step(0, false)).min(last);
             }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.runs_cursor = self.runs_cursor.saturating_sub(1);
+            Action::HalfPageUp => {
+                self.runs_cursor = self.runs_cursor.saturating_sub(page_step(0, false));
             }
-            KeyCode::Enter => self.open_selected_run(),
+            Action::FullPageDown => {
+                self.runs_cursor = (self.runs_cursor + page_step(0, true)).min(last);
+            }
+            Action::FullPageUp => {
+                self.runs_cursor = self.runs_cursor.saturating_sub(page_step(0, true));
+            }
+            Action::Open => self.open_selected_run(),
             _ => {}
         }
-        Flow::Continue
     }
 
     /// Drive the foldable logs view from a keymap [`Action`]: motions, fold,

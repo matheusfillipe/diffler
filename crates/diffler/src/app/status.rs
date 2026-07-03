@@ -724,6 +724,7 @@ impl App {
                 self.open_selected_run();
             }
             Row::CiHeader { .. } => self.open_runs(),
+            Row::RecentHeader { .. } => self.open_log(),
             // a section header opens the full review diff, starting the
             // walk at the section's first file (when the review covers it)
             Row::SectionHeader { section, .. } => {
