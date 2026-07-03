@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1783099548095,
+  "lastUpdate": 1783099768083,
   "repoUrl": "https://github.com/matheusfillipe/diffler",
   "entries": {
     "Benchmark": [
@@ -1247,6 +1247,102 @@ window.BENCHMARK_DATA = {
             "name": "scope_index/20000",
             "value": 92263403,
             "range": "± 1162131",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "committer": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "distinct": true,
+          "id": "8215df4deadb5f11ab1f536d46d38e05a6200bc7",
+          "message": "docs(readme): lead with agentic-code ownership; vim-like keys over a table",
+          "timestamp": "2026-07-03T19:25:09+02:00",
+          "tree_id": "d12ff4f8d11aad588e8f7e95af8161da9b03d54c",
+          "url": "https://github.com/matheusfillipe/diffler/commit/8215df4deadb5f11ab1f536d46d38e05a6200bc7"
+        },
+        "date": 1783099767805,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "syndiff_emphasis/1000",
+            "value": 8043027,
+            "range": "± 112756",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/1000",
+            "value": 18981,
+            "range": "± 575",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/1000",
+            "value": 5786650,
+            "range": "± 271440",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/1000",
+            "value": 4563102,
+            "range": "± 21276",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/5000",
+            "value": 41707258,
+            "range": "± 1040756",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/5000",
+            "value": 97147,
+            "range": "± 2462",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/5000",
+            "value": 29020040,
+            "range": "± 789049",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/5000",
+            "value": 22237233,
+            "range": "± 165648",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/20000",
+            "value": 173328637,
+            "range": "± 918781",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/20000",
+            "value": 392345,
+            "range": "± 1971",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/20000",
+            "value": 116479814,
+            "range": "± 1129346",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/20000",
+            "value": 88966242,
+            "range": "± 1634002",
             "unit": "ns/iter"
           }
         ]
