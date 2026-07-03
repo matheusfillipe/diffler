@@ -21,7 +21,8 @@ const MIN_BODY_FOR_PANEL: u16 = 9;
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let area = frame.area();
     frame.render_widget(Block::new().style(app.theme.base()), area);
-    let [hint, body, bar] = Layout::vertical([
+    let [hint, header, body, bar] = Layout::vertical([
+        Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Min(0),
         Constraint::Length(1),
@@ -34,6 +35,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         )),
         hint,
     );
+    frame.render_widget(Paragraph::new(run_header(app, &app.theme)), header);
 
     let (graph_area, panel) = carve_panel(app, body);
 
@@ -54,6 +56,29 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         Paragraph::new(Line::styled(status, bar_style)).style(Style::new().bg(app.theme.panel)),
         bar,
     );
+}
+
+/// One-line provenance for the open run: where it ran, which workflow,
+/// what commit — the graph alone doesn't say what you're looking at.
+fn run_header(app: &App, theme: &Theme) -> Line<'static> {
+    let Some(run) = app.open_run_summary() else {
+        return Line::default();
+    };
+    let source = match &run.remote {
+        Some(remote) => format!(" {remote}/{}", run.name),
+        None => format!(" {}", run.name),
+    };
+    let commit: String = run.commit.chars().take(7).collect();
+    let mut spans = vec![Span::styled(source, Style::new().fg(theme.accent))];
+    spans.push(Span::styled(
+        format!("  {}", run.branch),
+        Style::new().fg(theme.fg),
+    ));
+    spans.push(Span::styled(format!(" @ {commit}"), theme.dim_style()));
+    if !run.title.is_empty() {
+        spans.push(Span::styled(format!("  {}", run.title), theme.dim_style()));
+    }
+    Line::from(spans)
 }
 
 /// Split `body` into the graph area and, when the open run has extras and the

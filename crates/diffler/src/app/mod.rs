@@ -566,6 +566,14 @@ impl App {
         self.ci_remotes.clone()
     }
 
+    /// The run the Graph screen is showing, for its header line.
+    pub fn open_run_summary(&self) -> Option<&crate::ci::CiRun> {
+        let id = self.open_run.as_ref()?;
+        self.runs
+            .iter()
+            .find(|run| &run.id == id && run.remote == self.open_run_remote)
+    }
+
     /// The CI remote the open run came from (for routing its detail/log/extras),
     /// or the primary remote when the run isn't tagged or none is open.
     pub fn ci_remote_for_open_run(&self) -> Option<CiRemote> {
