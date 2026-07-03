@@ -330,7 +330,7 @@ async fn chain_calls(
                 .unwrap_or_default();
             for caller in callers {
                 let id = format!("{}:{}", caller.path, caller.select_line);
-                edges.push((id.clone(), callee_id.clone()));
+                edges.push((callee_id.clone(), id.clone()));
                 if !seen.insert(id.clone()) {
                     continue;
                 }
