@@ -301,29 +301,30 @@ async fn blast_symbols(
     let path = std::path::Path::new(&job.path);
     client.sync_document(path, &job.new_text).await.ok()?;
     let symbols = client.document_symbols(path).await.ok()?;
+    let touched: Vec<_> = symbols
+        .into_iter()
+        .filter(|s| {
+            job.changed_lines
+                .iter()
+                .any(|l| (s.start_line..=s.end_line).contains(l))
+        })
+        .take(8)
+        .collect();
     let mut out = Vec::new();
-    for symbol in symbols {
-        let touched = job
-            .changed_lines
-            .iter()
-            .any(|l| (symbol.start_line..=symbol.end_line).contains(l));
-        if !touched {
-            continue;
-        }
-        let mut refs = Vec::new();
-        for _ in 0..20 {
-            refs = client
+    for attempt in 0..30 {
+        out.clear();
+        for symbol in &touched {
+            let refs = client
                 .references(path, symbol.select_line, symbol.select_character)
                 .await
                 .unwrap_or_default();
-            if !refs.is_empty() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            out.push((symbol.name.clone(), refs));
         }
-        out.push((symbol.name, refs));
-        if out.len() >= 8 {
+        if out.iter().any(|(_, refs)| !refs.is_empty()) || touched.is_empty() {
             break;
+        }
+        if attempt < 29 {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
     }
     Some(out)

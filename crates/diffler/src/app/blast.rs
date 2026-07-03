@@ -126,6 +126,10 @@ impl App {
         );
     }
 
+    pub fn blast_computing(&self, hash: &str) -> bool {
+        self.blast_inflight.contains(hash)
+    }
+
     pub(crate) fn open_impact(&mut self) {
         let Some(path) = self
             .diff
@@ -135,7 +139,11 @@ impl App {
             return;
         };
         let Some(blast) = self.blast.get(&path) else {
-            self.info("impact not computed yet for this file");
+            if self.blast_inflight.is_empty() {
+                self.info("no impact for this file (unsupported language or no changes)");
+            } else {
+                self.info("impact still computing — the language server is indexing");
+            }
             return;
         };
         let mut lines = Vec::new();

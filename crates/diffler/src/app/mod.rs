@@ -358,7 +358,7 @@ pub struct App {
     pub blast: std::collections::HashMap<String, blast::FileBlast>,
     /// Blast jobs waiting for the runtime's LSP pool.
     pub pending_blast: Vec<blast::BlastJob>,
-    blast_inflight: std::collections::HashSet<String>,
+    pub(crate) blast_inflight: std::collections::HashSet<String>,
     /// Enrichment jobs waiting for a blocking-pool worker; drained by the
     /// main loop like the other pending slots.
     pub pending_enrich: Vec<enrich::EnrichJob>,

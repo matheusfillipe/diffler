@@ -80,6 +80,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             session,
             review_model,
             blast,
+            blast_inflight: &app.blast_inflight,
             search,
         };
         draw_body(frame, body, &ctx, diff);
@@ -112,6 +113,7 @@ struct RenderCtx<'a> {
     session: &'a Session,
     review_model: Option<&'a DiffModel>,
     blast: &'a std::collections::HashMap<String, crate::app::blast::FileBlast>,
+    blast_inflight: &'a std::collections::HashSet<String>,
     search: Option<&'a Search>,
 }
 
@@ -254,6 +256,7 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
             blast
                 .get(&file.path)
                 .filter(|b| b.hash == file.sides_hash()),
+            ctx.blast_inflight.contains(&file.sides_hash()),
             header_area.width,
         )),
         header_area,
@@ -784,6 +787,7 @@ fn pane_header_line(
     // (open or replied, total) comment counts for the file
     comments: (usize, usize),
     impact: Option<&crate::app::blast::FileBlast>,
+    computing: bool,
     width: u16,
 ) -> Line<'static> {
     let bg = theme.panel;
@@ -802,6 +806,9 @@ fn pane_header_line(
     }
     if viewed {
         spans.push(Span::styled(" ✓ viewed".to_owned(), dim));
+    }
+    if computing && impact.is_none() {
+        spans.push(Span::styled(" · impact computing…".to_owned(), dim));
     }
     if let Some(blast) = impact {
         let refs: usize = blast.symbols.iter().map(|s| s.total_refs).sum();
