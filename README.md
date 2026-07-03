@@ -71,7 +71,7 @@ rather paste it into a prompt.
 | `<c-n>` / `<c-p>` | next / previous file in the diff view |
 | `s` / `u` | stage / unstage |
 | `S` / `U` | stage all / unstage all |
-| `x` | discard (with confirmation) |
+| `x` | discard (status, with confirmation); in the diff view: graph who calls the symbol under the cursor (needs the language server on `PATH`) |
 | `cc` | commit |
 | `b` | branch popup |
 | `ll` | log |

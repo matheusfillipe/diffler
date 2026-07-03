@@ -23,6 +23,7 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   ui/ app/ tree.rs     ratatui TUI: screens, file sidebar, state
   ci/                  provider-agnostic CI acquisition (CiProvider trait, gh/glab)
   graph/               navigable orthogonal node-graph ratatui component
+  lsp/                 language-server registry (PATH probe + install hints) + minimal JSON-RPC stdio client
   keymap.rs config.rs  configurable keybindings, layered TOML config
   theme.rs transient.rs  rendering theme, popup/modal model
   mcp.rs               rmcp/axum MCP server
@@ -64,8 +65,8 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
 - **Runtime.** One tokio runtime: MCP server (axum, `127.0.0.1:{port}/mcp`),
   notify watcher (debounce ~200ms → refresh), main task = the ratatui loop.
   `App` owns all state; workers (git, CI, editor, clipboard, refresh,
-  enrichment) are spawned off "pending" slots and answer over the event
-  channel. Watcher refreshes and per-file enrichment (emphasis/highlight/
+  enrichment, LSP blast/chain) are spawned off "pending" slots and answer over
+  the event channel. Watcher refreshes and per-file enrichment (emphasis/highlight/
   scope) run on the blocking pool — the pane renders plain until results
   land; draw never computes. Caches: hash-memoized per-file hashes, enriched
   models, commit/range models, CI workflow YAML. Perf guard: `just bench`
@@ -97,8 +98,15 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   Agent triggering is the `wait_for_feedback` long-poll (MCP can't initiate agent
   turns); the human's "send" key unblocks it. `propose_resolve` only marks a
   comment Replied — only the human resolves it, in the TUI.
+- **LSP blast radius.** Per-language servers resolved from PATH (Helix-style
+  registry with install hints), pooled `lsp::LspClient`s over stdio. The diff
+  pane badge counts references to changed symbols outside the diff; `x` on a
+  diff line traces `callHierarchy/incomingCalls` (depth ≤3) from the symbol
+  under the cursor into the graph screen — Enter on a node jumps to the call
+  site in `$EDITOR`. Requests time out (30s) and a failed client is evicted
+  from the pool.
 - **Non-goals.** Worktree/workspace management, forge/PR integration, agent
-  orchestration, structural diff. LSP and task tracking are later milestones (`PLAN.md`).
+  orchestration, structural diff. Task tracking is a later milestone (`PLAN.md`).
 
 ## Distribution
 

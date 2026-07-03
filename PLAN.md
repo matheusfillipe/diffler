@@ -12,9 +12,10 @@ M1 (the review loop) shipped and is released across all channels.
   listing and patch-file source.
 - **M3 — workload tracking**: task model, home-screen board, task MCP tools.
 - **M4 — LSP / blast radius**: minimal JSON-RPC client pool over stdio,
-  Helix-style server registry (PATH probe + install hints, config override),
-  changed-symbol impact via `documentSymbol` + `references` — file-header
-  impact badge, symbol impact popup, later the impact graph and
-  sort-by-impact sidebar.
+  Helix-style server registry (PATH probe + install hints),
+  changed-symbol impact via `documentSymbol` + `references`. *(Landed:
+  client pool + registry, file-header reference badge, `x` caller-chain
+  graph via `callHierarchy` with `/` search.)* Remaining: registry config
+  override, sort-by-impact sidebar.
 
 Later: jj VCS backend, structural (difftastic-style) diff toggle.
