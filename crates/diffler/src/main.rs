@@ -270,6 +270,7 @@ fn dispatch_blast(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
                 path: job.path,
                 hash: job.hash,
                 symbols,
+                diff_files: job.diff_files,
             })));
         });
     }
@@ -309,10 +310,17 @@ async fn blast_symbols(
         if !touched {
             continue;
         }
-        let refs = client
-            .references(path, symbol.select_line, symbol.select_character)
-            .await
-            .unwrap_or_default();
+        let mut refs = Vec::new();
+        for _ in 0..20 {
+            refs = client
+                .references(path, symbol.select_line, symbol.select_character)
+                .await
+                .unwrap_or_default();
+            if !refs.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
         out.push((symbol.name, refs));
         if out.len() >= 8 {
             break;

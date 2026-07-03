@@ -705,6 +705,7 @@ impl App {
 
     fn dispatch_diff_pane(&mut self, action: Action) {
         match action {
+            Action::Impact => self.open_impact(),
             Action::MoveDown => self.diff_move(1),
             Action::MoveUp => self.diff_move(-1),
             Action::GoTop => self.diff_move(isize::MIN),

@@ -15,6 +15,7 @@ pub struct BlastJob {
     pub new_text: String,
     pub changed_lines: Vec<u32>,
     pub extension: String,
+    pub diff_files: HashSet<String>,
 }
 
 #[derive(Debug)]
@@ -22,6 +23,7 @@ pub struct BlastOutcome {
     pub path: String,
     pub hash: String,
     pub symbols: Vec<(String, Vec<RefSite>)>,
+    pub diff_files: HashSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,12 +86,14 @@ impl App {
             self.blast_inflight.remove(&hash);
             return;
         }
+        let diff_files = model.files.iter().map(|f| f.path.clone()).collect();
         self.pending_blast.push(BlastJob {
             path: file.path.clone(),
             hash,
             new_text,
             changed_lines,
             extension,
+            diff_files,
         });
     }
 
@@ -100,19 +104,7 @@ impl App {
 
     pub(crate) fn on_blast(&mut self, outcome: BlastOutcome) {
         self.blast_inflight.remove(&outcome.hash);
-        let changed: HashSet<String> = self
-            .diff
-            .as_ref()
-            .map(|diff| {
-                diff.commit_model
-                    .as_ref()
-                    .unwrap_or_else(|| self.review.model())
-                    .files
-                    .iter()
-                    .map(|f| f.path.clone())
-                    .collect()
-            })
-            .unwrap_or_default();
+        let changed = &outcome.diff_files;
         let symbols = outcome
             .symbols
             .into_iter()
@@ -179,6 +171,7 @@ mod tests {
         app.on_blast(BlastOutcome {
             path: "src/lib.rs".into(),
             hash: "h".into(),
+            diff_files: ["src/lib.rs".to_owned()].into(),
             symbols: vec![(
                 "answer".into(),
                 vec![

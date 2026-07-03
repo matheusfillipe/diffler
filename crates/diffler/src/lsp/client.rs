@@ -33,6 +33,7 @@ impl LspClient {
             .kill_on_drop(true)
             .spawn()
             .map_err(|err| LspError::Spawn(bin.to_owned(), err.to_string()))?;
+        let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
         let stdin = child.stdin.take().ok_or(LspError::Io("no stdin"))?;
         let stdout = BufReader::new(child.stdout.take().ok_or(LspError::Io("no stdout"))?);
         let mut client = Self {
@@ -40,10 +41,10 @@ impl LspClient {
             stdin,
             stdout,
             next_id: 0,
-            root: root.to_path_buf(),
+            root,
             open_docs: HashMap::new(),
         };
-        let root_uri = uri(root);
+        let root_uri = uri(&client.root);
         client
             .request(
                 "initialize",
