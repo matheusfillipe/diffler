@@ -69,7 +69,7 @@ pub fn provider_available(detected: &Detected) -> bool {
 
 /// Whether `program` resolves in one of `path`'s directories (with a `.exe`
 /// fallback on Windows). Split from [`provider_available`] for testability.
-fn on_path(program: &str, path: &std::ffi::OsStr) -> bool {
+pub(crate) fn on_path(program: &str, path: &std::ffi::OsStr) -> bool {
     std::env::split_paths(path)
         .any(|dir| dir.join(program).is_file() || dir.join(format!("{program}.exe")).is_file())
 }

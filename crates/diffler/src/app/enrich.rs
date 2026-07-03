@@ -95,6 +95,7 @@ impl App {
         for index in targets {
             self.queue_enrich_file(index);
         }
+        self.queue_blast_selected();
     }
 
     fn queue_enrich_file(&mut self, index: usize) {

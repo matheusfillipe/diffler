@@ -10,6 +10,7 @@ pub mod editor;
 pub mod event;
 pub mod graph;
 pub mod keymap;
+pub mod lsp;
 pub mod mcp;
 pub mod search;
 #[cfg(test)]

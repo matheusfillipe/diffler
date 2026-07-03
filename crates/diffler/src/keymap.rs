@@ -16,6 +16,7 @@ pub enum Action {
     MoveUp,
     GoTop,
     GoBottom,
+    Impact,
     NextSection,
     PrevSection,
     NextFile,
@@ -79,6 +80,7 @@ impl Action {
         match self {
             Self::MoveDown => "move_down",
             Self::MoveUp => "move_up",
+            Self::Impact => "impact",
             Self::GoTop => "go_top",
             Self::GoBottom => "go_bottom",
             Self::NextSection => "next_section",
@@ -284,6 +286,7 @@ const STATUS_PREFIXES: &[(&str, TransientKind)] = &[
 const NO_PREFIXES: &[(&str, TransientKind)] = &[];
 
 const DIFF_DEFAULTS: &[(&str, Action)] = &[
+    ("x", Action::Impact),
     ("j", Action::MoveDown),
     ("k", Action::MoveUp),
     ("gg", Action::GoTop),

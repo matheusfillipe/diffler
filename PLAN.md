@@ -11,7 +11,10 @@ M1 (the review loop) shipped and is released across all channels.
   stash + network popups, side-by-side toggle, themes.)* Dropped: worktree
   listing and patch-file source.
 - **M3 — workload tracking**: task model, home-screen board, task MCP tools.
-- **M4 — LSP**: async-lsp client pool, language registry, hover/definition/
-  references, diagnostics gutter.
+- **M4 — LSP / blast radius**: minimal JSON-RPC client pool over stdio,
+  Helix-style server registry (PATH probe + install hints, config override),
+  changed-symbol impact via `documentSymbol` + `references` — file-header
+  impact badge, symbol impact popup, later the impact graph and
+  sort-by-impact sidebar.
 
 Later: jj VCS backend, structural (difftastic-style) diff toggle.

@@ -3,6 +3,7 @@
 //! reads the state in `ui::draw`. Per-screen state and handlers live in the
 //! `status`, `log`, and `diff` submodules.
 
+pub mod blast;
 mod ci;
 mod commit;
 mod diff;
@@ -112,6 +113,10 @@ pub enum BranchAction {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Modal {
+    Impact {
+        title: String,
+        lines: Vec<String>,
+    },
     Confirm {
         message: String,
         on_confirm: PendingOp,
@@ -349,6 +354,11 @@ pub struct App {
         std::collections::HashMap<String, std::sync::Arc<diffler_core::model::DiffModel>>,
     /// Off-thread refresh lifecycle: repo changes queue one worker at a time.
     pub refresh_state: RefreshState,
+    /// Blast-radius results per file path, keyed valid by content hash.
+    pub blast: std::collections::HashMap<String, blast::FileBlast>,
+    /// Blast jobs waiting for the runtime's LSP pool.
+    pub pending_blast: Vec<blast::BlastJob>,
+    blast_inflight: std::collections::HashSet<String>,
     /// Enrichment jobs waiting for a blocking-pool worker; drained by the
     /// main loop like the other pending slots.
     pub pending_enrich: Vec<enrich::EnrichJob>,
@@ -502,6 +512,9 @@ impl App {
             ci_remotes,
             source_models: std::collections::HashMap::new(),
             refresh_state: RefreshState::Idle,
+            blast: std::collections::HashMap::new(),
+            pending_blast: Vec::new(),
+            blast_inflight: std::collections::HashSet::new(),
             pending_enrich: Vec::new(),
             enrich_inflight: std::collections::HashSet::new(),
             ci_yaml_cache: crate::ci::YamlCache::default(),
@@ -671,6 +684,7 @@ impl App {
                 self.on_refresh_done(*result);
                 Flow::Continue
             }
+            AppEvent::Blast(outcome) => self.on_blast_event(*outcome),
             AppEvent::Enriched(outcome) => {
                 self.on_enriched(*outcome);
                 Flow::Continue

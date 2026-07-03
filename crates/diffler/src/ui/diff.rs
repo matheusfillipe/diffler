@@ -67,6 +67,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     // cache) while theme and review stay read-only
     let theme = &app.theme;
     let review = &app.review;
+    let blast = &app.blast;
     let search = app.search.as_ref();
     if let Some(diff) = app.diff.as_mut() {
         diff.ensure_rows(review);
@@ -74,7 +75,14 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         // (lazily computed) working-tree model for the working-tree view
         let review_model = (diff.commit_model.is_none()).then(|| review.model());
         let session = review.session_for(&diff.source);
-        draw_body(frame, body, theme, session, review_model, diff, search);
+        let ctx = RenderCtx {
+            theme,
+            session,
+            review_model,
+            blast,
+            search,
+        };
+        draw_body(frame, body, &ctx, diff);
     }
 
     frame.render_widget(
@@ -99,20 +107,22 @@ pub fn highlighter() -> &'static Highlighter {
     HIGHLIGHTER.get_or_init(Highlighter::default)
 }
 
-fn draw_body(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    theme: &Theme,
-    session: &Session,
-    review_model: Option<&DiffModel>,
-    diff: &mut DiffView,
-    search: Option<&Search>,
-) {
+struct RenderCtx<'a> {
+    theme: &'a Theme,
+    session: &'a Session,
+    review_model: Option<&'a DiffModel>,
+    blast: &'a std::collections::HashMap<String, crate::app::blast::FileBlast>,
+    search: Option<&'a Search>,
+}
+
+fn draw_body(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut DiffView) {
+    let (theme, session, review_model, search) =
+        (ctx.theme, ctx.session, ctx.review_model, ctx.search);
     let width = sidebar_width(area.width);
     let [list_area, pane_area] =
         Layout::horizontal([Constraint::Length(width), Constraint::Min(0)]).areas(area);
     draw_sidebar(frame, list_area, theme, session, review_model, diff, search);
-    draw_pane(frame, pane_area, theme, session, review_model, diff, search);
+    draw_pane(frame, pane_area, ctx, diff);
 }
 
 /// Left pane: one row per file in the diff, the selected one highlighted, the
@@ -190,15 +200,14 @@ fn draw_sidebar(
 /// Right pane: the selected file's header then the visible slice of its rows,
 /// in unified or side-by-side mode.
 #[allow(clippy::too_many_lines)]
-fn draw_pane(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    theme: &Theme,
-    session: &Session,
-    review_model: Option<&DiffModel>,
-    diff: &mut DiffView,
-    search: Option<&Search>,
-) {
+fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut DiffView) {
+    let (theme, session, review_model, blast, search) = (
+        ctx.theme,
+        ctx.session,
+        ctx.review_model,
+        ctx.blast,
+        ctx.search,
+    );
     let focused = diff.focus == Pane::Diff;
     let title = pane_title(&diff.source);
     let block = pane_block(theme, &title, focused);
@@ -242,6 +251,9 @@ fn draw_pane(
             file,
             viewed,
             (open, total),
+            blast
+                .get(&file.path)
+                .filter(|b| b.hash == file.sides_hash()),
             header_area.width,
         )),
         header_area,
@@ -771,6 +783,7 @@ fn pane_header_line(
     viewed: bool,
     // (open or replied, total) comment counts for the file
     comments: (usize, usize),
+    impact: Option<&crate::app::blast::FileBlast>,
     width: u16,
 ) -> Line<'static> {
     let bg = theme.panel;
@@ -789,6 +802,19 @@ fn pane_header_line(
     }
     if viewed {
         spans.push(Span::styled(" ✓ viewed".to_owned(), dim));
+    }
+    if let Some(blast) = impact {
+        let refs: usize = blast.symbols.iter().map(|s| s.total_refs).sum();
+        if refs > 0 {
+            spans.push(Span::styled(
+                format!(
+                    " · impact {} fns → {refs} refs · {} files outside",
+                    blast.symbols.len(),
+                    blast.outside_files()
+                ),
+                Style::new().fg(theme.warn_fg).bg(bg),
+            ));
+        }
     }
     // resolved-only files read as done: no count, just a quiet marker
     let (open, total) = comments;
@@ -1046,6 +1072,34 @@ mod tests {
             })
             .expect("added line");
         app.diff.as_mut().unwrap().cursor = position;
+    }
+
+    #[test]
+    fn pane_header_shows_the_impact_badge() {
+        use crate::app::blast::{FileBlast, SymbolImpact};
+        use crate::lsp::RefSite;
+        let (_fixture, mut app) = diff_app();
+        let hash = app.review.model().files[0].sides_hash();
+        let path = app.review.model().files[0].path.clone();
+        app.blast.insert(
+            path,
+            FileBlast {
+                hash,
+                symbols: vec![SymbolImpact {
+                    name: "answer".into(),
+                    total_refs: 4,
+                    outside: vec![RefSite {
+                        path: "src/other.rs".into(),
+                        line: 2,
+                    }],
+                }],
+            },
+        );
+        let content = render(&mut app).backend().to_string();
+        assert!(
+            content.contains("impact 1 fns → 4 refs · 1 files outside"),
+            "{content}"
+        );
     }
 
     #[test]

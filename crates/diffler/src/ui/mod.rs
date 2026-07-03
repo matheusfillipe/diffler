@@ -110,6 +110,16 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             }
             .render(frame, &app.theme);
         }
+        Some(Modal::Impact { title, lines }) => {
+            popup::Popup {
+                title: format!("Impact — {title}"),
+                entries: lines
+                    .iter()
+                    .map(|line| (String::new(), line.clone()))
+                    .collect(),
+            }
+            .render(frame, &app.theme);
+        }
         Some(Modal::Help) => {
             let screen = match app.screen() {
                 Screen::Status => "status",

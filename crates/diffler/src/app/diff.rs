@@ -691,6 +691,7 @@ impl App {
             Action::OpenEditor => self.editor_at_diff_cursor(),
             // copy is file/all scoped, not line scoped: works from the list
             Action::CopyFileFeedback => self.copy_file_or_selection(),
+            Action::Impact => self.open_impact(),
             Action::CopyAllFeedback => self.copy_feedback(false),
             // a file in the sidebar takes a whole-file comment; the line-scoped
             // actions still need the diff pane
