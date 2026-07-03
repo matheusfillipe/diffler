@@ -86,15 +86,15 @@ impl CiProvider for ForgejoProvider {
     }
 
     async fn list_runs(&self, limit: usize) -> Result<Vec<CiRun>> {
-        let body = self.get(&format!("actions/tasks?limit={limit}")).await?;
-        let resp: TasksResponse = serde_json::from_str(&body).map_err(|e| CiError::Parse {
-            what: "forgejo tasks".into(),
+        let body = self.get(&format!("actions/runs?limit={limit}")).await?;
+        let resp: RunsResponse = serde_json::from_str(&body).map_err(|e| CiError::Parse {
+            what: "forgejo runs".into(),
             message: e.to_string(),
         })?;
         Ok(resp
             .workflow_runs
             .into_iter()
-            .map(WorkflowRun::into_run)
+            .map(RunItem::into_run)
             .filter(|run| {
                 self.branch
                     .as_deref()
@@ -110,16 +110,25 @@ impl CiProvider for ForgejoProvider {
             .into_iter()
             .find(|r| &r.id == run)
             .ok_or_else(|| CiError::NotFound(format!("run {}", run.0)))?;
-        let job = CiJob {
-            id: JobId(found.id.0.clone()),
-            name: found.name.clone(),
-            status: found.status,
-            needs: Vec::new(),
-        };
-        Ok(RunDetail {
-            run: found,
-            jobs: vec![job],
-        })
+        // no run-jobs endpoint on current Forgejo: this run's jobs are the
+        // tasks sharing its run number
+        let body = self.get("actions/tasks?limit=50").await?;
+        let tasks: TasksResponse = serde_json::from_str(&body).map_err(|e| CiError::Parse {
+            what: "forgejo tasks".into(),
+            message: e.to_string(),
+        })?;
+        let jobs: Vec<CiJob> = tasks
+            .workflow_runs
+            .iter()
+            .filter(|t| t.run_number.map(|n| n.to_string()).as_deref() == Some(run.0.as_str()))
+            .map(|t| CiJob {
+                id: JobId(t.id.to_string()),
+                name: t.name.clone(),
+                status: map_status(&t.status, t.conclusion.as_deref()),
+                needs: Vec::new(),
+            })
+            .collect();
+        Ok(RunDetail { run: found, jobs })
     }
 
     async fn job_log(&self, _run: &RunId, _job: &JobId, _offset: u64) -> Result<LogChunk> {
@@ -136,6 +145,52 @@ impl CiProvider for ForgejoProvider {
 }
 
 #[derive(Deserialize)]
+struct RunsResponse {
+    #[serde(default)]
+    workflow_runs: Vec<RunItem>,
+}
+
+/// One run from `/actions/runs`. `index_in_repo` is the human run number the
+/// tasks reference and the web URL uses; it becomes the `RunId`.
+#[derive(Deserialize)]
+struct RunItem {
+    index_in_repo: u64,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    workflow_id: String,
+    #[serde(default)]
+    prettyref: String,
+    #[serde(default)]
+    commit_sha: String,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    html_url: String,
+    #[serde(default)]
+    created: Option<String>,
+}
+
+impl RunItem {
+    fn into_run(self) -> CiRun {
+        CiRun {
+            id: RunId(self.index_in_repo.to_string()),
+            name: self.workflow_id,
+            title: self.title,
+            branch: self.prettyref,
+            commit: self.commit_sha,
+            author: String::new(),
+            created: self.created.as_deref().and_then(|ts| {
+                time::OffsetDateTime::parse(ts, &time::format_description::well_known::Rfc3339).ok()
+            }),
+            status: map_status(&self.status, None),
+            url: (!self.html_url.is_empty()).then_some(self.html_url),
+            remote: None,
+        }
+    }
+}
+
+#[derive(Deserialize)]
 struct TasksResponse {
     #[serde(default)]
     workflow_runs: Vec<WorkflowRun>,
@@ -147,40 +202,13 @@ struct TasksResponse {
 struct WorkflowRun {
     id: u64,
     #[serde(default)]
+    run_number: Option<u64>,
+    #[serde(default)]
     name: String,
-    #[serde(default)]
-    display_title: String,
-    #[serde(default)]
-    head_branch: String,
-    #[serde(default)]
-    head_sha: String,
     #[serde(default)]
     status: String,
     #[serde(default)]
     conclusion: Option<String>,
-    #[serde(default, alias = "html_url")]
-    url: String,
-    #[serde(default)]
-    created_at: Option<String>,
-}
-
-impl WorkflowRun {
-    fn into_run(self) -> CiRun {
-        CiRun {
-            id: RunId(self.id.to_string()),
-            name: self.name,
-            title: self.display_title,
-            branch: self.head_branch,
-            commit: self.head_sha,
-            author: String::new(),
-            created: self.created_at.as_deref().and_then(|ts| {
-                time::OffsetDateTime::parse(ts, &time::format_description::well_known::Rfc3339).ok()
-            }),
-            status: map_status(&self.status, self.conclusion.as_deref()),
-            url: (!self.url.is_empty()).then_some(self.url),
-            remote: None,
-        }
-    }
 }
 
 fn map_status(status: &str, conclusion: Option<&str>) -> JobStatus {
@@ -205,13 +233,13 @@ mod tests {
 
     #[tokio::test]
     async fn list_runs_parses_the_tasks_envelope() {
-        let json = r#"{"total_count":1,"workflow_runs":[
-            {"id":7,"name":"CI","display_title":"fix things","head_branch":"main",
-             "head_sha":"abc1234","status":"completed","conclusion":"success",
+        let json = r#"{"workflow_runs":[
+            {"id":900,"index_in_repo":7,"workflow_id":"ci.yml","title":"fix things",
+             "prettyref":"main","commit_sha":"abc1234","status":"success",
              "html_url":"https://codeberg.org/mattf/diffler/actions/runs/7",
-             "created_at":"2026-06-26T10:00:00Z"}]}"#;
+             "created":"2026-06-26T10:00:00Z"}]}"#;
         let runs = ForgejoProvider::new(
-            Box::new(RecordingRunner::new(&[("actions/tasks", json)])),
+            Box::new(RecordingRunner::new(&[("actions/runs", json)])),
             "codeberg.org".into(),
             "mattf/diffler".into(),
             None,
@@ -257,11 +285,11 @@ mod tests {
 
     #[tokio::test]
     async fn list_runs_scopes_to_the_branch() {
-        let json = r#"{"total_count":2,"workflow_runs":[
-            {"id":7,"name":"CI","head_branch":"main","status":"completed","conclusion":"success"},
-            {"id":8,"name":"CI","head_branch":"feat/x","status":"completed","conclusion":"success"}]}"#;
+        let json = r#"{"workflow_runs":[
+            {"id":900,"index_in_repo":7,"workflow_id":"ci.yml","prettyref":"main","status":"success"},
+            {"id":901,"index_in_repo":8,"workflow_id":"ci.yml","prettyref":"feat/x","status":"success"}]}"#;
         let runs = ForgejoProvider::new(
-            Box::new(RecordingRunner::new(&[("actions/tasks", json)])),
+            Box::new(RecordingRunner::new(&[("actions/runs", json)])),
             "codeberg.org".into(),
             "mattf/diffler".into(),
             None,
