@@ -5,12 +5,14 @@
 [![IRC](https://img.shields.io/badge/IRC-chat.h4ks.com-blue.svg)](https://chat.h4ks.com)
 
 A tool for taking ownership of agentic code: review what your agent writes,
-together with the agent, while it happens. diffler is a neogit-style TUI you
-launch in a repo alongside Claude Code or any MCP-compatible agent — it shows a
-live diff of what the agent is doing; you read, comment, stage, and commit; the
-agent picks your feedback up over the embedded MCP server and responds in
-place. The code that lands is code you have actually reviewed. One binary, no
-browser, no daemon.
+together with the agent, while it happens. The code that lands is code you
+have actually reviewed.
+
+diffler is a neogit-style TUI you launch in a repo alongside Claude Code or
+any MCP-compatible agent. It shows a live diff of what the agent is doing;
+you read, comment, stage, and commit; the agent picks your feedback up over
+the embedded MCP server and responds in place. One binary, no browser, no
+daemon.
 
 ## Install
 
@@ -64,12 +66,23 @@ rather paste it into a prompt.
 
 ## Keys
 
-Vim-like, neogit-flavored: `j`/`k` motions, `gg`/`G`, `/` search, and `<c-d>`/
-`<c-u>` paging work in every list; `s`/`u` stage and unstage, `cc` commits,
-`c` comments the diff line under the cursor (`V` selects a range first), `Z`
-sends the feedback to the agent, and `x` in the diff view graphs who calls the
-symbol under the cursor (needs the language's LSP server on `PATH`). `?` shows
-the full keymap for the current screen, and every binding is remappable — see
+Vim-like, neogit-flavored: `j`/`k`/`gg`/`G` motions, `/` search, and
+`<c-d>`/`<c-u>` paging work in every list. The basics:
+
+| Key | Action |
+| --- | --- |
+| `<cr>` | open the thing under the cursor |
+| `s` / `u` | stage / unstage |
+| `cc` | commit |
+| `c` | comment the diff line (`V` selects a range first) |
+| `Z` | send feedback to the agent |
+| `y` / `Y` | copy feedback as markdown (file / all) |
+| `x` | in the diff view: graph who calls the symbol under the cursor |
+| `e` | open the file in `$EDITOR` |
+| `?` | full keymap for the current screen |
+| `q` | back / quit |
+
+Every binding is remappable — see
 [docs/config.example.toml](docs/config.example.toml).
 
 The diff view is two panes: a file sidebar and the selected file's diff. `TAB`
