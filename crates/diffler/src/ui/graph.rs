@@ -60,7 +60,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
 
 /// One-line provenance for the open run: where it ran, which workflow,
 /// what commit — the graph alone doesn't say what you're looking at.
-fn run_header(app: &App, theme: &Theme) -> Line<'static> {
+pub(crate) fn run_header(app: &App, theme: &Theme) -> Line<'static> {
     let Some(run) = app.open_run_summary() else {
         return Line::default();
     };

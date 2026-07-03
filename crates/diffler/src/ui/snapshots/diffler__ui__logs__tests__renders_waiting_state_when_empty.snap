@@ -3,8 +3,8 @@ source: crates/diffler/src/ui/logs.rs
 expression: terminal.backend()
 ---
 " Hint: <tab> fold  j/k move  / search  q back               "
-"  waiting for logs…                                         "
 "                                                            "
+"  waiting for logs…                                         "
 "                                                            "
 "                                                            "
 " STATUS  fixture@main  mcp off  3 files, 0 viewed           "

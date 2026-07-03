@@ -26,13 +26,22 @@ const HINTS: &[Hint] = &[
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let area = frame.area();
     frame.render_widget(Block::new().style(app.theme.base()), area);
-    let [hint, body, bar] = Layout::vertical([
+    let [hint, header, body, bar] = Layout::vertical([
+        Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Min(0),
         Constraint::Length(1),
     ])
     .areas(area);
     frame.render_widget(Paragraph::new(hint_line(app, HINTS)), hint);
+    let mut provenance = super::graph::run_header(app, &app.theme);
+    if let Some(job) = app.open_job_name() {
+        provenance.push_span(Span::styled(
+            format!("  ▸ {job}"),
+            Style::new().fg(app.theme.accent),
+        ));
+    }
+    frame.render_widget(Paragraph::new(provenance), header);
 
     let search = app.search.as_ref();
     match app.logs.as_mut() {

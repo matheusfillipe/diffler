@@ -566,6 +566,11 @@ impl App {
         self.ci_remotes.clone()
     }
 
+    /// The job the Logs screen is showing, for its header line.
+    pub fn open_job_name(&self) -> Option<String> {
+        self.open_job.as_ref().map(|job| job.0.clone())
+    }
+
     /// The run the Graph screen is showing, for its header line.
     pub fn open_run_summary(&self) -> Option<&crate::ci::CiRun> {
         let id = self.open_run.as_ref()?;

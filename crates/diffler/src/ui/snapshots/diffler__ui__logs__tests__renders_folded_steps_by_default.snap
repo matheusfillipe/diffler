@@ -3,9 +3,9 @@ source: crates/diffler/src/ui/logs.rs
 expression: terminal.backend()
 ---
 " Hint: <tab> fold  j/k move  / search  q back               "
+"                                                            "
 " ▸ Build  1 lines                                           "
 " ▸ Test  2 lines                                            "
-"                                                            "
 "                                                            "
 "                                                            "
 "                                                            "
