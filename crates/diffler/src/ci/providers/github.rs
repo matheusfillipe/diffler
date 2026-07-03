@@ -15,7 +15,8 @@ use crate::ci::error::{CiError, Result};
 use crate::ci::exec::CommandRunner;
 use crate::ci::model::{
     Annotation, AnnotationLevel, Artifact, Capabilities, CiJob, CiRun, DagSource, JobId, JobStatus,
-    LogChunk, LogMode, LogStepMeta, PullRequest, RunDetail, RunExtras, RunId, ts_sort_key,
+    LogChunk, LogMode, LogStepMeta, PrComment, PullRequest, RunDetail, RunExtras, RunId,
+    ts_sort_key,
 };
 use crate::ci::provider::{CiProvider, ProviderKind};
 
@@ -349,6 +350,59 @@ impl CiProvider for GitHubProvider {
             artifacts: self.artifacts(run).await.unwrap_or_default(),
             annotations: self.annotations(run).await.unwrap_or_default(),
         })
+    }
+
+    async fn pr_comments(&self, number: u64) -> Result<Vec<PrComment>> {
+        let args = [
+            "api".to_owned(),
+            "--paginate".to_owned(),
+            format!("repos/{{owner}}/{{repo}}/pulls/{number}/comments"),
+        ];
+        let raw = self.runner.run("gh", &args).await?;
+        let items: Vec<ReviewCommentApi> = serde_json::from_str(&raw).unwrap_or_default();
+        Ok(items
+            .into_iter()
+            .map(ReviewCommentApi::into_comment)
+            .collect())
+    }
+
+    async fn post_pr_comment(&self, new: &crate::ci::NewPrComment) -> Result<PrComment> {
+        let args = [
+            "api".to_owned(),
+            "-X".to_owned(),
+            "POST".to_owned(),
+            format!("repos/{{owner}}/{{repo}}/pulls/{}/comments", new.number),
+            "-f".to_owned(),
+            format!("body={}", new.body),
+            "-f".to_owned(),
+            format!("commit_id={}", new.head_oid),
+            "-f".to_owned(),
+            format!("path={}", new.path),
+            "-F".to_owned(),
+            format!("line={}", new.line),
+            "-f".to_owned(),
+            "side=RIGHT".to_owned(),
+        ];
+        let raw = self.runner.run("gh", &args).await?;
+        parse_posted(&raw)
+    }
+
+    async fn reply_pr_comment(
+        &self,
+        number: u64,
+        remote_id: &str,
+        body: &str,
+    ) -> Result<PrComment> {
+        let args = [
+            "api".to_owned(),
+            "-X".to_owned(),
+            "POST".to_owned(),
+            format!("repos/{{owner}}/{{repo}}/pulls/{number}/comments/{remote_id}/replies"),
+            "-f".to_owned(),
+            format!("body={body}"),
+        ];
+        let raw = self.runner.run("gh", &args).await?;
+        parse_posted(&raw)
     }
 
     async fn current_pr(&self) -> Result<Option<PullRequest>> {
@@ -708,6 +762,64 @@ impl From<ArtifactItem> for Artifact {
 #[derive(Deserialize)]
 struct JobsApi {
     jobs: Vec<JobApi>,
+}
+
+fn parse_posted(raw: &str) -> Result<PrComment> {
+    let item: ReviewCommentApi =
+        serde_json::from_str(raw).map_err(|err| crate::ci::CiError::Parse {
+            what: "pr comment".to_owned(),
+            message: err.to_string(),
+        })?;
+    Ok(item.into_comment())
+}
+
+/// One review comment from the REST API (list and post share the shape).
+#[derive(Deserialize)]
+struct ReviewCommentApi {
+    id: u64,
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    line: Option<u32>,
+    #[serde(default)]
+    original_line: Option<u32>,
+    #[serde(default)]
+    side: Option<String>,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    user: UserApi,
+    #[serde(default)]
+    in_reply_to_id: Option<u64>,
+    #[serde(default)]
+    created_at: String,
+}
+
+#[derive(Deserialize, Default)]
+struct UserApi {
+    #[serde(default)]
+    login: String,
+}
+
+impl ReviewCommentApi {
+    fn into_comment(self) -> PrComment {
+        PrComment {
+            id: self.id.to_string(),
+            path: self.path,
+            line: self.line.or(self.original_line),
+            new_side: self.side.as_deref() != Some("LEFT"),
+            body: self.body,
+            author: self.user.login,
+            reply_to: self.in_reply_to_id.map(|id| id.to_string()),
+            at: chrono_free_epoch(&self.created_at),
+        }
+    }
+}
+
+/// `2026-07-03T17:00:00Z` → unix seconds without a date dependency; a shape
+/// we don't recognize collapses to zero (renders as "long ago").
+fn chrono_free_epoch(iso: &str) -> u64 {
+    crate::ci::model::iso_epoch(iso).unwrap_or(0)
 }
 
 #[derive(Deserialize)]

@@ -145,6 +145,11 @@ impl App {
             Screen::Graph => self.open_run.clone().map(CiRequest::Detail),
             // stop once the log is complete (a dump provider sends it all at once)
             Screen::Logs if self.log_done => None,
+            // a PR diff re-syncs its forge comments on the same cadence
+            Screen::Diff => match self.diff.as_ref().map(|d| &d.source) {
+                Some(crate::app::DiffSource::Pr { number }) => Some(CiRequest::PrComments(*number)),
+                _ => None,
+            },
             Screen::Logs => match (self.open_run.clone(), self.open_job.clone()) {
                 (Some(run), Some(job)) => Some(CiRequest::Log {
                     run,
@@ -153,7 +158,7 @@ impl App {
                 }),
                 _ => None,
             },
-            _ => None,
+            Screen::Log => None,
         };
     }
 

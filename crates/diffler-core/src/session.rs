@@ -21,6 +21,9 @@ pub struct Reply {
     pub author: String,
     pub body: String,
     pub at: u64,
+    /// Forge-side id once synced/posted; `None` for purely local replies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_id: Option<String>,
 }
 
 /// Where a comment is anchored. `line` (and `line_end` for visual ranges)
@@ -64,6 +67,9 @@ impl Anchor {
 pub struct Comment {
     pub id: String,
     pub author: String,
+    /// Forge-side id once synced/posted; `None` for purely local comments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_id: Option<String>,
     pub anchor: Anchor,
     pub body: String,
     pub status: CommentStatus,
@@ -91,6 +97,7 @@ pub fn now_unix() -> u64 {
 impl Session {
     pub fn add_comment(&mut self, author: &str, anchor: Anchor, body: &str) -> &Comment {
         self.comments.push(Comment {
+            remote_id: None,
             id: uuid::Uuid::new_v4().to_string(),
             author: author.to_owned(),
             anchor,
@@ -113,6 +120,7 @@ impl Session {
             return false;
         };
         comment.replies.push(Reply {
+            remote_id: None,
             author: author.to_owned(),
             body: body.to_owned(),
             at: now_unix(),

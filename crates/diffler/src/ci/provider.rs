@@ -5,7 +5,7 @@ use async_trait::async_trait;
 
 use crate::ci::error::Result;
 use crate::ci::model::{
-    Capabilities, CiRun, JobId, LogChunk, PullRequest, RunDetail, RunExtras, RunId,
+    Capabilities, CiRun, JobId, LogChunk, PrComment, PullRequest, RunDetail, RunExtras, RunId,
 };
 
 /// Which forge an adapter talks to.
@@ -40,4 +40,25 @@ pub trait CiProvider: Send {
     /// The pull/merge request for the checked-out branch, if one is open.
     /// `None` when there's no PR or the provider can't resolve one.
     async fn current_pr(&self) -> Result<Option<PullRequest>>;
+
+    /// Line-anchored review comments on a PR; empty when the provider has no
+    /// review API.
+    async fn pr_comments(&self, number: u64) -> Result<Vec<PrComment>>;
+
+    /// Post a new line comment on the PR head, returning the forge's record.
+    async fn post_pr_comment(&self, new: &NewPrComment) -> Result<PrComment>;
+
+    /// Reply to an existing PR review comment thread.
+    async fn reply_pr_comment(&self, number: u64, remote_id: &str, body: &str)
+    -> Result<PrComment>;
+}
+
+/// A comment to post: anchored to `line` on the new side of `path` at `head_oid`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewPrComment {
+    pub number: u64,
+    pub head_oid: String,
+    pub path: String,
+    pub line: u32,
+    pub body: String,
 }

@@ -698,6 +698,7 @@ impl App {
                 );
                 self.diff = Some(view);
                 self.push_screen(Screen::Diff);
+                self.pending_ci = Some(super::CiRequest::PrComments(number));
             }
             Err(err) => self.error(err.to_string()),
         }

@@ -9,8 +9,8 @@ use serde::Deserialize;
 use crate::ci::error::{CiError, Result};
 use crate::ci::exec::CommandRunner;
 use crate::ci::model::{
-    Capabilities, CiJob, CiRun, DagSource, JobId, JobStatus, LogChunk, LogMode, PullRequest,
-    RunDetail, RunExtras, RunId,
+    Capabilities, CiJob, CiRun, DagSource, JobId, JobStatus, LogChunk, LogMode, PrComment,
+    PullRequest, RunDetail, RunExtras, RunId,
 };
 use crate::ci::provider::{CiProvider, ProviderKind};
 
@@ -137,6 +137,23 @@ impl CiProvider for ForgejoProvider {
 
     async fn run_extras(&self, _run: &RunId) -> Result<RunExtras> {
         Ok(RunExtras::default())
+    }
+
+    async fn pr_comments(&self, _number: u64) -> Result<Vec<PrComment>> {
+        Ok(Vec::new())
+    }
+
+    async fn post_pr_comment(&self, _new: &crate::ci::NewPrComment) -> Result<PrComment> {
+        Err(CiError::Unsupported("posting PR comments"))
+    }
+
+    async fn reply_pr_comment(
+        &self,
+        _number: u64,
+        _remote_id: &str,
+        _body: &str,
+    ) -> Result<PrComment> {
+        Err(CiError::Unsupported("replying to PR comments"))
     }
 
     async fn current_pr(&self) -> Result<Option<PullRequest>> {

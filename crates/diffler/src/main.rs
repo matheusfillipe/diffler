@@ -245,7 +245,74 @@ fn dispatch_workers(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>, lsp_poo
     dispatch_enrich(app, tx);
     dispatch_blast(app, tx, lsp_pool);
     dispatch_chain(app, tx, lsp_pool);
+    dispatch_pr_posts(app, tx);
     dispatch_refresh(app, tx);
+}
+
+/// Push each queued PR comment/reply to the forge via the primary remote's
+/// provider; results return as events that stamp the forge ids.
+fn dispatch_pr_posts(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
+    if app.pending_pr_posts.is_empty() {
+        return;
+    }
+    let Some(remote) = app.ci_remotes().first().cloned() else {
+        app.pending_pr_posts.clear();
+        return;
+    };
+    let repo_root = app.review.repo_root.clone();
+    let branch = app.head.branch.clone();
+    let yaml_cache = app.ci_yaml_cache.clone();
+    for post in std::mem::take(&mut app.pending_pr_posts) {
+        let tx = tx.clone();
+        let repo_root = repo_root.clone();
+        let branch = branch.clone();
+        let yaml_cache = yaml_cache.clone();
+        let detected = remote.detected.clone();
+        let url = remote.url.clone();
+        tokio::spawn(async move {
+            let provider = ci::build_provider(
+                &detected,
+                &repo_root,
+                branch.as_deref(),
+                url.as_deref(),
+                yaml_cache,
+            );
+            let result = match &post {
+                app::pr::PrPost::Comment {
+                    number,
+                    head_oid,
+                    path,
+                    line,
+                    body,
+                    ..
+                } => {
+                    provider
+                        .post_pr_comment(&ci::NewPrComment {
+                            number: *number,
+                            head_oid: head_oid.clone(),
+                            path: path.clone(),
+                            line: *line,
+                            body: body.clone(),
+                        })
+                        .await
+                }
+                app::pr::PrPost::Reply {
+                    number,
+                    parent_remote_id,
+                    body,
+                    ..
+                } => {
+                    provider
+                        .reply_pr_comment(*number, parent_remote_id, body)
+                        .await
+                }
+            };
+            let _ = tx.send(AppEvent::PrPosted {
+                post: Box::new(post),
+                result: result.map_err(|err| err.to_string()),
+            });
+        });
+    }
 }
 
 fn dispatch_chain(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>, pool: &LspPool) {
@@ -358,6 +425,10 @@ async fn run_ci_request(
             Err(err) => AppEvent::CiError(err.to_string()),
         },
         CiRequest::Pr => AppEvent::CiPr(provider.current_pr().await.unwrap_or(None)),
+        CiRequest::PrComments(number) => match provider.pr_comments(number).await {
+            Ok(comments) => AppEvent::PrComments { number, comments },
+            Err(err) => AppEvent::CiError(err.to_string()),
+        },
         CiRequest::Detail(id) => match provider.run_detail(&id).await {
             Ok(detail) => AppEvent::CiRunDetail(detail),
             Err(err) => AppEvent::CiError(err.to_string()),

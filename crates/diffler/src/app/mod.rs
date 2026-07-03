@@ -12,6 +12,7 @@ mod log;
 pub mod logs;
 mod mcp;
 mod modal;
+pub mod pr;
 mod search;
 mod status;
 
@@ -222,6 +223,7 @@ const FALLBACK_REFRESH_TICKS: u32 = 20;
 pub enum CiRequest {
     Runs,
     Pr,
+    PrComments(u64),
     Detail(crate::ci::RunId),
     Extras(crate::ci::RunId),
     Log {
@@ -382,6 +384,9 @@ pub struct App {
     pub(crate) pr_ranges: std::collections::HashMap<u64, (String, String)>,
     /// A PR open waiting on its head fetch; retried when the fetch lands.
     pub(crate) pending_pr_open: Option<u64>,
+    /// Outbound forge posts drained by the runtime each frame.
+    pub pending_pr_posts: Vec<pr::PrPost>,
+    pub(crate) pr_posts_inflight: std::collections::HashSet<String>,
     /// Whether the PR has been resolved for the current branch, so it's fetched
     /// once per branch instead of on every runs poll (reset on a repo change).
     pr_checked: bool,
@@ -538,6 +543,8 @@ impl App {
             pr_checked: false,
             pr_ranges: std::collections::HashMap::new(),
             pending_pr_open: None,
+            pending_pr_posts: Vec::new(),
+            pr_posts_inflight: std::collections::HashSet::new(),
             runs_cursor: 0,
             open_run: None,
             open_run_remote: None,
@@ -710,11 +717,11 @@ impl App {
                 self.on_ci_runs(runs);
                 Flow::Continue
             }
-            AppEvent::CiPr(pr) => {
-                self.pr = pr;
-                self.pr_checked = true;
-                Flow::Continue
+            AppEvent::CiPr(pr) => self.on_pr_event(pr),
+            AppEvent::PrComments { number, comments } => {
+                self.on_pr_comments_event(number, &comments)
             }
+            AppEvent::PrPosted { post, result } => self.on_pr_posted_event(&post, result),
             AppEvent::CiRunDetail(detail) => {
                 self.on_run_detail(&detail);
                 Flow::Continue
@@ -966,6 +973,7 @@ impl App {
         if let Some(diff) = self.diff.as_mut() {
             diff.invalidate();
         }
+        self.queue_pr_posts();
     }
 
     fn expire_pending(&mut self) {
@@ -1149,6 +1157,12 @@ impl App {
     /// success toast (label + summary), or as an error on failure. Refresh
     /// first (head/log/ahead-behind may have moved), then set the toast so a
     /// clean refresh does not clobber it.
+    fn on_pr_event(&mut self, pr: Option<crate::ci::PullRequest>) -> Flow {
+        self.pr = pr;
+        self.pr_checked = true;
+        Flow::Continue
+    }
+
     fn git_finished(&mut self, label: &str, ok: bool, output: &str) {
         if self.pending_pr_open.take().is_some()
             && let Some(pr) = self.pr.clone().filter(|_| ok)

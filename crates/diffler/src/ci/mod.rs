@@ -15,9 +15,10 @@ pub use error::{CiError, Result};
 pub use exec::{CommandRunner, RealRunner};
 pub use model::{
     Annotation, AnnotationLevel, Artifact, Capabilities, CiJob, CiRun, DagSource, JobId, JobStatus,
-    LogChunk, LogMode, LogStepMeta, PullRequest, RunDetail, RunExtras, RunId, ts_sort_key,
+    LogChunk, LogMode, LogStepMeta, PrComment, PullRequest, RunDetail, RunExtras, RunId,
+    ts_sort_key,
 };
-pub use provider::{CiProvider, ProviderKind};
+pub use provider::{CiProvider, NewPrComment, ProviderKind};
 pub use providers::{ForgejoProvider, GitHubProvider, GitLabProvider, YamlCache};
 
 use std::path::Path;

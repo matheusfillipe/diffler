@@ -50,6 +50,14 @@ pub enum AppEvent {
     /// Branch-scoped CI run list from a provider poll.
     CiRuns(Vec<crate::ci::CiRun>),
     /// The checked-out branch's PR, fetched once per branch (not every poll).
+    PrComments {
+        number: u64,
+        comments: Vec<crate::ci::PrComment>,
+    },
+    PrPosted {
+        post: Box<crate::app::pr::PrPost>,
+        result: Result<crate::ci::PrComment, String>,
+    },
     CiPr(Option<crate::ci::PullRequest>),
     /// A run's jobs + dependency DAG, mapped onto the graph view.
     CiRunDetail(crate::ci::RunDetail),
