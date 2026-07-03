@@ -67,7 +67,7 @@ rather paste it into a prompt.
 
 ## Keys
 
-Vim-like, magit-flavored: `j`/`k`/`gg`/`G` motions, `/` search, and
+Vim-like: `j`/`k`/`gg`/`G` motions, `/` search, and
 `<c-d>`/`<c-u>` paging work in every list. The basics:
 
 | Key | Action |
