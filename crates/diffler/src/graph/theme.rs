@@ -16,6 +16,8 @@ pub struct GraphTheme {
     pub queued: Color,
     /// Bottom-bar / panel background.
     pub panel: Color,
+    /// Background for nodes matching an active `/` search.
+    pub search: Color,
 }
 
 impl GraphTheme {

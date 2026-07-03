@@ -235,9 +235,31 @@ impl App {
     }
 
     /// While the graph screen is up, keys go to the component; Esc/q leave it.
+    /// A committed `/` search steals `n`/`N` for match steps (edge-follow
+    /// otherwise) and Esc clears it before Esc pops the screen.
     pub(super) fn handle_graph_key(&mut self, key: &KeyEvent) -> Flow {
-        if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) {
-            return self.pop_screen();
+        if self.search.as_ref().is_some_and(|s| s.open) {
+            return self.handle_search_key(key);
+        }
+        match key.code {
+            KeyCode::Char('/') => {
+                self.search_start();
+                return Flow::Continue;
+            }
+            KeyCode::Esc if self.search.is_some() => {
+                self.search = None;
+                return Flow::Continue;
+            }
+            KeyCode::Char('n') if self.search.is_some() => {
+                self.search_step(true);
+                return Flow::Continue;
+            }
+            KeyCode::Char('N') if self.search.is_some() => {
+                self.search_step(false);
+                return Flow::Continue;
+            }
+            KeyCode::Char('q') | KeyCode::Esc => return self.pop_screen(),
+            _ => {}
         }
         if let Some(action) = self.graph.as_mut().and_then(|g| g.on_key(*key)) {
             self.on_graph_action(&action);

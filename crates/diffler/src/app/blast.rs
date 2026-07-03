@@ -307,4 +307,58 @@ mod tests {
             Some(&("src/other.rs".to_owned(), 4))
         );
     }
+    #[test]
+    fn slash_search_finds_a_graph_node_and_esc_clears_before_leaving() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_working_tree_diff(Some("src/lib.rs"));
+        app.on_chain(ChainOutcome {
+            file: "src/lib.rs".into(),
+            nodes: vec![
+                ChainNode {
+                    id: "src/lib.rs:0".into(),
+                    label: "answer — src/lib.rs".into(),
+                    path: "src/lib.rs".into(),
+                    line: 0,
+                },
+                ChainNode {
+                    id: "src/other.rs:4".into(),
+                    label: "caller — src/other.rs".into(),
+                    path: "src/other.rs".into(),
+                    line: 4,
+                },
+            ],
+            edges: vec![("src/lib.rs:0".into(), "src/other.rs:4".into())],
+        });
+        let press = |app: &mut App, code: KeyCode| {
+            app.handle(crate::event::AppEvent::Key(KeyEvent::new(
+                code,
+                KeyModifiers::NONE,
+            )));
+        };
+        press(&mut app, KeyCode::Char('/'));
+        press(&mut app, KeyCode::Char('c'));
+        press(&mut app, KeyCode::Char('a'));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(
+            app.graph
+                .as_ref()
+                .and_then(|g| g.selected())
+                .map(|id| id.0.as_str()),
+            Some("src/other.rs:4"),
+            "search lands on the matching node"
+        );
+        assert_eq!(
+            app.search.as_ref().map(crate::search::Search::count),
+            Some((1, 1))
+        );
+
+        press(&mut app, KeyCode::Esc);
+        assert!(app.search.is_none(), "first Esc clears the search");
+        assert_eq!(app.screen(), crate::app::Screen::Graph);
+        press(&mut app, KeyCode::Esc);
+        assert_ne!(app.screen(), crate::app::Screen::Graph, "second Esc leaves");
+    }
 }

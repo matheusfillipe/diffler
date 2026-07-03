@@ -40,6 +40,7 @@ pub struct GraphView {
     viewport: Rect,
     zoom: Zoom,
     collapsed: HashSet<String>,
+    marks: HashSet<NodeId>,
     last_click: Option<(std::time::Instant, u16, u16)>,
 }
 
@@ -62,6 +63,7 @@ impl GraphView {
             viewport: Rect::default(),
             zoom: Zoom::Normal,
             collapsed: HashSet::new(),
+            marks: HashSet::new(),
             last_click: None,
         }
     }
@@ -115,6 +117,58 @@ impl GraphView {
             self.selected = Some(id.clone());
             self.ensure_visible();
         }
+    }
+
+    /// The searchable nodes in placement order: `(row, label)` pairs feeding
+    /// the shared `/` search, one row per visible node.
+    pub fn search_rows(&self) -> Vec<(usize, String)> {
+        self.searchable()
+            .enumerate()
+            .map(|(row, id)| {
+                let label = self
+                    .model
+                    .nodes
+                    .iter()
+                    .find(|n| &n.id == id)
+                    .map_or_else(|| id.0.clone(), |n| n.label.clone());
+                (row, label)
+            })
+            .collect()
+    }
+
+    /// Select the node at `row` of [`Self::search_rows`], scrolling it into view.
+    pub fn select_nth(&mut self, row: usize) {
+        let id = self.searchable().nth(row).cloned();
+        if let Some(id) = id {
+            self.selected = Some(id);
+            self.ensure_visible();
+        }
+    }
+
+    /// The selection's row in [`Self::search_rows`]; `0` when nothing is selected.
+    pub fn selected_index(&self) -> usize {
+        let Some(selected) = self.selected.as_ref() else {
+            return 0;
+        };
+        self.searchable().position(|id| id == selected).unwrap_or(0)
+    }
+
+    /// Mark the given [`Self::search_rows`] rows as search matches; they render
+    /// on the search background until replaced.
+    pub fn set_marks(&mut self, rows: &[usize]) {
+        let ids: Vec<NodeId> = self.searchable().cloned().collect();
+        self.marks = rows
+            .iter()
+            .filter_map(|row| ids.get(*row).cloned())
+            .collect();
+    }
+
+    fn searchable(&self) -> impl Iterator<Item = &NodeId> {
+        self.layout
+            .placements
+            .iter()
+            .filter(|p| p.selectable || p.member)
+            .map(|p| &p.id)
     }
 
     // --- input: pure; returns an action for the host ---
@@ -383,6 +437,7 @@ impl GraphView {
     fn paint_nodes(&self, area: Rect, buf: &mut Buffer, theme: &GraphTheme) {
         for p in &self.layout.placements {
             let selected = self.selected.as_ref() == Some(&p.id);
+            let marked = self.marks.contains(&p.id);
             let color = theme.status(p.status);
             for row in 0..p.h {
                 let gy = p.y + row;
@@ -408,6 +463,9 @@ impl GraphView {
                     }
                     if let Some(cell) = buf.cell_mut((sx, sy)) {
                         cell.set_fg(color);
+                        if marked {
+                            cell.set_bg(theme.search);
+                        }
                         if selected {
                             cell.modifier.insert(Modifier::BOLD | Modifier::REVERSED);
                         }
@@ -451,6 +509,7 @@ mod tests {
             running: Color::Yellow,
             queued: Color::DarkGray,
             panel: Color::Black,
+            search: Color::Rgb(0x57, 0x52, 0x1c),
         }
     }
 
@@ -530,6 +589,31 @@ mod tests {
             crossterm::event::KeyModifiers::NONE,
         ));
         assert_eq!(action, Some(GraphAction::Activated(NodeId::new("build"))));
+    }
+
+    #[test]
+    fn search_rows_index_into_select_nth_and_marks() {
+        let mut v = view();
+        render(&mut v);
+        let rows = v.search_rows();
+        let build = rows
+            .iter()
+            .find(|(_, label)| label == "build")
+            .expect("build row");
+        v.select_nth(build.0);
+        assert_eq!(v.selected(), Some(&NodeId::new("build")));
+        assert_eq!(v.selected_index(), build.0);
+
+        v.set_marks(&[build.0]);
+        let terminal = render(&mut v);
+        let marked_cells = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .filter(|c| c.bg == Color::Rgb(0x57, 0x52, 0x1c))
+            .count();
+        assert!(marked_cells > 0, "the marked node paints the search bg");
     }
 
     #[test]

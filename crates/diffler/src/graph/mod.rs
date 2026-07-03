@@ -26,5 +26,6 @@ pub fn graph_theme(theme: &Theme) -> GraphTheme {
         running: theme.warn_fg,
         queued: theme.dim,
         panel: theme.panel,
+        search: theme.search,
     }
 }

@@ -3,6 +3,7 @@
 use crossterm::event::{KeyCode, KeyEvent};
 
 use super::{App, Flow, Pane, Screen, diff_row_text, tree_row_label};
+use crate::graph::GraphView;
 use crate::search::Search;
 
 impl App {
@@ -83,7 +84,7 @@ impl App {
             }),
             Screen::Logs => self.logs.as_ref().map_or(0, |v| v.cursor),
             Screen::Runs => self.runs_cursor,
-            Screen::Graph => 0,
+            Screen::Graph => self.graph.as_ref().map_or(0, GraphView::selected_index),
         }
     }
 
@@ -111,7 +112,10 @@ impl App {
                     .map(|(i, row)| (i, view.row_text(*row).to_owned()))
                     .collect()
             }),
-            Screen::Graph => Vec::new(),
+            Screen::Graph => self
+                .graph
+                .as_ref()
+                .map_or_else(Vec::new, GraphView::search_rows),
         }
     }
 
@@ -160,7 +164,11 @@ impl App {
                     v.cursor = row;
                 }
             }
-            Screen::Graph => {}
+            Screen::Graph => {
+                if let Some(g) = self.graph.as_mut() {
+                    g.select_nth(row);
+                }
+            }
         }
     }
 }

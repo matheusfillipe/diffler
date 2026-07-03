@@ -30,7 +30,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     .areas(area);
     frame.render_widget(
         Paragraph::new(Line::styled(
-            " hjkl move · n/N edge · ⏎ open/fold · +/- zoom · g/G ends · q back",
+            " hjkl move · n/N edge · ⏎ open/fold · +/- zoom · g/G ends · / search · q back",
             app.theme.dim_style(),
         )),
         hint,
@@ -40,12 +40,28 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let (graph_area, panel) = carve_panel(app, body);
 
     let gtheme = crate::graph::graph_theme(&app.theme);
-    let status = if let Some(graph) = app.graph.as_mut() {
+    let marks = app
+        .search
+        .as_ref()
+        .map(crate::search::Search::match_rows)
+        .unwrap_or_default();
+    let mut status = if let Some(graph) = app.graph.as_mut() {
+        graph.set_marks(&marks);
         graph.render(graph_area, frame.buffer_mut(), &gtheme);
         format!(" GRAPH  zoom: {}", graph.zoom().label())
     } else {
         " GRAPH".to_owned()
     };
+    if let Some(search) = &app.search {
+        use std::fmt::Write;
+        let (i, n) = search.count();
+        let count = if n == 0 {
+            "[no match]".to_owned()
+        } else {
+            format!("[{i}/{n}]")
+        };
+        let _ = write!(status, "  /{} {count}", search.query());
+    }
 
     if let Some((rect, lines)) = panel {
         render_panel(frame, rect, lines, &app.theme);

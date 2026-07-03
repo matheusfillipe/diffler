@@ -102,6 +102,13 @@ impl Search {
         self.active_row()
     }
 
+    /// The distinct rows holding at least one match, in row order.
+    pub fn match_rows(&self) -> Vec<usize> {
+        let mut rows: Vec<usize> = self.matches.iter().map(|m| m.row).collect();
+        rows.dedup();
+        rows
+    }
+
     pub fn ranges_for(&self, row: usize) -> Vec<(Range<usize>, bool)> {
         self.matches
             .iter()
