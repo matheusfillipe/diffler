@@ -11,7 +11,7 @@ mod view;
 pub use engine::{GraphEngine, Layered, Zoom};
 pub use model::{Edge, Model, Node, NodeId, NodeStatus, RankDir};
 pub use theme::GraphTheme;
-pub use view::{GraphAction, GraphView};
+pub use view::{Dir, GraphAction, GraphView};
 
 use crate::theme::Theme;
 

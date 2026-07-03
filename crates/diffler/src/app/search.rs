@@ -39,6 +39,19 @@ impl App {
         }
     }
 
+    /// `n`/`N`: step the committed search, or — on the graph, where the same
+    /// keys walk edges when no search is up — follow an edge instead.
+    pub(super) fn search_step_or_follow(&mut self, forward: bool) {
+        if self.search.is_none()
+            && self.screen() == Screen::Graph
+            && let Some(graph) = self.graph.as_mut()
+        {
+            graph.follow_edge(forward);
+            return;
+        }
+        self.search_step(forward);
+    }
+
     pub(super) fn search_step(&mut self, forward: bool) {
         let row = match self.search.as_mut() {
             Some(s) if !s.open => {

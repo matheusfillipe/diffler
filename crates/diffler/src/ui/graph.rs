@@ -11,12 +11,32 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
+use super::{Hint, hint_line};
 use crate::app::App;
+use crate::keymap::Action;
 use crate::theme::Theme;
 
 /// Body rows below which the extras panel is suppressed, so a short terminal
 /// leaves the whole body to the graph.
 const MIN_BODY_FOR_PANEL: u16 = 9;
+
+const GRAPH_HINTS: &[Hint] = &[
+    Hint::Leaf(
+        &[
+            Action::MoveLeft,
+            Action::MoveDown,
+            Action::MoveUp,
+            Action::MoveRight,
+        ],
+        "move",
+    ),
+    Hint::Leaf(&[Action::SearchNext, Action::SearchPrev], "edge/match"),
+    Hint::Leaf(&[Action::Open], "open/fold"),
+    Hint::Leaf(&[Action::ZoomIn, Action::ZoomOut], "zoom"),
+    Hint::Leaf(&[Action::GoTop, Action::GoBottom], "ends"),
+    Hint::Leaf(&[Action::Search], "search"),
+    Hint::Leaf(&[Action::Back], "back"),
+];
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let area = frame.area();
@@ -28,13 +48,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         Constraint::Length(1),
     ])
     .areas(area);
-    frame.render_widget(
-        Paragraph::new(Line::styled(
-            " hjkl move · n/N edge · ⏎ open/fold · +/- zoom · g/G ends · / search · q back",
-            app.theme.dim_style(),
-        )),
-        hint,
-    );
+    frame.render_widget(Paragraph::new(hint_line(app, GRAPH_HINTS)), hint);
     frame.render_widget(Paragraph::new(run_header(app, &app.theme)), header);
 
     let (graph_area, panel) = carve_panel(app, body);
@@ -233,6 +247,7 @@ mod tests {
     fn graph_app_with_extras(extras: RunExtras) -> App {
         let fixture = standard_fixture();
         let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.push_screen(crate::app::Screen::Graph);
         app.graph = Some(crate::graph::GraphView::new());
         app.handle(AppEvent::CiExtras(extras));
         app
@@ -249,6 +264,7 @@ mod tests {
     fn no_panel_without_extras_keeps_full_body() {
         let fixture = standard_fixture();
         let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.push_screen(crate::app::Screen::Graph);
         app.graph = Some(crate::graph::GraphView::new());
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");

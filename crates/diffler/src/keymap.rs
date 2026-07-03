@@ -14,8 +14,12 @@ use crate::transient::TransientKind;
 pub enum Action {
     MoveDown,
     MoveUp,
+    MoveLeft,
+    MoveRight,
     GoTop,
     GoBottom,
+    ZoomIn,
+    ZoomOut,
     Impact,
     NextSection,
     PrevSection,
@@ -80,6 +84,10 @@ impl Action {
         match self {
             Self::MoveDown => "move_down",
             Self::MoveUp => "move_up",
+            Self::MoveLeft => "move_left",
+            Self::MoveRight => "move_right",
+            Self::ZoomIn => "zoom_in",
+            Self::ZoomOut => "zoom_out",
             Self::Impact => "impact",
             Self::GoTop => "go_top",
             Self::GoBottom => "go_bottom",
@@ -141,11 +149,16 @@ impl Action {
         }
     }
 
-    const ALL: [Self; 59] = [
+    const ALL: [Self; 64] = [
         Self::MoveDown,
         Self::MoveUp,
+        Self::MoveLeft,
+        Self::MoveRight,
         Self::GoTop,
         Self::GoBottom,
+        Self::ZoomIn,
+        Self::ZoomOut,
+        Self::Impact,
         Self::NextSection,
         Self::PrevSection,
         Self::NextFile,
@@ -216,6 +229,8 @@ pub enum Context {
     Log,
     /// The CI job-log screen (foldable steps).
     Logs,
+    /// The node-graph screen (CI pipeline, caller chains).
+    Graph,
 }
 
 /// Outcome of feeding one key press into a keymap.
@@ -362,6 +377,25 @@ const LOGS_DEFAULTS: &[(&str, Action)] = &[
     ("q", Action::Back),
 ];
 
+const GRAPH_DEFAULTS: &[(&str, Action)] = &[
+    ("j", Action::MoveDown),
+    ("k", Action::MoveUp),
+    ("h", Action::MoveLeft),
+    ("l", Action::MoveRight),
+    ("gg", Action::GoTop),
+    ("G", Action::GoBottom),
+    ("+", Action::ZoomIn),
+    ("=", Action::ZoomIn),
+    ("-", Action::ZoomOut),
+    ("_", Action::ZoomOut),
+    ("<cr>", Action::Open),
+    ("/", Action::Search),
+    ("n", Action::SearchNext),
+    ("N", Action::SearchPrev),
+    ("?", Action::Help),
+    ("q", Action::Back),
+];
+
 impl Keymap {
     /// Build the keymap for one screen: built-in defaults, then config
     /// overrides (action name → chord). Returns user-facing warnings for
@@ -372,6 +406,7 @@ impl Keymap {
             Context::Diff => (DIFF_DEFAULTS, NO_PREFIXES, &keys.diff, "diff"),
             Context::Log => (LOG_DEFAULTS, NO_PREFIXES, &keys.log, "log"),
             Context::Logs => (LOGS_DEFAULTS, NO_PREFIXES, &keys.logs, "logs"),
+            Context::Graph => (GRAPH_DEFAULTS, NO_PREFIXES, &keys.graph, "graph"),
         };
         let mut keymap = Self {
             // defaults are static strings validated by tests; a default that
@@ -762,6 +797,7 @@ mod tests {
             (DIFF_DEFAULTS, Context::Diff),
             (LOG_DEFAULTS, Context::Log),
             (LOGS_DEFAULTS, Context::Logs),
+            (GRAPH_DEFAULTS, Context::Graph),
         ] {
             let (keymap, _) = Keymap::for_context(context, &KeysConfig::default());
             assert_eq!(keymap.bindings.len(), defaults.len(), "{context:?}");
@@ -1122,7 +1158,13 @@ mod tests {
         // Every default context must produce zero warnings under the new
         // checks. In particular: `g` (first key of `gg`) is not a transient
         // prefix by default, so `gg` must not false-positive.
-        for context in [Context::Status, Context::Diff, Context::Log, Context::Logs] {
+        for context in [
+            Context::Status,
+            Context::Diff,
+            Context::Log,
+            Context::Logs,
+            Context::Graph,
+        ] {
             let (_, warnings) = Keymap::for_context(context, &KeysConfig::default());
             assert!(
                 warnings.is_empty(),

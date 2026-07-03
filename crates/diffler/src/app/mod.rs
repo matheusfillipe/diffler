@@ -55,7 +55,7 @@ pub enum Screen {
     Diff,
     /// The CI runs start page (list of recent runs for the repo's provider).
     Runs,
-    /// The CI graph view; keys route to the embedded `GraphView`, not the keymap.
+    /// The node-graph view (CI pipeline, caller chains).
     Graph,
     /// A single job's log view.
     Logs,
@@ -64,12 +64,12 @@ pub enum Screen {
 impl Screen {
     fn context(self) -> Context {
         match self {
-            // the Graph screen drives its own input; its context is only for
-            // hint/help lookups. Runs is a plain list: it shares Log's motions.
-            Self::Status | Self::Graph => Context::Status,
+            Self::Status => Context::Status,
+            // Runs is a plain list: it shares Log's motions
             Self::Runs | Self::Log => Context::Log,
             Self::Logs => Context::Logs,
             Self::Diff => Context::Diff,
+            Self::Graph => Context::Graph,
         }
     }
 }
@@ -150,6 +150,7 @@ struct Keymaps {
     diff: Keymap,
     log: Keymap,
     logs: Keymap,
+    graph: Keymap,
 }
 
 impl Keymaps {
@@ -165,6 +166,7 @@ impl Keymaps {
             diff: build(Context::Diff),
             log: build(Context::Log),
             logs: build(Context::Logs),
+            graph: build(Context::Graph),
         }
     }
 }
@@ -618,6 +620,7 @@ impl App {
             Context::Diff => &self.keymaps.diff,
             Context::Log => &self.keymaps.log,
             Context::Logs => &self.keymaps.logs,
+            Context::Graph => &self.keymaps.graph,
         }
     }
 
@@ -655,9 +658,7 @@ impl App {
         match event {
             AppEvent::Quit => Flow::Quit,
             AppEvent::Key(key) if key.kind != crossterm::event::KeyEventKind::Release => {
-                if self.screen() == Screen::Graph {
-                    self.handle_graph_key(&key)
-                } else if self.modal.is_some() {
+                if self.modal.is_some() {
                     self.handle_modal_key(&key)
                 } else if self.transient.is_some() {
                     self.handle_transient_key(&key)
@@ -984,8 +985,8 @@ impl App {
                 self.info("feedback sent to waiting agents");
             }
             Action::Search => self.search_start(),
-            Action::SearchNext => self.search_step(true),
-            Action::SearchPrev => self.search_step(false),
+            Action::SearchNext => self.search_step_or_follow(true),
+            Action::SearchPrev => self.search_step_or_follow(false),
             Action::OpenRuns => self.open_runs(),
             action => match self.screen() {
                 Screen::Status => self.dispatch_status(action),
@@ -993,8 +994,7 @@ impl App {
                 Screen::Diff => self.dispatch_diff(action),
                 Screen::Logs => self.dispatch_logs(action),
                 Screen::Runs => self.dispatch_runs(action),
-                // the Graph screen drives its own input, never the keymap
-                Screen::Graph => {}
+                Screen::Graph => self.dispatch_graph(action),
             },
         }
         Flow::Continue
@@ -1003,7 +1003,7 @@ impl App {
     /// Open the CI runs start page for the repo's detected provider.
     /// Enter a screen. Clears any search, whose matches are keyed to the
     /// leaving screen's rows.
-    fn push_screen(&mut self, screen: Screen) {
+    pub(crate) fn push_screen(&mut self, screen: Screen) {
         self.search = None;
         self.screens.push(screen);
     }

@@ -5,7 +5,7 @@
 
 use std::collections::HashSet;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -171,35 +171,31 @@ impl GraphView {
             .map(|p| &p.id)
     }
 
-    // --- input: pure; returns an action for the host ---
+    // --- input: semantic operations; the host's keymap decides the keys ---
 
-    /// Handle a key. Returns an action the host should act on, or `None`.
-    /// Navigation/zoom/collapse are handled internally; Enter on a non-foldable
-    /// node yields `Activated`. Quit/back keys are the host's concern.
-    pub fn on_key(&mut self, key: KeyEvent) -> Option<GraphAction> {
-        if key.kind == KeyEventKind::Release {
-            return None;
-        }
-        let action = match key.code {
-            KeyCode::Char('h') | KeyCode::Left => self.step_none(Dir::Left),
-            KeyCode::Char('l') | KeyCode::Right => self.step_none(Dir::Right),
-            KeyCode::Char('k') | KeyCode::Up => self.step_none(Dir::Up),
-            KeyCode::Char('j') | KeyCode::Down => self.step_none(Dir::Down),
-            KeyCode::Char('n') => self.follow_none(true),
-            KeyCode::Char('N') => self.follow_none(false),
-            KeyCode::Char('g') => self.end_none(true),
-            KeyCode::Char('G') => self.end_none(false),
-            KeyCode::Char('+' | '=') => {
-                self.set_zoom(self.zoom.in_());
-                None
-            }
-            KeyCode::Char('-' | '_') => {
-                self.set_zoom(self.zoom.out());
-                None
-            }
-            KeyCode::Enter | KeyCode::Char('c') => return self.activate(),
-            _ => None,
-        };
+    /// Move the selection one node in `dir` (spatially nearest, columns for
+    /// horizontal moves).
+    pub fn move_selection(&mut self, dir: Dir) {
+        self.step(dir);
+        self.ensure_visible();
+    }
+
+    /// Follow an edge out of (forward) or into (backward) the selection.
+    pub fn follow_edge(&mut self, forward: bool) {
+        self.follow(forward);
+        self.ensure_visible();
+    }
+
+    /// Jump the selection to the first / last navigable node.
+    pub fn select_end(&mut self, top: bool) {
+        self.jump_end(top);
+        self.ensure_visible();
+    }
+
+    /// Activate the selection: fold a group root (`Folded`), else hand the
+    /// node to the host (`Activated`).
+    pub fn activate(&mut self) -> Option<GraphAction> {
+        let action = self.fold_or_open();
         self.ensure_visible();
         action
     }
@@ -214,7 +210,7 @@ impl GraphView {
                 self.selected = Some(id);
                 self.ensure_visible();
                 if double {
-                    return self.activate();
+                    return self.fold_or_open();
                 }
                 None
             }
@@ -264,8 +260,8 @@ impl GraphView {
         }
     }
 
-    /// Enter on the selection: fold a group root, else open a plain node.
-    fn activate(&mut self) -> Option<GraphAction> {
+    /// Fold a group root, else open a plain node.
+    fn fold_or_open(&mut self) -> Option<GraphAction> {
         let id = self.selected.clone()?;
         if let Some(group) = self.model.foldable_of(&id) {
             let collapsed = !self.collapsed.remove(&group);
@@ -278,21 +274,6 @@ impl GraphView {
         } else {
             Some(GraphAction::Activated(id))
         }
-    }
-
-    fn step_none(&mut self, dir: Dir) -> Option<GraphAction> {
-        self.step(dir);
-        None
-    }
-
-    fn follow_none(&mut self, forward: bool) -> Option<GraphAction> {
-        self.follow(forward);
-        None
-    }
-
-    fn end_none(&mut self, top: bool) -> Option<GraphAction> {
-        self.select_end(top);
-        None
     }
 
     fn selected_placement(&self) -> Option<&Placement> {
@@ -364,7 +345,7 @@ impl GraphView {
         }
     }
 
-    fn select_end(&mut self, top: bool) {
+    fn jump_end(&mut self, top: bool) {
         let mut navigable = self.layout.placements.iter().filter(|p| p.selectable);
         let pick = if top {
             navigable.next()
@@ -480,8 +461,8 @@ impl GraphView {
     }
 }
 
-#[derive(Clone, Copy)]
-enum Dir {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dir {
     Left,
     Right,
     Up,
@@ -523,10 +504,6 @@ mod tests {
         v
     }
 
-    fn key(c: char) -> KeyEvent {
-        KeyEvent::new(KeyCode::Char(c), crossterm::event::KeyModifiers::NONE)
-    }
-
     fn render(v: &mut GraphView) -> Terminal<TestBackend> {
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -550,17 +527,17 @@ mod tests {
         let mut v = view();
         render(&mut v);
         v.select(&NodeId::new("lint"));
-        v.on_key(key('l'));
+        v.move_selection(Dir::Right);
         assert_eq!(
             v.selected(),
             Some(&NodeId::new("test")),
-            "l lands on the container gate"
+            "right lands on the container gate"
         );
-        v.on_key(key('j'));
+        v.move_selection(Dir::Down);
         assert_eq!(
             v.selected().map(|id| id.0.as_str()),
             Some("test ubuntu"),
-            "j descends into the first leg"
+            "down descends into the first leg"
         );
     }
 
@@ -569,10 +546,7 @@ mod tests {
         let mut v = view();
         render(&mut v);
         v.select(&NodeId::new("test"));
-        let action = v.on_key(KeyEvent::new(
-            KeyCode::Enter,
-            crossterm::event::KeyModifiers::NONE,
-        ));
+        let action = v.activate();
         assert_eq!(
             action,
             Some(GraphAction::Folded {
@@ -588,10 +562,7 @@ mod tests {
         let mut v = view();
         render(&mut v);
         v.select(&NodeId::new("build"));
-        let action = v.on_key(KeyEvent::new(
-            KeyCode::Enter,
-            crossterm::event::KeyModifiers::NONE,
-        ));
+        let action = v.activate();
         assert_eq!(action, Some(GraphAction::Activated(NodeId::new("build"))));
     }
 
@@ -612,15 +583,15 @@ mod tests {
         render(&mut v);
 
         v.select(&NodeId::new("a"));
-        v.on_key(key('l'));
+        v.move_selection(Dir::Right);
         assert_eq!(
             v.selected(),
             Some(&NodeId::new("next")),
-            "l crosses to the next column, not the wide cousin below"
+            "right crosses to the next column, not the wide cousin below"
         );
-        v.on_key(key('h'));
+        v.move_selection(Dir::Left);
         assert_eq!(v.selected(), Some(&NodeId::new("a")));
-        v.on_key(key('j'));
+        v.move_selection(Dir::Down);
         assert_eq!(
             v.selected().map(|id| id.0.as_str()),
             Some("a very wide same-column cousin label"),

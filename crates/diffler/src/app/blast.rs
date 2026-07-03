@@ -558,6 +558,56 @@ mod tests {
         );
     }
     #[test]
+    fn graph_movement_routes_through_the_keymap() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_working_tree_diff(Some("src/lib.rs"));
+        app.chain_inflight = Some("src/lib.rs".into());
+        app.on_chain(ChainOutcome {
+            file: "src/lib.rs".into(),
+            nodes: vec![
+                ChainNode {
+                    id: "root".into(),
+                    label: "answer — src/lib.rs".into(),
+                    path: "src/lib.rs".into(),
+                    line: 0,
+                },
+                ChainNode {
+                    id: "caller".into(),
+                    label: "caller — src/other.rs".into(),
+                    path: "src/other.rs".into(),
+                    line: 4,
+                },
+            ],
+            edges: vec![("root".into(), "caller".into())],
+        });
+        let selected = |app: &App| {
+            app.graph
+                .as_ref()
+                .and_then(|g| g.selected())
+                .map(|id| id.0.clone())
+        };
+        let press = |app: &mut App, c: char| {
+            app.handle(crate::event::AppEvent::Key(KeyEvent::new(
+                KeyCode::Char(c),
+                KeyModifiers::NONE,
+            )));
+        };
+        assert_eq!(selected(&app).as_deref(), Some("root"));
+        press(&mut app, 'l');
+        assert_eq!(selected(&app).as_deref(), Some("caller"), "l moves right");
+        press(&mut app, 'h');
+        assert_eq!(selected(&app).as_deref(), Some("root"), "h moves back");
+        press(&mut app, 'n');
+        assert_eq!(
+            selected(&app).as_deref(),
+            Some("caller"),
+            "n follows the edge when no search is up"
+        );
+    }
+
+    #[test]
     fn slash_search_finds_a_graph_node_and_esc_clears_before_leaving() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -607,10 +657,10 @@ mod tests {
         );
 
         press(&mut app, KeyCode::Esc);
-        assert!(app.search.is_none(), "first Esc clears the search");
+        assert!(app.search.is_none(), "Esc clears the search");
         assert_eq!(app.screen(), crate::app::Screen::Graph);
-        press(&mut app, KeyCode::Esc);
-        assert_ne!(app.screen(), crate::app::Screen::Graph, "second Esc leaves");
+        press(&mut app, KeyCode::Char('q'));
+        assert_ne!(app.screen(), crate::app::Screen::Graph, "q leaves");
     }
     fn hunk(
         new_start: u32,

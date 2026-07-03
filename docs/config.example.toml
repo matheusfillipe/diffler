@@ -69,3 +69,10 @@
 [keys.log]
 # open = "<cr>"
 # refresh = "<c-r>"
+
+[keys.graph]
+# move_left = "h"
+# move_right = "l"
+# zoom_in = "+"
+# zoom_out = "-"
+# open = "<cr>"

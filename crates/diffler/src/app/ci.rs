@@ -1,8 +1,6 @@
 //! CI screens: the runs list, the run graph, and job logs.
 
-use crossterm::event::{KeyCode, KeyEvent};
-
-use super::{App, CiRequest, Flow, MouseGesture, Screen, hit_index, logs, page_step};
+use super::{App, CiRequest, MouseGesture, Screen, hit_index, logs, page_step};
 use crate::keymap::Action;
 
 impl App {
@@ -234,35 +232,35 @@ impl App {
         };
     }
 
-    /// While the graph screen is up, keys go to the component; Esc/q leave it.
-    /// A committed `/` search steals `n`/`N` for match steps (edge-follow
-    /// otherwise) and Esc clears it before Esc pops the screen.
-    pub(super) fn handle_graph_key(&mut self, key: &KeyEvent) -> Flow {
-        if self.search.as_ref().is_some_and(|s| s.open) {
-            return self.handle_search_key(key);
-        }
-        match key.code {
-            KeyCode::Char('/') => {
-                self.search_start();
-                return Flow::Continue;
+    /// Keymap actions on the graph screen. Search, help, and back are handled
+    /// by the shared dispatch; `n`/`N` arrive as SearchNext/Prev and fall back
+    /// to edge-follow there when no search is up.
+    pub(super) fn dispatch_graph(&mut self, action: Action) {
+        use crate::graph::Dir;
+        let Some(graph) = self.graph.as_mut() else {
+            return;
+        };
+        match action {
+            Action::MoveDown => graph.move_selection(Dir::Down),
+            Action::MoveUp => graph.move_selection(Dir::Up),
+            Action::MoveLeft => graph.move_selection(Dir::Left),
+            Action::MoveRight => graph.move_selection(Dir::Right),
+            Action::GoTop => graph.select_end(true),
+            Action::GoBottom => graph.select_end(false),
+            Action::ZoomIn => {
+                let zoom = graph.zoom().in_();
+                graph.set_zoom(zoom);
             }
-            KeyCode::Esc if self.search.is_some() => {
-                self.search = None;
-                return Flow::Continue;
+            Action::ZoomOut => {
+                let zoom = graph.zoom().out();
+                graph.set_zoom(zoom);
             }
-            KeyCode::Char('n') if self.search.is_some() => {
-                self.search_step(true);
-                return Flow::Continue;
+            Action::Open => {
+                if let Some(action) = graph.activate() {
+                    self.on_graph_action(&action);
+                }
             }
-            KeyCode::Char('N') if self.search.is_some() => {
-                self.search_step(false);
-                return Flow::Continue;
-            }
-            KeyCode::Char('q') | KeyCode::Esc => return self.pop_screen(),
             _ => {}
-        }
-        if let Some(action) = self.graph.as_mut().and_then(|g| g.on_key(*key)) {
-            self.on_graph_action(&action);
         }
         // folds and zooms relayout the placements the committed match rows
         // index into; recompute so highlights and n/N track the live nodes
@@ -272,7 +270,6 @@ impl App {
                 search.recompute(&rows);
             }
         }
-        Flow::Continue
     }
 
     /// React to a [`crate::graph::GraphAction`] from the component: activating a
