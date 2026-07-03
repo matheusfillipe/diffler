@@ -283,23 +283,9 @@ async fn chain_calls(
     let lsp::Resolution::Found(spec) = lsp::resolve(&job.extension) else {
         return None;
     };
-    let client = {
-        let mut clients = pool.lock().await;
-        if let Some(client) = clients.get(spec.bin) {
-            client.clone()
-        } else {
-            let spawned = lsp::LspClient::spawn(spec.bin, spec.argv, root)
-                .await
-                .ok()?;
-            let client = std::sync::Arc::new(tokio::sync::Mutex::new(spawned));
-            clients.insert(spec.bin, client.clone());
-            client
-        }
-    };
-    let mut client = client.lock().await;
     let path = std::path::Path::new(&job.path);
-    client.sync_document(path, &job.new_text).await.ok()?;
-    let symbols = client.document_symbols(path).await.ok()?;
+    let (client, symbols) = file_symbols(pool, spec, root, path, &job.new_text).await?;
+    let mut client = client.lock().await;
     let target = symbols
         .iter()
         .filter(|s| (s.start_line..=s.end_line).contains(&job.cursor_line))
@@ -363,6 +349,47 @@ fn lsp_pool() -> &'static LspPool {
     POOL.get_or_init(LspPool::default)
 }
 
+/// Reuse or spawn the language's pooled client and load the file's symbols.
+/// A transport failure (dead or wedged server — every request is capped by
+/// the client's timeout) evicts the client so the next job respawns fresh.
+async fn file_symbols(
+    pool: &LspPool,
+    spec: &'static lsp::ServerSpec,
+    root: &std::path::Path,
+    path: &std::path::Path,
+    text: &str,
+) -> Option<(
+    std::sync::Arc<tokio::sync::Mutex<lsp::LspClient>>,
+    Vec<lsp::Symbol>,
+)> {
+    let client = {
+        let mut clients = pool.lock().await;
+        if let Some(client) = clients.get(spec.bin) {
+            client.clone()
+        } else {
+            let spawned = lsp::LspClient::spawn(spec.bin, spec.argv, root)
+                .await
+                .ok()?;
+            let client = std::sync::Arc::new(tokio::sync::Mutex::new(spawned));
+            clients.insert(spec.bin, client.clone());
+            client
+        }
+    };
+    let symbols = {
+        let mut guard = client.lock().await;
+        match guard.sync_document(path, text).await {
+            Ok(()) => guard.document_symbols(path).await,
+            Err(err) => Err(err),
+        }
+    };
+    if let Ok(symbols) = symbols {
+        Some((client, symbols))
+    } else {
+        pool.lock().await.remove(spec.bin);
+        None
+    }
+}
+
 /// One task per queued blast job: resolve the language server, reuse or spawn
 /// its client, then symbols ∩ changed lines → references. Unsupported or
 /// missing servers complete with an empty outcome so the job isn't retried.
@@ -391,23 +418,9 @@ async fn blast_symbols(
     let lsp::Resolution::Found(spec) = lsp::resolve(&job.extension) else {
         return None;
     };
-    let client = {
-        let mut clients = pool.lock().await;
-        if let Some(client) = clients.get(spec.bin) {
-            client.clone()
-        } else {
-            let spawned = lsp::LspClient::spawn(spec.bin, spec.argv, root)
-                .await
-                .ok()?;
-            let client = std::sync::Arc::new(tokio::sync::Mutex::new(spawned));
-            clients.insert(spec.bin, client.clone());
-            client
-        }
-    };
-    let mut client = client.lock().await;
     let path = std::path::Path::new(&job.path);
-    client.sync_document(path, &job.new_text).await.ok()?;
-    let symbols = client.document_symbols(path).await.ok()?;
+    let (client, symbols) = file_symbols(pool, spec, root, path, &job.new_text).await?;
+    let mut client = client.lock().await;
     let touched: Vec<_> = symbols
         .into_iter()
         .filter(|s| {

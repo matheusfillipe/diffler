@@ -135,7 +135,7 @@ impl LspClient {
             .filter_map(|loc| {
                 let target = loc.get("uri")?.as_str()?;
                 let line = loc.pointer("/range/start/line")?.as_u64()? as u32;
-                let path = target.strip_prefix(&root_prefix)?.to_owned();
+                let path = decode_uri_path(target.strip_prefix(&root_prefix)?);
                 Some(RefSite { path, line })
             })
             .collect())
@@ -172,7 +172,7 @@ impl LspClient {
                 let from = call.get("from")?;
                 let name = from.get("name")?.as_str()?.to_owned();
                 let target = from.get("uri")?.as_str()?;
-                let path = target.strip_prefix(&root_prefix)?.to_owned();
+                let path = decode_uri_path(target.strip_prefix(&root_prefix)?);
                 let at = |ptr: &str| from.pointer(ptr).and_then(Value::as_u64).map(|v| v as u32);
                 Some(Caller {
                     name,
@@ -190,6 +190,12 @@ impl LspClient {
         let id = self.next_id;
         self.send(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))
             .await?;
+        tokio::time::timeout(REQUEST_TIMEOUT, self.await_response(id, method))
+            .await
+            .map_err(|_| LspError::Io("timeout"))?
+    }
+
+    async fn await_response(&mut self, id: i64, method: &str) -> Result<Value, LspError> {
         loop {
             let message = self.read_message().await?;
             if message.get("id").and_then(Value::as_i64) == Some(id)
@@ -205,7 +211,8 @@ impl LspClient {
                 .and(message.get("id"))
                 .and_then(Value::as_i64)
             {
-                self.send(&json!({"jsonrpc": "2.0", "id": request_id, "result": null}))
+                let result = server_request_result(&message);
+                self.send(&json!({"jsonrpc": "2.0", "id": request_id, "result": result}))
                     .await?;
             }
         }
@@ -255,8 +262,60 @@ impl LspClient {
     }
 }
 
+/// Servers hold every response until their pending request is answered, so a
+/// reply that never comes would wedge the client (and its pool slot) forever.
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// `workspace/configuration` expects one entry per queried item; everything
+/// else the client doesn't implement is answered with plain `null`.
+fn server_request_result(message: &Value) -> Value {
+    if message.get("method").and_then(Value::as_str) == Some("workspace/configuration") {
+        let items = message
+            .pointer("/params/items")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        return Value::Array(vec![Value::Null; items]);
+    }
+    Value::Null
+}
+
+/// A `file://` URI with the path percent-encoded the way servers emit them,
+/// so prefix-matching server URIs back to repo-relative paths stays exact.
 fn uri(path: &Path) -> String {
-    format!("file://{}", path.display())
+    use std::fmt::Write;
+    let mut out = String::from("file://");
+    for byte in path.to_string_lossy().bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                out.push(char::from(byte));
+            }
+            _ => {
+                let _ = write!(out, "%{byte:02X}");
+            }
+        }
+    }
+    out
+}
+
+/// Decode `%XX` escapes in a URI path back into the on-disk path.
+fn decode_uri_path(encoded: &str) -> String {
+    let bytes = encoded.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let escaped = (bytes.get(i) == Some(&b'%'))
+            .then(|| encoded.get(i + 1..i + 3))
+            .flatten()
+            .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+        if let Some(byte) = escaped {
+            out.push(byte);
+            i += 3;
+        } else {
+            out.extend(bytes.get(i..=i).unwrap_or_default());
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn language_id(path: &Path) -> &'static str {
@@ -300,5 +359,41 @@ fn collect_symbols(nodes: &[Value], out: &mut Vec<Symbol>) {
             select_line: range("/selectionRange/start/line").unwrap_or(start),
             select_character: range("/selectionRange/start/character").unwrap_or(0),
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uri_percent_encodes_and_decode_reverses_it() {
+        let uri = uri(Path::new("/repo dir/src/a file.rs"));
+        assert_eq!(uri, "file:///repo%20dir/src/a%20file.rs");
+        let path = uri.strip_prefix("file:///repo%20dir/").expect("prefix");
+        assert_eq!(decode_uri_path(path), "src/a file.rs");
+    }
+
+    #[test]
+    fn decode_leaves_malformed_escapes_alone() {
+        assert_eq!(decode_uri_path("a%2"), "a%2");
+        assert_eq!(decode_uri_path("a%zz"), "a%zz");
+        assert_eq!(decode_uri_path("plain"), "plain");
+    }
+
+    #[test]
+    fn configuration_requests_get_one_null_per_item() {
+        let msg = serde_json::json!({
+            "method": "workspace/configuration",
+            "params": {"items": [{}, {}]},
+        });
+        assert_eq!(
+            server_request_result(&msg),
+            Value::Array(vec![Value::Null, Value::Null])
+        );
+        assert_eq!(
+            server_request_result(&serde_json::json!({"method": "x"})),
+            Value::Null
+        );
     }
 }

@@ -71,6 +71,13 @@ impl FileBlast {
     }
 }
 
+fn extension_of(path: &str) -> Option<String> {
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_owned)
+}
+
 impl App {
     pub(crate) fn queue_blast_selected(&mut self) {
         let Some(diff) = self.diff.as_ref() else {
@@ -83,7 +90,7 @@ impl App {
         let Some(file) = model.files.get(diff.selected) else {
             return;
         };
-        let Some(extension) = file.path.rsplit_once('.').map(|(_, e)| e.to_owned()) else {
+        let Some(extension) = extension_of(&file.path) else {
             return;
         };
         let Some(new_text) = file.new_text.clone() else {
@@ -176,13 +183,22 @@ impl App {
             })
             .unwrap_or(1)
             .saturating_sub(1);
-        let (Some(extension), Some(new_text)) = (
-            file.path.rsplit_once('.').map(|(_, e)| e.to_owned()),
-            file.new_text.clone(),
-        ) else {
+        let (Some(extension), Some(new_text)) = (extension_of(&file.path), file.new_text.clone())
+        else {
             self.info("no reference data for this file");
             return;
         };
+        match crate::lsp::resolve(&extension) {
+            crate::lsp::Resolution::Found(_) => {}
+            crate::lsp::Resolution::Missing(hint) => {
+                self.info(format!("language server not on PATH — install: {hint}"));
+                return;
+            }
+            crate::lsp::Resolution::Unsupported => {
+                self.info(format!("no language server known for .{extension} files"));
+                return;
+            }
+        }
         self.pending_chain = Some(ChainJob {
             path: file.path.clone(),
             new_text,
@@ -279,8 +295,14 @@ mod tests {
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         app.open_working_tree_diff(Some("src/lib.rs"));
         app.open_impact();
-        let job = app.pending_chain.as_ref().expect("chain queued");
-        assert_eq!(job.path, "src/lib.rs");
+        // queueing needs the language server on PATH; without one the press
+        // degrades to the install hint instead
+        if matches!(crate::lsp::resolve("rs"), crate::lsp::Resolution::Found(_)) {
+            let job = app.pending_chain.as_ref().expect("chain queued");
+            assert_eq!(job.path, "src/lib.rs");
+        } else {
+            assert!(app.pending_chain.is_none());
+        }
 
         app.on_chain(ChainOutcome {
             file: "src/lib.rs".into(),
@@ -360,5 +382,11 @@ mod tests {
         assert_eq!(app.screen(), crate::app::Screen::Graph);
         press(&mut app, KeyCode::Esc);
         assert_ne!(app.screen(), crate::app::Screen::Graph, "second Esc leaves");
+    }
+    #[test]
+    fn extension_of_ignores_dotted_directories() {
+        assert_eq!(extension_of("src/foo.d/main.rs").as_deref(), Some("rs"));
+        assert_eq!(extension_of("src/foo.d/README"), None);
+        assert_eq!(extension_of("Makefile"), None);
     }
 }
