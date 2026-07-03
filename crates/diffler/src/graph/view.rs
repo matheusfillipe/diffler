@@ -301,7 +301,7 @@ impl GraphView {
     }
 
     fn step(&mut self, dir: Dir) {
-        let Some(from) = self.selected_placement().map(center) else {
+        let Some((from, from_x)) = self.selected_placement().map(|p| (center(p), p.x)) else {
             return;
         };
         let best = self
@@ -321,9 +321,13 @@ impl GraphView {
                     i32::from(to.0) - i32::from(from.0),
                     i32::from(to.1) - i32::from(from.1),
                 );
+                // horizontal moves measure column edges, not centers: nodes in
+                // one column share their left x but not their width, so a wide
+                // same-column cousin's center would read as nearer/"ahead"
+                let edge_dx = i32::from(p.x) - i32::from(from_x);
                 let ahead = match dir {
-                    Dir::Left => dx < 0,
-                    Dir::Right => dx > 0,
+                    Dir::Left => edge_dx < 0,
+                    Dir::Right => edge_dx > 0,
                     Dir::Up => dy < 0,
                     Dir::Down => dy > 0,
                 };
@@ -331,7 +335,7 @@ impl GraphView {
                     return None;
                 }
                 let cost = match dir {
-                    Dir::Left | Dir::Right => dx.abs() * 3 + dy.abs(),
+                    Dir::Left | Dir::Right => edge_dx.abs() * 3 + dy.abs(),
                     Dir::Up | Dir::Down => dy.abs() * 3 + dx.abs(),
                 };
                 Some((cost, p.id.clone()))
@@ -589,6 +593,39 @@ mod tests {
             crossterm::event::KeyModifiers::NONE,
         ));
         assert_eq!(action, Some(GraphAction::Activated(NodeId::new("build"))));
+    }
+
+    #[test]
+    fn horizontal_step_crosses_columns_never_same_column_cousins() {
+        use crate::graph::model::{Edge, Node, RankDir};
+        let mut model = Model::new(RankDir::LeftRight);
+        let n = |id: &str| Node::leaf(id, NodeStatus::Neutral);
+        model.nodes = vec![n("a"), n("a very wide same-column cousin label"), n("next")];
+        let e = |from: &str, to: &str| Edge {
+            from: NodeId::new(from),
+            to: NodeId::new(to),
+            label: None,
+        };
+        model.edges = vec![e("a", "next")];
+        let mut v = GraphView::new();
+        v.set_model(model);
+        render(&mut v);
+
+        v.select(&NodeId::new("a"));
+        v.on_key(key('l'));
+        assert_eq!(
+            v.selected(),
+            Some(&NodeId::new("next")),
+            "l crosses to the next column, not the wide cousin below"
+        );
+        v.on_key(key('h'));
+        assert_eq!(v.selected(), Some(&NodeId::new("a")));
+        v.on_key(key('j'));
+        assert_eq!(
+            v.selected().map(|id| id.0.as_str()),
+            Some("a very wide same-column cousin label"),
+            "cousins stay reachable vertically"
+        );
     }
 
     #[test]
