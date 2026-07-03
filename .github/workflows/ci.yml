@@ -26,6 +26,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rust-analyzer
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest

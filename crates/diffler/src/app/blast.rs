@@ -29,6 +29,8 @@ pub struct ChainOutcome {
     pub file: String,
     pub nodes: Vec<ChainNode>,
     pub edges: Vec<(String, String)>,
+    /// Why the trace came back empty, when the worker knows.
+    pub note: Option<String>,
 }
 
 pub struct BlastJob {
@@ -250,7 +252,10 @@ impl App {
             return;
         }
         if outcome.nodes.is_empty() {
-            self.info("no callers found for the symbol under the cursor");
+            let note = outcome
+                .note
+                .unwrap_or_else(|| "no callers found for the symbol under the cursor".to_owned());
+            self.info(note);
             return;
         }
         let mut model = Model::new(RankDir::LeftRight);
@@ -339,10 +344,11 @@ async fn file_symbols(
 pub async fn chain_calls(pool: &LspPool, root: &std::path::Path, job: &ChainJob) -> ChainOutcome {
     walk_chain(pool, root, job)
         .await
-        .unwrap_or_else(|| ChainOutcome {
+        .unwrap_or_else(|note| ChainOutcome {
             file: job.path.clone(),
             nodes: Vec::new(),
             edges: Vec::new(),
+            note: Some(note),
         })
 }
 
@@ -350,18 +356,28 @@ async fn walk_chain(
     pool: &LspPool,
     root: &std::path::Path,
     job: &ChainJob,
-) -> Option<ChainOutcome> {
+) -> Result<ChainOutcome, String> {
     let crate::lsp::Resolution::Found(spec) = crate::lsp::resolve(&job.extension) else {
-        return None;
+        return Err("no language server for this file type".to_owned());
     };
     let path = std::path::Path::new(&job.path);
-    let (slot, symbols) = file_symbols(pool, spec, root, path, &job.new_text).await?;
+    // a rustup-style proxy on PATH spawns fine and dies at initialize, so a
+    // startup failure still needs the install hint
+    let Some((slot, symbols)) = file_symbols(pool, spec, root, path, &job.new_text).await else {
+        return Err(format!(
+            "{} isn't responding — install it: {}",
+            spec.bin, spec.install_hint
+        ));
+    };
     let mut guard = slot.lock().await;
-    let target = symbols
+    let Some(target) = symbols
         .iter()
         .filter(|s| (s.start_line..=s.end_line).contains(&job.cursor_line))
-        .min_by_key(|s| s.end_line - s.start_line)?
-        .clone();
+        .min_by_key(|s| s.end_line - s.start_line)
+        .cloned()
+    else {
+        return Err("no function under the cursor".to_owned());
+    };
 
     let root_id = format!("{}:{}", job.path, target.select_line);
     let mut nodes = vec![ChainNode {
@@ -381,7 +397,9 @@ async fn walk_chain(
     'walk: for _depth in 0..3 {
         let mut next = Vec::new();
         for (callee_id, callee_path, line, character) in frontier {
-            let client = guard.as_mut()?;
+            let Some(client) = guard.as_mut() else {
+                break 'walk;
+            };
             let Ok(callers) = client
                 .incoming_calls(std::path::Path::new(&callee_path), line, character)
                 .await
@@ -412,10 +430,11 @@ async fn walk_chain(
         }
         frontier = next;
     }
-    Some(ChainOutcome {
+    Ok(ChainOutcome {
         file: job.path.clone(),
         nodes,
         edges,
+        note: None,
     })
 }
 
@@ -549,6 +568,7 @@ mod tests {
                 },
             ],
             edges: vec![("src/other.rs:4".into(), "src/lib.rs:0".into())],
+            note: None,
         });
         assert_eq!(app.screen(), crate::app::Screen::Graph);
         assert_eq!(app.impact_title.as_deref(), Some("src/lib.rs"));
@@ -581,6 +601,7 @@ mod tests {
                 },
             ],
             edges: vec![("root".into(), "caller".into())],
+            note: None,
         });
         let selected = |app: &App| {
             app.graph
@@ -632,6 +653,7 @@ mod tests {
                 },
             ],
             edges: vec![("src/lib.rs:0".into(), "src/other.rs:4".into())],
+            note: None,
         });
         let press = |app: &mut App, code: KeyCode| {
             app.handle(crate::event::AppEvent::Key(KeyEvent::new(
