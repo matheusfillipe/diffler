@@ -396,7 +396,7 @@ impl CiProvider for GitHubProvider {
             "-F".to_owned(),
             format!("line={}", new.line),
             "-f".to_owned(),
-            "side=RIGHT".to_owned(),
+            format!("side={}", if new.new_side { "RIGHT" } else { "LEFT" }),
         ];
         let raw = self.runner.run("gh", &args).await?;
         parse_posted(&raw)

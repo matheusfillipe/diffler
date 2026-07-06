@@ -56,12 +56,15 @@ pub trait CiProvider: Send {
     -> Result<PrComment>;
 }
 
-/// A comment to post: anchored to `line` on the new side of `path` at `head_oid`.
+/// A comment to post, anchored to a diff line of `path` at `head_oid`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewPrComment {
     pub number: u64,
     pub head_oid: String,
     pub path: String,
+    /// 1-based line on the side the comment anchors to.
     pub line: u32,
+    /// Anchored to the new side (`RIGHT`) or the old side of the diff.
+    pub new_side: bool,
     pub body: String,
 }

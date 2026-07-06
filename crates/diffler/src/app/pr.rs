@@ -17,6 +17,7 @@ pub enum PrPost {
         comment_id: String,
         path: String,
         line: u32,
+        new_side: bool,
         body: String,
     },
     Reply {
@@ -205,13 +206,14 @@ impl App {
         let mut posts = Vec::new();
         for comment in &session.comments {
             match (&comment.remote_id, comment.anchor.line) {
-                (None, Some(line)) if !comment.anchor.on_old_side => {
+                (None, Some(line)) => {
                     posts.push(PrPost::Comment {
                         number,
                         head_oid: head.clone(),
                         comment_id: comment.id.clone(),
                         path: comment.anchor.file.clone(),
                         line: comment.anchor.line_end.unwrap_or(line),
+                        new_side: !comment.anchor.on_old_side,
                         body: comment.body.clone(),
                     });
                 }
@@ -319,6 +321,54 @@ mod tests {
             git.argv
         );
         assert_eq!(app.pending_pr_open.as_ref().map(|p| p.number), Some(9));
+    }
+
+    #[test]
+    fn commenting_through_the_modal_queues_a_forge_post() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let fixture = standard_fixture();
+        fixture.write("src/lib.rs", "pub fn answer() -> u32 {\n    43\n}\n");
+        fixture.stage("src/lib.rs");
+        fixture.commit_all("bump");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let head = app.review.vcs.resolve("HEAD").expect("head oid");
+        let base = app.review.vcs.resolve("HEAD~1").expect("base oid");
+        app.open_pr_diff(3, &base, &head);
+        assert!(app.diff.is_some());
+        // a forge sync landing before the comment must not disturb posting
+        app.sync_pr_comments(
+            3,
+            &[PrComment {
+                id: "55".into(),
+                path: "src/lib.rs".into(),
+                line: Some(1),
+                new_side: true,
+                body: "remote".into(),
+                author: "alice".into(),
+                reply_to: None,
+                at: 1,
+            }],
+        );
+        let press = |app: &mut App, code: KeyCode| {
+            app.handle(crate::event::AppEvent::Key(KeyEvent::new(
+                code,
+                KeyModifiers::NONE,
+            )));
+        };
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('c'));
+        assert!(app.modal.is_some(), "comment modal open");
+        for ch in "ship it".chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(
+            app.pending_pr_posts.len(),
+            1,
+            "modal submit queues the forge post: {:?}",
+            app.pending_pr_posts
+        );
     }
 
     #[test]

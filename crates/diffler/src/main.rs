@@ -283,6 +283,7 @@ fn dispatch_pr_posts(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
                     head_oid,
                     path,
                     line,
+                    new_side,
                     body,
                     ..
                 } => {
@@ -292,6 +293,7 @@ fn dispatch_pr_posts(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
                             head_oid: head_oid.clone(),
                             path: path.clone(),
                             line: *line,
+                            new_side: *new_side,
                             body: body.clone(),
                         })
                         .await
