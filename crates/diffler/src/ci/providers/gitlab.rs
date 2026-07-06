@@ -12,7 +12,7 @@ use crate::ci::model::{
     Capabilities, CiJob, CiRun, DagSource, JobId, JobStatus, LogChunk, LogMode, PrComment,
     PullRequest, RunDetail, RunExtras, RunId,
 };
-use crate::ci::provider::{CiProvider, ProviderKind};
+use crate::ci::provider::{ForgeProvider, ProviderKind};
 
 /// Talks to GitLab CI through `glab api`. `glab` resolves the project from the
 /// repo via the `:fullpath` placeholder; an explicit `host` targets a
@@ -40,7 +40,7 @@ impl GitLabProvider {
 }
 
 #[async_trait]
-impl CiProvider for GitLabProvider {
+impl ForgeProvider for GitLabProvider {
     fn kind(&self) -> ProviderKind {
         ProviderKind::GitLab
     }

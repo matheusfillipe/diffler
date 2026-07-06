@@ -249,6 +249,23 @@ fn dispatch_workers(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>, lsp_poo
     dispatch_refresh(app, tx);
 }
 
+/// The provider for one detected remote, with the app context every adapter
+/// needs cloned in.
+fn provider_for(
+    remote: &diffler::app::CiRemote,
+    repo_root: &Path,
+    branch: Option<&str>,
+    yaml_cache: ci::YamlCache,
+) -> Box<dyn ci::ForgeProvider + Send> {
+    ci::build_provider(
+        &remote.detected,
+        repo_root,
+        branch,
+        remote.url.as_deref(),
+        yaml_cache,
+    )
+}
+
 /// Push each queued PR comment/reply to the forge via the primary remote's
 /// provider; results return as events that stamp the forge ids.
 fn dispatch_pr_posts(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
@@ -267,16 +284,9 @@ fn dispatch_pr_posts(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
         let repo_root = repo_root.clone();
         let branch = branch.clone();
         let yaml_cache = yaml_cache.clone();
-        let detected = remote.detected.clone();
-        let url = remote.url.clone();
+        let remote = remote.clone();
         tokio::spawn(async move {
-            let provider = ci::build_provider(
-                &detected,
-                &repo_root,
-                branch.as_deref(),
-                url.as_deref(),
-                yaml_cache,
-            );
+            let provider = provider_for(&remote, &repo_root, branch.as_deref(), yaml_cache);
             let result = match &post {
                 app::pr::PrPost::Comment {
                     number,
@@ -376,13 +386,8 @@ fn dispatch_ci(app: &App, request: CiRequest, tx: &mpsc::UnboundedSender<AppEven
         tokio::spawn(async move {
             let mut all = Vec::new();
             for remote in &remotes {
-                let provider = ci::build_provider(
-                    &remote.detected,
-                    &repo_root,
-                    branch.as_deref(),
-                    remote.url.as_deref(),
-                    yaml_cache.clone(),
-                );
+                let provider =
+                    provider_for(remote, &repo_root, branch.as_deref(), yaml_cache.clone());
                 if let Ok(mut runs) = provider.list_runs(30).await {
                     if multi {
                         for run in &mut runs {
@@ -404,13 +409,7 @@ fn dispatch_ci(app: &App, request: CiRequest, tx: &mpsc::UnboundedSender<AppEven
         _ => remotes.first().cloned(),
     };
     if let Some(remote) = remote {
-        let provider = ci::build_provider(
-            &remote.detected,
-            &repo_root,
-            branch.as_deref(),
-            remote.url.as_deref(),
-            yaml_cache,
-        );
+        let provider = provider_for(&remote, &repo_root, branch.as_deref(), yaml_cache);
         tokio::spawn(async move {
             let _ = tx.send(run_ci_request(provider, request).await);
         });
@@ -418,7 +417,7 @@ fn dispatch_ci(app: &App, request: CiRequest, tx: &mpsc::UnboundedSender<AppEven
 }
 
 async fn run_ci_request(
-    provider: Box<dyn crate::ci::CiProvider + Send>,
+    provider: Box<dyn crate::ci::ForgeProvider + Send>,
     request: CiRequest,
 ) -> AppEvent {
     match request {

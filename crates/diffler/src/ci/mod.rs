@@ -1,6 +1,6 @@
 //! Provider-agnostic CI run/job/log acquisition, plus the host glue that picks a
 //! provider for the repo and maps a normalized `RunDetail` onto the graph model.
-//! Adapters (`providers/`) implement [`CiProvider`] over each forge (via
+//! Adapters (`providers/`) implement [`ForgeProvider`] over each forge (via
 //! `gh`/`glab`/`curl` through the [`CommandRunner`] seam) and never touch the terminal.
 
 mod detect;
@@ -18,7 +18,7 @@ pub use model::{
     LogChunk, LogMode, LogStepMeta, PrComment, PullRequest, RunDetail, RunExtras, RunId,
     ts_sort_key,
 };
-pub use provider::{CiProvider, NewPrComment, ProviderKind};
+pub use provider::{ForgeProvider, NewPrComment, ProviderKind};
 pub use providers::{ForgejoProvider, GitHubProvider, GitLabProvider, YamlCache};
 
 use std::path::Path;
@@ -95,7 +95,7 @@ pub fn build_provider(
     branch: Option<&str>,
     remote_url: Option<&str>,
     yaml_cache: YamlCache,
-) -> Box<dyn CiProvider + Send> {
+) -> Box<dyn ForgeProvider + Send> {
     match detected.kind {
         ProviderKind::GitHub => Box::new(GitHubProvider::new(
             Box::new(RealRunner),

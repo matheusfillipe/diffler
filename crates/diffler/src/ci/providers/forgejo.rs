@@ -12,7 +12,7 @@ use crate::ci::model::{
     Capabilities, CiJob, CiRun, DagSource, JobId, JobStatus, LogChunk, LogMode, PrComment,
     PullRequest, RunDetail, RunExtras, RunId,
 };
-use crate::ci::provider::{CiProvider, ProviderKind};
+use crate::ci::provider::{ForgeProvider, ProviderKind};
 
 pub struct ForgejoProvider {
     runner: Box<dyn CommandRunner>,
@@ -73,7 +73,7 @@ impl ForgejoProvider {
 }
 
 #[async_trait]
-impl CiProvider for ForgejoProvider {
+impl ForgeProvider for ForgejoProvider {
     fn kind(&self) -> ProviderKind {
         ProviderKind::Forgejo
     }
@@ -141,7 +141,11 @@ impl CiProvider for ForgejoProvider {
 
     async fn list_prs(&self) -> Result<Vec<PullRequest>> {
         let raw = self.get("pulls?state=open&limit=50").await?;
-        let pulls: Vec<PullItem> = serde_json::from_str(&raw).unwrap_or_default();
+        let pulls: Vec<PullItem> =
+            serde_json::from_str(&raw).map_err(|err| crate::ci::CiError::Parse {
+                what: "pr list".to_owned(),
+                message: err.to_string(),
+            })?;
         Ok(pulls.into_iter().map(PullItem::into_pr).collect())
     }
 

@@ -648,19 +648,17 @@ impl App {
         if let Some((base, head)) = self.resolve_pr_range(&pr) {
             self.open_pr_diff(pr.number, &base, &head);
         } else {
-            {
-                let remote = self
-                    .ci_remotes
-                    .first()
-                    .map_or_else(|| "origin".to_owned(), |r| r.name.clone());
-                let refspec = format!("refs/pull/{}/head", pr.number);
-                let label = format!("fetch PR #{}", pr.number);
-                self.pending_pr_open = Some(pr);
-                self.pending_git = Some(super::GitOp {
-                    label,
-                    argv: vec!["git".to_owned(), "fetch".to_owned(), remote, refspec],
-                });
-            }
+            let remote = self
+                .ci_remotes
+                .first()
+                .map_or_else(|| "origin".to_owned(), |r| r.name.clone());
+            let refspec = format!("refs/pull/{}/head", pr.number);
+            let label = format!("fetch PR #{}", pr.number);
+            self.pending_pr_open = Some(pr);
+            self.pending_git = Some(super::GitOp {
+                label,
+                argv: vec!["git".to_owned(), "fetch".to_owned(), remote, refspec],
+            });
         }
     }
 

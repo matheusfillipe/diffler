@@ -57,11 +57,17 @@ impl App {
             Action::MoveUp => self.prs_cursor = self.prs_cursor.saturating_sub(1),
             Action::GoTop => self.prs_cursor = 0,
             Action::GoBottom => self.prs_cursor = last,
-            Action::HalfPageDown | Action::FullPageDown => {
-                self.prs_cursor = (self.prs_cursor + 20).min(last);
+            Action::HalfPageDown => {
+                self.prs_cursor = (self.prs_cursor + super::page_step(0, false)).min(last);
             }
-            Action::HalfPageUp | Action::FullPageUp => {
-                self.prs_cursor = self.prs_cursor.saturating_sub(20);
+            Action::FullPageDown => {
+                self.prs_cursor = (self.prs_cursor + super::page_step(0, true)).min(last);
+            }
+            Action::HalfPageUp => {
+                self.prs_cursor = self.prs_cursor.saturating_sub(super::page_step(0, false));
+            }
+            Action::FullPageUp => {
+                self.prs_cursor = self.prs_cursor.saturating_sub(super::page_step(0, true));
             }
             Action::Refresh => self.pending_ci = Some(super::CiRequest::Prs),
             Action::Open => {
@@ -140,17 +146,8 @@ impl App {
         let mut roots: Vec<Comment> = Vec::new();
         for item in remote.iter().filter(|c| c.reply_to.is_none()) {
             let line_text = item.line.and_then(|line| {
-                let file = model.files.iter().find(|f| f.path == item.path)?;
-                file.hunks
-                    .iter()
-                    .flat_map(|h| &h.lines)
-                    .find(|l| {
-                        if item.new_side {
-                            l.new_no == Some(line)
-                        } else {
-                            l.old_no == Some(line)
-                        }
-                    })
+                model
+                    .find_line(&item.path, line, !item.new_side)
                     .map(|l| l.text.clone())
             });
             roots.push(Comment {
@@ -525,7 +522,8 @@ mod tests {
             .expect("kept");
         assert_eq!(mine.remote_id.as_deref(), Some("200"));
 
-        // the next sync keeps the now-remote local comment out of the purge
+        // once stamped with a remote id the comment is forge-owned: an empty
+        // listing purges it
         app.sync_pr_comments(7, &[]);
         let session = app.review.session_for(&source);
         assert!(

@@ -1,5 +1,6 @@
-//! The provider seam. One async trait every forge adapter implements; the host
-//! holds a `Box<dyn CiProvider + Send>` chosen at runtime by detection.
+//! The forge seam: one async trait per forge adapter covering CI acquisition
+//! and pull-request review. The host holds a `Box<dyn ForgeProvider + Send>`
+//! chosen at runtime by detection.
 
 use async_trait::async_trait;
 
@@ -17,7 +18,7 @@ pub enum ProviderKind {
 }
 
 #[async_trait]
-pub trait CiProvider: Send {
+pub trait ForgeProvider: Send {
     fn kind(&self) -> ProviderKind;
 
     /// What this provider can do, so the UI degrades honestly.

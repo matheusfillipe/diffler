@@ -21,7 +21,7 @@ crates/diffler-core/   pure logic, no terminal (errors via thiserror):
 
 crates/diffler/        binary (color-eyre at the top; thiserror for typed errors):
   ui/ app/ tree.rs     ratatui TUI: screens, file sidebar, state
-  ci/                  provider-agnostic CI acquisition (CiProvider trait, gh/glab)
+  ci/                  forge seam: CI acquisition + PR review (ForgeProvider trait; gh/glab/Forgejo REST)
   graph/               navigable orthogonal node-graph ratatui component
   lsp/                 language-server registry (PATH probe + install hints) + minimal JSON-RPC stdio client
   keymap.rs config.rs  configurable keybindings, layered TOML config
@@ -105,8 +105,15 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   under the cursor into the graph screen — Enter on a node jumps to the call
   site in `$EDITOR`. Requests time out (30s) and a failed client is evicted
   from the pool.
-- **Non-goals.** Worktree/workspace management, forge/PR integration, agent
-  orchestration, structural diff. Task tracking is a later milestone (`PLAN.md`).
+- **PR review.** `ReviewSource::Pr{number}` keys review state on the PR number
+  (survives pushes); the diff is `merge-base..head` via `Vcs::tree_diff`,
+  fetching `refs/pull/<n>/head` when the head isn't local — reviewing never
+  needs a checkout. The branch's PR is a status row; `b p` lists all open PRs
+  (Enter reviews, `b` checks out). Forge review comments sync into the session
+  (`remote_id` marks forge-owned rows); local comments and replies post back
+  through queued workers (GitHub via `gh`; Forgejo/GitLab decline politely).
+- **Non-goals.** Worktree/workspace management, agent orchestration,
+  structural diff. Task tracking is a later milestone (`PLAN.md`).
 
 ## Distribution
 

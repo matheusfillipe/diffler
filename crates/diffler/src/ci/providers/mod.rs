@@ -1,4 +1,4 @@
-//! Per-forge adapters implementing [`crate::ci::CiProvider`].
+//! Per-forge adapters implementing [`crate::ci::ForgeProvider`].
 
 mod forgejo;
 mod github;

@@ -132,34 +132,6 @@ pub fn ts_sort_key(iso: &str) -> u64 {
     }
 }
 
-/// An ISO-8601 UTC timestamp (`2026-07-03T17:00:00Z`) as unix seconds, via
-/// the days-from-civil algorithm; anything unparseable is `None`.
-#[must_use]
-pub fn iso_epoch(iso: &str) -> Option<u64> {
-    let (date, rest) = iso.split_once('T')?;
-    let mut parts = date.splitn(3, '-');
-    let year: i64 = parts.next()?.parse().ok()?;
-    let month: i64 = parts.next()?.parse().ok()?;
-    let day: i64 = parts.next()?.parse().ok()?;
-    let time: String = rest.chars().take(8).collect();
-    let mut hms = time.splitn(3, ':');
-    let hour: i64 = hms.next()?.parse().ok()?;
-    let minute: i64 = hms.next()?.parse().ok()?;
-    let second: i64 = hms.next()?.parse().ok()?;
-    let shifted_year = if month <= 2 { year - 1 } else { year };
-    let era = if shifted_year >= 0 {
-        shifted_year
-    } else {
-        shifted_year - 399
-    } / 400;
-    let year_of_era = shifted_year - era * 400;
-    let month_shifted = (month + 9) % 12;
-    let day_of_year = (153 * month_shifted + 2) / 5 + day - 1;
-    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-    let days = era * 146_097 + day_of_era - 719_468;
-    u64::try_from(days * 86_400 + hour * 3600 + minute * 60 + second).ok()
-}
-
 /// The pull/merge request for the checked-out branch, shown beside the runs so
 /// the section reflects "the branch and PR I'm on", not just a workflow.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -18,7 +18,7 @@ use crate::ci::model::{
     LogChunk, LogMode, LogStepMeta, PrComment, PullRequest, RunDetail, RunExtras, RunId,
     ts_sort_key,
 };
-use crate::ci::provider::{CiProvider, ProviderKind};
+use crate::ci::provider::{ForgeProvider, ProviderKind};
 
 /// Talks to GitHub Actions through `gh`. The runs list is scoped to the current
 /// `branch` (across all of its workflows); each run's DAG comes from whichever
@@ -208,7 +208,7 @@ impl GitHubProvider {
 }
 
 #[async_trait]
-impl CiProvider for GitHubProvider {
+impl ForgeProvider for GitHubProvider {
     fn kind(&self) -> ProviderKind {
         ProviderKind::GitHub
     }
@@ -363,7 +363,11 @@ impl CiProvider for GitHubProvider {
         ]
         .map(str::to_owned);
         let raw = self.runner.run("gh", &args).await?;
-        let items: Vec<PrListItem> = serde_json::from_str(&raw).unwrap_or_default();
+        let items: Vec<PrListItem> =
+            serde_json::from_str(&raw).map_err(|err| crate::ci::CiError::Parse {
+                what: "pr list".to_owned(),
+                message: err.to_string(),
+            })?;
         Ok(items.into_iter().map(PrListItem::into_pr).collect())
     }
 
@@ -828,15 +832,16 @@ impl ReviewCommentApi {
             body: self.body,
             author: self.user.login,
             reply_to: self.in_reply_to_id.map(|id| id.to_string()),
-            at: chrono_free_epoch(&self.created_at),
+            at: created_epoch(&self.created_at),
         }
     }
 }
 
-/// `2026-07-03T17:00:00Z` → unix seconds without a date dependency; a shape
-/// we don't recognize collapses to zero (renders as "long ago").
-fn chrono_free_epoch(iso: &str) -> u64 {
-    crate::ci::model::iso_epoch(iso).unwrap_or(0)
+/// ISO-8601 → unix seconds; an unrecognized shape collapses to zero.
+fn created_epoch(iso: &str) -> u64 {
+    parse_created(iso)
+        .and_then(|t| u64::try_from(t.unix_timestamp()).ok())
+        .unwrap_or(0)
 }
 
 #[derive(Deserialize)]
