@@ -65,6 +65,11 @@ comments up through `wait_for_feedback`, replies or proposes resolutions, and
 you confirm in the TUI. `y`/`Y` copy the same feedback as markdown if you would
 rather paste it into a prompt.
 
+The same review works against real pull requests: the status screen shows the
+branch's PR (and `b` `p` lists all open ones — reviewing never needs a
+checkout). PR comments sync in as regular threads, yours stack locally, and
+`S` submits them as a single review on the forge.
+
 ## Keys
 
 Vim-like: `j`/`k`/`gg`/`G` motions, `/` search, and
@@ -77,6 +82,8 @@ Vim-like: `j`/`k`/`gg`/`G` motions, `/` search, and
 | `cc` | commit |
 | `c` | comment the diff line (`V` selects a range first) |
 | `Z` | send feedback to the agent |
+| `C` | overview of every comment — Enter jumps to it |
+| `S` | submit stacked PR comments as one review |
 | `y` / `Y` | copy feedback as markdown (file / all) |
 | `x` | in the diff view: graph who calls the symbol under the cursor |
 | `e` | open the file in `$EDITOR` |
