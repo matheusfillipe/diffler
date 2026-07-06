@@ -5,7 +5,7 @@ expression: render(&mut app).backend()
 " Hint: c comment  r reply  v viewed  C comments  ? help                                                                 "
 "╭ Files ─────────────────────╮╭ Diff ──────────────────────────────────────────────────────────────────────────────────╮"
 "│▌A ci.yml              +1 -0││ new file  ci.yml                                                            +1 -0 █████│"
-"│ M src/lib.rs          +1 -1││                                                                                        │"
+"│ M src/lib.rs          +1 -1││ @@ -0,0 +1,1 @@                                                                        │"
 "│ ? todo.md             +1 -0││         1 on: push                                                                     │"
 "│                            ││                                                                                        │"
 "│                            ││                                                                                        │"

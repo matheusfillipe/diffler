@@ -800,6 +800,8 @@ impl App {
             Action::FullPageUp => self.diff_move(-self.diff_page(true)),
             Action::NextHunk => self.diff_jump(true, |row| matches!(row, DiffRow::Hunk { .. })),
             Action::PrevHunk => self.diff_jump(false, |row| matches!(row, DiffRow::Hunk { .. })),
+            Action::NextFunction => self.diff_jump_function(true),
+            Action::PrevFunction => self.diff_jump_function(false),
             Action::Open => self.diff_focus(Pane::List),
             // side-by-side is a read-only view; commenting and selection stay
             // in the unified pane, reachable by toggling back with `|`
@@ -1099,6 +1101,54 @@ impl App {
     fn diff_jump_comment(&mut self, forward: bool) {
         self.diff_jump(forward, |row| {
             matches!(row, DiffRow::Comment { line: 0, .. })
+        });
+    }
+
+    /// Jump to the next/previous definition start visible in the diff, using
+    /// the tree-sitter scope index the breadcrumb already maintains.
+    fn diff_jump_function(&mut self, forward: bool) {
+        let Some(diff) = self.diff.as_ref() else {
+            return;
+        };
+        let Some(path) = diff.selected_path(&self.review) else {
+            return;
+        };
+        let Some(scope) = diff.scopes.get(&path) else {
+            self.info("no definition index for this file (yet)");
+            return;
+        };
+        let starts: std::collections::HashSet<u32> = scope
+            .index
+            .def_starts()
+            .into_iter()
+            .filter_map(|row| u32::try_from(row + 1).ok())
+            .collect();
+        if starts.is_empty() {
+            self.info("no definitions in this file");
+            return;
+        }
+        let model = diff
+            .commit_model
+            .clone()
+            .unwrap_or_else(|| self.review.model().clone());
+        let file = model.files.iter().position(|f| f.path == path);
+        self.diff_jump(forward, |row| {
+            let DiffRow::Line {
+                file: f,
+                hunk,
+                line,
+            } = row
+            else {
+                return false;
+            };
+            Some(*f) == file
+                && model
+                    .files
+                    .get(*f)
+                    .and_then(|fd| fd.hunks.get(*hunk))
+                    .and_then(|h| h.lines.get(*line))
+                    .and_then(|l| l.new_no)
+                    .is_some_and(|no| starts.contains(&no))
         });
     }
 
@@ -2680,5 +2730,58 @@ mod tests {
                 .is_some_and(|m| m.text.contains("unified")),
             "the message points to the unified view"
         );
+    }
+    #[test]
+    fn paren_jumps_land_on_definition_starts() {
+        use crate::test_support::standard_fixture;
+        let fixture = standard_fixture();
+        fixture.write(
+            "src/lib.rs",
+            "pub fn answer() -> u32 {\n    42\n}\n\npub fn other() -> u32 {\n    7\n}\n",
+        );
+        let mut app =
+            crate::app::App::new(fixture.review(), crate::config::LoadedConfig::default());
+        app.open_working_tree_diff(Some("src/lib.rs"));
+        let (path, content) = ("src/lib.rs".to_owned(), fixture_content(&app));
+        let index = crate::ui::diff::highlighter().scope_index(&path, &content);
+        assert!(!index.is_empty(), "rust definitions indexed");
+        let hash = current_hash(&app);
+        if let Some(diff) = app.diff.as_mut() {
+            diff.scopes
+                .insert(path, crate::app::diff::FileScope { hash, index });
+            diff.ensure_rows(&app.review);
+            diff.focus = Pane::Diff;
+        }
+        app.handle(crate::test_support::key(')'));
+        let diff = app.diff.as_ref().expect("diff");
+        let on_def = matches!(
+            diff.rows().get(diff.cursor),
+            Some(DiffRow::Line { file, hunk, line })
+                if app.review.model().files.get(*file)
+                    .and_then(|f| f.hunks.get(*hunk))
+                    .and_then(|h| h.lines.get(*line))
+                    .is_some_and(|l| l.text.contains("fn "))
+        );
+        assert!(on_def, "cursor row {} is a definition line", diff.cursor);
+    }
+
+    fn fixture_content(app: &crate::app::App) -> String {
+        app.review
+            .model()
+            .files
+            .iter()
+            .find(|f| f.path == "src/lib.rs")
+            .and_then(|f| f.new_text.clone())
+            .expect("new text")
+    }
+
+    fn current_hash(app: &crate::app::App) -> String {
+        app.review
+            .model()
+            .files
+            .iter()
+            .find(|f| f.path == "src/lib.rs")
+            .map(diffler_core::model::FileDiff::sides_hash)
+            .expect("hash")
     }
 }

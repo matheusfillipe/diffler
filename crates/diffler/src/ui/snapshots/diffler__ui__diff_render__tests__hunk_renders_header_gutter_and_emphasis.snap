@@ -2,7 +2,7 @@
 source: crates/diffler/src/ui/diff_render.rs
 expression: render(&lines).backend()
 ---
-"                                                            "
+" @@ -1,3 +1,3 @@                                            "
 "    1    1 fn answer() {                                    "
 "    2          41                                           "
 "         2     42                                           "

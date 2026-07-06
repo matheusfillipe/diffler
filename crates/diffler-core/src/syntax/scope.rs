@@ -26,6 +26,15 @@ impl ScopeIndex {
         self.defs.is_empty()
     }
 
+    /// 0-based start rows of every definition, sorted and deduped — the jump
+    /// targets for function/definition motions.
+    pub fn def_starts(&self) -> Vec<usize> {
+        let mut rows: Vec<usize> = self.defs.iter().map(|d| d.start_row).collect();
+        rows.sort_unstable();
+        rows.dedup();
+        rows
+    }
+
     /// Names of the definitions enclosing `line` (0-based), outermost first. A
     /// line inside `class A` → `method` → body returns `["A", "method"]`.
     pub fn crumbs(&self, line: usize) -> Vec<String> {

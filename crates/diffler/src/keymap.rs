@@ -58,6 +58,8 @@ pub enum Action {
     StashPop,
     NextHunk,
     PrevHunk,
+    NextFunction,
+    PrevFunction,
     NextComment,
     PrevComment,
     HalfPageDown,
@@ -130,6 +132,8 @@ impl Action {
             Self::StashPush => "stash_push",
             Self::StashPop => "stash_pop",
             Self::NextHunk => "next_hunk",
+            Self::NextFunction => "next_function",
+            Self::PrevFunction => "prev_function",
             Self::PrevHunk => "prev_hunk",
             Self::NextComment => "next_comment",
             Self::PrevComment => "prev_comment",
@@ -155,7 +159,9 @@ impl Action {
         }
     }
 
-    const ALL: [Self; 67] = [
+    const ALL: [Self; 69] = [
+        Self::NextFunction,
+        Self::PrevFunction,
         Self::OpenPrs,
         Self::CommentsOverview,
         Self::SubmitReview,
@@ -331,6 +337,8 @@ const DIFF_DEFAULTS: &[(&str, Action)] = &[
     ("<c-r>", Action::Refresh),
     ("{", Action::PrevHunk),
     ("}", Action::NextHunk),
+    ("(", Action::PrevFunction),
+    (")", Action::NextFunction),
     ("[", Action::PrevComment),
     ("]", Action::NextComment),
     ("c", Action::Comment),

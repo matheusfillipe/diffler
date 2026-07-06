@@ -5,7 +5,7 @@ expression: render(&mut app).backend()
 " Hint: c comment  r reply  v viewed  C comments  ? help                                                                 "
 "╭ Files ─────────────────────╮╭ Diff ──────────────────────────────────────────────────────────────────────────────────╮"
 "│ ▾ src                      ││ new file  notes.txt                                                         +1 -0 █████│"
-"│   A lib.rs            +3 -0││                                                                                        │"
+"│   A lib.rs            +3 -0││ @@ -0,0 +1,1 @@                                                                        │"
 "│▌A notes.txt           +1 -0││         1 alpha                                                                        │"
 "│                            ││                                                                                        │"
 "│                            ││                                                                                        │"

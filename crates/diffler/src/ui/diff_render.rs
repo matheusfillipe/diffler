@@ -98,10 +98,14 @@ pub fn hunk_header(theme: &Theme, hunk: &Hunk, width: u16, selected: bool) -> Li
     } else {
         theme.panel
     };
+    let ranges = format!(
+        "@@ -{},{} +{},{} @@",
+        hunk.old_start, hunk.old_lines, hunk.new_start, hunk.new_lines
+    );
     let text = if hunk.context.is_empty() {
-        String::new()
+        format!(" {ranges}")
     } else {
-        format!(" {}", hunk.context)
+        format!(" {ranges} {}", hunk.context)
     };
     let pad = (width as usize).saturating_sub(text.chars().count());
     Line::from(vec![
