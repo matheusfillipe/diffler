@@ -22,6 +22,9 @@ fn fixture_crate(root: &Path) {
     .expect("source");
 }
 
+// Windows LSP paths (drive letters, verbatim prefixes) aren't exercised in
+// CI; the protocol logic is covered on the unix runners.
+#[cfg(unix)]
 #[tokio::test]
 async fn finds_references_for_a_changed_function() {
     let Resolution::Found(spec) = resolve("rs") else {

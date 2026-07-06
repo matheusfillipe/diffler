@@ -33,7 +33,7 @@ impl LspClient {
             .kill_on_drop(true)
             .spawn()
             .map_err(|err| LspError::Spawn(bin.to_owned(), err.to_string()))?;
-        let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        let root = canonical_root(root);
         let stdin = child.stdin.take().ok_or(LspError::Io("no stdin"))?;
         let stdout = BufReader::new(child.stdout.take().ok_or(LspError::Io("no stdout"))?);
         let mut client = Self {
@@ -277,6 +277,18 @@ fn server_request_result(message: &Value) -> Value {
     Value::Null
 }
 
+/// The canonical root for URI building. Windows `canonicalize` returns a
+/// verbatim `\\?\C:\…` path that `Url::from_file_path` and servers won't
+/// produce, so the prefix comes back off.
+fn canonical_root(root: &Path) -> PathBuf {
+    let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let text = canonical.to_string_lossy();
+    match text.strip_prefix(r"\\?\") {
+        Some(stripped) => PathBuf::from(stripped),
+        None => canonical,
+    }
+}
+
 /// A `file://` URI with the path percent-encoded the way servers emit them.
 fn uri(path: &Path) -> String {
     url::Url::from_file_path(path).map_or_else(
@@ -326,6 +338,7 @@ fn collect_symbols(nodes: &[Value], out: &mut Vec<Symbol>) {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[test]
     fn uri_and_rel_path_round_trip_spaces() {
         let root = Path::new("/repo dir");
