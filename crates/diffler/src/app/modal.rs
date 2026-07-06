@@ -16,6 +16,7 @@ impl App {
             },
             Some(Modal::Input { .. }) => self.handle_input_key(key),
             Some(Modal::BranchList { .. }) => self.handle_branch_list_key(key),
+            Some(Modal::Comments { .. }) => self.handle_comments_key(key),
             Some(Modal::Help) => match key.code {
                 KeyCode::Esc | KeyCode::Char('q' | '?') => self.modal = None,
                 _ => {}
@@ -189,6 +190,125 @@ impl App {
         }
     }
 
+    /// The comments overview: every comment of the active review, ordered by
+    /// file then line, Enter jumping to the comment in the diff pane.
+    pub(super) fn open_comments_overview(&mut self) {
+        let source = self.active_review_source();
+        let model = self.source_model(&source);
+        let session = self.review.session_for(&source);
+        let file_order = |path: &str| {
+            model
+                .files
+                .iter()
+                .position(|f| f.path == path)
+                .unwrap_or(usize::MAX)
+        };
+        let mut entries: Vec<super::CommentJump> = session
+            .comments
+            .iter()
+            .map(|comment| {
+                let line = comment
+                    .anchor
+                    .line
+                    .map_or(String::new(), |l| format!(":{l}"));
+                let status = match comment.status {
+                    diffler_core::session::CommentStatus::Open => "open",
+                    diffler_core::session::CommentStatus::Replied => "replied",
+                    diffler_core::session::CommentStatus::Resolved => "resolved",
+                };
+                let snippet = comment.body.lines().next().unwrap_or("").to_owned();
+                let replies = if comment.replies.is_empty() {
+                    String::new()
+                } else {
+                    format!(" +{}", comment.replies.len())
+                };
+                super::CommentJump {
+                    file: comment.anchor.file.clone(),
+                    comment_id: comment.id.clone(),
+                    label: format!(
+                        "{}{line} · {} · {status}{replies} · {snippet}",
+                        comment.anchor.file, comment.author
+                    ),
+                }
+            })
+            .collect();
+        entries.sort_by_key(|e| file_order(&e.file));
+        if entries.is_empty() {
+            self.info("no comments in this review yet");
+            return;
+        }
+        self.modal = Some(Modal::Comments { entries, cursor: 0 });
+    }
+
+    pub(super) fn handle_comments_key(&mut self, key: &KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.modal = None,
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let Some(Modal::Comments { entries, cursor }) = self.modal.as_mut() {
+                    *cursor = (*cursor + 1).min(entries.len().saturating_sub(1));
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let Some(Modal::Comments { cursor, .. }) = self.modal.as_mut() {
+                    *cursor = cursor.saturating_sub(1);
+                }
+            }
+            KeyCode::Char('g') => {
+                if let Some(Modal::Comments { cursor, .. }) = self.modal.as_mut() {
+                    *cursor = 0;
+                }
+            }
+            KeyCode::Char('G') => {
+                if let Some(Modal::Comments { entries, cursor }) = self.modal.as_mut() {
+                    *cursor = entries.len().saturating_sub(1);
+                }
+            }
+            KeyCode::Enter => self.jump_to_selected_comment(),
+            _ => {}
+        }
+    }
+
+    fn jump_to_selected_comment(&mut self) {
+        let Some(Modal::Comments { entries, cursor }) = self.modal.take() else {
+            return;
+        };
+        let Some(entry) = entries.get(cursor).cloned() else {
+            return;
+        };
+        if self.diff.is_none() {
+            self.open_working_tree_diff(None);
+        }
+        let Some(diff) = self.diff.as_mut() else {
+            return;
+        };
+        diff.ensure_rows(&self.review);
+        let model = diff
+            .commit_model
+            .clone()
+            .unwrap_or_else(|| self.review.model().clone());
+        let Some(file_index) = model.files.iter().position(|f| f.path == entry.file) else {
+            self.info("comment file is not in this diff");
+            return;
+        };
+        if diff.selected != file_index {
+            diff.selected = file_index;
+            diff.invalidate();
+            diff.ensure_rows(&self.review);
+        }
+        let session = self.review.session_for(&diff.source);
+        let target = diff.rows().iter().position(|row| {
+            matches!(row, super::diff::DiffRow::Comment { comment, line: 0, .. }
+                if session.comments.get(*comment).is_some_and(|c| c.id == entry.comment_id))
+        });
+        if let Some(row) = target {
+            diff.cursor = row;
+            diff.focus = super::Pane::Diff;
+        }
+        if self.screen() != super::Screen::Diff {
+            self.push_screen(super::Screen::Diff);
+        }
+    }
+
     pub(super) fn handle_branch_list_key(&mut self, key: &KeyEvent) {
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => self.modal = None,
@@ -237,5 +357,73 @@ impl App {
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    use super::super::{App, Modal, Pane, Screen};
+    use crate::config::LoadedConfig;
+    use crate::test_support::standard_fixture;
+    use diffler_core::session::Anchor;
+
+    fn press(app: &mut App, code: KeyCode) {
+        app.handle(crate::event::AppEvent::Key(KeyEvent::new(
+            code,
+            KeyModifiers::NONE,
+        )));
+    }
+
+    #[test]
+    fn comments_overview_walks_and_jumps_to_the_comment() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.review.session.add_comment(
+            "me",
+            Anchor {
+                file: "src/lib.rs".into(),
+                line: Some(2),
+                line_end: None,
+                on_old_side: false,
+                line_text: None,
+            },
+            "tighten this",
+        );
+
+        press(&mut app, KeyCode::Char('C'));
+        let Some(Modal::Comments { entries, cursor }) = &app.modal else {
+            panic!("overview modal open, got {:?}", app.modal);
+        };
+        assert_eq!(*cursor, 0);
+        assert_eq!(entries.len(), 1);
+        assert!(
+            entries[0].label.contains("src/lib.rs:2"),
+            "{}",
+            entries[0].label
+        );
+        assert!(entries[0].label.contains("tighten this"));
+
+        press(&mut app, KeyCode::Enter);
+        assert!(app.modal.is_none());
+        assert_eq!(app.screen(), Screen::Diff);
+        let diff = app.diff.as_ref().expect("diff open");
+        assert_eq!(diff.focus, Pane::Diff);
+        assert!(
+            matches!(
+                diff.rows().get(diff.cursor),
+                Some(super::super::diff::DiffRow::Comment { line: 0, .. })
+            ),
+            "cursor sits on the comment header row"
+        );
+    }
+
+    #[test]
+    fn overview_without_comments_just_says_so() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        press(&mut app, KeyCode::Char('C'));
+        assert!(app.modal.is_none());
     }
 }

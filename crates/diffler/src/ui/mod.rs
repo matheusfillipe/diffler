@@ -8,7 +8,7 @@ pub mod graph;
 pub mod log;
 pub mod logs;
 pub mod popup;
-pub mod prs;
+mod prs;
 mod runs;
 pub mod status;
 
@@ -143,6 +143,14 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
                     .iter()
                     .map(|b| format!("{} {}", if b.is_head { "*" } else { " " }, b.name))
                     .collect(),
+                cursor: *cursor,
+            }
+            .render(frame, &app.theme);
+        }
+        Some(Modal::Comments { entries, cursor }) => {
+            popup::ListModal {
+                title: format!("Comments — {}", app.active_review_source().label()),
+                items: entries.iter().map(|e| e.label.clone()).collect(),
                 cursor: *cursor,
             }
             .render(frame, &app.theme);

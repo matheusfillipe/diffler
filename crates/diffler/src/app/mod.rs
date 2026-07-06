@@ -134,8 +134,21 @@ pub enum Modal {
         cursor: usize,
         action: BranchAction,
     },
+    /// Every comment of the active review; Enter jumps to it in the diff.
+    Comments {
+        entries: Vec<CommentJump>,
+        cursor: usize,
+    },
     /// Keymap listing for the screen the popup opened over.
     Help,
+}
+
+/// One row of the comments overview: where it anchors and what to show.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommentJump {
+    pub file: String,
+    pub comment_id: String,
+    pub label: String,
 }
 
 /// A network git op the main loop runs by shelling out, with the terminal kept
@@ -1020,6 +1033,7 @@ impl App {
             Action::SearchPrev => self.search_step_or_follow(false),
             Action::OpenRuns => self.open_runs(),
             Action::OpenPrs => self.open_prs(),
+            Action::CommentsOverview => self.open_comments_overview(),
             action => match self.screen() {
                 Screen::Status => self.dispatch_status(action),
                 Screen::Log => self.dispatch_log(action),
@@ -1184,19 +1198,21 @@ impl App {
     }
 
     fn git_finished(&mut self, label: &str, ok: bool, output: &str) {
-        if let Some(pr) = self.pending_pr_open.take().filter(|_| ok) {
-            match self.resolve_pr_range(&pr) {
-                Some((base, head)) => self.open_pr_diff(pr.number, &base, &head),
-                None => self.error("PR head still missing after fetch"),
+        if label.starts_with("fetch PR #") {
+            if let Some(pr) = self.pending_pr_open.take().filter(|_| ok) {
+                match self.resolve_pr_range(&pr) {
+                    Some((base, head)) => self.open_pr_diff(pr.number, &base, &head),
+                    None => self.error("PR head still missing after fetch"),
+                }
+                return;
             }
-            return;
-        }
-        if let Some(branch) = self.pending_pr_switch.take().filter(|_| ok) {
-            self.pending_git = Some(GitOp {
-                label: format!("switch {branch}"),
-                argv: vec!["git".to_owned(), "switch".to_owned(), branch],
-            });
-            return;
+            if let Some(branch) = self.pending_pr_switch.take().filter(|_| ok) {
+                self.pending_git = Some(GitOp {
+                    label: format!("switch {branch}"),
+                    argv: vec!["git".to_owned(), "switch".to_owned(), branch],
+                });
+                return;
+            }
         }
         let summary = output
             .lines()
