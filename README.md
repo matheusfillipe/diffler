@@ -4,6 +4,8 @@
 [![npm](https://img.shields.io/npm/v/@mattfillipe/diffler.svg)](https://www.npmjs.com/package/@mattfillipe/diffler)
 [![IRC](https://img.shields.io/badge/IRC-chat.h4ks.com-blue.svg)](https://chat.h4ks.com)
 
+![diffler reviewing an agent's change: live diff, an inline comment, feedback sent](assets/demo.gif)
+
 A tool for taking ownership of agentic code: review what your agent writes,
 together with the agent, while it happens. The code that lands is code you
 have actually reviewed.
@@ -102,6 +104,15 @@ pointer, and a left click selects a row — clicking a section, directory, or
 recent-commits header folds it, and clicking a sidebar file opens it. Mouse
 capture means the terminal's own text selection needs the usual override
 (`Shift`, or `Option` in iTerm2).
+
+## How it compares
+
+Pagers like `delta` render diffs beautifully, and `lazygit`/`gitui` are great
+general git TUIs. diffler is review-first: comments live on diff lines, an
+agent reads and answers them over MCP while you watch, and the same threads
+work against real GitHub/Forgejo PRs — including PRs whose branch you never
+checked out. The `x` key adds something none of them have: a call-graph of
+who uses the code that changed.
 
 ## MCP tools
 
