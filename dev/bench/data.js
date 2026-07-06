@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1783100608130,
+  "lastUpdate": 1783365649094,
   "repoUrl": "https://github.com/matheusfillipe/diffler",
   "entries": {
     "Benchmark": [
@@ -1631,6 +1631,102 @@ window.BENCHMARK_DATA = {
             "name": "scope_index/20000",
             "value": 88855358,
             "range": "± 911140",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "committer": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "distinct": true,
+          "id": "03d20925252c20dce630f04baf663043a95624a3",
+          "message": "feat(diff): two render states only — full ± background, emphasis for punctual edits\n\nThe moved/reindent rail is gone: every added/deleted line carries its full\nred/green background. Char-level emphasis appears only when the edit is\npunctual — a shared cap (both engines) drops highlights covering half or\nmore of a line's content, since highlighting almost everything highlights\nnothing; a one-or-two character edit always keeps its mark.",
+          "timestamp": "2026-07-06T21:15:47+02:00",
+          "tree_id": "5e36559846a23e9fcc519bbf2100f773ab687fab",
+          "url": "https://github.com/matheusfillipe/diffler/commit/03d20925252c20dce630f04baf663043a95624a3"
+        },
+        "date": 1783365648602,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "syndiff_emphasis/1000",
+            "value": 8576058,
+            "range": "± 251918",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/1000",
+            "value": 19131,
+            "range": "± 620",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/1000",
+            "value": 5947415,
+            "range": "± 283262",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/1000",
+            "value": 4534871,
+            "range": "± 70510",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/5000",
+            "value": 46594759,
+            "range": "± 1293646",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/5000",
+            "value": 97504,
+            "range": "± 1039",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/5000",
+            "value": 30348465,
+            "range": "± 226006",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/5000",
+            "value": 22952358,
+            "range": "± 199280",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/20000",
+            "value": 186177029,
+            "range": "± 1847554",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/20000",
+            "value": 392298,
+            "range": "± 7265",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/20000",
+            "value": 127624406,
+            "range": "± 1519727",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/20000",
+            "value": 97666484,
+            "range": "± 958604",
             "unit": "ns/iter"
           }
         ]
