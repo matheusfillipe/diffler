@@ -12,10 +12,9 @@ use crate::keymap::Action;
 use crate::ui::{Hint, hint_line};
 
 const HINTS: &[Hint] = &[
-    Hint::Leaf(&[Action::MoveDown, Action::MoveUp], "move"),
     Hint::Leaf(&[Action::Open], "open graph"),
     Hint::Leaf(&[Action::Search], "search"),
-    Hint::Leaf(&[Action::Back], "back"),
+    Hint::Leaf(&[Action::Help], "help"),
 ];
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {

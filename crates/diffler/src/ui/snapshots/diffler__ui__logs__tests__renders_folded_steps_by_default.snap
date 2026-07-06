@@ -2,7 +2,7 @@
 source: crates/diffler/src/ui/logs.rs
 expression: terminal.backend()
 ---
-" Hint: <tab> fold  j/k move  / search  q back               "
+" Hint: <tab> fold  / search  ? help                         "
 "                                                            "
 " ▸ Build  1 lines                                           "
 " ▸ Test  2 lines                                            "

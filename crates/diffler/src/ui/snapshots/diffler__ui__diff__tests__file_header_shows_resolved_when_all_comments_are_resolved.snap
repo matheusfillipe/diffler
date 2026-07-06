@@ -2,7 +2,7 @@
 source: crates/diffler/src/ui/diff.rs
 expression: terminal.backend()
 ---
-" Hint: <tab> focus  c comment  V select  r reply  R resolve  v viewed  | split  <c-n>/<c-p> file  y/Y copy  q back      "
+" Hint: c comment  r reply  v viewed  C comments  ? help                                                                 "
 "╭ Files ─────────────────────╮╭ Diff ──────────────────────────────────────────────────────────────────────────────────╮"
 "│ ▾ src                      ││ modified  src/lib.rs · resolved                                             +1 -1 █████│"
 "│▌  M lib.rs            +1 -1││ answer                                                                                 │"

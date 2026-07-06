@@ -17,10 +17,9 @@ use crate::ui::{Hint, cursor_line, hint_line, status_bar};
 
 const HINTS: &[Hint] = &[
     Hint::Leaf(&[Action::ToggleFold], "fold"),
-    Hint::Leaf(&[Action::MoveDown, Action::MoveUp], "move"),
     Hint::Leaf(&[Action::Search], "search"),
     Hint::Leaf(&[Action::CopyFileFeedback], "yank"),
-    Hint::Leaf(&[Action::Back], "back"),
+    Hint::Leaf(&[Action::Help], "help"),
 ];
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {

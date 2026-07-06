@@ -30,12 +30,9 @@ const GRAPH_HINTS: &[Hint] = &[
         ],
         "move",
     ),
-    Hint::Leaf(&[Action::SearchNext, Action::SearchPrev], "edge/match"),
     Hint::Leaf(&[Action::Open], "open/fold"),
-    Hint::Leaf(&[Action::ZoomIn, Action::ZoomOut], "zoom"),
-    Hint::Leaf(&[Action::GoTop, Action::GoBottom], "ends"),
     Hint::Leaf(&[Action::Search], "search"),
-    Hint::Leaf(&[Action::Back], "back"),
+    Hint::Leaf(&[Action::Help], "help"),
 ];
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {

@@ -31,16 +31,11 @@ use crate::ui::{diffstat_spans, hint_line, proportion_bar, status_bar, status_co
 
 /// Hint entries, rendered against the live keymap so remaps show.
 const HINTS: &[Hint] = &[
-    Hint::Leaf(&[Action::ToggleFocus], "focus"),
     Hint::Leaf(&[Action::Comment], "comment"),
-    Hint::Leaf(&[Action::VisualSelect], "select"),
     Hint::Leaf(&[Action::Reply], "reply"),
-    Hint::Leaf(&[Action::Resolve], "resolve"),
     Hint::Leaf(&[Action::MarkViewed], "viewed"),
-    Hint::Leaf(&[Action::ToggleSideBySide], "split"),
-    Hint::Leaf(&[Action::NextFile, Action::PrevFile], "file"),
-    Hint::Leaf(&[Action::CopyFileFeedback, Action::CopyAllFeedback], "copy"),
-    Hint::Leaf(&[Action::Back], "back"),
+    Hint::Leaf(&[Action::CommentsOverview], "comments"),
+    Hint::Leaf(&[Action::Help], "help"),
 ];
 
 /// Sidebar width: a quarter of the screen, clamped to a readable band.

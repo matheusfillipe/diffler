@@ -2,7 +2,7 @@
 source: crates/diffler/src/ui/graph.rs
 expression: terminal.backend()
 ---
-" Hint: h/j/k/l move  n/N edge/match  <cr> open/fold  +/- zoom  gg/G ends  / sear"
+" Hint: h/j/k/l move  <cr> open/fold  / search  ? help                           "
 "                                                                                "
 "                                                                                "
 "                                                                                "

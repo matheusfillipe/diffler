@@ -16,8 +16,8 @@ use crate::ui::{commit_meta_spans, cursor_line, hint_line, status_bar};
 /// Hint entries, rendered against the live keymap so remaps show.
 const HINTS: &[Hint] = &[
     Hint::Leaf(&[Action::Open], "open commit"),
-    Hint::Leaf(&[Action::MoveDown, Action::MoveUp], "move"),
-    Hint::Leaf(&[Action::Back], "back"),
+    Hint::Leaf(&[Action::VisualSelect], "select range"),
+    Hint::Leaf(&[Action::Help], "help"),
 ];
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {

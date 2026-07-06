@@ -28,11 +28,6 @@ use crate::ui::{
 const HINTS: &[Hint] = &[
     Hint::Prefix(TransientKind::Commit, "commit"),
     Hint::Prefix(TransientKind::Branch, "branch"),
-    Hint::Prefix(TransientKind::Log, "log"),
-    Hint::Prefix(TransientKind::Push, "push"),
-    Hint::Prefix(TransientKind::Pull, "pull"),
-    Hint::Prefix(TransientKind::Fetch, "fetch"),
-    Hint::Prefix(TransientKind::Stash, "stash"),
     Hint::Leaf(&[Action::Stage], "stage"),
     Hint::Leaf(&[Action::Discard], "discard"),
     Hint::Leaf(&[Action::Help], "help"),
@@ -979,14 +974,11 @@ mod tests {
         let hint = content.lines().next().unwrap_or_default();
         assert!(hint.contains("c commit"), "{hint}");
         assert!(hint.contains("b branch"), "{hint}");
-        assert!(hint.contains("l log"), "{hint}");
-        assert!(hint.contains("P push"), "{hint}");
-        assert!(hint.contains("p pull"), "{hint}");
-        assert!(hint.contains("f fetch"), "{hint}");
-        // sub-commands (amend/reword/checkout/upstream) stay out of the hint line
+        assert!(hint.contains("? help"), "{hint}");
+        // everything else lives in which-key and the ? help popup
+        assert!(!hint.contains("push"), "{hint}");
         assert!(!hint.contains("amend"), "{hint}");
         assert!(!hint.contains("checkout"), "{hint}");
-        assert!(!hint.contains("upstream"), "{hint}");
     }
 
     #[test]
