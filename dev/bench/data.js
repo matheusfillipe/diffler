@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1783367487304,
+  "lastUpdate": 1783367704405,
   "repoUrl": "https://github.com/matheusfillipe/diffler",
   "entries": {
     "Benchmark": [
@@ -1823,6 +1823,102 @@ window.BENCHMARK_DATA = {
             "name": "scope_index/20000",
             "value": 90588699,
             "range": "± 1174499",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "committer": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "distinct": true,
+          "id": "6d10887d614b49c71f94c846780379ad3377914e",
+          "message": "fix(ci): windows paths — strip verbatim roots, unix-only path tests\n\nWindows canonicalize yields \\\\?\\C:\\… which neither Url::from_file_path\nnor servers speak; the root loses the prefix. The unix-shaped URI and\nrust-analyzer integration tests don't run on Windows.",
+          "timestamp": "2026-07-06T21:48:15+02:00",
+          "tree_id": "2f15d9dc04c3185284d2a84213038968f0155cb9",
+          "url": "https://github.com/matheusfillipe/diffler/commit/6d10887d614b49c71f94c846780379ad3377914e"
+        },
+        "date": 1783367704040,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "syndiff_emphasis/1000",
+            "value": 8339883,
+            "range": "± 88723",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/1000",
+            "value": 19237,
+            "range": "± 168",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/1000",
+            "value": 5969725,
+            "range": "± 29373",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/1000",
+            "value": 4574728,
+            "range": "± 24036",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/5000",
+            "value": 43133293,
+            "range": "± 193597",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/5000",
+            "value": 97534,
+            "range": "± 640",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/5000",
+            "value": 29784387,
+            "range": "± 101782",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/5000",
+            "value": 22909985,
+            "range": "± 770237",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/20000",
+            "value": 183438269,
+            "range": "± 10139239",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/20000",
+            "value": 392048,
+            "range": "± 6804",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/20000",
+            "value": 122789707,
+            "range": "± 1537714",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/20000",
+            "value": 95113474,
+            "range": "± 1313193",
             "unit": "ns/iter"
           }
         ]
