@@ -653,11 +653,20 @@ impl App {
                 .first()
                 .map_or_else(|| "origin".to_owned(), |r| r.name.clone());
             let refspec = format!("refs/pull/{}/head", pr.number);
+            let base_ref = pr.base_ref.clone();
             let label = format!("fetch PR #{}", pr.number);
             self.pending_pr_open = Some(pr);
+            // the base ref comes along so merge-base reflects the forge's
+            // view, not however stale the last fetch left it
             self.pending_git = Some(super::GitOp {
                 label,
-                argv: vec!["git".to_owned(), "fetch".to_owned(), remote, refspec],
+                argv: vec![
+                    "git".to_owned(),
+                    "fetch".to_owned(),
+                    remote,
+                    refspec,
+                    base_ref,
+                ],
             });
         }
     }
@@ -729,6 +738,7 @@ impl App {
             Action::ToggleSideBySide => return self.toggle_side_by_side(),
             // comment walk works from either pane; land in the diff pane on the
             // comment so it can be read and replied to
+            Action::SubmitReview => return self.submit_pr_review(),
             Action::NextComment => {
                 self.diff_focus(Pane::Diff);
                 return self.diff_jump_comment(true);

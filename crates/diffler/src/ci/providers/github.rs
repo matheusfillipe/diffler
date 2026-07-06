@@ -424,6 +424,44 @@ impl ForgeProvider for GitHubProvider {
         parse_posted(&raw)
     }
 
+    async fn submit_pr_review(&self, review: &crate::ci::NewPrReview) -> Result<()> {
+        let comments: Vec<serde_json::Value> = review
+            .comments
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "path": c.path,
+                    "line": c.line,
+                    "side": if c.new_side { "RIGHT" } else { "LEFT" },
+                    "body": c.body,
+                })
+            })
+            .collect();
+        let payload = serde_json::json!({
+            "commit_id": review.head_oid,
+            "event": "COMMENT",
+            "comments": comments,
+        });
+        // gh reads nested JSON bodies from a file; argv fields can't express
+        // arrays of objects
+        let input = std::env::temp_dir().join(format!("diffler-review-{}.json", review.number));
+        std::fs::write(&input, payload.to_string()).map_err(|err| crate::ci::CiError::Exec {
+            cmd: "write review payload".to_owned(),
+            message: err.to_string(),
+        })?;
+        let args = [
+            "api".to_owned(),
+            "-X".to_owned(),
+            "POST".to_owned(),
+            format!("repos/{{owner}}/{{repo}}/pulls/{}/reviews", review.number),
+            "--input".to_owned(),
+            input.to_string_lossy().into_owned(),
+        ];
+        let result = self.runner.run("gh", &args).await;
+        let _ = std::fs::remove_file(&input);
+        result.map(|_| ())
+    }
+
     async fn current_pr(&self) -> Result<Option<PullRequest>> {
         let Some(branch) = &self.branch else {
             return Ok(None);

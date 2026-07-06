@@ -39,6 +39,7 @@ pub enum Action {
     OpenRuns,
     OpenPrs,
     CommentsOverview,
+    SubmitReview,
     CommitFlow,
     CommitExtend,
     CommitAmend,
@@ -111,6 +112,7 @@ impl Action {
             Self::OpenRuns => "open_runs",
             Self::OpenPrs => "open_prs",
             Self::CommentsOverview => "comments_overview",
+            Self::SubmitReview => "submit_review",
             Self::CommitFlow => "commit_flow",
             Self::CommitExtend => "commit_extend",
             Self::CommitAmend => "commit_amend",
@@ -153,9 +155,10 @@ impl Action {
         }
     }
 
-    const ALL: [Self; 66] = [
+    const ALL: [Self; 67] = [
         Self::OpenPrs,
         Self::CommentsOverview,
+        Self::SubmitReview,
         Self::MoveDown,
         Self::MoveUp,
         Self::MoveLeft,
@@ -340,6 +343,7 @@ const DIFF_DEFAULTS: &[(&str, Action)] = &[
     ("e", Action::OpenEditor),
     ("Z", Action::SendFeedback),
     ("C", Action::CommentsOverview),
+    ("S", Action::SubmitReview),
     ("/", Action::Search),
     ("n", Action::SearchNext),
     ("N", Action::SearchPrev),

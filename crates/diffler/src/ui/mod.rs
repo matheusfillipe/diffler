@@ -397,7 +397,20 @@ pub(super) fn status_bar(app: &App, width: u16) -> Line<'static> {
     let chip = match app.screen() {
         Screen::Status => " STATUS ".to_owned(),
         Screen::Diff => match app.diff.as_ref().map(|d| &d.source) {
-            Some(crate::app::DiffSource::Pr { number }) => format!(" PR #{number} "),
+            Some(source @ crate::app::DiffSource::Pr { number }) => {
+                let pending = app
+                    .review
+                    .session_for(source)
+                    .comments
+                    .iter()
+                    .filter(|c| c.remote_id.is_none())
+                    .count();
+                if pending == 0 {
+                    format!(" PR #{number} ")
+                } else {
+                    format!(" PR #{number} · {pending} pending ")
+                }
+            }
             _ => " DIFF ".to_owned(),
         },
         Screen::Log => " LOG ".to_owned(),

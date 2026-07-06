@@ -55,6 +55,18 @@ pub trait ForgeProvider: Send {
     /// Reply to an existing PR review comment thread.
     async fn reply_pr_comment(&self, number: u64, remote_id: &str, body: &str)
     -> Result<PrComment>;
+
+    /// Submit a batch of line comments as one review, so the forge sends a
+    /// single notification instead of one per comment.
+    async fn submit_pr_review(&self, review: &NewPrReview) -> Result<()>;
+}
+
+/// A whole review to submit at once: every pending line comment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewPrReview {
+    pub number: u64,
+    pub head_oid: String,
+    pub comments: Vec<NewPrComment>,
 }
 
 /// A comment to post, anchored to a diff line of `path` at `head_oid`.

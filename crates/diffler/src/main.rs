@@ -288,36 +288,18 @@ fn dispatch_pr_posts(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
         tokio::spawn(async move {
             let provider = provider_for(&remote, &repo_root, branch.as_deref(), yaml_cache);
             let result = match &post {
-                app::pr::PrPost::Comment {
-                    number,
-                    head_oid,
-                    path,
-                    line,
-                    new_side,
-                    body,
-                    ..
-                } => {
-                    provider
-                        .post_pr_comment(&ci::NewPrComment {
-                            number: *number,
-                            head_oid: head_oid.clone(),
-                            path: path.clone(),
-                            line: *line,
-                            new_side: *new_side,
-                            body: body.clone(),
-                        })
-                        .await
+                app::pr::PrPost::Review { review, .. } => {
+                    provider.submit_pr_review(review).await.map(|()| None)
                 }
                 app::pr::PrPost::Reply {
                     number,
                     parent_remote_id,
                     body,
                     ..
-                } => {
-                    provider
-                        .reply_pr_comment(*number, parent_remote_id, body)
-                        .await
-                }
+                } => provider
+                    .reply_pr_comment(*number, parent_remote_id, body)
+                    .await
+                    .map(Some),
             };
             let _ = tx.send(AppEvent::PrPosted {
                 post: Box::new(post),

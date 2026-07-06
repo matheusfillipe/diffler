@@ -11,14 +11,12 @@ use crate::ci::PrComment;
 /// One queued outbound post; results return as events and stamp `remote_id`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PrPost {
-    Comment {
-        number: u64,
-        head_oid: String,
-        comment_id: String,
-        path: String,
-        line: u32,
-        new_side: bool,
-        body: String,
+    /// Every pending comment as one review — a single forge notification.
+    Review {
+        review: crate::ci::NewPrReview,
+        /// Local ids the review covers; forge-owned copies replace them on
+        /// the resync a successful submit triggers.
+        comment_ids: Vec<String>,
     },
     Reply {
         number: u64,
@@ -114,7 +112,7 @@ impl App {
                 "git".to_owned(),
                 "fetch".to_owned(),
                 remote,
-                format!("+refs/pull/{}/head:refs/heads/{}", pr.number, pr.head_ref),
+                format!("refs/pull/{}/head:refs/heads/{}", pr.number, pr.head_ref),
             ],
         });
     }
@@ -131,7 +129,7 @@ impl App {
     pub(crate) fn on_pr_posted_event(
         &mut self,
         post: &PrPost,
-        result: Result<PrComment, String>,
+        result: Result<Option<PrComment>, String>,
     ) -> super::Flow {
         self.on_pr_posted(post, result);
         super::Flow::Continue
@@ -178,6 +176,25 @@ impl App {
             }
         }
         let session = self.review.session_for_mut(&source);
+        // a re-imported root must not clobber local state: unsent replies and
+        // the locally set status live only here, not on the forge
+        for root in &mut roots {
+            let Some(prior) = session
+                .comments
+                .iter()
+                .find(|c| c.remote_id == root.remote_id)
+            else {
+                continue;
+            };
+            root.status = prior.status;
+            root.replies.extend(
+                prior
+                    .replies
+                    .iter()
+                    .filter(|r| r.remote_id.is_none())
+                    .cloned(),
+            );
+        }
         let mut merged: Vec<Comment> = session
             .comments
             .iter()
@@ -200,35 +217,47 @@ impl App {
         }
     }
 
-    /// Queue forge posts for every unsent comment and reply in the active PR
-    /// session. Called after any session change; the inflight set keeps a
-    /// slow forge from double-posting.
-    pub(crate) fn queue_pr_posts(&mut self) {
+    /// Submit everything pending in the active PR review as one forge review
+    /// (plus individual replies to existing threads). Nothing posts until
+    /// this runs — comments stack up locally so the forge sends one
+    /// notification, not one per comment.
+    pub(crate) fn submit_pr_review(&mut self) {
         let ReviewSource::Pr { number } = self.active_review_source() else {
+            self.info("not reviewing a PR — nothing to submit");
             return;
         };
         let Some((_, head)) = self.pr_ranges.get(&number).cloned() else {
             return;
         };
         let session = self.review.session_for(&ReviewSource::pr(number));
-        let mut posts = Vec::new();
+        let mut review_comments = Vec::new();
+        let mut comment_ids = Vec::new();
+        let mut replies = Vec::new();
         for comment in &session.comments {
             match (&comment.remote_id, comment.anchor.line) {
                 (None, Some(line)) => {
-                    posts.push(PrPost::Comment {
-                        number,
-                        head_oid: head.clone(),
-                        comment_id: comment.id.clone(),
-                        path: comment.anchor.file.clone(),
-                        line: comment.anchor.line_end.unwrap_or(line),
-                        new_side: !comment.anchor.on_old_side,
-                        body: comment.body.clone(),
-                    });
+                    let line = comment.anchor.line_end.unwrap_or(line);
+                    // unsent replies under an unsent comment ride along in the
+                    // review at the same anchor: a flattened thread beats a
+                    // lost reply
+                    let bodies = std::iter::once(comment.body.clone())
+                        .chain(comment.replies.iter().map(|r| r.body.clone()));
+                    for body in bodies {
+                        review_comments.push(crate::ci::NewPrComment {
+                            number,
+                            head_oid: head.clone(),
+                            path: comment.anchor.file.clone(),
+                            line,
+                            new_side: !comment.anchor.on_old_side,
+                            body,
+                        });
+                    }
+                    comment_ids.push(comment.id.clone());
                 }
                 (Some(parent), _) => {
                     for (reply_index, reply) in comment.replies.iter().enumerate() {
                         if reply.remote_id.is_none() {
-                            posts.push(PrPost::Reply {
+                            replies.push(PrPost::Reply {
                                 number,
                                 comment_id: comment.id.clone(),
                                 reply_index,
@@ -241,30 +270,52 @@ impl App {
                 _ => {}
             }
         }
+        if review_comments.is_empty() && replies.is_empty() {
+            self.info("nothing pending to submit");
+            return;
+        }
+        let total = review_comments.len() + replies.len();
+        let mut posts = replies;
+        if !review_comments.is_empty() {
+            posts.push(PrPost::Review {
+                review: crate::ci::NewPrReview {
+                    number,
+                    head_oid: head,
+                    comments: review_comments,
+                },
+                comment_ids,
+            });
+        }
         for post in posts {
             let key = post_key(&post);
             if self.pr_posts_inflight.insert(key) {
                 self.pending_pr_posts.push(post);
             }
         }
+        self.info(format!("submitting review ({total} comments)…"));
     }
 
-    /// A completed post: stamp the forge id onto the local comment or reply
-    /// so it stops re-queueing and future syncs recognize it.
-    pub(crate) fn on_pr_posted(&mut self, post: &PrPost, result: Result<PrComment, String>) {
+    /// A completed post. A reply stamps its forge id; a submitted review
+    /// hands its comments over to the forge — the local copies go away and
+    /// the immediate resync brings back the canonical ones.
+    pub(crate) fn on_pr_posted(
+        &mut self,
+        post: &PrPost,
+        result: Result<Option<PrComment>, String>,
+    ) {
         self.pr_posts_inflight.remove(&post_key(post));
         let number = match post {
-            PrPost::Comment { number, .. } | PrPost::Reply { number, .. } => *number,
+            PrPost::Review { review, .. } => review.number,
+            PrPost::Reply { number, .. } => *number,
         };
         let source = ReviewSource::pr(number);
         match result {
             Ok(remote) => {
                 let session = self.review.session_for_mut(&source);
                 match post {
-                    PrPost::Comment { comment_id, .. } => {
-                        if let Some(c) = session.comments.iter_mut().find(|c| c.id == *comment_id) {
-                            c.remote_id = Some(remote.id);
-                        }
+                    PrPost::Review { comment_ids, .. } => {
+                        session.comments.retain(|c| !comment_ids.contains(&c.id));
+                        self.pending_ci = Some(super::CiRequest::PrComments(number));
                     }
                     PrPost::Reply {
                         comment_id,
@@ -277,12 +328,15 @@ impl App {
                             .find(|c| c.id == *comment_id)
                             .and_then(|c| c.replies.get_mut(*reply_index))
                         {
-                            r.remote_id = Some(remote.id);
+                            r.remote_id = remote.map(|c| c.id);
                         }
                     }
                 }
                 if let Err(err) = self.review.save_for(&source) {
                     self.error(err.to_string());
+                }
+                if let Some(diff) = self.diff.as_mut() {
+                    diff.invalidate();
                 }
             }
             Err(err) => self.error(format!("posting to the PR failed: {err}")),
@@ -292,7 +346,7 @@ impl App {
 
 fn post_key(post: &PrPost) -> String {
     match post {
-        PrPost::Comment { comment_id, .. } => format!("c-{comment_id}"),
+        PrPost::Review { review, .. } => format!("review-{}", review.number),
         PrPost::Reply {
             comment_id,
             reply_index,
@@ -371,12 +425,17 @@ mod tests {
             press(&mut app, KeyCode::Char(ch));
         }
         press(&mut app, KeyCode::Enter);
-        assert_eq!(
-            app.pending_pr_posts.len(),
-            1,
-            "modal submit queues the forge post: {:?}",
-            app.pending_pr_posts
+        assert!(
+            app.pending_pr_posts.is_empty(),
+            "comments stack locally until the review is submitted"
         );
+        press(&mut app, KeyCode::Char('S'));
+        assert_eq!(app.pending_pr_posts.len(), 1);
+        let PrPost::Review { review, .. } = &app.pending_pr_posts[0] else {
+            panic!("expected a review post: {:?}", app.pending_pr_posts);
+        };
+        assert_eq!(review.comments.len(), 1);
+        assert_eq!(review.comments[0].body, "ship it");
     }
 
     #[test]
@@ -431,6 +490,43 @@ mod tests {
             app.modal.is_some(),
             "reply modal after ]+r; cursor={:?} rows={kinds:?}",
             app.diff.as_ref().map(|d| d.cursor)
+        );
+    }
+
+    #[test]
+    fn sync_keeps_local_replies_and_status_on_forge_roots() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let listing = [PrComment {
+            id: "100".into(),
+            path: "app.txt".into(),
+            line: Some(2),
+            new_side: true,
+            body: "remote root".into(),
+            author: "alice".into(),
+            reply_to: None,
+            at: 10,
+        }];
+        app.sync_pr_comments(7, &listing);
+        let source = ReviewSource::pr(7);
+        {
+            let session = app.review.session_for_mut(&source);
+            let id = session.comments[0].id.clone();
+            session.reply(&id, "me", "local reply not yet sent");
+            session.comments[0].status = diffler_core::session::CommentStatus::Resolved;
+        }
+        // the next poll returns the same listing: local state must survive
+        app.sync_pr_comments(7, &listing);
+        let session = app.review.session_for(&source);
+        assert_eq!(session.comments.len(), 1);
+        assert_eq!(
+            session.comments[0].status,
+            diffler_core::session::CommentStatus::Resolved
+        );
+        assert_eq!(session.comments[0].replies.len(), 1);
+        assert_eq!(
+            session.comments[0].replies[0].body,
+            "local reply not yet sent"
         );
     }
 
@@ -491,44 +587,24 @@ mod tests {
             .clone();
         app.open_pr_diff(7, &head, &head);
         assert!(app.diff.is_some(), "the PR diff view opened");
-        app.queue_pr_posts();
+        app.submit_pr_review();
         assert_eq!(app.pending_pr_posts.len(), 1);
-        app.queue_pr_posts();
+        app.submit_pr_review();
         assert_eq!(
             app.pending_pr_posts.len(),
             1,
             "inflight set blocks re-queue"
         );
 
+        // a successful submit hands the comment to the forge: the local copy
+        // goes away and the immediate resync is queued
         let post = app.pending_pr_posts.remove(0);
-        app.on_pr_posted(
-            &post,
-            Ok(PrComment {
-                id: "200".into(),
-                path: "app.txt".into(),
-                line: Some(3),
-                new_side: true,
-                body: "needs work".into(),
-                author: "me".into(),
-                reply_to: None,
-                at: 12,
-            }),
-        );
+        app.on_pr_posted(&post, Ok(None));
         let session = app.review.session_for(&source);
-        let mine = session
-            .comments
-            .iter()
-            .find(|c| c.id == local_id)
-            .expect("kept");
-        assert_eq!(mine.remote_id.as_deref(), Some("200"));
-
-        // once stamped with a remote id the comment is forge-owned: an empty
-        // listing purges it
-        app.sync_pr_comments(7, &[]);
-        let session = app.review.session_for(&source);
-        assert!(
-            session.comments.iter().all(|c| c.id != local_id),
-            "forge-synced comments follow the forge listing"
-        );
+        assert!(session.comments.iter().all(|c| c.id != local_id));
+        assert!(matches!(
+            app.pending_ci,
+            Some(crate::app::CiRequest::PrComments(7))
+        ));
     }
 }

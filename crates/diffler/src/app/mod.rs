@@ -1003,7 +1003,6 @@ impl App {
         if let Some(diff) = self.diff.as_mut() {
             diff.invalidate();
         }
-        self.queue_pr_posts();
     }
 
     fn expire_pending(&mut self) {

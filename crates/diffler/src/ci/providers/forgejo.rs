@@ -166,6 +166,10 @@ impl ForgeProvider for ForgejoProvider {
         Err(CiError::Unsupported("replying to PR comments"))
     }
 
+    async fn submit_pr_review(&self, _review: &crate::ci::NewPrReview) -> Result<()> {
+        Err(CiError::Unsupported("submitting PR reviews"))
+    }
+
     async fn current_pr(&self) -> Result<Option<PullRequest>> {
         let Some(branch) = &self.branch else {
             return Ok(None);
