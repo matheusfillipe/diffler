@@ -52,6 +52,9 @@
 
 [keys.diff]
 # toggle_focus = "<tab>"
+# next_function = ")"
+# prev_function = "("
+# delete_comment = "d"
 # open = "<cr>"
 # next_file = "<c-n>"
 # prev_file = "<c-p>"

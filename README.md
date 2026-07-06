@@ -82,7 +82,7 @@ Vim-like: `j`/`k`/`gg`/`G` motions, `/` search, and
 | `cc` | commit |
 | `c` | comment the diff line (`V` selects a range first) |
 | `Z` | send feedback to the agent |
-| `C` | overview of every comment — Enter jumps to it |
+| `C` | overview of every comment — Enter jumps, `d`/`D` delete one/all |
 | `S` | submit stacked PR comments as one review |
 | `y` / `Y` | copy feedback as markdown (file / all) |
 | `x` | in the diff view: graph who calls the symbol under the cursor |

@@ -115,6 +115,13 @@ impl Session {
         self.comments.iter_mut().find(|c| c.id == comment_id)
     }
 
+    /// Remove the comment with `id`; `true` when something was deleted.
+    pub fn delete_comment(&mut self, id: &str) -> bool {
+        let before = self.comments.len();
+        self.comments.retain(|c| c.id != id);
+        self.comments.len() != before
+    }
+
     pub fn reply(&mut self, comment_id: &str, author: &str, body: &str) -> bool {
         let Some(comment) = self.comment_mut(comment_id) else {
             return false;

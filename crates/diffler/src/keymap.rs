@@ -60,6 +60,7 @@ pub enum Action {
     PrevHunk,
     NextFunction,
     PrevFunction,
+    DeleteComment,
     NextComment,
     PrevComment,
     HalfPageDown,
@@ -134,6 +135,7 @@ impl Action {
             Self::NextHunk => "next_hunk",
             Self::NextFunction => "next_function",
             Self::PrevFunction => "prev_function",
+            Self::DeleteComment => "delete_comment",
             Self::PrevHunk => "prev_hunk",
             Self::NextComment => "next_comment",
             Self::PrevComment => "prev_comment",
@@ -159,9 +161,10 @@ impl Action {
         }
     }
 
-    const ALL: [Self; 69] = [
+    const ALL: [Self; 70] = [
         Self::NextFunction,
         Self::PrevFunction,
+        Self::DeleteComment,
         Self::OpenPrs,
         Self::CommentsOverview,
         Self::SubmitReview,
@@ -345,6 +348,7 @@ const DIFF_DEFAULTS: &[(&str, Action)] = &[
     ("V", Action::VisualSelect),
     ("r", Action::Reply),
     ("R", Action::Resolve),
+    ("d", Action::DeleteComment),
     ("v", Action::MarkViewed),
     ("y", Action::CopyFileFeedback),
     ("Y", Action::CopyAllFeedback),

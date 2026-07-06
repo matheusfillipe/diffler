@@ -95,8 +95,12 @@ pub struct StatusMessage {
 /// `App::handle` stays a pure state transition.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PendingOp {
-    Discard { path: String },
+    Discard {
+        path: String,
+    },
     DeleteBranch(String),
+    /// Wipe every deletable comment of the active review.
+    DeleteAllComments,
 }
 
 /// What an input modal does with its buffer on submit.

@@ -41,6 +41,7 @@ impl App {
                     self.info(format!("deleted branch {name}"));
                 }
             }
+            PendingOp::DeleteAllComments => self.delete_all_comments(),
         }
     }
 
@@ -243,6 +244,17 @@ impl App {
     pub(super) fn handle_comments_key(&mut self, key: &KeyEvent) {
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => self.modal = None,
+            KeyCode::Char('d') => self.delete_selected_overview_comment(),
+            KeyCode::Char('D') => {
+                let entries = match &self.modal {
+                    Some(Modal::Comments { entries, .. }) => entries.len(),
+                    _ => 0,
+                };
+                self.modal = Some(Modal::Confirm {
+                    message: format!("Delete all {entries} comments of this review?"),
+                    on_confirm: super::PendingOp::DeleteAllComments,
+                });
+            }
             KeyCode::Char('j') | KeyCode::Down => {
                 if let Some(Modal::Comments { entries, cursor }) = self.modal.as_mut() {
                     *cursor = (*cursor + 1).min(entries.len().saturating_sub(1));
@@ -265,6 +277,62 @@ impl App {
             }
             KeyCode::Enter => self.jump_to_selected_comment(),
             _ => {}
+        }
+    }
+
+    /// Delete the highlighted overview entry and rebuild the list in place.
+    fn delete_selected_overview_comment(&mut self) {
+        let (entry, keep_cursor) = match &self.modal {
+            Some(Modal::Comments { entries, cursor }) => match entries.get(*cursor).cloned() {
+                Some(entry) => (entry, cursor.saturating_sub(1)),
+                None => return,
+            },
+            _ => return,
+        };
+        if self.delete_comment_by_id(&entry.comment_id) {
+            self.open_comments_overview();
+            if let Some(Modal::Comments { entries, cursor }) = self.modal.as_mut() {
+                *cursor = keep_cursor.min(entries.len().saturating_sub(1));
+            }
+        }
+    }
+
+    /// Delete one comment outright. Forge-owned comments decline — the next
+    /// sync would just re-import them.
+    pub(super) fn delete_comment_by_id(&mut self, id: &str) -> bool {
+        let source = self.active_review_source();
+        let session = self.review.session_for_mut(&source);
+        let forge_owned = session
+            .comments
+            .iter()
+            .any(|c| c.id == id && c.remote_id.is_some());
+        if forge_owned {
+            self.info("forge comment — resolve or delete it on the PR");
+            return false;
+        }
+        if !session.delete_comment(id) {
+            return false;
+        }
+        self.after_session_change();
+        true
+    }
+
+    /// Start fresh: drop every local comment of the active review (forge-owned
+    /// ones stay; the forge is their home).
+    pub(super) fn delete_all_comments(&mut self) {
+        let source = self.active_review_source();
+        let session = self.review.session_for_mut(&source);
+        let before = session.comments.len();
+        session.comments.retain(|c| c.remote_id.is_some());
+        let removed = before - session.comments.len();
+        let kept = session.comments.len();
+        self.after_session_change();
+        if kept > 0 {
+            self.info(format!(
+                "deleted {removed} comments ({kept} forge-owned kept)"
+            ));
+        } else {
+            self.info(format!("deleted {removed} comments"));
         }
     }
 
@@ -417,6 +485,64 @@ mod tests {
             ),
             "cursor sits on the comment header row"
         );
+    }
+
+    #[test]
+    fn d_vanishes_a_local_comment_and_capital_d_wipes_the_review() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        for (line, body) in [(1, "first"), (2, "second"), (3, "third")] {
+            app.review.session.add_comment(
+                "me",
+                Anchor {
+                    file: "src/lib.rs".into(),
+                    line: Some(line),
+                    line_end: None,
+                    on_old_side: false,
+                    line_text: None,
+                },
+                body,
+            );
+        }
+        press(&mut app, KeyCode::Char('C'));
+        press(&mut app, KeyCode::Char('d'));
+        let Some(Modal::Comments { entries, .. }) = &app.modal else {
+            panic!("overview stays open after a single delete");
+        };
+        assert_eq!(entries.len(), 2, "one comment vanished");
+        assert_eq!(app.review.session.comments.len(), 2);
+
+        press(&mut app, KeyCode::Char('D'));
+        assert!(
+            matches!(app.modal, Some(Modal::Confirm { .. })),
+            "delete-all asks first"
+        );
+        press(&mut app, KeyCode::Char('y'));
+        assert!(app.review.session.comments.is_empty(), "started fresh");
+    }
+
+    #[test]
+    fn forge_owned_comments_refuse_local_deletion() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.review.session.add_comment(
+            "alice",
+            Anchor {
+                file: "src/lib.rs".into(),
+                line: Some(1),
+                line_end: None,
+                on_old_side: false,
+                line_text: None,
+            },
+            "remote",
+        );
+        app.review.session.comments[0].remote_id = Some("9".into());
+        let id = app.review.session.comments[0].id.clone();
+        assert!(!app.delete_comment_by_id(&id));
+        assert_eq!(app.review.session.comments.len(), 1);
+        // delete-all keeps it too
+        app.delete_all_comments();
+        assert_eq!(app.review.session.comments.len(), 1);
     }
 
     #[test]

@@ -780,7 +780,7 @@ impl App {
             // a file in the sidebar takes a whole-file comment; the line-scoped
             // actions still need the diff pane
             Action::Comment => self.comment_on_selected_file(),
-            Action::VisualSelect | Action::Reply | Action::Resolve => {
+            Action::VisualSelect | Action::Reply | Action::Resolve | Action::DeleteComment => {
                 self.info("move into the diff to comment");
             }
             _ => {}
@@ -814,6 +814,7 @@ impl App {
             Action::VisualSelect => self.toggle_visual(),
             Action::Reply => self.reply_at_cursor(),
             Action::Resolve => self.resolve_at_cursor(),
+            Action::DeleteComment => self.delete_comment_at_cursor(),
             Action::MarkViewed => self.diff_toggle_viewed(),
             Action::CopyFileFeedback => self.copy_file_or_selection(),
             Action::CopyAllFeedback => self.copy_feedback(false),
@@ -1336,6 +1337,14 @@ impl App {
             return None;
         };
         self.review.session_for(&diff.source).comments.get(*comment)
+    }
+
+    fn delete_comment_at_cursor(&mut self) {
+        let Some(id) = self.comment_at_cursor_row().map(|c| c.id.clone()) else {
+            self.info("move onto a comment to delete it");
+            return;
+        };
+        self.delete_comment_by_id(&id);
     }
 
     fn reply_at_cursor(&mut self) {
