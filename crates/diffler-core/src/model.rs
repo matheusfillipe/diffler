@@ -207,10 +207,6 @@ pub struct DiffLine {
     pub text: String,
     /// Byte ranges within `text` to emphasize (intra-line changes).
     pub emphasis: Vec<Range<usize>>,
-    /// An added/deleted line the semantic engine found unchanged (only
-    /// reindented or moved). The UI marks it with a thin rail instead of a
-    /// full +/- background. Always false for the textual engine.
-    pub moved: bool,
 }
 
 impl DiffLine {
@@ -221,7 +217,6 @@ impl DiffLine {
             new_no,
             text,
             emphasis: Vec::new(),
-            moved: false,
         }
     }
 }

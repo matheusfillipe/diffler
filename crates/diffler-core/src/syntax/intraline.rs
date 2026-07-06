@@ -67,10 +67,8 @@ impl LanguageRegistry {
                     (None, Some(o)) => old_emph.get(o as usize - 1),
                     _ => None,
                 };
-                let (moved, emphasis) =
+                line.emphasis =
                     classify_line(line.kind, &line.text, ranges.map_or(&[], Vec::as_slice));
-                line.moved = moved;
-                line.emphasis = emphasis;
             }
             refine_partial_changes(hunk);
         }
@@ -127,36 +125,17 @@ fn per_line_emphasis(src: &str, ranges: &[Range<usize>]) -> LineEmphasis {
     out
 }
 
-/// Classify an added/deleted `line` from its raw changed byte `ranges`:
-/// - no change → a reindent/move: `(moved = true, no emphasis)`, a thin rail;
-/// - the whole content changed → `(false, no emphasis)`, a full +/- background;
-/// - some tokens changed → `(false, those ranges)`, background plus emphasis.
-fn classify_line(kind: LineKind, text: &str, ranges: &[Range<usize>]) -> (bool, Vec<Range<usize>>) {
+/// Emphasis for an added/deleted `line` from its raw changed byte `ranges`.
+/// Every changed line keeps its full +/- background; emphasis only marks
+/// punctual edits — a line that changed mostly or entirely gets none, because
+/// highlighting almost everything highlights nothing.
+fn classify_line(kind: LineKind, text: &str, ranges: &[Range<usize>]) -> Vec<Range<usize>> {
+    let _ = kind;
     let ranges = clamp(ranges, text.len());
-    let changed = matches!(kind, LineKind::Added | LineKind::Deleted);
-    if ranges.is_empty() {
-        return (changed, Vec::new());
+    if ranges.is_empty() || !crate::pairing::emphasis_is_punctual(text, &ranges) {
+        return Vec::new();
     }
-    if whole_line_changed(text, &ranges) {
-        return (false, Vec::new());
-    }
-    (false, ranges)
-}
-
-/// True when every non-whitespace byte of the line is emphasized (gaps fall
-/// only on whitespace) — i.e. the entire content changed.
-fn whole_line_changed(text: &str, ranges: &[Range<usize>]) -> bool {
-    let mut any_content = false;
-    for (i, &b) in text.as_bytes().iter().enumerate() {
-        if b == b' ' || b == b'\t' {
-            continue;
-        }
-        any_content = true;
-        if !ranges.iter().any(|r| r.start <= i && i < r.end) {
-            return false;
-        }
-    }
-    any_content
+    ranges
 }
 
 /// Clip ranges to the line's length and drop any that become empty.
@@ -278,10 +257,9 @@ mod tests {
     }
 
     #[test]
-    fn classify_reindented_line_is_a_move() {
-        // an added/deleted line with no changed bytes only moved/reindented
-        let (moved, emph) = classify_line(LineKind::Added, "    <Form>", &[]);
-        assert!(moved, "reindent/move is flagged");
+    fn classify_unchanged_line_gets_no_emphasis() {
+        // a reindent/move: nothing changed within the line, plain +/- bg
+        let emph = classify_line(LineKind::Added, "    <Form>", &[]);
         assert!(emph.is_empty());
     }
 
@@ -290,8 +268,7 @@ mod tests {
         // every non-whitespace byte changed -> full +/- bg, no char emphasis
         let text = "    let entirely_new = compute();";
         let ranges = [4..7, 8..20, 21..22, 23..text.len()];
-        let (moved, emph) = classify_line(LineKind::Added, text, &ranges);
-        assert!(!moved, "a wholly-changed line is a real change, not a move");
+        let emph = classify_line(LineKind::Added, text, &ranges);
         assert!(
             emph.is_empty(),
             "no char emphasis when the whole line changed"
@@ -299,20 +276,21 @@ mod tests {
     }
 
     #[test]
+    fn classify_mostly_changed_line_drops_emphasis() {
+        // more than the punctual share changed: highlighting it all says nothing
+        let text = "    let entirely_new = compute();";
+        let ranges = [4..7, 8..20, 23..30];
+        let emph = classify_line(LineKind::Added, text, &ranges);
+        assert!(emph.is_empty(), "{emph:?}");
+    }
+
+    #[test]
     fn classify_partial_change_keeps_emphasis() {
         // only `2` changed in `    let x = 2;`
         let text = "    let x = 2;";
         let changed = 12..13;
-        let (moved, emph) = classify_line(LineKind::Added, text, std::slice::from_ref(&changed));
-        assert!(!moved);
+        let emph = classify_line(LineKind::Added, text, std::slice::from_ref(&changed));
         assert_eq!(emph.len(), 1);
         assert_eq!(emph[0], changed);
-    }
-
-    #[test]
-    fn classify_context_line_is_never_moved() {
-        let (moved, emph) = classify_line(LineKind::Context, "    unchanged", &[]);
-        assert!(!moved);
-        assert!(emph.is_empty());
     }
 }

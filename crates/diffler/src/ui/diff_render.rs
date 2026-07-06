@@ -154,7 +154,6 @@ pub fn render_diff_line(
 }
 
 /// The line (base) and emphasis backgrounds, given selection/annotation state.
-/// A moved/reindented line drops its full +/- background for a thin rail.
 fn line_backgrounds(
     theme: &Theme,
     line: &DiffLine,
@@ -166,7 +165,6 @@ fn line_backgrounds(
         LineKind::Deleted => (theme.del_line_bg, theme.del_emph_bg),
         LineKind::Context => (theme.bg, theme.bg),
     };
-    let line_bg = if line.moved { theme.bg } else { line_bg };
     let base_bg = if selected {
         theme.cursor_line
     } else if annotated {
@@ -177,10 +175,8 @@ fn line_backgrounds(
     (base_bg, emph_bg)
 }
 
-/// The gutter's leading cell: a thin colored bar for a moved/reindented line,
-/// otherwise a blank that keeps every other line's alignment unchanged.
-fn rail(line: &DiffLine) -> &'static str {
-    if line.moved { "▌" } else { " " }
+fn rail(_line: &DiffLine) -> &'static str {
+    " "
 }
 
 fn rail_color(theme: &Theme, line: &DiffLine) -> Color {
@@ -569,22 +565,17 @@ mod tests {
     }
 
     #[test]
-    fn moved_line_shows_a_rail_instead_of_a_full_background() {
+    fn every_added_line_keeps_the_full_background() {
+        // reindents/moves included: there is no in-between render state
         let theme = Theme::github_dark();
-        let mut moved = line(LineKind::Added, None, Some(2), "    <Form>");
-        moved.moved = true;
-        let rendered = render_diff_line(&theme, &moved, None, 3, 60, false, false, &[]);
-        let text: String = rendered.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(
-            text.starts_with('▌'),
-            "a moved line leads with a rail: {text:?}"
-        );
+        let reindented = line(LineKind::Added, None, Some(2), "    <Form>");
+        let rendered = render_diff_line(&theme, &reindented, None, 3, 60, false, false, &[]);
         assert!(
             rendered
                 .spans
                 .iter()
-                .all(|s| s.style.bg != Some(theme.add_line_bg)),
-            "a moved line drops the full added background"
+                .any(|s| s.style.bg == Some(theme.add_line_bg)),
+            "added lines always carry the added background"
         );
     }
 

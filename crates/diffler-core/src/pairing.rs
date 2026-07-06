@@ -10,6 +10,35 @@ use crate::model::{DiffLine, FileDiff, Hunk, LineKind};
 /// Below this similarity the pair is treated as unrelated (no emphasis).
 const MIN_SIMILARITY: f32 = 0.4;
 
+/// Emphasis above this share of a line's content is noise, not signal:
+/// highlights are for punctual edits, not rewrites.
+const MAX_EMPHASIS_SHARE: f32 = 0.5;
+
+/// True when the emphasized ranges cover a minority of the line's
+/// non-whitespace content — a punctual edit worth highlighting. A line that
+/// changed (nearly) everywhere reads better as a plain +/- line.
+pub(crate) fn emphasis_is_punctual(text: &str, ranges: &[std::ops::Range<usize>]) -> bool {
+    // usize→f32 precision loss is irrelevant at line lengths
+    #[allow(clippy::cast_precision_loss)]
+    fn share(n: usize) -> f32 {
+        n as f32
+    }
+    let mut content = 0usize;
+    let mut emphasized = 0usize;
+    for (i, &b) in text.as_bytes().iter().enumerate() {
+        if b == b' ' || b == b'\t' {
+            continue;
+        }
+        content += 1;
+        if ranges.iter().any(|r| r.start <= i && i < r.end) {
+            emphasized += 1;
+        }
+    }
+    // a couple of changed characters is always signal, whatever the ratio —
+    // short lines ("41" → "42") would otherwise lose their only highlight
+    content > 0 && (emphasized <= 2 || share(emphasized) < share(content) * MAX_EMPHASIS_SHARE)
+}
+
 /// Attach intra-line emphasis to one file's hunks. Pairing is a render-time
 /// concern (only the TUI reads `.emphasis`), so callers enrich the file they
 /// are about to display rather than enriching whole models up front.
@@ -28,11 +57,15 @@ fn enrich_hunk(hunk: &mut Hunk) {
             continue;
         }
         let (old_emphasis, new_emphasis) = intraline(&old.text, &new.text);
+        // a pair similar enough to relate can still differ almost everywhere;
+        // near-total emphasis on either side means neither gets any
+        let punctual = emphasis_is_punctual(&old.text, &old_emphasis)
+            && emphasis_is_punctual(&new.text, &new_emphasis);
         if let Some(line) = hunk.lines.get_mut(del_idx) {
-            line.emphasis = old_emphasis;
+            line.emphasis = if punctual { old_emphasis } else { Vec::new() };
         }
         if let Some(line) = hunk.lines.get_mut(add_idx) {
-            line.emphasis = new_emphasis;
+            line.emphasis = if punctual { new_emphasis } else { Vec::new() };
         }
     }
 }
@@ -101,6 +134,23 @@ mod tests {
         enrich_hunk(&mut h);
         assert!(h.lines[1].emphasis.is_empty()); // deletion side: nothing removed, only insert
         assert_eq!(h.lines[2].emphasis, vec![10..11]);
+    }
+
+    #[test]
+    fn emphasis_is_punctual_separates_edits_from_rewrites() {
+        // minority coverage is signal
+        assert!(emphasis_is_punctual(
+            "let x = compute();",
+            std::slice::from_ref(&(8..15))
+        ));
+        // a tiny edit always qualifies, whatever the ratio
+        assert!(emphasis_is_punctual("41", std::slice::from_ref(&(1..2))));
+        // majority coverage is a rewrite: no char highlights
+        assert!(!emphasis_is_punctual(
+            "let x = compute();",
+            std::slice::from_ref(&(0..14))
+        ));
+        assert!(!emphasis_is_punctual("", &[]));
     }
 
     #[test]
