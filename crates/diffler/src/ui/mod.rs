@@ -384,14 +384,19 @@ pub(super) fn cursor_line(line: Line<'static>, theme: &Theme, width: u16) -> Lin
 pub(super) fn status_bar(app: &App, width: u16) -> Line<'static> {
     let theme = &app.theme;
     let on_panel = |fg| Style::new().fg(fg).bg(theme.panel);
+    // the chip is the mode indicator: a forge-backed review must read
+    // differently from a local one, so the PR source names itself
     let chip = match app.screen() {
-        Screen::Status => " STATUS ",
-        Screen::Diff => " DIFF ",
-        Screen::Log => " LOG ",
-        Screen::Graph => " GRAPH ",
-        Screen::Runs => " RUNS ",
-        Screen::Prs => " PRS ",
-        Screen::Logs => " LOGS ",
+        Screen::Status => " STATUS ".to_owned(),
+        Screen::Diff => match app.diff.as_ref().map(|d| &d.source) {
+            Some(crate::app::DiffSource::Pr { number }) => format!(" PR #{number} "),
+            _ => " DIFF ".to_owned(),
+        },
+        Screen::Log => " LOG ".to_owned(),
+        Screen::Graph => " GRAPH ".to_owned(),
+        Screen::Runs => " RUNS ".to_owned(),
+        Screen::Prs => " PRS ".to_owned(),
+        Screen::Logs => " LOGS ".to_owned(),
     };
     let repo = app
         .review
@@ -458,6 +463,21 @@ pub(super) fn status_bar(app: &App, width: u16) -> Line<'static> {
 #[cfg(test)]
 mod tests {
     use super::relative_time;
+
+    #[test]
+    fn the_chip_names_the_pr_when_reviewing_one() {
+        use crate::app::App;
+        use crate::config::LoadedConfig;
+        use crate::test_support::standard_fixture;
+
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let head = app.review.vcs.resolve("HEAD").expect("head");
+        app.open_pr_diff(7, &head, &head);
+        let bar = super::status_bar(&app, 80);
+        let text: String = bar.spans.iter().map(|s| s.content.clone()).collect();
+        assert!(text.contains(" PR #7 "), "{text}");
+    }
 
     #[test]
     fn relative_time_picks_a_compact_unit() {
