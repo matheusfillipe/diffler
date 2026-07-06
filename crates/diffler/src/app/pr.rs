@@ -181,9 +181,20 @@ impl App {
             }
         }
         let session = self.review.session_for_mut(&source);
-        session.comments.retain(|c| c.remote_id.is_none());
-        session.comments.extend(roots);
-        session.comments.sort_by_key(|c| c.at);
+        let mut merged: Vec<Comment> = session
+            .comments
+            .iter()
+            .filter(|c| c.remote_id.is_none())
+            .cloned()
+            .collect();
+        merged.extend(roots);
+        merged.sort_by_key(|c| c.at);
+        // a poll that changed nothing must not dirty the store: the write wakes
+        // the watcher, which refreshes, which redraws — a self-sustaining storm
+        if merged == session.comments {
+            return;
+        }
+        session.comments = merged;
         if let Err(err) = self.review.save_for(&source) {
             self.error(err.to_string());
         }
@@ -368,6 +379,61 @@ mod tests {
             1,
             "modal submit queues the forge post: {:?}",
             app.pending_pr_posts
+        );
+    }
+
+    #[test]
+    fn next_comment_then_reply_opens_the_modal_in_a_pr_view() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let fixture = crate::test_support::Fixture::new();
+        fixture.write("app.py", "def greet(name):\n    return f\"hello {name}\"\n");
+        fixture.stage("app.py");
+        fixture.commit_all("initial");
+        fixture.write("app.py", "def greet(name):\n    return f\"hi {name}!\"\n");
+        fixture.stage("app.py");
+        fixture.commit_all("tweak");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let head = app.review.vcs.resolve("HEAD").expect("head");
+        let base = app.review.vcs.resolve("HEAD~1").expect("base");
+        app.open_pr_diff(9, &base, &head);
+        app.sync_pr_comments(
+            9,
+            &[PrComment {
+                id: "70".into(),
+                path: "app.py".into(),
+                line: Some(2),
+                new_side: true,
+                body: "hm?".into(),
+                author: "alice".into(),
+                reply_to: None,
+                at: 1,
+            }],
+        );
+        if let Some(diff) = app.diff.as_mut() {
+            diff.ensure_rows(&app.review);
+        }
+        let press = |app: &mut App, code: KeyCode| {
+            app.handle(crate::event::AppEvent::Key(KeyEvent::new(
+                code,
+                KeyModifiers::NONE,
+            )));
+        };
+        press(&mut app, KeyCode::Char(']'));
+        press(&mut app, KeyCode::Char('r'));
+        let kinds: Vec<String> = app
+            .diff
+            .as_ref()
+            .map(|d| {
+                d.rows()
+                    .iter()
+                    .map(|r| format!("{r:?}").chars().take(30).collect())
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(
+            app.modal.is_some(),
+            "reply modal after ]+r; cursor={:?} rows={kinds:?}",
+            app.diff.as_ref().map(|d| d.cursor)
         );
     }
 
