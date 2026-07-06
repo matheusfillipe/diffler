@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1783367704405,
+  "lastUpdate": 1783369791285,
   "repoUrl": "https://github.com/matheusfillipe/diffler",
   "entries": {
     "Benchmark": [
@@ -1919,6 +1919,102 @@ window.BENCHMARK_DATA = {
             "name": "scope_index/20000",
             "value": 95113474,
             "range": "± 1313193",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "committer": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "distinct": true,
+          "id": "810cda451eb122141d451a0a08caf6566ec8f07e",
+          "message": "feat(review): d deletes a comment outright, D in the overview starts fresh\n\nDeletion is instant on local comments (pane cursor or overview row);\ndelete-all confirms once and wipes the active review's local comments.\nForge-owned comments decline — the next sync would re-import them.",
+          "timestamp": "2026-07-06T22:26:11+02:00",
+          "tree_id": "389808de5c7d6932f2cd0e988162c537cc3edd73",
+          "url": "https://github.com/matheusfillipe/diffler/commit/810cda451eb122141d451a0a08caf6566ec8f07e"
+        },
+        "date": 1783369790952,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "syndiff_emphasis/1000",
+            "value": 7973873,
+            "range": "± 252472",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/1000",
+            "value": 20180,
+            "range": "± 175",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/1000",
+            "value": 5747712,
+            "range": "± 210070",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/1000",
+            "value": 4484708,
+            "range": "± 10042",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/5000",
+            "value": 42387736,
+            "range": "± 628803",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/5000",
+            "value": 99995,
+            "range": "± 634",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/5000",
+            "value": 28961505,
+            "range": "± 630598",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/5000",
+            "value": 22498319,
+            "range": "± 253047",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/20000",
+            "value": 176357036,
+            "range": "± 10230318",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/20000",
+            "value": 399179,
+            "range": "± 1027",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/20000",
+            "value": 123317047,
+            "range": "± 856940",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/20000",
+            "value": 95303088,
+            "range": "± 770110",
             "unit": "ns/iter"
           }
         ]
