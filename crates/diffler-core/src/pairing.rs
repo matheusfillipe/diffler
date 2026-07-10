@@ -1,22 +1,28 @@
 //! Pair deleted/added line runs inside a hunk and attach intra-line
-//! emphasis. Lines pair positionally within a run, gated by similarity,
-//! mirroring delta's homologous-line model.
-
-use similar::TextDiff;
+//! emphasis. Lines pair positionally within a run, mirroring delta's
+//! homologous-line model; the word-level engine's own token-similarity
+//! floor rejects unrelated pairs.
 
 use crate::diff::intraline;
 use crate::model::{DiffLine, FileDiff, Hunk, LineKind};
 
-/// Below this similarity the pair is treated as unrelated (no emphasis).
-const MIN_SIMILARITY: f32 = 0.4;
-
 /// Emphasis above this share of a line's content is noise, not signal:
-/// highlights are for punctual edits, not rewrites.
-const MAX_EMPHASIS_SHARE: f32 = 0.5;
+/// highlights are for punctual edits, not rewrites. Word-level emphasis
+/// legitimately covers whole tokens (`old_name` → `new_name` is most of its
+/// line), so the ceiling sits above one-substituted-word territory; true
+/// rewrites already fall out at the token-ratio gate.
+const MAX_EMPHASIS_SHARE: f32 = 0.7;
+
+/// More separate emphasis runs than this and the line reads as confetti:
+/// scattered small edits render better as plain +/- lines (jj draws the
+/// same line at 3 inline alternations). Counted after near-adjacent runs
+/// merge under `diff::MAX_GAP_CHARS` — tune the two together.
+const MAX_EMPHASIS_RUNS: usize = 3;
 
 /// True when the emphasized ranges cover a minority of the line's
-/// non-whitespace content — a punctual edit worth highlighting. A line that
-/// changed (nearly) everywhere reads better as a plain +/- line.
+/// non-whitespace content in a few contiguous runs — a punctual edit worth
+/// highlighting. A line that changed (nearly) everywhere, or in many
+/// scattered places, reads better as a plain +/- line.
 pub(crate) fn emphasis_is_punctual(text: &str, ranges: &[std::ops::Range<usize>]) -> bool {
     // usize→f32 precision loss is irrelevant at line lengths
     #[allow(clippy::cast_precision_loss)]
@@ -35,8 +41,26 @@ pub(crate) fn emphasis_is_punctual(text: &str, ranges: &[std::ops::Range<usize>]
         }
     }
     // a couple of changed characters is always signal, whatever the ratio —
-    // short lines ("41" → "42") would otherwise lose their only highlight
-    content > 0 && (emphasized <= 2 || share(emphasized) < share(content) * MAX_EMPHASIS_SHARE)
+    // short lines ("41" → "42") would otherwise lose their only highlight;
+    // the run cap stands regardless (whitespace-only runs count zero chars
+    // and would ride the shortcut into confetti)
+    content > 0
+        && ranges.len() <= MAX_EMPHASIS_RUNS
+        && (emphasized <= 2 || share(emphasized) < share(content) * MAX_EMPHASIS_SHARE)
+}
+
+/// Intra-line emphasis for a paired old/new line, gated as a pair: both
+/// sides punctual, or neither side gets any.
+pub(crate) fn gated_pair_emphasis(
+    old: &str,
+    new: &str,
+) -> (Vec<std::ops::Range<usize>>, Vec<std::ops::Range<usize>>) {
+    let (old_emphasis, new_emphasis) = intraline(old, new);
+    if emphasis_is_punctual(old, &old_emphasis) && emphasis_is_punctual(new, &new_emphasis) {
+        (old_emphasis, new_emphasis)
+    } else {
+        (Vec::new(), Vec::new())
+    }
 }
 
 /// Attach intra-line emphasis to one file's hunks. Pairing is a render-time
@@ -53,19 +77,12 @@ fn enrich_hunk(hunk: &mut Hunk) {
         let (Some(old), Some(new)) = (hunk.lines.get(del_idx), hunk.lines.get(add_idx)) else {
             continue;
         };
-        if similarity(&old.text, &new.text) < MIN_SIMILARITY {
-            continue;
-        }
-        let (old_emphasis, new_emphasis) = intraline(&old.text, &new.text);
-        // a pair similar enough to relate can still differ almost everywhere;
-        // near-total emphasis on either side means neither gets any
-        let punctual = emphasis_is_punctual(&old.text, &old_emphasis)
-            && emphasis_is_punctual(&new.text, &new_emphasis);
+        let (old_emphasis, new_emphasis) = gated_pair_emphasis(&old.text, &new.text);
         if let Some(line) = hunk.lines.get_mut(del_idx) {
-            line.emphasis = if punctual { old_emphasis } else { Vec::new() };
+            line.emphasis = old_emphasis;
         }
         if let Some(line) = hunk.lines.get_mut(add_idx) {
-            line.emphasis = if punctual { new_emphasis } else { Vec::new() };
+            line.emphasis = new_emphasis;
         }
     }
 }
@@ -94,13 +111,6 @@ pub(crate) fn paired_run_indices(lines: &[DiffLine]) -> Vec<(usize, usize)> {
         }
     }
     pairs
-}
-
-fn similarity(old: &str, new: &str) -> f32 {
-    if old.is_empty() && new.is_empty() {
-        return 1.0;
-    }
-    TextDiff::from_graphemes(old, new).ratio()
 }
 
 #[cfg(test)]
@@ -151,6 +161,26 @@ mod tests {
             std::slice::from_ref(&(0..14))
         ));
         assert!(!emphasis_is_punctual("", &[]));
+    }
+
+    #[test]
+    fn scattered_runs_beyond_the_cap_are_not_punctual() {
+        let text = "alpha one beta two gamma three delta four epsilon";
+        // three runs under the coverage ceiling: still an edit
+        let three = vec![6..9, 15..18, 25..30];
+        assert!(emphasis_is_punctual(text, &three));
+        // a fourth scattered run tips it into confetti
+        let four = vec![6..9, 15..18, 25..30, 37..41];
+        assert!(!emphasis_is_punctual(text, &four));
+    }
+
+    #[test]
+    fn whitespace_only_runs_do_not_ride_the_tiny_edit_shortcut() {
+        // alignment-only edits emphasize zero content chars; four scattered
+        // space runs must still fail the cap, not pass as a "tiny edit"
+        let text = "a   = 1; b   = 2; c   = 3; d   = 4";
+        let runs = vec![1..4, 10..13, 19..22, 28..31];
+        assert!(!emphasis_is_punctual(text, &runs));
     }
 
     #[test]

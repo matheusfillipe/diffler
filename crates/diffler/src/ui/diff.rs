@@ -1151,7 +1151,7 @@ mod tests {
 
     #[test]
     fn diff_pane_renders_with_syntax_emphasis_and_gutter() {
-        // grapheme engine: it char-diffs the `41`→`42` literal so the emphasis
+        // textual engine: it word-diffs the `41`→`42` literal so the emphasis
         // background composites. The syntactic engine treats the whole literal
         // as changed (no partial highlight); that path is covered by the core
         // intraline tests.

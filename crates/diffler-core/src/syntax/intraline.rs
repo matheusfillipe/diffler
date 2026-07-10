@@ -78,7 +78,7 @@ impl LanguageRegistry {
 
 /// Where the AST diff flagged a *partial* line change (some token ranges, not
 /// the whole line and not a reformat), replace the coarse token ranges with a
-/// grapheme-level diff of the paired lines, so only the characters that actually
+/// word-level diff of the paired lines, so only the tokens that actually
 /// changed are emphasized (an edit inside a string scalar shouldn't light up the
 /// whole scalar). Whole-line changes and reformat-only lines keep the AST result.
 fn refine_partial_changes(hunk: &mut Hunk) {
@@ -100,7 +100,9 @@ fn refine_partial_changes(hunk: &mut Hunk) {
         ) else {
             continue;
         };
-        let (old_emph, new_emph) = crate::diff::intraline(&old, &new);
+        // the same pair gate as the textual engine, so a refinement that
+        // comes back scattered or near-total drops to plain lines too
+        let (old_emph, new_emph) = crate::pairing::gated_pair_emphasis(&old, &new);
         if let Some(line) = hunk.lines.get_mut(del_idx) {
             line.emphasis = old_emph;
         }

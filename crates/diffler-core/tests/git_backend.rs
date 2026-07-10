@@ -209,8 +209,9 @@ fn modified_line_pair_carries_intraline_emphasis() {
         .iter()
         .map(|r| &added.text[r.clone()])
         .collect();
-    assert_eq!(old_hl, "old");
-    assert_eq!(new_hl, "new");
+    // word-level emphasis: the whole substituted token, never a fragment
+    assert_eq!(old_hl, "old_name");
+    assert_eq!(new_hl, "new_name");
 }
 
 #[test]
