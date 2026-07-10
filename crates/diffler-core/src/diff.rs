@@ -69,7 +69,25 @@ pub fn intraline(old: &str, new: &str) -> (Vec<Range<usize>>, Vec<Range<usize>>)
         }
     }
 
-    (coalesce(old, old_ranges), coalesce(new, new_ranges))
+    (
+        coalesce(old, drop_indent_only(old, old_ranges)),
+        coalesce(new, drop_indent_only(new, new_ranges)),
+    )
+}
+
+/// Emphasis on the line's leading indentation is a reindent artifact, not an
+/// edit — matching the AST engine (`syntax::intraline`), which never flags
+/// reformatting. Whitespace changes inside or after content stay: a trailing
+/// space or a tab→space swap is invisible without the highlight.
+fn drop_indent_only(text: &str, ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
+    ranges
+        .into_iter()
+        .filter(|r| {
+            let ws_only = text.get(r.clone()).is_some_and(|s| s.trim().is_empty());
+            let in_indent = text.get(..r.start).is_some_and(|s| s.trim().is_empty());
+            !(ws_only && in_indent)
+        })
+        .collect()
 }
 
 /// Merge runs whose gap is `MAX_GAP_CHARS` characters or fewer.
@@ -184,6 +202,39 @@ mod tests {
         }
         let joined: String = new.iter().map(|r| &new_line[r.clone()]).collect();
         assert!(joined.contains('\u{301}'), "emphasis: {new:?}");
+    }
+
+    #[test]
+    fn indentation_only_changes_carry_no_emphasis() {
+        // a re-indented line pairs with its twin; the differing indent must
+        // not render as a phantom edit block
+        let (old, new) = intraline("        openAPI(),", "            openAPI(),");
+        assert!(old.is_empty(), "{old:?}");
+        assert!(new.is_empty(), "{new:?}");
+    }
+
+    #[test]
+    fn whitespace_shift_beside_a_real_edit_keeps_the_edit() {
+        let old = "foo  bar";
+        let new = "foo bar baz";
+        let (old_r, new_r) = intraline(old, new);
+        // the shrunk mid-line gap sits after content, so it may stay marked;
+        // only leading-indent emphasis is dropped
+        assert!(old_r.iter().all(|r| r.start >= 3), "{old_r:?}");
+        let joined: String = new_r.iter().map(|r| &new[r.clone()]).collect();
+        assert!(joined.contains("baz"), "the added word survives: {new_r:?}");
+    }
+
+    #[test]
+    fn trailing_and_midline_whitespace_edits_stay_visible() {
+        // without the highlight these changes are invisible on screen
+        let (_, new_r) = intraline("foo();", "foo(); ");
+        assert_eq!(new_r, vec![6..7], "trailing space stays marked");
+        let (old_r, new_r) = intraline("foo\tbar();", "foo    bar();");
+        assert!(
+            !old_r.is_empty() && !new_r.is_empty(),
+            "tab swap stays marked"
+        );
     }
 
     #[test]
