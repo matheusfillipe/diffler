@@ -80,9 +80,20 @@ impl LanguageRegistry {
 /// the whole line and not a reformat), replace the coarse token ranges with a
 /// word-level diff of the paired lines, so only the tokens that actually
 /// changed are emphasized (an edit inside a string scalar shouldn't light up the
-/// whole scalar). Whole-line changes and reformat-only lines keep the AST result.
+/// whole scalar). Emphasis means "differs from the homolog": a line with no
+/// pair — wholly new or wholly gone — renders plain, never with the stray
+/// fragments the AST diff leaves when it matches a token of new code against
+/// something elsewhere in the old tree.
 fn refine_partial_changes(hunk: &mut Hunk) {
-    for (del_idx, add_idx) in crate::pairing::paired_run_indices(&hunk.lines) {
+    let pairs = crate::pairing::paired_run_indices(&hunk.lines);
+    let paired: std::collections::HashSet<usize> =
+        pairs.iter().flat_map(|&(d, a)| [d, a]).collect();
+    for (index, line) in hunk.lines.iter_mut().enumerate() {
+        if matches!(line.kind, LineKind::Deleted | LineKind::Added) && !paired.contains(&index) {
+            line.emphasis = Vec::new();
+        }
+    }
+    for (del_idx, add_idx) in pairs {
         let partial = hunk
             .lines
             .get(del_idx)
@@ -231,6 +242,63 @@ mod tests {
             !covered.contains("foo"),
             "the unchanged prefix is not emphasized: {covered:?}"
         );
+    }
+
+    /// A block of wholly-new code where the AST diff matches stray tokens
+    /// (a `}`, an identifier) against the old tree and would light up
+    /// fragments inside plain added lines.
+    #[test]
+    fn wholly_new_code_never_carries_fragment_emphasis() {
+        use crate::model::{DiffLine, FileDiff, FileStatus, Hunk, HunkId, LineKind};
+        let old_src = "function keep(path: string): string {\n    return path;\n}\n";
+        let added = [
+            "function fresh(path: string): string {",
+            "    if (!path) {",
+            "        return \"missing\";",
+            "    }",
+            "    return path;",
+            "}",
+        ];
+        let new_src = format!("{old_src}\n{}\n", added.join("\n"));
+        let lines = added
+            .iter()
+            .enumerate()
+            .map(|(i, text)| {
+                DiffLine::new(
+                    LineKind::Added,
+                    None,
+                    Some(5 + i as u32),
+                    (*text).to_owned(),
+                )
+            })
+            .collect();
+        let mut file = FileDiff {
+            path: "a.ts".into(),
+            old_path: None,
+            status: FileStatus::Modified,
+            binary: false,
+            old_text: Some(old_src.to_owned()),
+            new_text: Some(new_src),
+            hunks: vec![Hunk {
+                id: HunkId("h".into()),
+                old_start: 3,
+                old_lines: 0,
+                new_start: 5,
+                new_lines: 6,
+                context: String::new(),
+                lines,
+            }],
+            hashes: crate::model::HashCache::default(),
+        };
+        assert!(LanguageRegistry::build().syntactic_emphasis(&mut file));
+        for line in &file.hunks[0].lines {
+            assert!(
+                line.emphasis.is_empty(),
+                "no pair, no emphasis — {:?} got {:?}",
+                line.text,
+                line.emphasis
+            );
+        }
     }
 
     #[test]

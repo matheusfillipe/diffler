@@ -1,7 +1,10 @@
 //! Pair deleted/added line runs inside a hunk and attach intra-line
-//! emphasis. Lines pair positionally within a run, mirroring delta's
-//! homologous-line model; the word-level engine's own token-similarity
-//! floor rejects unrelated pairs.
+//! emphasis. Within a run, lines pair by best total similarity (delta's
+//! homologous-line model): an unbalanced run pairs each line with its true
+//! counterpart, and lines with no counterpart stay unpaired and render
+//! plain — emphasis only ever contrasts a line against its homolog.
+
+use similar::TextDiff;
 
 use crate::diff::intraline;
 use crate::model::{DiffLine, FileDiff, Hunk, LineKind};
@@ -87,8 +90,21 @@ fn enrich_hunk(hunk: &mut Hunk) {
     }
 }
 
-/// `(deleted, added)` index pairs for a hunk's del/add runs, paired
-/// positionally within each run — the shared homologous-line model.
+/// Below this token similarity two lines never pair as homologs; a line
+/// with no partner above the floor renders plain rather than being
+/// contrasted against an unrelated neighbor. Keep at or above the engine's
+/// `diff::MIN_INLINE_RATIO`, or pairs form whose emphasis it always
+/// suppresses, wasting a real homolog candidate.
+const MIN_PAIR_RATIO: f32 = 0.5;
+
+/// Runs whose candidate table exceeds this fall back to positional prefix
+/// pairing: a run that big is a rewrite, and the quadratic alignment would
+/// buy nothing but latency. Fallback pairs skip the ratio floor and lean on
+/// the downstream emphasis gates instead.
+const MAX_PAIR_TABLE: usize = 1024;
+
+/// `(deleted, added)` index pairs for a hunk's del/add runs — the shared
+/// homologous-line model.
 pub(crate) fn paired_run_indices(lines: &[DiffLine]) -> Vec<(usize, usize)> {
     let kind_at = |i: usize| lines.get(i).map(|l| l.kind);
     let mut pairs = Vec::new();
@@ -106,11 +122,87 @@ pub(crate) fn paired_run_indices(lines: &[DiffLine]) -> Vec<(usize, usize)> {
         while kind_at(i) == Some(LineKind::Added) {
             i += 1;
         }
-        for p in 0..(add_start - del_start).min(i - add_start) {
-            pairs.push((del_start + p, add_start + p));
-        }
+        pair_runs(lines, del_start..add_start, add_start..i, &mut pairs);
     }
     pairs
+}
+
+/// Monotonic best-total-similarity alignment of a deleted run against its
+/// added run (a weighted LCS over line pairs): positional pairing mismatches
+/// as soon as a run inserts or drops one line, contrasting unrelated lines.
+// the DP tables are allocated (d+1)×(a+1) and every index below stays
+// inside those bounds
+#[allow(clippy::indexing_slicing)]
+fn pair_runs(
+    lines: &[DiffLine],
+    dels: std::ops::Range<usize>,
+    adds: std::ops::Range<usize>,
+    pairs: &mut Vec<(usize, usize)>,
+) {
+    let (d, a) = (dels.len(), adds.len());
+    if d == 0 || a == 0 {
+        return;
+    }
+    if d * a > MAX_PAIR_TABLE {
+        pairs.extend((0..d.min(a)).map(|p| (dels.start + p, adds.start + p)));
+        return;
+    }
+    let text = |i: usize| lines.get(i).map_or("", |l| l.text.as_str());
+    // score[i][j]: best total ratio pairing the first i dels with the first
+    // j adds; step[i][j] records the move that produced it for traceback
+    let mut score = vec![vec![0f32; a + 1]; d + 1];
+    let mut step = vec![vec![0u8; a + 1]; d + 1];
+    for i in 1..=d {
+        for j in 1..=a {
+            let ratio = line_ratio(text(dels.start + i - 1), text(adds.start + j - 1));
+            let (mut best, mut chose) = (score[i - 1][j], 1u8);
+            if score[i][j - 1] > best {
+                (best, chose) = (score[i][j - 1], 2);
+            }
+            // >= so an exact tie prefers pairing (the positional alignment):
+            // shifted single-token columns land exactly on the ratio floor
+            if ratio >= MIN_PAIR_RATIO && score[i - 1][j - 1] + ratio >= best {
+                (best, chose) = (score[i - 1][j - 1] + ratio, 3);
+            }
+            score[i][j] = best;
+            step[i][j] = chose;
+        }
+    }
+    let (mut i, mut j) = (d, a);
+    let mut aligned = Vec::new();
+    while i > 0 && j > 0 {
+        match step[i][j] {
+            3 => {
+                aligned.push((dels.start + i - 1, adds.start + j - 1));
+                i -= 1;
+                j -= 1;
+            }
+            2 => j -= 1,
+            _ => i -= 1,
+        }
+    }
+    pairs.extend(aligned.into_iter().rev());
+}
+
+/// Lines longer than this never pair: the token diff per DP cell is
+/// quadratic on dissimilar lines, and a run of huge lines would stall the
+/// render path for emphasis that reads as noise anyway.
+const MAX_PAIR_LINE_BYTES: usize = 1024;
+
+/// Token-level similarity of two lines. Indentation counts: a shared indent
+/// is what keeps short single-token pairs (`41` → `42`) above the floor, and
+/// the alignment already prefers a real homolog over an indent-only match.
+fn line_ratio(old: &str, new: &str) -> f32 {
+    if old.len() > MAX_PAIR_LINE_BYTES || new.len() > MAX_PAIR_LINE_BYTES {
+        return 0.0;
+    }
+    // blank and whitespace-only lines match anything of their kind at full
+    // ratio yet carry no signal; scoring them zero keeps a stray blank from
+    // stealing a real homolog's slot in the alignment
+    if old.trim().is_empty() || new.trim().is_empty() {
+        return 0.0;
+    }
+    TextDiff::from_unicode_words(old, new).ratio()
 }
 
 #[cfg(test)]
@@ -184,6 +276,49 @@ mod tests {
     }
 
     #[test]
+    fn shifted_single_token_columns_still_pair_positionally() {
+        // "    1" vs "    2" sits exactly on the ratio floor; a renumber
+        // shift must not collapse onto the lone identity pair and go plain
+        let mut h = hunk(vec![
+            (LineKind::Deleted, "    1"),
+            (LineKind::Deleted, "    2"),
+            (LineKind::Added, "    2"),
+            (LineKind::Added, "    3"),
+        ]);
+        enrich_hunk(&mut h);
+        assert_eq!(paired_run_indices(&h.lines), vec![(0, 2), (1, 3)]);
+        assert_eq!(h.lines[0].emphasis, vec![4..5]);
+        assert_eq!(h.lines[3].emphasis, vec![4..5]);
+    }
+
+    #[test]
+    fn blank_lines_never_steal_a_homolog_slot() {
+        let mut h = hunk(vec![
+            (LineKind::Deleted, "foo();"),
+            (LineKind::Deleted, ""),
+            (LineKind::Added, ""),
+            (LineKind::Added, "foo(x);"),
+        ]);
+        enrich_hunk(&mut h);
+        // a blank-to-blank identity pair would cross and unpair the real edit
+        assert_eq!(paired_run_indices(&h.lines), vec![(0, 3)]);
+        assert!(!h.lines[3].emphasis.is_empty(), "the edit keeps emphasis");
+    }
+
+    #[test]
+    fn huge_lines_never_pair() {
+        let long_old = format!("data,{}", "x,".repeat(1024));
+        let long_new = format!("data,{}", "y,".repeat(1024));
+        let mut h = hunk(vec![
+            (LineKind::Deleted, long_old.as_str()),
+            (LineKind::Added, long_new.as_str()),
+        ]);
+        enrich_hunk(&mut h);
+        assert!(paired_run_indices(&h.lines).is_empty());
+        assert!(h.lines.iter().all(|l| l.emphasis.is_empty()));
+    }
+
+    #[test]
     fn dissimilar_pair_gets_no_emphasis() {
         let mut h = hunk(vec![
             (LineKind::Deleted, "totally_different_thing()"),
@@ -195,15 +330,62 @@ mod tests {
     }
 
     #[test]
-    fn unbalanced_runs_pair_prefix_only() {
+    fn unbalanced_runs_pair_by_similarity_not_position() {
         let mut h = hunk(vec![
             (LineKind::Deleted, "alpha line one"),
             (LineKind::Deleted, "beta line two"),
-            (LineKind::Added, "alpha line ONE"),
+            (LineKind::Added, "beta line TWO"),
         ]);
         enrich_hunk(&mut h);
-        assert!(!h.lines[2].emphasis.is_empty()); // paired with first deletion
-        assert!(h.lines[1].emphasis.is_empty()); // unpaired deletion untouched
+        // positional pairing would contrast the add with "alpha line one";
+        // the alignment finds its real homolog on the second deletion
+        assert_eq!(
+            paired_run_indices(&h.lines),
+            vec![(1, 2)],
+            "pairs the beta lines, leaves alpha unpaired"
+        );
+        assert!(!h.lines[2].emphasis.is_empty());
+        assert!(h.lines[0].emphasis.is_empty());
+    }
+
+    /// A 4-deleted/3-added run where positional pairing would contrast
+    /// `email` with `permissions` and `permissions` with `states`, painting
+    /// identifier "renames" that never happened.
+    #[test]
+    fn misaligned_type_hunk_pairs_fields_with_their_homologs() {
+        let mut h = hunk(vec![
+            (
+                LineKind::Deleted,
+                "export function buildTokenClaims(user: {",
+            ),
+            (LineKind::Deleted, "    email: string;"),
+            (LineKind::Deleted, "    permissions?: string[];"),
+            (LineKind::Deleted, "    states?: string[];"),
+            (LineKind::Added, "type Entitlements = {"),
+            (LineKind::Added, "    permissions?: string[] | null;"),
+            (LineKind::Added, "    states?: string[] | null;"),
+        ]);
+        enrich_hunk(&mut h);
+        assert_eq!(paired_run_indices(&h.lines), vec![(2, 5), (3, 6)]);
+        for (index, expected) in [(5, "| null"), (6, "| null")] {
+            let line = &h.lines[index];
+            let covered: String = line
+                .emphasis
+                .iter()
+                .map(|r| &line.text[r.clone()])
+                .collect();
+            assert_eq!(
+                covered.trim(),
+                expected,
+                "only the added union arm lights up: {covered:?}"
+            );
+        }
+        for index in [0, 1, 4] {
+            assert!(
+                h.lines[index].emphasis.is_empty(),
+                "unpaired line {index} renders plain"
+            );
+        }
     }
 
     #[test]
