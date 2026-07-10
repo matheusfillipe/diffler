@@ -4,7 +4,7 @@
 [![npm](https://img.shields.io/npm/v/@mattfillipe/diffler.svg)](https://www.npmjs.com/package/@mattfillipe/diffler)
 [![IRC](https://img.shields.io/badge/IRC-chat.h4ks.com-blue.svg)](https://chat.h4ks.com)
 
-![diffler reviewing an agent's change: live diff, an inline comment, feedback sent](assets/demo.gif)
+![diffler reviewing an agent's change: word-level diff highlights, an inline comment, and the agent replying and fixing the code live over MCP](assets/demo.gif)
 
 A tool for taking ownership of agentic code: review what your agent writes,
 together with the agent, while it happens. The code that lands is code you
