@@ -88,7 +88,10 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   (Head + Untracked/Unstaged/Staged sections + recent commits; stage/unstage/
   discard/commit/branch), Log, and Diff/review (file sidebar + single-file pane;
   `c` comment, `V` visual select, `r` reply/resolve, `v` viewed, `y`/`Y` yank
-  feedback as markdown, `e` `$EDITOR` jump). OSC52 clipboard works over ssh/tmux.
+  feedback as markdown, `e` `$EDITOR` jump). The diff sidebar has three layouts
+  (`t` cycles): tree, flat list, and review — to-review vs a folded viewed
+  bucket, membership derived from the hash-keyed viewed marks so an edited file
+  falls back into to-review. OSC52 clipboard works over ssh/tmux.
 - **Config.** TOML, XDG-layered (built-in defaults → `~/.config/diffler/config.toml`
   → `<repo>/.diffler/config.toml` → CLI flags; every flag has a config key).
   `diffler config --dump` prints the merged config with origins.

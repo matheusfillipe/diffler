@@ -22,7 +22,7 @@ use crate::app::{
 use crate::keymap::Action;
 use crate::search::Search;
 use crate::theme::Theme;
-use crate::tree::TreeNode;
+use crate::tree::{Bucket, TreeNode};
 use crate::ui::Hint;
 use crate::ui::diff_render::{
     SplitSide, file_gutter_width, hunk_header, line_syntax, render_diff_line, render_split_pair,
@@ -147,7 +147,7 @@ fn draw_sidebar(
     let scroll = diff.tree_cursor.saturating_sub(height - 1);
     diff.sidebar_scroll = scroll;
     let lines: Vec<Line<'static>> = diff
-        .tree_rows(model)
+        .tree_rows(model, session)
         .iter()
         .enumerate()
         .skip(scroll)
@@ -170,6 +170,11 @@ fn draw_sidebar(
                     on_cursor,
                     &ranges,
                 ),
+                TreeNode::Section {
+                    bucket,
+                    count,
+                    folded,
+                } => sidebar_section_line(theme, *bucket, *count, *folded, inner.width, on_cursor),
                 TreeNode::File { index, name } => {
                     let Some(file) = model.files.get(*index) else {
                         return Line::default();
@@ -501,6 +506,34 @@ fn sidebar_dir_line(
     ];
     // dir names are never clipped, so the highlight maps straight onto them
     spans.extend(super::highlight_spans(name, name_style, search, theme));
+    pad_line(spans, bg, width)
+}
+
+/// A review-bucket header row: fold arrow, bold label, and file count.
+fn sidebar_section_line(
+    theme: &Theme,
+    bucket: Bucket,
+    count: usize,
+    folded: bool,
+    width: u16,
+    on_cursor: bool,
+) -> Line<'static> {
+    let bg = if on_cursor {
+        theme.cursor_line
+    } else {
+        theme.bg
+    };
+    let arrow = if folded { "▸ " } else { "▾ " };
+    let label_style = Style::new()
+        .fg(if on_cursor { theme.accent } else { theme.fg })
+        .bg(bg)
+        .add_modifier(Modifier::BOLD);
+    let spans = vec![
+        tree_lead(theme, 0, bg, on_cursor),
+        Span::styled(arrow.to_owned(), Style::new().fg(theme.dim).bg(bg)),
+        Span::styled(bucket.label().to_owned(), label_style),
+        Span::styled(format!(" ({count})"), Style::new().fg(theme.dim).bg(bg)),
+    ];
     pad_line(spans, bg, width)
 }
 
@@ -1035,6 +1068,19 @@ mod tests {
         (fixture, app)
     }
 
+    #[test]
+    fn review_layout_sidebar_buckets_viewed_files() {
+        let fixture = standard_fixture();
+        let mut loaded = LoadedConfig::default();
+        loaded.config.ui.diff_file_layout = crate::config::FileLayout::Review;
+        let mut app = App::new(fixture.review(), loaded);
+        app.author = "reviewer".to_owned();
+        app.open_working_tree_diff(None);
+        // one viewed file in the folded bucket, two left to review
+        app.handle(key('v'));
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
     /// Select src/lib.rs and focus the diff pane.
     fn open_lib_diff(app: &mut App) {
         let index = app
@@ -1170,7 +1216,8 @@ mod tests {
     /// Sidebar file position on screen for the last render.
     fn sidebar_file_pos(app: &App) -> (u16, u16, usize) {
         let diff = app.diff.as_ref().unwrap();
-        let rows = diff.tree_rows(diff.model(&app.review));
+        let session = app.review.session_for(&diff.source);
+        let rows = diff.tree_rows(diff.model(&app.review), session);
         let target = rows
             .iter()
             .position(|r| matches!(r.node, crate::tree::TreeNode::File { .. }))
@@ -1372,7 +1419,8 @@ mod tests {
         app.open_working_tree_diff(None);
         let count = {
             let diff = app.diff.as_ref().unwrap();
-            diff.tree_rows(diff.model(&app.review)).len()
+            let session = app.review.session_for(&diff.source);
+            diff.tree_rows(diff.model(&app.review), session).len()
         };
         app.diff.as_mut().unwrap().tree_cursor = count - 1;
 

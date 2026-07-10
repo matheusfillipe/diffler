@@ -25,6 +25,8 @@ pub enum Action {
     PrevSection,
     NextFile,
     PrevFile,
+    NextUnviewed,
+    CycleSidebarMode,
     ToggleFocus,
     ToggleFold,
     ToggleSideBySide,
@@ -101,6 +103,8 @@ impl Action {
             Self::PrevSection => "prev_section",
             Self::NextFile => "next_file",
             Self::PrevFile => "prev_file",
+            Self::NextUnviewed => "next_unviewed",
+            Self::CycleSidebarMode => "cycle_sidebar_mode",
             Self::ToggleFocus => "toggle_focus",
             Self::ToggleFold => "toggle_fold",
             Self::ToggleSideBySide => "toggle_side_by_side",
@@ -161,7 +165,7 @@ impl Action {
         }
     }
 
-    const ALL: [Self; 70] = [
+    const ALL: [Self; 72] = [
         Self::NextFunction,
         Self::PrevFunction,
         Self::DeleteComment,
@@ -181,6 +185,8 @@ impl Action {
         Self::PrevSection,
         Self::NextFile,
         Self::PrevFile,
+        Self::NextUnviewed,
+        Self::CycleSidebarMode,
         Self::ToggleFocus,
         Self::ToggleFold,
         Self::ToggleSideBySide,
@@ -333,6 +339,10 @@ const DIFF_DEFAULTS: &[(&str, Action)] = &[
     ("<c-b>", Action::FullPageUp),
     ("<c-n>", Action::NextFile),
     ("<c-p>", Action::PrevFile),
+    ("J", Action::NextFile),
+    ("K", Action::PrevFile),
+    ("u", Action::NextUnviewed),
+    ("t", Action::CycleSidebarMode),
     ("<tab>", Action::ToggleFocus),
     ("za", Action::ToggleFold),
     ("|", Action::ToggleSideBySide),

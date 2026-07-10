@@ -1248,6 +1248,8 @@ fn tree_row_label(node: &crate::tree::TreeNode) -> String {
         crate::tree::TreeNode::Dir { name, .. } | crate::tree::TreeNode::File { name, .. } => {
             name.clone()
         }
+        // bucket headers are chrome, not content: `/` never matches them
+        crate::tree::TreeNode::Section { .. } => String::new(),
     }
 }
 

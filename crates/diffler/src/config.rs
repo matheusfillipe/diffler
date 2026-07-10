@@ -28,12 +28,14 @@ pub struct Config {
 }
 
 /// How a view lists files: a flat magit-style list (one row per file, full
-/// repo-relative path) or a collapsible directory tree.
+/// repo-relative path), a collapsible directory tree, or the review mode that
+/// splits files into to-review and viewed buckets (diff sidebar only).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FileLayout {
     List,
     Tree,
+    Review,
 }
 
 impl FileLayout {
@@ -44,6 +46,7 @@ impl FileLayout {
         match value {
             "list" => (Self::List, None),
             "tree" => (Self::Tree, None),
+            "review" => (Self::Review, None),
             other => (
                 default,
                 Some(format!("unknown {key} \"{other}\", using \"{default}\"")),
@@ -57,6 +60,7 @@ impl fmt::Display for FileLayout {
         f.write_str(match self {
             Self::List => "list",
             Self::Tree => "tree",
+            Self::Review => "review",
         })
     }
 }
@@ -382,11 +386,13 @@ fn read_layer(path: &Path, warnings: &mut Vec<String>) -> Result<PartialConfig, 
 
 /// Apply a layer's file-layout value: an unknown string keeps the prior value
 /// (the default) and warns, matching the theme key's lenient handling, rather
-/// than aborting the parse.
+/// than aborting the parse. The review layout only makes sense where viewed
+/// marks exist, so `allow_review` gates it to the diff sidebar key.
 fn set_layout(
     value: Option<String>,
     target: &mut FileLayout,
     key: &str,
+    allow_review: bool,
     origin: &Origin,
     origins: &mut BTreeMap<String, Origin>,
     warnings: &mut Vec<String>,
@@ -397,6 +403,12 @@ fn set_layout(
     let (layout, warning) = FileLayout::from_str(&value, key, *target);
     if let Some(warning) = warning {
         warnings.push(warning);
+        return;
+    }
+    if layout == FileLayout::Review && !allow_review {
+        warnings.push(format!(
+            "{key} does not support \"review\" (diff sidebar only), using \"{target}\""
+        ));
         return;
     }
     *target = layout;
@@ -450,6 +462,7 @@ fn apply_layer(
         layer.ui.status_file_layout,
         &mut config.ui.status_file_layout,
         "ui.status_file_layout",
+        false,
         origin,
         origins,
         warnings,
@@ -458,6 +471,7 @@ fn apply_layer(
         layer.ui.diff_file_layout,
         &mut config.ui.diff_file_layout,
         "ui.diff_file_layout",
+        true,
         origin,
         origins,
         warnings,
@@ -899,6 +913,24 @@ mod tests {
             Origin::Project(project)
         );
         assert!(loaded.warnings.is_empty());
+    }
+
+    #[test]
+    fn review_layout_applies_to_the_diff_sidebar_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project.toml");
+        fs::write(
+            &project,
+            "[ui]\nstatus_file_layout = \"review\"\ndiff_file_layout = \"review\"\n",
+        )
+        .unwrap();
+        let loaded = load_layers(None, Some(&project), &CliOverrides::default()).unwrap();
+        assert_eq!(loaded.config.ui.diff_file_layout, FileLayout::Review);
+        // the status screen has no viewed marks: review is rejected there
+        assert_eq!(loaded.config.ui.status_file_layout, FileLayout::List);
+        assert_eq!(loaded.warnings.len(), 1);
+        let warning = &loaded.warnings[0];
+        assert!(warning.contains("diff sidebar only"), "explains: {warning}");
     }
 
     #[test]

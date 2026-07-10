@@ -18,7 +18,7 @@ use super::Modal;
 use super::{App, InputOp, Screen};
 use crate::config::FileLayout;
 use crate::keymap::Action;
-use crate::tree::{self, TreeNode, TreeRow};
+use crate::tree::{self, Bucket, TreeNode, TreeRow};
 use crate::ui::diff_render::SplitSide;
 
 /// Which pane has the keyboard: the file sidebar or the diff body.
@@ -26,6 +26,38 @@ use crate::ui::diff_render::SplitSide;
 pub enum Pane {
     List,
     Diff,
+}
+
+/// Fold state of the review layout's two buckets.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BucketFolds {
+    to_review: bool,
+    viewed: bool,
+}
+
+impl Default for BucketFolds {
+    fn default() -> Self {
+        Self {
+            to_review: false,
+            viewed: true,
+        }
+    }
+}
+
+impl BucketFolds {
+    fn get(self, bucket: Bucket) -> bool {
+        match bucket {
+            Bucket::ToReview => self.to_review,
+            Bucket::Viewed => self.viewed,
+        }
+    }
+
+    fn toggle(&mut self, bucket: Bucket) {
+        match bucket {
+            Bucket::ToReview => self.to_review = !self.to_review,
+            Bucket::Viewed => self.viewed = !self.viewed,
+        }
+    }
 }
 
 /// One terminal row of the selected file's diff body. Indices point into the
@@ -86,6 +118,9 @@ pub struct DiffView {
     /// Folded directory paths in the sidebar tree; persists across refresh.
     /// Unused in the flat list (it has no directories).
     pub(crate) folded_dirs: BTreeSet<String>,
+    /// Review-layout bucket folds. The viewed pile starts collapsed so file
+    /// navigation walks only what still needs review.
+    pub(crate) bucket_folds: BucketFolds,
     /// Cursor into the current visible sidebar tree rows (dirs and files).
     pub(crate) tree_cursor: usize,
     /// Row within the selected file's rows.
@@ -136,6 +171,7 @@ impl DiffView {
             layout,
             selected: 0,
             folded_dirs: BTreeSet::new(),
+            bucket_folds: BucketFolds::default(),
             tree_cursor: 0,
             cursor: 0,
             scroll: 0,
@@ -260,9 +296,15 @@ impl DiffView {
         self.scroll = self.scroll.min(self.rows.len().saturating_sub(1));
         // the file list may have shifted (refresh) or folds may hide the old
         // cursor row: keep the tree cursor on the pane's file
-        let tree_rows = self.tree_rows(model);
-        self.tree_cursor = tree_position_of_file(&tree_rows, self.selected)
-            .unwrap_or_else(|| self.tree_cursor.min(tree_rows.len().saturating_sub(1)));
+        let tree_rows = self.tree_rows(model, session);
+        self.reseat_tree_cursor(&tree_rows);
+    }
+
+    /// Seat the tree cursor on the selected file's row, or clamp it into
+    /// range when that row is hidden (folded away, moved between buckets).
+    pub(crate) fn reseat_tree_cursor(&mut self, rows: &[TreeRow]) {
+        self.tree_cursor = tree_position_of_file(rows, self.selected)
+            .unwrap_or_else(|| self.tree_cursor.min(rows.len().saturating_sub(1)));
     }
 
     /// Inclusive row span the visual selection covers, when active.
@@ -289,9 +331,12 @@ impl DiffView {
     /// groups files under collapsible directory rows (honoring the folded
     /// set); the flat list is a degenerate tree — one File row per file at
     /// depth 0, carrying its full path, no Dir rows — so `tree_cursor` and the
-    /// file-navigation helpers work unchanged for both. Files keep their model
-    /// index.
-    pub(crate) fn tree_rows(&self, model: &DiffModel) -> Vec<TreeRow> {
+    /// file-navigation helpers work unchanged for both. The review layout
+    /// splits files into a to-review and a viewed bucket under foldable
+    /// Section rows; bucket membership reads the hash-keyed viewed marks, so
+    /// an edited file falls back into to-review by itself. Files keep their
+    /// model index.
+    pub(crate) fn tree_rows(&self, model: &DiffModel, session: &Session) -> Vec<TreeRow> {
         match self.layout {
             FileLayout::List => model
                 .files
@@ -309,8 +354,80 @@ impl DiffView {
                 let paths: Vec<&str> = model.files.iter().map(|f| f.path.as_str()).collect();
                 tree::visible_rows(&paths, &self.folded_dirs)
             }
+            FileLayout::Review => self.review_rows(model, session),
         }
     }
+
+    fn review_rows(&self, model: &DiffModel, session: &Session) -> Vec<TreeRow> {
+        let (mut fresh, mut viewed) = (Vec::new(), Vec::new());
+        for (index, file) in model.files.iter().enumerate() {
+            if session.is_viewed(&file.path, &file.content_hash()) {
+                viewed.push(index);
+            } else {
+                fresh.push(index);
+            }
+        }
+        let mut rows = Vec::new();
+        for (bucket, indices) in [(Bucket::ToReview, fresh), (Bucket::Viewed, viewed)] {
+            let folded = self.bucket_folds.get(bucket);
+            rows.push(TreeRow {
+                depth: 0,
+                node: TreeNode::Section {
+                    bucket,
+                    count: indices.len(),
+                    folded,
+                },
+            });
+            if folded {
+                continue;
+            }
+            rows.extend(indices.into_iter().filter_map(|index| {
+                let file = model.files.get(index)?;
+                Some(TreeRow {
+                    depth: 1,
+                    node: TreeNode::File {
+                        index,
+                        name: file.path.clone(),
+                    },
+                })
+            }));
+        }
+        rows
+    }
+
+    /// Advance the sidebar layout: tree → list → review → tree.
+    pub(crate) fn cycle_layout(&mut self) -> FileLayout {
+        self.layout = match self.layout {
+            FileLayout::Tree => FileLayout::List,
+            FileLayout::List => FileLayout::Review,
+            FileLayout::Review => FileLayout::Tree,
+        };
+        self.layout
+    }
+}
+
+/// The sidebar rows for `diff`, pairing its model with its source's session
+/// (the review layout needs the viewed marks).
+fn sidebar_rows(diff: &DiffView, review: &Review) -> Vec<TreeRow> {
+    diff.tree_rows(diff.model(review), review.session_for(&diff.source))
+}
+
+/// Model index of the next file after the selection not yet marked viewed,
+/// scanning forward and coming back around only when `wrap` asks for it.
+fn next_unviewed_index(diff: &DiffView, review: &Review, wrap: bool) -> Option<usize> {
+    let model = diff.model(review);
+    let session = review.session_for(&diff.source);
+    let count = model.files.len();
+    (1..=count)
+        .map(|step| diff.selected + step)
+        .take_while(|&index| wrap || index < count)
+        .map(|index| index % count)
+        .find(|&index| {
+            model
+                .files
+                .get(index)
+                .is_some_and(|file| !session.is_viewed(&file.path, &file.content_hash()))
+        })
 }
 
 /// Visible-row index of the File row addressing `file_index`, if shown.
@@ -734,6 +851,8 @@ impl App {
         match action {
             Action::NextFile => return self.diff_step_file(true),
             Action::PrevFile => return self.diff_step_file(false),
+            Action::NextUnviewed => return self.diff_jump_unviewed(),
+            Action::CycleSidebarMode => return self.diff_cycle_sidebar_mode(),
             Action::ToggleFocus => return self.diff_toggle_focus(),
             Action::ToggleSideBySide => return self.toggle_side_by_side(),
             // comment walk works from either pane; land in the diff pane on the
@@ -932,7 +1051,7 @@ impl App {
     fn diff_sidebar_row_at(&self, col: u16, row: u16) -> Option<usize> {
         let diff = self.diff.as_ref()?;
         let index = super::hit_index(diff.sidebar, diff.sidebar_scroll, col, row)?;
-        (index < diff.tree_rows(diff.model(&self.review)).len()).then_some(index)
+        (index < sidebar_rows(diff, &self.review).len()).then_some(index)
     }
 
     /// Unified pane row index under `(col, row)`. `None` in split mode, whose
@@ -952,7 +1071,7 @@ impl App {
         let Some(diff) = self.diff.as_ref() else {
             return;
         };
-        let rows = diff.tree_rows(diff.model(&self.review));
+        let rows = sidebar_rows(diff, &self.review);
         if rows.is_empty() {
             return;
         }
@@ -970,7 +1089,7 @@ impl App {
         let Some(diff) = self.diff.as_mut() else {
             return;
         };
-        let rows = diff.tree_rows(diff.model(review));
+        let rows = sidebar_rows(diff, review);
         if rows.is_empty() {
             return;
         }
@@ -990,41 +1109,40 @@ impl App {
     }
 
     /// `<cr>` on the tree cursor: focus the diff pane on a file row, or toggle
-    /// the fold on a directory row.
+    /// the fold on a directory or bucket row.
     fn diff_tree_activate(&mut self) {
         let review = &self.review;
         let Some(diff) = self.diff.as_mut() else {
             return;
         };
-        let rows = diff.tree_rows(diff.model(review));
+        let rows = sidebar_rows(diff, review);
         match rows.get(diff.tree_cursor).map(|r| &r.node) {
             Some(TreeNode::File { .. }) => self.diff_focus(Pane::Diff),
-            Some(TreeNode::Dir { .. }) => self.diff_toggle_dir_fold(),
+            Some(TreeNode::Dir { .. } | TreeNode::Section { .. }) => self.diff_toggle_dir_fold(),
             None => {}
         }
     }
 
-    /// `za`: toggle the fold of the directory under the tree cursor. A no-op on
-    /// a file row.
+    /// `za`: toggle the fold of the directory or review bucket under the tree
+    /// cursor. A no-op on a file row.
     fn diff_toggle_dir_fold(&mut self) {
         let review = &self.review;
         let Some(diff) = self.diff.as_mut() else {
             return;
         };
-        let rows = diff.tree_rows(diff.model(review));
-        let Some(TreeRow {
-            node: TreeNode::Dir { path, .. },
-            ..
-        }) = rows.get(diff.tree_cursor)
-        else {
-            return;
-        };
-        let path = path.clone();
-        if !diff.folded_dirs.remove(&path) {
-            diff.folded_dirs.insert(path);
+        let rows = sidebar_rows(diff, review);
+        match rows.get(diff.tree_cursor).map(|r| &r.node) {
+            Some(TreeNode::Dir { path, .. }) => {
+                let path = path.clone();
+                if !diff.folded_dirs.remove(&path) {
+                    diff.folded_dirs.insert(path);
+                }
+            }
+            Some(TreeNode::Section { bucket, .. }) => diff.bucket_folds.toggle(*bucket),
+            _ => return,
         }
         // folding past the cursor shrinks the tree; keep the cursor in range
-        let rows = diff.tree_rows(diff.model(review));
+        let rows = sidebar_rows(diff, review);
         diff.tree_cursor = diff.tree_cursor.min(rows.len().saturating_sub(1));
     }
 
@@ -1034,7 +1152,7 @@ impl App {
         let Some(diff) = self.diff.as_ref() else {
             return;
         };
-        let rows = diff.tree_rows(diff.model(&self.review));
+        let rows = sidebar_rows(diff, &self.review);
         let is_file = |row: &TreeRow| matches!(row.node, TreeNode::File { .. });
         let target = if forward {
             rows.iter()
@@ -1052,6 +1170,37 @@ impl App {
         if let Some(target) = target {
             self.diff_tree_to(target);
         }
+    }
+
+    /// `u`: land on the next file not yet marked viewed, wrapping past the
+    /// end, from either pane.
+    fn diff_jump_unviewed(&mut self) {
+        let Some(diff) = self.diff.as_ref() else {
+            return;
+        };
+        if diff.model(&self.review).files.is_empty() {
+            self.info("nothing to review");
+            return;
+        }
+        match next_unviewed_index(diff, &self.review, true) {
+            Some(index) => self.diff_select_file_index(index),
+            None => self.info("every file is viewed"),
+        }
+    }
+
+    /// `t`: cycle the sidebar layout (tree → list → review), keeping the
+    /// pane's file and re-seating the tree cursor on its row when visible.
+    fn diff_cycle_sidebar_mode(&mut self) {
+        let review = &self.review;
+        let Some(diff) = self.diff.as_mut() else {
+            return;
+        };
+        let layout = diff.cycle_layout();
+        let rows = sidebar_rows(diff, review);
+        diff.reseat_tree_cursor(&rows);
+        // a committed search indexes the old layout's rows
+        self.search = None;
+        self.info(format!("sidebar: {layout}"));
     }
 
     /// `e`: open the selected file in the editor — at the line for diff line
@@ -1408,23 +1557,22 @@ impl App {
         if !viewed {
             self.diff_advance_to_unviewed();
         }
+        // the toggle can reshuffle the review layout's buckets without the
+        // advance re-seating anything (unmark, or nothing left to advance to)
+        let review = &self.review;
+        if let Some(diff) = self.diff.as_mut() {
+            let rows = sidebar_rows(diff, review);
+            diff.reseat_tree_cursor(&rows);
+        }
     }
 
     /// Move the sidebar selection to the next not-viewed file below it, if
     /// any; otherwise stay put.
     fn diff_advance_to_unviewed(&mut self) {
-        let review = &self.review;
-        let next = self.diff.as_ref().and_then(|diff| {
-            let model = diff.model(review);
-            let session = review.session_for(&diff.source);
-            model
-                .files
-                .iter()
-                .enumerate()
-                .skip(diff.selected + 1)
-                .find(|(_, file)| !session.is_viewed(&file.path, &file.content_hash()))
-                .map(|(index, _)| index)
-        });
+        let next = self
+            .diff
+            .as_ref()
+            .and_then(|diff| next_unviewed_index(diff, &self.review, false));
         if let Some(index) = next {
             self.diff_select_file_index(index);
         }
@@ -1606,17 +1754,21 @@ mod tests {
 
     fn tree_row_count(app: &App) -> usize {
         let diff = app.diff.as_ref().expect("diff view");
-        diff.tree_rows(diff.model(&app.review)).len()
+        sidebar_rows(diff, &app.review).len()
     }
 
-    /// Kinds of the visible sidebar tree rows: "dir" or "file:<name>".
+    /// Kinds of the visible sidebar tree rows: "dir", "file:<name>", or
+    /// "section:<label>:<count>".
     fn tree_kinds(app: &App) -> Vec<String> {
         let diff = app.diff.as_ref().expect("diff view");
-        diff.tree_rows(diff.model(&app.review))
+        sidebar_rows(diff, &app.review)
             .iter()
             .map(|row| match &row.node {
                 crate::tree::TreeNode::Dir { .. } => "dir".to_owned(),
                 crate::tree::TreeNode::File { name, .. } => format!("file:{name}"),
+                crate::tree::TreeNode::Section { bucket, count, .. } => {
+                    format!("section:{}:{count}", bucket.label())
+                }
             })
             .collect()
     }
@@ -2310,6 +2462,185 @@ mod tests {
         assert!(app.is_path_viewed(&first));
         // marking advanced the selection past the viewed file
         assert_ne!(selected_path(&app), first);
+    }
+
+    #[test]
+    fn review_layout_buckets_files_with_the_viewed_pile_folded() {
+        let fixture = standard_fixture();
+        let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Review);
+        assert_eq!(
+            tree_kinds(&app),
+            [
+                "section:To review:3",
+                "file:ci.yml",
+                "file:src/lib.rs",
+                "file:todo.md",
+                "section:Viewed:0",
+            ]
+        );
+        // v moves the file into the folded viewed bucket and advances
+        app.handle(key('v'));
+        assert_eq!(
+            tree_kinds(&app),
+            [
+                "section:To review:2",
+                "file:src/lib.rs",
+                "file:todo.md",
+                "section:Viewed:1",
+            ]
+        );
+        assert_eq!(selected_path(&app), "src/lib.rs");
+    }
+
+    #[test]
+    fn toggling_the_viewed_bucket_reveals_and_hides_its_files() {
+        let fixture = standard_fixture();
+        let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Review);
+        app.handle(key('v'));
+        // the folded viewed header is the last row; za on it unfolds
+        app.handle(key('G'));
+        app.handle(key('z'));
+        app.handle(key('a'));
+        assert_eq!(
+            tree_kinds(&app),
+            [
+                "section:To review:2",
+                "file:src/lib.rs",
+                "file:todo.md",
+                "section:Viewed:1",
+                "file:ci.yml",
+            ]
+        );
+        // <cr> on the header folds it back
+        app.handle(key('\n'));
+        assert_eq!(
+            tree_kinds(&app).last().map(String::as_str),
+            Some("section:Viewed:1")
+        );
+    }
+
+    #[test]
+    fn editing_a_viewed_file_returns_it_to_the_to_review_bucket() {
+        let fixture = standard_fixture();
+        let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Review);
+        app.handle(key('v'));
+        assert_eq!(tree_kinds(&app)[0], "section:To review:2");
+        // the file changes on disk: its hash no longer matches the mark
+        fixture.write("ci.yml", "on: push\njobs: {}\n");
+        app.refresh();
+        assert_eq!(
+            tree_kinds(&app)[0],
+            "section:To review:3",
+            "stale viewed mark drops the file back into to-review"
+        );
+    }
+
+    #[test]
+    fn t_cycles_the_sidebar_through_tree_list_and_review() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        assert!(tree_kinds(&app).contains(&"dir".to_owned()));
+        app.handle(key('t'));
+        assert_eq!(
+            tree_kinds(&app),
+            ["file:ci.yml", "file:src/lib.rs", "file:todo.md"],
+            "list: one flat row per file"
+        );
+        app.handle(key('t'));
+        assert_eq!(tree_kinds(&app)[0], "section:To review:3");
+        app.handle(key('t'));
+        assert!(
+            tree_kinds(&app).contains(&"dir".to_owned()),
+            "wraps back to the tree"
+        );
+    }
+
+    #[test]
+    fn unmarking_in_the_review_layout_reseats_the_cursor_on_the_moved_row() {
+        let fixture = standard_fixture();
+        let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Review);
+        // view everything, then unfold the viewed bucket and step onto a file
+        app.handle(key('v'));
+        app.handle(key('v'));
+        app.handle(key('v'));
+        app.handle(key('G'));
+        app.handle(key('z'));
+        app.handle(key('a'));
+        app.handle(key('j'));
+        assert_eq!(selected_path(&app), "ci.yml");
+        // unmark: ci.yml jumps up into to-review; the cursor must follow it
+        app.handle(key('v'));
+        assert_eq!(
+            tree_kinds(&app),
+            [
+                "section:To review:1",
+                "file:ci.yml",
+                "section:Viewed:2",
+                "file:src/lib.rs",
+                "file:todo.md",
+            ]
+        );
+        assert_eq!(tree_cursor(&app), 1, "cursor sits on the moved file row");
+    }
+
+    #[test]
+    fn marking_the_last_unviewed_file_keeps_the_cursor_in_range() {
+        let fixture = standard_fixture();
+        let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Review);
+        app.handle(key('v'));
+        app.handle(key('v'));
+        // one file left; park the cursor on the trailing viewed header
+        app.handle(key('G'));
+        app.handle(key('v'));
+        let rows = tree_row_count(&app);
+        assert_eq!(rows, 2, "both buckets, all files folded away");
+        assert!(
+            tree_cursor(&app) < rows,
+            "cursor clamps into the shrunken row list"
+        );
+    }
+
+    #[test]
+    fn cycling_the_sidebar_layout_drops_a_committed_search() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        app.handle(key('/'));
+        app.handle(key('l'));
+        app.handle(key('\n'));
+        assert!(app.search.is_some(), "search committed on the tree rows");
+        app.handle(key('t'));
+        assert!(
+            app.search.is_none(),
+            "layout swap invalidates the search row indices"
+        );
+    }
+
+    #[test]
+    fn u_jumps_to_the_next_unviewed_file_wrapping_past_viewed_ones() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        app.handle(key('v')); // ci.yml viewed, selection lands on src/lib.rs
+        select_file(&mut app, "todo.md");
+        app.handle(key('u'));
+        assert_eq!(
+            selected_path(&app),
+            "src/lib.rs",
+            "wraps past the viewed ci.yml"
+        );
+    }
+
+    #[test]
+    fn u_with_everything_viewed_says_so() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        app.handle(key('v'));
+        app.handle(key('v'));
+        app.handle(key('v'));
+        let before = selected_path(&app);
+        app.handle(key('u'));
+        assert_eq!(selected_path(&app), before);
+        let message = app.message.expect("message");
+        assert!(message.text.contains("every file is viewed"));
     }
 
     #[test]

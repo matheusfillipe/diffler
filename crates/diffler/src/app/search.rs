@@ -146,7 +146,7 @@ impl App {
         let model = diff.model(&self.review);
         match diff.focus {
             Pane::List => diff
-                .tree_rows(model)
+                .tree_rows(model, self.review.session_for(&diff.source))
                 .iter()
                 .enumerate()
                 .map(|(i, r)| (i, tree_row_label(&r.node)))

@@ -83,6 +83,8 @@ Vim-like: `j`/`k`/`gg`/`G` motions, `/` search, and
 | `s` / `u` | stage / unstage |
 | `cc` | commit |
 | `c` | comment the diff line (`V` selects a range first) |
+| `v` / `u` | in the diff view: mark the file viewed / jump to the next unviewed file |
+| `t` | cycle the sidebar: tree, list, review buckets (viewed files fold away, come back if they change) |
 | `Z` | send feedback to the agent |
 | `C` | overview of every comment — Enter jumps, `d`/`D` delete one/all |
 | `S` | submit stacked PR comments as one review |
@@ -97,7 +99,8 @@ Every binding is remappable — see
 
 The diff view is two panes: a file sidebar and the selected file's diff. `TAB`
 moves focus between them; `j`/`k` change the selected file from the sidebar or
-scroll the diff when focused there; `<c-n>`/`<c-p>` switch files from either.
+scroll the diff when focused there; `J`/`K` (or `<c-n>`/`<c-p>`) switch files
+from either.
 
 The mouse works too (including over tmux): the wheel scrolls the pane under the
 pointer, and a left click selects a row — clicking a section, directory, or

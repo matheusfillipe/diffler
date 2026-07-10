@@ -221,7 +221,9 @@ impl App {
     /// layouts. The tree honors the section's folded directories.
     fn section_layout_rows(&self, section: Section, files: &[FileDiff]) -> Vec<TreeRow> {
         match self.config.ui.status_file_layout {
-            FileLayout::List => files
+            // review is diff-sidebar-only (config rejects it here); a stray
+            // value degrades to the flat list
+            FileLayout::List | FileLayout::Review => files
                 .iter()
                 .enumerate()
                 .map(|(index, file)| TreeRow {
@@ -262,6 +264,8 @@ impl App {
             // layouts; Tree groups files under collapsible directory rows.
             for tree_row in self.section_layout_rows(section, files) {
                 match tree_row.node {
+                    // status sections never produce review buckets
+                    TreeNode::Section { .. } => {}
                     TreeNode::Dir { path, name } => rows.push(Row::Dir {
                         section,
                         path,

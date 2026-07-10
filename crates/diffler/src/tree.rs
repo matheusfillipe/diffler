@@ -1,19 +1,52 @@
-//! Pure directory-trie flattening shared by the diff sidebar and the status
-//! sections. A file list (repo-relative paths, in input order) becomes a list
-//! of visible rows honoring fold state — directories before files at each
-//! level, input order preserved within a kind, folded directories hiding their
-//! subtree. No rendering and no app state, so the navigation math is fully
+//! The shared sidebar row vocabulary (`TreeRow`/`TreeNode`) and pure
+//! directory-trie flattening, used by the diff sidebar and the status
+//! sections. `visible_rows` turns a file list (repo-relative paths, in input
+//! order) into visible rows honoring fold state — directories before files at
+//! each level, input order preserved within a kind, folded directories hiding
+//! their subtree. It only ever emits Dir and File rows; Section rows are
+//! composed by the diff sidebar's review layout on top of the same vocabulary.
+//! No rendering and no app state, so the navigation math is fully
 //! unit-testable.
 
 use std::collections::BTreeSet;
 
+/// The review-mode bucket a section header stands for: files still needing
+/// review, or files already marked viewed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Bucket {
+    ToReview,
+    Viewed,
+}
+
+impl Bucket {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ToReview => "To review",
+            Self::Viewed => "Viewed",
+        }
+    }
+}
+
 /// One node in a flattened tree row: a directory (carrying its full path as the
-/// fold key, and the last path segment as its display name) or a file (carrying
-/// its index into the source path slice, and its basename).
+/// fold key, and the last path segment as its display name), a file (carrying
+/// its index into the source path slice, and its basename), or a review-mode
+/// bucket header. Sections are composed by the diff sidebar's review layout;
+/// the trie flattening below never produces them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TreeNode {
-    Dir { path: String, name: String },
-    File { index: usize, name: String },
+    Dir {
+        path: String,
+        name: String,
+    },
+    File {
+        index: usize,
+        name: String,
+    },
+    Section {
+        bucket: Bucket,
+        count: usize,
+        folded: bool,
+    },
 }
 
 /// A flattened tree row: a node and its indentation depth (0 at the root).
@@ -171,6 +204,7 @@ mod tests {
         match &row.node {
             TreeNode::Dir { name, .. } => (row.depth, "dir", name.clone()),
             TreeNode::File { name, .. } => (row.depth, "file", name.clone()),
+            TreeNode::Section { bucket, .. } => (row.depth, "section", bucket.label().to_owned()),
         }
     }
 
@@ -327,7 +361,7 @@ mod tests {
             .iter()
             .filter_map(|r| match &r.node {
                 TreeNode::File { index, name } => Some((*index, name.as_str())),
-                TreeNode::Dir { .. } => None,
+                TreeNode::Dir { .. } | TreeNode::Section { .. } => None,
             })
             .collect();
         assert_eq!(files, vec![(0, "mod.rs"), (1, "mod.rs")]);
