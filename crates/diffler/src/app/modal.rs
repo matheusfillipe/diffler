@@ -50,6 +50,12 @@ impl App {
         // that swallow the alt modifier
         let newline = (key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::ALT))
             || (key.code == KeyCode::Char('j') && key.modifiers.contains(KeyModifiers::CONTROL));
+        // exactly one of ctrl/alt makes an emacs chord: Windows reports AltGr
+        // as ctrl+alt together, and those keys carry text (@, {, €) to insert
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL)
+            && !key.modifiers.contains(KeyModifiers::ALT);
+        let alt = key.modifiers.contains(KeyModifiers::ALT)
+            && !key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             _ if newline => {
                 let Some(Modal::Input { buffer, cursor, .. }) = self.modal.as_mut() else {
@@ -64,8 +70,62 @@ impl App {
                 let Some(Modal::Input { buffer, cursor, .. }) = self.modal.as_mut() else {
                     return;
                 };
+                // the readline/emacs set every shell input carries; these are
+                // widget-internal like Backspace and the arrows, not remappable
+                // screen actions
                 match code {
-                    KeyCode::Char(c) => {
+                    KeyCode::Char('a') if ctrl => *cursor = line_start(buffer, *cursor),
+                    KeyCode::Char('e') if ctrl => *cursor = line_end(buffer, *cursor),
+                    KeyCode::Char('u') if ctrl => {
+                        let start = line_start(buffer, *cursor);
+                        remove_chars(buffer, start, *cursor);
+                        *cursor = start;
+                    }
+                    KeyCode::Char('k') if ctrl => {
+                        // at line end, kill the newline itself: readline joins
+                        let end = line_end(buffer, *cursor)
+                            .max((*cursor + 1).min(buffer.chars().count()));
+                        remove_chars(buffer, *cursor, end);
+                    }
+                    KeyCode::Char('w') if ctrl => {
+                        let start = prev_word(buffer, *cursor);
+                        remove_chars(buffer, start, *cursor);
+                        *cursor = start;
+                    }
+                    KeyCode::Backspace if alt => {
+                        let start = prev_word(buffer, *cursor);
+                        remove_chars(buffer, start, *cursor);
+                        *cursor = start;
+                    }
+                    KeyCode::Char('d') if alt => {
+                        let end = next_word(buffer, *cursor);
+                        remove_chars(buffer, *cursor, end);
+                    }
+                    KeyCode::Char('b') if alt => *cursor = prev_word(buffer, *cursor),
+                    KeyCode::Char('f') if alt => *cursor = next_word(buffer, *cursor),
+                    KeyCode::Char('b') if ctrl => *cursor = cursor.saturating_sub(1),
+                    KeyCode::Char('f') if ctrl => {
+                        *cursor = (*cursor + 1).min(buffer.chars().count());
+                    }
+                    KeyCode::Char('d') if ctrl => {
+                        if *cursor < buffer.chars().count() {
+                            buffer.remove(byte_index(buffer, *cursor));
+                        }
+                    }
+                    KeyCode::Delete => {
+                        if *cursor < buffer.chars().count() {
+                            buffer.remove(byte_index(buffer, *cursor));
+                        }
+                    }
+                    // terminals with legacy input send ctrl-backspace as ctrl-h
+                    KeyCode::Char('h') if ctrl => {
+                        if *cursor > 0 {
+                            *cursor -= 1;
+                            buffer.remove(byte_index(buffer, *cursor));
+                        }
+                    }
+                    // a char with a lone ctrl/alt held is a chord, never text
+                    KeyCode::Char(c) if !ctrl && !alt => {
                         buffer.insert(byte_index(buffer, *cursor), c);
                         *cursor += 1;
                     }
@@ -85,7 +145,6 @@ impl App {
         }
     }
 
-    /// An empty buffer submits as a cancel — comments and replies must say
     /// Open the text-input modal with the cursor at the end of `buffer` (so a
     /// prefilled edit lands ready to append). An empty buffer starts at column 0.
     pub(crate) fn open_input(&mut self, title: String, buffer: String, on_submit: InputOp) {
@@ -97,6 +156,7 @@ impl App {
         });
     }
 
+    /// An empty buffer submits as a cancel — comments and replies must say
     /// something to be worth persisting.
     pub(super) fn submit_input(&mut self) {
         let Some(Modal::Input {
@@ -428,6 +488,67 @@ impl App {
     }
 }
 
+/// Char index of the current line's start (just past the previous newline).
+fn line_start(buffer: &str, cursor: usize) -> usize {
+    buffer
+        .chars()
+        .take(cursor)
+        .enumerate()
+        .filter(|&(_, c)| c == '\n')
+        .last()
+        .map_or(0, |(i, _)| i + 1)
+}
+
+/// Char index of the current line's end (the next newline, or the buffer end).
+fn line_end(buffer: &str, cursor: usize) -> usize {
+    buffer
+        .chars()
+        .enumerate()
+        .skip(cursor)
+        .find(|&(_, c)| c == '\n')
+        .map_or_else(|| buffer.chars().count(), |(i, _)| i)
+}
+
+/// Char index of the previous word's start: skip whitespace back, then the
+/// word itself. One whitespace-word rule serves both the ctrl and meta ops —
+/// simpler than readline's split, and right for comment prose.
+fn prev_word(buffer: &str, cursor: usize) -> usize {
+    let chars: Vec<char> = buffer.chars().take(cursor).collect();
+    let ws_at = |i: usize| chars.get(i).is_some_and(|c| c.is_whitespace());
+    let mut i = chars.len();
+    while i > 0 && ws_at(i - 1) {
+        i -= 1;
+    }
+    while i > 0 && !ws_at(i - 1) {
+        i -= 1;
+    }
+    i
+}
+
+/// Char index just past the next word: skip whitespace forward, then the word.
+fn next_word(buffer: &str, cursor: usize) -> usize {
+    let chars: Vec<char> = buffer.chars().collect();
+    let ws_at = |i: usize| chars.get(i).is_some_and(|c| c.is_whitespace());
+    let mut i = cursor.min(chars.len());
+    while i < chars.len() && ws_at(i) {
+        i += 1;
+    }
+    while i < chars.len() && !ws_at(i) {
+        i += 1;
+    }
+    i
+}
+
+/// Remove the chars in `[start, end)` (char indices) from `buffer`.
+fn remove_chars(buffer: &mut String, start: usize, end: usize) {
+    if start >= end {
+        return;
+    }
+    let from = byte_index(buffer, start);
+    let to = byte_index(buffer, end);
+    buffer.replace_range(from..to, "");
+}
+
 #[cfg(test)]
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -442,6 +563,133 @@ mod tests {
             code,
             KeyModifiers::NONE,
         )));
+    }
+
+    fn chord(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
+        app.handle(crate::event::AppEvent::Key(KeyEvent::new(code, modifiers)));
+    }
+
+    /// The open input modal's `(buffer, cursor)`.
+    fn input_state(app: &App) -> (String, usize) {
+        let Some(Modal::Input { buffer, cursor, .. }) = &app.modal else {
+            panic!("input modal open, got {:?}", app.modal);
+        };
+        (buffer.clone(), *cursor)
+    }
+
+    fn input_app(prefill: &str) -> App {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_input(
+            "Comment".to_owned(),
+            prefill.to_owned(),
+            super::super::InputOp::Comment {
+                anchor: Anchor {
+                    file: "src/lib.rs".into(),
+                    line: Some(2),
+                    line_end: None,
+                    on_old_side: false,
+                    line_text: None,
+                },
+            },
+        );
+        app
+    }
+
+    #[test]
+    fn readline_line_motions_and_kills() {
+        let mut app = input_app("fix the name");
+        // ctrl-a → start, ctrl-e → end
+        chord(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+        assert_eq!(input_state(&app).1, 0);
+        chord(&mut app, KeyCode::Char('e'), KeyModifiers::CONTROL);
+        assert_eq!(input_state(&app).1, 12);
+        // ctrl-u kills to line start
+        chord(&mut app, KeyCode::Char('u'), KeyModifiers::CONTROL);
+        assert_eq!(input_state(&app), (String::new(), 0));
+    }
+
+    #[test]
+    fn readline_motions_are_line_scoped_in_multiline_buffers() {
+        let mut app = input_app("first line\nsecond here");
+        // cursor opens at the very end; ctrl-a stops at the second line's start
+        chord(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+        assert_eq!(input_state(&app).1, 11);
+        // ctrl-k kills only the second line
+        chord(&mut app, KeyCode::Char('k'), KeyModifiers::CONTROL);
+        assert_eq!(input_state(&app).0, "first line\n");
+    }
+
+    #[test]
+    fn readline_word_deletion_and_motion() {
+        let mut app = input_app("delete the last word");
+        // alt-backspace eats "word", ctrl-w eats "last "
+        chord(&mut app, KeyCode::Backspace, KeyModifiers::ALT);
+        assert_eq!(input_state(&app).0, "delete the last ");
+        chord(&mut app, KeyCode::Char('w'), KeyModifiers::CONTROL);
+        assert_eq!(input_state(&app).0, "delete the ");
+        // alt-b steps back over "the"; alt-d deletes the word, keeping the
+        // spaces on both sides as readline does
+        chord(&mut app, KeyCode::Char('b'), KeyModifiers::ALT);
+        assert_eq!(input_state(&app).1, 7);
+        chord(&mut app, KeyCode::Char('d'), KeyModifiers::ALT);
+        assert_eq!(input_state(&app).0, "delete  ");
+    }
+
+    #[test]
+    fn control_chords_never_insert_their_letter() {
+        let mut app = input_app("");
+        chord(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+        chord(&mut app, KeyCode::Char('f'), KeyModifiers::ALT);
+        assert_eq!(input_state(&app).0, "", "chords must not type text");
+        press(&mut app, KeyCode::Char('A'));
+        assert_eq!(input_state(&app).0, "A", "plain shift still types");
+    }
+
+    #[test]
+    fn altgr_chars_still_type_text() {
+        // Windows reports AltGr as ctrl+alt together; the produced char is text
+        let mut app = input_app("");
+        chord(
+            &mut app,
+            KeyCode::Char('@'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        );
+        assert_eq!(input_state(&app).0, "@");
+    }
+
+    #[test]
+    fn ctrl_h_deletes_backward_and_ctrl_k_joins_lines() {
+        let mut app = input_app("ab");
+        chord(&mut app, KeyCode::Char('h'), KeyModifiers::CONTROL);
+        assert_eq!(input_state(&app), ("a".to_owned(), 1));
+
+        let mut app = input_app("first\nsecond");
+        // park at the end of the first line, then kill the newline
+        for _ in 0..7 {
+            chord(&mut app, KeyCode::Char('b'), KeyModifiers::CONTROL);
+        }
+        assert_eq!(input_state(&app).1, 5);
+        chord(&mut app, KeyCode::Char('k'), KeyModifiers::CONTROL);
+        assert_eq!(input_state(&app).0, "firstsecond");
+    }
+
+    #[test]
+    fn readline_ops_stay_on_char_boundaries_with_multibyte_text() {
+        let mut app = input_app("h\u{e9}llo \u{4e16}\u{754c} \u{1f44d}");
+        // ctrl-w eats the emoji word, alt-b crosses the CJK word
+        chord(&mut app, KeyCode::Char('w'), KeyModifiers::CONTROL);
+        assert_eq!(input_state(&app).0, "h\u{e9}llo \u{4e16}\u{754c} ");
+        chord(&mut app, KeyCode::Char('b'), KeyModifiers::ALT);
+        assert_eq!(input_state(&app).1, 6);
+        chord(&mut app, KeyCode::Char('d'), KeyModifiers::ALT);
+        assert_eq!(input_state(&app).0, "h\u{e9}llo  ");
+        chord(&mut app, KeyCode::Char('u'), KeyModifiers::CONTROL);
+        assert_eq!(input_state(&app).0, " ");
+        // forward char motion and delete at the end are clamped no-ops
+        chord(&mut app, KeyCode::Char('f'), KeyModifiers::CONTROL);
+        chord(&mut app, KeyCode::Char('d'), KeyModifiers::CONTROL);
+        assert_eq!(input_state(&app), (" ".to_owned(), 1));
     }
 
     #[test]
