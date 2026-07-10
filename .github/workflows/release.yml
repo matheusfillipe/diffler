@@ -3,6 +3,11 @@ on:
   push:
     tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
   workflow_dispatch:
+    inputs:
+      npm_tag:
+        description: "Re-publish the npm packages for an existing release tag (skips builds)"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -27,7 +32,7 @@ jobs:
 
   build:
     needs: create-release
-    if: ${{ !failure() && !cancelled() }}
+    if: ${{ !failure() && !cancelled() && (github.event_name == 'push' || inputs.npm_tag == '') }}
     strategy:
       fail-fast: false
       matrix:
@@ -113,21 +118,24 @@ jobs:
 
   npm:
     needs: publish-release
-    if: github.event_name == 'push'
+    if: ${{ !cancelled() && (needs.publish-release.result == 'success' || (github.event_name == 'workflow_dispatch' && inputs.npm_tag != '')) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.npm_tag || github.ref }}
       - uses: actions/setup-node@v6
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
-      - run: npm install -g npm@latest
+      # npm 12's provenance publish is broken (missing sigstore module)
+      - run: npm install -g npm@11
       - name: Verify package versions match the tag
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.npm_tag || github.ref_name }}
         run: |
           for d in npm/diffler npm/diffler-mcp; do
             pkg=$(node -p "require('./$d/package.json').version")
