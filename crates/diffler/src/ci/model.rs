@@ -155,12 +155,19 @@ pub struct PrComment {
     pub path: String,
     /// 1-based line on the side the comment anchors to; `None` for file-level.
     pub line: Option<u32>,
+    /// First line of a multi-line comment's range.
+    pub start_line: Option<u32>,
     /// Anchored to the new side (`true`) or the old side of the diff.
     pub new_side: bool,
     pub body: String,
     pub author: String,
     /// Forge id of the comment this replies to; `None` for thread roots.
     pub reply_to: Option<String>,
+    /// The forge's thread handle, set on thread roots where the provider
+    /// exposes one; what `resolve_pr_thread` takes.
+    pub thread_id: Option<String>,
+    /// The thread is marked resolved on the forge (roots only).
+    pub resolved: bool,
     pub at: u64,
 }
 

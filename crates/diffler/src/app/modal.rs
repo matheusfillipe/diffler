@@ -15,6 +15,24 @@ impl App {
                 _ => {}
             },
             Some(Modal::Input { .. }) => self.handle_input_key(key),
+            Some(Modal::ReviewVerdict { number }) => {
+                use crate::ci::ReviewVerdict;
+                let number = *number;
+                let verdict = match key.code {
+                    KeyCode::Char('a') => Some(ReviewVerdict::Approve),
+                    KeyCode::Char('x') => Some(ReviewVerdict::RequestChanges),
+                    KeyCode::Char('c') => Some(ReviewVerdict::Comment),
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        self.modal = None;
+                        None
+                    }
+                    _ => None,
+                };
+                if let Some(verdict) = verdict {
+                    self.modal = None;
+                    self.pr_review_verdict_chosen(number, verdict);
+                }
+            }
             Some(Modal::BranchList { .. }) => self.handle_branch_list_key(key),
             Some(Modal::Comments { .. }) => self.handle_comments_key(key),
             Some(Modal::Help) => match key.code {
@@ -166,11 +184,16 @@ impl App {
             return;
         };
         let body = buffer.trim();
-        if body.is_empty() {
+        // the review summary is optional; everything else needs content
+        if body.is_empty() && !matches!(on_submit, InputOp::ReviewBody { .. }) {
             return;
         }
         let source = self.active_review_source();
         match on_submit {
+            InputOp::ReviewBody { number, verdict } => {
+                let body = body.to_owned();
+                self.queue_pr_review(number, verdict, &body);
+            }
             InputOp::Comment { anchor } => {
                 self.review
                     .session_for_mut(&source)
@@ -197,6 +220,7 @@ impl App {
                     .session_for_mut(&source)
                     .edit_comment(&comment_id, body)
                 {
+                    self.queue_pr_comment_edit(&source, &comment_id, body);
                     self.after_session_change();
                 } else {
                     self.error("comment is gone; edit dropped");
@@ -362,12 +386,20 @@ impl App {
     pub(super) fn delete_comment_by_id(&mut self, id: &str) -> bool {
         let source = self.active_review_source();
         let session = self.review.session_for_mut(&source);
-        let forge_owned = session
+        let remote = session
             .comments
             .iter()
-            .any(|c| c.id == id && c.remote_id.is_some());
-        if forge_owned {
-            self.info("forge comment — resolve or delete it on the PR");
+            .find(|c| c.id == id)
+            .and_then(|c| c.remote_id.clone());
+        // a forge-owned comment deletes on the forge first; the local copy
+        // goes when the forge confirms (the forge 403s on others' comments)
+        if let Some(remote_id) = remote {
+            if let diffler_core::source::ReviewSource::Pr { number } = source {
+                self.queue_pr_comment_delete(number, id, &remote_id);
+                self.info("deleting the comment on the forge…");
+            } else {
+                self.info("forge comment — open the PR review to delete it");
+            }
             return false;
         }
         if !session.delete_comment(id) {

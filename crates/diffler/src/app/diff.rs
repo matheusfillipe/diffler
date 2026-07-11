@@ -816,15 +816,25 @@ impl App {
                     self.error(err.to_string());
                     return;
                 }
-                let view = DiffView::new(
-                    source,
-                    Some(model),
-                    &self.review,
-                    self.config.ui.diff_file_layout,
-                    self.config.ui.side_by_side,
-                );
-                self.diff = Some(view);
-                self.push_screen(Screen::Diff);
+                // re-opening the PR already on screen (a head-move refresh,
+                // or picking it again from the list) swaps the model in
+                // place: the reviewer keeps their cursor, folds, and screen
+                // stack instead of landing on a fresh view
+                if let Some(diff) = self.diff.as_mut().filter(|d| d.source == source) {
+                    diff.commit_model = Some(model);
+                    diff.invalidate();
+                    diff.ensure_rows(&self.review);
+                } else {
+                    let view = DiffView::new(
+                        source,
+                        Some(model),
+                        &self.review,
+                        self.config.ui.diff_file_layout,
+                        self.config.ui.side_by_side,
+                    );
+                    self.diff = Some(view);
+                    self.push_screen(Screen::Diff);
+                }
                 self.pending_ci = Some(super::CiRequest::PrComments(number));
             }
             Err(err) => self.error(err.to_string()),
@@ -1510,20 +1520,37 @@ impl App {
         );
     }
 
+    /// `R`: toggle the comment's resolution. In a PR review the flip is
+    /// optimistic and syncs to the forge thread; elsewhere it stays local.
     fn resolve_at_cursor(&mut self) {
         let Some(comment) = self.comment_at_cursor_row() else {
             self.info("move onto a comment to resolve");
             return;
         };
-        if comment.status == CommentStatus::Resolved {
-            self.info("already resolved");
+        let id = comment.id.clone();
+        let resolving = comment.status != CommentStatus::Resolved;
+        let forge = comment.remote_id.is_some();
+        let source = self.active_review_source();
+        // a forge thread must be queueable before the local flip, or the
+        // status would lie until the next sync reverts it
+        if forge
+            && let diffler_core::source::ReviewSource::Pr { number } = source
+            && !self.queue_pr_resolve(number, &id, resolving)
+        {
             return;
         }
-        let id = comment.id.clone();
-        let source = self.active_review_source();
-        self.review.session_for_mut(&source).resolve(&id);
+        let session = self.review.session_for_mut(&source);
+        if resolving {
+            session.resolve(&id);
+        } else if let Some(comment) = session.comments.iter_mut().find(|c| c.id == id) {
+            comment.status = CommentStatus::Open;
+        }
         self.after_session_change();
-        self.info("comment resolved");
+        self.info(if resolving {
+            "comment resolved"
+        } else {
+            "comment reopened"
+        });
     }
 
     fn diff_toggle_viewed(&mut self) {

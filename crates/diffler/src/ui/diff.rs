@@ -1081,6 +1081,13 @@ mod tests {
         insta::assert_snapshot!(render(&mut app).backend());
     }
 
+    #[test]
+    fn review_verdict_picker_renders_its_choices() {
+        let (_fixture, mut app) = diff_app();
+        app.modal = Some(crate::app::Modal::ReviewVerdict { number: 7 });
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
     /// Select src/lib.rs and focus the diff pane.
     fn open_lib_diff(app: &mut App) {
         let index = app

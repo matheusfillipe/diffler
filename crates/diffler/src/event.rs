@@ -53,6 +53,9 @@ pub enum AppEvent {
     PrComments {
         number: u64,
         comments: Vec<crate::ci::PrComment>,
+        /// The PR as the forge sees it now, so a force-push is noticed on the
+        /// same poll that syncs comments. `None` when the lookup failed.
+        pr: Option<crate::ci::PullRequest>,
     },
     PrPosted {
         post: Box<crate::app::pr::PrPost>,

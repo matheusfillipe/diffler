@@ -70,6 +70,10 @@ pub struct Comment {
     /// Forge-side id once synced/posted; `None` for purely local comments.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_id: Option<String>,
+    /// The forge's review-thread handle, where the forge has one — what
+    /// thread resolution posts against.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
     pub anchor: Anchor,
     pub body: String,
     pub status: CommentStatus,
@@ -98,6 +102,7 @@ impl Session {
     pub fn add_comment(&mut self, author: &str, anchor: Anchor, body: &str) -> &Comment {
         self.comments.push(Comment {
             remote_id: None,
+            thread_id: None,
             id: uuid::Uuid::new_v4().to_string(),
             author: author.to_owned(),
             anchor,

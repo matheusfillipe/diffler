@@ -60,6 +60,75 @@ impl GitHubProvider {
             .await
     }
 
+    /// Thread handle and resolution per review-comment database id, from the
+    /// GraphQL `reviewThreads` connection (REST exposes neither).
+    async fn review_threads(&self, number: u64) -> Result<HashMap<u64, (String, bool)>> {
+        let (owner, name) = self.repo_slug().await?;
+        let query = "query($owner:String!,$name:String!,$number:Int!,$cursor:String){\
+            repository(owner:$owner,name:$name){pullRequest(number:$number){\
+            reviewThreads(first:100,after:$cursor){pageInfo{hasNextPage endCursor}\
+            nodes{id isResolved comments(first:100){nodes{databaseId}}}}}}}";
+        let mut map = HashMap::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let mut args = vec![
+                "api".to_owned(),
+                "graphql".to_owned(),
+                "-f".to_owned(),
+                format!("query={query}"),
+                "-f".to_owned(),
+                format!("owner={owner}"),
+                "-f".to_owned(),
+                format!("name={name}"),
+                "-F".to_owned(),
+                format!("number={number}"),
+            ];
+            if let Some(cursor) = &cursor {
+                args.push("-f".to_owned());
+                args.push(format!("cursor={cursor}"));
+            }
+            let raw = self.runner.run("gh", &args).await?;
+            let page: ThreadsPage = serde_json::from_str(&raw).map_err(|err| CiError::Parse {
+                what: "review threads".to_owned(),
+                message: err.to_string(),
+            })?;
+            let threads = page.data.repository.pull_request.review_threads;
+            for node in threads.nodes {
+                for comment in node.comments.nodes {
+                    map.insert(comment.database_id, (node.id.clone(), node.is_resolved));
+                }
+            }
+            // a next page without a cursor cannot advance; bail rather than
+            // refetch page one forever inside the poll task
+            if !threads.page_info.has_next_page || threads.page_info.end_cursor.is_none() {
+                return Ok(map);
+            }
+            cursor = threads.page_info.end_cursor;
+        }
+    }
+
+    /// The current repo's `owner`/`name`, for GraphQL calls where `gh` does
+    /// not expand `{owner}`/`{repo}` placeholders.
+    async fn repo_slug(&self) -> Result<(String, String)> {
+        let raw = self
+            .runner
+            .run(
+                "gh",
+                &[
+                    "repo".to_owned(),
+                    "view".to_owned(),
+                    "--json".to_owned(),
+                    "owner,name".to_owned(),
+                ],
+            )
+            .await?;
+        let slug: RepoSlug = serde_json::from_str(&raw).map_err(|err| CiError::Parse {
+            what: "repo slug".to_owned(),
+            message: err.to_string(),
+        })?;
+        Ok((slug.owner.login, slug.name))
+    }
+
     /// `gh api` returning the raw file body (not the base64 contents envelope).
     async fn api_raw(&self, path: &str) -> Result<String> {
         self.runner
@@ -378,15 +447,38 @@ impl ForgeProvider for GitHubProvider {
             format!("repos/{{owner}}/{{repo}}/pulls/{number}/comments"),
         ];
         let raw = self.runner.run("gh", &args).await?;
-        let items: Vec<ReviewCommentApi> = serde_json::from_str(&raw).unwrap_or_default();
+        // `--paginate` concatenates one JSON array per page; stream-parse the
+        // documents. A parse error must propagate: an empty fallback would
+        // read as "the forge deleted every comment" and wipe synced state.
+        let mut items: Vec<ReviewCommentApi> = Vec::new();
+        for page in serde_json::Deserializer::from_str(&raw).into_iter::<Vec<ReviewCommentApi>>() {
+            items.extend(page.map_err(|err| CiError::Parse {
+                what: "pr comments".to_owned(),
+                message: err.to_string(),
+            })?);
+        }
+        if items.is_empty() {
+            return Ok(Vec::new());
+        }
+        // thread handles and resolution live only in GraphQL; losing them
+        // (query failure) degrades to unresolvable threads, not an error
+        let threads = self.review_threads(number).await.unwrap_or_default();
         Ok(items
             .into_iter()
-            .map(ReviewCommentApi::into_comment)
+            .map(|item| {
+                let thread = threads.get(&item.id).cloned();
+                let mut comment = item.into_comment();
+                if let Some((thread_id, resolved)) = thread {
+                    comment.thread_id = Some(thread_id);
+                    comment.resolved = resolved;
+                }
+                comment
+            })
             .collect())
     }
 
     async fn post_pr_comment(&self, new: &crate::ci::NewPrComment) -> Result<PrComment> {
-        let args = [
+        let mut args = vec![
             "api".to_owned(),
             "-X".to_owned(),
             "POST".to_owned(),
@@ -402,6 +494,15 @@ impl ForgeProvider for GitHubProvider {
             "-f".to_owned(),
             format!("side={}", if new.new_side { "RIGHT" } else { "LEFT" }),
         ];
+        if let Some(start) = new.start_line {
+            args.push("-F".to_owned());
+            args.push(format!("start_line={start}"));
+            args.push("-f".to_owned());
+            args.push(format!(
+                "start_side={}",
+                if new.new_side { "RIGHT" } else { "LEFT" }
+            ));
+        }
         let raw = self.runner.run("gh", &args).await?;
         parse_posted(&raw)
     }
@@ -425,23 +526,7 @@ impl ForgeProvider for GitHubProvider {
     }
 
     async fn submit_pr_review(&self, review: &crate::ci::NewPrReview) -> Result<()> {
-        let comments: Vec<serde_json::Value> = review
-            .comments
-            .iter()
-            .map(|c| {
-                serde_json::json!({
-                    "path": c.path,
-                    "line": c.line,
-                    "side": if c.new_side { "RIGHT" } else { "LEFT" },
-                    "body": c.body,
-                })
-            })
-            .collect();
-        let payload = serde_json::json!({
-            "commit_id": review.head_oid,
-            "event": "COMMENT",
-            "comments": comments,
-        });
+        let payload = review_payload(review);
         // gh reads nested JSON bodies from a file; argv fields can't express
         // arrays of objects
         let input = std::env::temp_dir().join(format!("diffler-review-{}.json", review.number));
@@ -460,6 +545,62 @@ impl ForgeProvider for GitHubProvider {
         let result = self.runner.run("gh", &args).await;
         let _ = std::fs::remove_file(&input);
         result.map(|_| ())
+    }
+
+    async fn resolve_pr_thread(&self, _number: u64, thread_id: &str, resolved: bool) -> Result<()> {
+        // resolution is GraphQL-only; REST has no endpoint for it
+        let mutation = if resolved {
+            "mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{id}}}"
+        } else {
+            "mutation($id:ID!){unresolveReviewThread(input:{threadId:$id}){thread{id}}}"
+        };
+        let args = [
+            "api".to_owned(),
+            "graphql".to_owned(),
+            "-f".to_owned(),
+            format!("query={mutation}"),
+            "-f".to_owned(),
+            format!("id={thread_id}"),
+        ];
+        self.runner.run("gh", &args).await.map(|_| ())
+    }
+
+    async fn update_pr_comment(&self, remote_id: &str, body: &str) -> Result<()> {
+        let args = [
+            "api".to_owned(),
+            "-X".to_owned(),
+            "PATCH".to_owned(),
+            format!("repos/{{owner}}/{{repo}}/pulls/comments/{remote_id}"),
+            "-f".to_owned(),
+            format!("body={body}"),
+        ];
+        self.runner.run("gh", &args).await.map(|_| ())
+    }
+
+    async fn delete_pr_comment(&self, remote_id: &str) -> Result<()> {
+        let args = [
+            "api".to_owned(),
+            "-X".to_owned(),
+            "DELETE".to_owned(),
+            format!("repos/{{owner}}/{{repo}}/pulls/comments/{remote_id}"),
+        ];
+        self.runner.run("gh", &args).await.map(|_| ())
+    }
+
+    async fn pr(&self, number: u64) -> Result<PullRequest> {
+        let args = [
+            "pr".to_owned(),
+            "view".to_owned(),
+            number.to_string(),
+            "--json".to_owned(),
+            "number,title,url,baseRefName,headRefName,headRefOid,author".to_owned(),
+        ];
+        let raw = self.runner.run("gh", &args).await?;
+        let pr: PrListItem = serde_json::from_str(&raw).map_err(|err| CiError::Parse {
+            what: "pr".to_owned(),
+            message: err.to_string(),
+        })?;
+        Ok(pr.into_pr())
     }
 
     async fn current_pr(&self) -> Result<Option<PullRequest>> {
@@ -843,6 +984,10 @@ struct ReviewCommentApi {
     #[serde(default)]
     original_line: Option<u32>,
     #[serde(default)]
+    start_line: Option<u32>,
+    #[serde(default)]
+    original_start_line: Option<u32>,
+    #[serde(default)]
     side: Option<String>,
     #[serde(default)]
     body: String,
@@ -852,6 +997,72 @@ struct ReviewCommentApi {
     in_reply_to_id: Option<u64>,
     #[serde(default)]
     created_at: String,
+}
+
+#[derive(Deserialize)]
+struct RepoSlug {
+    owner: RepoOwner,
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct RepoOwner {
+    login: String,
+}
+
+#[derive(Deserialize)]
+struct ThreadsPage {
+    data: ThreadsData,
+}
+
+#[derive(Deserialize)]
+struct ThreadsData {
+    repository: ThreadsRepo,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadsRepo {
+    pull_request: ThreadsPr,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadsPr {
+    review_threads: ThreadsConn,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadsConn {
+    page_info: ThreadsPageInfo,
+    nodes: Vec<ThreadNode>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadsPageInfo {
+    has_next_page: bool,
+    end_cursor: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadNode {
+    id: String,
+    is_resolved: bool,
+    comments: ThreadComments,
+}
+
+#[derive(Deserialize)]
+struct ThreadComments {
+    nodes: Vec<ThreadCommentNode>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadCommentNode {
+    database_id: u64,
 }
 
 #[derive(Deserialize, Default)]
@@ -866,13 +1077,52 @@ impl ReviewCommentApi {
             id: self.id.to_string(),
             path: self.path,
             line: self.line.or(self.original_line),
+            start_line: self.start_line.or(self.original_start_line),
             new_side: self.side.as_deref() != Some("LEFT"),
             body: self.body,
             author: self.user.login,
             reply_to: self.in_reply_to_id.map(|id| id.to_string()),
+            thread_id: None,
+            resolved: false,
             at: created_epoch(&self.created_at),
         }
     }
+}
+
+/// The REST body for POST /pulls/N/reviews: verdict as the event, the
+/// optional summary, every pending comment with its side (and range when
+/// multi-line).
+fn review_payload(review: &crate::ci::NewPrReview) -> serde_json::Value {
+    let comments: Vec<serde_json::Value> = review
+        .comments
+        .iter()
+        .map(|c| {
+            let side = if c.new_side { "RIGHT" } else { "LEFT" };
+            let mut comment = serde_json::Map::new();
+            comment.insert("path".to_owned(), c.path.clone().into());
+            comment.insert("line".to_owned(), c.line.into());
+            comment.insert("side".to_owned(), side.into());
+            comment.insert("body".to_owned(), c.body.clone().into());
+            if let Some(start) = c.start_line {
+                comment.insert("start_line".to_owned(), start.into());
+                comment.insert("start_side".to_owned(), side.into());
+            }
+            serde_json::Value::Object(comment)
+        })
+        .collect();
+    let event = match review.verdict {
+        crate::ci::ReviewVerdict::Approve => "APPROVE",
+        crate::ci::ReviewVerdict::RequestChanges => "REQUEST_CHANGES",
+        crate::ci::ReviewVerdict::Comment => "COMMENT",
+    };
+    let mut payload = serde_json::Map::new();
+    payload.insert("commit_id".to_owned(), review.head_oid.clone().into());
+    payload.insert("event".to_owned(), event.into());
+    payload.insert("comments".to_owned(), comments.into());
+    if !review.body.is_empty() {
+        payload.insert("body".to_owned(), review.body.clone().into());
+    }
+    serde_json::Value::Object(payload)
 }
 
 /// ISO-8601 → unix seconds; an unrecognized shape collapses to zero.
@@ -1365,5 +1615,113 @@ jobs:
         let caps = provider(&[]).capabilities();
         assert_eq!(caps.dag, DagSource::ConfigFile);
         assert_eq!(caps.logs, LogMode::Dump);
+    }
+
+    #[tokio::test]
+    async fn review_payload_carries_verdict_body_and_ranges() {
+        let review = crate::ci::NewPrReview {
+            number: 9,
+            head_oid: "abc".into(),
+            verdict: crate::ci::ReviewVerdict::RequestChanges,
+            body: "hold on".into(),
+            comments: vec![
+                crate::ci::NewPrComment {
+                    number: 9,
+                    head_oid: "abc".into(),
+                    path: "src/a.rs".into(),
+                    line: 4,
+                    start_line: None,
+                    new_side: true,
+                    body: "single".into(),
+                },
+                crate::ci::NewPrComment {
+                    number: 9,
+                    head_oid: "abc".into(),
+                    path: "src/a.rs".into(),
+                    line: 12,
+                    start_line: Some(10),
+                    new_side: false,
+                    body: "range".into(),
+                },
+            ],
+        };
+        let payload = review_payload(&review);
+        assert_eq!(payload["event"], "REQUEST_CHANGES");
+        assert_eq!(payload["body"], "hold on");
+        assert_eq!(payload["comments"][0].get("start_line"), None);
+        assert_eq!(payload["comments"][1]["start_line"], 10);
+        assert_eq!(payload["comments"][1]["start_side"], "LEFT");
+        assert_eq!(payload["comments"][1]["line"], 12);
+
+        // approve with nothing pending: no body key, empty comments
+        let bare = crate::ci::NewPrReview {
+            number: 9,
+            head_oid: "abc".into(),
+            verdict: crate::ci::ReviewVerdict::Approve,
+            body: String::new(),
+            comments: Vec::new(),
+        };
+        let payload = review_payload(&bare);
+        assert_eq!(payload["event"], "APPROVE");
+        assert_eq!(payload.get("body"), None);
+    }
+
+    #[tokio::test]
+    async fn resolve_pr_thread_uses_the_matching_mutation() {
+        let runner = std::sync::Arc::new(RecordingRunner::new(&[("graphql", "{}")]));
+        let provider = GitHubProvider::new(
+            Box::new(runner.clone()),
+            vec![WORKFLOW.to_owned()],
+            None,
+            YamlCache::default(),
+        );
+        provider
+            .resolve_pr_thread(9, "T_1", true)
+            .await
+            .expect("resolve");
+        provider
+            .resolve_pr_thread(9, "T_1", false)
+            .await
+            .expect("unresolve");
+        let calls = runner.calls();
+        // "unresolveReviewThread" contains "resolveReviewThread": exclude it
+        assert!(
+            calls[0].contains("resolveReviewThread") && !calls[0].contains("unresolveReviewThread"),
+            "{calls:?}"
+        );
+        assert!(calls[0].contains("id=T_1"), "{calls:?}");
+        assert!(calls[1].contains("unresolveReviewThread"), "{calls:?}");
+    }
+
+    #[tokio::test]
+    async fn pr_comments_join_graphql_thread_state() {
+        let rest = r#"[{"id":100,"path":"a.rs","line":2,"side":"RIGHT",
+            "body":"root","user":{"login":"alice"},"created_at":"2026-01-01T00:00:00Z"}]"#;
+        let slug = r#"{"owner":{"login":"me"},"name":"repo"}"#;
+        let threads = r#"{"data":{"repository":{"pullRequest":{"reviewThreads":{
+            "pageInfo":{"hasNextPage":false,"endCursor":null},
+            "nodes":[{"id":"T_9","isResolved":true,"comments":{"nodes":[{"databaseId":100}]}}]
+        }}}}}"#;
+        let provider = provider(&[
+            ("pulls/9/comments", rest),
+            ("repo view", slug),
+            ("graphql", threads),
+        ]);
+        let comments = provider.pr_comments(9).await.expect("comments");
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].thread_id.as_deref(), Some("T_9"));
+        assert!(comments[0].resolved);
+    }
+
+    #[tokio::test]
+    async fn pr_lookup_parses_the_head() {
+        let json = r#"{"number":9,"title":"t","url":"u",
+            "baseRefName":"main","headRefName":"feat/x",
+            "headRefOid":"headsha","author":{"login":"alice"}}"#;
+        let provider = provider(&[("pr view 9", json)]);
+        let pr = provider.pr(9).await.expect("pr");
+        assert_eq!(pr.head_oid, "headsha");
+        assert_eq!(pr.base_ref, "main");
+        assert_eq!(pr.head_ref, "feat/x");
     }
 }

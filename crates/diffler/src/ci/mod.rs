@@ -18,7 +18,7 @@ pub use model::{
     LogChunk, LogMode, LogStepMeta, PrComment, PullRequest, RunDetail, RunExtras, RunId,
     ts_sort_key,
 };
-pub use provider::{ForgeProvider, NewPrComment, NewPrReview, ProviderKind};
+pub use provider::{ForgeProvider, NewPrComment, NewPrReview, ProviderKind, ReviewVerdict};
 pub use providers::{ForgejoProvider, GitHubProvider, GitLabProvider, YamlCache};
 
 use std::path::Path;

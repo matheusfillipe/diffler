@@ -273,7 +273,7 @@ fn dispatch_pr_posts(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
         return;
     }
     let Some(remote) = app.ci_remotes().first().cloned() else {
-        app.pending_pr_posts.clear();
+        app.drop_pending_pr_posts();
         return;
     };
     let repo_root = app.review.repo_root.clone();
@@ -300,6 +300,24 @@ fn dispatch_pr_posts(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
                     .reply_pr_comment(*number, parent_remote_id, body)
                     .await
                     .map(Some),
+                app::pr::PrPost::Resolve {
+                    number,
+                    thread_id,
+                    resolved,
+                    ..
+                } => provider
+                    .resolve_pr_thread(*number, thread_id, *resolved)
+                    .await
+                    .map(|()| None),
+                app::pr::PrPost::Edit {
+                    remote_id, body, ..
+                } => provider
+                    .update_pr_comment(remote_id, body)
+                    .await
+                    .map(|()| None),
+                app::pr::PrPost::Delete { remote_id, .. } => {
+                    provider.delete_pr_comment(remote_id).await.map(|()| None)
+                }
             };
             let _ = tx.send(AppEvent::PrPosted {
                 post: Box::new(post),
@@ -413,7 +431,12 @@ async fn run_ci_request(
             Err(err) => AppEvent::CiError(err.to_string()),
         },
         CiRequest::PrComments(number) => match provider.pr_comments(number).await {
-            Ok(comments) => AppEvent::PrComments { number, comments },
+            Ok(comments) => AppEvent::PrComments {
+                number,
+                comments,
+                // best-effort: a failed lookup only skips force-push detection
+                pr: provider.pr(number).await.ok(),
+            },
             Err(err) => AppEvent::CiError(err.to_string()),
         },
         CiRequest::Detail(id) => match provider.run_detail(&id).await {

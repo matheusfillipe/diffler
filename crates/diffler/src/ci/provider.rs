@@ -59,13 +59,39 @@ pub trait ForgeProvider: Send {
     /// Submit a batch of line comments as one review, so the forge sends a
     /// single notification instead of one per comment.
     async fn submit_pr_review(&self, review: &NewPrReview) -> Result<()>;
+
+    /// Resolve or unresolve a review thread. `thread_id` is the forge's
+    /// thread handle carried on the root comment from `pr_comments`.
+    async fn resolve_pr_thread(&self, number: u64, thread_id: &str, resolved: bool) -> Result<()>;
+
+    /// Rewrite the body of one of our own review comments.
+    async fn update_pr_comment(&self, remote_id: &str, body: &str) -> Result<()>;
+
+    /// Delete one of our own review comments.
+    async fn delete_pr_comment(&self, remote_id: &str) -> Result<()>;
+
+    /// The PR as the forge sees it right now, for spotting a force-push
+    /// while the review is open.
+    async fn pr(&self, number: u64) -> Result<PullRequest>;
 }
 
-/// A whole review to submit at once: every pending line comment.
+/// The event a submitted review carries on the forge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewVerdict {
+    Approve,
+    RequestChanges,
+    Comment,
+}
+
+/// A whole review to submit at once: the verdict, an optional top-level
+/// body, and every pending line comment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewPrReview {
     pub number: u64,
     pub head_oid: String,
+    pub verdict: ReviewVerdict,
+    /// Shown above the line comments on the forge; empty means none.
+    pub body: String,
     pub comments: Vec<NewPrComment>,
 }
 
@@ -75,8 +101,11 @@ pub struct NewPrComment {
     pub number: u64,
     pub head_oid: String,
     pub path: String,
-    /// 1-based line on the side the comment anchors to.
+    /// 1-based line on the side the comment anchors to; for a multi-line
+    /// comment this is the range's last line.
     pub line: u32,
+    /// First line of a multi-line comment; `None` anchors a single line.
+    pub start_line: Option<u32>,
     /// Anchored to the new side (`RIGHT`) or the old side of the diff.
     pub new_side: bool,
     pub body: String,

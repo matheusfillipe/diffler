@@ -155,6 +155,18 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             }
             .render(frame, &app.theme);
         }
+        Some(Modal::ReviewVerdict { number }) => {
+            popup::Popup {
+                title: format!("Submit review — PR #{number}"),
+                entries: vec![
+                    ("a".to_owned(), "approve".to_owned()),
+                    ("x".to_owned(), "request changes".to_owned()),
+                    ("c".to_owned(), "comment only".to_owned()),
+                    ("esc".to_owned(), "cancel".to_owned()),
+                ],
+            }
+            .render(frame, &app.theme);
+        }
         None => {}
     }
     // the which-key panel is a transient overlay, not a modal: it draws only

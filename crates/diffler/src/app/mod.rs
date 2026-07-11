@@ -106,10 +106,23 @@ pub enum PendingOp {
 /// What an input modal does with its buffer on submit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputOp {
-    Comment { anchor: Anchor },
-    Reply { comment_id: String },
-    EditComment { comment_id: String },
-    CreateBranch { checkout: bool },
+    Comment {
+        anchor: Anchor,
+    },
+    Reply {
+        comment_id: String,
+    },
+    EditComment {
+        comment_id: String,
+    },
+    CreateBranch {
+        checkout: bool,
+    },
+    /// The optional top-level body of a PR review; empty submits without one.
+    ReviewBody {
+        number: u64,
+        verdict: crate::ci::ReviewVerdict,
+    },
 }
 
 /// What selecting a branch in the branch list does.
@@ -143,6 +156,9 @@ pub enum Modal {
         entries: Vec<CommentJump>,
         cursor: usize,
     },
+    /// Verdict picker for a PR review submit: approve, request changes, or
+    /// comment only.
+    ReviewVerdict { number: u64 },
     /// Keymap listing for the screen the popup opened over.
     Help,
 }
@@ -752,18 +768,17 @@ impl App {
             }
             AppEvent::CiPr(pr) => self.on_pr_event(pr),
             AppEvent::CiPrs(prs) => self.on_prs_event(prs),
-            AppEvent::PrComments { number, comments } => {
-                self.on_pr_comments_event(number, &comments)
-            }
+            AppEvent::PrComments {
+                number,
+                comments,
+                pr,
+            } => self.on_pr_comments_event(number, &comments, pr),
             AppEvent::PrPosted { post, result } => self.on_pr_posted_event(&post, result),
             AppEvent::CiRunDetail(detail) => {
                 self.on_run_detail(&detail);
                 Flow::Continue
             }
-            AppEvent::CiExtras(extras) => {
-                self.extras = Some(extras);
-                Flow::Continue
-            }
+            AppEvent::CiExtras(extras) => self.on_ci_extras(extras),
             AppEvent::CiLog {
                 text,
                 steps,
@@ -773,10 +788,7 @@ impl App {
                 self.on_ci_log(&text, steps, next_offset, done);
                 Flow::Continue
             }
-            AppEvent::CiError(message) => {
-                self.error(message);
-                Flow::Continue
-            }
+            AppEvent::CiError(message) => self.on_ci_error(message),
             AppEvent::RepoChanged => {
                 self.refresh_state = self.refresh_state.queue();
                 self.refresh_flash = REFRESH_FLASH_TICKS;
@@ -1190,16 +1202,26 @@ impl App {
         self.info(format!("running git {label}…"));
     }
 
-    /// Report a finished network op: the first non-empty output line as a
-    /// success toast (label + summary), or as an error on failure. Refresh
-    /// first (head/log/ahead-behind may have moved), then set the toast so a
-    /// clean refresh does not clobber it.
+    fn on_ci_extras(&mut self, extras: crate::ci::RunExtras) -> Flow {
+        self.extras = Some(extras);
+        Flow::Continue
+    }
+
+    fn on_ci_error(&mut self, message: String) -> Flow {
+        self.error(message);
+        Flow::Continue
+    }
+
     fn on_pr_event(&mut self, pr: Option<crate::ci::PullRequest>) -> Flow {
         self.pr = pr;
         self.pr_checked = true;
         Flow::Continue
     }
 
+    /// Report a finished network op: the first non-empty output line as a
+    /// success toast (label + summary), or as an error on failure. Refresh
+    /// first (head/log/ahead-behind may have moved), then set the toast so a
+    /// clean refresh does not clobber it.
     fn git_finished(&mut self, label: &str, ok: bool, output: &str) {
         if label.starts_with("fetch PR #") {
             if let Some(pr) = self.pending_pr_open.take().filter(|_| ok) {

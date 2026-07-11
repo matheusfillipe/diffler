@@ -145,6 +145,27 @@ impl ForgeProvider for GitLabProvider {
         Err(CiError::Unsupported("submitting PR reviews"))
     }
 
+    async fn resolve_pr_thread(
+        &self,
+        _number: u64,
+        _thread_id: &str,
+        _resolved: bool,
+    ) -> Result<()> {
+        Err(CiError::Unsupported("resolving PR threads"))
+    }
+
+    async fn update_pr_comment(&self, _remote_id: &str, _body: &str) -> Result<()> {
+        Err(CiError::Unsupported("editing PR comments"))
+    }
+
+    async fn delete_pr_comment(&self, _remote_id: &str) -> Result<()> {
+        Err(CiError::Unsupported("deleting PR comments"))
+    }
+
+    async fn pr(&self, _number: u64) -> Result<PullRequest> {
+        Err(CiError::Unsupported("PR lookup"))
+    }
+
     async fn current_pr(&self) -> Result<Option<PullRequest>> {
         Ok(None)
     }
