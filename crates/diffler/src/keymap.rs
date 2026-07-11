@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::config::{Chord, KeyPress, KeysConfig, parse_chord};
+use crate::config::{Chord, KeyPress, KeysConfig, parse_chord, single_press};
 use crate::transient::TransientKind;
 
 /// Everything a key can do. Defined as the full superset so config action
@@ -765,17 +765,6 @@ enum Lookup {
     Exact(Action),
     Prefix,
     None,
-}
-
-/// Parse a chord that must be exactly one key press; `None` otherwise. Prefix
-/// and transient keys are single-press by design.
-fn single_press(chord: &str) -> Option<KeyPress> {
-    let mut presses = parse_chord(chord).ok()?;
-    if presses.len() == 1 {
-        Some(presses.remove(0))
-    } else {
-        None
-    }
 }
 
 /// Render a chord back to the `parse_chord` syntax for warnings, hints,

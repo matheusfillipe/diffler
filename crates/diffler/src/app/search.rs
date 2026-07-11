@@ -95,7 +95,7 @@ impl App {
                 Pane::List => d.tree_cursor,
                 Pane::Diff => d.cursor,
             }),
-            Screen::Logs => self.logs.as_ref().map_or(0, |v| v.cursor),
+            Screen::CiLog => self.ci_log.as_ref().map_or(0, |v| v.cursor),
             Screen::Runs => self.runs_cursor,
             Screen::Prs => self.prs_cursor,
             Screen::Graph => self.graph.as_ref().map_or(0, GraphView::selected_index),
@@ -125,7 +125,7 @@ impl App {
                 .enumerate()
                 .map(|(i, pr)| (i, format!("#{} {} {}", pr.number, pr.title, pr.author)))
                 .collect(),
-            Screen::Logs => self.logs.as_ref().map_or_else(Vec::new, |view| {
+            Screen::CiLog => self.ci_log.as_ref().map_or_else(Vec::new, |view| {
                 view.rows()
                     .iter()
                     .enumerate()
@@ -180,8 +180,8 @@ impl App {
                     }
                 }
             }
-            Screen::Logs => {
-                if let Some(v) = self.logs.as_mut() {
+            Screen::CiLog => {
+                if let Some(v) = self.ci_log.as_mut() {
                     v.cursor = row;
                 }
             }

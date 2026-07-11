@@ -4,11 +4,11 @@
 //! comment blocks, keeping the cursor in view.
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
 
-use diffler_core::highlight::{Highlighter, StyledRange, SyntaxTheme};
+use diffler_core::highlight::{Highlighter, StyledRange};
 use diffler_core::model::{DiffLine, DiffModel, FileDiff};
 use diffler_core::session::{Comment, CommentStatus, Session};
+use diffler_core::source::ReviewSource;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -16,7 +16,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use crate::app::{
-    App, CommentLine, DiffRow, DiffSource, DiffView, FileHighlights, FileScope, Pane, SplitRow,
+    App, CommentLine, DiffRow, DiffView, FileHighlights, FileScope, Pane, SplitRow, SplitSide,
     comment_display,
 };
 use crate::keymap::Action;
@@ -25,7 +25,7 @@ use crate::theme::Theme;
 use crate::tree::{Bucket, TreeNode};
 use crate::ui::Hint;
 use crate::ui::diff_render::{
-    SplitSide, file_gutter_width, hunk_header, line_syntax, render_diff_line, render_split_pair,
+    file_gutter_width, hunk_header, line_syntax, render_diff_line, render_split_pair,
 };
 use crate::ui::{diffstat_spans, hint_line, proportion_bar, status_bar, status_color};
 
@@ -85,22 +85,6 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         Paragraph::new(status_bar(app, bar.width)).style(Style::new().bg(app.theme.panel)),
         bar,
     );
-}
-
-/// The process-wide syntax set: loading it is expensive, highlight results
-/// are cached per file on the view.
-static HIGHLIGHTER: OnceLock<Highlighter> = OnceLock::new();
-
-/// Pin the shared highlighter to the session's theme. Called once at startup;
-/// the theme is fixed per session, so a second call is a no-op. Because the
-/// cell is process-global, a test that wants themed-syntax output must set its
-/// theme before any other `App` in the same test binary pins a different one.
-pub(crate) fn init_highlighter(syntax: SyntaxTheme) {
-    let _ = HIGHLIGHTER.set(Highlighter::new(syntax));
-}
-
-pub fn highlighter() -> &'static Highlighter {
-    HIGHLIGHTER.get_or_init(Highlighter::default)
 }
 
 struct RenderCtx<'a> {
@@ -434,14 +418,14 @@ fn split_side_syntax<'a>(
 
 /// Diff-pane title: a plain "Diff" for the working tree or a single commit, a
 /// `oldest7..newest7` range span when the pane shows a combined commit range.
-fn pane_title(source: &DiffSource) -> String {
+fn pane_title(source: &ReviewSource) -> String {
     match source {
-        DiffSource::WorkingTree | DiffSource::Commit { .. } => "Diff".to_owned(),
-        DiffSource::Range { oldest, newest } => {
+        ReviewSource::WorkingTree | ReviewSource::Commit { .. } => "Diff".to_owned(),
+        ReviewSource::Range { oldest, newest } => {
             let short = |oid: &str| oid.get(..7).unwrap_or(oid).to_owned();
             format!("Diff {}..{}", short(oldest), short(newest))
         }
-        DiffSource::Pr { number } => format!("PR #{number}"),
+        ReviewSource::Pr { number } => format!("PR #{number}"),
     }
 }
 
@@ -785,7 +769,11 @@ fn split_right_new_no(file: &FileDiff, row: &SplitRow) -> Option<u32> {
     }
 }
 
-pub(crate) fn ensure_file_highlights(cache: &mut HashMap<String, FileHighlights>, file: &FileDiff) {
+pub(crate) fn ensure_file_highlights(
+    highlighter: &Highlighter,
+    cache: &mut HashMap<String, FileHighlights>,
+    file: &FileDiff,
+) {
     // both sides are highlighted, so the validity hash must cover both:
     // an old-side-only change (e.g. a rebase) must invalidate the entry
     let hash = file.sides_hash();
@@ -797,7 +785,7 @@ pub(crate) fn ensure_file_highlights(cache: &mut HashMap<String, FileHighlights>
     }
     let highlight = |text: &Option<String>| {
         text.as_deref()
-            .map(|content| highlighter().highlight(&file.path, content))
+            .map(|content| highlighter.highlight(&file.path, content))
             .unwrap_or_default()
     };
     let entry = FileHighlights {

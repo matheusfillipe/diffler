@@ -1043,7 +1043,9 @@ fn is_section_header(row: &Row) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{DiffSource, Screen};
+    use diffler_core::source::ReviewSource;
+
+    use super::super::Screen;
     use super::*;
     use crate::app::App;
     use crate::config::LoadedConfig;
@@ -1574,7 +1576,7 @@ mod tests {
         app.handle(key('\n'));
         assert_eq!(app.screen(), Screen::Diff);
         let diff = app.diff.as_ref().expect("diff view");
-        assert_eq!(diff.source, DiffSource::WorkingTree);
+        assert_eq!(diff.source, ReviewSource::WorkingTree);
         assert_eq!(
             diff.focus,
             super::super::Pane::Diff,
@@ -1599,7 +1601,7 @@ mod tests {
         app.handle(key('\n'));
         assert_eq!(app.screen(), Screen::Diff);
         let diff = app.diff.as_ref().expect("diff view");
-        assert_eq!(diff.source, DiffSource::WorkingTree);
+        assert_eq!(diff.source, ReviewSource::WorkingTree);
         assert_eq!(
             diff.focus,
             super::super::Pane::List,
@@ -1646,7 +1648,7 @@ mod tests {
         app.handle(key('D'));
         assert_eq!(app.screen(), Screen::Diff);
         let diff = app.diff.as_ref().expect("diff view");
-        assert_eq!(diff.source, DiffSource::WorkingTree);
+        assert_eq!(diff.source, ReviewSource::WorkingTree);
         assert_eq!(diff.cursor, 0, "unscoped open starts at the top");
     }
 
@@ -1659,7 +1661,7 @@ mod tests {
         app.handle(key('\n'));
         assert_eq!(app.screen(), Screen::Diff);
         let diff = app.diff.as_ref().expect("diff view");
-        let DiffSource::Commit { oid } = &diff.source else {
+        let ReviewSource::Commit { oid } = &diff.source else {
             panic!("expected a commit source, got {:?}", diff.source);
         };
         assert_eq!(oid.len(), 40);

@@ -11,7 +11,7 @@ use ratatui::layout::Rect;
 
 /// One collapsible step: its name, status, run time, and log lines. `name` is
 /// empty (and `status` `None`) for the leading section of pre-step output.
-pub struct LogStep {
+pub struct CiLogStep {
     pub name: String,
     pub status: Option<JobStatus>,
     pub duration_secs: Option<i64>,
@@ -21,14 +21,14 @@ pub struct LogStep {
 
 /// A cursor-addressable row of the log view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LogsRow {
+pub enum CiLogRow {
     Step(usize),
     Line { step: usize, line: usize },
 }
 
 /// State for the CI logs screen.
-pub struct LogsView {
-    pub steps: Vec<LogStep>,
+pub struct CiLogView {
+    pub steps: Vec<CiLogStep>,
     pub cursor: usize,
     pub scroll: usize,
     pub visual_anchor: Option<usize>,
@@ -36,7 +36,7 @@ pub struct LogsView {
     pub body: Rect,
 }
 
-impl LogsView {
+impl CiLogView {
     /// Group a job's log into folded steps. With step metadata, lines are
     /// bucketed by timestamp into the real steps; without it, sections come from
     /// `##[group]` markers. Folded by default.
@@ -61,7 +61,7 @@ impl LogsView {
     /// a re-poll that appends lines doesn't reset what the user folded or where
     /// they are. New steps keep the default folded state.
     #[must_use]
-    pub fn carry_into(self, mut next: LogsView) -> LogsView {
+    pub fn carry_into(self, mut next: CiLogView) -> CiLogView {
         for step in &mut next.steps {
             // match by name, but never by the empty name — the leading section
             // and an unlabeled `##[group]` would otherwise share fold state
@@ -82,22 +82,22 @@ impl LogsView {
     }
 
     /// Flattened cursor-addressable rows given the current fold state.
-    pub fn rows(&self) -> Vec<LogsRow> {
+    pub fn rows(&self) -> Vec<CiLogRow> {
         let mut rows = Vec::new();
         for (s, step) in self.steps.iter().enumerate() {
-            rows.push(LogsRow::Step(s));
+            rows.push(CiLogRow::Step(s));
             if !step.folded {
-                rows.extend((0..step.lines.len()).map(|line| LogsRow::Line { step: s, line }));
+                rows.extend((0..step.lines.len()).map(|line| CiLogRow::Line { step: s, line }));
             }
         }
         rows
     }
 
     /// Display text of a row (the step name, or a log line), for search/render.
-    pub fn row_text(&self, row: LogsRow) -> &str {
+    pub fn row_text(&self, row: CiLogRow) -> &str {
         match row {
-            LogsRow::Step(s) => self.steps.get(s).map_or("", |st| st.name.as_str()),
-            LogsRow::Line { step, line } => self
+            CiLogRow::Step(s) => self.steps.get(s).map_or("", |st| st.name.as_str()),
+            CiLogRow::Line { step, line } => self
                 .steps
                 .get(step)
                 .and_then(|st| st.lines.get(line))
@@ -110,7 +110,7 @@ impl LogsView {
     pub fn toggle_fold_at_cursor(&mut self) {
         let rows = self.rows();
         let Some(step) = rows.get(self.cursor).map(|row| match row {
-            LogsRow::Step(s) | LogsRow::Line { step: s, .. } => *s,
+            CiLogRow::Step(s) | CiLogRow::Line { step: s, .. } => *s,
         }) else {
             return;
         };
@@ -118,7 +118,7 @@ impl LogsView {
             st.folded = !st.folded;
         }
         let last = self.rows().len().saturating_sub(1);
-        if let Some(pos) = self.rows().iter().position(|r| *r == LogsRow::Step(step)) {
+        if let Some(pos) = self.rows().iter().position(|r| *r == CiLogRow::Step(step)) {
             self.cursor = pos;
         }
         // a collapse can drop rows out from under an anchor set in the now-folded
@@ -150,7 +150,7 @@ impl LogsView {
 
 /// Bucket lines into the job's real steps by timestamp: a line joins the last
 /// step whose start it's at or after; earlier lines form a leading section.
-fn sections_by_step(raw: &str, metas: &[LogStepMeta]) -> Vec<LogStep> {
+fn sections_by_step(raw: &str, metas: &[LogStepMeta]) -> Vec<CiLogStep> {
     let mut leading: Vec<String> = Vec::new();
     let mut buckets: Vec<Vec<String>> = vec![Vec::new(); metas.len()];
     for raw_line in raw.lines() {
@@ -174,7 +174,7 @@ fn sections_by_step(raw: &str, metas: &[LogStepMeta]) -> Vec<LogStep> {
     }
     let mut steps = Vec::new();
     if !leading.is_empty() {
-        steps.push(LogStep {
+        steps.push(CiLogStep {
             name: String::new(),
             status: None,
             duration_secs: None,
@@ -183,7 +183,7 @@ fn sections_by_step(raw: &str, metas: &[LogStepMeta]) -> Vec<LogStep> {
         });
     }
     for (meta, lines) in metas.iter().zip(buckets) {
-        steps.push(LogStep {
+        steps.push(CiLogStep {
             name: meta.name.clone(),
             status: Some(meta.status),
             duration_secs: meta.duration_secs,
@@ -196,13 +196,13 @@ fn sections_by_step(raw: &str, metas: &[LogStepMeta]) -> Vec<LogStep> {
 
 /// Fallback grouping by the runner's `##[group]`/`##[endgroup]` markers, for
 /// providers that don't expose step metadata.
-fn sections_by_group(raw: &str) -> Vec<LogStep> {
-    let mut steps: Vec<LogStep> = Vec::new();
+fn sections_by_group(raw: &str) -> Vec<CiLogStep> {
+    let mut steps: Vec<CiLogStep> = Vec::new();
     let mut leading: Vec<String> = Vec::new();
     for raw_line in raw.lines() {
         let (_, content) = line_key_and_content(raw_line);
         if let Some(name) = content.strip_prefix("##[group]") {
-            steps.push(LogStep {
+            steps.push(CiLogStep {
                 name: name.trim().to_owned(),
                 status: None,
                 duration_secs: None,
@@ -222,7 +222,7 @@ fn sections_by_group(raw: &str) -> Vec<LogStep> {
     if !leading.is_empty() {
         steps.insert(
             0,
-            LogStep {
+            CiLogStep {
                 name: String::new(),
                 status: None,
                 duration_secs: None,
@@ -286,7 +286,7 @@ mod tests {
 
     #[test]
     fn parse_sections_by_group_strips_prefix_and_ansi() {
-        let view = LogsView::parse(RAW, &[]);
+        let view = CiLogView::parse(RAW, &[]);
         assert_eq!(view.steps.len(), 3);
         assert_eq!(view.steps[0].name, "", "pre-group lines lead unnamed");
         assert_eq!(view.steps[0].lines, vec!["runner v2.335.1"]);
@@ -299,26 +299,26 @@ mod tests {
 
     #[test]
     fn folded_view_shows_only_headers() {
-        let view = LogsView::parse(RAW, &[]);
+        let view = CiLogView::parse(RAW, &[]);
         assert_eq!(
             view.rows(),
-            vec![LogsRow::Step(0), LogsRow::Step(1), LogsRow::Step(2)]
+            vec![CiLogRow::Step(0), CiLogRow::Step(1), CiLogRow::Step(2)]
         );
     }
 
     #[test]
     fn toggle_fold_reveals_lines_and_reseats_cursor() {
-        let mut view = LogsView::parse(RAW, &[]);
+        let mut view = CiLogView::parse(RAW, &[]);
         view.cursor = 1; // the Build section header
         view.toggle_fold_at_cursor();
         assert_eq!(
             view.rows(),
             vec![
-                LogsRow::Step(0),
-                LogsRow::Step(1),
-                LogsRow::Line { step: 1, line: 0 },
-                LogsRow::Line { step: 1, line: 1 },
-                LogsRow::Step(2),
+                CiLogRow::Step(0),
+                CiLogRow::Step(1),
+                CiLogRow::Line { step: 1, line: 0 },
+                CiLogRow::Line { step: 1, line: 1 },
+                CiLogRow::Step(2),
             ]
         );
         view.cursor = 3; // a Build line
@@ -331,7 +331,7 @@ mod tests {
 
     #[test]
     fn selection_text_joins_the_visual_range() {
-        let mut view = LogsView::parse(RAW, &[]);
+        let mut view = CiLogView::parse(RAW, &[]);
         view.cursor = 1;
         view.toggle_fold_at_cursor();
         view.visual_anchor = Some(2);
@@ -341,7 +341,7 @@ mod tests {
 
     #[test]
     fn folding_clamps_a_stale_visual_anchor() {
-        let mut view = LogsView::parse(RAW, &[]);
+        let mut view = CiLogView::parse(RAW, &[]);
         view.cursor = 1;
         view.toggle_fold_at_cursor();
         view.visual_anchor = Some(3);
@@ -353,10 +353,10 @@ mod tests {
 
     #[test]
     fn carry_into_preserves_fold_state_by_name() {
-        let mut prev = LogsView::parse(RAW, &[]);
+        let mut prev = CiLogView::parse(RAW, &[]);
         prev.cursor = 1;
         prev.toggle_fold_at_cursor();
-        let next = prev.carry_into(LogsView::parse(RAW, &[]));
+        let next = prev.carry_into(CiLogView::parse(RAW, &[]));
         assert!(!next.steps[1].folded, "Build stays unfolded across re-poll");
         assert!(next.steps[2].folded);
     }
@@ -378,7 +378,7 @@ mod tests {
             },
         ];
         // the `##[group]` markers are ignored when real steps drive the grouping
-        let view = LogsView::parse(RAW, &metas);
+        let view = CiLogView::parse(RAW, &metas);
         assert_eq!(view.steps.len(), 2, "one section per real step, no leading");
         assert_eq!(view.steps[0].name, "Set up job");
         assert_eq!(view.steps[0].status, Some(JobStatus::Ok));
@@ -414,7 +414,7 @@ mod tests {
                 duration_secs: Some(13),
             },
         ];
-        let view = LogsView::parse(RAW, &metas);
+        let view = CiLogView::parse(RAW, &metas);
         assert!(
             view.steps[0].lines.iter().any(|l| l == "compiling…"),
             "early lines stay with the first real step, not the skipped one"

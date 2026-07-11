@@ -2,11 +2,11 @@
 //! view additionally fills its lazy highlight cache and follows the cursor
 //! with its scroll offset, which is why it takes `&mut App`).
 
+pub mod ci_log;
 pub mod diff;
 pub mod diff_render;
 pub mod graph;
 pub mod log;
-pub mod logs;
 pub mod popup;
 mod prs;
 mod runs;
@@ -82,7 +82,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             // attach intra-line emphasis and syntax to expanded inline diffs
             // before the read-only status render
             app.enrich_status_expanded();
-            app.ensure_status_highlights(diff::ensure_file_highlights);
+            let highlighter = std::sync::Arc::clone(&app.highlighter);
+            app.ensure_status_highlights(|cache, file| {
+                diff::ensure_file_highlights(&highlighter, cache, file);
+            });
             status::draw(frame, app);
         }
         Screen::Log => log::draw(frame, app),
@@ -90,7 +93,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         Screen::Graph => graph::draw(frame, app),
         Screen::Runs => runs::draw(frame, app),
         Screen::Prs => prs::draw(frame, app),
-        Screen::Logs => logs::draw(frame, app),
+        Screen::CiLog => ci_log::draw(frame, app),
     }
     match &app.modal {
         Some(Modal::Confirm { message, .. }) => {
@@ -120,7 +123,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
                 Screen::Graph => "graph",
                 Screen::Runs => "runs",
                 Screen::Prs => "prs",
-                Screen::Logs => "logs",
+                Screen::CiLog => "logs",
             };
             popup::Popup {
                 title: format!("Help — {screen} keys"),
@@ -409,7 +412,7 @@ pub(super) fn status_bar(app: &App, width: u16) -> Line<'static> {
     let chip = match app.screen() {
         Screen::Status => " STATUS ".to_owned(),
         Screen::Diff => match app.diff.as_ref().map(|d| &d.source) {
-            Some(source @ crate::app::DiffSource::Pr { number }) => {
+            Some(source @ diffler_core::source::ReviewSource::Pr { number }) => {
                 let pending = app
                     .review
                     .session_for(source)
@@ -429,7 +432,7 @@ pub(super) fn status_bar(app: &App, width: u16) -> Line<'static> {
         Screen::Graph => " GRAPH ".to_owned(),
         Screen::Runs => " RUNS ".to_owned(),
         Screen::Prs => " PRS ".to_owned(),
-        Screen::Logs => " LOGS ".to_owned(),
+        Screen::CiLog => " LOGS ".to_owned(),
     };
     let repo = app
         .review

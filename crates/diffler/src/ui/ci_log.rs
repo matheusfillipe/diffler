@@ -10,7 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
 use crate::app::App;
-use crate::app::logs::{LogsRow, LogsView};
+use crate::app::ci_log::{CiLogRow, CiLogView};
 use crate::keymap::Action;
 use crate::theme::Theme;
 use crate::ui::{Hint, cursor_line, hint_line, status_bar};
@@ -43,7 +43,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     frame.render_widget(Paragraph::new(provenance), header);
 
     let search = app.search.as_ref();
-    match app.logs.as_mut() {
+    match app.ci_log.as_mut() {
         Some(view) if !view.steps.is_empty() => {
             view.viewport = body.height;
             view.body = body;
@@ -86,12 +86,12 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
 
 fn row_line(
     theme: &Theme,
-    view: &LogsView,
-    row: LogsRow,
+    view: &CiLogView,
+    row: CiLogRow,
     search: &[(std::ops::Range<usize>, bool)],
 ) -> Line<'static> {
     match row {
-        LogsRow::Step(s) => {
+        CiLogRow::Step(s) => {
             let Some(step) = view.steps.get(s) else {
                 return Line::default();
             };
@@ -128,7 +128,7 @@ fn row_line(
             ));
             Line::from(spans)
         }
-        LogsRow::Line { .. } => {
+        CiLogRow::Line { .. } => {
             let text = view.row_text(row);
             let mut spans = vec![Span::styled("    ", theme.base())];
             spans.extend(super::highlight_spans(text, theme.base(), search, theme));
@@ -202,7 +202,7 @@ mod tests {
     #[test]
     fn parses_sections_by_group_marker() {
         let app = build_app();
-        let view = app.logs().expect("logs view");
+        let view = app.ci_log().expect("ci_log view");
         assert_eq!(view.steps.len(), 2);
         assert_eq!(view.steps[0].name, "Build");
         assert_eq!(view.steps[1].name, "Test");

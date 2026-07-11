@@ -5,11 +5,11 @@
 
 pub mod blast;
 mod ci;
+pub mod ci_log;
 mod commit;
 mod diff;
 pub mod enrich;
 mod log;
-pub mod logs;
 mod mcp;
 mod modal;
 pub mod pr;
@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub use diff::{
-    CommentLine, DiffRow, DiffSource, DiffView, FileHighlights, FileScope, Pane, SplitRow,
+    CommentLine, DiffRow, DiffView, FileHighlights, FileScope, Pane, SplitRow, SplitSide,
     comment_display,
 };
 pub use log::LogView;
@@ -30,6 +30,7 @@ pub use status::{Row, Section, StatusView};
 use crossterm::event::{KeyCode, KeyEvent};
 use diffler_core::review::Review;
 use diffler_core::session::Anchor;
+use diffler_core::source::ReviewSource;
 use diffler_core::vcs::{BranchInfo, HeadInfo, NetworkOp, Vcs, VcsError};
 
 use crate::config::{Config, KeyPress, LoadedConfig};
@@ -61,7 +62,7 @@ pub enum Screen {
     /// The open pull requests of the repo's forge.
     Prs,
     /// A single job's log view.
-    Logs,
+    CiLog,
 }
 
 impl Screen {
@@ -70,7 +71,7 @@ impl Screen {
             Self::Status => Context::Status,
             // Runs is a plain list: it shares Log's motions
             Self::Runs | Self::Log => Context::Log,
-            Self::Logs => Context::Logs,
+            Self::CiLog => Context::Logs,
             Self::Diff => Context::Diff,
             Self::Graph => Context::Graph,
             Self::Prs => Context::Prs,
@@ -375,6 +376,10 @@ pub struct App {
     pub review: Review,
     pub head: HeadInfo,
     pub theme: Theme,
+    /// Whole-file syntax highlighter, pinned to `theme`'s syntax palette at
+    /// construction. Shared (not rebuilt) with blocking-pool enrichment
+    /// workers, which clone the `Arc`.
+    pub highlighter: Arc<diffler_core::highlight::Highlighter>,
     pub config: Config,
     /// Author label stamped on comments and replies the human writes.
     pub author: String,
@@ -441,16 +446,16 @@ pub struct App {
     open_run_remote: Option<String>,
     /// The open run's artifacts + annotations, shown below the DAG.
     pub extras: Option<crate::ci::RunExtras>,
-    /// The job whose log is on the Logs screen.
+    /// The job whose log is on the `CiLog` screen.
     open_job: Option<crate::ci::JobId>,
     /// Accumulated raw job-log text and the byte offset the next poll resumes
-    /// from. Parsed into [`logs`](Self::logs) for the foldable view.
+    /// from. Parsed into [`ci_log`](Self::ci_log) for the foldable view.
     log_text: String,
     log_offset: u64,
     /// The opened job's step boundaries, used to bucket `log_text` into steps.
     log_steps: Vec<crate::ci::LogStepMeta>,
-    /// The foldable step view over `log_text`, present while the Logs screen is up.
-    pub logs: Option<logs::LogsView>,
+    /// The foldable step view over `log_text`, present while the `CiLog` screen is up.
+    pub ci_log: Option<ci_log::CiLogView>,
     /// Set once a log chunk reports the job's log is complete, so polling stops
     /// (a dump-mode provider returns the whole log in one chunk).
     log_done: bool,
@@ -520,7 +525,7 @@ impl App {
         } = loaded;
         let (theme, theme_warning) = Theme::from_name(&config.ui.theme);
         startup_warnings.extend(theme_warning);
-        crate::ui::diff::init_highlighter(theme.syntax);
+        let highlighter = Arc::new(diffler_core::highlight::Highlighter::new(theme.syntax));
         let keymaps = Keymaps::build(&config.keys, &mut startup_warnings);
         let transients = build_transients(&config.keys, &mut startup_warnings);
 
@@ -558,6 +563,7 @@ impl App {
             review,
             head,
             theme,
+            highlighter,
             config,
             // git config user.name is not exposed through HeadInfo; $USER is
             // a good-enough human label for feedback exports
@@ -601,7 +607,7 @@ impl App {
             log_text: String::new(),
             log_offset: 0,
             log_steps: Vec::new(),
-            logs: None,
+            ci_log: None,
             log_done: false,
             modal: None,
             search: None,
@@ -635,14 +641,14 @@ impl App {
         self.runs_cursor
     }
 
-    /// The accumulated job-log text on the Logs screen.
+    /// The accumulated job-log text on the `CiLog` screen.
     pub fn log_text(&self) -> &str {
         &self.log_text
     }
 
-    /// The foldable step view over the Logs screen, once a log chunk arrived.
-    pub fn logs(&self) -> Option<&logs::LogsView> {
-        self.logs.as_ref()
+    /// The foldable step view over the `CiLog` screen, once a log chunk arrived.
+    pub fn ci_log(&self) -> Option<&ci_log::CiLogView> {
+        self.ci_log.as_ref()
     }
 
     /// The CI remotes for the repo (the main loop builds a provider per remote
@@ -651,7 +657,7 @@ impl App {
         self.ci_remotes.clone()
     }
 
-    /// The job the Logs screen is showing, for its header line.
+    /// The job the `CiLog` screen is showing, for its header line.
     pub fn open_job_name(&self) -> Option<String> {
         self.open_job.as_ref().map(|job| job.0.clone())
     }
@@ -851,7 +857,7 @@ impl App {
                 down: false,
             },
             MouseEventKind::Down(MouseButton::Left) => {
-                if self.is_double_click(col, row) {
+                if self.register_click_is_double(col, row) {
                     MouseGesture::DoublePress { col, row }
                 } else {
                     MouseGesture::Press { col, row }
@@ -865,7 +871,7 @@ impl App {
             Screen::Status => self.status_mouse(gesture),
             Screen::Diff => self.diff_mouse(gesture),
             Screen::Log => self.log_mouse(gesture),
-            Screen::Logs => self.logs_mouse(gesture),
+            Screen::CiLog => self.ci_log_mouse(gesture),
             // the Runs/Graph screens are keyboard-driven
             Screen::Graph | Screen::Runs | Screen::Prs => {}
         }
@@ -874,7 +880,7 @@ impl App {
     /// Mouse on the logs screen: wheel scrolls the cursor, click positions it,
     /// double-click folds the step, drag extends a selection — mirroring the
     /// diff/log screens so the foldable log behaves the same under the pointer.
-    fn is_double_click(&mut self, col: u16, row: u16) -> bool {
+    fn register_click_is_double(&mut self, col: u16, row: u16) -> bool {
         let now = std::time::Instant::now();
         let double = self.last_click.is_some_and(|(at, c, r)| {
             now.duration_since(at) < DOUBLE_CLICK_WINDOW && c.abs_diff(col) <= 1 && r == row
@@ -898,8 +904,8 @@ impl App {
                         log.visual_anchor = None;
                     }
                 }
-                Screen::Logs => {
-                    if let Some(view) = self.logs.as_mut() {
+                Screen::CiLog => {
+                    if let Some(view) = self.ci_log.as_mut() {
                         view.visual_anchor = None;
                     }
                 }
@@ -981,8 +987,8 @@ impl App {
                 .as_ref()
                 .is_some_and(|d| d.visual_anchor.is_some()),
             Screen::Log => self.log.as_ref().is_some_and(|l| l.visual_anchor.is_some()),
-            Screen::Logs => self
-                .logs
+            Screen::CiLog => self
+                .ci_log
                 .as_ref()
                 .is_some_and(|v| v.visual_anchor.is_some()),
             Screen::Status | Screen::Graph | Screen::Runs | Screen::Prs => false,
@@ -996,10 +1002,10 @@ impl App {
 
     /// The review source the user is currently looking at: the open diff's
     /// source, or the working tree on the status screen.
-    pub(crate) fn active_review_source(&self) -> DiffSource {
+    pub(crate) fn active_review_source(&self) -> ReviewSource {
         self.diff
             .as_ref()
-            .map_or(DiffSource::WorkingTree, |diff| diff.source.clone())
+            .map_or(ReviewSource::WorkingTree, |diff| diff.source.clone())
     }
 
     /// Persist the session and invalidate comment-bearing rows after a
@@ -1053,7 +1059,7 @@ impl App {
                 Screen::Status => self.dispatch_status(action),
                 Screen::Log => self.dispatch_log(action),
                 Screen::Diff => self.dispatch_diff(action),
-                Screen::Logs => self.dispatch_logs(action),
+                Screen::CiLog => self.dispatch_ci_log(action),
                 Screen::Runs => self.dispatch_runs(action),
                 Screen::Graph => self.dispatch_graph(action),
                 Screen::Prs => self.dispatch_prs(action),
@@ -1086,10 +1092,10 @@ impl App {
                 self.impact_targets.clear();
                 self.extras = None;
             }
-            Some(Screen::Logs) => {
+            Some(Screen::CiLog) => {
                 self.open_job = None;
                 self.log_text.clear();
-                self.logs = None;
+                self.ci_log = None;
             }
             Some(Screen::Runs) => self.runs_cursor = 0,
             Some(Screen::Prs) => self.prs_cursor = 0,
@@ -1353,30 +1359,30 @@ mod tests {
     }
 
     #[test]
-    fn logs_mouse_scrolls_and_double_click_folds() {
+    fn ci_log_mouse_scrolls_and_double_click_folds() {
         let (_fixture, mut app) = app();
         let raw = "j\tUNKNOWN STEP\t2026-06-20T00:00:00Z ##[group]Build\n\
                    j\tUNKNOWN STEP\t2026-06-20T00:00:01Z compiling\n\
                    j\tUNKNOWN STEP\t2026-06-20T00:00:02Z ##[group]Test\n\
                    j\tUNKNOWN STEP\t2026-06-20T00:00:03Z running\n";
-        let mut view = logs::LogsView::parse(raw, &[]);
+        let mut view = ci_log::CiLogView::parse(raw, &[]);
         view.body = ratatui::layout::Rect::new(0, 1, 40, 10);
-        app.logs = Some(view);
+        app.ci_log = Some(view);
 
-        app.logs_mouse(MouseGesture::Scroll {
+        app.ci_log_mouse(MouseGesture::Scroll {
             col: 1,
             row: 2,
             down: true,
         });
         assert_eq!(
-            app.logs.as_ref().expect("view").cursor,
+            app.ci_log.as_ref().expect("view").cursor,
             1,
             "wheel moved cursor"
         );
 
         // double-click the Build header (top body row) unfolds it
-        app.logs_mouse(MouseGesture::DoublePress { col: 2, row: 1 });
-        let view = app.logs.as_ref().expect("view");
+        app.ci_log_mouse(MouseGesture::DoublePress { col: 2, row: 1 });
+        let view = app.ci_log.as_ref().expect("view");
         assert_eq!(view.cursor, 0, "click re-seated the cursor on Build");
         assert!(!view.steps[0].folded, "double-click unfolded the step");
     }

@@ -675,6 +675,17 @@ pub fn parse_chord(s: &str) -> Result<Chord, ChordError> {
     Ok(presses)
 }
 
+/// Parse a chord that must be exactly one key press; `None` otherwise. Prefix
+/// and transient keys are single-press by design.
+pub(crate) fn single_press(chord: &str) -> Option<KeyPress> {
+    let mut presses = parse_chord(chord).ok()?;
+    if presses.len() == 1 {
+        Some(presses.remove(0))
+    } else {
+        None
+    }
+}
+
 fn plain_press(c: char) -> KeyPress {
     KeyPress {
         code: KeyCode::Char(c),

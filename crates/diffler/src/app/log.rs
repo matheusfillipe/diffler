@@ -181,7 +181,9 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{DiffSource, Screen};
+    use diffler_core::source::ReviewSource;
+
+    use super::super::Screen;
     use crate::app::App;
     use crate::config::LoadedConfig;
     use crate::test_support::{Fixture, ctrl_key, key, standard_fixture};
@@ -270,7 +272,7 @@ mod tests {
         app.handle(key('\n'));
         assert_eq!(app.screen(), Screen::Diff);
         let diff = app.diff.as_ref().expect("diff view");
-        let DiffSource::Commit { oid } = &diff.source else {
+        let ReviewSource::Commit { oid } = &diff.source else {
             panic!("expected a commit diff");
         };
         let expected = &app.log.as_ref().unwrap().entries[1].oid;
@@ -313,7 +315,7 @@ mod tests {
         app.handle(key('\n'));
         assert_eq!(app.screen(), Screen::Diff);
         let diff = app.diff.as_ref().expect("diff view");
-        let DiffSource::Range {
+        let ReviewSource::Range {
             oldest: src_oldest,
             newest: src_newest,
         } = &diff.source
@@ -341,7 +343,7 @@ mod tests {
         app.handle(key('\n'));
         let diff = app.diff.as_ref().expect("diff view");
         assert!(
-            matches!(&diff.source, DiffSource::Commit { .. }),
+            matches!(&diff.source, ReviewSource::Commit { .. }),
             "no selection means a single commit diff: {:?}",
             diff.source
         );

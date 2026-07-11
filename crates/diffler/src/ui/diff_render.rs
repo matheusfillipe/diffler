@@ -11,6 +11,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthChar;
 
+use crate::app::SplitSide;
 use crate::theme::Theme;
 
 /// Per-file syntax for both diff sides — `(old, new)` — each indexed by line
@@ -189,14 +190,6 @@ fn rail_color(theme: &Theme, line: &DiffLine) -> Color {
         LineKind::Deleted => theme.error_fg,
         LineKind::Context => theme.dim,
     }
-}
-
-/// Which column of a side-by-side row a line belongs to: the old side renders
-/// on the left, the new side on the right.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SplitSide {
-    Left,
-    Right,
 }
 
 /// One side of a side-by-side row: the line and its per-line syntax, or `None`

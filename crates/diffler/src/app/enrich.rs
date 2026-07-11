@@ -170,7 +170,7 @@ impl App {
         }
         let jobs: Vec<EnrichJob> = self.pending_enrich.drain(..).collect();
         for job in jobs {
-            let outcome = run_enrich(crate::ui::diff::highlighter(), job);
+            let outcome = run_enrich(&self.highlighter, job);
             self.on_enriched(outcome);
         }
     }

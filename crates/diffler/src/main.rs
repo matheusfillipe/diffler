@@ -371,8 +371,9 @@ fn dispatch_blast(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>, pool: &Ls
 fn dispatch_enrich(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     for job in app.pending_enrich.drain(..) {
         let tx = tx.clone();
+        let highlighter = std::sync::Arc::clone(&app.highlighter);
         tokio::task::spawn_blocking(move || {
-            let outcome = app::enrich::run_enrich(ui::diff::highlighter(), job);
+            let outcome = app::enrich::run_enrich(&highlighter, job);
             let _ = tx.send(AppEvent::Enriched(Box::new(outcome)));
         });
     }

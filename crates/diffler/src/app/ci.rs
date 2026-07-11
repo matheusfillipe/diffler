@@ -1,11 +1,11 @@
 //! CI screens: the runs list, the run graph, and job logs.
 
-use super::{App, CiRequest, MouseGesture, Screen, hit_index, logs, page_step};
+use super::{App, CiRequest, MouseGesture, Screen, ci_log, hit_index, page_step};
 use crate::keymap::Action;
 
 impl App {
-    pub(super) fn logs_mouse(&mut self, gesture: MouseGesture) {
-        let Some(view) = self.logs.as_mut() else {
+    pub(super) fn ci_log_mouse(&mut self, gesture: MouseGesture) {
+        let Some(view) = self.ci_log.as_mut() else {
             return;
         };
         let last = view.rows().len().saturating_sub(1);
@@ -83,8 +83,8 @@ impl App {
         if !steps.is_empty() {
             self.log_steps = steps;
         }
-        let rebuilt = logs::LogsView::parse(&self.log_text, &self.log_steps);
-        self.logs = Some(match self.logs.take() {
+        let rebuilt = ci_log::CiLogView::parse(&self.log_text, &self.log_steps);
+        self.ci_log = Some(match self.ci_log.take() {
             Some(prev) => prev.carry_into(rebuilt),
             None => rebuilt,
         });
@@ -119,7 +119,7 @@ impl App {
     }
 
     /// Open a job's log view from a graph node activation.
-    pub(super) fn open_logs(&mut self, job: crate::ci::JobId) {
+    pub(super) fn open_ci_log(&mut self, job: crate::ci::JobId) {
         let Some(run) = self.open_run.clone() else {
             return;
         };
@@ -127,9 +127,9 @@ impl App {
         self.log_text.clear();
         self.log_offset = 0;
         self.log_steps.clear();
-        self.logs = None;
+        self.ci_log = None;
         self.log_done = false;
-        self.push_screen(Screen::Logs);
+        self.push_screen(Screen::CiLog);
         self.pending_ci = Some(CiRequest::Log {
             run,
             job,
@@ -144,13 +144,15 @@ impl App {
             Screen::Status | Screen::Runs => Some(CiRequest::Runs),
             Screen::Graph => self.open_run.clone().map(CiRequest::Detail),
             // stop once the log is complete (a dump provider sends it all at once)
-            Screen::Logs if self.log_done => None,
+            Screen::CiLog if self.log_done => None,
             // a PR diff re-syncs its forge comments on the same cadence
             Screen::Diff => match self.diff.as_ref().map(|d| &d.source) {
-                Some(crate::app::DiffSource::Pr { number }) => Some(CiRequest::PrComments(*number)),
+                Some(diffler_core::source::ReviewSource::Pr { number }) => {
+                    Some(CiRequest::PrComments(*number))
+                }
                 _ => None,
             },
-            Screen::Logs => match (self.open_run.clone(), self.open_job.clone()) {
+            Screen::CiLog => match (self.open_run.clone(), self.open_job.clone()) {
                 (Some(run), Some(job)) => Some(CiRequest::Log {
                     run,
                     job,
@@ -188,10 +190,10 @@ impl App {
         }
     }
 
-    /// Drive the foldable logs view from a keymap [`Action`]: motions, fold,
-    /// visual select, and yank. The Logs screen reuses the diff/log keymap.
-    pub(super) fn dispatch_logs(&mut self, action: Action) {
-        let Some(view) = self.logs.as_mut() else {
+    /// Drive the foldable CI-log view from a keymap [`Action`]: motions, fold,
+    /// visual select, and yank. The `CiLog` screen reuses the diff/log keymap.
+    pub(super) fn dispatch_ci_log(&mut self, action: Action) {
+        let Some(view) = self.ci_log.as_mut() else {
             return;
         };
         let last = view.rows().len().saturating_sub(1);
@@ -200,10 +202,10 @@ impl App {
             Action::MoveUp => view.cursor = view.cursor.saturating_sub(1),
             Action::GoTop => view.cursor = 0,
             Action::GoBottom => view.cursor = last,
-            Action::HalfPageDown => self.logs_page(false, false),
-            Action::HalfPageUp => self.logs_page(true, false),
-            Action::FullPageDown => self.logs_page(false, true),
-            Action::FullPageUp => self.logs_page(true, true),
+            Action::HalfPageDown => self.ci_log_page(false, false),
+            Action::HalfPageUp => self.ci_log_page(true, false),
+            Action::FullPageDown => self.ci_log_page(false, true),
+            Action::FullPageUp => self.ci_log_page(true, true),
             Action::ToggleFold => view.toggle_fold_at_cursor(),
             Action::VisualSelect => {
                 view.visual_anchor = match view.visual_anchor {
@@ -213,7 +215,7 @@ impl App {
             }
             Action::CopyFileFeedback | Action::CopyAllFeedback => {
                 self.pending_clipboard = Some(view.selection_text());
-                let view = self.logs.as_mut();
+                let view = self.ci_log.as_mut();
                 if let Some(view) = view {
                     view.visual_anchor = None;
                 }
@@ -223,9 +225,9 @@ impl App {
         }
     }
 
-    /// Half/full-page cursor jump over the logs view, mirroring `log_page`.
-    pub(super) fn logs_page(&mut self, up: bool, full: bool) {
-        let Some(view) = self.logs.as_mut() else {
+    /// Half/full-page cursor jump over the CI-log view, mirroring `log_page`.
+    pub(super) fn ci_log_page(&mut self, up: bool, full: bool) {
+        let Some(view) = self.ci_log.as_mut() else {
             return;
         };
         let last = view.rows().len().saturating_sub(1);
@@ -285,7 +287,7 @@ impl App {
                 if let Some((path, line)) = self.impact_targets.get(&id.0).cloned() {
                     self.request_editor(&path, Some(line + 1));
                 } else if self.impact_title.is_none() {
-                    self.open_logs(crate::ci::JobId(id.0.clone()));
+                    self.open_ci_log(crate::ci::JobId(id.0.clone()));
                 }
             }
             crate::graph::GraphAction::Folded { .. } => {}
