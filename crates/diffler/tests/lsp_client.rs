@@ -75,23 +75,26 @@ async fn finds_references_for_a_changed_function() {
     assert_eq!(refs.len(), 2, "two callers of target(): {refs:?}");
     assert!(refs.iter().all(|r| r.path == "src/main.rs"));
 
-    // the call-hierarchy index can lag the reference index on slow runners:
-    // poll until the full caller set appears, same as the references query
+    // the call-hierarchy index can lag the reference index on slow runners,
+    // and rust-analyzer answers with a transient `ContentModified` error
+    // while it settles: poll through both until the full caller set appears
     let mut callers = Vec::new();
     let mut names: Vec<String> = Vec::new();
     for _ in 0..40 {
-        callers = client
+        if let Ok(result) = client
             .incoming_calls(
                 Path::new("src/main.rs"),
                 target.select_line,
                 target.select_character,
             )
             .await
-            .expect("incoming calls");
-        names = callers.iter().map(|c| c.name.clone()).collect();
-        names.sort_unstable();
-        if names == ["caller_one", "main"] {
-            break;
+        {
+            callers = result;
+            names = callers.iter().map(|c| c.name.clone()).collect();
+            names.sort_unstable();
+            if names == ["caller_one", "main"] {
+                break;
+            }
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
@@ -103,12 +106,14 @@ async fn finds_references_for_a_changed_function() {
         .expect("caller_one");
     let mut second = Vec::new();
     for _ in 0..20 {
-        second = client
+        if let Ok(result) = client
             .incoming_calls(Path::new(&one.path), one.select_line, one.select_character)
             .await
-            .expect("second hop");
-        if second.len() == 1 {
-            break;
+        {
+            second = result;
+            if second.len() == 1 {
+                break;
+            }
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
