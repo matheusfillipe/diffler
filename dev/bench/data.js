@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1783799667853,
+  "lastUpdate": 1783799954568,
   "repoUrl": "https://github.com/matheusfillipe/diffler",
   "entries": {
     "Benchmark": [
@@ -3647,6 +3647,102 @@ window.BENCHMARK_DATA = {
             "name": "scope_index/20000",
             "value": 89125043,
             "range": "± 2366277",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "committer": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "distinct": true,
+          "id": "e15f40cbc6c7308c6afb5d443eb75fc5fb17fa89",
+          "message": "docs: e2e, pty and fixture rules in the agent guide",
+          "timestamp": "2026-07-11T21:55:33+02:00",
+          "tree_id": "a7e60b194f3e25d0eea8792f60125231d91c4724",
+          "url": "https://github.com/matheusfillipe/diffler/commit/e15f40cbc6c7308c6afb5d443eb75fc5fb17fa89"
+        },
+        "date": 1783799954299,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "syndiff_emphasis/1000",
+            "value": 8238968,
+            "range": "± 152212",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/1000",
+            "value": 19050,
+            "range": "± 505",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/1000",
+            "value": 5798469,
+            "range": "± 458133",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/1000",
+            "value": 4457637,
+            "range": "± 23541",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/5000",
+            "value": 44474794,
+            "range": "± 721092",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/5000",
+            "value": 96070,
+            "range": "± 681",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/5000",
+            "value": 29599776,
+            "range": "± 1165135",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/5000",
+            "value": 22945316,
+            "range": "± 465321",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/20000",
+            "value": 177314623,
+            "range": "± 2624584",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/20000",
+            "value": 385384,
+            "range": "± 2335",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/20000",
+            "value": 122702282,
+            "range": "± 3910579",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/20000",
+            "value": 93411547,
+            "range": "± 1575190",
             "unit": "ns/iter"
           }
         ]
