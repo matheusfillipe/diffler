@@ -12,6 +12,15 @@ use crate::mcp::{
     ReviewSummary, comment_info, comment_status_name, file_status_name, render_unified,
 };
 
+/// The [`ReviewSource`] variants whose diffs are computed once and cached;
+/// `WorkingTree` always reads live and never reaches [`App::source_model`]'s
+/// cache path.
+enum CachedKind<'a> {
+    Commit(&'a str),
+    Range(&'a str, &'a str),
+    Pr(u64),
+}
+
 impl App {
     pub(crate) fn handle_mcp(&mut self, kind: McpRequestKind) -> McpResponse {
         match kind {
@@ -91,29 +100,29 @@ impl App {
     /// once and stay cached — agent polls must not stall the render loop.
     /// Backend errors degrade to an empty diff.
     pub(crate) fn source_model(&mut self, source: &ReviewSource) -> std::sync::Arc<DiffModel> {
-        let key = match source {
+        // narrowing to the cacheable sources up front makes WorkingTree
+        // structurally absent below, instead of an unreachable match arm
+        let kind = match source {
             ReviewSource::WorkingTree => {
                 return std::sync::Arc::new(self.review.model().clone());
             }
-            ReviewSource::Commit { .. } | ReviewSource::Range { .. } | ReviewSource::Pr { .. } => {
-                source.key()
-            }
+            ReviewSource::Commit { oid } => CachedKind::Commit(oid),
+            ReviewSource::Range { oldest, newest } => CachedKind::Range(oldest, newest),
+            ReviewSource::Pr { number } => CachedKind::Pr(*number),
         };
+        let key = source.key();
         if !self.source_models.contains_key(&key) {
-            let model = match source {
-                ReviewSource::WorkingTree => DiffModel::default(),
-                ReviewSource::Commit { oid } => {
-                    self.review.vcs.commit_diff(oid).unwrap_or_default()
-                }
-                ReviewSource::Range { oldest, newest } => self
+            let model = match kind {
+                CachedKind::Commit(oid) => self.review.vcs.commit_diff(oid).unwrap_or_default(),
+                CachedKind::Range(oldest, newest) => self
                     .review
                     .vcs
                     .range_diff(oldest, newest)
                     .unwrap_or_default(),
                 // resolved when the PR view opened; unknown PRs degrade empty
-                ReviewSource::Pr { number } => self
+                CachedKind::Pr(number) => self
                     .pr_ranges
-                    .get(number)
+                    .get(&number)
                     .and_then(|(base, head)| self.review.vcs.tree_diff(base, head).ok())
                     .unwrap_or_default(),
             };

@@ -121,26 +121,7 @@ async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<
     if let Some(handle) = &watcher {
         app.watcher_healthy = Some(handle.healthy.clone());
     }
-    let mcp = if app.config.mcp.enabled {
-        match mcp::spawn_mcp(tx.clone(), app.feedback_tx.subscribe(), app.config.mcp.port) {
-            Ok(handle) => {
-                app.mcp_port = Some(handle.port);
-                let _ = mcp::write_endpoint(&app.review.repo_root, handle.port);
-                // show the connect hint as the initial message only when no
-                // startup warning is already occupying the one-shot slot
-                if app.message.is_none() {
-                    app.info(mcp::connect_hint(handle.port));
-                }
-                Some(handle)
-            }
-            Err(err) => {
-                app.error(format!("mcp server failed to start: {err}"));
-                None
-            }
-        }
-    } else {
-        None
-    };
+    let mcp = start_mcp(&mut app, &tx);
     loop {
         terminal.draw(|frame| ui::draw(frame, &mut app))?;
         if let Some(text) = app.pending_clipboard.take() {
@@ -223,6 +204,36 @@ async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<
     }
     drop(watcher);
     Ok(())
+}
+
+/// Spawn the MCP server when enabled and publish its endpoint for the stdio
+/// proxy to discover. A startup failure disables MCP for the session; a
+/// failed endpoint write only loses proxy discovery, so it surfaces as a
+/// toast rather than aborting startup.
+fn start_mcp(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) -> Option<mcp::McpHandle> {
+    if !app.config.mcp.enabled {
+        return None;
+    }
+    let handle = match mcp::spawn_mcp(tx.clone(), app.feedback_tx.subscribe(), app.config.mcp.port)
+    {
+        Ok(handle) => handle,
+        Err(err) => {
+            app.error(format!("mcp server failed to start: {err}"));
+            return None;
+        }
+    };
+    app.mcp_port = Some(handle.port);
+    if let Err(err) = mcp::write_endpoint(&app.review.repo_root, handle.port) {
+        // the proxy that agents connect through discovers the port from
+        // this file; a write failure means it silently can't find diffler
+        app.error(format!("failed to write mcp endpoint file: {err}"));
+    }
+    // show the connect hint as the initial message only when no startup
+    // warning is already occupying the one-shot slot
+    if app.message.is_none() {
+        app.info(mcp::connect_hint(handle.port));
+    }
+    Some(handle)
 }
 
 /// Start the off-thread repo refresh when one is queued and none is running.

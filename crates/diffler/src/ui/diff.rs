@@ -849,6 +849,13 @@ fn pane_header_line(
                 ),
                 Style::new().fg(theme.warn_fg).bg(bg),
             ));
+        } else if let Some(note) = &blast.note {
+            // a failed scan must read differently from a symbol that
+            // legitimately has zero cross-file references (no badge at all)
+            spans.push(Span::styled(
+                format!(" · ref scan failed: {note}"),
+                Style::new().fg(theme.error_fg).bg(bg),
+            ));
         }
     }
     // resolved-only files read as done: no count, just a quiet marker
@@ -1147,11 +1154,33 @@ mod tests {
                         line: 2,
                     }],
                 }],
+                note: None,
             },
         );
         let content = render(&mut app).backend().to_string();
         assert!(
             content.contains("referenced 4× · 1 files outside diff"),
+            "{content}"
+        );
+    }
+
+    #[test]
+    fn pane_header_shows_a_failed_scan_distinctly_from_zero_references() {
+        use crate::app::blast::FileBlast;
+        let (_fixture, mut app) = diff_app();
+        let hash = app.review.model().files[0].sides_hash();
+        let path = app.review.model().files[0].path.clone();
+        app.blast.insert(
+            path,
+            FileBlast {
+                hash,
+                symbols: Vec::new(),
+                note: Some("rust-analyzer connection was lost".to_owned()),
+            },
+        );
+        let content = render(&mut app).backend().to_string();
+        assert!(
+            content.contains("ref scan failed: rust-analyzer connection was lost"),
             "{content}"
         );
     }

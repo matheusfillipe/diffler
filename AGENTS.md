@@ -11,8 +11,10 @@ small native binary, alternate-screen TUI, no daemon, no browser.
 ```
 crates/diffler-core/   pure logic, no terminal (errors via thiserror):
   vcs.rs / git.rs      Vcs trait + git2 backend (status, diff, log, stage, commit, branch)
+  repo.rs              repository discovery (finds the repo root from any path)
   model.rs diff.rs     diff model, hunks
   pairing.rs           similarity line-pairing + grapheme intraline emphasis
+  syntax/              tree-sitter language registry + AST-diff intraline emphasis + scope index
   highlight.rs         syntect whole-file highlight
   source.rs review.rs  ReviewSource + per-source review state
   session.rs           comments + viewed marks

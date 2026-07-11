@@ -165,6 +165,7 @@ impl App {
                 hash: job.hash,
                 symbols: Vec::new(),
                 diff_files: job.diff_files,
+                note: None,
             });
         }
         let jobs: Vec<EnrichJob> = self.pending_enrich.drain(..).collect();

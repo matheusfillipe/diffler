@@ -1,5 +1,6 @@
 //! Backend-agnostic VCS interface. Everything above this trait consumes
-//! `dyn Vcs`; only the `git` module (and test fixtures) may import git2.
+//! `dyn Vcs`; only the `git` and `repo` modules (and test fixtures) may
+//! import git2.
 
 use std::path::{Path, PathBuf};
 

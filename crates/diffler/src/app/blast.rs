@@ -48,6 +48,9 @@ pub struct BlastOutcome {
     pub hash: String,
     pub symbols: Vec<(String, Vec<RefSite>)>,
     pub diff_files: HashSet<String>,
+    /// Why the scan came back empty, when it's a failure rather than a
+    /// legitimately reference-free symbol.
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +63,7 @@ pub struct SymbolImpact {
 pub struct FileBlast {
     pub hash: String,
     pub symbols: Vec<SymbolImpact>,
+    pub note: Option<String>,
 }
 
 impl FileBlast {
@@ -183,6 +187,7 @@ impl App {
             FileBlast {
                 hash: outcome.hash,
                 symbols,
+                note: outcome.note,
             },
         );
     }
@@ -439,15 +444,21 @@ async fn walk_chain(
 }
 
 /// Changed symbols → their references, batch-retried while the server is
-/// still indexing. Unsupported or missing servers complete with an empty
-/// outcome so the job isn't retried.
+/// still indexing. An unsupported extension completes with an empty, silent
+/// outcome (there was never a server to ask); every other failure carries a
+/// note so a dead or missing server doesn't cache as an indistinguishable
+/// "0 references".
 pub async fn blast_refs(pool: &LspPool, root: &std::path::Path, job: BlastJob) -> BlastOutcome {
-    let symbols = blast_symbols(pool, root, &job).await.unwrap_or_default();
+    let (symbols, note) = match blast_symbols(pool, root, &job).await {
+        Ok(symbols) => (symbols, None),
+        Err(note) => (Vec::new(), Some(note)),
+    };
     BlastOutcome {
         path: job.path,
         hash: job.hash,
         symbols,
         diff_files: job.diff_files,
+        note,
     }
 }
 
@@ -455,12 +466,21 @@ async fn blast_symbols(
     pool: &LspPool,
     root: &std::path::Path,
     job: &BlastJob,
-) -> Option<Vec<(String, Vec<RefSite>)>> {
-    let crate::lsp::Resolution::Found(spec) = crate::lsp::resolve(&job.extension) else {
-        return None;
+) -> Result<Vec<(String, Vec<RefSite>)>, String> {
+    let spec = match crate::lsp::resolve(&job.extension) {
+        crate::lsp::Resolution::Found(spec) => spec,
+        crate::lsp::Resolution::Unsupported => return Ok(Vec::new()),
+        crate::lsp::Resolution::Missing(hint) => {
+            return Err(format!("language server not on PATH — install: {hint}"));
+        }
     };
     let path = std::path::Path::new(&job.path);
-    let (slot, symbols) = file_symbols(pool, spec, root, path, &job.new_text).await?;
+    let Some((slot, symbols)) = file_symbols(pool, spec, root, path, &job.new_text).await else {
+        return Err(format!(
+            "{} isn't responding — install it: {}",
+            spec.bin, spec.install_hint
+        ));
+    };
     let touched: Vec<_> = symbols
         .into_iter()
         .filter(|s| {
@@ -471,20 +491,22 @@ async fn blast_symbols(
         .take(8)
         .collect();
     if touched.is_empty() {
-        return Some(Vec::new());
+        return Ok(Vec::new());
     }
     let mut out = Vec::new();
     for attempt in 0..30 {
         out.clear();
         let mut guard = slot.lock().await;
         for symbol in &touched {
-            let client = guard.as_mut()?;
+            let Some(client) = guard.as_mut() else {
+                return Err(format!("{} connection was lost", spec.bin));
+            };
             let Ok(refs) = client
                 .references(path, symbol.select_line, symbol.select_character)
                 .await
             else {
                 *guard = None;
-                return None;
+                return Err(format!("{} failed to answer a references query", spec.bin));
             };
             out.push((symbol.name.clone(), refs));
         }
@@ -496,7 +518,7 @@ async fn blast_symbols(
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
     }
-    Some(out)
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -527,12 +549,54 @@ mod tests {
                     },
                 ],
             )],
+            note: None,
         });
         let blast = app.blast.get("src/lib.rs").expect("stored");
         assert_eq!(blast.symbols[0].total_refs, 2);
         assert_eq!(blast.symbols[0].outside.len(), 1);
         assert_eq!(blast.symbols[0].outside[0].path, "src/other.rs");
         assert_eq!(blast.outside_files(), 1);
+        assert!(blast.note.is_none());
+    }
+
+    #[test]
+    fn on_blast_preserves_a_failure_note_instead_of_a_bare_empty_result() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_working_tree_diff(None);
+        app.on_blast(BlastOutcome {
+            path: "src/lib.rs".into(),
+            hash: "h".into(),
+            diff_files: ["src/lib.rs".to_owned()].into(),
+            symbols: Vec::new(),
+            note: Some("rust-analyzer connection was lost".to_owned()),
+        });
+        let blast = app.blast.get("src/lib.rs").expect("stored");
+        assert!(blast.symbols.is_empty());
+        assert_eq!(
+            blast.note.as_deref(),
+            Some("rust-analyzer connection was lost")
+        );
+    }
+
+    #[tokio::test]
+    async fn blast_refs_stays_quiet_for_an_unsupported_extension() {
+        let pool = LspPool::default();
+        let root = std::env::temp_dir();
+        let job = BlastJob {
+            path: "notes.made-up-ext".into(),
+            hash: "h".into(),
+            new_text: String::new(),
+            changed_lines: vec![0],
+            extension: "made-up-ext".into(),
+            diff_files: HashSet::new(),
+        };
+        let outcome = blast_refs(&pool, &root, job).await;
+        assert!(outcome.symbols.is_empty());
+        assert!(
+            outcome.note.is_none(),
+            "an unsupported extension was never going to have references, not a failure"
+        );
     }
 
     #[test]
