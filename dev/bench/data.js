@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1783803882265,
+  "lastUpdate": 1783804238046,
   "repoUrl": "https://github.com/matheusfillipe/diffler",
   "entries": {
     "Benchmark": [
@@ -3935,6 +3935,102 @@ window.BENCHMARK_DATA = {
             "name": "scope_index/20000",
             "value": 95310547,
             "range": "± 2398491",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "distinct": true,
+          "id": "7342526923e11e8494badadfa68e4e7184d1e3f8",
+          "message": "Bump cachix/install-nix-action from 30 to 31\n\nBumps [cachix/install-nix-action](https://github.com/cachix/install-nix-action) from 30 to 31.\n- [Release notes](https://github.com/cachix/install-nix-action/releases)\n- [Changelog](https://github.com/cachix/install-nix-action/blob/master/RELEASE.md)\n- [Commits](https://github.com/cachix/install-nix-action/compare/v30...v31)\n\n---\nupdated-dependencies:\n- dependency-name: cachix/install-nix-action\n  dependency-version: '31'\n  dependency-type: direct:production\n  update-type: version-update:semver-major\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>",
+          "timestamp": "2026-07-11T23:07:01+02:00",
+          "tree_id": "6ec8609396c69f36fbd5b755423f7d4e68bd9cac",
+          "url": "https://github.com/matheusfillipe/diffler/commit/7342526923e11e8494badadfa68e4e7184d1e3f8"
+        },
+        "date": 1783804237773,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "syndiff_emphasis/1000",
+            "value": 8057877,
+            "range": "± 64446",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/1000",
+            "value": 18804,
+            "range": "± 343",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/1000",
+            "value": 5791516,
+            "range": "± 333800",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/1000",
+            "value": 4451258,
+            "range": "± 19279",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/5000",
+            "value": 42140608,
+            "range": "± 735325",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/5000",
+            "value": 96158,
+            "range": "± 520",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/5000",
+            "value": 29121724,
+            "range": "± 197855",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/5000",
+            "value": 22200202,
+            "range": "± 199308",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/20000",
+            "value": 174696761,
+            "range": "± 1136527",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/20000",
+            "value": 386893,
+            "range": "± 1262",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/20000",
+            "value": 121593749,
+            "range": "± 1238632",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/20000",
+            "value": 91607863,
+            "range": "± 1374084",
             "unit": "ns/iter"
           }
         ]
