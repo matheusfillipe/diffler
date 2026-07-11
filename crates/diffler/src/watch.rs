@@ -200,6 +200,18 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let _handle = spawn_watcher(&root, &git_dir, tx).expect("watcher");
 
+        // FSEvents can deliver events from just before the stream started
+        // (the tempdir/.git/.diffler creation above), and a root-dir event
+        // passes `relevant`; drain until one quiet window before asserting
+        for _ in 0..10 {
+            if tokio::time::timeout(Duration::from_millis(500), rx.recv())
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+
         // an irrelevant write must not produce an event within a window well
         // past the debounce interval
         std::fs::write(root.join(".diffler/session.json"), "{}").expect("write");

@@ -773,7 +773,7 @@ mod tests {
     }
 
     #[test]
-    fn route_back_edge_loops_under_boxes_into_the_childs_bottom() {
+    fn route_back_edge_loops_under_boxes_into_the_child_bottom() {
         // source box at (6,0), target box at (0,0), both 2x2, rail at y=5
         let mut grid = Grid::new(10, 7);
         route_back_edge(&mut grid, (6, 0), 2, 2, (0, 0), 2, 2, 5);
