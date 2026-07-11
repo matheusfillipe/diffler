@@ -40,7 +40,7 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
 - `just fix` — clippy --fix + fmt
 - `just snap` — insta snapshot tests; read `.snap.new` diffs before `just snap-accept`
 - `just e2e` — PTY end-to-end suite (needs `uv`; CI runs it in a separate job)
-- `just ci` — fmt+clippy+tests gate, must pass before any commit (CI additionally runs msrv, deny, typos)
+- `just ci` — fmt+clippy+tests gate, must pass before any commit (CI additionally runs msrv, deny, typos, dupes, machete, coverage)
 
 ## Rules
 
