@@ -2,14 +2,14 @@
 //! provider, and the shared status bar. Selecting a run opens its graph.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use crate::app::App;
 use crate::keymap::Action;
-use crate::ui::{Hint, hint_line};
+use crate::ui::Hint;
 
 const HINTS: &[Hint] = &[
     Hint::Leaf(&[Action::Open], "open graph"),
@@ -18,15 +18,7 @@ const HINTS: &[Hint] = &[
 ];
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
-    let area = frame.area();
-    frame.render_widget(Block::new().style(app.theme.base()), area);
-    let [hint, body, bar] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(0),
-        Constraint::Length(1),
-    ])
-    .areas(area);
-    frame.render_widget(Paragraph::new(hint_line(app, HINTS)), hint);
+    let (body, bar) = super::screen_chrome(frame, app, HINTS);
     draw_list(frame, app, body);
     frame.render_widget(Paragraph::new(super::status_bar(app, bar.width)), bar);
 }

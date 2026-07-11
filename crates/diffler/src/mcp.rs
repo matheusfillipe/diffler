@@ -733,7 +733,7 @@ mod tests {
         let mut a = anchor("src/auth.py", Some(2));
         a.on_old_side = true;
         a.line_text = Some("two".to_owned());
-        session.add_comment("human", a, "what was wrong with two?");
+        session.add_comment(a, "human", "what was wrong with two?");
         let info = comment_info(
             &session.comments[0],
             &sample_model(),
@@ -751,7 +751,7 @@ mod tests {
         let mut session = Session::default();
         let mut a = anchor("src/auth.py", Some(2));
         a.line_text = Some("TWO".to_owned());
-        let id = session.add_comment("human", a, "why uppercase?").id.clone();
+        let id = session.add_comment(a, "human", "why uppercase?").id.clone();
         session.reply(&id, AGENT_AUTHOR, "legacy API");
         let info = comment_info(
             &session.comments[0],
@@ -771,7 +771,7 @@ mod tests {
     #[test]
     fn comment_info_flags_departed_lines_outdated() {
         let mut session = Session::default();
-        session.add_comment("human", anchor("src/auth.py", Some(99)), "moved on");
+        session.add_comment(anchor("src/auth.py", Some(99)), "human", "moved on");
         let info = comment_info(
             &session.comments[0],
             &sample_model(),
@@ -786,7 +786,7 @@ mod tests {
         let mut session = Session::default();
         let mut a = anchor("src/auth.py", Some(2));
         a.line_text = Some("old text".to_owned());
-        session.add_comment("human", a, "stale");
+        session.add_comment(a, "human", "stale");
         let info = comment_info(
             &session.comments[0],
             &sample_model(),
@@ -799,8 +799,8 @@ mod tests {
     #[test]
     fn file_level_comment_outdated_only_when_file_left_the_diff() {
         let mut session = Session::default();
-        session.add_comment("human", anchor("src/auth.py", None), "overall");
-        session.add_comment("human", anchor("gone.py", None), "gone");
+        session.add_comment(anchor("src/auth.py", None), "human", "overall");
+        session.add_comment(anchor("gone.py", None), "human", "gone");
         let model = sample_model();
         assert!(!comment_info(&session.comments[0], &model, &ReviewSource::WorkingTree).outdated);
         assert!(comment_info(&session.comments[1], &model, &ReviewSource::WorkingTree).outdated);
@@ -822,7 +822,7 @@ mod tests {
         };
         // sanity: start text differs from end text
         assert_ne!(a.line_text.as_deref(), Some("one"));
-        session.add_comment("human", a.clone(), "range comment");
+        session.add_comment(a.clone(), "human", "range comment");
         let info = comment_info(
             &session.comments[0],
             &sample_model(),

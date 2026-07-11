@@ -2,16 +2,15 @@
 
 use diffler_core::vcs::LogEntry;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use crate::app::App;
 use crate::keymap::Action;
 use crate::theme::Theme;
 use crate::ui::Hint;
-use crate::ui::{commit_meta_spans, cursor_line, hint_line, status_bar};
+use crate::ui::{commit_meta_spans, cursor_line, status_bar};
 
 /// Hint entries, rendered against the live keymap so remaps show.
 const HINTS: &[Hint] = &[
@@ -21,15 +20,7 @@ const HINTS: &[Hint] = &[
 ];
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
-    let area = frame.area();
-    frame.render_widget(Block::new().style(app.theme.base()), area);
-    let [hint, body, bar] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(0),
-        Constraint::Length(1),
-    ])
-    .areas(area);
-    frame.render_widget(Paragraph::new(hint_line(app, HINTS)), hint);
+    let (body, bar) = super::screen_chrome(frame, app, HINTS);
 
     let now = app.now_unix;
     let search = app.search.as_ref();

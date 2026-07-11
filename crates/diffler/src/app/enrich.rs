@@ -132,25 +132,30 @@ impl App {
         });
     }
 
-    /// Install a finished enrichment if the file still has the same content.
+    /// Install a finished enrichment wherever the file still has the same
+    /// content: the diff view's model and caches, and any expanded
+    /// status-section file (jobs from both screens share this worker path).
+    /// A stale outcome (the file changed mid-flight) installs nothing; the
+    /// next frame re-queues against the new content.
     pub(crate) fn on_enriched(&mut self, outcome: EnrichOutcome) {
         self.enrich_inflight.remove(&outcome.hash);
+        self.install_status_enrichment(&outcome);
         let Some(diff) = self.diff.as_mut() else {
             return;
         };
+        let same = |file: &FileDiff| file.path == outcome.path && file.sides_hash() == outcome.hash;
+        let file = match diff.commit_model.as_mut() {
+            Some(model) => model.files.iter_mut().find(|f| same(f)),
+            None => self.review.model_mut().files.iter_mut().find(|f| same(f)),
+        };
+        let Some(file) = file else {
+            return;
+        };
+        file.hunks = outcome.hunks;
         diff.highlights
             .insert(outcome.path.clone(), outcome.highlights);
         diff.scopes.insert(outcome.path.clone(), outcome.scope);
-        let same = |file: &FileDiff| file.path == outcome.path && file.sides_hash() == outcome.hash;
-        if let Some(model) = diff.commit_model.as_mut() {
-            if let Some(file) = model.files.iter_mut().find(|f| same(f)) {
-                file.hunks = outcome.hunks;
-                diff.mark_enriched(&outcome.path);
-            }
-        } else if let Some(file) = self.review.model_mut().files.iter_mut().find(|f| same(f)) {
-            file.hunks = outcome.hunks;
-            diff.mark_enriched(&outcome.path);
-        }
+        diff.mark_enriched(&outcome.path);
     }
 }
 

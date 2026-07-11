@@ -8,6 +8,7 @@ use std::path::Path;
 use diffler_core::model::FileDiff;
 use diffler_core::vcs::{LogEntry, NetworkOp};
 
+use super::enrich::{EnrichJob, EnrichOutcome};
 use super::{App, BranchAction, FileHighlights, Modal, PendingOp};
 use crate::config::FileLayout;
 use crate::keymap::Action;
@@ -140,9 +141,9 @@ pub struct StatusView {
     expanded: [BTreeSet<String>; 3],
     /// Per-section set of folded directory paths in that section's file tree.
     folded_dirs: [BTreeSet<String>; 3],
-    /// Per-section set of file paths whose inline diff has been enriched with
-    /// intra-line emphasis, so the per-file enrichment runs once. Cleared
-    /// when the status sections are rebuilt (refresh).
+    /// Per-section set of file paths whose inline diff has received its
+    /// background enrichment (intra-line emphasis), so a landed file isn't
+    /// re-queued. Cleared when the status sections are rebuilt (refresh).
     enriched: [BTreeSet<String>; 3],
     /// Per-file syntax spans for inline diffs, keyed by path and validated by
     /// the both-sides content hash. Filled lazily, only for expanded files.
@@ -223,17 +224,10 @@ impl App {
         match self.config.ui.status_file_layout {
             // review is diff-sidebar-only (config rejects it here); a stray
             // value degrades to the flat list
-            FileLayout::List | FileLayout::Review => files
-                .iter()
-                .enumerate()
-                .map(|(index, file)| TreeRow {
-                    depth: 0,
-                    node: TreeNode::File {
-                        index,
-                        name: file.path.clone(),
-                    },
-                })
-                .collect(),
+            FileLayout::List | FileLayout::Review => {
+                let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+                tree::flat_rows(&paths)
+            }
             FileLayout::Tree => {
                 let folded = self.section_folded_dirs(section);
                 let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
@@ -377,41 +371,13 @@ impl App {
         &model.files
     }
 
-    /// Enrich every currently-expanded inline diff with intra-line emphasis
-    /// before the status screen renders. Memoized per section/path so the
-    /// pairing runs once per expanded file. Called by the renderer.
-    pub(crate) fn enrich_status_expanded(&mut self) {
-        for section in Section::ALL {
-            let index = section.index();
-            let model = match section {
-                Section::Untracked => &mut self.review.status.untracked,
-                Section::Unstaged => &mut self.review.status.unstaged,
-                Section::Staged => &mut self.review.status.staged,
-            };
-            let (Some(expanded), Some(enriched)) = (
-                self.status.expanded.get(index),
-                self.status.enriched.get_mut(index),
-            ) else {
-                continue;
-            };
-            for file in &mut model.files {
-                if expanded.contains(&file.path) && enriched.insert(file.path.clone()) {
-                    diffler_core::pairing::enrich_file(file);
-                }
-            }
-        }
-    }
-
-    /// Drive `fill` over every currently-expanded inline diff's file and its
-    /// syntax cache, so the renderer can highlight expanded files lazily —
-    /// only expanded files are touched. The UI supplies `fill` (the same
-    /// per-file highlighter the diff pane uses), keeping the highlighter in
-    /// the render layer.
-    pub(crate) fn ensure_status_highlights(
-        &mut self,
-        mut fill: impl FnMut(&mut HashMap<String, FileHighlights>, &FileDiff),
-    ) {
-        let cache = &mut self.status.highlights;
+    /// Queue background enrichment (intra-line emphasis + syntax highlight)
+    /// for every currently-expanded inline diff. Cheap and deduped by
+    /// content, so the renderer calls it per frame; the expanded rows draw
+    /// plain until the outcome lands as an `AppEvent::Enriched` event — draw
+    /// never computes.
+    pub(crate) fn queue_enrich_status_expanded(&mut self) {
+        let semantic = self.config.ui.semantic_diff;
         for section in Section::ALL {
             let index = section.index();
             let model = match section {
@@ -419,12 +385,61 @@ impl App {
                 Section::Unstaged => &self.review.status.unstaged,
                 Section::Staged => &self.review.status.staged,
             };
-            let Some(expanded) = self.status.expanded.get(index) else {
+            let (Some(expanded), Some(enriched)) = (
+                self.status.expanded.get(index),
+                self.status.enriched.get(index),
+            ) else {
                 continue;
             };
             for file in &model.files {
-                if expanded.contains(&file.path) {
-                    fill(cache, file);
+                if file.binary || file.hunks.is_empty() || !expanded.contains(&file.path) {
+                    continue;
+                }
+                let hash = file.sides_hash();
+                let ready = enriched.contains(&file.path)
+                    && self
+                        .status
+                        .highlights
+                        .get(&file.path)
+                        .is_some_and(|cached| cached.hash == hash);
+                if ready || !self.enrich_inflight.insert(hash.clone()) {
+                    continue;
+                }
+                self.pending_enrich.push(EnrichJob {
+                    path: file.path.clone(),
+                    hash,
+                    old_text: file.old_text.clone(),
+                    new_text: file.new_text.clone(),
+                    hunks: file.hunks.clone(),
+                    semantic,
+                });
+            }
+        }
+    }
+
+    /// Install a finished enrichment into every status-section file it still
+    /// matches (same path and content): swap in the emphasised hunks, cache
+    /// the syntax highlights, and mark the file enriched so it isn't
+    /// re-queued. A stale outcome (the file changed while the job ran)
+    /// matches nothing and is dropped; the next frame re-queues.
+    pub(super) fn install_status_enrichment(&mut self, outcome: &EnrichOutcome) {
+        for section in Section::ALL {
+            let index = section.index();
+            let model = match section {
+                Section::Untracked => &mut self.review.status.untracked,
+                Section::Unstaged => &mut self.review.status.unstaged,
+                Section::Staged => &mut self.review.status.staged,
+            };
+            let Some(enriched) = self.status.enriched.get_mut(index) else {
+                continue;
+            };
+            for file in &mut model.files {
+                if file.path == outcome.path && file.sides_hash() == outcome.hash {
+                    file.hunks.clone_from(&outcome.hunks);
+                    self.status
+                        .highlights
+                        .insert(outcome.path.clone(), outcome.highlights.clone());
+                    enriched.insert(file.path.clone());
                 }
             }
         }

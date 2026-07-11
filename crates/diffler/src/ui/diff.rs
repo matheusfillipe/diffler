@@ -3,9 +3,7 @@
 //! renders the visible slice of the selected file's hunks, lines, and inline
 //! comment blocks, keeping the cursor in view.
 
-use std::collections::HashMap;
-
-use diffler_core::highlight::{Highlighter, StyledRange};
+use diffler_core::highlight::StyledRange;
 use diffler_core::model::{DiffLine, DiffModel, FileDiff};
 use diffler_core::session::{Comment, CommentStatus, Session};
 use diffler_core::source::ReviewSource;
@@ -27,7 +25,7 @@ use crate::ui::Hint;
 use crate::ui::diff_render::{
     file_gutter_width, hunk_header, line_syntax, render_diff_line, render_split_pair,
 };
-use crate::ui::{diffstat_spans, hint_line, proportion_bar, status_bar, status_color};
+use crate::ui::{diffstat_spans, proportion_bar, status_bar, status_color};
 
 /// Hint entries, rendered against the live keymap so remaps show.
 const HINTS: &[Hint] = &[
@@ -44,15 +42,7 @@ fn sidebar_width(total: u16) -> u16 {
 }
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
-    let area = frame.area();
-    frame.render_widget(Block::new().style(app.theme.base()), area);
-    let [hint, body, bar] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(0),
-        Constraint::Length(1),
-    ])
-    .areas(area);
-    frame.render_widget(Paragraph::new(hint_line(app, HINTS)), hint);
+    let (body, bar) = super::screen_chrome(frame, app, HINTS);
 
     // enrichment (emphasis/highlight/scope) runs on the blocking pool; this
     // only queues work, and the pane renders plain until the result lands
@@ -200,17 +190,12 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let Some(model) = diff.commit_model.as_ref().or(review_model) else {
-        frame.render_widget(
-            Paragraph::new(Line::styled(
-                " nothing to review",
-                Style::new().fg(theme.dim).bg(theme.bg),
-            )),
-            inner,
-        );
-        return;
-    };
-    let Some(file) = model.files.get(diff.selected) else {
+    let Some((model, file)) = diff
+        .commit_model
+        .as_ref()
+        .or(review_model)
+        .and_then(|model| model.files.get(diff.selected).map(|file| (model, file)))
+    else {
         frame.render_widget(
             Paragraph::new(Line::styled(
                 " nothing to review",
@@ -769,33 +754,6 @@ fn split_right_new_no(file: &FileDiff, row: &SplitRow) -> Option<u32> {
     }
 }
 
-pub(crate) fn ensure_file_highlights(
-    highlighter: &Highlighter,
-    cache: &mut HashMap<String, FileHighlights>,
-    file: &FileDiff,
-) {
-    // both sides are highlighted, so the validity hash must cover both:
-    // an old-side-only change (e.g. a rebase) must invalidate the entry
-    let hash = file.sides_hash();
-    if cache
-        .get(&file.path)
-        .is_some_and(|cached| cached.hash == hash)
-    {
-        return;
-    }
-    let highlight = |text: &Option<String>| {
-        text.as_deref()
-            .map(|content| highlighter.highlight(&file.path, content))
-            .unwrap_or_default()
-    };
-    let entry = FileHighlights {
-        hash,
-        old: highlight(&file.old_text),
-        new: highlight(&file.new_text),
-    };
-    cache.insert(file.path.clone(), entry);
-}
-
 /// Right-pane header: status, path, binary/viewed marks, comment count.
 fn pane_header_line(
     theme: &Theme,
@@ -1210,7 +1168,6 @@ mod tests {
         let (_fixture, mut app) = diff_app();
         open_lib_diff(&mut app);
         app.review.session.add_comment(
-            "reviewer",
             diffler_core::session::Anchor {
                 file: "src/lib.rs".to_owned(),
                 line: Some(1),
@@ -1218,6 +1175,7 @@ mod tests {
                 on_old_side: false,
                 line_text: None,
             },
+            "reviewer",
             "this whole block",
         );
         app.diff.as_mut().unwrap().invalidate();
@@ -1514,7 +1472,6 @@ mod tests {
             .review
             .session
             .add_comment(
-                "reviewer",
                 diffler_core::session::Anchor {
                     file: "src/lib.rs".to_owned(),
                     line: Some(1),
@@ -1522,6 +1479,7 @@ mod tests {
                     on_old_side: false,
                     line_text: Some("pub fn answer() -> u32 {".to_owned()),
                 },
+                "reviewer",
                 "rename this?",
             )
             .id

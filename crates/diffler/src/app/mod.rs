@@ -1597,7 +1597,6 @@ mod tests {
             .review
             .session
             .add_comment(
-                "human",
                 Anchor {
                     file: "src/lib.rs".to_owned(),
                     line: Some(2),
@@ -1605,6 +1604,7 @@ mod tests {
                     on_old_side: false,
                     line_text: None,
                 },
+                "human",
                 "why?",
             )
             .id

@@ -888,8 +888,8 @@ mod tests {
         };
         {
             let session = app.review.session_for_mut(&source);
-            session.add_comment("me", single, "lab single comment");
-            session.add_comment("me", range, "lab range comment");
+            session.add_comment(single, "me", "lab single comment");
+            session.add_comment(range, "me", "lab range comment");
         }
         app.queue_pr_review(3, ReviewVerdict::Comment, "lab review body");
         assert_eq!(app.pending_pr_posts.len(), 1);
@@ -1129,7 +1129,7 @@ mod tests {
         let local_id = app
             .review
             .session_for_mut(&source)
-            .add_comment("me", anchor, "needs work")
+            .add_comment(anchor, "me", "needs work")
             .id
             .clone();
         app.open_pr_diff(7, &head, &head);

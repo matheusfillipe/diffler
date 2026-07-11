@@ -11,7 +11,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use super::{Hint, hint_line};
+use super::Hint;
 use crate::app::App;
 use crate::keymap::Action;
 use crate::theme::Theme;
@@ -36,16 +36,7 @@ const GRAPH_HINTS: &[Hint] = &[
 ];
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
-    let area = frame.area();
-    frame.render_widget(Block::new().style(app.theme.base()), area);
-    let [hint, header, body, bar] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Min(0),
-        Constraint::Length(1),
-    ])
-    .areas(area);
-    frame.render_widget(Paragraph::new(hint_line(app, GRAPH_HINTS)), hint);
+    let (header, body, bar) = super::screen_chrome_with_header(frame, app, GRAPH_HINTS);
     frame.render_widget(Paragraph::new(run_header(app, &app.theme)), header);
 
     let (graph_area, panel) = carve_panel(app, body);

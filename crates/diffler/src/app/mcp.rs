@@ -269,7 +269,6 @@ mod tests {
             .review
             .session
             .add_comment(
-                "human",
                 Anchor {
                     file: "src/lib.rs".to_owned(),
                     line: Some(2),
@@ -277,6 +276,7 @@ mod tests {
                     on_old_side: false,
                     line_text: Some("    42".to_owned()),
                 },
+                "human",
                 "why 42?",
             )
             .id
@@ -498,7 +498,7 @@ mod tests {
         let commit_id = app
             .review
             .session_for_mut(&source)
-            .add_comment("human", commit_anchor("src/lib.rs"), "on the commit")
+            .add_comment(commit_anchor("src/lib.rs"), "human", "on the commit")
             .id
             .clone();
         app.review.save_for(&source).expect("save");
@@ -525,7 +525,7 @@ mod tests {
         let id = app
             .review
             .session_for_mut(&source)
-            .add_comment("human", commit_anchor("src/lib.rs"), "why here?")
+            .add_comment(commit_anchor("src/lib.rs"), "human", "why here?")
             .id
             .clone();
         app.review.save_for(&source).expect("save");
@@ -562,7 +562,7 @@ mod tests {
         app.review.ensure_source(&source).expect("ensure");
         app.review
             .session_for_mut(&source)
-            .add_comment("human", commit_anchor("src/lib.rs"), "x");
+            .add_comment(commit_anchor("src/lib.rs"), "human", "x");
         app.review.save_for(&source).expect("save");
 
         let McpResponse::Reviews(reviews) = app.handle_mcp(McpRequestKind::ListReviews) else {
@@ -610,7 +610,6 @@ mod tests {
     fn feedback_returns_open_and_replied_but_not_resolved() {
         let (_fixture, mut app, id) = app_with_comment();
         app.review.session.add_comment(
-            "human",
             Anchor {
                 file: "todo.md".to_owned(),
                 line: None,
@@ -618,6 +617,7 @@ mod tests {
                 on_old_side: false,
                 line_text: None,
             },
+            "human",
             "second",
         );
         app.review.session.resolve(&id);

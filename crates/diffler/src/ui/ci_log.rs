@@ -4,16 +4,15 @@
 //! yank all behave as elsewhere.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use crate::app::App;
 use crate::app::ci_log::{CiLogRow, CiLogView};
 use crate::keymap::Action;
 use crate::theme::Theme;
-use crate::ui::{Hint, cursor_line, hint_line, status_bar};
+use crate::ui::{Hint, cursor_line, status_bar};
 
 const HINTS: &[Hint] = &[
     Hint::Leaf(&[Action::ToggleFold], "fold"),
@@ -23,16 +22,7 @@ const HINTS: &[Hint] = &[
 ];
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
-    let area = frame.area();
-    frame.render_widget(Block::new().style(app.theme.base()), area);
-    let [hint, header, body, bar] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Min(0),
-        Constraint::Length(1),
-    ])
-    .areas(area);
-    frame.render_widget(Paragraph::new(hint_line(app, HINTS)), hint);
+    let (header, body, bar) = super::screen_chrome_with_header(frame, app, HINTS);
     let mut provenance = super::graph::run_header(app, &app.theme);
     if let Some(job) = app.open_job_name() {
         provenance.push_span(Span::styled(

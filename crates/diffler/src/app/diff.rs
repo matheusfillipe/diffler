@@ -86,8 +86,8 @@ pub enum DiffRow {
 
 /// Per-line syntax spans for both sides of one file, keyed by the
 /// both-sides content hash so edits to either side invalidate naturally.
-/// Filled lazily by the renderer.
-#[derive(Debug)]
+/// Filled by the background enrichment worker.
+#[derive(Debug, Clone)]
 pub struct FileHighlights {
     pub hash: String,
     pub old: Vec<Vec<StyledRange>>,
@@ -337,18 +337,10 @@ impl DiffView {
     /// model index.
     pub(crate) fn tree_rows(&self, model: &DiffModel, session: &Session) -> Vec<TreeRow> {
         match self.layout {
-            FileLayout::List => model
-                .files
-                .iter()
-                .enumerate()
-                .map(|(index, file)| TreeRow {
-                    depth: 0,
-                    node: TreeNode::File {
-                        index,
-                        name: file.path.clone(),
-                    },
-                })
-                .collect(),
+            FileLayout::List => {
+                let paths: Vec<&str> = model.files.iter().map(|f| f.path.as_str()).collect();
+                tree::flat_rows(&paths)
+            }
             FileLayout::Tree => {
                 let paths: Vec<&str> = model.files.iter().map(|f| f.path.as_str()).collect();
                 tree::visible_rows(&paths, &self.folded_dirs)
@@ -685,13 +677,10 @@ impl App {
     }
 
     fn open_working_tree_diff_focused(&mut self, scope: Option<&str>, focus: Pane) {
-        let mut view = DiffView::new(
-            ReviewSource::WorkingTree,
-            None,
-            &self.review,
-            self.config.ui.diff_file_layout,
-            self.config.ui.side_by_side,
-        );
+        self.install_diff_view(ReviewSource::WorkingTree, None);
+        let Some(view) = self.diff.as_mut() else {
+            return;
+        };
         if let Some(path) = scope
             && let Some(index) = self
                 .review
@@ -705,28 +694,32 @@ impl App {
             view.ensure_rows(&self.review);
         }
         view.focus = focus;
+    }
+
+    /// Shared ceremony for every diff opener: load the source's review state,
+    /// build a fresh `DiffView` from the current file-layout config, install
+    /// it as `self.diff`, and push the diff screen. On a source load failure
+    /// the error is reported and nothing changes (`self.diff` stays `None` or
+    /// keeps the previous view).
+    fn install_diff_view(&mut self, source: ReviewSource, model: Option<DiffModel>) {
+        if let Err(err) = self.review.ensure_source(&source) {
+            self.error(err.to_string());
+            return;
+        }
+        let view = DiffView::new(
+            source,
+            model,
+            &self.review,
+            self.config.ui.diff_file_layout,
+            self.config.ui.side_by_side,
+        );
         self.diff = Some(view);
         self.push_screen(Screen::Diff);
     }
 
     pub(crate) fn open_commit_diff(&mut self, oid: &str) {
         match self.review.vcs.commit_diff(oid) {
-            Ok(model) => {
-                let source = ReviewSource::commit(oid);
-                if let Err(err) = self.review.ensure_source(&source) {
-                    self.error(err.to_string());
-                    return;
-                }
-                let view = DiffView::new(
-                    source,
-                    Some(model),
-                    &self.review,
-                    self.config.ui.diff_file_layout,
-                    self.config.ui.side_by_side,
-                );
-                self.diff = Some(view);
-                self.push_screen(Screen::Diff);
-            }
+            Ok(model) => self.install_diff_view(ReviewSource::commit(oid), Some(model)),
             Err(err) => self.error(err.to_string()),
         }
     }
@@ -735,22 +728,7 @@ impl App {
     /// full oids), pinned like a single commit's diff.
     pub(crate) fn open_range_diff(&mut self, oldest: &str, newest: &str) {
         match self.review.vcs.range_diff(oldest, newest) {
-            Ok(model) => {
-                let source = ReviewSource::range(oldest, newest);
-                if let Err(err) = self.review.ensure_source(&source) {
-                    self.error(err.to_string());
-                    return;
-                }
-                let view = DiffView::new(
-                    source,
-                    Some(model),
-                    &self.review,
-                    self.config.ui.diff_file_layout,
-                    self.config.ui.side_by_side,
-                );
-                self.diff = Some(view);
-                self.push_screen(Screen::Diff);
-            }
+            Ok(model) => self.install_diff_view(ReviewSource::range(oldest, newest), Some(model)),
             Err(err) => self.error(err.to_string()),
         }
     }
@@ -832,15 +810,7 @@ impl App {
                     diff.invalidate();
                     diff.ensure_rows(&self.review);
                 } else {
-                    let view = DiffView::new(
-                        source,
-                        Some(model),
-                        &self.review,
-                        self.config.ui.diff_file_layout,
-                        self.config.ui.side_by_side,
-                    );
-                    self.diff = Some(view);
-                    self.push_screen(Screen::Diff);
+                    self.install_diff_view(source, Some(model));
                 }
                 self.pending_ci = Some(super::CiRequest::PrComments(number));
             }
@@ -2111,8 +2081,8 @@ mod tests {
             on_old_side: false,
             line_text: None,
         };
-        app.review.session.add_comment("r", anchor(1), "first");
-        app.review.session.add_comment("r", anchor(20), "second");
+        app.review.session.add_comment(anchor(1), "r", "first");
+        app.review.session.add_comment(anchor(20), "r", "second");
         app.open_working_tree_diff(None);
         {
             let diff = app.diff.as_mut().unwrap();
@@ -2194,7 +2164,6 @@ mod tests {
         let mut app = diff_app(&fixture);
         select_file(&mut app, "src/lib.rs");
         app.review.session.add_comment(
-            "reviewer",
             Anchor {
                 file: "src/lib.rs".to_owned(),
                 line: Some(2),
@@ -2202,6 +2171,7 @@ mod tests {
                 on_old_side: false,
                 line_text: Some("    43".to_owned()),
             },
+            "reviewer",
             "stale snapshot",
         );
         let diff = app.diff.as_mut().unwrap();
@@ -2221,7 +2191,6 @@ mod tests {
         let mut app = diff_app(&fixture);
         select_file(&mut app, "src/lib.rs");
         app.review.session.add_comment(
-            "reviewer",
             Anchor {
                 file: "src/lib.rs".to_owned(),
                 line: Some(99),
@@ -2229,6 +2198,7 @@ mod tests {
                 on_old_side: false,
                 line_text: None,
             },
+            "reviewer",
             "moved on",
         );
         let diff = app.diff.as_mut().unwrap();
@@ -2688,7 +2658,6 @@ mod tests {
         type_text(&mut app, "why 42?");
         app.handle(key('\n'));
         app.review.session.add_comment(
-            "reviewer",
             Anchor {
                 file: "todo.md".to_owned(),
                 line: None,
@@ -2696,6 +2665,7 @@ mod tests {
                 on_old_side: false,
                 line_text: None,
             },
+            "reviewer",
             "other file",
         );
 
@@ -2962,7 +2932,6 @@ mod tests {
         let fixture = standard_fixture();
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         app.review.session.add_comment(
-            "reviewer",
             diffler_core::session::Anchor {
                 file: "todo.md".into(),
                 line: Some(1),
@@ -2970,6 +2939,7 @@ mod tests {
                 on_old_side: false,
                 line_text: None,
             },
+            "reviewer",
             "working-tree decoy",
         );
         let oid = app.status.recent[0].oid.clone();
@@ -3012,7 +2982,6 @@ mod tests {
         let mut session = Session::default();
         let id = session
             .add_comment(
-                "reviewer",
                 Anchor {
                     file: "a.rs".to_owned(),
                     line: Some(1),
@@ -3020,6 +2989,7 @@ mod tests {
                     on_old_side: false,
                     line_text: None,
                 },
+                "reviewer",
                 "first\nsecond",
             )
             .id

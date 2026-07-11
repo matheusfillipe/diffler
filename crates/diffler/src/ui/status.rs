@@ -3,10 +3,10 @@
 
 use diffler_core::model::FileDiff;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use std::ops::Range;
 
@@ -18,8 +18,8 @@ use crate::transient::TransientKind;
 use crate::ui::Hint;
 use crate::ui::diff_render::render_hunk_lines;
 use crate::ui::{
-    commit_meta_spans, cursor_line, diffstat_spans, highlight_spans, hint_line, proportion_bar,
-    status_bar, status_color,
+    commit_meta_spans, cursor_line, diffstat_spans, highlight_spans, proportion_bar, status_bar,
+    status_color,
 };
 
 /// Prefix-only hint entries: top-level keys and the transient prefixes,
@@ -34,16 +34,8 @@ const HINTS: &[Hint] = &[
 ];
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
-    let area = frame.area();
-    frame.render_widget(Block::new().style(app.theme.base()), area);
-    let [hint, body_area, bar] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(0),
-        Constraint::Length(1),
-    ])
-    .areas(area);
+    let (body_area, bar) = super::screen_chrome(frame, app, HINTS);
     app.status.viewport = body_area.height;
-    frame.render_widget(Paragraph::new(hint_line(app, HINTS)), hint);
     let (lines, scroll, line_rows) = body(app, body_area);
     app.status.body = body_area;
     app.status.scroll = scroll;
@@ -113,10 +105,13 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16, Vec<Option<usize>>) 
                 if let Some(offset) = selected {
                     cursor_line_index = lines.len() + offset;
                 }
+                // enrichment lands asynchronously: only spans that still match
+                // the file's content may be sliced onto its lines
                 let syntax = app
                     .status
                     .highlights
                     .get(&file_diff.path)
+                    .filter(|cached| cached.hash == file_diff.sides_hash())
                     .map(|cached| (cached.old.as_slice(), cached.new.as_slice()));
                 lines.extend(render_hunk_lines(
                     &app.theme, hunk, syntax, area.width, selected,
@@ -494,6 +489,12 @@ mod tests {
     fn render(app: &mut App) -> Terminal<TestBackend> {
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| crate::ui::draw(frame, app))
+            .expect("draw");
+        // the first draw only queues enrichment for expanded inline diffs;
+        // run it and draw again so the snapshot captures the settled frame
+        app.enrich_now();
         terminal
             .draw(|frame| crate::ui::draw(frame, app))
             .expect("draw");

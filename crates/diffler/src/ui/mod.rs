@@ -14,8 +14,10 @@ pub mod status;
 
 use diffler_core::model::FileStatus;
 use ratatui::Frame;
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Paragraph};
 
 use crate::app::{App, BranchAction, Modal, Screen, Severity};
 use crate::keymap::{Action, render_chord};
@@ -76,16 +78,50 @@ pub(super) fn highlight_spans(
     spans
 }
 
+/// Shared chrome for the `[hint, body, bar]` screens: paints the full-area
+/// background, splits off the hint row and renders it, and hands back the
+/// body and bar rects. The bar's own paragraph (content and style both vary
+/// per screen) stays with the caller.
+pub(super) fn screen_chrome(frame: &mut Frame<'_>, app: &App, hints: &[Hint]) -> (Rect, Rect) {
+    let area = frame.area();
+    frame.render_widget(Block::new().style(app.theme.base()), area);
+    let [hint, body, bar] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(0),
+        Constraint::Length(1),
+    ])
+    .areas(area);
+    frame.render_widget(Paragraph::new(hint_line(app, hints)), hint);
+    (body, bar)
+}
+
+/// Like [`screen_chrome`], for screens that carve an extra header row (a
+/// provenance/summary line) out from under the hint line.
+pub(super) fn screen_chrome_with_header(
+    frame: &mut Frame<'_>,
+    app: &App,
+    hints: &[Hint],
+) -> (Rect, Rect, Rect) {
+    let area = frame.area();
+    frame.render_widget(Block::new().style(app.theme.base()), area);
+    let [hint, header, body, bar] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(0),
+        Constraint::Length(1),
+    ])
+    .areas(area);
+    frame.render_widget(Paragraph::new(hint_line(app, hints)), hint);
+    (header, body, bar)
+}
+
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     match app.screen() {
         Screen::Status => {
-            // attach intra-line emphasis and syntax to expanded inline diffs
-            // before the read-only status render
-            app.enrich_status_expanded();
-            let highlighter = std::sync::Arc::clone(&app.highlighter);
-            app.ensure_status_highlights(|cache, file| {
-                diff::ensure_file_highlights(&highlighter, cache, file);
-            });
+            // enrichment (emphasis/highlight) runs on the blocking pool; this
+            // only queues work, and expanded inline diffs render plain until
+            // the result lands
+            app.queue_enrich_status_expanded();
             status::draw(frame, app);
         }
         Screen::Log => log::draw(frame, app),

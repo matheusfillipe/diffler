@@ -152,19 +152,9 @@ pub fn save(repo_root: &Path, session: &Session) -> Result<(), StoreError> {
 
 #[cfg(test)]
 mod tests {
-    use crate::session::Anchor;
+    use crate::test_support::anchor;
 
     use super::*;
-
-    fn anchor() -> Anchor {
-        Anchor {
-            file: "a.txt".into(),
-            line: Some(1),
-            line_end: None,
-            on_old_side: false,
-            line_text: None,
-        }
-    }
 
     #[test]
     fn missing_file_loads_default() {
@@ -177,7 +167,7 @@ mod tests {
     fn save_load_round_trip() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut s = Session::default();
-        s.add_comment("mattf", anchor(), "hm");
+        s.add_comment(anchor("a.txt", Some(1)), "mattf", "hm");
         s.mark_viewed("a.txt", "hash-1");
         save(dir.path(), &s).expect("save");
         let back = load(dir.path()).expect("load");

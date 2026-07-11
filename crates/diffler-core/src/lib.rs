@@ -15,4 +15,6 @@ pub mod session;
 pub mod source;
 pub mod store;
 pub mod syntax;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod vcs;
