@@ -51,6 +51,12 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
 - Async: never block in async fns; `spawn_blocking` for CPU/IO-heavy work.
 - TUI changes need TestBackend + insta snapshot coverage. A changed snapshot is a
   behavior change — read the diff, never accept blindly, never edit `.snap` by hand.
+- Run `just e2e` after rendering/behavior changes: `just ci` skips it, and glyph
+  or timing changes can pass ci yet break the PTY suite.
+- PTY e2e probes must drain output continuously (the suite's wait helpers do);
+  a bare sleep fills the PTY buffer and freezes the app under test.
+- Test fixtures and sample data use generic mock names ("reviewer",
+  "acme/widgets") — never real usernames, handles, or emails.
 - Hooks are managed by prek (`prek install` once). If a hook fails, fix the cause.
   Never `git commit --no-verify`.
 - Review before committing: in Claude Code run `/rev` on the working tree for any
