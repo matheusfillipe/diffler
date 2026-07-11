@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::ci::error::{CiError, Result};
+use crate::ci::error::{CiError, Result, parse_json};
 use crate::ci::exec::CommandRunner;
 use crate::ci::model::{
     Annotation, AnnotationLevel, Artifact, Capabilities, CiJob, CiRun, DagSource, JobId, JobStatus,
@@ -88,10 +88,7 @@ impl GitHubProvider {
                 args.push(format!("cursor={cursor}"));
             }
             let raw = self.runner.run("gh", &args).await?;
-            let page: ThreadsPage = serde_json::from_str(&raw).map_err(|err| CiError::Parse {
-                what: "review threads".to_owned(),
-                message: err.to_string(),
-            })?;
+            let page: ThreadsPage = parse_json("review threads", &raw)?;
             let threads = page.data.repository.pull_request.review_threads;
             for node in threads.nodes {
                 for comment in node.comments.nodes {
@@ -122,10 +119,7 @@ impl GitHubProvider {
                 ],
             )
             .await?;
-        let slug: RepoSlug = serde_json::from_str(&raw).map_err(|err| CiError::Parse {
-            what: "repo slug".to_owned(),
-            message: err.to_string(),
-        })?;
+        let slug: RepoSlug = parse_json("repo slug", &raw)?;
         Ok((slug.owner.login, slug.name))
     }
 
@@ -239,10 +233,7 @@ impl GitHubProvider {
                 run.0
             ))
             .await?;
-        let list: ArtifactList = serde_json::from_str(&raw).map_err(|e| CiError::Parse {
-            what: "gh api artifacts".into(),
-            message: e.to_string(),
-        })?;
+        let list: ArtifactList = parse_json("gh api artifacts", &raw)?;
         Ok(list.artifacts.into_iter().map(ArtifactItem::into).collect())
     }
 
@@ -253,10 +244,7 @@ impl GitHubProvider {
                 run.0
             ))
             .await?;
-        let jobs: JobsApi = serde_json::from_str(&raw).map_err(|e| CiError::Parse {
-            what: "gh api jobs".into(),
-            message: e.to_string(),
-        })?;
+        let jobs: JobsApi = parse_json("gh api jobs", &raw)?;
         let mut annotations = Vec::new();
         for job in jobs.jobs {
             // one job's annotations 404ing (a GC'd check run) or rate-limiting
@@ -305,10 +293,7 @@ impl ForgeProvider for GitHubProvider {
             .map(str::to_owned),
         );
         let out = self.runner.run("gh", &args).await?;
-        let raw: Vec<RunListItem> = serde_json::from_str(&out).map_err(|e| CiError::Parse {
-            what: "gh run list".into(),
-            message: e.to_string(),
-        })?;
+        let raw: Vec<RunListItem> = parse_json("gh run list", &out)?;
         Ok(raw.into_iter().map(RunListItem::into_run).collect())
     }
 
@@ -322,10 +307,7 @@ impl ForgeProvider for GitHubProvider {
         ]
         .map(str::to_owned);
         let out = self.runner.run("gh", &args).await?;
-        let view: RunView = serde_json::from_str(&out).map_err(|e| CiError::Parse {
-            what: "gh run view".into(),
-            message: e.to_string(),
-        })?;
+        let view: RunView = parse_json("gh run view", &out)?;
 
         // build the DAG from the run's own workflow, matched by the YAML `name:`
         // against the run's `workflowName`; an unmatched run falls back to flat
@@ -364,17 +346,17 @@ impl ForgeProvider for GitHubProvider {
                 run.0
             ))
             .await?;
-        let view: JobList = serde_json::from_str(&out).map_err(|e| CiError::Parse {
-            what: "gh api jobs".into(),
-            message: e.to_string(),
-        })?;
+        let view: JobList = parse_json("gh api jobs", &out)?;
         let job = view
             .jobs
             .iter()
             .find(|j| j.name == job.0 || job_matches(&j.name, &job.0, &job.0))
             .ok_or_else(|| CiError::NotFound(format!("job {} in run {}", job.0, run.0)))?;
         let steps = job.steps.iter().map(RunStep::to_meta).collect();
-        let done = job.status == "completed";
+        // route through the same classifier `steps` was just built from
+        // (rather than a raw status literal), so "done" agrees with every
+        // other reading of this job's state
+        let done = job_finished(&job.status, job.conclusion.as_deref());
 
         // the log archive (`jobs/{id}/logs`) only exists once the job finishes —
         // it 404s while running. so for an in-progress job, return the live step
@@ -432,11 +414,7 @@ impl ForgeProvider for GitHubProvider {
         ]
         .map(str::to_owned);
         let raw = self.runner.run("gh", &args).await?;
-        let items: Vec<PrListItem> =
-            serde_json::from_str(&raw).map_err(|err| crate::ci::CiError::Parse {
-                what: "pr list".to_owned(),
-                message: err.to_string(),
-            })?;
+        let items: Vec<PrListItem> = parse_json("pr list", &raw)?;
         Ok(items.into_iter().map(PrListItem::into_pr).collect())
     }
 
@@ -596,10 +574,7 @@ impl ForgeProvider for GitHubProvider {
             "number,title,url,baseRefName,headRefName,headRefOid,author".to_owned(),
         ];
         let raw = self.runner.run("gh", &args).await?;
-        let pr: PrListItem = serde_json::from_str(&raw).map_err(|err| CiError::Parse {
-            what: "pr".to_owned(),
-            message: err.to_string(),
-        })?;
+        let pr: PrListItem = parse_json("pr", &raw)?;
         Ok(pr.into_pr())
     }
 
@@ -786,17 +761,25 @@ fn aggregate_status(id: &str, label: &str, jobs: &[RunJob]) -> JobStatus {
 }
 
 fn map_status(status: &str, conclusion: Option<&str>) -> JobStatus {
-    match conclusion {
-        Some("success") => JobStatus::Ok,
-        Some("failure" | "timed_out" | "startup_failure") => JobStatus::Failed,
-        Some("skipped") => JobStatus::Skipped,
-        Some("cancelled") => JobStatus::Neutral,
-        _ => match status {
-            "in_progress" => JobStatus::Running,
-            "completed" => JobStatus::Neutral,
-            _ => JobStatus::Queued,
-        },
-    }
+    // GitHub and Forgejo Actions share the same `conclusion` vocabulary
+    // (`crate::ci::map_conclusion` covers both); only the in-progress/no-conclusion
+    // status strings are forge-specific
+    crate::ci::map_conclusion(conclusion).unwrap_or(match status {
+        "in_progress" => JobStatus::Running,
+        "completed" => JobStatus::Neutral,
+        _ => JobStatus::Queued,
+    })
+}
+
+/// Whether a job has reached a terminal state, classified the same way as
+/// every other reading of `status`/`conclusion` in this file — not a raw
+/// string comparison, which would drift the moment a new terminal status or
+/// conclusion is added to `map_status`.
+fn job_finished(status: &str, conclusion: Option<&str>) -> bool {
+    matches!(
+        map_status(status, conclusion),
+        JobStatus::Ok | JobStatus::Failed | JobStatus::Skipped | JobStatus::Neutral
+    )
 }
 
 fn parse_created(raw: &str) -> Option<time::OffsetDateTime> {
@@ -965,11 +948,7 @@ struct JobsApi {
 }
 
 fn parse_posted(raw: &str) -> Result<PrComment> {
-    let item: ReviewCommentApi =
-        serde_json::from_str(raw).map_err(|err| crate::ci::CiError::Parse {
-            what: "pr comment".to_owned(),
-            message: err.to_string(),
-        })?;
+    let item: ReviewCommentApi = parse_json("pr comment", raw)?;
     Ok(item.into_comment())
 }
 

@@ -88,7 +88,12 @@ fn parse_host(url: &str) -> Option<String> {
 
 /// Construct the provider for a detected forge. GitLab targets the detected host;
 /// GitHub scopes the runs list to `branch` and carries every workflow YAML so
-/// each run's DAG is built from its own workflow.
+/// each run's DAG is built from its own workflow. A Forgejo detection with no
+/// resolvable host (no `[ci.forgejo] host` and no parseable remote) is passed
+/// through as `None` rather than guessing `codeberg.org` — same fail-closed
+/// shape as `detect_for_repo` returning `None` when it has no signal at all —
+/// so the built provider errors on every call instead of risking the token
+/// going to the wrong host.
 pub fn build_provider(
     detected: &Detected,
     repo_root: &Path,
@@ -109,14 +114,25 @@ pub fn build_provider(
         )),
         ProviderKind::Forgejo => Box::new(ForgejoProvider::new(
             Box::new(RealRunner),
-            detected
-                .host
-                .clone()
-                .unwrap_or_else(|| "codeberg.org".to_owned()),
+            detected.host.clone(),
             remote_url.and_then(parse_owner_repo).unwrap_or_default(),
             forgejo_token(),
             branch.map(str::to_owned),
         )),
+    }
+}
+
+/// The status vocabulary GitHub and Forgejo Actions share on `conclusion`
+/// (Forgejo mirrors GitHub's Actions REST shape here). `None` means the run
+/// hasn't concluded, so the caller falls back to its own in-progress/queued
+/// status strings, which the two forges do not report identically.
+pub(crate) fn map_conclusion(conclusion: Option<&str>) -> Option<JobStatus> {
+    match conclusion? {
+        "success" => Some(JobStatus::Ok),
+        "failure" | "timed_out" | "startup_failure" => Some(JobStatus::Failed),
+        "skipped" => Some(JobStatus::Skipped),
+        "cancelled" => Some(JobStatus::Neutral),
+        _ => None,
     }
 }
 
@@ -245,6 +261,42 @@ mod tests {
             detect_for_repo(dir.path(), Some("git@git.example.com:me/repo.git"), &config)
                 .expect("detected");
         assert_eq!(detected.host.as_deref(), Some("forge.corp.io"));
+    }
+
+    #[tokio::test]
+    async fn forced_forgejo_with_no_resolvable_host_fails_closed() {
+        // no remote, no config host: build_provider must not fall back to a
+        // hardcoded default host (that would risk sending the token elsewhere)
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = CiConfig {
+            provider: "forgejo".to_owned(),
+            ..CiConfig::default()
+        };
+        let detected = detect_for_repo(dir.path(), None, &config).expect("detected");
+        assert_eq!(detected.host, None);
+
+        let provider = build_provider(&detected, dir.path(), None, None, YamlCache::default());
+        let err = provider.list_runs(1).await.expect_err("no host to target");
+        assert!(matches!(err, CiError::NotFound(_)), "{err:?}");
+    }
+
+    #[test]
+    fn map_conclusion_covers_the_shared_actions_vocabulary() {
+        assert_eq!(map_conclusion(Some("success")), Some(JobStatus::Ok));
+        assert_eq!(map_conclusion(Some("failure")), Some(JobStatus::Failed));
+        assert_eq!(map_conclusion(Some("timed_out")), Some(JobStatus::Failed));
+        assert_eq!(map_conclusion(Some("skipped")), Some(JobStatus::Skipped));
+        assert_eq!(map_conclusion(Some("cancelled")), Some(JobStatus::Neutral));
+        assert_eq!(
+            map_conclusion(None),
+            None,
+            "no conclusion yet: not classified"
+        );
+        assert_eq!(
+            map_conclusion(Some("neutral")),
+            None,
+            "an unrecognized value falls back to the forge's own status strings"
+        );
     }
 
     #[test]

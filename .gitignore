@@ -17,3 +17,5 @@ flake.lock
 docs/superpowers/
 target/criterion
 claudedocs/
+.desloppify/
+scorecard.png
