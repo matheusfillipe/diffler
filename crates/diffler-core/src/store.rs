@@ -167,7 +167,7 @@ mod tests {
     fn save_load_round_trip() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut s = Session::default();
-        s.add_comment(anchor("a.txt", Some(1)), "mattf", "hm");
+        s.add_comment(anchor("a.txt", Some(1)), "reviewer", "hm");
         s.mark_viewed("a.txt", "hash-1");
         save(dir.path(), &s).expect("save");
         let back = load(dir.path()).expect("load");

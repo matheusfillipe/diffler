@@ -280,12 +280,12 @@ mod tests {
         let json = r#"{"workflow_runs":[
             {"id":900,"index_in_repo":7,"workflow_id":"ci.yml","title":"fix things",
              "prettyref":"main","commit_sha":"abc1234","status":"success",
-             "html_url":"https://codeberg.org/mattf/diffler/actions/runs/7",
+             "html_url":"https://codeberg.org/acme/widgets/actions/runs/7",
              "created":"2026-06-26T10:00:00Z"}]}"#;
         let runs = ForgejoProvider::new(
             Box::new(RecordingRunner::new(&[("actions/runs", json)])),
             Some("codeberg.org".into()),
-            "mattf/diffler".into(),
+            "acme/widgets".into(),
             None,
             None,
         )
@@ -315,7 +315,7 @@ mod tests {
         let err = ForgejoProvider::new(
             Box::new(FailingRunner),
             Some("codeberg.org".into()),
-            "mattf/diffler".into(),
+            "acme/widgets".into(),
             Some("sekret-token".into()),
             None,
         )
@@ -335,7 +335,7 @@ mod tests {
         let runs = ForgejoProvider::new(
             Box::new(RecordingRunner::new(&[("actions/runs", json)])),
             Some("codeberg.org".into()),
-            "mattf/diffler".into(),
+            "acme/widgets".into(),
             None,
             Some("feat/x".into()),
         )
@@ -355,7 +355,7 @@ mod tests {
         let err = ForgejoProvider::new(
             Box::new(runner.clone()),
             None,
-            "mattf/diffler".into(),
+            "acme/widgets".into(),
             Some("sekret-token".into()),
             None,
         )
@@ -374,7 +374,7 @@ mod tests {
         let err = ForgejoProvider::new(
             Box::new(RecordingRunner::new(&[("pulls", "not json")])),
             Some("codeberg.org".into()),
-            "mattf/diffler".into(),
+            "acme/widgets".into(),
             None,
             Some("feat/x".into()),
         )

@@ -304,16 +304,16 @@ mod tests {
     #[test]
     fn parse_owner_repo_handles_common_url_shapes() {
         assert_eq!(
-            parse_owner_repo("git@codeberg.org:mattf/diffler.git").as_deref(),
-            Some("mattf/diffler")
+            parse_owner_repo("git@codeberg.org:acme/widgets.git").as_deref(),
+            Some("acme/widgets")
         );
         assert_eq!(
-            parse_owner_repo("https://codeberg.org/mattf/diffler").as_deref(),
-            Some("mattf/diffler")
+            parse_owner_repo("https://codeberg.org/acme/widgets").as_deref(),
+            Some("acme/widgets")
         );
         assert_eq!(
-            parse_owner_repo("ssh://git@codeberg.org:2222/mattf/diffler.git").as_deref(),
-            Some("mattf/diffler")
+            parse_owner_repo("ssh://git@codeberg.org:2222/acme/widgets.git").as_deref(),
+            Some("acme/widgets")
         );
         assert_eq!(parse_owner_repo("https://codeberg.org/"), None);
     }

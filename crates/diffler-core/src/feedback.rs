@@ -186,7 +186,7 @@ mod tests {
     #[test]
     fn single_line_comment_renders_heading_and_context_fence() {
         let mut s = Session::default();
-        s.add_comment(anchor("src/auth.py", Some(2)), "mattf", "why uppercase?");
+        s.add_comment(anchor("src/auth.py", Some(2)), "reviewer", "why uppercase?");
         let md = to_markdown(&s, &sample_model(), &opts());
         assert!(md.starts_with("## Review feedback\n\n"));
         assert!(md.contains("### src/auth.py:2\n"));
@@ -200,7 +200,7 @@ mod tests {
         let mut s = Session::default();
         let mut a = anchor("src/auth.py", Some(2));
         a.on_old_side = true;
-        s.add_comment(a, "mattf", "what was wrong with two?");
+        s.add_comment(a, "reviewer", "what was wrong with two?");
         let md = to_markdown(&s, &sample_model(), &opts());
         assert!(md.contains("```\n one\n-two\n+TWO\n```\n"));
     }
@@ -210,7 +210,7 @@ mod tests {
         let mut s = Session::default();
         let mut a = anchor("src/auth.py", Some(3));
         a.line_end = Some(5);
-        s.add_comment(a, "mattf", "this whole block");
+        s.add_comment(a, "reviewer", "this whole block");
         let md = to_markdown(&s, &sample_model(), &opts());
         assert!(md.contains("### src/auth.py:3-5\n"));
     }
@@ -218,8 +218,8 @@ mod tests {
     #[test]
     fn file_filter_excludes_other_files() {
         let mut s = Session::default();
-        s.add_comment(anchor("src/auth.py", Some(2)), "mattf", "keep");
-        s.add_comment(anchor("other.py", Some(1)), "mattf", "drop");
+        s.add_comment(anchor("src/auth.py", Some(2)), "reviewer", "keep");
+        s.add_comment(anchor("other.py", Some(1)), "reviewer", "drop");
         let o = FeedbackOptions {
             file_filter: Some("src/auth.py"),
             ..opts()
@@ -233,7 +233,7 @@ mod tests {
     fn resolved_skipped_by_default_included_and_marked_with_flag() {
         let mut s = Session::default();
         let id = s
-            .add_comment(anchor("src/auth.py", Some(2)), "mattf", "done already")
+            .add_comment(anchor("src/auth.py", Some(2)), "reviewer", "done already")
             .id
             .clone();
         assert!(s.resolve(&id));
@@ -252,7 +252,7 @@ mod tests {
     #[test]
     fn departed_file_renders_outdated_marker() {
         let mut s = Session::default();
-        s.add_comment(anchor("gone.py", Some(7)), "mattf", "still matters");
+        s.add_comment(anchor("gone.py", Some(7)), "reviewer", "still matters");
         let md = to_markdown(&s, &sample_model(), &opts());
         assert!(md.contains("### gone.py:7\n_(outdated)_\n"));
         assert!(md.contains("> still matters\n"));
@@ -261,7 +261,7 @@ mod tests {
     #[test]
     fn departed_line_renders_outdated_marker() {
         let mut s = Session::default();
-        s.add_comment(anchor("src/auth.py", Some(99)), "mattf", "moved on");
+        s.add_comment(anchor("src/auth.py", Some(99)), "reviewer", "moved on");
         let md = to_markdown(&s, &sample_model(), &opts());
         assert!(md.contains("### src/auth.py:99\n_(outdated)_\n"));
     }
@@ -269,7 +269,7 @@ mod tests {
     #[test]
     fn file_level_comment_has_no_fence_when_file_present() {
         let mut s = Session::default();
-        s.add_comment(anchor("src/auth.py", None), "mattf", "overall: nice");
+        s.add_comment(anchor("src/auth.py", None), "reviewer", "overall: nice");
         let md = to_markdown(&s, &sample_model(), &opts());
         assert!(md.contains("### src/auth.py\n> overall: nice\n"));
         assert!(!md.contains("```"));
@@ -280,7 +280,7 @@ mod tests {
     fn replies_render_as_nested_quotes() {
         let mut s = Session::default();
         let id = s
-            .add_comment(anchor("src/auth.py", Some(2)), "mattf", "why?")
+            .add_comment(anchor("src/auth.py", Some(2)), "reviewer", "why?")
             .id
             .clone();
         assert!(s.reply(&id, "agent", "because tests\nand style"));
@@ -295,7 +295,7 @@ mod tests {
             line.text = "````md".into();
         }
         let mut s = Session::default();
-        s.add_comment(anchor("src/auth.py", Some(2)), "mattf", "fence bomb");
+        s.add_comment(anchor("src/auth.py", Some(2)), "reviewer", "fence bomb");
         let md = to_markdown(&s, &model, &opts());
         let fence = "`````";
         assert!(
@@ -310,9 +310,9 @@ mod tests {
     #[test]
     fn comments_order_by_file_then_line() {
         let mut s = Session::default();
-        s.add_comment(anchor("z.py", Some(1)), "mattf", "third");
-        s.add_comment(anchor("src/auth.py", Some(3)), "mattf", "second");
-        s.add_comment(anchor("src/auth.py", Some(1)), "mattf", "first");
+        s.add_comment(anchor("z.py", Some(1)), "reviewer", "third");
+        s.add_comment(anchor("src/auth.py", Some(3)), "reviewer", "second");
+        s.add_comment(anchor("src/auth.py", Some(1)), "reviewer", "first");
         let md = to_markdown(&s, &sample_model(), &opts());
         let first = md.find("> first").expect("first present");
         let second = md.find("> second").expect("second present");

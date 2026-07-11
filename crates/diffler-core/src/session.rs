@@ -205,7 +205,7 @@ mod tests {
     fn comment_lifecycle_open_replied_resolved() {
         let mut s = Session::default();
         let id = s
-            .add_comment(anchor("a.txt", Some(3)), "mattf", "why?")
+            .add_comment(anchor("a.txt", Some(3)), "reviewer", "why?")
             .id
             .clone();
         assert_eq!(s.comments[0].status, CommentStatus::Open);
@@ -236,7 +236,7 @@ mod tests {
     fn edit_comment_replaces_body_and_keeps_status() {
         let mut s = Session::default();
         let id = s
-            .add_comment(anchor("a.txt", Some(3)), "mattf", "old body")
+            .add_comment(anchor("a.txt", Some(3)), "reviewer", "old body")
             .id
             .clone();
         assert!(s.reply(&id, "agent", "ack"));
@@ -252,11 +252,11 @@ mod tests {
     fn unresolved_comments_filters_resolved_only() {
         let mut s = Session::default();
         let keep = s
-            .add_comment(anchor("a.txt", Some(3)), "mattf", "open")
+            .add_comment(anchor("a.txt", Some(3)), "reviewer", "open")
             .id
             .clone();
         let done = s
-            .add_comment(anchor("a.txt", Some(3)), "mattf", "done")
+            .add_comment(anchor("a.txt", Some(3)), "reviewer", "done")
             .id
             .clone();
         assert!(s.resolve(&done));
@@ -274,7 +274,7 @@ mod tests {
         let mut s = Session::default();
         let mut range = anchor("a.txt", Some(3));
         range.line_end = Some(7);
-        s.add_comment(range, "mattf", "this whole block");
+        s.add_comment(range, "reviewer", "this whole block");
         s.mark_viewed("b.txt", "hash-b");
         let json = serde_json::to_string(&s).expect("serialize");
         let back: Session = serde_json::from_str(&json).expect("deserialize");
@@ -386,7 +386,11 @@ mod tests {
         s.mark_viewed("kept.txt", &kept.content_hash());
         s.mark_viewed("changed.txt", "hash-of-old-content");
         s.mark_viewed("departed.txt", "whatever");
-        s.add_comment(anchor("departed.txt", Some(3)), "mattf", "still relevant");
+        s.add_comment(
+            anchor("departed.txt", Some(3)),
+            "reviewer",
+            "still relevant",
+        );
 
         s.reconcile(&model(vec![kept, changed]));
 
