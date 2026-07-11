@@ -1232,22 +1232,25 @@ impl App {
     /// success toast (label + summary), or as an error on failure. Refresh
     /// first (head/log/ahead-behind may have moved), then set the toast so a
     /// clean refresh does not clobber it. A pending PR open/switch routes to
-    /// its own continuation instead — `label` is display text only, the
-    /// `pending_pr_*` slots are what's actually being continued.
+    /// its own continuation instead — gated on the fetch's own label, since
+    /// several git ops can be in flight and an unrelated one finishing first
+    /// must not consume the continuation slots.
     fn git_finished(&mut self, label: &str, ok: bool, output: &str) {
-        if let Some(pr) = self.pending_pr_open.take().filter(|_| ok) {
-            match self.resolve_pr_range(&pr) {
-                Some((base, head)) => self.open_pr_diff(pr.number, &base, &head),
-                None => self.error("PR head still missing after fetch"),
+        if label.starts_with(Self::PR_FETCH_PREFIX) {
+            if let Some(pr) = self.pending_pr_open.take().filter(|_| ok) {
+                match self.resolve_pr_range(&pr) {
+                    Some((base, head)) => self.open_pr_diff(pr.number, &base, &head),
+                    None => self.error("PR head still missing after fetch"),
+                }
+                return;
             }
-            return;
-        }
-        if let Some(branch) = self.pending_pr_switch.take().filter(|_| ok) {
-            self.pending_git = Some(GitOp {
-                label: format!("switch {branch}"),
-                argv: vec!["git".to_owned(), "switch".to_owned(), branch],
-            });
-            return;
+            if let Some(branch) = self.pending_pr_switch.take().filter(|_| ok) {
+                self.pending_git = Some(GitOp {
+                    label: format!("switch {branch}"),
+                    argv: vec!["git".to_owned(), "switch".to_owned(), branch],
+                });
+                return;
+            }
         }
         let summary = output
             .lines()
@@ -2258,6 +2261,45 @@ mod tests {
             message.text.contains("Everything up-to-date"),
             "{}",
             message.text
+        );
+    }
+
+    #[test]
+    fn git_done_for_an_unrelated_op_leaves_a_pending_pr_continuation_alone() {
+        let (_fixture, mut app) = app();
+        app.pending_pr_open = Some(crate::ci::PullRequest {
+            number: 7,
+            title: String::new(),
+            url: None,
+            base_ref: "main".to_owned(),
+            head_ref: "topic".to_owned(),
+            head_oid: String::new(),
+            author: String::new(),
+        });
+        // ops run detached, so a pull can finish while the PR fetch is still
+        // in flight — its completion must not consume the continuation
+        app.handle(AppEvent::GitDone {
+            label: "pull".to_owned(),
+            ok: true,
+            output: "Already up to date.\n".to_owned(),
+        });
+        assert!(
+            app.pending_pr_open.is_some(),
+            "unrelated op consumed the pending PR open"
+        );
+        let message = app
+            .message
+            .take()
+            .expect("the pull's own toast still shows");
+        assert!(message.text.contains("pull"), "{}", message.text);
+        app.handle(AppEvent::GitDone {
+            label: App::pr_fetch_label(7),
+            ok: true,
+            output: String::new(),
+        });
+        assert!(
+            app.pending_pr_open.is_none(),
+            "the matching fetch consumes the continuation"
         );
     }
 

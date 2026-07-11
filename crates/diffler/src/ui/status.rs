@@ -105,13 +105,12 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16, Vec<Option<usize>>) 
                 if let Some(offset) = selected {
                     cursor_line_index = lines.len() + offset;
                 }
-                // enrichment lands asynchronously: only spans that still match
-                // the file's content may be sliced onto its lines
+                // enrichment lands asynchronously: the hash in the key ties
+                // the spans to the exact content they were computed from
                 let syntax = app
                     .status
                     .highlights
-                    .get(&file_diff.path)
-                    .filter(|cached| cached.hash == file_diff.sides_hash())
+                    .get(&(file_diff.path.clone(), file_diff.sides_hash()))
                     .map(|cached| (cached.old.as_slice(), cached.new.as_slice()));
                 lines.extend(render_hunk_lines(
                     &app.theme, hunk, syntax, area.width, selected,
@@ -710,7 +709,8 @@ mod tests {
         let lib = app
             .status
             .highlights
-            .get("src/lib.rs")
+            .iter()
+            .find_map(|((path, _), cached)| (path == "src/lib.rs").then_some(cached))
             .expect("expanded file highlighted");
         assert!(
             lib.new.iter().any(|line| !line.is_empty()),

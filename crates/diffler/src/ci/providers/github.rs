@@ -1115,9 +1115,7 @@ fn review_payload(review: &crate::ci::NewPrReview) -> serde_json::Value {
     // every field is a plain String/number/&'static str, so serialization
     // can never fail
     #[allow(clippy::expect_used)]
-    let value =
-        serde_json::to_value(payload).expect("wire payload of plain fields always serializes");
-    value
+    serde_json::to_value(payload).expect("wire payload of plain fields always serializes")
 }
 
 /// ISO-8601 → unix seconds; an unrecognized shape collapses to zero.

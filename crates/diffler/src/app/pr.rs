@@ -100,6 +100,15 @@ impl App {
         }
     }
 
+    /// Marks the git ops whose completion may consume the `pending_pr_*`
+    /// continuation slots: several ops can be in flight at once, so
+    /// `git_finished` must not route an unrelated op's result into them.
+    pub(crate) const PR_FETCH_PREFIX: &'static str = "fetch PR #";
+
+    pub(crate) fn pr_fetch_label(number: u64) -> String {
+        format!("{}{number}", Self::PR_FETCH_PREFIX)
+    }
+
     /// Fetch the PR's head into a local branch and switch to it. GitHub's CLI
     /// does both (and handles forks); other forges fetch the pull ref into a
     /// branch named after the PR head and switch when the fetch lands.
@@ -129,7 +138,7 @@ impl App {
             .map_or_else(|| "origin".to_owned(), |r| r.name.clone());
         self.pending_pr_switch = Some(pr.head_ref.clone());
         self.pending_git = Some(super::GitOp {
-            label: format!("fetch PR #{}", pr.number),
+            label: Self::pr_fetch_label(pr.number),
             argv: vec![
                 "git".to_owned(),
                 "fetch".to_owned(),

@@ -145,9 +145,11 @@ pub struct StatusView {
     /// background enrichment (intra-line emphasis), so a landed file isn't
     /// re-queued. Cleared when the status sections are rebuilt (refresh).
     enriched: [BTreeSet<String>; 3],
-    /// Per-file syntax spans for inline diffs, keyed by path and validated by
-    /// the both-sides content hash. Filled lazily, only for expanded files.
-    pub(crate) highlights: HashMap<String, FileHighlights>,
+    /// Per-file syntax spans for inline diffs, keyed by path plus both-sides
+    /// content hash: a partially staged file shows up in two sections with
+    /// different content, and each needs its own entry to stay settled.
+    /// Filled lazily, only for expanded files.
+    pub(crate) highlights: HashMap<(String, String), FileHighlights>,
     /// Last render's body rect, line scroll, and per-rendered-line row index
     /// (rows vary in height, so a screen row maps back to a `visible_rows`
     /// index only through this table). Drives mouse hit-testing.
@@ -399,8 +401,7 @@ impl App {
                     && self
                         .status
                         .highlights
-                        .get(&file.path)
-                        .is_some_and(|cached| cached.hash == file.sides_hash());
+                        .contains_key(&(file.path.clone(), file.sides_hash()));
                 super::enrich::queue_if_stale(
                     &mut self.enrich_inflight,
                     &mut self.pending_enrich,
@@ -418,6 +419,21 @@ impl App {
     /// re-queued. A stale outcome (the file changed while the job ran)
     /// matches nothing and is dropped; the next frame re-queues.
     pub(super) fn install_status_enrichment(&mut self, outcome: &EnrichOutcome) {
+        // entries for content no section still shows are dead; drop them so
+        // an edited file doesn't accumulate one entry per past hash
+        let live: Vec<String> = [
+            &self.review.status.untracked,
+            &self.review.status.unstaged,
+            &self.review.status.staged,
+        ]
+        .into_iter()
+        .flat_map(|model| &model.files)
+        .filter(|file| file.path == outcome.path)
+        .map(FileDiff::sides_hash)
+        .collect();
+        self.status
+            .highlights
+            .retain(|(path, hash), _| *path != outcome.path || live.contains(hash));
         for section in Section::ALL {
             let index = section.index();
             let model = match section {
@@ -431,9 +447,10 @@ impl App {
             for file in &mut model.files {
                 if file.path == outcome.path && file.sides_hash() == outcome.hash {
                     file.hunks.clone_from(&outcome.hunks);
-                    self.status
-                        .highlights
-                        .insert(outcome.path.clone(), outcome.highlights.clone());
+                    self.status.highlights.insert(
+                        (outcome.path.clone(), outcome.hash.clone()),
+                        outcome.highlights.clone(),
+                    );
                     enriched.insert(file.path.clone());
                 }
             }
@@ -1902,5 +1919,28 @@ mod tests {
         assert!(app.search.is_some());
         app.handle(esc());
         assert!(app.search.is_none());
+    }
+
+    #[test]
+    fn partially_staged_file_expanded_in_both_sections_settles() {
+        // the same path carries different content in Unstaged and Staged, so
+        // each side needs its own cache entry — a path-keyed cache would make
+        // the two sections evict each other and re-enrich forever
+        let fixture = standard_fixture();
+        fixture.stage("src/lib.rs");
+        fixture.write("src/lib.rs", "pub fn answer() -> u32 {\n    43\n}\n");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        for section in [Section::Unstaged, Section::Staged] {
+            app.status.expanded[section.index()].insert("src/lib.rs".to_owned());
+        }
+
+        app.queue_enrich_status_expanded();
+        assert_eq!(app.pending_enrich.len(), 2, "one job per section");
+        app.enrich_now();
+        app.queue_enrich_status_expanded();
+        assert!(
+            app.pending_enrich.is_empty(),
+            "both sections stay settled once their outcomes land"
+        );
     }
 }

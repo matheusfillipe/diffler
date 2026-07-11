@@ -756,7 +756,7 @@ impl App {
                 .map_or_else(|| "origin".to_owned(), |r| r.name.clone());
             let refspec = format!("refs/pull/{}/head", pr.number);
             let base_ref = pr.base_ref.clone();
-            let label = format!("fetch PR #{}", pr.number);
+            let label = Self::pr_fetch_label(pr.number);
             self.pending_pr_open = Some(pr);
             // the base ref comes along so merge-base reflects the forge's
             // view, not however stale the last fetch left it
