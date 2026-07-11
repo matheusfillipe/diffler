@@ -7,11 +7,78 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
+use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
 use crate::lsp::{Caller, LspError, RefSite, Symbol};
+
+/// A `Position`/`Range` are atomic in the LSP spec (`line`+`character`,
+/// `start`+`end` always travel together), so unlike the fields below they're
+/// modeled as plain required fields rather than defended with fallbacks.
+#[derive(Deserialize)]
+struct LspPosition {
+    line: u32,
+    character: u32,
+}
+
+#[derive(Deserialize)]
+struct LspRange {
+    start: LspPosition,
+    end: LspPosition,
+}
+
+#[derive(Deserialize)]
+struct Location {
+    uri: String,
+    range: LspRange,
+}
+
+/// Gate fields for `textDocument/documentSymbol`: if any of these fail to
+/// parse, there was never a resolvable symbol to push (matching the old
+/// pointer-walk, which also skipped the node whenever `name` or `range`
+/// didn't resolve). `kind` degrades to 0 rather than failing the node, since
+/// a missing kind still needs to fall through the function-kind filter below.
+#[derive(Deserialize)]
+struct DocumentSymbolCore {
+    name: String,
+    #[serde(default)]
+    kind: u32,
+    range: LspRange,
+}
+
+/// `selectionRange` is genuinely optional in the wild: some servers omit it
+/// or leave `start` partial, and the symbol is still pushed using `range`'s
+/// start line and character 0 as the fallback position — so this is parsed
+/// independently of `DocumentSymbolCore` and never fails the whole node.
+#[derive(Deserialize, Default)]
+struct SelectionRange {
+    #[serde(default)]
+    start: SelectionStart,
+}
+
+#[derive(Deserialize, Default)]
+struct SelectionStart {
+    line: Option<u32>,
+    #[serde(default)]
+    character: u32,
+}
+
+/// The shape of a `CallHierarchyItem`, read from `incomingCalls`'s `from`.
+#[derive(Deserialize)]
+struct CallHierarchyItem {
+    name: String,
+    uri: String,
+    range: LspRange,
+    #[serde(rename = "selectionRange")]
+    selection_range: LspRange,
+}
+
+#[derive(Deserialize)]
+struct IncomingCall {
+    from: CallHierarchyItem,
+}
 
 pub struct LspClient {
     _child: Child,
@@ -132,10 +199,12 @@ impl LspClient {
             .unwrap_or(&Vec::new())
             .iter()
             .filter_map(|loc| {
-                let target = loc.get("uri")?.as_str()?;
-                let line = loc.pointer("/range/start/line")?.as_u64()? as u32;
-                let path = rel_path(&self.root, target)?;
-                Some(RefSite { path, line })
+                let loc: Location = serde_json::from_value(loc.clone()).ok()?;
+                let path = rel_path(&self.root, &loc.uri)?;
+                Some(RefSite {
+                    path,
+                    line: loc.range.start.line,
+                })
             })
             .collect())
     }
@@ -156,6 +225,9 @@ impl LspClient {
                 }),
             )
             .await?;
+        // The raw item (not a struct rebuilt from it) is forwarded to
+        // `incomingCalls` below: servers may carry extra fields (e.g. `data`)
+        // on it that must round-trip untouched.
         let Some(item) = items.as_array().and_then(|a| a.first()).cloned() else {
             return Ok(Vec::new());
         };
@@ -167,17 +239,14 @@ impl LspClient {
             .unwrap_or(&Vec::new())
             .iter()
             .filter_map(|call| {
-                let from = call.get("from")?;
-                let name = from.get("name")?.as_str()?.to_owned();
-                let target = from.get("uri")?.as_str()?;
-                let path = rel_path(&self.root, target)?;
-                let at = |ptr: &str| from.pointer(ptr).and_then(Value::as_u64).map(|v| v as u32);
+                let call: IncomingCall = serde_json::from_value(call.clone()).ok()?;
+                let path = rel_path(&self.root, &call.from.uri)?;
                 Some(Caller {
-                    name,
+                    name: call.from.name,
                     path,
-                    line: at("/range/start/line")?,
-                    select_line: at("/selectionRange/start/line")?,
-                    select_character: at("/selectionRange/start/character")?,
+                    line: call.from.range.start.line,
+                    select_line: call.from.selection_range.start.line,
+                    select_character: call.from.selection_range.start.character,
                 })
             })
             .collect())
@@ -305,31 +374,33 @@ fn rel_path(root: &Path, uri: &str) -> Option<String> {
     Some(rel.to_string_lossy().into_owned())
 }
 
-const FUNCTION_KINDS: &[u64] = &[6, 9, 12];
+const FUNCTION_KINDS: &[u32] = &[6, 9, 12];
 
+/// Recurses into `children` unconditionally, before parsing the node's own
+/// fields, so a node with a broken `name`/`kind`/`range` still surfaces any
+/// valid symbols nested underneath it — matching the old pointer-walk, which
+/// never let a node's own validity gate its children.
 fn collect_symbols(nodes: &[Value], out: &mut Vec<Symbol>) {
     for node in nodes {
         if let Some(children) = node.get("children").and_then(Value::as_array) {
             collect_symbols(children, out);
         }
-        let kind = node.get("kind").and_then(Value::as_u64).unwrap_or(0);
-        if !FUNCTION_KINDS.contains(&kind) {
+        let Ok(core) = serde_json::from_value::<DocumentSymbolCore>(node.clone()) else {
+            continue;
+        };
+        if !FUNCTION_KINDS.contains(&core.kind) {
             continue;
         }
-        let Some(name) = node.get("name").and_then(Value::as_str) else {
-            continue;
-        };
-        let range = |ptr: &str| node.pointer(ptr).and_then(Value::as_u64).map(|v| v as u32);
-        let (Some(start), Some(end)) = (range("/range/start/line"), range("/range/end/line"))
-        else {
-            continue;
-        };
+        let selection = node
+            .get("selectionRange")
+            .and_then(|v| serde_json::from_value::<SelectionRange>(v.clone()).ok())
+            .unwrap_or_default();
         out.push(Symbol {
-            name: name.to_owned(),
-            start_line: start,
-            end_line: end,
-            select_line: range("/selectionRange/start/line").unwrap_or(start),
-            select_character: range("/selectionRange/start/character").unwrap_or(0),
+            name: core.name,
+            start_line: core.range.start.line,
+            end_line: core.range.end.line,
+            select_line: selection.start.line.unwrap_or(core.range.start.line),
+            select_character: selection.start.character,
         });
     }
 }
@@ -367,5 +438,87 @@ mod tests {
             server_request_result(&serde_json::json!({"method": "x"})),
             Value::Null
         );
+    }
+
+    fn range(start: (u32, u32), end: (u32, u32)) -> serde_json::Value {
+        serde_json::json!({
+            "start": {"line": start.0, "character": start.1},
+            "end": {"line": end.0, "character": end.1},
+        })
+    }
+
+    #[test]
+    fn collect_symbols_reads_kind_name_and_ranges() {
+        let nodes = serde_json::json!([{
+            "name": "target",
+            "kind": 12,
+            "range": range((0, 0), (2, 1)),
+            "selectionRange": range((0, 3), (0, 9)),
+        }]);
+        let mut out = Vec::new();
+        collect_symbols(nodes.as_array().unwrap(), &mut out);
+        assert_eq!(
+            out,
+            vec![Symbol {
+                name: "target".into(),
+                start_line: 0,
+                end_line: 2,
+                select_line: 0,
+                select_character: 3,
+            }]
+        );
+    }
+
+    #[test]
+    fn collect_symbols_filters_non_function_kinds() {
+        let nodes = serde_json::json!([{
+            "name": "Widget",
+            "kind": 5, // class, not a function kind
+            "range": range((0, 0), (5, 1)),
+            "selectionRange": range((0, 6), (0, 12)),
+        }]);
+        let mut out = Vec::new();
+        collect_symbols(nodes.as_array().unwrap(), &mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn collect_symbols_defaults_missing_selection_range_to_the_outer_range_start() {
+        let nodes = serde_json::json!([{
+            "name": "target",
+            "kind": 12,
+            "range": range((4, 0), (6, 1)),
+        }]);
+        let mut out = Vec::new();
+        collect_symbols(nodes.as_array().unwrap(), &mut out);
+        assert_eq!(out[0].select_line, 4, "falls back to range.start.line");
+        assert_eq!(out[0].select_character, 0);
+    }
+
+    #[test]
+    fn collect_symbols_recurses_into_children_of_an_otherwise_unresolvable_node() {
+        let nodes = serde_json::json!([{
+            "name": "impl Foo",
+            // no "kind"/"range" at all on the parent, but its children are
+            // still real, pushable symbols
+            "children": [{
+                "name": "target",
+                "kind": 6,
+                "range": range((1, 0), (1, 20)),
+                "selectionRange": range((1, 3), (1, 9)),
+            }],
+        }]);
+        let mut out = Vec::new();
+        collect_symbols(nodes.as_array().unwrap(), &mut out);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].name, "target");
+    }
+
+    #[test]
+    fn collect_symbols_skips_a_node_with_no_resolvable_range() {
+        let nodes = serde_json::json!([{"name": "target", "kind": 12}]);
+        let mut out = Vec::new();
+        collect_symbols(nodes.as_array().unwrap(), &mut out);
+        assert!(out.is_empty());
     }
 }
