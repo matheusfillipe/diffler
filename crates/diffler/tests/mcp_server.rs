@@ -335,9 +335,13 @@ async fn wait_for_feedback_unblocks_on_the_send_key() {
     };
     let (client, task) = waiter;
 
-    // give the long poll time to subscribe before the human sends
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    assert!(!task.is_finished(), "the poll must block until the bump");
+    // no signal marks when the long poll has reached the server and
+    // subscribed, so poll repeatedly over a generous window instead of
+    // guessing one delay: any iteration seeing it finished early fails fast
+    for _ in 0..40 {
+        assert!(!task.is_finished(), "the poll must block until the bump");
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
     send_key(&harness.tx, 'Z');
 
     let result = task.await.expect("join");
