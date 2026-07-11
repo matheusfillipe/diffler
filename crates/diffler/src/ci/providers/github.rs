@@ -9,7 +9,7 @@
 use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::ci::error::{CiError, Result, parse_json};
 use crate::ci::exec::CommandRunner;
@@ -587,9 +587,9 @@ impl ForgeProvider for GitHubProvider {
         let Ok(raw) = self.runner.run("gh", &args).await else {
             return Ok(None);
         };
-        let Ok(pr) = serde_json::from_str::<PrView>(&raw) else {
-            return Ok(None);
-        };
+        // a malformed response must propagate, same as `pr`/`list_prs` —
+        // treating it as "no PR" would look like a normal, PR-less branch
+        let pr: PrView = parse_json("pr view", &raw)?;
         Ok(Some(PullRequest {
             number: pr.number,
             title: pr.title,
@@ -1060,25 +1060,45 @@ impl ReviewCommentApi {
     }
 }
 
+/// A single line (or range) comment in the GitHub review-submission wire shape.
+#[derive(Serialize)]
+struct ReviewCommentPayload {
+    path: String,
+    line: u32,
+    side: &'static str,
+    body: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    start_line: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    start_side: Option<&'static str>,
+}
+
 /// The REST body for POST /pulls/N/reviews: verdict as the event, the
 /// optional summary, every pending comment with its side (and range when
 /// multi-line).
+#[derive(Serialize)]
+struct ReviewPayload {
+    commit_id: String,
+    event: &'static str,
+    comments: Vec<ReviewCommentPayload>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    body: String,
+}
+
 fn review_payload(review: &crate::ci::NewPrReview) -> serde_json::Value {
-    let comments: Vec<serde_json::Value> = review
+    let comments = review
         .comments
         .iter()
         .map(|c| {
             let side = if c.new_side { "RIGHT" } else { "LEFT" };
-            let mut comment = serde_json::Map::new();
-            comment.insert("path".to_owned(), c.path.clone().into());
-            comment.insert("line".to_owned(), c.line.into());
-            comment.insert("side".to_owned(), side.into());
-            comment.insert("body".to_owned(), c.body.clone().into());
-            if let Some(start) = c.start_line {
-                comment.insert("start_line".to_owned(), start.into());
-                comment.insert("start_side".to_owned(), side.into());
+            ReviewCommentPayload {
+                path: c.path.clone(),
+                line: c.line,
+                side,
+                body: c.body.clone(),
+                start_line: c.start_line,
+                start_side: c.start_line.is_some().then_some(side),
             }
-            serde_json::Value::Object(comment)
         })
         .collect();
     let event = match review.verdict {
@@ -1086,14 +1106,18 @@ fn review_payload(review: &crate::ci::NewPrReview) -> serde_json::Value {
         crate::ci::ReviewVerdict::RequestChanges => "REQUEST_CHANGES",
         crate::ci::ReviewVerdict::Comment => "COMMENT",
     };
-    let mut payload = serde_json::Map::new();
-    payload.insert("commit_id".to_owned(), review.head_oid.clone().into());
-    payload.insert("event".to_owned(), event.into());
-    payload.insert("comments".to_owned(), comments.into());
-    if !review.body.is_empty() {
-        payload.insert("body".to_owned(), review.body.clone().into());
-    }
-    serde_json::Value::Object(payload)
+    let payload = ReviewPayload {
+        commit_id: review.head_oid.clone(),
+        event,
+        comments,
+        body: review.body.clone(),
+    };
+    // every field is a plain String/number/&'static str, so serialization
+    // can never fail
+    #[allow(clippy::expect_used)]
+    let value =
+        serde_json::to_value(payload).expect("wire payload of plain fields always serializes");
+    value
 }
 
 /// ISO-8601 → unix seconds; an unrecognized shape collapses to zero.
@@ -1574,6 +1598,20 @@ jobs:
         let pr = pr.expect("a pr");
         assert_eq!(pr.number, 28);
         assert_eq!(pr.url.as_deref(), Some("https://gh/pull/28"));
+    }
+
+    #[tokio::test]
+    async fn current_pr_propagates_a_parse_failure_like_list_prs() {
+        let err = GitHubProvider::new(
+            Box::new(RecordingRunner::new(&[("pr view feat/x", "not json")])),
+            vec![],
+            Some("feat/x".to_owned()),
+            YamlCache::default(),
+        )
+        .current_pr()
+        .await
+        .expect_err("malformed body must not silently read as \"no PR\"");
+        assert!(matches!(err, CiError::Parse { .. }));
     }
 
     #[tokio::test]

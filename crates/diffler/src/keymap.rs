@@ -252,7 +252,7 @@ pub enum Context {
     Diff,
     Log,
     /// The CI job-log screen (foldable steps).
-    Logs,
+    CiLog,
     /// The node-graph screen (CI pipeline, caller chains).
     Graph,
     /// The pull-request list.
@@ -392,7 +392,7 @@ const LOG_DEFAULTS: &[(&str, Action)] = &[
     ("q", Action::Back),
 ];
 
-const LOGS_DEFAULTS: &[(&str, Action)] = &[
+const CI_LOG_DEFAULTS: &[(&str, Action)] = &[
     ("j", Action::MoveDown),
     ("k", Action::MoveUp),
     ("gg", Action::GoTop),
@@ -460,7 +460,7 @@ impl Keymap {
             Context::Status => (STATUS_DEFAULTS, STATUS_PREFIXES, &keys.status, "status"),
             Context::Diff => (DIFF_DEFAULTS, NO_PREFIXES, &keys.diff, "diff"),
             Context::Log => (LOG_DEFAULTS, NO_PREFIXES, &keys.log, "log"),
-            Context::Logs => (LOGS_DEFAULTS, NO_PREFIXES, &keys.logs, "logs"),
+            Context::CiLog => (CI_LOG_DEFAULTS, NO_PREFIXES, &keys.ci_log, "ci_log"),
             Context::Graph => (GRAPH_DEFAULTS, NO_PREFIXES, &keys.graph, "graph"),
             Context::Prs => (PRS_DEFAULTS, NO_PREFIXES, &keys.prs, "prs"),
         };
@@ -841,7 +841,7 @@ mod tests {
             (STATUS_DEFAULTS, Context::Status),
             (DIFF_DEFAULTS, Context::Diff),
             (LOG_DEFAULTS, Context::Log),
-            (LOGS_DEFAULTS, Context::Logs),
+            (CI_LOG_DEFAULTS, Context::CiLog),
             (GRAPH_DEFAULTS, Context::Graph),
             (PRS_DEFAULTS, Context::Prs),
         ] {
@@ -1208,7 +1208,7 @@ mod tests {
             Context::Status,
             Context::Diff,
             Context::Log,
-            Context::Logs,
+            Context::CiLog,
             Context::Graph,
             Context::Prs,
         ] {

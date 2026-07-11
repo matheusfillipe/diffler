@@ -1,7 +1,8 @@
 //! Application state and event handling. `App::handle` is a pure-ish state
 //! transition (no terminal IO) so the whole shell is unit-testable; rendering
 //! reads the state in `ui::draw`. Per-screen state and handlers live in the
-//! `status`, `log`, and `diff` submodules.
+//! `status`, `log`, `diff`, `ci` (runs + graph), `ci_log`, and `pr`
+//! submodules.
 
 pub mod blast;
 mod ci;
@@ -71,7 +72,7 @@ impl Screen {
             Self::Status => Context::Status,
             // Runs is a plain list: it shares Log's motions
             Self::Runs | Self::Log => Context::Log,
-            Self::CiLog => Context::Logs,
+            Self::CiLog => Context::CiLog,
             Self::Diff => Context::Diff,
             Self::Graph => Context::Graph,
             Self::Prs => Context::Prs,
@@ -187,7 +188,7 @@ struct Keymaps {
     status: Keymap,
     diff: Keymap,
     log: Keymap,
-    logs: Keymap,
+    ci_log: Keymap,
     graph: Keymap,
     prs: Keymap,
 }
@@ -204,7 +205,7 @@ impl Keymaps {
             status: build(Context::Status),
             diff: build(Context::Diff),
             log: build(Context::Log),
-            logs: build(Context::Logs),
+            ci_log: build(Context::CiLog),
             graph: build(Context::Graph),
             prs: build(Context::Prs),
         }
@@ -686,7 +687,7 @@ impl App {
             Context::Status => &self.keymaps.status,
             Context::Diff => &self.keymaps.diff,
             Context::Log => &self.keymaps.log,
-            Context::Logs => &self.keymaps.logs,
+            Context::CiLog => &self.keymaps.ci_log,
             Context::Graph => &self.keymaps.graph,
             Context::Prs => &self.keymaps.prs,
         }

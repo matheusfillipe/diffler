@@ -614,9 +614,21 @@ pub fn write_endpoint(repo_root: &Path, port: u16) -> std::io::Result<()> {
     std::fs::write(endpoint_path(repo_root), body)
 }
 
-/// Remove the endpoint file on shutdown so a stale port never lingers.
-pub fn clear_endpoint(repo_root: &Path) {
-    let _ = std::fs::remove_file(endpoint_path(repo_root));
+/// Remove the endpoint file on shutdown, but only when it still names this
+/// process's own port. A second diffler instance in the same repo overwrites
+/// the file with its own port; deleting unconditionally would let whichever
+/// process exits first destroy the still-running one's proxy discovery.
+pub fn clear_endpoint(repo_root: &Path, port: u16) {
+    let path = endpoint_path(repo_root);
+    let Ok(body) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    let current_owner = serde_json::from_str::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| v.get("port").and_then(serde_json::Value::as_u64));
+    if current_owner == Some(u64::from(port)) {
+        let _ = std::fs::remove_file(&path);
+    }
 }
 
 #[cfg(test)]
@@ -896,8 +908,24 @@ mod tests {
         let gitignore =
             std::fs::read_to_string(dir.path().join(".diffler/.gitignore")).expect("gitignore");
         assert_eq!(gitignore, "*\n");
-        clear_endpoint(dir.path());
+        clear_endpoint(dir.path(), 8417);
         assert!(!path.exists(), "endpoint file removed on shutdown");
+    }
+
+    #[test]
+    fn clear_endpoint_leaves_a_newer_owner_alone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_endpoint(dir.path(), 1111).expect("write first instance");
+        // a second diffler instance in the same repo overwrites the file
+        write_endpoint(dir.path(), 2222).expect("write second instance");
+
+        // the first instance shuts down and clears its own (stale) port
+        clear_endpoint(dir.path(), 1111);
+
+        let path = dir.path().join(".diffler/mcp.json");
+        let body = std::fs::read_to_string(&path)
+            .expect("file survives: it names the still-running instance");
+        assert!(body.contains("\"port\": 2222"), "{body}");
     }
 
     // spawn_mcp falls back to :0 only on AddrInUse, not on other errors.

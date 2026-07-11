@@ -44,14 +44,14 @@ impl Default for BucketFolds {
 }
 
 impl BucketFolds {
-    fn get(self, bucket: Bucket) -> bool {
+    fn is_folded(self, bucket: Bucket) -> bool {
         match bucket {
             Bucket::ToReview => self.to_review,
             Bucket::Viewed => self.viewed,
         }
     }
 
-    fn toggle(&mut self, bucket: Bucket) {
+    fn toggle_fold(&mut self, bucket: Bucket) {
         match bucket {
             Bucket::ToReview => self.to_review = !self.to_review,
             Bucket::Viewed => self.viewed = !self.viewed,
@@ -360,7 +360,7 @@ impl DiffView {
         }
         let mut rows = Vec::new();
         for (bucket, indices) in [(Bucket::ToReview, fresh), (Bucket::Viewed, viewed)] {
-            let folded = self.bucket_folds.get(bucket);
+            let folded = self.bucket_folds.is_folded(bucket);
             rows.push(TreeRow {
                 depth: 0,
                 node: TreeNode::Section {
@@ -1125,7 +1125,7 @@ impl App {
                     diff.folded_dirs.insert(path);
                 }
             }
-            Some(TreeNode::Section { bucket, .. }) => diff.bucket_folds.toggle(*bucket),
+            Some(TreeNode::Section { bucket, .. }) => diff.bucket_folds.toggle_fold(*bucket),
             _ => return,
         }
         // folding past the cursor shrinks the tree; keep the cursor in range

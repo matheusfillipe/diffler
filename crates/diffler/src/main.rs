@@ -200,7 +200,7 @@ async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<
     events.abort();
     if let Some(mcp) = mcp {
         mcp.handle.abort();
-        mcp::clear_endpoint(&app.review.repo_root);
+        mcp::clear_endpoint(&app.review.repo_root, mcp.port);
     }
     drop(watcher);
     Ok(())
