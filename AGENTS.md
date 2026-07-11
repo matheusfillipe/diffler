@@ -11,8 +11,10 @@ small native binary, alternate-screen TUI, no daemon, no browser.
 ```
 crates/diffler-core/   pure logic, no terminal (errors via thiserror):
   vcs.rs / git.rs      Vcs trait + git2 backend (status, diff, log, stage, commit, branch)
+  repo.rs              repository discovery (finds the repo root from any path)
   model.rs diff.rs     diff model, hunks
   pairing.rs           similarity line-pairing + grapheme intraline emphasis
+  syntax/              tree-sitter language registry + AST-diff intraline emphasis + scope index
   highlight.rs         syntect whole-file highlight
   source.rs review.rs  ReviewSource + per-source review state
   session.rs           comments + viewed marks
@@ -38,7 +40,7 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
 - `just fix` — clippy --fix + fmt
 - `just snap` — insta snapshot tests; read `.snap.new` diffs before `just snap-accept`
 - `just e2e` — PTY end-to-end suite (needs `uv`; CI runs it in a separate job)
-- `just ci` — fmt+clippy+tests gate, must pass before any commit (CI additionally runs msrv, deny, typos)
+- `just ci` — fmt+clippy+tests gate, must pass before any commit (CI additionally runs msrv, deny, typos, dupes, machete, coverage)
 
 ## Rules
 
@@ -86,9 +88,12 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   progressive render (a plain first frame is fine).
 - **TUI.** neogit/doom keybindings, every binding configurable. Screens: Status
   (Head + Untracked/Unstaged/Staged sections + recent commits; stage/unstage/
-  discard/commit/branch), Log, and Diff/review (file sidebar + single-file pane;
-  `c` comment, `V` visual select, `r` reply/resolve, `v` viewed, `y`/`Y` yank
-  feedback as markdown, `e` `$EDITOR` jump). The diff sidebar has three layouts
+  discard/commit/branch), Log, Diff/review (file sidebar + pane, unified or
+  `|`-toggled side-by-side; `c` comment, `V` visual select, `r` reply/resolve,
+  `v` viewed, `y`/`Y` yank feedback as markdown, `e` `$EDITOR` jump), Runs (the
+  CI run list), Graph (CI run detail / LSP call-hierarchy trace, shared
+  node-graph component), Prs (open PRs of the repo's forge), and CiLog (a
+  job's log folded into its real steps). The diff sidebar has three layouts
   (`t` cycles): tree, flat list, and review — to-review vs a folded viewed
   bucket, membership derived from the hash-keyed viewed marks so an edited file
   falls back into to-review. OSC52 clipboard works over ssh/tmux.

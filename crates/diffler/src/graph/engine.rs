@@ -696,4 +696,124 @@ mod tests {
         model.edges = vec![e("a", "b"), e("b", "a")];
         assert_eq!(Layered.lay_out(&model, Zoom::Normal).placements.len(), 2);
     }
+
+    #[test]
+    fn rank_nodes_assigns_columns_by_longest_path_and_rows_by_declaration_order() {
+        use crate::graph::model::{Edge, Node, RankDir};
+        let mut model = Model::new(RankDir::LeftRight);
+        let n = |id: &str| Node::leaf(id, NodeStatus::Neutral);
+        // d has no edges at all; c has two parents at different depths (via b,
+        // and directly from d) so it must take the longer of the two
+        model.nodes = vec![n("a"), n("b"), n("c"), n("d")];
+        let e = |a: &str, b: &str| Edge {
+            from: NodeId::new(a),
+            to: NodeId::new(b),
+            label: None,
+        };
+        model.edges = vec![e("a", "b"), e("b", "c"), e("d", "c")];
+        let ranks = rank_nodes(&model);
+        assert_eq!(ranks[0], (0, 0), "a starts the flow");
+        assert_eq!(ranks[1], (1, 0), "b is one hop from a");
+        assert_eq!(ranks[2], (2, 0), "c takes the longer path in via b, not d");
+        assert_eq!(
+            ranks[3],
+            (0, 1),
+            "d has no predecessors so it shares column 0, as the 2nd node placed there"
+        );
+    }
+
+    #[test]
+    fn rank_nodes_treats_a_cycle_back_edge_as_zero_depth() {
+        use crate::graph::model::{Edge, Node, RankDir};
+        let mut model = Model::new(RankDir::LeftRight);
+        model.nodes = vec![
+            Node::leaf("a", NodeStatus::Neutral),
+            Node::leaf("b", NodeStatus::Neutral),
+        ];
+        let e = |a: &str, b: &str| Edge {
+            from: NodeId::new(a),
+            to: NodeId::new(b),
+            label: None,
+        };
+        model.edges = vec![e("a", "b"), e("b", "a")];
+        let ranks = rank_nodes(&model);
+        // a is visited first: descending into b's predecessor (a itself,
+        // already on the path) contributes no depth, so b lands at 0 and a's
+        // hop through it lands at 1 — the cycle never inflates either depth
+        assert_eq!(ranks[0], (1, 0), "a: one real hop through b");
+        assert_eq!(
+            ranks[1],
+            (0, 0),
+            "b: its back-edge to a on the path adds no depth"
+        );
+    }
+
+    #[test]
+    fn draw_fork_draws_one_junction_with_a_stub_and_arrow_per_child() {
+        // a parent box ending at x=2, mid-row 2, forking to a child level with
+        // it (row 2) and a child two rows below (row 6) — the level+drop mix
+        // that a single junction has to carry
+        let mut grid = Grid::new(12, 8);
+        draw_fork(&mut grid, (0, 2), 2, &[(8, 2), (8, 6)]);
+        let lines = grid.into_lines();
+        let cell = |x: usize, y: usize| lines[y].chars().nth(x).unwrap_or(' ');
+        assert_eq!(cell(5, 2), '┬', "one junction carries both branches");
+        assert_eq!(cell(7, 2), '▸', "the level child gets a stub arrow");
+        assert_eq!(
+            cell(5, 6),
+            '╰',
+            "the dropping branch turns into the child's row"
+        );
+        assert_eq!(cell(7, 6), '▸', "the dropped child gets a stub arrow too");
+        assert_eq!(
+            cell(5, 4),
+            '│',
+            "a vertical rail links the junction to the drop"
+        );
+    }
+
+    #[test]
+    fn route_back_edge_loops_under_boxes_into_the_child_bottom() {
+        // source box at (6,0), target box at (0,0), both 2x2, rail at y=5
+        let mut grid = Grid::new(10, 7);
+        route_back_edge(&mut grid, (6, 0), 2, 2, (0, 0), 2, 2, 5);
+        let lines = grid.into_lines();
+        let cell = |x: usize, y: usize| lines[y].chars().nth(x).unwrap_or(' ');
+        assert_eq!(cell(7, 2), '│', "descent from the source's bottom");
+        assert_eq!(cell(7, 5), '╯', "turn from the descent onto the rail");
+        assert_eq!(cell(4, 5), '─', "the rail runs under both boxes");
+        assert_eq!(
+            cell(1, 5),
+            '╰',
+            "turn from the rail up into the target's column"
+        );
+        assert_eq!(cell(1, 3), '│', "ascent back up to the target");
+        assert_eq!(cell(1, 2), '▴', "the arrowhead points back into the target");
+    }
+
+    #[test]
+    fn box_drawing_masks_round_trip_through_their_glyphs() {
+        for ch in ['─', '│', '╭', '╮', '╰', '╯', '├', '┤', '┬', '┴', '┼'] {
+            assert_eq!(mask_to_char(char_to_mask(ch)), ch, "{ch} round-trips");
+        }
+        assert_eq!(
+            char_to_mask(' '),
+            0,
+            "an unrecognized glyph carries no lines"
+        );
+        assert_eq!(mask_to_char(0), ' ', "no lines draws a blank cell");
+    }
+
+    #[test]
+    fn grid_line_merges_crossing_segments_into_a_junction() {
+        let mut grid = Grid::new(5, 5);
+        grid.line(2, 2, Dir::L | Dir::R);
+        grid.line(2, 2, Dir::U | Dir::D);
+        let lines = grid.into_lines();
+        assert_eq!(
+            lines[2].chars().nth(2),
+            Some('┼'),
+            "a horizontal and vertical segment sharing a cell merge into a 4-way junction"
+        );
+    }
 }

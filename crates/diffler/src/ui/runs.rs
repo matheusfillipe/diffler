@@ -2,14 +2,14 @@
 //! provider, and the shared status bar. Selecting a run opens its graph.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use crate::app::App;
 use crate::keymap::Action;
-use crate::ui::{Hint, hint_line};
+use crate::ui::Hint;
 
 const HINTS: &[Hint] = &[
     Hint::Leaf(&[Action::Open], "open graph"),
@@ -17,16 +17,8 @@ const HINTS: &[Hint] = &[
     Hint::Leaf(&[Action::Help], "help"),
 ];
 
-pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
-    let area = frame.area();
-    frame.render_widget(Block::new().style(app.theme.base()), area);
-    let [hint, body, bar] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(0),
-        Constraint::Length(1),
-    ])
-    .areas(area);
-    frame.render_widget(Paragraph::new(hint_line(app, HINTS)), hint);
+pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
+    let (body, bar) = super::screen_chrome(frame, app, HINTS);
     draw_list(frame, app, body);
     frame.render_widget(Paragraph::new(super::status_bar(app, bar.width)), bar);
 }
@@ -84,8 +76,8 @@ fn draw_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 .as_ref()
                 .map(|s| s.ranges_for(i))
                 .unwrap_or_default();
-            let name_txt = format!("{:<16}", truncate(&run.name, 16));
-            let title_txt = format!("{:<32}", truncate(&run.title, 32));
+            let name_txt = format!("{:<16}", super::elide(&run.name, 16));
+            let title_txt = format!("{:<32}", super::elide(&run.title, 32));
             let mut spans = vec![
                 Span::styled(marker, Style::new().fg(app.theme.warn_fg)),
                 Span::styled(format!("{glyph} "), Style::new().fg(color)),
@@ -109,7 +101,7 @@ fn draw_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
             ));
             spans.extend([
                 Span::styled(
-                    format!("  {:<14}", truncate(&run.branch, 14)),
+                    format!("  {:<14}", super::elide(&run.branch, 14)),
                     Style::new().fg(app.theme.purple),
                 ),
                 Span::styled(format!("  {short}"), Style::new().fg(app.theme.warn_fg)),
@@ -127,15 +119,6 @@ fn draw_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
         })
         .collect();
     frame.render_widget(Paragraph::new(rows), area);
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_owned()
-    } else {
-        let kept: String = s.chars().take(max.saturating_sub(1)).collect();
-        format!("{kept}…")
-    }
 }
 
 #[cfg(test)]

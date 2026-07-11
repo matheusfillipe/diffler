@@ -12,6 +12,15 @@ use crate::mcp::{
     ReviewSummary, comment_info, comment_status_name, file_status_name, render_unified,
 };
 
+/// The [`ReviewSource`] variants whose diffs are computed once and cached;
+/// `WorkingTree` always reads live and never reaches [`App::source_model`]'s
+/// cache path.
+enum CachedKind<'a> {
+    Commit(&'a str),
+    Range(&'a str, &'a str),
+    Pr(u64),
+}
+
 impl App {
     pub(crate) fn handle_mcp(&mut self, kind: McpRequestKind) -> McpResponse {
         match kind {
@@ -91,29 +100,29 @@ impl App {
     /// once and stay cached — agent polls must not stall the render loop.
     /// Backend errors degrade to an empty diff.
     pub(crate) fn source_model(&mut self, source: &ReviewSource) -> std::sync::Arc<DiffModel> {
-        let key = match source {
+        // narrowing to the cacheable sources up front makes WorkingTree
+        // structurally absent below, instead of an unreachable match arm
+        let kind = match source {
             ReviewSource::WorkingTree => {
                 return std::sync::Arc::new(self.review.model().clone());
             }
-            ReviewSource::Commit { .. } | ReviewSource::Range { .. } | ReviewSource::Pr { .. } => {
-                source.key()
-            }
+            ReviewSource::Commit { oid } => CachedKind::Commit(oid),
+            ReviewSource::Range { oldest, newest } => CachedKind::Range(oldest, newest),
+            ReviewSource::Pr { number } => CachedKind::Pr(*number),
         };
+        let key = source.key();
         if !self.source_models.contains_key(&key) {
-            let model = match source {
-                ReviewSource::WorkingTree => DiffModel::default(),
-                ReviewSource::Commit { oid } => {
-                    self.review.vcs.commit_diff(oid).unwrap_or_default()
-                }
-                ReviewSource::Range { oldest, newest } => self
+            let model = match kind {
+                CachedKind::Commit(oid) => self.review.vcs.commit_diff(oid).unwrap_or_default(),
+                CachedKind::Range(oldest, newest) => self
                     .review
                     .vcs
                     .range_diff(oldest, newest)
                     .unwrap_or_default(),
                 // resolved when the PR view opened; unknown PRs degrade empty
-                ReviewSource::Pr { number } => self
+                CachedKind::Pr(number) => self
                     .pr_ranges
-                    .get(number)
+                    .get(&number)
                     .and_then(|(base, head)| self.review.vcs.tree_diff(base, head).ok())
                     .unwrap_or_default(),
             };
@@ -156,7 +165,7 @@ impl App {
         self.review
             .session_for_mut(&source)
             .reply(id, AGENT_AUTHOR, body);
-        self.persist_agent_change(&source);
+        self.persist_review_change(&source);
         self.info("agent replied to a comment");
         self.comment_status_response(&source, id)
     }
@@ -178,7 +187,7 @@ impl App {
         self.review
             .session_for_mut(&source)
             .reply(id, AGENT_AUTHOR, &body);
-        self.persist_agent_change(&source);
+        self.persist_review_change(&source);
         self.info("agent proposed resolving a comment (confirm with R)");
         self.comment_status_response(&source, id)
     }
@@ -215,21 +224,9 @@ impl App {
         self.review
             .session_for_mut(&source)
             .mark_viewed(file, &hash);
-        self.persist_agent_change(&source);
+        self.persist_review_change(&source);
         self.info(format!("agent marked {file} viewed"));
         McpResponse::Ok
-    }
-
-    /// Persist one source after an agent mutation and refresh the open diff.
-    /// Unlike the human path this never bumps the feedback epoch — an agent's
-    /// own change must not wake its `wait_for_feedback` poll.
-    fn persist_agent_change(&mut self, source: &ReviewSource) {
-        if let Err(err) = self.review.save_for(source) {
-            self.error(err.to_string());
-        }
-        if let Some(diff) = self.diff.as_mut() {
-            diff.invalidate();
-        }
     }
 }
 
@@ -260,7 +257,6 @@ mod tests {
             .review
             .session
             .add_comment(
-                "human",
                 Anchor {
                     file: "src/lib.rs".to_owned(),
                     line: Some(2),
@@ -268,6 +264,7 @@ mod tests {
                     on_old_side: false,
                     line_text: Some("    42".to_owned()),
                 },
+                "human",
                 "why 42?",
             )
             .id
@@ -489,7 +486,7 @@ mod tests {
         let commit_id = app
             .review
             .session_for_mut(&source)
-            .add_comment("human", commit_anchor("src/lib.rs"), "on the commit")
+            .add_comment(commit_anchor("src/lib.rs"), "human", "on the commit")
             .id
             .clone();
         app.review.save_for(&source).expect("save");
@@ -516,7 +513,7 @@ mod tests {
         let id = app
             .review
             .session_for_mut(&source)
-            .add_comment("human", commit_anchor("src/lib.rs"), "why here?")
+            .add_comment(commit_anchor("src/lib.rs"), "human", "why here?")
             .id
             .clone();
         app.review.save_for(&source).expect("save");
@@ -553,7 +550,7 @@ mod tests {
         app.review.ensure_source(&source).expect("ensure");
         app.review
             .session_for_mut(&source)
-            .add_comment("human", commit_anchor("src/lib.rs"), "x");
+            .add_comment(commit_anchor("src/lib.rs"), "human", "x");
         app.review.save_for(&source).expect("save");
 
         let McpResponse::Reviews(reviews) = app.handle_mcp(McpRequestKind::ListReviews) else {
@@ -601,7 +598,6 @@ mod tests {
     fn feedback_returns_open_and_replied_but_not_resolved() {
         let (_fixture, mut app, id) = app_with_comment();
         app.review.session.add_comment(
-            "human",
             Anchor {
                 file: "todo.md".to_owned(),
                 line: None,
@@ -609,6 +605,7 @@ mod tests {
                 on_old_side: false,
                 line_text: None,
             },
+            "human",
             "second",
         );
         app.review.session.resolve(&id);

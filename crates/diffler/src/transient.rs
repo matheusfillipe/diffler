@@ -3,7 +3,7 @@
 //! data, not closures, so resolution and the which-key panel layout stay pure
 //! and unit-testable; the app owns the live transient state and timer.
 
-use crate::config::{KeyPress, KeysConfig, parse_chord};
+use crate::config::{KeyPress, KeysConfig, single_press};
 use crate::keymap::{Action, render_chord};
 
 /// Which transient a top-level prefix opens. Commit and branch are multi-leaf;
@@ -303,16 +303,6 @@ impl DefaultKeyLookup for &str {
                 }
             }
         }
-        None
-    }
-}
-
-/// Parse a chord that must be exactly one key press; `None` otherwise.
-fn single_press(chord: &str) -> Option<KeyPress> {
-    let mut presses = parse_chord(chord).ok()?;
-    if presses.len() == 1 {
-        Some(presses.remove(0))
-    } else {
         None
     }
 }

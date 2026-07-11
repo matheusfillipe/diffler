@@ -8,6 +8,7 @@ use std::path::Path;
 use diffler_core::model::FileDiff;
 use diffler_core::vcs::{LogEntry, NetworkOp};
 
+use super::enrich::EnrichOutcome;
 use super::{App, BranchAction, FileHighlights, Modal, PendingOp};
 use crate::config::FileLayout;
 use crate::keymap::Action;
@@ -140,13 +141,15 @@ pub struct StatusView {
     expanded: [BTreeSet<String>; 3],
     /// Per-section set of folded directory paths in that section's file tree.
     folded_dirs: [BTreeSet<String>; 3],
-    /// Per-section set of file paths whose inline diff has been enriched with
-    /// intra-line emphasis, so the per-file enrichment runs once. Cleared
-    /// when the status sections are rebuilt (refresh).
+    /// Per-section set of file paths whose inline diff has received its
+    /// background enrichment (intra-line emphasis), so a landed file isn't
+    /// re-queued. Cleared when the status sections are rebuilt (refresh).
     enriched: [BTreeSet<String>; 3],
-    /// Per-file syntax spans for inline diffs, keyed by path and validated by
-    /// the both-sides content hash. Filled lazily, only for expanded files.
-    pub(crate) highlights: HashMap<String, FileHighlights>,
+    /// Per-file syntax spans for inline diffs, keyed by path plus both-sides
+    /// content hash: a partially staged file shows up in two sections with
+    /// different content, and each needs its own entry to stay settled.
+    /// Filled lazily, only for expanded files.
+    pub(crate) highlights: HashMap<(String, String), FileHighlights>,
     /// Last render's body rect, line scroll, and per-rendered-line row index
     /// (rows vary in height, so a screen row maps back to a `visible_rows`
     /// index only through this table). Drives mouse hit-testing.
@@ -223,17 +226,10 @@ impl App {
         match self.config.ui.status_file_layout {
             // review is diff-sidebar-only (config rejects it here); a stray
             // value degrades to the flat list
-            FileLayout::List | FileLayout::Review => files
-                .iter()
-                .enumerate()
-                .map(|(index, file)| TreeRow {
-                    depth: 0,
-                    node: TreeNode::File {
-                        index,
-                        name: file.path.clone(),
-                    },
-                })
-                .collect(),
+            FileLayout::List | FileLayout::Review => {
+                let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+                tree::flat_rows(&paths)
+            }
             FileLayout::Tree => {
                 let folded = self.section_folded_dirs(section);
                 let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
@@ -377,41 +373,13 @@ impl App {
         &model.files
     }
 
-    /// Enrich every currently-expanded inline diff with intra-line emphasis
-    /// before the status screen renders. Memoized per section/path so the
-    /// pairing runs once per expanded file. Called by the renderer.
-    pub(crate) fn enrich_status_expanded(&mut self) {
-        for section in Section::ALL {
-            let index = section.index();
-            let model = match section {
-                Section::Untracked => &mut self.review.status.untracked,
-                Section::Unstaged => &mut self.review.status.unstaged,
-                Section::Staged => &mut self.review.status.staged,
-            };
-            let (Some(expanded), Some(enriched)) = (
-                self.status.expanded.get(index),
-                self.status.enriched.get_mut(index),
-            ) else {
-                continue;
-            };
-            for file in &mut model.files {
-                if expanded.contains(&file.path) && enriched.insert(file.path.clone()) {
-                    diffler_core::pairing::enrich_file(file);
-                }
-            }
-        }
-    }
-
-    /// Drive `fill` over every currently-expanded inline diff's file and its
-    /// syntax cache, so the renderer can highlight expanded files lazily —
-    /// only expanded files are touched. The UI supplies `fill` (the same
-    /// per-file highlighter the diff pane uses), keeping the highlighter in
-    /// the render layer.
-    pub(crate) fn ensure_status_highlights(
-        &mut self,
-        mut fill: impl FnMut(&mut HashMap<String, FileHighlights>, &FileDiff),
-    ) {
-        let cache = &mut self.status.highlights;
+    /// Queue background enrichment (intra-line emphasis + syntax highlight)
+    /// for every currently-expanded inline diff. Cheap and deduped by
+    /// content, so the renderer calls it per frame; the expanded rows draw
+    /// plain until the outcome lands as an `AppEvent::Enriched` event — draw
+    /// never computes.
+    pub(crate) fn queue_enrich_status_expanded(&mut self) {
+        let semantic = self.config.ui.semantic_diff;
         for section in Section::ALL {
             let index = section.index();
             let model = match section {
@@ -419,12 +387,71 @@ impl App {
                 Section::Unstaged => &self.review.status.unstaged,
                 Section::Staged => &self.review.status.staged,
             };
-            let Some(expanded) = self.status.expanded.get(index) else {
+            let (Some(expanded), Some(enriched)) = (
+                self.status.expanded.get(index),
+                self.status.enriched.get(index),
+            ) else {
                 continue;
             };
             for file in &model.files {
-                if expanded.contains(&file.path) {
-                    fill(cache, file);
+                if file.binary || file.hunks.is_empty() || !expanded.contains(&file.path) {
+                    continue;
+                }
+                let ready = enriched.contains(&file.path)
+                    && self
+                        .status
+                        .highlights
+                        .contains_key(&(file.path.clone(), file.sides_hash()));
+                super::enrich::queue_if_stale(
+                    &mut self.enrich_inflight,
+                    &mut self.pending_enrich,
+                    file,
+                    semantic,
+                    ready,
+                );
+            }
+        }
+    }
+
+    /// Install a finished enrichment into every status-section file it still
+    /// matches (same path and content): swap in the emphasised hunks, cache
+    /// the syntax highlights, and mark the file enriched so it isn't
+    /// re-queued. A stale outcome (the file changed while the job ran)
+    /// matches nothing and is dropped; the next frame re-queues.
+    pub(super) fn install_status_enrichment(&mut self, outcome: &EnrichOutcome) {
+        // entries for content no section still shows are dead; drop them so
+        // an edited file doesn't accumulate one entry per past hash
+        let live: Vec<String> = [
+            &self.review.status.untracked,
+            &self.review.status.unstaged,
+            &self.review.status.staged,
+        ]
+        .into_iter()
+        .flat_map(|model| &model.files)
+        .filter(|file| file.path == outcome.path)
+        .map(FileDiff::sides_hash)
+        .collect();
+        self.status
+            .highlights
+            .retain(|(path, hash), _| *path != outcome.path || live.contains(hash));
+        for section in Section::ALL {
+            let index = section.index();
+            let model = match section {
+                Section::Untracked => &mut self.review.status.untracked,
+                Section::Unstaged => &mut self.review.status.unstaged,
+                Section::Staged => &mut self.review.status.staged,
+            };
+            let Some(enriched) = self.status.enriched.get_mut(index) else {
+                continue;
+            };
+            for file in &mut model.files {
+                if file.path == outcome.path && file.sides_hash() == outcome.hash {
+                    file.hunks.clone_from(&outcome.hunks);
+                    self.status.highlights.insert(
+                        (outcome.path.clone(), outcome.hash.clone()),
+                        outcome.highlights.clone(),
+                    );
+                    enriched.insert(file.path.clone());
                 }
             }
         }
@@ -813,12 +840,9 @@ impl App {
                 {
                     set.insert(path.clone());
                 }
-                let position = self.visible_rows().iter().position(
+                self.seat_cursor_on(
                     |row| matches!(row, Row::Dir { section: s, path: p, .. } if *s == section && *p == path),
                 );
-                if let Some(position) = position {
-                    self.status.cursor = position;
-                }
             }
             Row::File { section, index, .. } => {
                 let Some(path) = self
@@ -846,46 +870,35 @@ impl App {
                     set.remove(&path);
                 }
                 // collapsing from inside lands the cursor on the file row
-                let position = self.visible_rows().iter().position(
+                self.seat_cursor_on(
                     |row| matches!(row, Row::File { section: s, index, .. } if *s == section && *index == file),
                 );
-                if let Some(position) = position {
-                    self.status.cursor = position;
-                }
             }
             Row::RecentHeader { .. } | Row::Commit { .. } => {
                 self.status.recent_folded ^= true;
-                let position = self
-                    .visible_rows()
-                    .iter()
-                    .position(|row| matches!(row, Row::RecentHeader { .. }));
-                if let Some(position) = position {
-                    self.status.cursor = position;
-                }
+                self.seat_cursor_on(|row| matches!(row, Row::RecentHeader { .. }));
             }
             Row::Pr => {}
             Row::CiHeader { .. } | Row::CiRun { .. } => {
                 self.status.ci_folded ^= true;
-                let position = self
-                    .visible_rows()
-                    .iter()
-                    .position(|row| matches!(row, Row::CiHeader { .. }));
-                if let Some(position) = position {
-                    self.status.cursor = position;
-                }
+                self.seat_cursor_on(|row| matches!(row, Row::CiHeader { .. }));
             }
         }
         self.clamp_cursor();
     }
 
-    fn cursor_to_section_header(&mut self, section: Section) {
-        let position = self
-            .visible_rows()
-            .iter()
-            .position(|row| matches!(row, Row::SectionHeader { section: s, .. } if *s == section));
-        if let Some(position) = position {
+    /// Move the cursor onto the first visible row matching `pred`, if any —
+    /// the re-seat every fold toggle needs once the row set it sits in shifts.
+    fn seat_cursor_on(&mut self, pred: impl Fn(&Row) -> bool) {
+        if let Some(position) = self.visible_rows().iter().position(pred) {
             self.status.cursor = position;
         }
+    }
+
+    fn cursor_to_section_header(&mut self, section: Section) {
+        self.seat_cursor_on(
+            |row| matches!(row, Row::SectionHeader { section: s, .. } if *s == section),
+        );
     }
 
     /// Move the cursor to the next/previous row matching `target`.
@@ -1043,7 +1056,9 @@ fn is_section_header(row: &Row) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{DiffSource, Screen};
+    use diffler_core::source::ReviewSource;
+
+    use super::super::Screen;
     use super::*;
     use crate::app::App;
     use crate::config::LoadedConfig;
@@ -1574,7 +1589,7 @@ mod tests {
         app.handle(key('\n'));
         assert_eq!(app.screen(), Screen::Diff);
         let diff = app.diff.as_ref().expect("diff view");
-        assert_eq!(diff.source, DiffSource::WorkingTree);
+        assert_eq!(diff.source, ReviewSource::WorkingTree);
         assert_eq!(
             diff.focus,
             super::super::Pane::Diff,
@@ -1599,7 +1614,7 @@ mod tests {
         app.handle(key('\n'));
         assert_eq!(app.screen(), Screen::Diff);
         let diff = app.diff.as_ref().expect("diff view");
-        assert_eq!(diff.source, DiffSource::WorkingTree);
+        assert_eq!(diff.source, ReviewSource::WorkingTree);
         assert_eq!(
             diff.focus,
             super::super::Pane::List,
@@ -1646,7 +1661,7 @@ mod tests {
         app.handle(key('D'));
         assert_eq!(app.screen(), Screen::Diff);
         let diff = app.diff.as_ref().expect("diff view");
-        assert_eq!(diff.source, DiffSource::WorkingTree);
+        assert_eq!(diff.source, ReviewSource::WorkingTree);
         assert_eq!(diff.cursor, 0, "unscoped open starts at the top");
     }
 
@@ -1659,7 +1674,7 @@ mod tests {
         app.handle(key('\n'));
         assert_eq!(app.screen(), Screen::Diff);
         let diff = app.diff.as_ref().expect("diff view");
-        let DiffSource::Commit { oid } = &diff.source else {
+        let ReviewSource::Commit { oid } = &diff.source else {
             panic!("expected a commit source, got {:?}", diff.source);
         };
         assert_eq!(oid.len(), 40);
@@ -1904,5 +1919,28 @@ mod tests {
         assert!(app.search.is_some());
         app.handle(esc());
         assert!(app.search.is_none());
+    }
+
+    #[test]
+    fn partially_staged_file_expanded_in_both_sections_settles() {
+        // the same path carries different content in Unstaged and Staged, so
+        // each side needs its own cache entry — a path-keyed cache would make
+        // the two sections evict each other and re-enrich forever
+        let fixture = standard_fixture();
+        fixture.stage("src/lib.rs");
+        fixture.write("src/lib.rs", "pub fn answer() -> u32 {\n    43\n}\n");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        for section in [Section::Unstaged, Section::Staged] {
+            app.status.expanded[section.index()].insert("src/lib.rs".to_owned());
+        }
+
+        app.queue_enrich_status_expanded();
+        assert_eq!(app.pending_enrich.len(), 2, "one job per section");
+        app.enrich_now();
+        app.queue_enrich_status_expanded();
+        assert!(
+            app.pending_enrich.is_empty(),
+            "both sections stay settled once their outcomes land"
+        );
     }
 }

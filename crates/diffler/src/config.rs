@@ -173,7 +173,9 @@ pub struct KeysConfig {
     pub status: BTreeMap<String, String>,
     pub diff: BTreeMap<String, String>,
     pub log: BTreeMap<String, String>,
-    pub logs: BTreeMap<String, String>,
+    /// The CI job-log screen; `logs` is the pre-rename TOML key, kept working.
+    #[serde(alias = "logs")]
+    pub ci_log: BTreeMap<String, String>,
     pub graph: BTreeMap<String, String>,
     pub prs: BTreeMap<String, String>,
     pub commit: BTreeMap<String, String>,
@@ -535,7 +537,7 @@ fn apply_layer(
         (layer.keys.status, &mut config.keys.status, "status"),
         (layer.keys.diff, &mut config.keys.diff, "diff"),
         (layer.keys.log, &mut config.keys.log, "log"),
-        (layer.keys.logs, &mut config.keys.logs, "logs"),
+        (layer.keys.ci_log, &mut config.keys.ci_log, "ci_log"),
         (layer.keys.graph, &mut config.keys.graph, "graph"),
         (layer.keys.prs, &mut config.keys.prs, "prs"),
         (layer.keys.commit, &mut config.keys.commit, "commit"),
@@ -673,6 +675,17 @@ pub fn parse_chord(s: &str) -> Result<Chord, ChordError> {
         }
     }
     Ok(presses)
+}
+
+/// Parse a chord that must be exactly one key press; `None` otherwise. Prefix
+/// and transient keys are single-press by design.
+pub(crate) fn single_press(chord: &str) -> Option<KeyPress> {
+    let mut presses = parse_chord(chord).ok()?;
+    if presses.len() == 1 {
+        Some(presses.remove(0))
+    } else {
+        None
+    }
 }
 
 fn plain_press(c: char) -> KeyPress {
@@ -872,6 +885,17 @@ mod tests {
             loaded.origins["keys.status.refresh"],
             Origin::Project(project)
         );
+    }
+
+    #[test]
+    fn keys_logs_alias_still_loads_into_ci_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project.toml");
+        fs::write(&project, "[keys.logs]\nfold = \"<tab>\"\n").unwrap();
+
+        let loaded = load_layers(None, Some(&project), &CliOverrides::default()).unwrap();
+        assert_eq!(loaded.config.keys.ci_log["fold"], "<tab>");
+        assert_eq!(loaded.origins["keys.ci_log.fold"], Origin::Project(project));
     }
 
     #[test]

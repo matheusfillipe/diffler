@@ -4,9 +4,10 @@
 
 use async_trait::async_trait;
 
-use crate::ci::error::Result;
+use crate::ci::error::{CiError, Result};
 use crate::ci::model::{
-    Capabilities, CiRun, JobId, LogChunk, PrComment, PullRequest, RunDetail, RunExtras, RunId,
+    Capabilities, CiRun, DagSource, JobId, LogChunk, LogMode, PrComment, PullRequest, RunDetail,
+    RunExtras, RunId,
 };
 
 /// Which forge an adapter talks to.
@@ -17,12 +18,40 @@ pub enum ProviderKind {
     Forgejo,
 }
 
+/// The capabilities of a provider kind — a pure function of `kind()`, so it's
+/// exposed standalone: UI code can gate an affordance from just the detected
+/// kind (a [`CiRemote`](crate::app::CiRemote)'s `detected.kind`) without
+/// constructing a full provider first.
+pub fn capabilities_for(kind: ProviderKind) -> Capabilities {
+    match kind {
+        ProviderKind::GitHub => Capabilities {
+            dag: DagSource::ConfigFile,
+            logs: LogMode::Dump,
+        },
+        ProviderKind::GitLab => Capabilities {
+            dag: DagSource::RunApi,
+            logs: LogMode::Poll,
+        },
+        ProviderKind::Forgejo => Capabilities {
+            dag: DagSource::None,
+            logs: LogMode::None,
+        },
+    }
+}
+
+// `Sync` (not just `Send`) is required so the async-trait macro can generate a
+// boxed future for the PR-review methods' default bodies below without
+// knowing the concrete `Self` — every adapter is already `Sync` (their fields
+// are plain owned data plus a `Box<dyn CommandRunner>`, itself `Send + Sync`).
 #[async_trait]
-pub trait ForgeProvider: Send {
+pub trait ForgeProvider: Send + Sync {
     fn kind(&self) -> ProviderKind;
 
-    /// What this provider can do, so the UI degrades honestly.
-    fn capabilities(&self) -> Capabilities;
+    /// What this provider can do, so the UI degrades honestly. A pure
+    /// function of `kind()` for every adapter, so the default covers them all.
+    fn capabilities(&self) -> Capabilities {
+        capabilities_for(self.kind())
+    }
 
     /// The most recent runs, newest first, capped at `limit`.
     async fn list_runs(&self, limit: usize) -> Result<Vec<CiRun>>;
@@ -46,33 +75,60 @@ pub trait ForgeProvider: Send {
     async fn list_prs(&self) -> Result<Vec<PullRequest>>;
 
     /// Line-anchored review comments on a PR; empty when the provider has no
-    /// review API.
-    async fn pr_comments(&self, number: u64) -> Result<Vec<PrComment>>;
+    /// review API. Default: no review API, so no comments.
+    async fn pr_comments(&self, _number: u64) -> Result<Vec<PrComment>> {
+        Ok(Vec::new())
+    }
 
     /// Post a new line comment on the PR head, returning the forge's record.
-    async fn post_pr_comment(&self, new: &NewPrComment) -> Result<PrComment>;
+    /// Default: unsupported.
+    async fn post_pr_comment(&self, _new: &NewPrComment) -> Result<PrComment> {
+        Err(CiError::Unsupported("posting PR comments"))
+    }
 
-    /// Reply to an existing PR review comment thread.
-    async fn reply_pr_comment(&self, number: u64, remote_id: &str, body: &str)
-    -> Result<PrComment>;
+    /// Reply to an existing PR review comment thread. Default: unsupported.
+    async fn reply_pr_comment(
+        &self,
+        _number: u64,
+        _remote_id: &str,
+        _body: &str,
+    ) -> Result<PrComment> {
+        Err(CiError::Unsupported("replying to PR comments"))
+    }
 
     /// Submit a batch of line comments as one review, so the forge sends a
-    /// single notification instead of one per comment.
-    async fn submit_pr_review(&self, review: &NewPrReview) -> Result<()>;
+    /// single notification instead of one per comment. Default: unsupported.
+    async fn submit_pr_review(&self, _review: &NewPrReview) -> Result<()> {
+        Err(CiError::Unsupported("submitting PR reviews"))
+    }
 
     /// Resolve or unresolve a review thread. `thread_id` is the forge's
     /// thread handle carried on the root comment from `pr_comments`.
-    async fn resolve_pr_thread(&self, number: u64, thread_id: &str, resolved: bool) -> Result<()>;
+    /// Default: unsupported.
+    async fn resolve_pr_thread(
+        &self,
+        _number: u64,
+        _thread_id: &str,
+        _resolved: bool,
+    ) -> Result<()> {
+        Err(CiError::Unsupported("resolving PR threads"))
+    }
 
-    /// Rewrite the body of one of our own review comments.
-    async fn update_pr_comment(&self, remote_id: &str, body: &str) -> Result<()>;
+    /// Rewrite the body of one of our own review comments. Default: unsupported.
+    async fn update_pr_comment(&self, _remote_id: &str, _body: &str) -> Result<()> {
+        Err(CiError::Unsupported("editing PR comments"))
+    }
 
-    /// Delete one of our own review comments.
-    async fn delete_pr_comment(&self, remote_id: &str) -> Result<()>;
+    /// Delete one of our own review comments. Default: unsupported.
+    async fn delete_pr_comment(&self, _remote_id: &str) -> Result<()> {
+        Err(CiError::Unsupported("deleting PR comments"))
+    }
 
     /// The PR as the forge sees it right now, for spotting a force-push
-    /// while the review is open.
-    async fn pr(&self, number: u64) -> Result<PullRequest>;
+    /// while the review is open. Default: unsupported.
+    async fn pr(&self, _number: u64) -> Result<PullRequest> {
+        Err(CiError::Unsupported("PR lookup"))
+    }
 }
 
 /// The event a submitted review carries on the forge.

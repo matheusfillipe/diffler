@@ -145,7 +145,7 @@ async fn comment_lifecycle_reply_resolve_and_viewed() {
     let harness = start(|app| {
         app.review
             .session
-            .add_comment("human", anchor_on_line_two(), "why 42?");
+            .add_comment(anchor_on_line_two(), "human", "why 42?");
         app.review.save().expect("save");
     })
     .await;
@@ -252,7 +252,6 @@ async fn comment_payloads_carry_range_and_old_side_anchors() {
         // range comment over the whole function on the new side; the
         // anchor end (line 3, "}") is what outdated detection checks
         app.review.session.add_comment(
-            "human",
             Anchor {
                 file: "src/lib.rs".to_owned(),
                 line: Some(1),
@@ -260,11 +259,11 @@ async fn comment_payloads_carry_range_and_old_side_anchors() {
                 on_old_side: false,
                 line_text: Some("}".to_owned()),
             },
+            "human",
             "whole function",
         );
         // single-line comment on the deleted side (old line 2, "    41")
         app.review.session.add_comment(
-            "human",
             Anchor {
                 file: "src/lib.rs".to_owned(),
                 line: Some(2),
@@ -272,6 +271,7 @@ async fn comment_payloads_carry_range_and_old_side_anchors() {
                 on_old_side: true,
                 line_text: Some("    41".to_owned()),
             },
+            "human",
             "why drop 41?",
         );
     })
@@ -311,7 +311,7 @@ async fn wait_for_feedback_unblocks_on_the_send_key() {
     let harness = start(|app| {
         app.review
             .session
-            .add_comment("human", anchor_on_line_two(), "why 42?");
+            .add_comment(anchor_on_line_two(), "human", "why 42?");
     })
     .await;
 
@@ -335,9 +335,13 @@ async fn wait_for_feedback_unblocks_on_the_send_key() {
     };
     let (client, task) = waiter;
 
-    // give the long poll time to subscribe before the human sends
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    assert!(!task.is_finished(), "the poll must block until the bump");
+    // no signal marks when the long poll has reached the server and
+    // subscribed, so poll repeatedly over a generous window instead of
+    // guessing one delay: any iteration seeing it finished early fails fast
+    for _ in 0..40 {
+        assert!(!task.is_finished(), "the poll must block until the bump");
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
     send_key(&harness.tx, 'Z');
 
     let result = task.await.expect("join");

@@ -6,17 +6,19 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::ci::error::{CiError, Result};
+use crate::ci::error::{CiError, Result, parse_json};
 use crate::ci::exec::CommandRunner;
 use crate::ci::model::{
-    Capabilities, CiJob, CiRun, DagSource, JobId, JobStatus, LogChunk, LogMode, PrComment,
-    PullRequest, RunDetail, RunExtras, RunId,
+    CiJob, CiRun, JobId, JobStatus, LogChunk, PullRequest, RunDetail, RunExtras, RunId,
 };
 use crate::ci::provider::{ForgeProvider, ProviderKind};
 
 pub struct ForgejoProvider {
     runner: Box<dyn CommandRunner>,
-    host: String,
+    /// `None` when no host could be resolved (no configured `[ci.forgejo]
+    /// host` and no parseable remote); every call then fails closed instead
+    /// of guessing a host to send the token to.
+    host: Option<String>,
     /// `owner/name`.
     repo: String,
     token: Option<String>,
@@ -26,7 +28,7 @@ pub struct ForgejoProvider {
 impl ForgejoProvider {
     pub fn new(
         runner: Box<dyn CommandRunner>,
-        host: String,
+        host: Option<String>,
         repo: String,
         token: Option<String>,
         branch: Option<String>,
@@ -41,6 +43,10 @@ impl ForgejoProvider {
     }
 
     async fn get(&self, path: &str) -> Result<String> {
+        let host = self
+            .host
+            .as_deref()
+            .ok_or_else(|| CiError::NotFound("no Forgejo host configured".to_owned()))?;
         let mut args = vec![
             "-sS".to_owned(),
             "--fail".to_owned(),
@@ -53,10 +59,7 @@ impl ForgejoProvider {
             args.push("-H".to_owned());
             args.push(format!("Authorization: token {token}"));
         }
-        args.push(format!(
-            "https://{}/api/v1/repos/{}/{path}",
-            self.host, self.repo
-        ));
+        args.push(format!("https://{host}/api/v1/repos/{}/{path}", self.repo));
         // a failed exec embeds the argv in the error, which the status bar
         // renders — never let the token through
         self.runner.run("curl", &args).await.map_err(|err| {
@@ -78,19 +81,9 @@ impl ForgeProvider for ForgejoProvider {
         ProviderKind::Forgejo
     }
 
-    fn capabilities(&self) -> Capabilities {
-        Capabilities {
-            dag: DagSource::None,
-            logs: LogMode::None,
-        }
-    }
-
     async fn list_runs(&self, limit: usize) -> Result<Vec<CiRun>> {
         let body = self.get(&format!("actions/runs?limit={limit}")).await?;
-        let resp: RunsResponse = serde_json::from_str(&body).map_err(|e| CiError::Parse {
-            what: "forgejo runs".into(),
-            message: e.to_string(),
-        })?;
+        let resp: RunsResponse = parse_json("forgejo runs", &body)?;
         Ok(resp
             .workflow_runs
             .into_iter()
@@ -113,10 +106,7 @@ impl ForgeProvider for ForgejoProvider {
         // no run-jobs endpoint on current Forgejo: this run's jobs are the
         // tasks sharing its run number
         let body = self.get("actions/tasks?limit=50").await?;
-        let tasks: TasksResponse = serde_json::from_str(&body).map_err(|e| CiError::Parse {
-            what: "forgejo tasks".into(),
-            message: e.to_string(),
-        })?;
+        let tasks: TasksResponse = parse_json("forgejo tasks", &body)?;
         let jobs: Vec<CiJob> = tasks
             .workflow_runs
             .iter()
@@ -141,54 +131,8 @@ impl ForgeProvider for ForgejoProvider {
 
     async fn list_prs(&self) -> Result<Vec<PullRequest>> {
         let raw = self.get("pulls?state=open&limit=50").await?;
-        let pulls: Vec<PullItem> =
-            serde_json::from_str(&raw).map_err(|err| crate::ci::CiError::Parse {
-                what: "pr list".to_owned(),
-                message: err.to_string(),
-            })?;
+        let pulls: Vec<PullItem> = parse_json("pr list", &raw)?;
         Ok(pulls.into_iter().map(PullItem::into_pr).collect())
-    }
-
-    async fn pr_comments(&self, _number: u64) -> Result<Vec<PrComment>> {
-        Ok(Vec::new())
-    }
-
-    async fn post_pr_comment(&self, _new: &crate::ci::NewPrComment) -> Result<PrComment> {
-        Err(CiError::Unsupported("posting PR comments"))
-    }
-
-    async fn reply_pr_comment(
-        &self,
-        _number: u64,
-        _remote_id: &str,
-        _body: &str,
-    ) -> Result<PrComment> {
-        Err(CiError::Unsupported("replying to PR comments"))
-    }
-
-    async fn submit_pr_review(&self, _review: &crate::ci::NewPrReview) -> Result<()> {
-        Err(CiError::Unsupported("submitting PR reviews"))
-    }
-
-    async fn resolve_pr_thread(
-        &self,
-        _number: u64,
-        _thread_id: &str,
-        _resolved: bool,
-    ) -> Result<()> {
-        Err(CiError::Unsupported("resolving PR threads"))
-    }
-
-    async fn update_pr_comment(&self, _remote_id: &str, _body: &str) -> Result<()> {
-        Err(CiError::Unsupported("editing PR comments"))
-    }
-
-    async fn delete_pr_comment(&self, _remote_id: &str) -> Result<()> {
-        Err(CiError::Unsupported("deleting PR comments"))
-    }
-
-    async fn pr(&self, _number: u64) -> Result<PullRequest> {
-        Err(CiError::Unsupported("PR lookup"))
     }
 
     async fn current_pr(&self) -> Result<Option<PullRequest>> {
@@ -196,7 +140,9 @@ impl ForgeProvider for ForgejoProvider {
             return Ok(None);
         };
         let raw = self.get("pulls?state=open&limit=50").await?;
-        let pulls: Vec<PullItem> = serde_json::from_str(&raw).unwrap_or_default();
+        // a malformed response must propagate, same as `list_prs` — treating
+        // it as "no PR" would look like a normal, PR-less branch
+        let pulls: Vec<PullItem> = parse_json("pr list", &raw)?;
         Ok(pulls
             .into_iter()
             .find(|p| p.head.r#ref == *branch)
@@ -313,18 +259,15 @@ struct WorkflowRun {
 }
 
 fn map_status(status: &str, conclusion: Option<&str>) -> JobStatus {
-    match conclusion {
-        Some("success") => JobStatus::Ok,
-        Some("failure" | "timed_out" | "startup_failure") => JobStatus::Failed,
-        Some("skipped") => JobStatus::Skipped,
-        Some("cancelled") => JobStatus::Neutral,
-        _ => match status {
-            "running" | "in_progress" => JobStatus::Running,
-            "success" => JobStatus::Ok,
-            "failure" => JobStatus::Failed,
-            _ => JobStatus::Queued,
-        },
-    }
+    // Forgejo's Actions API mirrors GitHub's `conclusion` vocabulary
+    // (`crate::ci::map_conclusion` covers both); only the in-progress/no-conclusion
+    // status strings are forge-specific
+    crate::ci::map_conclusion(conclusion).unwrap_or(match status {
+        "running" | "in_progress" => JobStatus::Running,
+        "success" => JobStatus::Ok,
+        "failure" => JobStatus::Failed,
+        _ => JobStatus::Queued,
+    })
 }
 
 #[cfg(test)]
@@ -337,12 +280,12 @@ mod tests {
         let json = r#"{"workflow_runs":[
             {"id":900,"index_in_repo":7,"workflow_id":"ci.yml","title":"fix things",
              "prettyref":"main","commit_sha":"abc1234","status":"success",
-             "html_url":"https://codeberg.org/mattf/diffler/actions/runs/7",
+             "html_url":"https://codeberg.org/acme/widgets/actions/runs/7",
              "created":"2026-06-26T10:00:00Z"}]}"#;
         let runs = ForgejoProvider::new(
             Box::new(RecordingRunner::new(&[("actions/runs", json)])),
-            "codeberg.org".into(),
-            "mattf/diffler".into(),
+            Some("codeberg.org".into()),
+            "acme/widgets".into(),
             None,
             None,
         )
@@ -371,8 +314,8 @@ mod tests {
         }
         let err = ForgejoProvider::new(
             Box::new(FailingRunner),
-            "codeberg.org".into(),
-            "mattf/diffler".into(),
+            Some("codeberg.org".into()),
+            "acme/widgets".into(),
             Some("sekret-token".into()),
             None,
         )
@@ -391,8 +334,8 @@ mod tests {
             {"id":901,"index_in_repo":8,"workflow_id":"ci.yml","prettyref":"feat/x","status":"success"}]}"#;
         let runs = ForgejoProvider::new(
             Box::new(RecordingRunner::new(&[("actions/runs", json)])),
-            "codeberg.org".into(),
-            "mattf/diffler".into(),
+            Some("codeberg.org".into()),
+            "acme/widgets".into(),
             None,
             Some("feat/x".into()),
         )
@@ -401,5 +344,43 @@ mod tests {
         .expect("runs");
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].id, RunId("8".into()));
+    }
+
+    #[tokio::test]
+    async fn no_host_fails_closed_without_ever_calling_curl() {
+        let runner = std::sync::Arc::new(RecordingRunner::new(&[(
+            "actions/runs",
+            r#"{"workflow_runs":[]}"#,
+        )]));
+        let err = ForgejoProvider::new(
+            Box::new(runner.clone()),
+            None,
+            "acme/widgets".into(),
+            Some("sekret-token".into()),
+            None,
+        )
+        .list_runs(10)
+        .await
+        .expect_err("no host to target");
+        assert!(matches!(err, CiError::NotFound(_)));
+        assert!(
+            runner.calls().is_empty(),
+            "an unresolved host must never reach curl, e.g. a hardcoded default"
+        );
+    }
+
+    #[tokio::test]
+    async fn current_pr_propagates_a_parse_failure_like_list_prs() {
+        let err = ForgejoProvider::new(
+            Box::new(RecordingRunner::new(&[("pulls", "not json")])),
+            Some("codeberg.org".into()),
+            "acme/widgets".into(),
+            None,
+            Some("feat/x".into()),
+        )
+        .current_pr()
+        .await
+        .expect_err("malformed body must not silently read as \"no PR\"");
+        assert!(matches!(err, CiError::Parse { .. }));
     }
 }

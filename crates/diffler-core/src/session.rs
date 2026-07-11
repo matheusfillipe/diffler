@@ -99,7 +99,7 @@ pub fn now_unix() -> u64 {
 }
 
 impl Session {
-    pub fn add_comment(&mut self, author: &str, anchor: Anchor, body: &str) -> &Comment {
+    pub fn add_comment(&mut self, anchor: Anchor, author: &str, body: &str) -> &Comment {
         self.comments.push(Comment {
             remote_id: None,
             thread_id: None,
@@ -151,7 +151,9 @@ impl Session {
         true
     }
 
-    /// Replace a comment's body in place (status, replies, and anchor are kept).
+    /// Replace a comment's body in place (status, replies, and anchor are
+    /// kept). No author: an edit corrects the existing comment, it doesn't
+    /// attribute a new one.
     pub fn edit_comment(&mut self, comment_id: &str, body: &str) -> bool {
         let Some(comment) = self.comment_mut(comment_id) else {
             return false;
@@ -191,31 +193,9 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use crate::model::{DiffLine, FileDiff, FileStatus, Hunk, HunkId, LineKind};
+    use crate::test_support::{anchor, file_diff};
 
     use super::*;
-
-    fn anchor(file: &str) -> Anchor {
-        Anchor {
-            file: file.to_owned(),
-            line: Some(3),
-            line_end: None,
-            on_old_side: false,
-            line_text: None,
-        }
-    }
-
-    fn file_diff(path: &str, new_text: &str) -> FileDiff {
-        FileDiff {
-            path: path.to_owned(),
-            old_path: None,
-            status: FileStatus::Modified,
-            binary: false,
-            old_text: None,
-            new_text: Some(new_text.to_owned()),
-            hunks: vec![],
-            hashes: crate::model::HashCache::default(),
-        }
-    }
 
     fn model(files: Vec<FileDiff>) -> DiffModel {
         DiffModel { files }
@@ -224,7 +204,10 @@ mod tests {
     #[test]
     fn comment_lifecycle_open_replied_resolved() {
         let mut s = Session::default();
-        let id = s.add_comment("mattf", anchor("a.txt"), "why?").id.clone();
+        let id = s
+            .add_comment(anchor("a.txt", Some(3)), "reviewer", "why?")
+            .id
+            .clone();
         assert_eq!(s.comments[0].status, CommentStatus::Open);
         assert!(s.reply(&id, "agent", "because"));
         assert_eq!(s.comments[0].status, CommentStatus::Replied);
@@ -253,7 +236,7 @@ mod tests {
     fn edit_comment_replaces_body_and_keeps_status() {
         let mut s = Session::default();
         let id = s
-            .add_comment("mattf", anchor("a.txt"), "old body")
+            .add_comment(anchor("a.txt", Some(3)), "reviewer", "old body")
             .id
             .clone();
         assert!(s.reply(&id, "agent", "ack"));
@@ -268,8 +251,14 @@ mod tests {
     #[test]
     fn unresolved_comments_filters_resolved_only() {
         let mut s = Session::default();
-        let keep = s.add_comment("mattf", anchor("a.txt"), "open").id.clone();
-        let done = s.add_comment("mattf", anchor("a.txt"), "done").id.clone();
+        let keep = s
+            .add_comment(anchor("a.txt", Some(3)), "reviewer", "open")
+            .id
+            .clone();
+        let done = s
+            .add_comment(anchor("a.txt", Some(3)), "reviewer", "done")
+            .id
+            .clone();
         assert!(s.resolve(&done));
         let unresolved: Vec<_> = s
             .comments
@@ -283,10 +272,9 @@ mod tests {
     #[test]
     fn session_serializes_round_trip_with_range_anchor() {
         let mut s = Session::default();
-        let mut range = anchor("a.txt");
-        range.line = Some(3);
+        let mut range = anchor("a.txt", Some(3));
         range.line_end = Some(7);
-        s.add_comment("mattf", range, "this whole block");
+        s.add_comment(range, "reviewer", "this whole block");
         s.mark_viewed("b.txt", "hash-b");
         let json = serde_json::to_string(&s).expect("serialize");
         let back: Session = serde_json::from_str(&json).expect("deserialize");
@@ -340,19 +328,9 @@ mod tests {
         }
     }
 
-    fn line_anchor(file: &str, line: Option<u32>) -> Anchor {
-        Anchor {
-            file: file.to_owned(),
-            line,
-            line_end: None,
-            on_old_side: false,
-            line_text: None,
-        }
-    }
-
     #[test]
     fn anchor_with_matching_line_text_is_current() {
-        let mut a = line_anchor("src/auth.py", Some(2));
+        let mut a = anchor("src/auth.py", Some(2));
         a.line_text = Some("TWO".to_owned());
         assert!(!a.is_outdated(&hunked_model()));
         // without a snapshot, a present line counts as current
@@ -362,20 +340,20 @@ mod tests {
 
     #[test]
     fn anchor_with_drifted_line_text_is_outdated() {
-        let mut a = line_anchor("src/auth.py", Some(2));
+        let mut a = anchor("src/auth.py", Some(2));
         a.line_text = Some("old text".to_owned());
         assert!(a.is_outdated(&hunked_model()));
     }
 
     #[test]
     fn anchor_to_a_departed_line_is_outdated() {
-        let a = line_anchor("src/auth.py", Some(99));
+        let a = anchor("src/auth.py", Some(99));
         assert!(a.is_outdated(&hunked_model()));
     }
 
     #[test]
     fn old_side_anchor_checks_the_old_line() {
-        let mut a = line_anchor("src/auth.py", Some(2));
+        let mut a = anchor("src/auth.py", Some(2));
         a.on_old_side = true;
         a.line_text = Some("two".to_owned());
         assert!(!a.is_outdated(&hunked_model()));
@@ -385,7 +363,7 @@ mod tests {
 
     #[test]
     fn range_anchor_judges_drift_on_its_end_line() {
-        let mut a = line_anchor("src/auth.py", Some(1));
+        let mut a = anchor("src/auth.py", Some(1));
         a.line_end = Some(3);
         a.line_text = Some("three".to_owned());
         assert!(!a.is_outdated(&hunked_model()), "end line still matches");
@@ -395,8 +373,8 @@ mod tests {
 
     #[test]
     fn file_level_anchor_is_outdated_only_when_the_file_departs() {
-        assert!(!line_anchor("src/auth.py", None).is_outdated(&hunked_model()));
-        assert!(line_anchor("gone.py", None).is_outdated(&hunked_model()));
+        assert!(!anchor("src/auth.py", None).is_outdated(&hunked_model()));
+        assert!(anchor("gone.py", None).is_outdated(&hunked_model()));
     }
 
     #[test]
@@ -408,7 +386,11 @@ mod tests {
         s.mark_viewed("kept.txt", &kept.content_hash());
         s.mark_viewed("changed.txt", "hash-of-old-content");
         s.mark_viewed("departed.txt", "whatever");
-        s.add_comment("mattf", anchor("departed.txt"), "still relevant");
+        s.add_comment(
+            anchor("departed.txt", Some(3)),
+            "reviewer",
+            "still relevant",
+        );
 
         s.reconcile(&model(vec![kept, changed]));
 

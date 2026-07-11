@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::config::{Chord, KeyPress, KeysConfig, parse_chord};
+use crate::config::{Chord, KeyPress, KeysConfig, parse_chord, single_press};
 use crate::transient::TransientKind;
 
 /// Everything a key can do. Defined as the full superset so config action
@@ -252,7 +252,7 @@ pub enum Context {
     Diff,
     Log,
     /// The CI job-log screen (foldable steps).
-    Logs,
+    CiLog,
     /// The node-graph screen (CI pipeline, caller chains).
     Graph,
     /// The pull-request list.
@@ -392,7 +392,7 @@ const LOG_DEFAULTS: &[(&str, Action)] = &[
     ("q", Action::Back),
 ];
 
-const LOGS_DEFAULTS: &[(&str, Action)] = &[
+const CI_LOG_DEFAULTS: &[(&str, Action)] = &[
     ("j", Action::MoveDown),
     ("k", Action::MoveUp),
     ("gg", Action::GoTop),
@@ -460,7 +460,7 @@ impl Keymap {
             Context::Status => (STATUS_DEFAULTS, STATUS_PREFIXES, &keys.status, "status"),
             Context::Diff => (DIFF_DEFAULTS, NO_PREFIXES, &keys.diff, "diff"),
             Context::Log => (LOG_DEFAULTS, NO_PREFIXES, &keys.log, "log"),
-            Context::Logs => (LOGS_DEFAULTS, NO_PREFIXES, &keys.logs, "logs"),
+            Context::CiLog => (CI_LOG_DEFAULTS, NO_PREFIXES, &keys.ci_log, "ci_log"),
             Context::Graph => (GRAPH_DEFAULTS, NO_PREFIXES, &keys.graph, "graph"),
             Context::Prs => (PRS_DEFAULTS, NO_PREFIXES, &keys.prs, "prs"),
         };
@@ -767,17 +767,6 @@ enum Lookup {
     None,
 }
 
-/// Parse a chord that must be exactly one key press; `None` otherwise. Prefix
-/// and transient keys are single-press by design.
-fn single_press(chord: &str) -> Option<KeyPress> {
-    let mut presses = parse_chord(chord).ok()?;
-    if presses.len() == 1 {
-        Some(presses.remove(0))
-    } else {
-        None
-    }
-}
-
 /// Render a chord back to the `parse_chord` syntax for warnings, hints,
 /// and the help popup.
 pub fn render_chord(chord: &[KeyPress]) -> String {
@@ -852,7 +841,7 @@ mod tests {
             (STATUS_DEFAULTS, Context::Status),
             (DIFF_DEFAULTS, Context::Diff),
             (LOG_DEFAULTS, Context::Log),
-            (LOGS_DEFAULTS, Context::Logs),
+            (CI_LOG_DEFAULTS, Context::CiLog),
             (GRAPH_DEFAULTS, Context::Graph),
             (PRS_DEFAULTS, Context::Prs),
         ] {
@@ -1219,7 +1208,7 @@ mod tests {
             Context::Status,
             Context::Diff,
             Context::Log,
-            Context::Logs,
+            Context::CiLog,
             Context::Graph,
             Context::Prs,
         ] {

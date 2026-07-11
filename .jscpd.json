@@ -1,0 +1,8 @@
+{
+  "minTokens": 70,
+  "threshold": 2,
+  "format": ["rust"],
+  "ignore": ["**/target/**", "**/*.snap", "**/node_modules/**"],
+  "reporters": ["console"],
+  "gitignore": true
+}

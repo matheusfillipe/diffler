@@ -205,7 +205,7 @@ impl GraphView {
     pub fn on_mouse(&mut self, mouse: MouseEvent) -> Option<GraphAction> {
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                let double = self.is_double_click(mouse.column, mouse.row);
+                let double = self.register_click_is_double(mouse.column, mouse.row);
                 let id = self.node_at(mouse.column, mouse.row)?;
                 self.selected = Some(id);
                 self.ensure_visible();
@@ -408,7 +408,7 @@ impl GraphView {
             .map(|p| p.id.clone())
     }
 
-    fn is_double_click(&mut self, col: u16, row: u16) -> bool {
+    fn register_click_is_double(&mut self, col: u16, row: u16) -> bool {
         let now = std::time::Instant::now();
         let double = self.last_click.is_some_and(|(at, c, r)| {
             now.duration_since(at) < DOUBLE_CLICK_WINDOW && c.abs_diff(col) <= 1 && r == row

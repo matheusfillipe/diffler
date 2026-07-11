@@ -3,12 +3,10 @@
 //! renders the visible slice of the selected file's hunks, lines, and inline
 //! comment blocks, keeping the cursor in view.
 
-use std::collections::HashMap;
-use std::sync::OnceLock;
-
-use diffler_core::highlight::{Highlighter, StyledRange, SyntaxTheme};
+use diffler_core::highlight::StyledRange;
 use diffler_core::model::{DiffLine, DiffModel, FileDiff};
 use diffler_core::session::{Comment, CommentStatus, Session};
+use diffler_core::source::ReviewSource;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -16,7 +14,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use crate::app::{
-    App, CommentLine, DiffRow, DiffSource, DiffView, FileHighlights, FileScope, Pane, SplitRow,
+    App, CommentLine, DiffRow, DiffView, FileHighlights, FileScope, Pane, SplitRow, SplitSide,
     comment_display,
 };
 use crate::keymap::Action;
@@ -25,9 +23,9 @@ use crate::theme::Theme;
 use crate::tree::{Bucket, TreeNode};
 use crate::ui::Hint;
 use crate::ui::diff_render::{
-    SplitSide, file_gutter_width, hunk_header, line_syntax, render_diff_line, render_split_pair,
+    file_gutter_width, hunk_header, line_syntax, render_diff_line, render_split_pair,
 };
-use crate::ui::{diffstat_spans, hint_line, proportion_bar, status_bar, status_color};
+use crate::ui::{diffstat_spans, proportion_bar, status_bar, status_color};
 
 /// Hint entries, rendered against the live keymap so remaps show.
 const HINTS: &[Hint] = &[
@@ -44,15 +42,7 @@ fn sidebar_width(total: u16) -> u16 {
 }
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
-    let area = frame.area();
-    frame.render_widget(Block::new().style(app.theme.base()), area);
-    let [hint, body, bar] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(0),
-        Constraint::Length(1),
-    ])
-    .areas(area);
-    frame.render_widget(Paragraph::new(hint_line(app, HINTS)), hint);
+    let (body, bar) = super::screen_chrome(frame, app, HINTS);
 
     // enrichment (emphasis/highlight/scope) runs on the blocking pool; this
     // only queues work, and the pane renders plain until the result lands
@@ -87,22 +77,6 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     );
 }
 
-/// The process-wide syntax set: loading it is expensive, highlight results
-/// are cached per file on the view.
-static HIGHLIGHTER: OnceLock<Highlighter> = OnceLock::new();
-
-/// Pin the shared highlighter to the session's theme. Called once at startup;
-/// the theme is fixed per session, so a second call is a no-op. Because the
-/// cell is process-global, a test that wants themed-syntax output must set its
-/// theme before any other `App` in the same test binary pins a different one.
-pub(crate) fn init_highlighter(syntax: SyntaxTheme) {
-    let _ = HIGHLIGHTER.set(Highlighter::new(syntax));
-}
-
-pub fn highlighter() -> &'static Highlighter {
-    HIGHLIGHTER.get_or_init(Highlighter::default)
-}
-
 struct RenderCtx<'a> {
     theme: &'a Theme,
     session: &'a Session,
@@ -113,26 +87,18 @@ struct RenderCtx<'a> {
 }
 
 fn draw_body(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut DiffView) {
-    let (theme, session, review_model, search) =
-        (ctx.theme, ctx.session, ctx.review_model, ctx.search);
     let width = sidebar_width(area.width);
     let [list_area, pane_area] =
         Layout::horizontal([Constraint::Length(width), Constraint::Min(0)]).areas(area);
-    draw_sidebar(frame, list_area, theme, session, review_model, diff, search);
+    draw_sidebar(frame, list_area, ctx, diff);
     draw_pane(frame, pane_area, ctx, diff);
 }
 
 /// Left pane: one row per file in the diff, the selected one highlighted, the
 /// focused pane's border accented.
-fn draw_sidebar(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    theme: &Theme,
-    session: &Session,
-    review_model: Option<&DiffModel>,
-    diff: &mut DiffView,
-    search: Option<&Search>,
-) {
+fn draw_sidebar(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut DiffView) {
+    let (theme, session, review_model, search) =
+        (ctx.theme, ctx.session, ctx.review_model, ctx.search);
     let focused = diff.focus == Pane::List;
     let block = pane_block(theme, "Files", focused);
     let inner = block.inner(area);
@@ -216,17 +182,12 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let Some(model) = diff.commit_model.as_ref().or(review_model) else {
-        frame.render_widget(
-            Paragraph::new(Line::styled(
-                " nothing to review",
-                Style::new().fg(theme.dim).bg(theme.bg),
-            )),
-            inner,
-        );
-        return;
-    };
-    let Some(file) = model.files.get(diff.selected) else {
+    let Some((model, file)) = diff
+        .commit_model
+        .as_ref()
+        .or(review_model)
+        .and_then(|model| model.files.get(diff.selected).map(|file| (model, file)))
+    else {
         frame.render_widget(
             Paragraph::new(Line::styled(
                 " nothing to review",
@@ -434,14 +395,14 @@ fn split_side_syntax<'a>(
 
 /// Diff-pane title: a plain "Diff" for the working tree or a single commit, a
 /// `oldest7..newest7` range span when the pane shows a combined commit range.
-fn pane_title(source: &DiffSource) -> String {
+fn pane_title(source: &ReviewSource) -> String {
     match source {
-        DiffSource::WorkingTree | DiffSource::Commit { .. } => "Diff".to_owned(),
-        DiffSource::Range { oldest, newest } => {
+        ReviewSource::WorkingTree | ReviewSource::Commit { .. } => "Diff".to_owned(),
+        ReviewSource::Range { oldest, newest } => {
             let short = |oid: &str| oid.get(..7).unwrap_or(oid).to_owned();
             format!("Diff {}..{}", short(oldest), short(newest))
         }
-        DiffSource::Pr { number } => format!("PR #{number}"),
+        ReviewSource::Pr { number } => format!("PR #{number}"),
     }
 }
 
@@ -785,29 +746,6 @@ fn split_right_new_no(file: &FileDiff, row: &SplitRow) -> Option<u32> {
     }
 }
 
-pub(crate) fn ensure_file_highlights(cache: &mut HashMap<String, FileHighlights>, file: &FileDiff) {
-    // both sides are highlighted, so the validity hash must cover both:
-    // an old-side-only change (e.g. a rebase) must invalidate the entry
-    let hash = file.sides_hash();
-    if cache
-        .get(&file.path)
-        .is_some_and(|cached| cached.hash == hash)
-    {
-        return;
-    }
-    let highlight = |text: &Option<String>| {
-        text.as_deref()
-            .map(|content| highlighter().highlight(&file.path, content))
-            .unwrap_or_default()
-    };
-    let entry = FileHighlights {
-        hash,
-        old: highlight(&file.old_text),
-        new: highlight(&file.new_text),
-    };
-    cache.insert(file.path.clone(), entry);
-}
-
 /// Right-pane header: status, path, binary/viewed marks, comment count.
 fn pane_header_line(
     theme: &Theme,
@@ -848,6 +786,13 @@ fn pane_header_line(
                     blast.outside_files()
                 ),
                 Style::new().fg(theme.warn_fg).bg(bg),
+            ));
+        } else if let Some(note) = &blast.note {
+            // a failed scan must read differently from a symbol that
+            // legitimately has zero cross-file references (no badge at all)
+            spans.push(Span::styled(
+                format!(" · ref scan failed: {note}"),
+                Style::new().fg(theme.error_fg).bg(bg),
             ));
         }
     }
@@ -976,7 +921,8 @@ mod tests {
     use crate::app::{App, DiffRow, Pane};
     use crate::config::LoadedConfig;
     use crate::test_support::{
-        Fixture, key, mouse_click, mouse_drag, mouse_right_click, mouse_scroll, standard_fixture,
+        Fixture, key, mouse_click, mouse_drag, mouse_right_click, mouse_scroll, render,
+        standard_fixture,
     };
     use crate::theme::Theme;
 
@@ -1043,21 +989,6 @@ mod tests {
             lit, "status",
             "the match stays lit after clipping: {clipped:?}"
         );
-    }
-
-    fn render(app: &mut App) -> Terminal<TestBackend> {
-        let backend = TestBackend::new(120, 40);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal
-            .draw(|frame| crate::ui::draw(frame, app))
-            .expect("draw");
-        // the first draw only queues enrichment; run it and draw again so the
-        // snapshot captures the settled frame, as the app converges to
-        app.enrich_now();
-        terminal
-            .draw(|frame| crate::ui::draw(frame, app))
-            .expect("draw");
-        terminal
     }
 
     fn diff_app() -> (crate::test_support::Fixture, App) {
@@ -1147,11 +1078,33 @@ mod tests {
                         line: 2,
                     }],
                 }],
+                note: None,
             },
         );
         let content = render(&mut app).backend().to_string();
         assert!(
             content.contains("referenced 4× · 1 files outside diff"),
+            "{content}"
+        );
+    }
+
+    #[test]
+    fn pane_header_shows_a_failed_scan_distinctly_from_zero_references() {
+        use crate::app::blast::FileBlast;
+        let (_fixture, mut app) = diff_app();
+        let hash = app.review.model().files[0].sides_hash();
+        let path = app.review.model().files[0].path.clone();
+        app.blast.insert(
+            path,
+            FileBlast {
+                hash,
+                symbols: Vec::new(),
+                note: Some("rust-analyzer connection was lost".to_owned()),
+            },
+        );
+        let content = render(&mut app).backend().to_string();
+        assert!(
+            content.contains("ref scan failed: rust-analyzer connection was lost"),
             "{content}"
         );
     }
@@ -1193,7 +1146,6 @@ mod tests {
         let (_fixture, mut app) = diff_app();
         open_lib_diff(&mut app);
         app.review.session.add_comment(
-            "reviewer",
             diffler_core::session::Anchor {
                 file: "src/lib.rs".to_owned(),
                 line: Some(1),
@@ -1201,6 +1153,7 @@ mod tests {
                 on_old_side: false,
                 line_text: None,
             },
+            "reviewer",
             "this whole block",
         );
         app.diff.as_mut().unwrap().invalidate();
@@ -1497,7 +1450,6 @@ mod tests {
             .review
             .session
             .add_comment(
-                "reviewer",
                 diffler_core::session::Anchor {
                     file: "src/lib.rs".to_owned(),
                     line: Some(1),
@@ -1505,6 +1457,7 @@ mod tests {
                     on_old_side: false,
                     line_text: Some("pub fn answer() -> u32 {".to_owned()),
                 },
+                "reviewer",
                 "rename this?",
             )
             .id

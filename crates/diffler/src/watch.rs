@@ -182,4 +182,52 @@ mod tests {
         let handle = spawn_watcher(dir.path(), &dir.path().join(".git"), tx).expect("watcher");
         assert!(handle.healthy.load(Ordering::Relaxed));
     }
+
+    // End-to-end against the real notify backend: a relevant write must
+    // surface as RepoChanged, an irrelevant one (under .diffler) must not.
+    // macOS FSEvents reports canonicalized paths, so the watched root is
+    // canonicalized too — otherwise `relevant`'s prefix-stripping silently
+    // falls back to treating every event as relevant (see lsp_client.rs for
+    // the same canonicalization need against a real OS-level watcher).
+    #[tokio::test]
+    async fn spawn_watcher_emits_repo_changed_for_relevant_writes_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().canonicalize().expect("canonical root");
+        let git_dir = root.join(".git");
+        std::fs::create_dir_all(&git_dir).expect("gitdir");
+        std::fs::create_dir_all(root.join(".diffler")).expect("diffler dir");
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let _handle = spawn_watcher(&root, &git_dir, tx).expect("watcher");
+
+        // FSEvents can deliver events from just before the stream started
+        // (the tempdir/.git/.diffler creation above), and a root-dir event
+        // passes `relevant`; drain until one quiet window before asserting
+        for _ in 0..10 {
+            if tokio::time::timeout(Duration::from_millis(500), rx.recv())
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+
+        // an irrelevant write must not produce an event within a window well
+        // past the debounce interval
+        std::fs::write(root.join(".diffler/session.json"), "{}").expect("write");
+        let irrelevant = tokio::time::timeout(Duration::from_millis(800), rx.recv()).await;
+        assert!(
+            irrelevant.is_err(),
+            "a write under .diffler must not surface as RepoChanged, got {irrelevant:?}"
+        );
+
+        // a relevant write must arrive, retried across a generous timeout so
+        // OS-level notify latency doesn't make this flaky on slower CI runners
+        std::fs::write(root.join("src.rs"), "fn main() {}").expect("write");
+        let event = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .expect("RepoChanged within timeout")
+            .expect("channel stays open");
+        assert!(matches!(event, AppEvent::RepoChanged));
+    }
 }

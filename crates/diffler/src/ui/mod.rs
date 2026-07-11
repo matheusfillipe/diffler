@@ -2,11 +2,11 @@
 //! view additionally fills its lazy highlight cache and follows the cursor
 //! with its scroll offset, which is why it takes `&mut App`).
 
+pub mod ci_log;
 pub mod diff;
 pub mod diff_render;
 pub mod graph;
 pub mod log;
-pub mod logs;
 pub mod popup;
 mod prs;
 mod runs;
@@ -14,8 +14,10 @@ pub mod status;
 
 use diffler_core::model::FileStatus;
 use ratatui::Frame;
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Paragraph};
 
 use crate::app::{App, BranchAction, Modal, Screen, Severity};
 use crate::keymap::{Action, render_chord};
@@ -76,13 +78,50 @@ pub(super) fn highlight_spans(
     spans
 }
 
+/// Shared chrome for the `[hint, body, bar]` screens: paints the full-area
+/// background, splits off the hint row and renders it, and hands back the
+/// body and bar rects. The bar's own paragraph (content and style both vary
+/// per screen) stays with the caller.
+pub(super) fn screen_chrome(frame: &mut Frame<'_>, app: &App, hints: &[Hint]) -> (Rect, Rect) {
+    let area = frame.area();
+    frame.render_widget(Block::new().style(app.theme.base()), area);
+    let [hint, body, bar] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(0),
+        Constraint::Length(1),
+    ])
+    .areas(area);
+    frame.render_widget(Paragraph::new(hint_line(app, hints)), hint);
+    (body, bar)
+}
+
+/// Like [`screen_chrome`], for screens that carve an extra header row (a
+/// provenance/summary line) out from under the hint line.
+pub(super) fn screen_chrome_with_header(
+    frame: &mut Frame<'_>,
+    app: &App,
+    hints: &[Hint],
+) -> (Rect, Rect, Rect) {
+    let area = frame.area();
+    frame.render_widget(Block::new().style(app.theme.base()), area);
+    let [hint, header, body, bar] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(0),
+        Constraint::Length(1),
+    ])
+    .areas(area);
+    frame.render_widget(Paragraph::new(hint_line(app, hints)), hint);
+    (header, body, bar)
+}
+
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     match app.screen() {
         Screen::Status => {
-            // attach intra-line emphasis and syntax to expanded inline diffs
-            // before the read-only status render
-            app.enrich_status_expanded();
-            app.ensure_status_highlights(diff::ensure_file_highlights);
+            // enrichment (emphasis/highlight) runs on the blocking pool; this
+            // only queues work, and expanded inline diffs render plain until
+            // the result lands
+            app.queue_enrich_status_expanded();
             status::draw(frame, app);
         }
         Screen::Log => log::draw(frame, app),
@@ -90,7 +129,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         Screen::Graph => graph::draw(frame, app),
         Screen::Runs => runs::draw(frame, app),
         Screen::Prs => prs::draw(frame, app),
-        Screen::Logs => logs::draw(frame, app),
+        Screen::CiLog => ci_log::draw(frame, app),
     }
     match &app.modal {
         Some(Modal::Confirm { message, .. }) => {
@@ -120,7 +159,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
                 Screen::Graph => "graph",
                 Screen::Runs => "runs",
                 Screen::Prs => "prs",
-                Screen::Logs => "logs",
+                Screen::CiLog => "logs",
             };
             popup::Popup {
                 title: format!("Help — {screen} keys"),
@@ -380,6 +419,18 @@ pub(super) fn scroll_to_cursor(cursor: usize, scroll: usize, height: usize) -> u
     }
 }
 
+/// Truncate to `max` graphemes with an ellipsis. Shared by the runs list and
+/// the status screen's inline CI section, which both fit run metadata into
+/// fixed-width columns.
+pub(super) fn elide(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_owned()
+    } else {
+        let kept: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{kept}…")
+    }
+}
+
 pub(super) fn cursor_line(line: Line<'static>, theme: &Theme, width: u16) -> Line<'static> {
     let pad = (width as usize).saturating_sub(line.width());
     let mut spans: Vec<Span<'static>> = line
@@ -409,7 +460,7 @@ pub(super) fn status_bar(app: &App, width: u16) -> Line<'static> {
     let chip = match app.screen() {
         Screen::Status => " STATUS ".to_owned(),
         Screen::Diff => match app.diff.as_ref().map(|d| &d.source) {
-            Some(source @ crate::app::DiffSource::Pr { number }) => {
+            Some(source @ diffler_core::source::ReviewSource::Pr { number }) => {
                 let pending = app
                     .review
                     .session_for(source)
@@ -429,7 +480,7 @@ pub(super) fn status_bar(app: &App, width: u16) -> Line<'static> {
         Screen::Graph => " GRAPH ".to_owned(),
         Screen::Runs => " RUNS ".to_owned(),
         Screen::Prs => " PRS ".to_owned(),
-        Screen::Logs => " LOGS ".to_owned(),
+        Screen::CiLog => " LOGS ".to_owned(),
     };
     let repo = app
         .review

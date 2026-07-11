@@ -9,18 +9,21 @@ use std::path::{Path, PathBuf};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use diffler_core::review::Review;
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 use tempfile::TempDir;
 
+use crate::app::App;
 use crate::event::AppEvent;
 
-pub struct Fixture {
+pub(crate) struct Fixture {
     _dir: TempDir,
     pub root: PathBuf,
     pub repo: git2::Repository,
 }
 
 impl Fixture {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path().join("fixture");
         std::fs::create_dir(&root).expect("repo dir");
@@ -42,7 +45,7 @@ impl Fixture {
         }
     }
 
-    pub fn write(&self, rel: &str, content: &str) {
+    pub(crate) fn write(&self, rel: &str, content: &str) {
         let path = self.root.join(rel);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).expect("mkdir");
@@ -50,13 +53,13 @@ impl Fixture {
         std::fs::write(path, content).expect("write");
     }
 
-    pub fn stage(&self, rel: &str) {
+    pub(crate) fn stage(&self, rel: &str) {
         let mut index = self.repo.index().expect("index");
         index.add_path(Path::new(rel)).expect("add");
         index.write().expect("index write");
     }
 
-    pub fn commit_all(&self, message: &str) {
+    pub(crate) fn commit_all(&self, message: &str) {
         let mut index = self.repo.index().expect("index");
         index
             .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
@@ -73,7 +76,7 @@ impl Fixture {
             .expect("commit");
     }
 
-    pub fn branch(&self, name: &str) {
+    pub(crate) fn branch(&self, name: &str) {
         let head = self
             .repo
             .head()
@@ -82,14 +85,14 @@ impl Fixture {
         self.repo.branch(name, &head, false).expect("branch");
     }
 
-    pub fn review(&self) -> Review {
+    pub(crate) fn review(&self) -> Review {
         Review::open(&self.root).expect("review")
     }
 }
 
 /// One untracked + one modified-unstaged + one staged-new file, exactly the
 /// shape the snapshot tests assert.
-pub fn standard_fixture() -> Fixture {
+pub(crate) fn standard_fixture() -> Fixture {
     let fixture = Fixture::new();
     fixture.write("src/lib.rs", "pub fn answer() -> u32 {\n    41\n}\n");
     fixture.write("notes.txt", "alpha\n");
@@ -103,7 +106,7 @@ pub fn standard_fixture() -> Fixture {
 
 /// One committed 20-line file with unstaged edits at both ends, far enough
 /// apart (context is 3 lines) to produce exactly two hunks.
-pub fn two_hunk_fixture() -> Fixture {
+pub(crate) fn two_hunk_fixture() -> Fixture {
     let fixture = Fixture::new();
     let lines: Vec<String> = (1..=20).map(|i| format!("line {i}")).collect();
     let original = lines.join("\n") + "\n";
@@ -117,7 +120,7 @@ pub fn two_hunk_fixture() -> Fixture {
 }
 
 /// Plain key press; `\t` and `\n` map to Tab/Enter.
-pub fn key(c: char) -> AppEvent {
+pub(crate) fn key(c: char) -> AppEvent {
     let code = match c {
         '\t' => KeyCode::Tab,
         '\n' => KeyCode::Enter,
@@ -131,19 +134,19 @@ pub fn key(c: char) -> AppEvent {
     AppEvent::Key(KeyEvent::new(code, modifiers))
 }
 
-pub fn ctrl_key(c: char) -> AppEvent {
+pub(crate) fn ctrl_key(c: char) -> AppEvent {
     AppEvent::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
 }
 
-pub fn esc_key() -> AppEvent {
+pub(crate) fn esc_key() -> AppEvent {
     AppEvent::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
 }
 
-pub fn key_backspace() -> AppEvent {
+pub(crate) fn key_backspace() -> AppEvent {
     AppEvent::Key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE))
 }
 
-pub fn mouse_scroll(down: bool, col: u16, row: u16) -> AppEvent {
+pub(crate) fn mouse_scroll(down: bool, col: u16, row: u16) -> AppEvent {
     use crossterm::event::{MouseEvent, MouseEventKind};
     let kind = if down {
         MouseEventKind::ScrollDown
@@ -158,7 +161,7 @@ pub fn mouse_scroll(down: bool, col: u16, row: u16) -> AppEvent {
     })
 }
 
-pub fn mouse_click(col: u16, row: u16) -> AppEvent {
+pub(crate) fn mouse_click(col: u16, row: u16) -> AppEvent {
     use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     AppEvent::Mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
@@ -168,7 +171,7 @@ pub fn mouse_click(col: u16, row: u16) -> AppEvent {
     })
 }
 
-pub fn mouse_drag(col: u16, row: u16) -> AppEvent {
+pub(crate) fn mouse_drag(col: u16, row: u16) -> AppEvent {
     use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     AppEvent::Mouse(MouseEvent {
         kind: MouseEventKind::Drag(MouseButton::Left),
@@ -178,7 +181,24 @@ pub fn mouse_drag(col: u16, row: u16) -> AppEvent {
     })
 }
 
-pub fn mouse_right_click(col: u16, row: u16) -> AppEvent {
+/// Render through the top-level draw so modal overlays and screen switching
+/// are covered too. The first draw only queues enrichment (intra-line
+/// emphasis, syntax highlight); run it and draw again so the snapshot
+/// captures the settled frame, as the real app converges to.
+pub(crate) fn render(app: &mut App) -> Terminal<TestBackend> {
+    let backend = TestBackend::new(120, 40);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| crate::ui::draw(frame, app))
+        .expect("draw");
+    app.enrich_now();
+    terminal
+        .draw(|frame| crate::ui::draw(frame, app))
+        .expect("draw");
+    terminal
+}
+
+pub(crate) fn mouse_right_click(col: u16, row: u16) -> AppEvent {
     use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     AppEvent::Mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Right),

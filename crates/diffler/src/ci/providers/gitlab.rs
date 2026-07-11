@@ -6,11 +6,10 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::ci::error::{CiError, Result};
+use crate::ci::error::{Result, parse_json};
 use crate::ci::exec::CommandRunner;
 use crate::ci::model::{
-    Capabilities, CiJob, CiRun, DagSource, JobId, JobStatus, LogChunk, LogMode, PrComment,
-    PullRequest, RunDetail, RunExtras, RunId,
+    CiJob, CiRun, JobId, JobStatus, LogChunk, PullRequest, RunDetail, RunExtras, RunId,
 };
 use crate::ci::provider::{ForgeProvider, ProviderKind};
 
@@ -45,20 +44,10 @@ impl ForgeProvider for GitLabProvider {
         ProviderKind::GitLab
     }
 
-    fn capabilities(&self) -> Capabilities {
-        Capabilities {
-            dag: DagSource::RunApi,
-            logs: LogMode::Poll,
-        }
-    }
-
     async fn list_runs(&self, limit: usize) -> Result<Vec<CiRun>> {
         let path = format!("projects/:fullpath/pipelines?per_page={limit}");
         let out = self.api(&path).await?;
-        let raw: Vec<PipelineItem> = serde_json::from_str(&out).map_err(|e| CiError::Parse {
-            what: "glab pipelines".into(),
-            message: e.to_string(),
-        })?;
+        let raw: Vec<PipelineItem> = parse_json("glab pipelines", &out)?;
         Ok(raw.into_iter().map(PipelineItem::into_run).collect())
     }
 
@@ -66,17 +55,11 @@ impl ForgeProvider for GitLabProvider {
         let meta = self
             .api(&format!("projects/:fullpath/pipelines/{}", run.0))
             .await?;
-        let pipeline: PipelineItem = serde_json::from_str(&meta).map_err(|e| CiError::Parse {
-            what: "glab pipeline".into(),
-            message: e.to_string(),
-        })?;
+        let pipeline: PipelineItem = parse_json("glab pipeline", &meta)?;
         let jobs_out = self
             .api(&format!("projects/:fullpath/pipelines/{}/jobs", run.0))
             .await?;
-        let raw: Vec<JobItem> = serde_json::from_str(&jobs_out).map_err(|e| CiError::Parse {
-            what: "glab jobs".into(),
-            message: e.to_string(),
-        })?;
+        let raw: Vec<JobItem> = parse_json("glab jobs", &jobs_out)?;
         Ok(RunDetail {
             run: pipeline.into_run(),
             jobs: jobs_with_stage_edges(&raw),
@@ -122,48 +105,6 @@ impl ForgeProvider for GitLabProvider {
 
     async fn list_prs(&self) -> Result<Vec<PullRequest>> {
         Ok(Vec::new())
-    }
-
-    async fn pr_comments(&self, _number: u64) -> Result<Vec<PrComment>> {
-        Ok(Vec::new())
-    }
-
-    async fn post_pr_comment(&self, _new: &crate::ci::NewPrComment) -> Result<PrComment> {
-        Err(CiError::Unsupported("posting PR comments"))
-    }
-
-    async fn reply_pr_comment(
-        &self,
-        _number: u64,
-        _remote_id: &str,
-        _body: &str,
-    ) -> Result<PrComment> {
-        Err(CiError::Unsupported("replying to PR comments"))
-    }
-
-    async fn submit_pr_review(&self, _review: &crate::ci::NewPrReview) -> Result<()> {
-        Err(CiError::Unsupported("submitting PR reviews"))
-    }
-
-    async fn resolve_pr_thread(
-        &self,
-        _number: u64,
-        _thread_id: &str,
-        _resolved: bool,
-    ) -> Result<()> {
-        Err(CiError::Unsupported("resolving PR threads"))
-    }
-
-    async fn update_pr_comment(&self, _remote_id: &str, _body: &str) -> Result<()> {
-        Err(CiError::Unsupported("editing PR comments"))
-    }
-
-    async fn delete_pr_comment(&self, _remote_id: &str) -> Result<()> {
-        Err(CiError::Unsupported("deleting PR comments"))
-    }
-
-    async fn pr(&self, _number: u64) -> Result<PullRequest> {
-        Err(CiError::Unsupported("PR lookup"))
     }
 
     async fn current_pr(&self) -> Result<Option<PullRequest>> {

@@ -1,5 +1,5 @@
 ---
-source: crates/diffler/src/ui/logs.rs
+source: crates/diffler/src/ui/ci_log.rs
 expression: terminal.backend()
 ---
 " Hint: <tab> fold  / search  ? help                         "

@@ -191,6 +191,24 @@ pub fn visible_rows(paths: &[&str], folded: &BTreeSet<String>) -> Vec<TreeRow> {
     rows
 }
 
+/// The flat-list rows for `paths`: one `File` row per entry, depth 0, full
+/// path as its name, index into the source slice. A degenerate tree — no
+/// `Dir` rows — so callers can drive the same cursor and file-navigation
+/// logic over the flat list and the tree layout alike.
+pub fn flat_rows(paths: &[&str]) -> Vec<TreeRow> {
+    paths
+        .iter()
+        .enumerate()
+        .map(|(index, path)| TreeRow {
+            depth: 0,
+            node: TreeNode::File {
+                index,
+                name: (*path).to_owned(),
+            },
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,6 +369,18 @@ mod tests {
     #[test]
     fn empty_input_is_no_rows() {
         assert!(visible_rows(&[], &no_folds()).is_empty());
+    }
+
+    #[test]
+    fn flat_rows_is_one_file_row_per_path_at_depth_zero() {
+        let rows = flat_rows(&["src/lib.rs", "top.rs"]);
+        assert_eq!(
+            shapes(&rows),
+            vec![
+                (0, "file", "src/lib.rs".to_owned()),
+                (0, "file", "top.rs".to_owned()),
+            ]
+        );
     }
 
     #[test]

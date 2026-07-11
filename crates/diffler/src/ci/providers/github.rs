@@ -9,14 +9,13 @@
 use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-use crate::ci::error::{CiError, Result};
+use crate::ci::error::{CiError, Result, parse_json};
 use crate::ci::exec::CommandRunner;
 use crate::ci::model::{
-    Annotation, AnnotationLevel, Artifact, Capabilities, CiJob, CiRun, DagSource, JobId, JobStatus,
-    LogChunk, LogMode, LogStepMeta, PrComment, PullRequest, RunDetail, RunExtras, RunId,
-    ts_sort_key,
+    Annotation, AnnotationLevel, Artifact, CiJob, CiRun, JobId, JobStatus, LogChunk, LogStepMeta,
+    PrComment, PullRequest, RunDetail, RunExtras, RunId, ts_sort_key,
 };
 use crate::ci::provider::{ForgeProvider, ProviderKind};
 
@@ -88,10 +87,7 @@ impl GitHubProvider {
                 args.push(format!("cursor={cursor}"));
             }
             let raw = self.runner.run("gh", &args).await?;
-            let page: ThreadsPage = serde_json::from_str(&raw).map_err(|err| CiError::Parse {
-                what: "review threads".to_owned(),
-                message: err.to_string(),
-            })?;
+            let page: ThreadsPage = parse_json("review threads", &raw)?;
             let threads = page.data.repository.pull_request.review_threads;
             for node in threads.nodes {
                 for comment in node.comments.nodes {
@@ -122,10 +118,7 @@ impl GitHubProvider {
                 ],
             )
             .await?;
-        let slug: RepoSlug = serde_json::from_str(&raw).map_err(|err| CiError::Parse {
-            what: "repo slug".to_owned(),
-            message: err.to_string(),
-        })?;
+        let slug: RepoSlug = parse_json("repo slug", &raw)?;
         Ok((slug.owner.login, slug.name))
     }
 
@@ -239,10 +232,7 @@ impl GitHubProvider {
                 run.0
             ))
             .await?;
-        let list: ArtifactList = serde_json::from_str(&raw).map_err(|e| CiError::Parse {
-            what: "gh api artifacts".into(),
-            message: e.to_string(),
-        })?;
+        let list: ArtifactList = parse_json("gh api artifacts", &raw)?;
         Ok(list.artifacts.into_iter().map(ArtifactItem::into).collect())
     }
 
@@ -253,10 +243,7 @@ impl GitHubProvider {
                 run.0
             ))
             .await?;
-        let jobs: JobsApi = serde_json::from_str(&raw).map_err(|e| CiError::Parse {
-            what: "gh api jobs".into(),
-            message: e.to_string(),
-        })?;
+        let jobs: JobsApi = parse_json("gh api jobs", &raw)?;
         let mut annotations = Vec::new();
         for job in jobs.jobs {
             // one job's annotations 404ing (a GC'd check run) or rate-limiting
@@ -282,13 +269,6 @@ impl ForgeProvider for GitHubProvider {
         ProviderKind::GitHub
     }
 
-    fn capabilities(&self) -> Capabilities {
-        Capabilities {
-            dag: DagSource::ConfigFile,
-            logs: LogMode::Dump,
-        }
-    }
-
     async fn list_runs(&self, limit: usize) -> Result<Vec<CiRun>> {
         let mut args = vec!["run".to_owned(), "list".to_owned()];
         if let Some(branch) = &self.branch {
@@ -305,10 +285,7 @@ impl ForgeProvider for GitHubProvider {
             .map(str::to_owned),
         );
         let out = self.runner.run("gh", &args).await?;
-        let raw: Vec<RunListItem> = serde_json::from_str(&out).map_err(|e| CiError::Parse {
-            what: "gh run list".into(),
-            message: e.to_string(),
-        })?;
+        let raw: Vec<RunListItem> = parse_json("gh run list", &out)?;
         Ok(raw.into_iter().map(RunListItem::into_run).collect())
     }
 
@@ -322,10 +299,7 @@ impl ForgeProvider for GitHubProvider {
         ]
         .map(str::to_owned);
         let out = self.runner.run("gh", &args).await?;
-        let view: RunView = serde_json::from_str(&out).map_err(|e| CiError::Parse {
-            what: "gh run view".into(),
-            message: e.to_string(),
-        })?;
+        let view: RunView = parse_json("gh run view", &out)?;
 
         // build the DAG from the run's own workflow, matched by the YAML `name:`
         // against the run's `workflowName`; an unmatched run falls back to flat
@@ -364,17 +338,17 @@ impl ForgeProvider for GitHubProvider {
                 run.0
             ))
             .await?;
-        let view: JobList = serde_json::from_str(&out).map_err(|e| CiError::Parse {
-            what: "gh api jobs".into(),
-            message: e.to_string(),
-        })?;
+        let view: JobList = parse_json("gh api jobs", &out)?;
         let job = view
             .jobs
             .iter()
             .find(|j| j.name == job.0 || job_matches(&j.name, &job.0, &job.0))
             .ok_or_else(|| CiError::NotFound(format!("job {} in run {}", job.0, run.0)))?;
         let steps = job.steps.iter().map(RunStep::to_meta).collect();
-        let done = job.status == "completed";
+        // route through the same classifier `steps` was just built from
+        // (rather than a raw status literal), so "done" agrees with every
+        // other reading of this job's state
+        let done = job_finished(&job.status, job.conclusion.as_deref());
 
         // the log archive (`jobs/{id}/logs`) only exists once the job finishes —
         // it 404s while running. so for an in-progress job, return the live step
@@ -432,11 +406,7 @@ impl ForgeProvider for GitHubProvider {
         ]
         .map(str::to_owned);
         let raw = self.runner.run("gh", &args).await?;
-        let items: Vec<PrListItem> =
-            serde_json::from_str(&raw).map_err(|err| crate::ci::CiError::Parse {
-                what: "pr list".to_owned(),
-                message: err.to_string(),
-            })?;
+        let items: Vec<PrListItem> = parse_json("pr list", &raw)?;
         Ok(items.into_iter().map(PrListItem::into_pr).collect())
     }
 
@@ -596,10 +566,7 @@ impl ForgeProvider for GitHubProvider {
             "number,title,url,baseRefName,headRefName,headRefOid,author".to_owned(),
         ];
         let raw = self.runner.run("gh", &args).await?;
-        let pr: PrListItem = serde_json::from_str(&raw).map_err(|err| CiError::Parse {
-            what: "pr".to_owned(),
-            message: err.to_string(),
-        })?;
+        let pr: PrListItem = parse_json("pr", &raw)?;
         Ok(pr.into_pr())
     }
 
@@ -620,9 +587,9 @@ impl ForgeProvider for GitHubProvider {
         let Ok(raw) = self.runner.run("gh", &args).await else {
             return Ok(None);
         };
-        let Ok(pr) = serde_json::from_str::<PrView>(&raw) else {
-            return Ok(None);
-        };
+        // a malformed response must propagate, same as `pr`/`list_prs` —
+        // treating it as "no PR" would look like a normal, PR-less branch
+        let pr: PrView = parse_json("pr view", &raw)?;
         Ok(Some(PullRequest {
             number: pr.number,
             title: pr.title,
@@ -786,17 +753,25 @@ fn aggregate_status(id: &str, label: &str, jobs: &[RunJob]) -> JobStatus {
 }
 
 fn map_status(status: &str, conclusion: Option<&str>) -> JobStatus {
-    match conclusion {
-        Some("success") => JobStatus::Ok,
-        Some("failure" | "timed_out" | "startup_failure") => JobStatus::Failed,
-        Some("skipped") => JobStatus::Skipped,
-        Some("cancelled") => JobStatus::Neutral,
-        _ => match status {
-            "in_progress" => JobStatus::Running,
-            "completed" => JobStatus::Neutral,
-            _ => JobStatus::Queued,
-        },
-    }
+    // GitHub and Forgejo Actions share the same `conclusion` vocabulary
+    // (`crate::ci::map_conclusion` covers both); only the in-progress/no-conclusion
+    // status strings are forge-specific
+    crate::ci::map_conclusion(conclusion).unwrap_or(match status {
+        "in_progress" => JobStatus::Running,
+        "completed" => JobStatus::Neutral,
+        _ => JobStatus::Queued,
+    })
+}
+
+/// Whether a job has reached a terminal state, classified the same way as
+/// every other reading of `status`/`conclusion` in this file — not a raw
+/// string comparison, which would drift the moment a new terminal status or
+/// conclusion is added to `map_status`.
+fn job_finished(status: &str, conclusion: Option<&str>) -> bool {
+    matches!(
+        map_status(status, conclusion),
+        JobStatus::Ok | JobStatus::Failed | JobStatus::Skipped | JobStatus::Neutral
+    )
 }
 
 fn parse_created(raw: &str) -> Option<time::OffsetDateTime> {
@@ -965,11 +940,7 @@ struct JobsApi {
 }
 
 fn parse_posted(raw: &str) -> Result<PrComment> {
-    let item: ReviewCommentApi =
-        serde_json::from_str(raw).map_err(|err| crate::ci::CiError::Parse {
-            what: "pr comment".to_owned(),
-            message: err.to_string(),
-        })?;
+    let item: ReviewCommentApi = parse_json("pr comment", raw)?;
     Ok(item.into_comment())
 }
 
@@ -1089,25 +1060,45 @@ impl ReviewCommentApi {
     }
 }
 
+/// A single line (or range) comment in the GitHub review-submission wire shape.
+#[derive(Serialize)]
+struct ReviewCommentPayload {
+    path: String,
+    line: u32,
+    side: &'static str,
+    body: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    start_line: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    start_side: Option<&'static str>,
+}
+
 /// The REST body for POST /pulls/N/reviews: verdict as the event, the
 /// optional summary, every pending comment with its side (and range when
 /// multi-line).
+#[derive(Serialize)]
+struct ReviewPayload {
+    commit_id: String,
+    event: &'static str,
+    comments: Vec<ReviewCommentPayload>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    body: String,
+}
+
 fn review_payload(review: &crate::ci::NewPrReview) -> serde_json::Value {
-    let comments: Vec<serde_json::Value> = review
+    let comments = review
         .comments
         .iter()
         .map(|c| {
             let side = if c.new_side { "RIGHT" } else { "LEFT" };
-            let mut comment = serde_json::Map::new();
-            comment.insert("path".to_owned(), c.path.clone().into());
-            comment.insert("line".to_owned(), c.line.into());
-            comment.insert("side".to_owned(), side.into());
-            comment.insert("body".to_owned(), c.body.clone().into());
-            if let Some(start) = c.start_line {
-                comment.insert("start_line".to_owned(), start.into());
-                comment.insert("start_side".to_owned(), side.into());
+            ReviewCommentPayload {
+                path: c.path.clone(),
+                line: c.line,
+                side,
+                body: c.body.clone(),
+                start_line: c.start_line,
+                start_side: c.start_line.is_some().then_some(side),
             }
-            serde_json::Value::Object(comment)
         })
         .collect();
     let event = match review.verdict {
@@ -1115,14 +1106,16 @@ fn review_payload(review: &crate::ci::NewPrReview) -> serde_json::Value {
         crate::ci::ReviewVerdict::RequestChanges => "REQUEST_CHANGES",
         crate::ci::ReviewVerdict::Comment => "COMMENT",
     };
-    let mut payload = serde_json::Map::new();
-    payload.insert("commit_id".to_owned(), review.head_oid.clone().into());
-    payload.insert("event".to_owned(), event.into());
-    payload.insert("comments".to_owned(), comments.into());
-    if !review.body.is_empty() {
-        payload.insert("body".to_owned(), review.body.clone().into());
-    }
-    serde_json::Value::Object(payload)
+    let payload = ReviewPayload {
+        commit_id: review.head_oid.clone(),
+        event,
+        comments,
+        body: review.body.clone(),
+    };
+    // every field is a plain String/number/&'static str, so serialization
+    // can never fail
+    #[allow(clippy::expect_used)]
+    serde_json::to_value(payload).expect("wire payload of plain fields always serializes")
 }
 
 /// ISO-8601 → unix seconds; an unrecognized shape collapses to zero.
@@ -1219,6 +1212,7 @@ impl From<AnnotationItem> for Annotation {
 mod tests {
     use super::*;
     use crate::ci::exec::test_support::RecordingRunner;
+    use crate::ci::model::{DagSource, LogMode};
 
     const WORKFLOW: &str = r"
 name: CI
@@ -1602,6 +1596,20 @@ jobs:
         let pr = pr.expect("a pr");
         assert_eq!(pr.number, 28);
         assert_eq!(pr.url.as_deref(), Some("https://gh/pull/28"));
+    }
+
+    #[tokio::test]
+    async fn current_pr_propagates_a_parse_failure_like_list_prs() {
+        let err = GitHubProvider::new(
+            Box::new(RecordingRunner::new(&[("pr view feat/x", "not json")])),
+            vec![],
+            Some("feat/x".to_owned()),
+            YamlCache::default(),
+        )
+        .current_pr()
+        .await
+        .expect_err("malformed body must not silently read as \"no PR\"");
+        assert!(matches!(err, CiError::Parse { .. }));
     }
 
     #[tokio::test]

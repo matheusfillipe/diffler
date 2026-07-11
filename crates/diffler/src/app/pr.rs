@@ -100,6 +100,15 @@ impl App {
         }
     }
 
+    /// Marks the git ops whose completion may consume the `pending_pr_*`
+    /// continuation slots: several ops can be in flight at once, so
+    /// `git_finished` must not route an unrelated op's result into them.
+    pub(crate) const PR_FETCH_PREFIX: &'static str = "fetch PR #";
+
+    pub(crate) fn pr_fetch_label(number: u64) -> String {
+        format!("{}{number}", Self::PR_FETCH_PREFIX)
+    }
+
     /// Fetch the PR's head into a local branch and switch to it. GitHub's CLI
     /// does both (and handles forks); other forges fetch the pull ref into a
     /// branch named after the PR head and switch when the fetch lands.
@@ -129,7 +138,7 @@ impl App {
             .map_or_else(|| "origin".to_owned(), |r| r.name.clone());
         self.pending_pr_switch = Some(pr.head_ref.clone());
         self.pending_git = Some(super::GitOp {
-            label: format!("fetch PR #{}", pr.number),
+            label: Self::pr_fetch_label(pr.number),
             argv: vec![
                 "git".to_owned(),
                 "fetch".to_owned(),
@@ -226,7 +235,7 @@ impl App {
             // flight also survives — the forge just hasn't heard yet
             let flip_inflight = inflight
                 .iter()
-                .any(|key| key.starts_with(&format!("res-{}-", root.id)));
+                .any(|key| key.starts_with(&resolve_key_prefix(&root.id)));
             root.status = if flip_inflight {
                 prior.status
             } else {
@@ -239,7 +248,7 @@ impl App {
             // same for a body rewrite the forge hasn't acknowledged yet
             let edit_inflight = inflight
                 .iter()
-                .any(|key| key.starts_with(&format!("e-{}-", root.id)));
+                .any(|key| key.starts_with(&edit_key_prefix(&root.id)));
             if edit_inflight {
                 root.body.clone_from(&prior.body);
             }
@@ -622,6 +631,19 @@ fn post_key(post: &PrPost) -> String {
     }
 }
 
+/// Prefix of a resolve toggle's inflight key for `comment_id`, regardless of
+/// direction — an in-flight check that doesn't care which way it flipped
+/// matches on this instead of a direction-specific [`post_key`].
+fn resolve_key_prefix(comment_id: &str) -> String {
+    format!("res-{comment_id}-")
+}
+
+/// Prefix of an edit's inflight key for `comment_id`, regardless of the body
+/// hash [`post_key`] mixes in.
+fn edit_key_prefix(comment_id: &str) -> String {
+    format!("e-{comment_id}-")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -888,8 +910,8 @@ mod tests {
         };
         {
             let session = app.review.session_for_mut(&source);
-            session.add_comment("me", single, "lab single comment");
-            session.add_comment("me", range, "lab range comment");
+            session.add_comment(single, "me", "lab single comment");
+            session.add_comment(range, "me", "lab range comment");
         }
         app.queue_pr_review(3, ReviewVerdict::Comment, "lab review body");
         assert_eq!(app.pending_pr_posts.len(), 1);
@@ -1129,7 +1151,7 @@ mod tests {
         let local_id = app
             .review
             .session_for_mut(&source)
-            .add_comment("me", anchor, "needs work")
+            .add_comment(anchor, "me", "needs work")
             .id
             .clone();
         app.open_pr_diff(7, &head, &head);

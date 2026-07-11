@@ -56,19 +56,22 @@ async fn finds_references_for_a_changed_function() {
         .find(|s| s.name == "target")
         .expect("target symbol");
 
-    // indexing may lag the first query; retry briefly until refs appear
+    // indexing may lag the first query, and rust-analyzer answers with a
+    // transient `ContentModified` error while it settles: poll through both
     let mut refs = Vec::new();
     for _ in 0..40 {
-        refs = client
+        if let Ok(result) = client
             .references(
                 Path::new("src/main.rs"),
                 target.select_line,
                 target.select_character,
             )
             .await
-            .expect("references");
-        if refs.len() >= 2 {
-            break;
+        {
+            refs = result;
+            if refs.len() >= 2 {
+                break;
+            }
         }
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }

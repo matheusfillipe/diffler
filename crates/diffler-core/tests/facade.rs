@@ -29,7 +29,7 @@ fn review_persists_session_and_auto_resets_viewed_on_rewrite() {
     let hash = review.model().files[0].content_hash();
     review
         .session
-        .add_comment("mattf", anchor("a.py", 2), "why 2?");
+        .add_comment(anchor("a.py", 2), "reviewer", "why 2?");
     review.session.mark_viewed("a.py", &hash);
     review.save().expect("save");
 

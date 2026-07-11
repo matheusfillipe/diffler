@@ -197,7 +197,7 @@ impl App {
             InputOp::Comment { anchor } => {
                 self.review
                     .session_for_mut(&source)
-                    .add_comment(&self.author, anchor, body);
+                    .add_comment(anchor, &self.author, body);
                 if let Some(diff) = self.diff.as_mut() {
                     diff.visual_anchor = None;
                 }
@@ -729,7 +729,6 @@ mod tests {
         let fixture = standard_fixture();
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         app.review.session.add_comment(
-            "me",
             Anchor {
                 file: "src/lib.rs".into(),
                 line: Some(2),
@@ -737,6 +736,7 @@ mod tests {
                 on_old_side: false,
                 line_text: None,
             },
+            "me",
             "tighten this",
         );
 
@@ -773,7 +773,6 @@ mod tests {
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         for (line, body) in [(1, "first"), (2, "second"), (3, "third")] {
             app.review.session.add_comment(
-                "me",
                 Anchor {
                     file: "src/lib.rs".into(),
                     line: Some(line),
@@ -781,6 +780,7 @@ mod tests {
                     on_old_side: false,
                     line_text: None,
                 },
+                "me",
                 body,
             );
         }
@@ -806,7 +806,6 @@ mod tests {
         let fixture = standard_fixture();
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         app.review.session.add_comment(
-            "alice",
             Anchor {
                 file: "src/lib.rs".into(),
                 line: Some(1),
@@ -814,6 +813,7 @@ mod tests {
                 on_old_side: false,
                 line_text: None,
             },
+            "alice",
             "remote",
         );
         app.review.session.comments[0].remote_id = Some("9".into());

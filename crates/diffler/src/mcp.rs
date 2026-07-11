@@ -614,9 +614,21 @@ pub fn write_endpoint(repo_root: &Path, port: u16) -> std::io::Result<()> {
     std::fs::write(endpoint_path(repo_root), body)
 }
 
-/// Remove the endpoint file on shutdown so a stale port never lingers.
-pub fn clear_endpoint(repo_root: &Path) {
-    let _ = std::fs::remove_file(endpoint_path(repo_root));
+/// Remove the endpoint file on shutdown, but only when it still names this
+/// process's own port. A second diffler instance in the same repo overwrites
+/// the file with its own port; deleting unconditionally would let whichever
+/// process exits first destroy the still-running one's proxy discovery.
+pub fn clear_endpoint(repo_root: &Path, port: u16) {
+    let path = endpoint_path(repo_root);
+    let Ok(body) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    let current_owner = serde_json::from_str::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| v.get("port").and_then(serde_json::Value::as_u64));
+    if current_owner == Some(u64::from(port)) {
+        let _ = std::fs::remove_file(&path);
+    }
 }
 
 #[cfg(test)]
@@ -733,7 +745,7 @@ mod tests {
         let mut a = anchor("src/auth.py", Some(2));
         a.on_old_side = true;
         a.line_text = Some("two".to_owned());
-        session.add_comment("human", a, "what was wrong with two?");
+        session.add_comment(a, "human", "what was wrong with two?");
         let info = comment_info(
             &session.comments[0],
             &sample_model(),
@@ -751,7 +763,7 @@ mod tests {
         let mut session = Session::default();
         let mut a = anchor("src/auth.py", Some(2));
         a.line_text = Some("TWO".to_owned());
-        let id = session.add_comment("human", a, "why uppercase?").id.clone();
+        let id = session.add_comment(a, "human", "why uppercase?").id.clone();
         session.reply(&id, AGENT_AUTHOR, "legacy API");
         let info = comment_info(
             &session.comments[0],
@@ -771,7 +783,7 @@ mod tests {
     #[test]
     fn comment_info_flags_departed_lines_outdated() {
         let mut session = Session::default();
-        session.add_comment("human", anchor("src/auth.py", Some(99)), "moved on");
+        session.add_comment(anchor("src/auth.py", Some(99)), "human", "moved on");
         let info = comment_info(
             &session.comments[0],
             &sample_model(),
@@ -786,7 +798,7 @@ mod tests {
         let mut session = Session::default();
         let mut a = anchor("src/auth.py", Some(2));
         a.line_text = Some("old text".to_owned());
-        session.add_comment("human", a, "stale");
+        session.add_comment(a, "human", "stale");
         let info = comment_info(
             &session.comments[0],
             &sample_model(),
@@ -799,8 +811,8 @@ mod tests {
     #[test]
     fn file_level_comment_outdated_only_when_file_left_the_diff() {
         let mut session = Session::default();
-        session.add_comment("human", anchor("src/auth.py", None), "overall");
-        session.add_comment("human", anchor("gone.py", None), "gone");
+        session.add_comment(anchor("src/auth.py", None), "human", "overall");
+        session.add_comment(anchor("gone.py", None), "human", "gone");
         let model = sample_model();
         assert!(!comment_info(&session.comments[0], &model, &ReviewSource::WorkingTree).outdated);
         assert!(comment_info(&session.comments[1], &model, &ReviewSource::WorkingTree).outdated);
@@ -822,7 +834,7 @@ mod tests {
         };
         // sanity: start text differs from end text
         assert_ne!(a.line_text.as_deref(), Some("one"));
-        session.add_comment("human", a.clone(), "range comment");
+        session.add_comment(a.clone(), "human", "range comment");
         let info = comment_info(
             &session.comments[0],
             &sample_model(),
@@ -896,8 +908,24 @@ mod tests {
         let gitignore =
             std::fs::read_to_string(dir.path().join(".diffler/.gitignore")).expect("gitignore");
         assert_eq!(gitignore, "*\n");
-        clear_endpoint(dir.path());
+        clear_endpoint(dir.path(), 8417);
         assert!(!path.exists(), "endpoint file removed on shutdown");
+    }
+
+    #[test]
+    fn clear_endpoint_leaves_a_newer_owner_alone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_endpoint(dir.path(), 1111).expect("write first instance");
+        // a second diffler instance in the same repo overwrites the file
+        write_endpoint(dir.path(), 2222).expect("write second instance");
+
+        // the first instance shuts down and clears its own (stale) port
+        clear_endpoint(dir.path(), 1111);
+
+        let path = dir.path().join(".diffler/mcp.json");
+        let body = std::fs::read_to_string(&path)
+            .expect("file survives: it names the still-running instance");
+        assert!(body.contains("\"port\": 2222"), "{body}");
     }
 
     // spawn_mcp falls back to :0 only on AddrInUse, not on other errors.

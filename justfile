@@ -52,7 +52,19 @@ e2e:
     cargo build -p diffler
     uv run --with pexpect --with pyte --with pytest --with mcp pytest tests/e2e -x -q
 
-# core gate, matches CI's test+lint jobs (CI additionally runs msrv, deny, typos)
+# copy-paste duplication gate, matches CI's dupes job (config in .jscpd.json)
+dupes:
+    npx --yes jscpd@4 crates/
+
+# unused-dependency gate, matches CI's machete job
+machete:
+    cargo machete
+
+# coverage with the CI floor, matches CI's coverage job
+cov:
+    cargo llvm-cov nextest --workspace --summary-only --fail-under-lines 85
+
+# core gate, matches CI's test+lint jobs (CI additionally runs msrv, deny, typos, dupes, machete, coverage)
 ci:
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --all-features -- -D warnings

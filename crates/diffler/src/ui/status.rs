@@ -3,10 +3,10 @@
 
 use diffler_core::model::FileDiff;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use std::ops::Range;
 
@@ -18,8 +18,8 @@ use crate::transient::TransientKind;
 use crate::ui::Hint;
 use crate::ui::diff_render::render_hunk_lines;
 use crate::ui::{
-    commit_meta_spans, cursor_line, diffstat_spans, highlight_spans, hint_line, proportion_bar,
-    status_bar, status_color,
+    commit_meta_spans, cursor_line, diffstat_spans, highlight_spans, proportion_bar, status_bar,
+    status_color,
 };
 
 /// Prefix-only hint entries: top-level keys and the transient prefixes,
@@ -34,16 +34,8 @@ const HINTS: &[Hint] = &[
 ];
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
-    let area = frame.area();
-    frame.render_widget(Block::new().style(app.theme.base()), area);
-    let [hint, body_area, bar] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(0),
-        Constraint::Length(1),
-    ])
-    .areas(area);
+    let (body_area, bar) = super::screen_chrome(frame, app, HINTS);
     app.status.viewport = body_area.height;
-    frame.render_widget(Paragraph::new(hint_line(app, HINTS)), hint);
     let (lines, scroll, line_rows) = body(app, body_area);
     app.status.body = body_area;
     app.status.scroll = scroll;
@@ -113,10 +105,12 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16, Vec<Option<usize>>) 
                 if let Some(offset) = selected {
                     cursor_line_index = lines.len() + offset;
                 }
+                // enrichment lands asynchronously: the hash in the key ties
+                // the spans to the exact content they were computed from
                 let syntax = app
                     .status
                     .highlights
-                    .get(&file_diff.path)
+                    .get(&(file_diff.path.clone(), file_diff.sides_hash()))
                     .map(|cached| (cached.old.as_slice(), cached.new.as_slice()));
                 lines.extend(render_hunk_lines(
                     &app.theme, hunk, syntax, area.width, selected,
@@ -436,11 +430,11 @@ fn ci_run_spans(
     spans.push(Span::raw(" ".repeat(pad)));
     let short: String = run.commit.chars().take(7).collect();
     spans.push(Span::styled(
-        format!("  {:<32}", elide(&run.title, 32)),
+        format!("  {:<32}", super::elide(&run.title, 32)),
         Style::new().fg(theme.fg),
     ));
     spans.push(Span::styled(
-        format!("  {:<18}", elide(&run.branch, 18)),
+        format!("  {:<18}", super::elide(&run.branch, 18)),
         Style::new().fg(theme.purple),
     ));
     spans.push(Span::styled(
@@ -457,16 +451,6 @@ fn ci_run_spans(
         }
     }
     spans
-}
-
-/// Truncate to `max` graphemes with an ellipsis.
-fn elide(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_owned()
-    } else {
-        let kept: String = s.chars().take(max.saturating_sub(1)).collect();
-        format!("{kept}…")
-    }
 }
 
 /// Summed `(added, deleted)` over every file in a section.
@@ -486,19 +470,8 @@ mod tests {
     use crate::config::LoadedConfig;
     use crate::event::AppEvent;
     use crate::test_support::{
-        Fixture, key, mouse_click, mouse_scroll, standard_fixture, two_hunk_fixture,
+        Fixture, key, mouse_click, mouse_scroll, render, standard_fixture, two_hunk_fixture,
     };
-
-    /// Render through the top-level draw so modal overlays and screen
-    /// switching are covered too.
-    fn render(app: &mut App) -> Terminal<TestBackend> {
-        let backend = TestBackend::new(120, 40);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal
-            .draw(|frame| crate::ui::draw(frame, app))
-            .expect("draw");
-        terminal
-    }
 
     #[test]
     fn status_shows_inline_ci_section() {
@@ -736,7 +709,8 @@ mod tests {
         let lib = app
             .status
             .highlights
-            .get("src/lib.rs")
+            .iter()
+            .find_map(|((path, _), cached)| (path == "src/lib.rs").then_some(cached))
             .expect("expanded file highlighted");
         assert!(
             lib.new.iter().any(|line| !line.is_empty()),

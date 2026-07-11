@@ -31,6 +31,37 @@ pub struct EnrichOutcome {
     pub scope: FileScope,
 }
 
+/// Queue `file` for enrichment unless the caller's own cache says it's
+/// already fresh (`ready`) or a job for the same content is already in
+/// flight. Shared by every enrichment call site (the diff pane and the
+/// status screen's expanded inline diffs) so the hash/inflight/push recipe
+/// lives in one place; each caller keeps only its own freshness check. Takes
+/// the two collections directly (rather than `&mut App`) so a caller mid-loop
+/// over data borrowed from another `App` field can still call it.
+pub(super) fn queue_if_stale(
+    inflight: &mut std::collections::HashSet<String>,
+    pending: &mut Vec<EnrichJob>,
+    file: &FileDiff,
+    semantic: bool,
+    ready: bool,
+) {
+    if ready {
+        return;
+    }
+    let hash = file.sides_hash();
+    if !inflight.insert(hash.clone()) {
+        return;
+    }
+    pending.push(EnrichJob {
+        path: file.path.clone(),
+        hash,
+        old_text: file.old_text.clone(),
+        new_text: file.new_text.clone(),
+        hunks: file.hunks.clone(),
+        semantic,
+    });
+}
+
 /// Run one job to completion (called on the blocking pool).
 pub fn run_enrich(highlighter: &Highlighter, job: EnrichJob) -> EnrichOutcome {
     let mut file = FileDiff {
@@ -113,44 +144,44 @@ impl App {
         if file.binary || file.hunks.is_empty() {
             return;
         }
-        let hash = file.sides_hash();
         let ready = diff
             .highlights
             .get(&file.path)
-            .is_some_and(|cached| cached.hash == hash)
+            .is_some_and(|cached| cached.hash == file.sides_hash())
             && diff.is_enriched(&file.path);
-        if ready || !self.enrich_inflight.insert(hash.clone()) {
-            return;
-        }
-        self.pending_enrich.push(EnrichJob {
-            path: file.path.clone(),
-            hash,
-            old_text: file.old_text.clone(),
-            new_text: file.new_text.clone(),
-            hunks: file.hunks.clone(),
+        queue_if_stale(
+            &mut self.enrich_inflight,
+            &mut self.pending_enrich,
+            file,
             semantic,
-        });
+            ready,
+        );
     }
 
-    /// Install a finished enrichment if the file still has the same content.
+    /// Install a finished enrichment wherever the file still has the same
+    /// content: the diff view's model and caches, and any expanded
+    /// status-section file (jobs from both screens share this worker path).
+    /// A stale outcome (the file changed mid-flight) installs nothing; the
+    /// next frame re-queues against the new content.
     pub(crate) fn on_enriched(&mut self, outcome: EnrichOutcome) {
         self.enrich_inflight.remove(&outcome.hash);
+        self.install_status_enrichment(&outcome);
         let Some(diff) = self.diff.as_mut() else {
             return;
         };
+        let same = |file: &FileDiff| file.path == outcome.path && file.sides_hash() == outcome.hash;
+        let file = match diff.commit_model.as_mut() {
+            Some(model) => model.files.iter_mut().find(|f| same(f)),
+            None => self.review.model_mut().files.iter_mut().find(|f| same(f)),
+        };
+        let Some(file) = file else {
+            return;
+        };
+        file.hunks = outcome.hunks;
         diff.highlights
             .insert(outcome.path.clone(), outcome.highlights);
         diff.scopes.insert(outcome.path.clone(), outcome.scope);
-        let same = |file: &FileDiff| file.path == outcome.path && file.sides_hash() == outcome.hash;
-        if let Some(model) = diff.commit_model.as_mut() {
-            if let Some(file) = model.files.iter_mut().find(|f| same(f)) {
-                file.hunks = outcome.hunks;
-                diff.mark_enriched(&outcome.path);
-            }
-        } else if let Some(file) = self.review.model_mut().files.iter_mut().find(|f| same(f)) {
-            file.hunks = outcome.hunks;
-            diff.mark_enriched(&outcome.path);
-        }
+        diff.mark_enriched(&outcome.path);
     }
 }
 
@@ -165,11 +196,12 @@ impl App {
                 hash: job.hash,
                 symbols: Vec::new(),
                 diff_files: job.diff_files,
+                note: None,
             });
         }
         let jobs: Vec<EnrichJob> = self.pending_enrich.drain(..).collect();
         for job in jobs {
-            let outcome = run_enrich(crate::ui::diff::highlighter(), job);
+            let outcome = run_enrich(&self.highlighter, job);
             self.on_enriched(outcome);
         }
     }
