@@ -9,8 +9,11 @@ use std::path::{Path, PathBuf};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use diffler_core::review::Review;
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 use tempfile::TempDir;
 
+use crate::app::App;
 use crate::event::AppEvent;
 
 pub struct Fixture {
@@ -176,6 +179,23 @@ pub fn mouse_drag(col: u16, row: u16) -> AppEvent {
         row,
         modifiers: KeyModifiers::NONE,
     })
+}
+
+/// Render through the top-level draw so modal overlays and screen switching
+/// are covered too. The first draw only queues enrichment (intra-line
+/// emphasis, syntax highlight); run it and draw again so the snapshot
+/// captures the settled frame, as the real app converges to.
+pub fn render(app: &mut App) -> Terminal<TestBackend> {
+    let backend = TestBackend::new(120, 40);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| crate::ui::draw(frame, app))
+        .expect("draw");
+    app.enrich_now();
+    terminal
+        .draw(|frame| crate::ui::draw(frame, app))
+        .expect("draw");
+    terminal
 }
 
 pub fn mouse_right_click(col: u16, row: u16) -> AppEvent {

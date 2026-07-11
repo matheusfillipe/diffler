@@ -193,3 +193,122 @@ impl App {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::LoadedConfig;
+    use crate::test_support::{Fixture, esc_key, key, standard_fixture};
+
+    fn app() -> (Fixture, App) {
+        let fixture = standard_fixture();
+        let app = App::new(fixture.review(), LoadedConfig::default());
+        (fixture, app)
+    }
+
+    // standard_fixture's status rows (flat layout): Untracked header,
+    // todo.md, Unstaged header, src/lib.rs, Staged header, ci.yml, Recent
+    // commits header — src/lib.rs sits at index 3, ci.yml at index 5.
+
+    #[test]
+    fn slash_search_filters_status_rows_and_moves_the_cursor_live() {
+        let (_fixture, mut app) = app();
+        app.handle(key('/'));
+        assert!(app.search.as_ref().expect("search open").open);
+        for c in "lib".chars() {
+            app.handle(key(c));
+        }
+        assert_eq!(app.search.as_ref().unwrap().query(), "lib");
+        assert_eq!(
+            app.status.cursor, 3,
+            "typing narrows the match onto src/lib.rs live"
+        );
+    }
+
+    #[test]
+    fn enter_commits_the_status_search_and_seats_the_cursor_on_the_match() {
+        let (_fixture, mut app) = app();
+        app.handle(key('/'));
+        for c in "ci.yml".chars() {
+            app.handle(key(c));
+        }
+        app.handle(key('\n'));
+        assert!(
+            !app.search.as_ref().unwrap().open,
+            "the prompt closes on commit"
+        );
+        assert_eq!(app.status.cursor, 5, "cursor lands on the matched row");
+    }
+
+    #[test]
+    fn escape_cancels_the_status_search_and_restores_the_origin_cursor() {
+        let (_fixture, mut app) = app();
+        app.status.cursor = 2; // the Unstaged section header — the search origin
+        app.handle(key('/'));
+        for c in "ci.yml".chars() {
+            app.handle(key(c));
+        }
+        assert_eq!(app.status.cursor, 5, "typing moved off the origin");
+        app.handle(esc_key());
+        assert!(app.search.is_none());
+        assert_eq!(app.status.cursor, 2, "escape restores the origin row");
+    }
+
+    #[test]
+    fn slash_search_filters_diff_list_rows_and_moves_the_tree_cursor() {
+        let (_fixture, mut app) = app();
+        app.open_working_tree_diff(None);
+        assert_eq!(app.screen(), Screen::Diff);
+        let target = app
+            .diff_search_rows()
+            .into_iter()
+            .find(|(_, text)| text.contains("lib.rs"))
+            .map(|(row, _)| row)
+            .expect("src/lib.rs is in the diff file list");
+
+        app.handle(key('/'));
+        for c in "lib".chars() {
+            app.handle(key(c));
+        }
+        assert_eq!(app.diff.as_ref().unwrap().tree_cursor, target);
+    }
+
+    #[test]
+    fn enter_commits_the_diff_search_and_seats_the_cursor_on_the_match() {
+        let (_fixture, mut app) = app();
+        app.open_working_tree_diff(None);
+        let target = app
+            .diff_search_rows()
+            .into_iter()
+            .find(|(_, text)| text.contains("lib.rs"))
+            .map(|(row, _)| row)
+            .expect("src/lib.rs is in the diff file list");
+
+        app.handle(key('/'));
+        for c in "lib".chars() {
+            app.handle(key(c));
+        }
+        app.handle(key('\n'));
+        assert!(!app.search.as_ref().unwrap().open);
+        assert_eq!(app.diff.as_ref().unwrap().tree_cursor, target);
+    }
+
+    #[test]
+    fn escape_cancels_the_diff_search_and_restores_the_origin_cursor() {
+        let (_fixture, mut app) = app();
+        app.open_working_tree_diff(None);
+        let origin = app.diff.as_ref().unwrap().tree_cursor;
+
+        app.handle(key('/'));
+        for c in "lib".chars() {
+            app.handle(key(c));
+        }
+        app.handle(esc_key());
+        assert!(app.search.is_none());
+        assert_eq!(
+            app.diff.as_ref().unwrap().tree_cursor,
+            origin,
+            "escape restores the origin row"
+        );
+    }
+}

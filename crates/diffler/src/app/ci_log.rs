@@ -581,6 +581,79 @@ mod tests {
     }
 
     #[test]
+    fn ci_log_mouse_press_selects_the_row_and_drops_the_anchor() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let mut view = CiLogView::parse(RAW, &[]);
+        view.body = ratatui::layout::Rect::new(0, 0, 40, 10);
+        view.visual_anchor = Some(0);
+        app.ci_log = Some(view);
+
+        app.ci_log_mouse(MouseGesture::Press { col: 1, row: 2 });
+        let view = app.ci_log.as_ref().expect("view");
+        assert_eq!(view.cursor, 2);
+        assert!(
+            view.visual_anchor.is_none(),
+            "a plain click drops any selection"
+        );
+    }
+
+    #[test]
+    fn ci_log_mouse_drag_extends_the_visual_selection() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let mut view = CiLogView::parse(RAW, &[]);
+        view.body = ratatui::layout::Rect::new(0, 0, 40, 10);
+        app.ci_log = Some(view);
+
+        app.ci_log_mouse(MouseGesture::Drag { col: 0, row: 2 });
+        let view = app.ci_log.as_ref().expect("view");
+        assert_eq!(
+            view.visual_anchor,
+            Some(0),
+            "drag anchors at the prior cursor"
+        );
+        assert_eq!(view.cursor, 2);
+    }
+
+    #[test]
+    fn ci_log_mouse_cancel_drops_the_visual_anchor() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let mut view = CiLogView::parse(RAW, &[]);
+        view.visual_anchor = Some(0);
+        app.ci_log = Some(view);
+
+        app.ci_log_mouse(MouseGesture::Cancel);
+        assert!(app.ci_log.as_ref().unwrap().visual_anchor.is_none());
+    }
+
+    #[test]
+    fn ci_log_page_moves_the_cursor_by_the_viewport_and_clamps() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let mut view = CiLogView::parse(RAW, &[]);
+        // unfold every step so there are enough rows to page through
+        for step in &mut view.steps {
+            step.folded = false;
+        }
+        view.viewport = 4; // half-page = 2, full-page = 3
+        app.ci_log = Some(view);
+
+        app.ci_log_page(false, false); // half down
+        assert_eq!(app.ci_log.as_ref().unwrap().cursor, 2);
+        app.ci_log_page(false, true); // full down
+        assert_eq!(app.ci_log.as_ref().unwrap().cursor, 5);
+        app.ci_log_page(false, true); // clamps at the last row
+        assert_eq!(app.ci_log.as_ref().unwrap().cursor, 6);
+        app.ci_log_page(true, false); // half up
+        assert_eq!(app.ci_log.as_ref().unwrap().cursor, 4);
+        app.ci_log_page(true, true); // full up
+        app.ci_log_page(true, true); // clamps at the top
+        assert_eq!(app.ci_log.as_ref().unwrap().cursor, 0);
+    }
+
+    #[test]
     fn a_skipped_step_mid_list_claims_no_lines() {
         // a skipped step (start_key 0) sits between two real steps; its zero key
         // must not swallow the first step's output

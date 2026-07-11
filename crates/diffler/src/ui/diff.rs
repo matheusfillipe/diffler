@@ -921,7 +921,8 @@ mod tests {
     use crate::app::{App, DiffRow, Pane};
     use crate::config::LoadedConfig;
     use crate::test_support::{
-        Fixture, key, mouse_click, mouse_drag, mouse_right_click, mouse_scroll, standard_fixture,
+        Fixture, key, mouse_click, mouse_drag, mouse_right_click, mouse_scroll, render,
+        standard_fixture,
     };
     use crate::theme::Theme;
 
@@ -988,21 +989,6 @@ mod tests {
             lit, "status",
             "the match stays lit after clipping: {clipped:?}"
         );
-    }
-
-    fn render(app: &mut App) -> Terminal<TestBackend> {
-        let backend = TestBackend::new(120, 40);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal
-            .draw(|frame| crate::ui::draw(frame, app))
-            .expect("draw");
-        // the first draw only queues enrichment; run it and draw again so the
-        // snapshot captures the settled frame, as the app converges to
-        app.enrich_now();
-        terminal
-            .draw(|frame| crate::ui::draw(frame, app))
-            .expect("draw");
-        terminal
     }
 
     fn diff_app() -> (crate::test_support::Fixture, App) {

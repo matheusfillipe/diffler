@@ -72,3 +72,51 @@ fn draw_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .collect();
     frame.render_widget(Paragraph::new(rows), area);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ci::PullRequest;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use crate::config::LoadedConfig;
+    use crate::test_support::standard_fixture;
+
+    fn pr(number: u64, title: &str, author: &str, head_ref: &str, base_ref: &str) -> PullRequest {
+        PullRequest {
+            number,
+            title: title.to_owned(),
+            url: None,
+            base_ref: base_ref.to_owned(),
+            head_ref: head_ref.to_owned(),
+            head_oid: "0".repeat(40),
+            author: author.to_owned(),
+        }
+    }
+
+    #[test]
+    fn renders_the_pr_list_with_a_selection() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.prs = vec![
+            pr(12, "Add widgets", "alice", "feat/widgets", "main"),
+            pr(9, "Fix flaky test", "bob", "fix/flaky", "main"),
+        ];
+        app.prs_cursor = 1;
+        let backend = TestBackend::new(80, 8);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|f| draw(f, &mut app)).expect("draw");
+        insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn renders_no_open_pull_requests() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let backend = TestBackend::new(80, 6);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|f| draw(f, &mut app)).expect("draw");
+        insta::assert_snapshot!(terminal.backend());
+    }
+}

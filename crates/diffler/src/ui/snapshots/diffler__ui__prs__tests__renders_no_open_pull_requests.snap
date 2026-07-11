@@ -1,0 +1,10 @@
+---
+source: crates/diffler/src/ui/prs.rs
+expression: terminal.backend()
+---
+" Hint: <cr> review  / search  ? help                                            "
+"  no open pull requests…                                                        "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+" STATUS  fixture@main  mcp off  3 files, 0 viewed                               "

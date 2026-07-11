@@ -471,25 +471,8 @@ mod tests {
     use crate::config::LoadedConfig;
     use crate::event::AppEvent;
     use crate::test_support::{
-        Fixture, key, mouse_click, mouse_scroll, standard_fixture, two_hunk_fixture,
+        Fixture, key, mouse_click, mouse_scroll, render, standard_fixture, two_hunk_fixture,
     };
-
-    /// Render through the top-level draw so modal overlays and screen
-    /// switching are covered too.
-    fn render(app: &mut App) -> Terminal<TestBackend> {
-        let backend = TestBackend::new(120, 40);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal
-            .draw(|frame| crate::ui::draw(frame, app))
-            .expect("draw");
-        // the first draw only queues enrichment for expanded inline diffs;
-        // run it and draw again so the snapshot captures the settled frame
-        app.enrich_now();
-        terminal
-            .draw(|frame| crate::ui::draw(frame, app))
-            .expect("draw");
-        terminal
-    }
 
     #[test]
     fn status_shows_inline_ci_section() {
