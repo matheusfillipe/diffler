@@ -9,14 +9,14 @@ use std::path::{Path, PathBuf};
 
 use tempfile::TempDir;
 
-pub struct Fixture {
+pub(crate) struct Fixture {
     _dir: TempDir,
     pub root: PathBuf,
 }
 
 /// One committed file with an unstaged edit (`41` → `42` on line 2), the
 /// same shape the unit-test fixtures use.
-pub fn fixture() -> Fixture {
+pub(crate) fn fixture() -> Fixture {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path().join("fixture");
     std::fs::create_dir(&root).expect("repo dir");

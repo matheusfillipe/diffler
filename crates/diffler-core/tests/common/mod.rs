@@ -9,13 +9,13 @@ use std::path::Path;
 use tempfile::TempDir;
 
 /// A throwaway git repo with helpers to commit and mutate files.
-pub struct Fixture {
+pub(crate) struct Fixture {
     pub dir: TempDir,
     pub repo: git2::Repository,
 }
 
 impl Fixture {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let repo = git2::Repository::init(dir.path()).expect("init");
         let mut config = repo.config().expect("config");
@@ -28,7 +28,7 @@ impl Fixture {
         Self { dir, repo }
     }
 
-    pub fn write(&self, rel: &str, content: &str) {
+    pub(crate) fn write(&self, rel: &str, content: &str) {
         let path = self.dir.path().join(rel);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).expect("mkdir");
@@ -36,11 +36,11 @@ impl Fixture {
         fs::write(path, content).expect("write");
     }
 
-    pub fn remove(&self, rel: &str) {
+    pub(crate) fn remove(&self, rel: &str) {
         fs::remove_file(self.dir.path().join(rel)).expect("remove");
     }
 
-    pub fn commit_all(&self, message: &str) {
+    pub(crate) fn commit_all(&self, message: &str) {
         let mut index = self.repo.index().expect("index");
         index
             .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
@@ -56,14 +56,14 @@ impl Fixture {
             .expect("commit");
     }
 
-    pub fn stage(&self, rel: &str) {
+    pub(crate) fn stage(&self, rel: &str) {
         let mut index = self.repo.index().expect("index");
         index.add_path(Path::new(rel)).expect("add");
         index.write().expect("index write");
     }
 
     /// Create a branch at HEAD without checking it out.
-    pub fn branch(&self, name: &str) {
+    pub(crate) fn branch(&self, name: &str) {
         let head = self
             .repo
             .head()
@@ -73,7 +73,7 @@ impl Fixture {
         self.repo.branch(name, &head, false).expect("branch");
     }
 
-    pub fn checkout(&self, name: &str) {
+    pub(crate) fn checkout(&self, name: &str) {
         self.repo
             .set_head(&format!("refs/heads/{name}"))
             .expect("set head");
@@ -82,7 +82,7 @@ impl Fixture {
         self.repo.checkout_head(Some(&mut cb)).expect("checkout");
     }
 
-    pub fn root(&self) -> &Path {
+    pub(crate) fn root(&self) -> &Path {
         self.dir.path()
     }
 }

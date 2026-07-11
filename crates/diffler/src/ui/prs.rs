@@ -18,7 +18,7 @@ const HINTS: &[Hint] = &[
     Hint::Leaf(&[Action::Help], "help"),
 ];
 
-pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
+pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let (body, bar) = super::screen_chrome(frame, app, HINTS);
     draw_list(frame, app, body);
     frame.render_widget(Paragraph::new(super::status_bar(app, bar.width)), bar);
