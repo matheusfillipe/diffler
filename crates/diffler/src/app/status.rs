@@ -8,7 +8,7 @@ use std::path::Path;
 use diffler_core::model::FileDiff;
 use diffler_core::vcs::{LogEntry, NetworkOp};
 
-use super::enrich::{EnrichJob, EnrichOutcome};
+use super::enrich::EnrichOutcome;
 use super::{App, BranchAction, FileHighlights, Modal, PendingOp};
 use crate::config::FileLayout;
 use crate::keymap::Action;
@@ -395,24 +395,19 @@ impl App {
                 if file.binary || file.hunks.is_empty() || !expanded.contains(&file.path) {
                     continue;
                 }
-                let hash = file.sides_hash();
                 let ready = enriched.contains(&file.path)
                     && self
                         .status
                         .highlights
                         .get(&file.path)
-                        .is_some_and(|cached| cached.hash == hash);
-                if ready || !self.enrich_inflight.insert(hash.clone()) {
-                    continue;
-                }
-                self.pending_enrich.push(EnrichJob {
-                    path: file.path.clone(),
-                    hash,
-                    old_text: file.old_text.clone(),
-                    new_text: file.new_text.clone(),
-                    hunks: file.hunks.clone(),
+                        .is_some_and(|cached| cached.hash == file.sides_hash());
+                super::enrich::queue_if_stale(
+                    &mut self.enrich_inflight,
+                    &mut self.pending_enrich,
+                    file,
                     semantic,
-                });
+                    ready,
+                );
             }
         }
     }
@@ -828,12 +823,9 @@ impl App {
                 {
                     set.insert(path.clone());
                 }
-                let position = self.visible_rows().iter().position(
+                self.seat_cursor_on(
                     |row| matches!(row, Row::Dir { section: s, path: p, .. } if *s == section && *p == path),
                 );
-                if let Some(position) = position {
-                    self.status.cursor = position;
-                }
             }
             Row::File { section, index, .. } => {
                 let Some(path) = self
@@ -861,46 +853,35 @@ impl App {
                     set.remove(&path);
                 }
                 // collapsing from inside lands the cursor on the file row
-                let position = self.visible_rows().iter().position(
+                self.seat_cursor_on(
                     |row| matches!(row, Row::File { section: s, index, .. } if *s == section && *index == file),
                 );
-                if let Some(position) = position {
-                    self.status.cursor = position;
-                }
             }
             Row::RecentHeader { .. } | Row::Commit { .. } => {
                 self.status.recent_folded ^= true;
-                let position = self
-                    .visible_rows()
-                    .iter()
-                    .position(|row| matches!(row, Row::RecentHeader { .. }));
-                if let Some(position) = position {
-                    self.status.cursor = position;
-                }
+                self.seat_cursor_on(|row| matches!(row, Row::RecentHeader { .. }));
             }
             Row::Pr => {}
             Row::CiHeader { .. } | Row::CiRun { .. } => {
                 self.status.ci_folded ^= true;
-                let position = self
-                    .visible_rows()
-                    .iter()
-                    .position(|row| matches!(row, Row::CiHeader { .. }));
-                if let Some(position) = position {
-                    self.status.cursor = position;
-                }
+                self.seat_cursor_on(|row| matches!(row, Row::CiHeader { .. }));
             }
         }
         self.clamp_cursor();
     }
 
-    fn cursor_to_section_header(&mut self, section: Section) {
-        let position = self
-            .visible_rows()
-            .iter()
-            .position(|row| matches!(row, Row::SectionHeader { section: s, .. } if *s == section));
-        if let Some(position) = position {
+    /// Move the cursor onto the first visible row matching `pred`, if any —
+    /// the re-seat every fold toggle needs once the row set it sits in shifts.
+    fn seat_cursor_on(&mut self, pred: impl Fn(&Row) -> bool) {
+        if let Some(position) = self.visible_rows().iter().position(pred) {
             self.status.cursor = position;
         }
+    }
+
+    fn cursor_to_section_header(&mut self, section: Section) {
+        self.seat_cursor_on(
+            |row| matches!(row, Row::SectionHeader { section: s, .. } if *s == section),
+        );
     }
 
     /// Move the cursor to the next/previous row matching `target`.

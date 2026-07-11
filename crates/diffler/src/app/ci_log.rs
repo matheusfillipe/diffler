@@ -6,8 +6,11 @@
 //! after. Without step metadata (e.g. GitLab) it falls back to the runner's
 //! `##[group]` markers. Folded by default; keymap-driven like the diff.
 
-use crate::ci::{JobStatus, LogStepMeta, ts_sort_key};
 use ratatui::layout::Rect;
+
+use super::{App, CiRequest, MouseGesture, Screen, hit_index, page_step};
+use crate::ci::{JobStatus, LogStepMeta, ts_sort_key};
+use crate::keymap::Action;
 
 /// One collapsible step: its name, status, run time, and log lines. `name` is
 /// empty (and `status` `None`) for the leading section of pre-step output.
@@ -148,6 +151,145 @@ impl CiLogView {
     }
 }
 
+impl App {
+    /// Open a job's log view from a graph node activation. Declines instead of
+    /// opening onto a screen that can only ever show "waiting for logs…": a
+    /// provider with `LogMode::None` (e.g. Forgejo, whose job-log endpoint
+    /// isn't wired up) would otherwise error on every poll forever.
+    pub(super) fn open_ci_log(&mut self, job: crate::ci::JobId) {
+        let Some(run) = self.open_run.clone() else {
+            return;
+        };
+        let has_logs = self.ci_remote_for_open_run().is_none_or(|remote| {
+            crate::ci::capabilities_for(remote.detected.kind).logs != crate::ci::LogMode::None
+        });
+        if !has_logs {
+            self.info("this CI provider doesn't expose job logs");
+            return;
+        }
+        self.open_job = Some(job.clone());
+        self.log_text.clear();
+        self.log_offset = 0;
+        self.log_steps.clear();
+        self.ci_log = None;
+        self.log_done = false;
+        self.push_screen(Screen::CiLog);
+        self.pending_ci = Some(CiRequest::Log {
+            run,
+            job,
+            offset: 0,
+        });
+    }
+
+    /// Append a job-log chunk, refresh the step metadata, and rebuild the
+    /// foldable view, carrying the prior fold state across the re-poll.
+    pub(super) fn on_ci_log(
+        &mut self,
+        text: &str,
+        steps: Vec<crate::ci::LogStepMeta>,
+        offset: u64,
+        done: bool,
+    ) {
+        self.log_text.push_str(text);
+        self.log_offset = offset;
+        self.log_done = done;
+        if !steps.is_empty() {
+            self.log_steps = steps;
+        }
+        let rebuilt = CiLogView::parse(&self.log_text, &self.log_steps);
+        self.ci_log = Some(match self.ci_log.take() {
+            Some(prev) => prev.carry_into(rebuilt),
+            None => rebuilt,
+        });
+    }
+
+    pub(super) fn ci_log_mouse(&mut self, gesture: MouseGesture) {
+        let Some(view) = self.ci_log.as_mut() else {
+            return;
+        };
+        let last = view.rows().len().saturating_sub(1);
+        match gesture {
+            MouseGesture::Scroll { down, .. } => {
+                let delta = if down { 3 } else { -3 };
+                view.cursor = view.cursor.saturating_add_signed(delta).min(last);
+            }
+            MouseGesture::Press { col, row } => {
+                if let Some(i) = hit_index(view.body, view.scroll, col, row).filter(|i| *i <= last)
+                {
+                    view.cursor = i;
+                    view.visual_anchor = None;
+                }
+            }
+            MouseGesture::DoublePress { col, row } => {
+                if let Some(i) = hit_index(view.body, view.scroll, col, row).filter(|i| *i <= last)
+                {
+                    view.cursor = i;
+                    view.toggle_fold_at_cursor();
+                }
+            }
+            MouseGesture::Drag { col, row } => {
+                if let Some(i) = hit_index(view.body, view.scroll, col, row).filter(|i| *i <= last)
+                {
+                    if view.visual_anchor.is_none() {
+                        view.visual_anchor = Some(view.cursor);
+                    }
+                    view.cursor = i;
+                }
+            }
+            MouseGesture::Cancel => view.visual_anchor = None,
+        }
+    }
+
+    /// Drive the foldable CI-log view from a keymap [`Action`]: motions, fold,
+    /// visual select, and yank. The `CiLog` screen reuses the diff/log keymap.
+    pub(super) fn dispatch_ci_log(&mut self, action: Action) {
+        let Some(view) = self.ci_log.as_mut() else {
+            return;
+        };
+        let last = view.rows().len().saturating_sub(1);
+        match action {
+            Action::MoveDown => view.cursor = (view.cursor + 1).min(last),
+            Action::MoveUp => view.cursor = view.cursor.saturating_sub(1),
+            Action::GoTop => view.cursor = 0,
+            Action::GoBottom => view.cursor = last,
+            Action::HalfPageDown => self.ci_log_page(false, false),
+            Action::HalfPageUp => self.ci_log_page(true, false),
+            Action::FullPageDown => self.ci_log_page(false, true),
+            Action::FullPageUp => self.ci_log_page(true, true),
+            Action::ToggleFold => view.toggle_fold_at_cursor(),
+            Action::VisualSelect => {
+                view.visual_anchor = match view.visual_anchor {
+                    Some(_) => None,
+                    None => Some(view.cursor),
+                };
+            }
+            Action::CopyFileFeedback | Action::CopyAllFeedback => {
+                self.pending_clipboard = Some(view.selection_text());
+                let view = self.ci_log.as_mut();
+                if let Some(view) = view {
+                    view.visual_anchor = None;
+                }
+                self.info("yanked log selection");
+            }
+            _ => {}
+        }
+    }
+
+    /// Half/full-page cursor jump over the CI-log view, mirroring `log_page`.
+    pub(super) fn ci_log_page(&mut self, up: bool, full: bool) {
+        let Some(view) = self.ci_log.as_mut() else {
+            return;
+        };
+        let last = view.rows().len().saturating_sub(1);
+        let step = page_step(view.viewport, full);
+        view.cursor = if up {
+            view.cursor.saturating_sub(step)
+        } else {
+            (view.cursor + step).min(last)
+        };
+    }
+}
+
 /// Bucket lines into the job's real steps by timestamp: a line joins the last
 /// step whose start it's at or after; earlier lines form a leading section.
 fn sections_by_step(raw: &str, metas: &[LogStepMeta]) -> Vec<CiLogStep> {
@@ -272,6 +414,54 @@ pub fn strip_ansi(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::CiRemote;
+    use crate::config::LoadedConfig;
+    use crate::test_support::standard_fixture;
+
+    #[test]
+    fn open_ci_log_declines_when_the_provider_has_no_logs() {
+        // Forgejo's job-log endpoint isn't wired up (`LogMode::None`); opening
+        // the log screen anyway would poll a request that fails forever
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.ci_remotes = vec![CiRemote {
+            name: "origin".into(),
+            detected: crate::ci::Detected {
+                kind: crate::ci::ProviderKind::Forgejo,
+                host: None,
+            },
+            url: None,
+        }];
+        app.open_run = Some(crate::ci::RunId("1".into()));
+        app.open_run_remote = Some("origin".into());
+        app.open_ci_log(crate::ci::JobId("lint".into()));
+        assert_ne!(
+            app.screen(),
+            Screen::CiLog,
+            "no log screen for a provider with no log support"
+        );
+        let message = app.message.expect("info message");
+        assert!(message.text.contains("job logs"), "{}", message.text);
+    }
+
+    #[test]
+    fn open_ci_log_opens_for_a_provider_with_logs() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.ci_remotes = vec![CiRemote {
+            name: "origin".into(),
+            detected: crate::ci::Detected {
+                kind: crate::ci::ProviderKind::GitHub,
+                host: None,
+            },
+            url: None,
+        }];
+        app.open_run = Some(crate::ci::RunId("1".into()));
+        app.open_run_remote = Some("origin".into());
+        app.open_ci_log(crate::ci::JobId("lint".into()));
+        assert_eq!(app.screen(), Screen::CiLog);
+        assert!(matches!(app.pending_ci, Some(CiRequest::Log { .. })));
+    }
 
     // mirrors the real `gh --log` shape: a `<job>\t<step>\t<ts>` prefix (the step
     // column is the literal junk `gh` emits), `##[group]`/`##[endgroup]` markers,

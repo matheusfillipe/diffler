@@ -6,7 +6,8 @@ use async_trait::async_trait;
 
 use crate::ci::error::{CiError, Result};
 use crate::ci::model::{
-    Capabilities, CiRun, JobId, LogChunk, PrComment, PullRequest, RunDetail, RunExtras, RunId,
+    Capabilities, CiRun, DagSource, JobId, LogChunk, LogMode, PrComment, PullRequest, RunDetail,
+    RunExtras, RunId,
 };
 
 /// Which forge an adapter talks to.
@@ -17,6 +18,27 @@ pub enum ProviderKind {
     Forgejo,
 }
 
+/// The capabilities of a provider kind — a pure function of `kind()`, so it's
+/// exposed standalone: UI code can gate an affordance from just the detected
+/// kind (a [`CiRemote`](crate::app::CiRemote)'s `detected.kind`) without
+/// constructing a full provider first.
+pub fn capabilities_for(kind: ProviderKind) -> Capabilities {
+    match kind {
+        ProviderKind::GitHub => Capabilities {
+            dag: DagSource::ConfigFile,
+            logs: LogMode::Dump,
+        },
+        ProviderKind::GitLab => Capabilities {
+            dag: DagSource::RunApi,
+            logs: LogMode::Poll,
+        },
+        ProviderKind::Forgejo => Capabilities {
+            dag: DagSource::None,
+            logs: LogMode::None,
+        },
+    }
+}
+
 // `Sync` (not just `Send`) is required so the async-trait macro can generate a
 // boxed future for the PR-review methods' default bodies below without
 // knowing the concrete `Self` — every adapter is already `Sync` (their fields
@@ -25,8 +47,11 @@ pub enum ProviderKind {
 pub trait ForgeProvider: Send + Sync {
     fn kind(&self) -> ProviderKind;
 
-    /// What this provider can do, so the UI degrades honestly.
-    fn capabilities(&self) -> Capabilities;
+    /// What this provider can do, so the UI degrades honestly. A pure
+    /// function of `kind()` for every adapter, so the default covers them all.
+    fn capabilities(&self) -> Capabilities {
+        capabilities_for(self.kind())
+    }
 
     /// The most recent runs, newest first, capped at `limit`.
     async fn list_runs(&self, limit: usize) -> Result<Vec<CiRun>>;

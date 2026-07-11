@@ -419,6 +419,18 @@ pub(super) fn scroll_to_cursor(cursor: usize, scroll: usize, height: usize) -> u
     }
 }
 
+/// Truncate to `max` graphemes with an ellipsis. Shared by the runs list and
+/// the status screen's inline CI section, which both fit run metadata into
+/// fixed-width columns.
+pub(super) fn elide(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_owned()
+    } else {
+        let kept: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{kept}…")
+    }
+}
+
 pub(super) fn cursor_line(line: Line<'static>, theme: &Theme, width: u16) -> Line<'static> {
     let pad = (width as usize).saturating_sub(line.width());
     let mut spans: Vec<Span<'static>> = line

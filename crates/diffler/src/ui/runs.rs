@@ -76,8 +76,8 @@ fn draw_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 .as_ref()
                 .map(|s| s.ranges_for(i))
                 .unwrap_or_default();
-            let name_txt = format!("{:<16}", truncate(&run.name, 16));
-            let title_txt = format!("{:<32}", truncate(&run.title, 32));
+            let name_txt = format!("{:<16}", super::elide(&run.name, 16));
+            let title_txt = format!("{:<32}", super::elide(&run.title, 32));
             let mut spans = vec![
                 Span::styled(marker, Style::new().fg(app.theme.warn_fg)),
                 Span::styled(format!("{glyph} "), Style::new().fg(color)),
@@ -101,7 +101,7 @@ fn draw_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
             ));
             spans.extend([
                 Span::styled(
-                    format!("  {:<14}", truncate(&run.branch, 14)),
+                    format!("  {:<14}", super::elide(&run.branch, 14)),
                     Style::new().fg(app.theme.purple),
                 ),
                 Span::styled(format!("  {short}"), Style::new().fg(app.theme.warn_fg)),
@@ -119,15 +119,6 @@ fn draw_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
         })
         .collect();
     frame.render_widget(Paragraph::new(rows), area);
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_owned()
-    } else {
-        let kept: String = s.chars().take(max.saturating_sub(1)).collect();
-        format!("{kept}…")
-    }
 }
 
 #[cfg(test)]

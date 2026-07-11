@@ -1,46 +1,10 @@
-//! CI screens: the runs list, the run graph, and job logs.
+//! CI screens: the runs list and the run graph. Job-log handlers live with
+//! their screen state in [`super::ci_log`].
 
-use super::{App, CiRequest, MouseGesture, Screen, ci_log, hit_index, page_step};
+use super::{App, CiRequest, Screen, page_step};
 use crate::keymap::Action;
 
 impl App {
-    pub(super) fn ci_log_mouse(&mut self, gesture: MouseGesture) {
-        let Some(view) = self.ci_log.as_mut() else {
-            return;
-        };
-        let last = view.rows().len().saturating_sub(1);
-        match gesture {
-            MouseGesture::Scroll { down, .. } => {
-                let delta = if down { 3 } else { -3 };
-                view.cursor = view.cursor.saturating_add_signed(delta).min(last);
-            }
-            MouseGesture::Press { col, row } => {
-                if let Some(i) = hit_index(view.body, view.scroll, col, row).filter(|i| *i <= last)
-                {
-                    view.cursor = i;
-                    view.visual_anchor = None;
-                }
-            }
-            MouseGesture::DoublePress { col, row } => {
-                if let Some(i) = hit_index(view.body, view.scroll, col, row).filter(|i| *i <= last)
-                {
-                    view.cursor = i;
-                    view.toggle_fold_at_cursor();
-                }
-            }
-            MouseGesture::Drag { col, row } => {
-                if let Some(i) = hit_index(view.body, view.scroll, col, row).filter(|i| *i <= last)
-                {
-                    if view.visual_anchor.is_none() {
-                        view.visual_anchor = Some(view.cursor);
-                    }
-                    view.cursor = i;
-                }
-            }
-            MouseGesture::Cancel => view.visual_anchor = None,
-        }
-    }
-
     /// A second left-press at (about) the same cell within the double-click
     /// window. Resets after firing so a third press starts fresh.
     pub(super) fn open_runs(&mut self) {
@@ -66,28 +30,6 @@ impl App {
         self.graph = Some(crate::graph::GraphView::new());
         self.push_screen(Screen::Graph);
         self.pending_ci = Some(CiRequest::Detail(id));
-    }
-
-    /// Append a job-log chunk, refresh the step metadata, and rebuild the
-    /// foldable view, carrying the prior fold state across the re-poll.
-    pub(super) fn on_ci_log(
-        &mut self,
-        text: &str,
-        steps: Vec<crate::ci::LogStepMeta>,
-        offset: u64,
-        done: bool,
-    ) {
-        self.log_text.push_str(text);
-        self.log_offset = offset;
-        self.log_done = done;
-        if !steps.is_empty() {
-            self.log_steps = steps;
-        }
-        let rebuilt = ci_log::CiLogView::parse(&self.log_text, &self.log_steps);
-        self.ci_log = Some(match self.ci_log.take() {
-            Some(prev) => prev.carry_into(rebuilt),
-            None => rebuilt,
-        });
     }
 
     /// Fold a branch-scoped runs poll into the inline section, then resolve the
@@ -116,25 +58,6 @@ impl App {
         {
             self.pending_ci = Some(CiRequest::Extras(run));
         }
-    }
-
-    /// Open a job's log view from a graph node activation.
-    pub(super) fn open_ci_log(&mut self, job: crate::ci::JobId) {
-        let Some(run) = self.open_run.clone() else {
-            return;
-        };
-        self.open_job = Some(job.clone());
-        self.log_text.clear();
-        self.log_offset = 0;
-        self.log_steps.clear();
-        self.ci_log = None;
-        self.log_done = false;
-        self.push_screen(Screen::CiLog);
-        self.pending_ci = Some(CiRequest::Log {
-            run,
-            job,
-            offset: 0,
-        });
     }
 
     /// Queue the poll for the active CI screen onto `pending_ci`.
@@ -188,55 +111,6 @@ impl App {
             Action::Open => self.open_selected_run(),
             _ => {}
         }
-    }
-
-    /// Drive the foldable CI-log view from a keymap [`Action`]: motions, fold,
-    /// visual select, and yank. The `CiLog` screen reuses the diff/log keymap.
-    pub(super) fn dispatch_ci_log(&mut self, action: Action) {
-        let Some(view) = self.ci_log.as_mut() else {
-            return;
-        };
-        let last = view.rows().len().saturating_sub(1);
-        match action {
-            Action::MoveDown => view.cursor = (view.cursor + 1).min(last),
-            Action::MoveUp => view.cursor = view.cursor.saturating_sub(1),
-            Action::GoTop => view.cursor = 0,
-            Action::GoBottom => view.cursor = last,
-            Action::HalfPageDown => self.ci_log_page(false, false),
-            Action::HalfPageUp => self.ci_log_page(true, false),
-            Action::FullPageDown => self.ci_log_page(false, true),
-            Action::FullPageUp => self.ci_log_page(true, true),
-            Action::ToggleFold => view.toggle_fold_at_cursor(),
-            Action::VisualSelect => {
-                view.visual_anchor = match view.visual_anchor {
-                    Some(_) => None,
-                    None => Some(view.cursor),
-                };
-            }
-            Action::CopyFileFeedback | Action::CopyAllFeedback => {
-                self.pending_clipboard = Some(view.selection_text());
-                let view = self.ci_log.as_mut();
-                if let Some(view) = view {
-                    view.visual_anchor = None;
-                }
-                self.info("yanked log selection");
-            }
-            _ => {}
-        }
-    }
-
-    /// Half/full-page cursor jump over the CI-log view, mirroring `log_page`.
-    pub(super) fn ci_log_page(&mut self, up: bool, full: bool) {
-        let Some(view) = self.ci_log.as_mut() else {
-            return;
-        };
-        let last = view.rows().len().saturating_sub(1);
-        let step = page_step(view.viewport, full);
-        view.cursor = if up {
-            view.cursor.saturating_sub(step)
-        } else {
-            (view.cursor + step).min(last)
-        };
     }
 
     /// Keymap actions on the graph screen. Search, help, and back are handled

@@ -9,8 +9,7 @@ use serde::Deserialize;
 use crate::ci::error::{CiError, Result, parse_json};
 use crate::ci::exec::CommandRunner;
 use crate::ci::model::{
-    Capabilities, CiJob, CiRun, DagSource, JobId, JobStatus, LogChunk, LogMode, PullRequest,
-    RunDetail, RunExtras, RunId,
+    CiJob, CiRun, JobId, JobStatus, LogChunk, PullRequest, RunDetail, RunExtras, RunId,
 };
 use crate::ci::provider::{ForgeProvider, ProviderKind};
 
@@ -80,13 +79,6 @@ impl ForgejoProvider {
 impl ForgeProvider for ForgejoProvider {
     fn kind(&self) -> ProviderKind {
         ProviderKind::Forgejo
-    }
-
-    fn capabilities(&self) -> Capabilities {
-        Capabilities {
-            dag: DagSource::None,
-            logs: LogMode::None,
-        }
     }
 
     async fn list_runs(&self, limit: usize) -> Result<Vec<CiRun>> {

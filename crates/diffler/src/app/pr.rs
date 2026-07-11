@@ -226,7 +226,7 @@ impl App {
             // flight also survives — the forge just hasn't heard yet
             let flip_inflight = inflight
                 .iter()
-                .any(|key| key.starts_with(&format!("res-{}-", root.id)));
+                .any(|key| key.starts_with(&resolve_key_prefix(&root.id)));
             root.status = if flip_inflight {
                 prior.status
             } else {
@@ -239,7 +239,7 @@ impl App {
             // same for a body rewrite the forge hasn't acknowledged yet
             let edit_inflight = inflight
                 .iter()
-                .any(|key| key.starts_with(&format!("e-{}-", root.id)));
+                .any(|key| key.starts_with(&edit_key_prefix(&root.id)));
             if edit_inflight {
                 root.body.clone_from(&prior.body);
             }
@@ -620,6 +620,19 @@ fn post_key(post: &PrPost) -> String {
         }
         PrPost::Delete { comment_id, .. } => format!("d-{comment_id}"),
     }
+}
+
+/// Prefix of a resolve toggle's inflight key for `comment_id`, regardless of
+/// direction — an in-flight check that doesn't care which way it flipped
+/// matches on this instead of a direction-specific [`post_key`].
+fn resolve_key_prefix(comment_id: &str) -> String {
+    format!("res-{comment_id}-")
+}
+
+/// Prefix of an edit's inflight key for `comment_id`, regardless of the body
+/// hash [`post_key`] mixes in.
+fn edit_key_prefix(comment_id: &str) -> String {
+    format!("e-{comment_id}-")
 }
 
 #[cfg(test)]

@@ -14,9 +14,8 @@ use serde::Deserialize;
 use crate::ci::error::{CiError, Result, parse_json};
 use crate::ci::exec::CommandRunner;
 use crate::ci::model::{
-    Annotation, AnnotationLevel, Artifact, Capabilities, CiJob, CiRun, DagSource, JobId, JobStatus,
-    LogChunk, LogMode, LogStepMeta, PrComment, PullRequest, RunDetail, RunExtras, RunId,
-    ts_sort_key,
+    Annotation, AnnotationLevel, Artifact, CiJob, CiRun, JobId, JobStatus, LogChunk, LogStepMeta,
+    PrComment, PullRequest, RunDetail, RunExtras, RunId, ts_sort_key,
 };
 use crate::ci::provider::{ForgeProvider, ProviderKind};
 
@@ -268,13 +267,6 @@ impl GitHubProvider {
 impl ForgeProvider for GitHubProvider {
     fn kind(&self) -> ProviderKind {
         ProviderKind::GitHub
-    }
-
-    fn capabilities(&self) -> Capabilities {
-        Capabilities {
-            dag: DagSource::ConfigFile,
-            logs: LogMode::Dump,
-        }
     }
 
     async fn list_runs(&self, limit: usize) -> Result<Vec<CiRun>> {
@@ -1198,6 +1190,7 @@ impl From<AnnotationItem> for Annotation {
 mod tests {
     use super::*;
     use crate::ci::exec::test_support::RecordingRunner;
+    use crate::ci::model::{DagSource, LogMode};
 
     const WORKFLOW: &str = r"
 name: CI

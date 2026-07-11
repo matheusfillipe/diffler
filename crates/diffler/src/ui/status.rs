@@ -431,11 +431,11 @@ fn ci_run_spans(
     spans.push(Span::raw(" ".repeat(pad)));
     let short: String = run.commit.chars().take(7).collect();
     spans.push(Span::styled(
-        format!("  {:<32}", elide(&run.title, 32)),
+        format!("  {:<32}", super::elide(&run.title, 32)),
         Style::new().fg(theme.fg),
     ));
     spans.push(Span::styled(
-        format!("  {:<18}", elide(&run.branch, 18)),
+        format!("  {:<18}", super::elide(&run.branch, 18)),
         Style::new().fg(theme.purple),
     ));
     spans.push(Span::styled(
@@ -452,16 +452,6 @@ fn ci_run_spans(
         }
     }
     spans
-}
-
-/// Truncate to `max` graphemes with an ellipsis.
-fn elide(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_owned()
-    } else {
-        let kept: String = s.chars().take(max.saturating_sub(1)).collect();
-        format!("{kept}…")
-    }
 }
 
 /// Summed `(added, deleted)` over every file in a section.

@@ -31,6 +31,37 @@ pub struct EnrichOutcome {
     pub scope: FileScope,
 }
 
+/// Queue `file` for enrichment unless the caller's own cache says it's
+/// already fresh (`ready`) or a job for the same content is already in
+/// flight. Shared by every enrichment call site (the diff pane and the
+/// status screen's expanded inline diffs) so the hash/inflight/push recipe
+/// lives in one place; each caller keeps only its own freshness check. Takes
+/// the two collections directly (rather than `&mut App`) so a caller mid-loop
+/// over data borrowed from another `App` field can still call it.
+pub(super) fn queue_if_stale(
+    inflight: &mut std::collections::HashSet<String>,
+    pending: &mut Vec<EnrichJob>,
+    file: &FileDiff,
+    semantic: bool,
+    ready: bool,
+) {
+    if ready {
+        return;
+    }
+    let hash = file.sides_hash();
+    if !inflight.insert(hash.clone()) {
+        return;
+    }
+    pending.push(EnrichJob {
+        path: file.path.clone(),
+        hash,
+        old_text: file.old_text.clone(),
+        new_text: file.new_text.clone(),
+        hunks: file.hunks.clone(),
+        semantic,
+    });
+}
+
 /// Run one job to completion (called on the blocking pool).
 pub fn run_enrich(highlighter: &Highlighter, job: EnrichJob) -> EnrichOutcome {
     let mut file = FileDiff {
@@ -113,23 +144,18 @@ impl App {
         if file.binary || file.hunks.is_empty() {
             return;
         }
-        let hash = file.sides_hash();
         let ready = diff
             .highlights
             .get(&file.path)
-            .is_some_and(|cached| cached.hash == hash)
+            .is_some_and(|cached| cached.hash == file.sides_hash())
             && diff.is_enriched(&file.path);
-        if ready || !self.enrich_inflight.insert(hash.clone()) {
-            return;
-        }
-        self.pending_enrich.push(EnrichJob {
-            path: file.path.clone(),
-            hash,
-            old_text: file.old_text.clone(),
-            new_text: file.new_text.clone(),
-            hunks: file.hunks.clone(),
+        queue_if_stale(
+            &mut self.enrich_inflight,
+            &mut self.pending_enrich,
+            file,
             semantic,
-        });
+            ready,
+        );
     }
 
     /// Install a finished enrichment wherever the file still has the same

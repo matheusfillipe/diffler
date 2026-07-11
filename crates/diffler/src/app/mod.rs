@@ -1009,17 +1009,20 @@ impl App {
     }
 
     /// Persist the session and invalidate comment-bearing rows after a
-    /// human comment change; also wakes agents waiting for feedback.
+    /// human comment change; also wakes agents waiting for feedback. Agent
+    /// mutations (see the `mcp` module) call [`App::persist_review_change`]
+    /// directly instead, so their own change never wakes their own
+    /// `wait_for_feedback` poll.
     fn after_session_change(&mut self) {
         self.feedback_tx.send_modify(|epoch| *epoch += 1);
-        self.after_agent_session_change();
+        let source = self.active_review_source();
+        self.persist_review_change(&source);
     }
 
-    /// Like [`App::after_session_change`] but for agent-driven mutations,
-    /// which must not wake the agent's own `wait_for_feedback` poll.
-    pub(crate) fn after_agent_session_change(&mut self) {
-        let source = self.active_review_source();
-        if let Err(err) = self.review.save_for(&source) {
+    /// Persist `source`'s session and invalidate the open diff's cached rows
+    /// so a stale comment/viewed-mark render never survives the mutation.
+    pub(crate) fn persist_review_change(&mut self, source: &ReviewSource) {
+        if let Err(err) = self.review.save_for(source) {
             self.error(err.to_string());
         }
         if let Some(diff) = self.diff.as_mut() {
@@ -1227,23 +1230,23 @@ impl App {
     /// Report a finished network op: the first non-empty output line as a
     /// success toast (label + summary), or as an error on failure. Refresh
     /// first (head/log/ahead-behind may have moved), then set the toast so a
-    /// clean refresh does not clobber it.
+    /// clean refresh does not clobber it. A pending PR open/switch routes to
+    /// its own continuation instead — `label` is display text only, the
+    /// `pending_pr_*` slots are what's actually being continued.
     fn git_finished(&mut self, label: &str, ok: bool, output: &str) {
-        if label.starts_with("fetch PR #") {
-            if let Some(pr) = self.pending_pr_open.take().filter(|_| ok) {
-                match self.resolve_pr_range(&pr) {
-                    Some((base, head)) => self.open_pr_diff(pr.number, &base, &head),
-                    None => self.error("PR head still missing after fetch"),
-                }
-                return;
+        if let Some(pr) = self.pending_pr_open.take().filter(|_| ok) {
+            match self.resolve_pr_range(&pr) {
+                Some((base, head)) => self.open_pr_diff(pr.number, &base, &head),
+                None => self.error("PR head still missing after fetch"),
             }
-            if let Some(branch) = self.pending_pr_switch.take().filter(|_| ok) {
-                self.pending_git = Some(GitOp {
-                    label: format!("switch {branch}"),
-                    argv: vec!["git".to_owned(), "switch".to_owned(), branch],
-                });
-                return;
-            }
+            return;
+        }
+        if let Some(branch) = self.pending_pr_switch.take().filter(|_| ok) {
+            self.pending_git = Some(GitOp {
+                label: format!("switch {branch}"),
+                argv: vec!["git".to_owned(), "switch".to_owned(), branch],
+            });
+            return;
         }
         let summary = output
             .lines()

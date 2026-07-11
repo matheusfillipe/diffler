@@ -165,7 +165,7 @@ impl App {
         self.review
             .session_for_mut(&source)
             .reply(id, AGENT_AUTHOR, body);
-        self.persist_agent_change(&source);
+        self.persist_review_change(&source);
         self.info("agent replied to a comment");
         self.comment_status_response(&source, id)
     }
@@ -187,7 +187,7 @@ impl App {
         self.review
             .session_for_mut(&source)
             .reply(id, AGENT_AUTHOR, &body);
-        self.persist_agent_change(&source);
+        self.persist_review_change(&source);
         self.info("agent proposed resolving a comment (confirm with R)");
         self.comment_status_response(&source, id)
     }
@@ -224,21 +224,9 @@ impl App {
         self.review
             .session_for_mut(&source)
             .mark_viewed(file, &hash);
-        self.persist_agent_change(&source);
+        self.persist_review_change(&source);
         self.info(format!("agent marked {file} viewed"));
         McpResponse::Ok
-    }
-
-    /// Persist one source after an agent mutation and refresh the open diff.
-    /// Unlike the human path this never bumps the feedback epoch — an agent's
-    /// own change must not wake its `wait_for_feedback` poll.
-    fn persist_agent_change(&mut self, source: &ReviewSource) {
-        if let Err(err) = self.review.save_for(source) {
-            self.error(err.to_string());
-        }
-        if let Some(diff) = self.diff.as_mut() {
-            diff.invalidate();
-        }
     }
 }
 

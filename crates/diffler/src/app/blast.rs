@@ -312,34 +312,37 @@ async fn slot_for(pool: &LspPool, bin: &'static str) -> LspSlot {
 /// Spawn into an empty slot, reuse an existing client otherwise, then load
 /// the file's symbols. A transport failure (dead or wedged server — every
 /// request is capped by the client's timeout) empties the slot so the next
-/// job respawns fresh.
+/// job respawns fresh, and the real [`crate::lsp::LspError`] comes back so the
+/// caller can distinguish e.g. a spawn failure from a request timeout.
 async fn file_symbols(
     pool: &LspPool,
     spec: &'static crate::lsp::ServerSpec,
     root: &std::path::Path,
     path: &std::path::Path,
     text: &str,
-) -> Option<(LspSlot, Vec<crate::lsp::Symbol>)> {
+) -> Result<(LspSlot, Vec<crate::lsp::Symbol>), crate::lsp::LspError> {
     let slot = slot_for(pool, spec.bin).await;
     let mut guard = slot.lock().await;
     if guard.is_none() {
-        *guard = Some(
-            crate::lsp::LspClient::spawn(spec.bin, spec.argv, root)
-                .await
-                .ok()?,
-        );
+        *guard = Some(crate::lsp::LspClient::spawn(spec.bin, spec.argv, root).await?);
     }
-    let client = guard.as_mut()?;
+    // populated just above (or already present) under the held lock, so the
+    // slot cannot be empty here
+    #[allow(clippy::expect_used)]
+    let client = guard.as_mut().expect("lsp slot populated above");
     let symbols = match client.sync_document(path, text).await {
         Ok(()) => client.document_symbols(path).await,
         Err(err) => Err(err),
     };
-    if let Ok(symbols) = symbols {
-        drop(guard);
-        Some((slot, symbols))
-    } else {
-        *guard = None;
-        None
+    match symbols {
+        Ok(symbols) => {
+            drop(guard);
+            Ok((slot, symbols))
+        }
+        Err(err) => {
+            *guard = None;
+            Err(err)
+        }
     }
 }
 
@@ -366,14 +369,11 @@ async fn walk_chain(
         return Err("no language server for this file type".to_owned());
     };
     let path = std::path::Path::new(&job.path);
-    // a rustup-style proxy on PATH spawns fine and dies at initialize, so a
-    // startup failure still needs the install hint
-    let Some((slot, symbols)) = file_symbols(pool, spec, root, path, &job.new_text).await else {
-        return Err(format!(
-            "{} isn't responding — install it: {}",
-            spec.bin, spec.install_hint
-        ));
-    };
+    // the real LspError (spawn failure, transport timeout, server error, …)
+    // surfaces as-is instead of a single generic "isn't responding" message
+    let (slot, symbols) = file_symbols(pool, spec, root, path, &job.new_text)
+        .await
+        .map_err(|err| err.to_string())?;
     let mut guard = slot.lock().await;
     let Some(target) = symbols
         .iter()
@@ -475,12 +475,9 @@ async fn blast_symbols(
         }
     };
     let path = std::path::Path::new(&job.path);
-    let Some((slot, symbols)) = file_symbols(pool, spec, root, path, &job.new_text).await else {
-        return Err(format!(
-            "{} isn't responding — install it: {}",
-            spec.bin, spec.install_hint
-        ));
-    };
+    let (slot, symbols) = file_symbols(pool, spec, root, path, &job.new_text)
+        .await
+        .map_err(|err| err.to_string())?;
     let touched: Vec<_> = symbols
         .into_iter()
         .filter(|s| {

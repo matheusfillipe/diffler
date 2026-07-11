@@ -87,26 +87,18 @@ struct RenderCtx<'a> {
 }
 
 fn draw_body(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut DiffView) {
-    let (theme, session, review_model, search) =
-        (ctx.theme, ctx.session, ctx.review_model, ctx.search);
     let width = sidebar_width(area.width);
     let [list_area, pane_area] =
         Layout::horizontal([Constraint::Length(width), Constraint::Min(0)]).areas(area);
-    draw_sidebar(frame, list_area, theme, session, review_model, diff, search);
+    draw_sidebar(frame, list_area, ctx, diff);
     draw_pane(frame, pane_area, ctx, diff);
 }
 
 /// Left pane: one row per file in the diff, the selected one highlighted, the
 /// focused pane's border accented.
-fn draw_sidebar(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    theme: &Theme,
-    session: &Session,
-    review_model: Option<&DiffModel>,
-    diff: &mut DiffView,
-    search: Option<&Search>,
-) {
+fn draw_sidebar(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut DiffView) {
+    let (theme, session, review_model, search) =
+        (ctx.theme, ctx.session, ctx.review_model, ctx.search);
     let focused = diff.focus == Pane::List;
     let block = pane_block(theme, "Files", focused);
     let inner = block.inner(area);
