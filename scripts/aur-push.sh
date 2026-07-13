@@ -6,6 +6,13 @@ set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 ver=$(grep -m1 '^pkgver=' "$root/packaging/aur/PKGBUILD" | cut -d= -f2)
+# CI commits the rendered PKGBUILD to main after the tag push, so a checkout
+# that predates it would silently publish the previous version
+latest=$(git -C "$root" tag --list 'v*' --sort=-v:refname | head -1)
+if [ "v$ver" != "$latest" ]; then
+  echo "aur: PKGBUILD is $ver but the latest tag is $latest — git pull first" >&2
+  exit 1
+fi
 remote="ssh://aur@aur.archlinux.org/diffler-bin.git"
 work=$(mktemp -d)
 
