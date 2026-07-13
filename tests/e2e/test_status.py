@@ -68,3 +68,15 @@ def test_viewed_mark_shows_a_check(spawn):
     tui.send("jjj")
     tui.send("v")
     tui.wait_for("✓")
+
+
+def test_ctrl_k_palette_filters_and_runs_the_best_match(spawn):
+    tui = spawn("--no-mcp")
+    tui.wait_for("Unstaged changes (1)")
+    tui.send("\x0b")  # ctrl+k
+    tui.wait_for("Commands")
+    tui.wait_for("stage everything")
+    tui.send("stage ev")
+    tui.send("\r")
+    tui.wait_gone("Unstaged changes")
+    tui.wait_for("Staged changes (2)")
