@@ -55,6 +55,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let blast = &app.blast;
     let search = app.search.as_ref();
     if let Some(diff) = app.diff.as_mut() {
+        // comment wrap follows the diff pane's inner width: the body minus
+        // the sidebar column and the pane block's two border columns
+        diff.set_wrap_width(body.width.saturating_sub(sidebar_width(body.width) + 2));
         diff.ensure_rows(review);
         // a commit view renders from its pinned model; only fall back to the
         // (lazily computed) working-tree model for the working-tree view
@@ -846,7 +849,7 @@ fn comment_row_line(
     let bar = Span::styled("  ▌ ".to_owned(), Style::new().fg(accent).bg(bg));
     let dim = Style::new().fg(theme.dim).bg(bg);
     let fg = Style::new().fg(theme.fg).bg(bg);
-    let lines = comment_display(comment);
+    let lines = comment_display(comment, width);
     let Some(part) = lines.get(line) else {
         return Line::default();
     };
@@ -1467,6 +1470,38 @@ mod tests {
             .reply(&answered, "agent", "kept for api compat");
         app.diff.as_mut().unwrap().invalidate();
         insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn long_comment_text_wraps_to_the_pane_width() {
+        let (_fixture, mut app) = diff_app();
+        open_lib_diff(&mut app);
+        let id = app
+            .review
+            .session
+            .add_comment(
+                diffler_core::session::Anchor {
+                    file: "src/lib.rs".to_owned(),
+                    line: Some(2),
+                    line_end: None,
+                    on_old_side: false,
+                    line_text: Some("    42".to_owned()),
+                },
+                "reviewer",
+                "a negative or far too large answer breaks the callers downstream, \
+                 so this needs a clamp before it ships to anyone",
+            )
+            .id
+            .clone();
+        app.review.session.reply(
+            &id,
+            "agent",
+            "agreed, clamping to the documented range and adding a regression \
+             test so the next refactor cannot silently drop it",
+        );
+        app.diff.as_mut().unwrap().invalidate();
+        let terminal = render(&mut app);
+        insta::assert_snapshot!(terminal.backend());
     }
 
     #[test]

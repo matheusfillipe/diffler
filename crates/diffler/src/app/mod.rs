@@ -101,6 +101,13 @@ pub enum PendingOp {
         path: String,
     },
     DeleteBranch(String),
+    /// Remove one comment (and its forge copy when synced) after confirm.
+    DeleteComment(String),
+    /// Same, from the comments overview: rebuilds the list, keeps the cursor.
+    DeleteOverviewComment {
+        id: String,
+        keep_cursor: usize,
+    },
     /// Wipe every deletable comment of the active review.
     DeleteAllComments,
 }

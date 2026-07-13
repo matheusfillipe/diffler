@@ -12,10 +12,9 @@ use diffler_core::review::Review;
 use diffler_core::session::{Anchor, Comment, CommentStatus, Session};
 use diffler_core::source::ReviewSource;
 use diffler_core::syntax::ScopeIndex;
+use unicode_width::UnicodeWidthStr;
 
-#[cfg(test)]
-use super::Modal;
-use super::{App, InputOp, Screen};
+use super::{App, InputOp, Modal, Screen};
 use crate::config::FileLayout;
 use crate::keymap::Action;
 use crate::tree::{self, Bucket, TreeNode, TreeRow};
@@ -145,6 +144,11 @@ pub struct DiffView {
     /// Rows for the selected file only.
     pub(crate) rows: Vec<DiffRow>,
     rows_dirty: bool,
+    /// Pane row width comments wrap to; set from the last draw, MAX until
+    /// the first frame so unit tests see unwrapped lines.
+    wrap_width: u16,
+    /// Rows need a re-flow for a new wrap width (no content change).
+    wrap_dirty: bool,
     /// Side-by-side row model, rebuilt with `rows` (not per frame).
     pub(crate) split_rows: Vec<SplitRow>,
     pub(crate) highlights: HashMap<String, FileHighlights>,
@@ -183,6 +187,8 @@ impl DiffView {
             viewport: 0,
             rows: Vec::new(),
             rows_dirty: true,
+            wrap_width: u16::MAX,
+            wrap_dirty: false,
             split_rows: Vec::new(),
             highlights: HashMap::new(),
             scopes: HashMap::new(),
@@ -281,22 +287,35 @@ impl DiffView {
         self.enriched.clear();
     }
 
+    /// Adopt the diff pane's row width so comment text wraps to it; rows
+    /// re-flow when it changes (a resize, the sidebar layout toggling).
+    pub(crate) fn set_wrap_width(&mut self, width: u16) {
+        if width > 0 && self.wrap_width != width {
+            self.wrap_width = width;
+            self.wrap_dirty = true;
+        }
+    }
+
     pub(crate) fn ensure_rows(&mut self, review: &Review) {
-        if !self.rows_dirty {
+        if !self.rows_dirty && !self.wrap_dirty {
             return;
         }
         let model = self.commit_model.as_ref().unwrap_or_else(|| review.model());
         self.selected = self.selected.min(model.files.len().saturating_sub(1));
         let session = review.session_for(&self.source);
-        self.rows = build_rows(model, session, self.selected);
-        self.split_rows = build_split_rows(model, session, self.selected);
-        self.rows_dirty = false;
+        self.rows = build_rows(model, session, self.selected, self.wrap_width);
+        self.split_rows = build_split_rows(model, session, self.selected, self.wrap_width);
         self.cursor = self.cursor.min(self.rows.len().saturating_sub(1));
         self.scroll = self.scroll.min(self.rows.len().saturating_sub(1));
         // the file list may have shifted (refresh) or folds may hide the old
-        // cursor row: keep the tree cursor on the pane's file
-        let tree_rows = self.tree_rows(model, session);
-        self.reseat_tree_cursor(&tree_rows);
+        // cursor row: keep the tree cursor on the pane's file. A pure wrap
+        // re-flow changes neither, and must not move a browsing cursor.
+        if self.rows_dirty {
+            let tree_rows = self.tree_rows(model, session);
+            self.reseat_tree_cursor(&tree_rows);
+        }
+        self.rows_dirty = false;
+        self.wrap_dirty = false;
     }
 
     /// Seat the tree cursor on the selected file's row, or clamp it into
@@ -440,29 +459,80 @@ pub enum CommentLine {
     Footer,
 }
 
-/// The terminal lines a comment occupies. Shared by row flattening (for
-/// counts) and rendering (for content) so they can never disagree.
-pub fn comment_display(comment: &Comment) -> Vec<CommentLine> {
+/// The terminal lines a comment occupies at `row_width` columns, long text
+/// wrapped to fit. Shared by row flattening (for counts) and rendering (for
+/// content) so they can never disagree.
+pub fn comment_display(comment: &Comment, row_width: u16) -> Vec<CommentLine> {
+    // "  ▌ " card bar; below that there is no room to wrap meaningfully
+    let budget = (row_width.saturating_sub(4) as usize).max(8);
     let mut lines = vec![CommentLine::Header];
-    lines.extend(
-        comment
-            .body
-            .lines()
-            .map(|l| CommentLine::Body(l.to_owned())),
-    );
+    for line in comment.body.lines() {
+        lines.extend(
+            wrap_text(line, budget, budget)
+                .into_iter()
+                .map(CommentLine::Body),
+        );
+    }
     for reply in &comment.replies {
+        // the author label only renders on the first line; continuations get
+        // the renderer's two-space indent
+        let label = format!("↳ {}: ", reply.author).width();
         let mut first = true;
         for text in reply.body.lines() {
-            lines.push(CommentLine::Reply {
-                author: reply.author.clone(),
-                text: text.to_owned(),
-                first,
-            });
-            first = false;
+            let head = budget.saturating_sub(if first { label } else { 2 }).max(8);
+            for wrapped in wrap_text(text, head, budget.saturating_sub(2).max(8)) {
+                lines.push(CommentLine::Reply {
+                    author: reply.author.clone(),
+                    text: wrapped,
+                    first,
+                });
+                first = false;
+            }
         }
     }
     lines.push(CommentLine::Footer);
     lines
+}
+
+/// Greedy word wrap by display width; a token longer than a whole line is
+/// hard-split. The first line may have a different budget (hanging label).
+fn wrap_text(text: &str, first_width: usize, rest_width: usize) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let (mut line, mut used) = (String::new(), 0usize);
+    let mut budget = first_width;
+    let mut flush = |line: &mut String, used: &mut usize, budget: &mut usize| {
+        out.push(std::mem::take(line));
+        *used = 0;
+        *budget = rest_width;
+    };
+    for word in text.split(' ') {
+        let mut word = word;
+        let sep = usize::from(!line.is_empty());
+        if used + sep + word.width() > budget && !line.is_empty() {
+            flush(&mut line, &mut used, &mut budget);
+        }
+        while word.width() > budget {
+            let split = word
+                .char_indices()
+                .scan(0usize, |w, (i, c)| {
+                    *w += c.to_string().width();
+                    (*w <= budget).then_some(i + c.len_utf8())
+                })
+                .last()
+                .unwrap_or(word.len());
+            line.push_str(&word[..split]);
+            flush(&mut line, &mut used, &mut budget);
+            word = &word[split..];
+        }
+        if !line.is_empty() {
+            line.push(' ');
+            used += 1;
+        }
+        line.push_str(word);
+        used += word.width();
+    }
+    out.push(line);
+    out
 }
 
 /// Hunk and line indices a comment displays under; `None` when the
@@ -487,12 +557,17 @@ fn anchor_target(file: &FileDiff, anchor: &Anchor) -> Option<(usize, usize)> {
     None
 }
 
-fn push_comment_rows(rows: &mut Vec<DiffRow>, session: &Session, comments: &[(usize, bool)]) {
+fn push_comment_rows(
+    rows: &mut Vec<DiffRow>,
+    session: &Session,
+    comments: &[(usize, bool)],
+    wrap_width: u16,
+) {
     for &(comment, outdated) in comments {
         let Some(c) = session.comments.get(comment) else {
             continue;
         };
-        let count = comment_display(c).len();
+        let count = comment_display(c, wrap_width).len();
         rows.extend((0..count).map(|line| DiffRow::Comment {
             comment,
             line,
@@ -530,13 +605,18 @@ fn collect_comments(file: &FileDiff, session: &Session, model: &DiffModel) -> Co
 
 /// Build the diff-pane rows for one file: its hunks and lines, with comment
 /// blocks under their anchored line, file-level (or orphaned) comments first.
-fn build_rows(model: &DiffModel, session: &Session, selected: usize) -> Vec<DiffRow> {
+fn build_rows(
+    model: &DiffModel,
+    session: &Session,
+    selected: usize,
+    wrap_width: u16,
+) -> Vec<DiffRow> {
     let mut rows = Vec::new();
     let Some(file) = model.files.get(selected) else {
         return rows;
     };
     let (by_line, unanchored) = collect_comments(file, session, model);
-    push_comment_rows(&mut rows, session, &unanchored);
+    push_comment_rows(&mut rows, session, &unanchored, wrap_width);
     for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
         rows.push(DiffRow::Hunk {
             file: selected,
@@ -549,7 +629,7 @@ fn build_rows(model: &DiffModel, session: &Session, selected: usize) -> Vec<Diff
                 line: line_idx,
             });
             if let Some(list) = by_line.get(&(hunk_idx, line_idx)) {
-                push_comment_rows(&mut rows, session, list);
+                push_comment_rows(&mut rows, session, list, wrap_width);
             }
         }
     }
@@ -585,12 +665,17 @@ pub enum SplitRow {
     },
 }
 
-fn push_split_comments(rows: &mut Vec<SplitRow>, session: &Session, comments: &[(usize, bool)]) {
+fn push_split_comments(
+    rows: &mut Vec<SplitRow>,
+    session: &Session,
+    comments: &[(usize, bool)],
+    wrap_width: u16,
+) {
     for &(comment, outdated) in comments {
         let Some(c) = session.comments.get(comment) else {
             continue;
         };
-        let count = comment_display(c).len();
+        let count = comment_display(c, wrap_width).len();
         rows.extend((0..count).map(|line| SplitRow::Comment {
             comment,
             line,
@@ -609,6 +694,7 @@ fn flush_change_block(
     hunk: usize,
     dels: &[usize],
     adds: &[usize],
+    wrap_width: u16,
 ) {
     for k in 0..dels.len().max(adds.len()) {
         let left = dels.get(k).copied();
@@ -616,7 +702,7 @@ fn flush_change_block(
         rows.push(SplitRow::Pair { hunk, left, right });
         for line in [left, right].into_iter().flatten() {
             if let Some(list) = by_line.get(&(hunk, line)) {
-                push_split_comments(rows, session, list);
+                push_split_comments(rows, session, list, wrap_width);
             }
         }
     }
@@ -628,13 +714,14 @@ pub(crate) fn build_split_rows(
     model: &DiffModel,
     session: &Session,
     selected: usize,
+    wrap_width: u16,
 ) -> Vec<SplitRow> {
     let mut rows = Vec::new();
     let Some(file) = model.files.get(selected) else {
         return rows;
     };
     let (by_line, unanchored) = collect_comments(file, session, model);
-    push_split_comments(&mut rows, session, &unanchored);
+    push_split_comments(&mut rows, session, &unanchored, wrap_width);
     for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
         rows.push(SplitRow::Hunk { hunk: hunk_idx });
         let mut dels: Vec<usize> = Vec::new();
@@ -642,7 +729,9 @@ pub(crate) fn build_split_rows(
         for (line_idx, line) in hunk.lines.iter().enumerate() {
             match line.kind {
                 LineKind::Context => {
-                    flush_change_block(&mut rows, session, &by_line, hunk_idx, &dels, &adds);
+                    flush_change_block(
+                        &mut rows, session, &by_line, hunk_idx, &dels, &adds, wrap_width,
+                    );
                     dels.clear();
                     adds.clear();
                     rows.push(SplitRow::Pair {
@@ -651,14 +740,16 @@ pub(crate) fn build_split_rows(
                         right: Some(line_idx),
                     });
                     if let Some(list) = by_line.get(&(hunk_idx, line_idx)) {
-                        push_split_comments(&mut rows, session, list);
+                        push_split_comments(&mut rows, session, list, wrap_width);
                     }
                 }
                 LineKind::Deleted => dels.push(line_idx),
                 LineKind::Added => adds.push(line_idx),
             }
         }
-        flush_change_block(&mut rows, session, &by_line, hunk_idx, &dels, &adds);
+        flush_change_block(
+            &mut rows, session, &by_line, hunk_idx, &dels, &adds, wrap_width,
+        );
     }
     rows
 }
@@ -1476,11 +1567,15 @@ impl App {
     }
 
     fn delete_comment_at_cursor(&mut self) {
-        let Some(id) = self.comment_at_cursor_row().map(|c| c.id.clone()) else {
+        let Some(comment) = self.comment_at_cursor_row() else {
             self.info("move onto a comment to delete it");
             return;
         };
-        self.delete_comment_by_id(&id);
+        let (id, author) = (comment.id.clone(), comment.author.clone());
+        self.modal = Some(Modal::Confirm {
+            message: format!("Delete {author}'s comment?"),
+            on_confirm: super::PendingOp::DeleteComment(id),
+        });
     }
 
     fn reply_at_cursor(&mut self) {
@@ -2995,7 +3090,7 @@ mod tests {
             .id
             .clone();
         session.reply(&id, "agent", "done\nand verified");
-        let lines = comment_display(&session.comments[0]);
+        let lines = comment_display(&session.comments[0], u16::MAX);
         assert_eq!(
             lines,
             vec![
@@ -3018,6 +3113,113 @@ mod tests {
     }
 
     #[test]
+    fn comment_display_wraps_long_text_to_the_pane_width() {
+        let mut session = Session::default();
+        let id = session
+            .add_comment(
+                Anchor {
+                    file: "a.rs".to_owned(),
+                    line: Some(1),
+                    line_end: None,
+                    on_old_side: false,
+                    line_text: None,
+                },
+                "reviewer",
+                "a body long enough that it cannot fit on one row",
+            )
+            .id
+            .clone();
+        session.reply(&id, "agent", "a reply that also runs past the pane");
+        let lines = comment_display(&session.comments[0], 30);
+        let budget = 30 - 4;
+        for line in &lines {
+            match line {
+                CommentLine::Body(text) => assert!(text.width() <= budget, "{text:?}"),
+                CommentLine::Reply { text, first, .. } => {
+                    let head = if *first { "↳ agent: ".width() } else { 2 };
+                    assert!(text.width() + head <= budget, "{text:?}");
+                }
+                _ => {}
+            }
+        }
+        let bodies = lines
+            .iter()
+            .filter(|l| matches!(l, CommentLine::Body(_)))
+            .count();
+        assert!(bodies > 1, "the long body wrapped onto several rows");
+        // words survive the wrap intact
+        let joined: Vec<String> = lines
+            .iter()
+            .filter_map(|l| match l {
+                CommentLine::Body(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            joined.join(" "),
+            "a body long enough that it cannot fit on one row"
+        );
+    }
+
+    #[test]
+    fn comment_display_hard_splits_an_unbreakable_token() {
+        let mut session = Session::default();
+        session.add_comment(
+            Anchor {
+                file: "a.rs".to_owned(),
+                line: Some(1),
+                line_end: None,
+                on_old_side: false,
+                line_text: None,
+            },
+            "reviewer",
+            "https://example.invalid/a/very/long/unbroken/path/segment/thing",
+        );
+        let lines = comment_display(&session.comments[0], 24);
+        for line in &lines {
+            if let CommentLine::Body(text) = line {
+                assert!(text.width() <= 20, "{text:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn deleting_a_comment_asks_for_confirmation_first() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        select_file(&mut app, "src/lib.rs");
+        app.diff.as_mut().unwrap().cursor = added_line_position(&app);
+        app.handle(key('c'));
+        type_text(&mut app, "why 42?");
+        app.handle(key('\n'));
+
+        let diff = app.diff.as_mut().unwrap();
+        diff.ensure_rows(&app.review);
+        let comment_row = rows(&app)
+            .iter()
+            .position(|r| matches!(r, DiffRow::Comment { .. }))
+            .expect("comment row present");
+        app.diff.as_mut().unwrap().cursor = comment_row;
+
+        app.delete_comment_at_cursor();
+        assert!(
+            matches!(app.modal, Some(Modal::Confirm { .. })),
+            "delete asks first"
+        );
+        assert_eq!(
+            app.review.session.comments.len(),
+            1,
+            "nothing deleted before confirming"
+        );
+        app.confirm_modal();
+        assert_eq!(
+            app.review.session.comments.len(),
+            0,
+            "confirm deletes the comment"
+        );
+    }
+
+    #[test]
     fn build_split_rows_aligns_old_and_new_sides() {
         let fixture = standard_fixture();
         let app = diff_app(&fixture);
@@ -3025,7 +3227,7 @@ mod tests {
         let model = diff.model(&app.review);
         let session = app.review.session_for(&ReviewSource::WorkingTree);
         for (index, file) in model.files.iter().enumerate() {
-            for row in build_split_rows(model, session, index) {
+            for row in build_split_rows(model, session, index, u16::MAX) {
                 let SplitRow::Pair { hunk, left, right } = row else {
                     continue;
                 };

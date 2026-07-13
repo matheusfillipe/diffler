@@ -59,6 +59,12 @@ impl App {
                     self.info(format!("deleted branch {name}"));
                 }
             }
+            PendingOp::DeleteComment(id) => {
+                self.delete_comment_by_id(&id);
+            }
+            PendingOp::DeleteOverviewComment { id, keep_cursor } => {
+                self.delete_overview_comment(&id, keep_cursor);
+            }
             PendingOp::DeleteAllComments => self.delete_all_comments(),
         }
     }
@@ -364,7 +370,8 @@ impl App {
         }
     }
 
-    /// Delete the highlighted overview entry and rebuild the list in place.
+    /// Ask before deleting the highlighted overview entry; the confirm arm
+    /// rebuilds the list in place with the cursor kept nearby.
     fn delete_selected_overview_comment(&mut self) {
         let (entry, keep_cursor) = match &self.modal {
             Some(Modal::Comments { entries, cursor }) => match entries.get(*cursor).cloned() {
@@ -373,7 +380,17 @@ impl App {
             },
             _ => return,
         };
-        if self.delete_comment_by_id(&entry.comment_id) {
+        self.modal = Some(Modal::Confirm {
+            message: "Delete this comment?".to_owned(),
+            on_confirm: super::PendingOp::DeleteOverviewComment {
+                id: entry.comment_id,
+                keep_cursor,
+            },
+        });
+    }
+
+    pub(super) fn delete_overview_comment(&mut self, id: &str, keep_cursor: usize) {
+        if self.delete_comment_by_id(id) {
             self.open_comments_overview();
             if let Some(Modal::Comments { entries, cursor }) = self.modal.as_mut() {
                 *cursor = keep_cursor.min(entries.len().saturating_sub(1));
@@ -786,8 +803,13 @@ mod tests {
         }
         press(&mut app, KeyCode::Char('C'));
         press(&mut app, KeyCode::Char('d'));
+        assert!(
+            matches!(app.modal, Some(Modal::Confirm { .. })),
+            "a single delete asks first"
+        );
+        press(&mut app, KeyCode::Char('y'));
         let Some(Modal::Comments { entries, .. }) = &app.modal else {
-            panic!("overview stays open after a single delete");
+            panic!("overview reopens after a confirmed delete");
         };
         assert_eq!(entries.len(), 2, "one comment vanished");
         assert_eq!(app.review.session.comments.len(), 2);
