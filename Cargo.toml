@@ -63,6 +63,8 @@ criterion = "0.8"
 toml = "1"
 uuid = { version = "1", features = ["v4"] }
 unicode-width = "0.2"
+# fuzzy matching for the command palette (Helix's matcher)
+nucleo-matcher = "0.3"
 insta = "1.47"
 tempfile = "3"
 

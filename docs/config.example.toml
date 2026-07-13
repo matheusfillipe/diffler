@@ -39,6 +39,7 @@
 # `?` in the TUI shows the effective keymap.
 
 [keys.status]
+# palette = "<c-k>"   # fuzzy command palette, bound on every screen
 # stage = "s"
 # unstage = "u"
 # stage_all = "S"

@@ -445,44 +445,81 @@ fn wrap_ranges(chars: &[char], width: usize) -> Vec<(usize, usize)> {
     ranges
 }
 
-/// Centered pick-one list (branches) with a j/k cursor.
+/// Centered fzf-style dialog: a query line, then ranked matches with an
+/// optional right-aligned column (chords), the selection highlighted.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ListModal {
+pub(crate) struct FuzzyModal {
     pub title: String,
-    pub items: Vec<String>,
+    pub query: String,
+    /// Character index of the query cursor.
     pub cursor: usize,
+    pub items: Vec<(String, String)>,
+    pub selected: usize,
+    pub footer: &'static str,
 }
 
-impl ListModal {
-    pub fn render(&self, frame: &mut Frame<'_>, theme: &Theme) {
-        let hint = "j/k move  enter select  esc back";
+impl FuzzyModal {
+    pub(crate) fn render(&self, frame: &mut Frame<'_>, theme: &Theme) {
         let width = self
             .items
             .iter()
-            .map(|item| item.chars().count())
-            .chain([hint.len(), self.title.chars().count() + 2])
+            .map(|(left, right)| left.chars().count() + right.chars().count() + 3)
+            .chain([
+                self.footer.len(),
+                self.title.chars().count() + 2,
+                self.query.chars().count() + 4,
+                44,
+            ])
             .max()
             .unwrap_or(0) as u16
             + 4;
-        // +3: borders and the hint line
-        let height = self.items.len() as u16 + 3;
-        let area = centered(frame.area(), width.min(frame.area().width), height);
+        let max_rows = (frame.area().height.saturating_sub(6) as usize).max(1);
+        let visible = self.items.len().min(max_rows);
+        // +4: borders, the query line, and the footer
+        let height = visible as u16 + 4;
+        let width = width.min(frame.area().width);
+        let area = centered(frame.area(), width, height);
         frame.render_widget(Clear, area);
-        let mut lines: Vec<Line<'static>> = self
-            .items
-            .iter()
-            .enumerate()
-            .map(|(index, item)| {
-                let style = if index == self.cursor {
-                    Style::new().fg(theme.fg).bg(theme.cursor_line)
-                } else {
-                    Style::new().fg(theme.fg).bg(theme.panel)
-                };
-                Line::styled(format!(" {item} "), style)
-            })
-            .collect();
+
+        let inner = width.saturating_sub(2) as usize;
+        let split = self
+            .query
+            .char_indices()
+            .nth(self.cursor)
+            .map_or(self.query.len(), |(at, _)| at);
+        let (before, after) = self.query.split_at(split);
+        let mut rest = after.chars();
+        let under = rest.next().unwrap_or(' ');
+        let fg = Style::new().fg(theme.fg).bg(theme.panel);
+        let mut lines = vec![Line::from(vec![
+            Span::styled(
+                " > ".to_owned(),
+                Style::new().fg(theme.accent).bg(theme.panel),
+            ),
+            Span::styled(before.to_owned(), fg),
+            Span::styled(under.to_string(), Style::new().fg(theme.panel).bg(theme.fg)),
+            Span::styled(rest.as_str().to_owned(), fg),
+        ])];
+
+        // keep the selection on screen when the list overflows
+        let top = self.selected.saturating_sub(visible.saturating_sub(1));
+        for (index, (left, right)) in self.items.iter().enumerate().skip(top).take(visible) {
+            let bg = if index == self.selected {
+                theme.cursor_line
+            } else {
+                theme.panel
+            };
+            let gap = inner
+                .saturating_sub(left.chars().count() + right.chars().count() + 2)
+                .max(1);
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {left}"), Style::new().fg(theme.fg).bg(bg)),
+                Span::styled(" ".repeat(gap), Style::new().bg(bg)),
+                Span::styled(format!("{right} "), Style::new().fg(theme.dim).bg(bg)),
+            ]));
+        }
         lines.push(Line::styled(
-            hint,
+            self.footer,
             Style::new().fg(theme.dim).bg(theme.panel),
         ));
         frame.render_widget(

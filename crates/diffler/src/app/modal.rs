@@ -4,6 +4,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use std::path::Path;
 
+use super::fuzzy::{FuzzyKey, FuzzyList, branch_haystack, comment_haystack, rank, selected};
 use super::{App, BranchAction, Flow, InputOp, Modal, PendingOp, byte_index};
 
 impl App {
@@ -35,6 +36,7 @@ impl App {
             }
             Some(Modal::BranchList { .. }) => self.handle_branch_list_key(key),
             Some(Modal::Comments { .. }) => self.handle_comments_key(key),
+            Some(Modal::Palette { .. }) => return self.handle_palette_key(key),
             Some(Modal::Help) => match key.code {
                 KeyCode::Esc | KeyCode::Char('q' | '?') => self.modal = None,
                 _ => {}
@@ -62,8 +64,8 @@ impl App {
             PendingOp::DeleteComment(id) => {
                 self.delete_comment_by_id(&id);
             }
-            PendingOp::DeleteOverviewComment { id, keep_cursor } => {
-                self.delete_overview_comment(&id, keep_cursor);
+            PendingOp::DeleteOverviewComment { id, keep } => {
+                self.delete_overview_comment(&id, keep);
             }
             PendingOp::DeleteAllComments => self.delete_all_comments(),
         }
@@ -270,7 +272,7 @@ impl App {
             Ok(branches) => {
                 self.modal = Some(Modal::BranchList {
                     branches,
-                    cursor: 0,
+                    list: FuzzyList::default(),
                     action,
                 });
             }
@@ -328,44 +330,37 @@ impl App {
             self.info("no comments in this review yet");
             return;
         }
-        self.modal = Some(Modal::Comments { entries, cursor: 0 });
+        self.modal = Some(Modal::Comments {
+            entries,
+            list: FuzzyList::default(),
+        });
     }
 
     pub(super) fn handle_comments_key(&mut self, key: &KeyEvent) {
-        match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => self.modal = None,
-            KeyCode::Char('d') => self.delete_selected_overview_comment(),
-            KeyCode::Char('D') => {
-                let entries = match &self.modal {
-                    Some(Modal::Comments { entries, .. }) => entries.len(),
-                    _ => 0,
-                };
-                self.modal = Some(Modal::Confirm {
-                    message: format!("Delete all {entries} comments of this review?"),
-                    on_confirm: super::PendingOp::DeleteAllComments,
-                });
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if let Some(Modal::Comments { entries, cursor }) = self.modal.as_mut() {
-                    *cursor = (*cursor + 1).min(entries.len().saturating_sub(1));
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if let Some(Modal::Comments { cursor, .. }) = self.modal.as_mut() {
-                    *cursor = cursor.saturating_sub(1);
-                }
-            }
-            KeyCode::Char('g') => {
-                if let Some(Modal::Comments { cursor, .. }) = self.modal.as_mut() {
-                    *cursor = 0;
-                }
-            }
-            KeyCode::Char('G') => {
-                if let Some(Modal::Comments { entries, cursor }) = self.modal.as_mut() {
-                    *cursor = entries.len().saturating_sub(1);
-                }
-            }
-            KeyCode::Enter => self.jump_to_selected_comment(),
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        if ctrl && key.code == KeyCode::Char('d') {
+            self.delete_selected_overview_comment();
+            return;
+        }
+        if alt && key.code == KeyCode::Char('d') {
+            let entries = match &self.modal {
+                Some(Modal::Comments { entries, .. }) => entries.len(),
+                _ => 0,
+            };
+            self.modal = Some(Modal::Confirm {
+                message: format!("Delete all {entries} comments of this review?"),
+                on_confirm: super::PendingOp::DeleteAllComments,
+            });
+            return;
+        }
+        let Some(Modal::Comments { entries, list }) = self.modal.as_mut() else {
+            return;
+        };
+        let matches = rank(&list.query, &comment_haystack(entries)).len();
+        match list.feed(key, matches) {
+            FuzzyKey::Submit => self.jump_to_selected_comment(),
+            FuzzyKey::Cancel => self.modal = None,
             _ => {}
         }
     }
@@ -373,27 +368,37 @@ impl App {
     /// Ask before deleting the highlighted overview entry; the confirm arm
     /// rebuilds the list in place with the cursor kept nearby.
     fn delete_selected_overview_comment(&mut self) {
-        let (entry, keep_cursor) = match &self.modal {
-            Some(Modal::Comments { entries, cursor }) => match entries.get(*cursor).cloned() {
-                Some(entry) => (entry, cursor.saturating_sub(1)),
-                None => return,
-            },
+        let (entry, keep) = match &self.modal {
+            Some(Modal::Comments { entries, list }) => {
+                match selected(list, &comment_haystack(entries), entries).cloned() {
+                    Some(entry) => {
+                        let keep = FuzzyList {
+                            selected: list.selected.saturating_sub(1),
+                            ..list.clone()
+                        };
+                        (entry, keep)
+                    }
+                    None => return,
+                }
+            }
             _ => return,
         };
         self.modal = Some(Modal::Confirm {
             message: "Delete this comment?".to_owned(),
             on_confirm: super::PendingOp::DeleteOverviewComment {
                 id: entry.comment_id,
-                keep_cursor,
+                keep,
             },
         });
     }
 
-    pub(super) fn delete_overview_comment(&mut self, id: &str, keep_cursor: usize) {
+    pub(super) fn delete_overview_comment(&mut self, id: &str, keep: FuzzyList) {
         if self.delete_comment_by_id(id) {
             self.open_comments_overview();
-            if let Some(Modal::Comments { entries, cursor }) = self.modal.as_mut() {
-                *cursor = keep_cursor.min(entries.len().saturating_sub(1));
+            if let Some(Modal::Comments { entries, list }) = self.modal.as_mut() {
+                let matches = rank(&keep.query, &comment_haystack(entries)).len();
+                *list = keep;
+                list.selected = list.selected.min(matches.saturating_sub(1));
             }
         }
     }
@@ -446,12 +451,14 @@ impl App {
     }
 
     fn jump_to_selected_comment(&mut self) {
-        let Some(Modal::Comments { entries, cursor }) = self.modal.take() else {
+        // a query matching nothing keeps the dialog open, like fzf
+        let Some(Modal::Comments { entries, list }) = &self.modal else {
             return;
         };
-        let Some(entry) = entries.get(cursor).cloned() else {
+        let Some(entry) = selected(list, &comment_haystack(entries), entries).cloned() else {
             return;
         };
+        self.modal = None;
         if self.diff.is_none() {
             self.open_working_tree_diff(None);
         }
@@ -486,39 +493,55 @@ impl App {
         }
     }
 
+    pub(super) fn handle_palette_key(&mut self, key: &KeyEvent) -> Flow {
+        let (commands, haystack) = self.command_index_haystack();
+        let Some(Modal::Palette { list }) = self.modal.as_mut() else {
+            return Flow::Continue;
+        };
+        let matches = rank(&list.query, &haystack).len();
+        match list.feed(key, matches) {
+            FuzzyKey::Submit => {
+                // a query matching nothing keeps the palette open, like fzf
+                if let Some(action) = selected(list, &haystack, &commands).map(|c| c.action) {
+                    self.modal = None;
+                    return self.dispatch(action);
+                }
+            }
+            FuzzyKey::Cancel => self.modal = None,
+            _ => {}
+        }
+        Flow::Continue
+    }
+
     pub(super) fn handle_branch_list_key(&mut self, key: &KeyEvent) {
-        match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => self.modal = None,
-            KeyCode::Char('j') | KeyCode::Down => {
-                if let Some(Modal::BranchList {
-                    branches, cursor, ..
-                }) = self.modal.as_mut()
-                {
-                    *cursor = (*cursor + 1).min(branches.len().saturating_sub(1));
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if let Some(Modal::BranchList { cursor, .. }) = self.modal.as_mut() {
-                    *cursor = cursor.saturating_sub(1);
-                }
-            }
-            KeyCode::Enter => self.submit_branch_list(),
+        let Some(Modal::BranchList { branches, list, .. }) = self.modal.as_mut() else {
+            return;
+        };
+        let matches = rank(&list.query, &branch_haystack(branches)).len();
+        match list.feed(key, matches) {
+            FuzzyKey::Submit => self.submit_branch_list(),
+            FuzzyKey::Cancel => self.modal = None,
             _ => {}
         }
     }
 
     pub(super) fn submit_branch_list(&mut self) {
+        // a query matching nothing keeps the dialog open, like fzf
         let Some(Modal::BranchList {
             branches,
-            cursor,
+            list,
             action,
-        }) = self.modal.take()
+        }) = &self.modal
         else {
             return;
         };
-        let Some(name) = branches.get(cursor).map(|b| b.name.clone()) else {
+        let action = *action;
+        let Some(name) =
+            selected(list, &branch_haystack(branches), branches).map(|b| b.name.clone())
+        else {
             return;
         };
+        self.modal = None;
         self.message = None;
         match action {
             BranchAction::Checkout => {
@@ -602,7 +625,7 @@ fn remove_chars(buffer: &mut String, start: usize, end: usize) {
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-    use super::super::{App, Modal, Pane, Screen};
+    use super::super::{App, BranchAction, Modal, Pane, Screen};
     use crate::config::LoadedConfig;
     use crate::test_support::standard_fixture;
     use diffler_core::session::Anchor;
@@ -612,6 +635,10 @@ mod tests {
             code,
             KeyModifiers::NONE,
         )));
+    }
+
+    fn press_with(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
+        app.handle(crate::event::AppEvent::Key(KeyEvent::new(code, modifiers)));
     }
 
     fn chord(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
@@ -758,10 +785,10 @@ mod tests {
         );
 
         press(&mut app, KeyCode::Char('C'));
-        let Some(Modal::Comments { entries, cursor }) = &app.modal else {
+        let Some(Modal::Comments { entries, list }) = &app.modal else {
             panic!("overview modal open, got {:?}", app.modal);
         };
-        assert_eq!(*cursor, 0);
+        assert_eq!(list.selected, 0);
         assert_eq!(entries.len(), 1);
         assert!(
             entries[0].label.contains("src/lib.rs:2"),
@@ -785,7 +812,7 @@ mod tests {
     }
 
     #[test]
-    fn d_vanishes_a_local_comment_and_capital_d_wipes_the_review() {
+    fn ctrl_d_vanishes_a_local_comment_and_alt_d_wipes_the_review() {
         let fixture = standard_fixture();
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         for (line, body) in [(1, "first"), (2, "second"), (3, "third")] {
@@ -802,7 +829,7 @@ mod tests {
             );
         }
         press(&mut app, KeyCode::Char('C'));
-        press(&mut app, KeyCode::Char('d'));
+        press_with(&mut app, KeyCode::Char('d'), KeyModifiers::CONTROL);
         assert!(
             matches!(app.modal, Some(Modal::Confirm { .. })),
             "a single delete asks first"
@@ -814,13 +841,55 @@ mod tests {
         assert_eq!(entries.len(), 2, "one comment vanished");
         assert_eq!(app.review.session.comments.len(), 2);
 
-        press(&mut app, KeyCode::Char('D'));
+        press_with(&mut app, KeyCode::Char('d'), KeyModifiers::ALT);
         assert!(
             matches!(app.modal, Some(Modal::Confirm { .. })),
             "delete-all asks first"
         );
         press(&mut app, KeyCode::Char('y'));
         assert!(app.review.session.comments.is_empty(), "started fresh");
+    }
+
+    #[test]
+    fn palette_runs_the_best_match_on_enter() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        press_with(&mut app, KeyCode::Char('k'), KeyModifiers::CONTROL);
+        assert!(matches!(app.modal, Some(Modal::Palette { .. })));
+        for c in "help".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.modal, Some(Modal::Help), "palette dispatched help");
+    }
+
+    #[test]
+    fn enter_on_a_query_matching_nothing_keeps_the_palette_open() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        press_with(&mut app, KeyCode::Char('k'), KeyModifiers::CONTROL);
+        for c in "zzzzqx".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.modal, Some(Modal::Palette { .. })));
+    }
+
+    #[test]
+    fn branch_list_checks_out_the_best_fuzzy_match() {
+        let fixture = standard_fixture();
+        fixture.branch("feat/topic");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_branch_list(BranchAction::Checkout);
+        for c in "topi".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        press(&mut app, KeyCode::Enter);
+        assert!(app.modal.is_none());
+        assert_eq!(
+            app.review.vcs.head().expect("head").branch.as_deref(),
+            Some("feat/topic")
+        );
     }
 
     #[test]

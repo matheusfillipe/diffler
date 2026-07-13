@@ -19,7 +19,7 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
-use crate::app::{App, BranchAction, Modal, Screen, Severity};
+use crate::app::{App, BranchAction, Modal, Screen, Severity, fuzzy};
 use crate::keymap::{Action, render_chord};
 use crate::theme::Theme;
 use crate::transient::TransientKind;
@@ -131,6 +131,17 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         Screen::Prs => prs::draw(frame, app),
         Screen::CiLog => ci_log::draw(frame, app),
     }
+    draw_modal(frame, app);
+    // the which-key panel is a transient overlay, not a modal: it draws only
+    // once the reveal timer has elapsed and never over a modal
+    if app.modal.is_none()
+        && let Some(transient) = app.which_key_panel()
+    {
+        popup::WhichKeyPanel { transient }.render(frame, &app.theme);
+    }
+}
+
+fn draw_modal(frame: &mut Frame<'_>, app: &App) {
     match &app.modal {
         Some(Modal::Confirm { message, .. }) => {
             popup::ConfirmDialog {
@@ -167,32 +178,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             }
             .render(frame, &app.theme);
         }
-        Some(Modal::BranchList {
-            branches,
-            cursor,
-            action,
-        }) => {
-            let title = match action {
-                BranchAction::Checkout => "Checkout branch",
-                BranchAction::Delete => "Delete branch",
-            };
-            popup::ListModal {
-                title: title.to_owned(),
-                items: branches
-                    .iter()
-                    .map(|b| format!("{} {}", if b.is_head { "*" } else { " " }, b.name))
-                    .collect(),
-                cursor: *cursor,
+        Some(Modal::BranchList { .. } | Modal::Comments { .. } | Modal::Palette { .. }) => {
+            if let Some(modal) = fuzzy_modal(app) {
+                modal.render(frame, &app.theme);
             }
-            .render(frame, &app.theme);
-        }
-        Some(Modal::Comments { entries, cursor }) => {
-            popup::ListModal {
-                title: format!("Comments — {}", app.active_review_source().label()),
-                items: entries.iter().map(|e| e.label.clone()).collect(),
-                cursor: *cursor,
-            }
-            .render(frame, &app.theme);
         }
         Some(Modal::ReviewVerdict { number }) => {
             popup::Popup {
@@ -208,12 +197,70 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         }
         None => {}
     }
-    // the which-key panel is a transient overlay, not a modal: it draws only
-    // once the reveal timer has elapsed and never over a modal
-    if app.modal.is_none()
-        && let Some(transient) = app.which_key_panel()
-    {
-        popup::WhichKeyPanel { transient }.render(frame, &app.theme);
+}
+
+fn fuzzy_modal(app: &App) -> Option<popup::FuzzyModal> {
+    match &app.modal {
+        Some(Modal::BranchList {
+            branches,
+            list,
+            action,
+        }) => {
+            let title = match action {
+                BranchAction::Checkout => "Checkout branch",
+                BranchAction::Delete => "Delete branch",
+            };
+            let ranked = fuzzy::rank(&list.query, &fuzzy::branch_haystack(branches));
+            Some(popup::FuzzyModal {
+                title: title.to_owned(),
+                query: list.query.clone(),
+                cursor: list.cursor,
+                items: ranked
+                    .iter()
+                    .filter_map(|index| branches.get(*index))
+                    .map(|b| {
+                        (
+                            format!("{} {}", if b.is_head { "*" } else { " " }, b.name),
+                            String::new(),
+                        )
+                    })
+                    .collect(),
+                selected: list.selected,
+                footer: " enter select · tab cycle · esc back ",
+            })
+        }
+        Some(Modal::Comments { entries, list }) => {
+            let ranked = fuzzy::rank(&list.query, &fuzzy::comment_haystack(entries));
+            Some(popup::FuzzyModal {
+                title: format!("Comments — {}", app.active_review_source().label()),
+                query: list.query.clone(),
+                cursor: list.cursor,
+                items: ranked
+                    .iter()
+                    .filter_map(|index| entries.get(*index))
+                    .map(|e| (e.label.clone(), String::new()))
+                    .collect(),
+                selected: list.selected,
+                footer: " enter jump · c-d delete · a-d delete all · esc back ",
+            })
+        }
+        Some(Modal::Palette { list }) => {
+            let (commands, haystack) = app.command_index_haystack();
+            let ranked = fuzzy::rank(&list.query, &haystack);
+            Some(popup::FuzzyModal {
+                title: "Commands".to_owned(),
+                query: list.query.clone(),
+                cursor: list.cursor,
+                items: ranked
+                    .iter()
+                    .filter_map(|index| commands.get(*index))
+                    .map(|c| (c.label.to_owned(), c.chord.clone()))
+                    .collect(),
+                selected: list.selected,
+                footer: " enter run · tab cycle · esc close ",
+            })
+        }
+        _ => None,
     }
 }
 
@@ -225,7 +272,7 @@ fn help_entries(app: &App) -> Vec<(String, String)> {
     let mut entries: Vec<(String, String)> = keymap
         .bindings()
         .iter()
-        .map(|(chord, action)| (render_chord(chord), action.name().to_owned()))
+        .map(|(chord, action)| (render_chord(chord), action.label().to_owned()))
         .collect();
     if app.screen() == Screen::Status {
         for kind in TransientKind::ALL {

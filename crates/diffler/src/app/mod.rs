@@ -7,9 +7,11 @@
 pub mod blast;
 mod ci;
 pub mod ci_log;
+mod commands;
 mod commit;
 mod diff;
 pub mod enrich;
+pub(crate) mod fuzzy;
 mod log;
 mod mcp;
 mod modal;
@@ -103,10 +105,11 @@ pub enum PendingOp {
     DeleteBranch(String),
     /// Remove one comment (and its forge copy when synced) after confirm.
     DeleteComment(String),
-    /// Same, from the comments overview: rebuilds the list, keeps the cursor.
+    /// Same, from the comments overview: rebuilds the list, keeping the
+    /// filter and a nearby selection.
     DeleteOverviewComment {
         id: String,
-        keep_cursor: usize,
+        keep: fuzzy::FuzzyList,
     },
     /// Wipe every deletable comment of the active review.
     DeleteAllComments,
@@ -157,14 +160,16 @@ pub enum Modal {
     /// Branch picker feeding `action` with the selected name.
     BranchList {
         branches: Vec<BranchInfo>,
-        cursor: usize,
+        list: fuzzy::FuzzyList,
         action: BranchAction,
     },
     /// Every comment of the active review; Enter jumps to it in the diff.
     Comments {
         entries: Vec<CommentJump>,
-        cursor: usize,
+        list: fuzzy::FuzzyList,
     },
+    /// Fuzzy command palette over everything executable on this screen.
+    Palette { list: fuzzy::FuzzyList },
     /// Verdict picker for a PR review submit: approve, request changes, or
     /// comment only.
     ReviewVerdict { number: u64 },
@@ -1056,6 +1061,11 @@ impl App {
             Action::Back => return self.pop_screen(),
             Action::Refresh => self.refresh(),
             Action::Help => self.modal = Some(Modal::Help),
+            Action::Palette => {
+                self.modal = Some(Modal::Palette {
+                    list: fuzzy::FuzzyList::default(),
+                });
+            }
             Action::SendFeedback => {
                 self.feedback_tx.send_modify(|epoch| *epoch += 1);
                 self.info("feedback sent to waiting agents");

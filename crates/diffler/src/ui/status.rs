@@ -863,8 +863,10 @@ mod tests {
         app.handle(key('?'));
         let terminal = render(&mut app);
         let content = terminal.backend().to_string();
-        // top-level leaves still list their action names
-        assert!(content.contains("open_review_diff"), "{content}");
+        assert!(
+            content.contains("open the full working-tree diff"),
+            "{content}"
+        );
         // transients appear as a prefix line plus their grouped sub-keys
         assert!(content.contains("Commit …"), "{content}");
         assert!(content.contains("Amend"), "{content}");
@@ -963,6 +965,23 @@ mod tests {
         app.handle(key('b'));
         app.handle(key('b'));
         insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn palette_lists_commands_and_filters_on_typing() {
+        let fixture = standard_fixture();
+        let mut app = app_for(&fixture);
+        app.handle(crate::event::AppEvent::Key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('k'),
+                crossterm::event::KeyModifiers::CONTROL,
+            ),
+        ));
+        insta::assert_snapshot!("palette_open", render(&mut app).backend());
+        for c in "amend".chars() {
+            app.handle(key(c));
+        }
+        insta::assert_snapshot!("palette_filtered", render(&mut app).backend());
     }
 
     #[test]

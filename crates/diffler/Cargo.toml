@@ -38,6 +38,7 @@ notify.workspace = true
 notify-debouncer-full.workspace = true
 serde_json.workspace = true
 unicode-width.workspace = true
+nucleo-matcher.workspace = true
 # the LSP client speaks file:// URIs, percent-encoded the way servers emit them
 url.workspace = true
 # the GitHub CI source parses workflow YAML into the graph Model
