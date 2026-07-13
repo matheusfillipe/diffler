@@ -59,7 +59,12 @@ port 8417. Connect your agent once:
 claude mcp add --transport http diffler http://127.0.0.1:8417/mcp
 # or, over stdio, auto-discovering the port:
 claude mcp add diffler -- npx -y diffler-mcp
+# or, as a Claude Code plugin (MCP server plus a /diffler command):
+claude plugin marketplace add matheusfillipe/diffler && claude plugin install diffler@diffler
 ```
+
+Connected agents also get the server's `review` prompt as a command
+(`/diffler:review` in Claude Code) that walks the whole check-and-respond loop.
 
 The loop: the agent edits files, the diff updates live. You comment lines or
 ranges in the diff view and press `Z` to send feedback. The agent picks the

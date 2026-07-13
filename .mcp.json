@@ -1,0 +1,6 @@
+{
+  "diffler": {
+    "command": "npx",
+    "args": ["-y", "diffler-mcp"]
+  }
+}

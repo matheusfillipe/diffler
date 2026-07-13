@@ -1,0 +1,9 @@
+{
+  "name": "diffler",
+  "version": "0.1.0",
+  "description": "Connects the diffler MCP server and adds /diffler to check the review and respond to feedback.",
+  "author": {
+    "name": "Matheus Fillipe",
+    "url": "https://github.com/matheusfillipe"
+  }
+}

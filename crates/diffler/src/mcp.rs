@@ -14,12 +14,16 @@ use diffler_core::feedback;
 use diffler_core::model::{DiffModel, FileStatus};
 use diffler_core::session::{Comment, CommentStatus};
 use diffler_core::source::ReviewSource;
+use rmcp::handler::server::router::prompt::PromptRouter;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{ServerCapabilities, ServerInfo};
+use rmcp::model::{PromptMessage, Role, ServerCapabilities, ServerInfo};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
-use rmcp::{ErrorData, Json, ServerHandler, schemars, tool, tool_handler, tool_router};
+use rmcp::{
+    ErrorData, Json, ServerHandler, prompt, prompt_handler, prompt_router, schemars, tool,
+    tool_handler, tool_router,
+};
 use serde::Serialize;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::{oneshot, watch};
@@ -331,6 +335,7 @@ pub struct DifflerMcp {
     tx: UnboundedSender<AppEvent>,
     feedback_rx: watch::Receiver<u64>,
     tool_router: ToolRouter<Self>,
+    prompt_router: PromptRouter<Self>,
 }
 
 fn mismatch() -> ErrorData {
@@ -355,6 +360,7 @@ impl DifflerMcp {
             tx,
             feedback_rx,
             tool_router: Self::tool_router(),
+            prompt_router: Self::prompt_router(),
         }
     }
 
@@ -529,14 +535,46 @@ impl DifflerMcp {
     }
 }
 
+/// Clients surface MCP prompts as commands (Claude Code renders this as
+/// `/diffler:review`), so connected agents get a one-keystroke entry into
+/// the review loop.
+#[prompt_router]
+impl DifflerMcp {
+    #[prompt(
+        name = "review",
+        description = "Check the diffler review: read the human's open comments, address them in code, reply, and wait for the next round."
+    )]
+    async fn review(&self) -> Vec<PromptMessage> {
+        vec![PromptMessage::new_text(
+            Role::User,
+            "Check the diffler review and respond to the human's feedback:\n\
+             1. Call review_status for the active review and its changed files.\n\
+             2. Call get_comments with status \"open\" and read each comment in place.\n\
+             3. Address every comment in the code it anchors to.\n\
+             4. Answer each with reply_comment (what you changed and why), then \
+             propose_resolve; only the human can resolve for real, in the TUI.\n\
+             5. Call wait_for_feedback with the latest epoch and start over when it \
+             returns — the human just sent new feedback. If it times out, call it \
+             again; if the connection fails, diffler is closed, so stop.",
+        )]
+    }
+}
+
 #[tool_handler(router = self.tool_router)]
+#[prompt_handler(router = self.prompt_router)]
 impl ServerHandler for DifflerMcp {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
+        ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_prompts()
+                .build(),
+        )
+        .with_instructions(
             "diffler code review: get_comments reads the human's diff comments, \
              reply_comment answers them in place, propose_resolve flags them as \
              addressed, and wait_for_feedback long-polls until the human sends \
-             new feedback.",
+             new feedback. The review prompt packages that loop as a command.",
         )
     }
 }

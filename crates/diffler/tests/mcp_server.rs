@@ -102,6 +102,34 @@ fn send_key(tx: &UnboundedSender<AppEvent>, c: char) {
 }
 
 #[tokio::test]
+async fn the_review_prompt_is_listed_and_carries_the_workflow() {
+    let harness = start(|_| {}).await;
+    let prompts = harness
+        .client
+        .list_prompts(Option::default())
+        .await
+        .expect("list prompts")
+        .prompts;
+    assert_eq!(prompts.len(), 1);
+    assert_eq!(prompts[0].name, "review");
+
+    let result = harness
+        .client
+        .get_prompt(rmcp::model::GetPromptRequestParams::new("review"))
+        .await
+        .expect("get prompt");
+    let text = format!("{:?}", result.messages);
+    for step in [
+        "review_status",
+        "get_comments",
+        "reply_comment",
+        "wait_for_feedback",
+    ] {
+        assert!(text.contains(step), "prompt walks through {step}");
+    }
+}
+
+#[tokio::test]
 async fn review_status_reflects_the_fixture() {
     let harness = start(|_| {}).await;
     let result = call(&harness.client, "review_status", Value::Null).await;
