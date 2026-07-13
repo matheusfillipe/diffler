@@ -127,7 +127,7 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   (`remote_id` marks forge-owned rows); local comments and replies post back
   through queued workers (GitHub via `gh`; Forgejo/GitLab decline politely).
 - **Non-goals.** Worktree/workspace management, agent orchestration,
-  structural diff. Task tracking is a later milestone (`PLAN.md`).
+  structural diff, task tracking.
 
 ## Distribution
 

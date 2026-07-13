@@ -3,7 +3,7 @@
 Issues and PRs welcome.
 
 ```sh
-just ci     # fmt + clippy + tests — must pass before any commit
+just ci     # fmt + clippy + tests, must pass before any commit
 just e2e    # PTY end-to-end suite (needs uv)
 prek install  # git hooks, once
 ```
