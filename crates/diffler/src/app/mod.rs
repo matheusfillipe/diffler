@@ -1062,9 +1062,10 @@ impl App {
             Action::Refresh => self.refresh(),
             Action::Help => self.modal = Some(Modal::Help),
             Action::Palette => {
-                self.modal = Some(Modal::Palette {
-                    list: fuzzy::FuzzyList::default(),
-                });
+                let (_, haystack) = self.command_index_haystack();
+                let mut list = fuzzy::FuzzyList::default();
+                list.rerank(&haystack);
+                self.modal = Some(Modal::Palette { list });
             }
             Action::SendFeedback => {
                 self.feedback_tx.send_modify(|epoch| *epoch += 1);

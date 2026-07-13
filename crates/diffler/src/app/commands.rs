@@ -40,16 +40,15 @@ impl App {
                 let Some(prefix) = keymap.prefix_chord(kind) else {
                     continue;
                 };
-                for group in &self.transient(kind).groups {
-                    commands.extend(group.entries.iter().map(|entry| Command {
-                        action: entry.action,
-                        label: entry.action.label(),
-                        chord: format!(
-                            "{prefix} {}",
-                            render_chord(std::slice::from_ref(&entry.key))
-                        ),
-                    }));
-                }
+                commands.extend(
+                    self.transient(kind)
+                        .flat_entries()
+                        .map(|(key, entry)| Command {
+                            action: entry.action,
+                            label: entry.action.label(),
+                            chord: format!("{prefix} {key}"),
+                        }),
+                );
             }
         }
         commands

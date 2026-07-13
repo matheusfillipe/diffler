@@ -277,13 +277,14 @@ impl Transient {
         TransientResolve::Unbound
     }
 
-    /// `(key, label)` pairs across all groups, for the help popup listing.
-    pub fn flat_entries(&self) -> impl Iterator<Item = (String, &'static str)> + '_ {
+    /// `(rendered key, entry)` pairs across all groups, for the help popup
+    /// and the command palette.
+    pub fn flat_entries(&self) -> impl Iterator<Item = (String, &TransientEntry)> + '_ {
         self.groups.iter().flat_map(|group| {
             group
                 .entries
                 .iter()
-                .map(|entry| (render_chord(std::slice::from_ref(&entry.key)), entry.label))
+                .map(|entry| (render_chord(std::slice::from_ref(&entry.key)), entry))
         })
     }
 }
@@ -474,7 +475,10 @@ mod tests {
     #[test]
     fn flat_entries_lists_every_leaf() {
         let commit = transient(TransientKind::Commit);
-        let labels: Vec<&str> = commit.flat_entries().map(|(_, label)| label).collect();
+        let labels: Vec<&str> = commit
+            .flat_entries()
+            .map(|(_, entry)| entry.label)
+            .collect();
         assert_eq!(labels, vec!["Commit", "Extend", "Amend", "Reword"]);
     }
 }

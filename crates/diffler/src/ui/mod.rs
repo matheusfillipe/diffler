@@ -19,7 +19,7 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
-use crate::app::{App, BranchAction, Modal, Screen, Severity, fuzzy};
+use crate::app::{App, BranchAction, Modal, Screen, Severity};
 use crate::keymap::{Action, render_chord};
 use crate::theme::Theme;
 use crate::transient::TransientKind;
@@ -210,12 +210,12 @@ fn fuzzy_modal(app: &App) -> Option<popup::FuzzyModal> {
                 BranchAction::Checkout => "Checkout branch",
                 BranchAction::Delete => "Delete branch",
             };
-            let ranked = fuzzy::rank(&list.query, &fuzzy::branch_haystack(branches));
             Some(popup::FuzzyModal {
                 title: title.to_owned(),
                 query: list.query.clone(),
                 cursor: list.cursor,
-                items: ranked
+                items: list
+                    .matches
                     .iter()
                     .filter_map(|index| branches.get(*index))
                     .map(|b| {
@@ -229,29 +229,27 @@ fn fuzzy_modal(app: &App) -> Option<popup::FuzzyModal> {
                 footer: " enter select · tab cycle · esc back ",
             })
         }
-        Some(Modal::Comments { entries, list }) => {
-            let ranked = fuzzy::rank(&list.query, &fuzzy::comment_haystack(entries));
-            Some(popup::FuzzyModal {
-                title: format!("Comments — {}", app.active_review_source().label()),
-                query: list.query.clone(),
-                cursor: list.cursor,
-                items: ranked
-                    .iter()
-                    .filter_map(|index| entries.get(*index))
-                    .map(|e| (e.label.clone(), String::new()))
-                    .collect(),
-                selected: list.selected,
-                footer: " enter jump · c-d delete · a-d delete all · esc back ",
-            })
-        }
+        Some(Modal::Comments { entries, list }) => Some(popup::FuzzyModal {
+            title: format!("Comments — {}", app.active_review_source().label()),
+            query: list.query.clone(),
+            cursor: list.cursor,
+            items: list
+                .matches
+                .iter()
+                .filter_map(|index| entries.get(*index))
+                .map(|e| (e.label.clone(), String::new()))
+                .collect(),
+            selected: list.selected,
+            footer: " enter jump · c-d delete · a-d delete all · esc back ",
+        }),
         Some(Modal::Palette { list }) => {
-            let (commands, haystack) = app.command_index_haystack();
-            let ranked = fuzzy::rank(&list.query, &haystack);
+            let commands = app.command_index();
             Some(popup::FuzzyModal {
                 title: "Commands".to_owned(),
                 query: list.query.clone(),
                 cursor: list.cursor,
-                items: ranked
+                items: list
+                    .matches
                     .iter()
                     .filter_map(|index| commands.get(*index))
                     .map(|c| (c.label.to_owned(), c.chord.clone()))
@@ -280,8 +278,8 @@ fn help_entries(app: &App) -> Vec<(String, String)> {
                 continue;
             };
             entries.push((prefix, format!("{} …", kind.title())));
-            for (key, label) in app.transient(kind).flat_entries() {
-                entries.push((format!("  {key}"), label.to_owned()));
+            for (key, entry) in app.transient(kind).flat_entries() {
+                entries.push((format!("  {key}"), entry.label.to_owned()));
             }
         }
     }

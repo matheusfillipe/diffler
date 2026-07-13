@@ -13,8 +13,11 @@ pub struct FuzzyList {
     pub query: String,
     /// Character index into `query`.
     pub cursor: usize,
-    /// Index into the current ranked matches.
+    /// Index into `matches`.
     pub selected: usize,
+    /// Ranked haystack indices, best first: the one place the ranking is
+    /// computed (on open and on each edit), read by handler and renderer.
+    pub matches: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,25 +31,25 @@ pub(crate) enum FuzzyKey {
 }
 
 impl FuzzyList {
-    pub(crate) fn feed(&mut self, key: &KeyEvent, matches: usize) -> FuzzyKey {
+    pub(crate) fn feed(&mut self, key: &KeyEvent) -> FuzzyKey {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc => return FuzzyKey::Cancel,
             KeyCode::Enter => return FuzzyKey::Submit,
             KeyCode::Tab | KeyCode::Down => {
-                self.step(matches, true);
+                self.step(true);
                 return FuzzyKey::Consumed;
             }
             KeyCode::BackTab | KeyCode::Up => {
-                self.step(matches, false);
+                self.step(false);
                 return FuzzyKey::Consumed;
             }
             KeyCode::Char('n') if ctrl => {
-                self.step(matches, true);
+                self.step(true);
                 return FuzzyKey::Consumed;
             }
             KeyCode::Char('p') if ctrl => {
-                self.step(matches, false);
+                self.step(false);
                 return FuzzyKey::Consumed;
             }
             KeyCode::Backspace => {
@@ -93,16 +96,24 @@ impl FuzzyList {
         FuzzyKey::Other
     }
 
-    fn step(&mut self, matches: usize, forward: bool) {
-        if matches == 0 {
+    fn step(&mut self, forward: bool) {
+        let len = self.matches.len();
+        if len == 0 {
             self.selected = 0;
             return;
         }
         self.selected = if forward {
-            (self.selected + 1) % matches
+            (self.selected + 1) % len
         } else {
-            (self.selected + matches - 1) % matches
+            (self.selected + len - 1) % len
         };
+    }
+
+    /// Recompute the ranking; call on open and after every edit. Keeps the
+    /// selection when it survives the new match set.
+    pub(crate) fn rerank(&mut self, haystacks: &[String]) {
+        self.matches = rank(&self.query, haystacks);
+        self.selected = self.selected.min(self.matches.len().saturating_sub(1));
     }
 }
 
@@ -128,12 +139,8 @@ pub(crate) fn rank(query: &str, haystacks: &[String]) -> Vec<usize> {
 }
 
 /// The item the list's selection points at, through the current ranking.
-pub(crate) fn selected<'a, T>(
-    list: &FuzzyList,
-    haystacks: &[String],
-    items: &'a [T],
-) -> Option<&'a T> {
-    rank(&list.query, haystacks)
+pub(crate) fn selected<'a, T>(list: &FuzzyList, items: &'a [T]) -> Option<&'a T> {
+    list.matches
         .get(list.selected)
         .and_then(|index| items.get(*index))
 }
@@ -178,16 +185,23 @@ mod tests {
 
     #[test]
     fn typing_filters_and_selection_wraps() {
+        let items = hay(&["stage file", "stash", "search"]);
         let mut list = FuzzyList::default();
+        list.rerank(&items);
         let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
-        assert_eq!(list.feed(&press(KeyCode::Char('s')), 3), FuzzyKey::Edited);
+        assert_eq!(list.feed(&press(KeyCode::Char('s'))), FuzzyKey::Edited);
+        list.rerank(&items);
         assert_eq!(list.query, "s");
-        list.feed(&press(KeyCode::Tab), 2);
+        assert_eq!(list.matches.len(), 3);
+        list.feed(&press(KeyCode::Char('t')));
+        list.rerank(&items);
+        assert_eq!(list.matches.len(), 2, "quit drops out of 'st'");
+        list.feed(&press(KeyCode::Tab));
         assert_eq!(list.selected, 1);
-        list.feed(&press(KeyCode::Tab), 2);
+        list.feed(&press(KeyCode::Tab));
         assert_eq!(list.selected, 0);
-        list.feed(&press(KeyCode::BackTab), 2);
+        list.feed(&press(KeyCode::BackTab));
         assert_eq!(list.selected, 1);
-        assert_eq!(list.feed(&press(KeyCode::Esc), 2), FuzzyKey::Cancel);
+        assert_eq!(list.feed(&press(KeyCode::Esc)), FuzzyKey::Cancel);
     }
 }

@@ -4,7 +4,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use std::path::Path;
 
-use super::fuzzy::{FuzzyKey, FuzzyList, branch_haystack, comment_haystack, rank, selected};
+use super::fuzzy::{FuzzyKey, FuzzyList, branch_haystack, comment_haystack, selected};
 use super::{App, BranchAction, Flow, InputOp, Modal, PendingOp, byte_index};
 
 impl App {
@@ -270,9 +270,11 @@ impl App {
                 self.info("no branches");
             }
             Ok(branches) => {
+                let mut list = FuzzyList::default();
+                list.rerank(&branch_haystack(&branches));
                 self.modal = Some(Modal::BranchList {
                     branches,
-                    list: FuzzyList::default(),
+                    list,
                     action,
                 });
             }
@@ -330,10 +332,9 @@ impl App {
             self.info("no comments in this review yet");
             return;
         }
-        self.modal = Some(Modal::Comments {
-            entries,
-            list: FuzzyList::default(),
-        });
+        let mut list = FuzzyList::default();
+        list.rerank(&comment_haystack(&entries));
+        self.modal = Some(Modal::Comments { entries, list });
     }
 
     pub(super) fn handle_comments_key(&mut self, key: &KeyEvent) {
@@ -357,10 +358,13 @@ impl App {
         let Some(Modal::Comments { entries, list }) = self.modal.as_mut() else {
             return;
         };
-        let matches = rank(&list.query, &comment_haystack(entries)).len();
-        match list.feed(key, matches) {
+        match list.feed(key) {
             FuzzyKey::Submit => self.jump_to_selected_comment(),
             FuzzyKey::Cancel => self.modal = None,
+            FuzzyKey::Edited => {
+                let haystack = comment_haystack(entries);
+                list.rerank(&haystack);
+            }
             _ => {}
         }
     }
@@ -369,18 +373,16 @@ impl App {
     /// rebuilds the list in place with the cursor kept nearby.
     fn delete_selected_overview_comment(&mut self) {
         let (entry, keep) = match &self.modal {
-            Some(Modal::Comments { entries, list }) => {
-                match selected(list, &comment_haystack(entries), entries).cloned() {
-                    Some(entry) => {
-                        let keep = FuzzyList {
-                            selected: list.selected.saturating_sub(1),
-                            ..list.clone()
-                        };
-                        (entry, keep)
-                    }
-                    None => return,
+            Some(Modal::Comments { entries, list }) => match selected(list, entries).cloned() {
+                Some(entry) => {
+                    let keep = FuzzyList {
+                        selected: list.selected.saturating_sub(1),
+                        ..list.clone()
+                    };
+                    (entry, keep)
                 }
-            }
+                None => return,
+            },
             _ => return,
         };
         self.modal = Some(Modal::Confirm {
@@ -396,9 +398,8 @@ impl App {
         if self.delete_comment_by_id(id) {
             self.open_comments_overview();
             if let Some(Modal::Comments { entries, list }) = self.modal.as_mut() {
-                let matches = rank(&keep.query, &comment_haystack(entries)).len();
                 *list = keep;
-                list.selected = list.selected.min(matches.saturating_sub(1));
+                list.rerank(&comment_haystack(entries));
             }
         }
     }
@@ -455,7 +456,7 @@ impl App {
         let Some(Modal::Comments { entries, list }) = &self.modal else {
             return;
         };
-        let Some(entry) = selected(list, &comment_haystack(entries), entries).cloned() else {
+        let Some(entry) = selected(list, entries).cloned() else {
             return;
         };
         self.modal = None;
@@ -498,16 +499,16 @@ impl App {
         let Some(Modal::Palette { list }) = self.modal.as_mut() else {
             return Flow::Continue;
         };
-        let matches = rank(&list.query, &haystack).len();
-        match list.feed(key, matches) {
+        match list.feed(key) {
             FuzzyKey::Submit => {
                 // a query matching nothing keeps the palette open, like fzf
-                if let Some(action) = selected(list, &haystack, &commands).map(|c| c.action) {
+                if let Some(action) = selected(list, &commands).map(|c| c.action) {
                     self.modal = None;
                     return self.dispatch(action);
                 }
             }
             FuzzyKey::Cancel => self.modal = None,
+            FuzzyKey::Edited => list.rerank(&haystack),
             _ => {}
         }
         Flow::Continue
@@ -517,10 +518,13 @@ impl App {
         let Some(Modal::BranchList { branches, list, .. }) = self.modal.as_mut() else {
             return;
         };
-        let matches = rank(&list.query, &branch_haystack(branches)).len();
-        match list.feed(key, matches) {
+        match list.feed(key) {
             FuzzyKey::Submit => self.submit_branch_list(),
             FuzzyKey::Cancel => self.modal = None,
+            FuzzyKey::Edited => {
+                let haystack = branch_haystack(branches);
+                list.rerank(&haystack);
+            }
             _ => {}
         }
     }
@@ -536,9 +540,7 @@ impl App {
             return;
         };
         let action = *action;
-        let Some(name) =
-            selected(list, &branch_haystack(branches), branches).map(|b| b.name.clone())
-        else {
+        let Some(name) = selected(list, branches).map(|b| b.name.clone()) else {
             return;
         };
         self.modal = None;
