@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/diffler", "crates/diffler-core"]
 
 [workspace.package]
-version = "0.4.2"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
@@ -14,7 +14,7 @@ categories = ["command-line-utilities", "development-tools"]
 keywords = ["diff", "tui", "code-review", "mcp", "agents"]
 
 [workspace.dependencies]
-diffler-core = { path = "crates/diffler-core", version = "0.4.2" }
+diffler-core = { path = "crates/diffler-core", version = "0.5.0" }
 ratatui = "0.30"
 async-trait = "0.1"
 time = { version = "0.3", features = ["formatting", "parsing"] }
