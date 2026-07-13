@@ -11,7 +11,7 @@ together with the agent, while it happens. The code that lands is code you
 have actually reviewed.
 
 If you know Emacs' [magit](https://magit.vc), diffler is basically a
-standalone magit with an MCP server built in — the same fast, keyboard-driven
+standalone magit with an MCP server built in: the same fast, keyboard-driven
 git UI, no Emacs required. Launch it in a repo alongside Claude Code or any
 MCP-compatible agent: it shows a live diff of what the agent is doing; you
 read, comment, stage, and commit; the agent picks your feedback up over MCP
@@ -22,7 +22,7 @@ and responds in place. One binary, no browser, no daemon.
 The installed command is always `diffler`. Pick whatever fits:
 
 ```sh
-# Rust — compile from source, or grab the prebuilt with cargo-binstall
+# Rust: compile from source, or grab the prebuilt with cargo-binstall
 cargo install diffler
 cargo binstall diffler
 
@@ -37,18 +37,18 @@ scoop install diffler
 # Arch (AUR)
 yay -S diffler-bin
 
-# Nix (flake — runs the prebuilt binary)
+# Nix (flake, runs the prebuilt binary)
 nix run github:matheusfillipe/diffler
 nix profile install github:matheusfillipe/diffler
 
-# npm — prebuilt binary, one-off or global
+# npm: prebuilt binary, one-off or global
 npx @mattfillipe/diffler
 npm install -g @mattfillipe/diffler
 ```
 
 Or download a prebuilt binary (macOS, Linux, Windows; x86_64 and arm64) from the
-[releases page](https://github.com/matheusfillipe/diffler/releases) — any
-GitHub-release installer (`eget`, `ubi`, …) works against it too.
+[releases page](https://github.com/matheusfillipe/diffler/releases). Any
+GitHub-release installer (`eget`, `ubi`, ...) works against it too.
 
 ## Quickstart
 
@@ -73,7 +73,7 @@ you confirm in the TUI. `y`/`Y` copy the same feedback as markdown if you would
 rather paste it into a prompt.
 
 The same review works against real pull requests: the status screen shows the
-branch's PR (and `b` `p` lists all open ones — reviewing never needs a
+branch's PR (and `b` `p` lists all open ones; reviewing never needs a
 checkout). PR comments sync in as regular threads, yours stack locally, and
 `S` submits them as a single review on the forge.
 
@@ -91,7 +91,7 @@ Vim-like: `j`/`k`/`gg`/`G` motions, `/` search, and
 | `v` / `u` | in the diff view: mark the file viewed / jump to the next unviewed file |
 | `t` | cycle the sidebar: tree, list, review buckets (viewed files fold away, come back if they change) |
 | `Z` | send feedback to the agent |
-| `C` | overview of every comment — Enter jumps, `d`/`D` delete one/all |
+| `C` | overview of every comment: Enter jumps, `d`/`D` delete one/all |
 | `S` | submit stacked PR comments as one review |
 | `y` / `Y` | copy feedback as markdown (file / all) |
 | `x` | in the diff view: graph who calls the symbol under the cursor |
@@ -99,7 +99,7 @@ Vim-like: `j`/`k`/`gg`/`G` motions, `/` search, and
 | `?` | full keymap for the current screen |
 | `q` | back / quit |
 
-Every binding is remappable — see
+Every binding is remappable, see
 [docs/config.example.toml](docs/config.example.toml).
 
 The diff view is two panes: a file sidebar and the selected file's diff. `TAB`
@@ -108,19 +108,19 @@ scroll the diff when focused there; `J`/`K` (or `<c-n>`/`<c-p>`) switch files
 from either.
 
 The mouse works too (including over tmux): the wheel scrolls the pane under the
-pointer, and a left click selects a row — clicking a section, directory, or
+pointer, and a left click selects a row. Clicking a section, directory, or
 recent-commits header folds it, and clicking a sidebar file opens it. Mouse
 capture means the terminal's own text selection needs the usual override
 (`Shift`, or `Option` in iTerm2).
 
 ## How it compares
 
-Pagers like `delta` render diffs beautifully, and `lazygit`/`gitui` are great
-general git TUIs. diffler is review-first: comments live on diff lines, an
-agent reads and answers them over MCP while you watch, and the same threads
-work against real GitHub/Forgejo PRs — including PRs whose branch you never
-checked out. The `x` key adds something none of them have: a call-graph of
-who uses the code that changed.
+Pagers like [delta](https://github.com/dandavison/delta) render diffs
+beautifully, and [lazygit](https://github.com/jesseduffield/lazygit) and
+[gitui](https://github.com/gitui-org/gitui) are great general git TUIs.
+diffler is review-first: comments live on diff lines, an agent reads and
+answers them over MCP while you watch, and the same threads work against real
+GitHub/Forgejo PRs, including PRs whose branch you never checked out.
 
 ## MCP tools
 
@@ -142,7 +142,7 @@ diffler config --dump
 ## Development
 
 ```sh
-just ci     # fmt + clippy + tests, same gate as CI
+just ci     # core gate: fmt + clippy + tests
 just e2e    # PTY end-to-end suite (needs uv)
 ```
 
