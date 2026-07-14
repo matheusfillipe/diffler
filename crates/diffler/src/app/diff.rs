@@ -143,6 +143,9 @@ pub struct DiffView {
     pub(crate) viewport: u16,
     /// Rows for the selected file only.
     pub(crate) rows: Vec<DiffRow>,
+    /// Last render's pane line -> row index table; wrapped rows span several
+    /// lines, so mouse hits map back through it.
+    pub(crate) line_rows: Vec<Option<usize>>,
     rows_dirty: bool,
     /// Pane row width comments wrap to; set from the last draw, MAX until
     /// the first frame so unit tests see unwrapped lines.
@@ -186,6 +189,7 @@ impl DiffView {
             visual_anchor: None,
             viewport: 0,
             rows: Vec::new(),
+            line_rows: Vec::new(),
             rows_dirty: true,
             wrap_width: u16::MAX,
             wrap_dirty: false,
@@ -1139,8 +1143,18 @@ impl App {
         if diff.side_by_side {
             return None;
         }
-        let index = super::hit_index(diff.pane, diff.scroll, col, row)?;
-        (index < diff.rows().len()).then_some(index)
+        let pane = diff.pane;
+        let inside = col >= pane.x
+            && col < pane.x + pane.width
+            && row >= pane.y
+            && row < pane.y + pane.height;
+        if !inside {
+            return None;
+        }
+        diff.line_rows
+            .get((row - pane.y) as usize)
+            .copied()
+            .flatten()
     }
 
     /// Move the sidebar tree cursor by `delta` over the visible rows (dirs and

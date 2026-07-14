@@ -23,7 +23,8 @@ use crate::theme::Theme;
 use crate::tree::{Bucket, TreeNode};
 use crate::ui::Hint;
 use crate::ui::diff_render::{
-    file_gutter_width, hunk_header, line_syntax, render_diff_line, render_split_pair,
+    diff_line_height, file_gutter_width, hunk_header, line_syntax, render_diff_line,
+    render_split_pair, split_pair_height,
 };
 use crate::ui::{diffstat_spans, proportion_bar, status_bar, status_color};
 
@@ -247,89 +248,171 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
         let split = diff.split_rows.clone();
         let (sel, side) = diff.split_cursor(&split);
         let height = rows_area.height.max(1) as usize;
-        if sel < diff.split_scroll {
-            diff.split_scroll = sel;
-        }
-        if sel >= diff.split_scroll + height {
-            diff.split_scroll = sel + 1 - height;
-        }
-        let scroll = diff.split_scroll;
-        let highlights = diff.highlights.get(&file.path);
         let gutter = file_gutter_width(file);
-        let lines: Vec<Line<'static>> = split
+        let heights: Vec<usize> = split
             .iter()
-            .enumerate()
-            .skip(scroll)
-            .take(height)
-            .map(|(index, row)| {
-                split_row_line(
-                    theme,
-                    session,
-                    file,
-                    highlights,
-                    gutter,
-                    rows_area.width,
-                    row,
-                    index == sel,
-                    side,
-                )
-            })
+            .map(|row| split_row_height(file, row, gutter, rows_area.width))
             .collect();
-        let top = split
-            .iter()
-            .skip(scroll)
-            .find_map(|r| split_right_new_no(file, r));
+        let mut starts = Vec::with_capacity(heights.len());
+        let mut total = 0usize;
+        for h in &heights {
+            starts.push(total);
+            total += h;
+        }
+        let (sel_start, sel_height) = match (starts.get(sel), heights.get(sel)) {
+            (Some(s), Some(h)) => (*s, *h),
+            _ => (0, 1),
+        };
+        let mut scroll = diff.split_scroll.min(total.saturating_sub(1));
+        if sel_start < scroll {
+            scroll = sel_start;
+        }
+        if sel_start + sel_height > scroll + height {
+            scroll = (sel_start + sel_height).saturating_sub(height);
+        }
+        diff.split_scroll = scroll;
+        let highlights = diff.highlights.get(&file.path);
+        let mut lines: Vec<Line<'static>> = Vec::with_capacity(height);
+        let mut top_row = None;
+        for (index, row) in split.iter().enumerate() {
+            let (Some(&start), Some(&row_h)) = (starts.get(index), heights.get(index)) else {
+                break;
+            };
+            if start + row_h <= scroll {
+                continue;
+            }
+            if start >= scroll + height {
+                break;
+            }
+            top_row.get_or_insert(index);
+            let rendered = split_row_lines(
+                theme,
+                session,
+                file,
+                highlights,
+                gutter,
+                rows_area.width,
+                row,
+                index == sel,
+                side,
+            );
+            for (offset, line) in rendered.into_iter().enumerate() {
+                let at = start + offset;
+                if at < scroll || at >= scroll + height {
+                    continue;
+                }
+                lines.push(line);
+            }
+        }
+        let top = top_row.and_then(|from| {
+            split
+                .iter()
+                .skip(from)
+                .find_map(|r| split_right_new_no(file, r))
+        });
         render_scope_crumb(frame, crumb_area, theme, diff.scopes.get(&file.path), top);
         frame.render_widget(Paragraph::new(lines), rows_area);
         return;
     }
 
     let height = rows_area.height.max(1) as usize;
-    diff.scroll = super::scroll_to_cursor(diff.cursor, diff.scroll, height);
-    let scroll = diff.scroll;
     let cursor = diff.cursor;
     let selection = diff.selection();
-
     let selected = |index: usize| {
         index == cursor || selection.is_some_and(|(start, end)| index >= start && index <= end)
     };
-    let lines: Vec<Line<'static>> = diff
-        .rows()
+
+    // long lines wrap, so rows vary in height: place every row first, then
+    // scroll in visual lines keeping the whole cursor row on screen
+    let rows = diff.rows().to_vec();
+    let heights: Vec<usize> = rows
         .iter()
-        .enumerate()
-        .skip(scroll)
-        .take(height)
-        .map(|(index, row)| {
-            // only the focused pane highlights; otherwise the sidebar's
-            // matches (keyed by row index) would bleed onto diff rows
-            let ranges = search
-                .filter(|_| focused)
-                .map(|s| s.ranges_for(index))
-                .unwrap_or_default();
-            row_line(
-                theme,
-                session,
-                model,
-                diff,
-                row,
-                rows_area.width,
-                selected(index),
-                &ranges,
-            )
-        })
+        .map(|row| row_height(model, row, rows_area.width))
         .collect();
+    let mut starts = Vec::with_capacity(heights.len());
+    let mut total = 0usize;
+    for h in &heights {
+        starts.push(total);
+        total += h;
+    }
+    let (cur_start, cur_height) = match (starts.get(cursor), heights.get(cursor)) {
+        (Some(s), Some(h)) => (*s, *h),
+        _ => (0, 1),
+    };
+    let mut scroll = diff.scroll.min(total.saturating_sub(1));
+    if cur_start < scroll {
+        scroll = cur_start;
+    }
+    if cur_start + cur_height > scroll + height {
+        scroll = (cur_start + cur_height).saturating_sub(height);
+    }
+    diff.scroll = scroll;
+
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(height);
+    let mut line_rows: Vec<Option<usize>> = Vec::with_capacity(height);
+    let mut top_row = None;
+    for (index, row) in rows.iter().enumerate() {
+        let (Some(&start), Some(&row_h)) = (starts.get(index), heights.get(index)) else {
+            break;
+        };
+        if start + row_h <= scroll {
+            continue;
+        }
+        if start >= scroll + height {
+            break;
+        }
+        top_row.get_or_insert(index);
+        // only the focused pane highlights; otherwise the sidebar's
+        // matches (keyed by row index) would bleed onto diff rows
+        let ranges = search
+            .filter(|_| focused)
+            .map(|s| s.ranges_for(index))
+            .unwrap_or_default();
+        let rendered = row_lines(
+            theme,
+            session,
+            model,
+            diff,
+            row,
+            rows_area.width,
+            selected(index),
+            &ranges,
+        );
+        for (offset, line) in rendered.into_iter().enumerate() {
+            let at = start + offset;
+            if at < scroll || at >= scroll + height {
+                continue;
+            }
+            lines.push(line);
+            line_rows.push(Some(index));
+        }
+    }
+    diff.line_rows = line_rows;
     frame.render_widget(Paragraph::new(lines), rows_area);
 
-    let top = diff
-        .rows()
-        .iter()
-        .skip(scroll)
-        .find_map(|r| row_new_no(file, r));
+    let top = top_row.and_then(|from| rows.iter().skip(from).find_map(|r| row_new_no(file, r)));
     render_scope_crumb(frame, crumb_area, theme, diff.scopes.get(&file.path), top);
 }
 
 #[allow(clippy::too_many_arguments)]
-fn split_row_line(
+/// Terminal rows a split row occupies at `width`; only pairs can wrap.
+fn split_row_height(file: &FileDiff, row: &SplitRow, gutter: usize, width: u16) -> usize {
+    let SplitRow::Pair { hunk, left, right } = *row else {
+        return 1;
+    };
+    let Some(hunk) = file.hunks.get(hunk) else {
+        return 1;
+    };
+    split_pair_height(
+        left.and_then(|i| hunk.lines.get(i)),
+        right.and_then(|i| hunk.lines.get(i)),
+        gutter,
+        width,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn split_row_lines(
     theme: &Theme,
     session: &Session,
     file: &FileDiff,
@@ -339,15 +422,15 @@ fn split_row_line(
     row: &SplitRow,
     on_cursor: bool,
     cursor_side: Option<SplitSide>,
-) -> Line<'static> {
+) -> Vec<Line<'static>> {
     match *row {
         SplitRow::Hunk { hunk } => match file.hunks.get(hunk) {
-            Some(hunk) => hunk_header(theme, hunk, width, on_cursor),
-            None => Line::default(),
+            Some(hunk) => vec![hunk_header(theme, hunk, width, on_cursor)],
+            None => vec![Line::default()],
         },
         SplitRow::Pair { hunk, left, right } => {
             let Some(hunk) = file.hunks.get(hunk) else {
-                return Line::default();
+                return vec![Line::default()];
             };
             let cell = |index: Option<usize>, side: SplitSide| {
                 index.and_then(|i| hunk.lines.get(i)).map(|line| {
@@ -375,8 +458,12 @@ fn split_row_line(
             line,
             outdated,
         } => match session.comments.get(comment) {
-            Some(comment) => comment_row_line(theme, comment, line, outdated, width, on_cursor),
-            None => Line::default(),
+            Some(comment) => {
+                vec![comment_row_line(
+                    theme, comment, line, outdated, width, on_cursor,
+                )]
+            }
+            None => vec![Line::default()],
         },
     }
 }
@@ -628,9 +715,24 @@ fn clip_spans(
     }
 }
 
+/// Terminal rows `row` occupies at `width`; only diff lines can wrap.
+fn row_height(model: &DiffModel, row: &DiffRow, width: u16) -> usize {
+    let DiffRow::Line { file, hunk, line } = row else {
+        return 1;
+    };
+    model
+        .files
+        .get(*file)
+        .and_then(|f| {
+            let line = f.hunks.get(*hunk)?.lines.get(*line)?;
+            Some(diff_line_height(line, file_gutter_width(f), width))
+        })
+        .unwrap_or(1)
+}
+
 // mirrors render_diff_line's orthogonal styling inputs plus the search ranges
 #[allow(clippy::too_many_arguments)]
-fn row_line(
+fn row_lines(
     theme: &Theme,
     session: &Session,
     model: &DiffModel,
@@ -639,21 +741,21 @@ fn row_line(
     width: u16,
     selected: bool,
     search: &[(std::ops::Range<usize>, bool)],
-) -> Line<'static> {
+) -> Vec<Line<'static>> {
     let highlights = &diff.highlights;
     match row {
         DiffRow::Hunk { file, hunk } => {
             match model.files.get(*file).and_then(|f| f.hunks.get(*hunk)) {
-                Some(hunk) => hunk_header(theme, hunk, width, selected),
-                None => Line::default(),
+                Some(hunk) => vec![hunk_header(theme, hunk, width, selected)],
+                None => vec![Line::default()],
             }
         }
         DiffRow::Line { file, hunk, line } => {
             let Some(file) = model.files.get(*file) else {
-                return Line::default();
+                return vec![Line::default()];
             };
             let Some(line) = file.hunks.get(*hunk).and_then(|h| h.lines.get(*line)) else {
-                return Line::default();
+                return vec![Line::default()];
             };
             let syntax = highlights
                 .get(&file.path)
@@ -675,8 +777,12 @@ fn row_line(
             line,
             outdated,
         } => match session.comments.get(*comment) {
-            Some(comment) => comment_row_line(theme, comment, *line, *outdated, width, selected),
-            None => Line::default(),
+            Some(comment) => {
+                vec![comment_row_line(
+                    theme, comment, *line, *outdated, width, selected,
+                )]
+            }
+            None => vec![Line::default()],
         },
     }
 }
@@ -1020,6 +1126,31 @@ mod tests {
         let (_fixture, mut app) = diff_app();
         app.modal = Some(crate::app::Modal::ReviewVerdict { number: 7 });
         insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn long_diff_lines_wrap_instead_of_clipping() {
+        let fixture = standard_fixture();
+        fixture.write(
+            "src/lib.rs",
+            &format!(
+                "pub fn answer() -> u32 {{\n    42 // {}\n}}\n",
+                "a very long trailing explanation that cannot possibly fit \
+                 in the diff pane at the test terminal width"
+                    .repeat(2)
+            ),
+        );
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.author = "reviewer".to_owned();
+        app.open_working_tree_diff(None);
+        open_lib_diff(&mut app);
+        let terminal = render(&mut app);
+        let text = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            text.contains("terminal width"),
+            "the tail of the long line is on screen"
+        );
+        insta::assert_snapshot!(terminal.backend());
     }
 
     /// Select src/lib.rs and focus the diff pane.

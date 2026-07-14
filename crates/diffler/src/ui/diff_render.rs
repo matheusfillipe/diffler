@@ -32,9 +32,9 @@ pub fn render_hunk_lines(
     width: u16,
     selected: Option<usize>,
 ) -> Vec<Line<'static>> {
-    let gutter = gutter_width(hunk);
+    let gutter = hunk_gutter_width(hunk);
     let mut lines = vec![hunk_header(theme, hunk, width, selected == Some(0))];
-    lines.extend(hunk.lines.iter().enumerate().map(|(index, line)| {
+    lines.extend(hunk.lines.iter().enumerate().flat_map(|(index, line)| {
         let per_line = syntax.and_then(|(old, new)| line_syntax(old, new, line));
         render_diff_line(
             theme,
@@ -69,7 +69,7 @@ pub fn line_syntax<'a>(
 
 /// Digits needed for the widest line number in the hunk, with a sane floor
 /// so neighbouring hunks rarely disagree.
-fn gutter_width(hunk: &Hunk) -> usize {
+pub fn hunk_gutter_width(hunk: &Hunk) -> usize {
     let max = (hunk.old_start + hunk.old_lines)
         .max(hunk.new_start + hunk.new_lines)
         .max(1);
@@ -115,8 +115,43 @@ pub fn hunk_header(theme: &Theme, hunk: &Hunk, width: u16, selected: bool) -> Li
     ])
 }
 
+/// Columns a diff line's rail + gutter numbers occupy before the text.
+fn prefix_width(gutter: usize) -> usize {
+    1 + gutter * 2 + 2
+}
+
+/// Rows the greedy wrapper produces for characters of the given display
+/// widths: the same loop as [`wrap_spans`], counting instead of building,
+/// so height predictions can never drift from the render (a width-2 glyph
+/// at a row boundary wastes a column that plain division would miscount).
+fn greedy_rows(widths: impl Iterator<Item = usize>, budget: usize) -> usize {
+    let mut rows = 1;
+    let mut used = 0;
+    for cw in widths {
+        if used + cw > budget && used > 0 {
+            rows += 1;
+            used = 0;
+        }
+        used += cw;
+    }
+    rows
+}
+
+fn char_widths(text: &str) -> impl Iterator<Item = usize> + '_ {
+    text.chars()
+        .map(|c| UnicodeWidthChar::width(c).unwrap_or(0))
+}
+
+/// Terminal rows a diff line needs at `width`: 1 plus one per wrapped
+/// continuation. Agrees with [`render_diff_line`]'s wrapping by construction.
+pub fn diff_line_height(line: &DiffLine, gutter: usize, width: u16) -> usize {
+    let budget = (width as usize).saturating_sub(prefix_width(gutter)).max(1);
+    greedy_rows(char_widths(&line.text), budget)
+}
+
 /// Render one diff line: gutter numbers, then the text composited from the
 /// optional per-line syntax spans (fg) and the line's emphasis ranges (bg).
+/// Text wider than the pane wraps onto continuation rows under a blank gutter.
 // orthogonal styling inputs (gutter, selection, annotation, search ranges); a
 // params struct would not read more clearly
 #[allow(clippy::too_many_arguments)]
@@ -129,33 +164,75 @@ pub fn render_diff_line(
     selected: bool,
     annotated: bool,
     search: &[(Range<usize>, bool)],
-) -> Line<'static> {
+) -> Vec<Line<'static>> {
     let (base_bg, emph_bg) = line_backgrounds(theme, line, selected, annotated);
 
     let number = |n: Option<u32>| match n {
         Some(n) => format!("{n:>gutter$}"),
         None => " ".repeat(gutter),
     };
-    let mut spans = vec![
-        Span::styled(
-            rail(line),
-            Style::new().fg(rail_color(theme, line)).bg(base_bg),
-        ),
-        Span::styled(
-            format!("{} {} ", number(line.old_no), number(line.new_no)),
-            Style::new().fg(theme.dim).bg(base_bg),
-        ),
-    ];
-    spans.extend(composite_spans(
-        theme, line, syntax, base_bg, emph_bg, search,
-    ));
+    let prefix = |first: bool| {
+        vec![
+            Span::styled(
+                rail(line),
+                Style::new().fg(rail_color(theme, line)).bg(base_bg),
+            ),
+            Span::styled(
+                if first {
+                    format!("{} {} ", number(line.old_no), number(line.new_no))
+                } else {
+                    " ".repeat(gutter * 2 + 2)
+                },
+                Style::new().fg(theme.dim).bg(base_bg),
+            ),
+        ]
+    };
+    let content = composite_spans(theme, line, syntax, base_bg, emph_bg, search);
+    let budget = (width as usize).saturating_sub(prefix_width(gutter)).max(1);
+    wrap_spans(content, budget)
+        .into_iter()
+        .enumerate()
+        .map(|(row, segment)| {
+            let mut spans = prefix(row == 0);
+            spans.extend(segment);
+            let used: usize = spans.iter().map(Span::width).sum();
+            let pad = (width as usize).saturating_sub(used);
+            if pad > 0 {
+                spans.push(Span::styled(" ".repeat(pad), Style::new().bg(base_bg)));
+            }
+            Line::from(spans)
+        })
+        .collect()
+}
 
-    let used: usize = spans.iter().map(Span::width).sum();
-    let pad = (width as usize).saturating_sub(used);
-    if pad > 0 {
-        spans.push(Span::styled(" ".repeat(pad), Style::new().bg(base_bg)));
+/// Split styled spans into rows of at most `budget` display columns, cutting
+/// at character boundaries so every style survives the wrap. Always yields at
+/// least one row.
+fn wrap_spans(spans: Vec<Span<'static>>, budget: usize) -> Vec<Vec<Span<'static>>> {
+    let mut rows: Vec<Vec<Span<'static>>> = Vec::new();
+    let mut current: Vec<Span<'static>> = Vec::new();
+    let mut used = 0usize;
+    for span in spans {
+        let style = span.style;
+        let mut chunk = String::new();
+        for c in span.content.chars() {
+            let cw = UnicodeWidthChar::width(c).unwrap_or(0);
+            if used + cw > budget && used > 0 {
+                if !chunk.is_empty() {
+                    current.push(Span::styled(std::mem::take(&mut chunk), style));
+                }
+                rows.push(std::mem::take(&mut current));
+                used = 0;
+            }
+            chunk.push(c);
+            used += cw;
+        }
+        if !chunk.is_empty() {
+            current.push(Span::styled(chunk, style));
+        }
     }
-    Line::from(spans)
+    rows.push(current);
+    rows
 }
 
 /// The line (base) and emphasis backgrounds, given selection/annotation state.
@@ -202,6 +279,30 @@ pub type SplitCell<'a> = Option<(&'a DiffLine, Option<&'a [StyledRange]>, bool)>
 /// number (old on the left, new on the right) and the same composited text the
 /// unified view draws. `sel_left`/`sel_right` paint a column with the
 /// cursor-line background.
+/// Columns of a split cell taken by its rail + one gutter number.
+fn split_prefix_width(gutter: usize) -> usize {
+    1 + gutter + 1
+}
+
+/// Terminal rows a side-by-side row needs at `width`: the taller of its two
+/// wrapped sides. Must agree with [`render_split_pair`]'s wrapping.
+pub fn split_pair_height(
+    left: Option<&DiffLine>,
+    right: Option<&DiffLine>,
+    gutter: usize,
+    width: u16,
+) -> usize {
+    let total = width as usize;
+    let left_w = total.saturating_sub(1) / 2;
+    let right_w = total.saturating_sub(1 + left_w);
+    let side = |line: Option<&DiffLine>, col_width: usize| {
+        let Some(line) = line else { return 1 };
+        let budget = col_width.saturating_sub(split_prefix_width(gutter)).max(1);
+        greedy_rows(char_widths(&line.text), budget)
+    };
+    side(left, left_w).max(side(right, right_w))
+}
+
 pub fn render_split_pair(
     theme: &Theme,
     left: SplitCell<'_>,
@@ -210,39 +311,58 @@ pub fn render_split_pair(
     width: u16,
     sel_left: bool,
     sel_right: bool,
-) -> Line<'static> {
+) -> Vec<Line<'static>> {
     let total = width as usize;
     let left_w = total.saturating_sub(1) / 2;
     let right_w = total.saturating_sub(1 + left_w);
-    let mut spans = side_spans(theme, left, SplitSide::Left, gutter, left_w, sel_left);
-    spans.push(Span::styled("│", Style::new().fg(theme.dim).bg(theme.bg)));
-    spans.extend(side_spans(
-        theme,
-        right,
-        SplitSide::Right,
-        gutter,
-        right_w,
-        sel_right,
-    ));
-    Line::from(spans)
+    let mut left_rows = side_rows(theme, left, SplitSide::Left, gutter, left_w, sel_left);
+    let mut right_rows = side_rows(theme, right, SplitSide::Right, gutter, right_w, sel_right);
+    let rows = left_rows.len().max(right_rows.len());
+    let filler = |cell: SplitCell<'_>, selected: bool, col_width: usize| {
+        let bg = match cell {
+            Some((line, ..)) => line_backgrounds(theme, line, selected, false).0,
+            None if selected => theme.cursor_line,
+            None => theme.bg,
+        };
+        vec![Span::styled(" ".repeat(col_width), Style::new().bg(bg))]
+    };
+    while left_rows.len() < rows {
+        left_rows.push(filler(left, sel_left, left_w));
+    }
+    while right_rows.len() < rows {
+        right_rows.push(filler(right, sel_right, right_w));
+    }
+    left_rows
+        .into_iter()
+        .zip(right_rows)
+        .map(|(mut spans, right)| {
+            spans.push(Span::styled("│", Style::new().fg(theme.dim).bg(theme.bg)));
+            spans.extend(right);
+            Line::from(spans)
+        })
+        .collect()
 }
 
-/// Render one column of a side-by-side row, clipped and padded to `col_width`.
-fn side_spans(
+/// Render one column of a side-by-side row, wrapped and padded to
+/// `col_width`; continuations get a blank gutter.
+fn side_rows(
     theme: &Theme,
     cell: SplitCell<'_>,
     side: SplitSide,
     gutter: usize,
     col_width: usize,
     selected: bool,
-) -> Vec<Span<'static>> {
+) -> Vec<Vec<Span<'static>>> {
     let Some((line, syntax, annotated)) = cell else {
         let bg = if selected {
             theme.cursor_line
         } else {
             theme.bg
         };
-        return vec![Span::styled(" ".repeat(col_width), Style::new().bg(bg))];
+        return vec![vec![Span::styled(
+            " ".repeat(col_width),
+            Style::new().bg(bg),
+        )]];
     };
     let (base_bg, emph_bg) = line_backgrounds(theme, line, selected, annotated);
     let number = match side {
@@ -253,15 +373,33 @@ fn side_spans(
         Some(n) => format!("{n:>gutter$}"),
         None => " ".repeat(gutter),
     };
-    let mut spans = vec![
-        Span::styled(
-            rail(line),
-            Style::new().fg(rail_color(theme, line)).bg(base_bg),
-        ),
-        Span::styled(format!("{number} "), Style::new().fg(theme.dim).bg(base_bg)),
-    ];
-    spans.extend(composite_spans(theme, line, syntax, base_bg, emph_bg, &[]));
-    clip_pad(spans, col_width, base_bg)
+    let prefix = |first: bool| {
+        vec![
+            Span::styled(
+                rail(line),
+                Style::new().fg(rail_color(theme, line)).bg(base_bg),
+            ),
+            Span::styled(
+                if first {
+                    format!("{number} ")
+                } else {
+                    " ".repeat(gutter + 1)
+                },
+                Style::new().fg(theme.dim).bg(base_bg),
+            ),
+        ]
+    };
+    let content = composite_spans(theme, line, syntax, base_bg, emph_bg, &[]);
+    let budget = col_width.saturating_sub(split_prefix_width(gutter)).max(1);
+    wrap_spans(content, budget)
+        .into_iter()
+        .enumerate()
+        .map(|(row, segment)| {
+            let mut spans = prefix(row == 0);
+            spans.extend(segment);
+            clip_pad(spans, col_width, base_bg)
+        })
+        .collect()
 }
 
 /// Clip a styled run to `width` display columns, padding the remainder with
@@ -542,7 +680,8 @@ mod tests {
             },
         ];
         let rendered = render_diff_line(&theme, &added, Some(&syntax), 4, 60, false, false, &[]);
-        let keyword: Vec<_> = rendered
+        assert_eq!(rendered.len(), 1, "short line stays one row");
+        let keyword: Vec<_> = rendered[0]
             .spans
             .iter()
             .filter(|s| s.style.fg == Some(Color::Rgb(255, 0, 0)))
@@ -551,7 +690,7 @@ mod tests {
         assert_eq!(keyword[0].content.as_ref(), "let");
         assert!(keyword[0].style.add_modifier.contains(Modifier::BOLD));
         // "42" carries both the syntax fg and the emphasis bg
-        let emphasized: Vec<_> = rendered
+        let emphasized: Vec<_> = rendered[0]
             .spans
             .iter()
             .filter(|s| s.style.bg == Some(theme.add_emph_bg))
@@ -568,12 +707,73 @@ mod tests {
         let reindented = line(LineKind::Added, None, Some(2), "    <Form>");
         let rendered = render_diff_line(&theme, &reindented, None, 3, 60, false, false, &[]);
         assert!(
-            rendered
+            rendered[0]
                 .spans
                 .iter()
                 .any(|s| s.style.bg == Some(theme.add_line_bg)),
             "added lines always carry the added background"
         );
+    }
+
+    #[test]
+    fn long_lines_wrap_under_a_blank_gutter_and_keep_their_text() {
+        let theme = Theme::github_dark();
+        let text = "x".repeat(100);
+        let long = line(LineKind::Added, None, Some(2), &text);
+        let width = 40u16;
+        let rendered = render_diff_line(&theme, &long, None, 4, width, false, false, &[]);
+        assert_eq!(rendered.len(), diff_line_height(&long, 4, width));
+        assert!(rendered.len() > 1, "100 columns cannot fit in 40");
+        for row in &rendered {
+            let total: usize = row.spans.iter().map(Span::width).sum();
+            assert_eq!(total, width as usize, "every row fills the pane exactly");
+        }
+        let joined: String = rendered
+            .iter()
+            .flat_map(|row| row.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+        assert_eq!(
+            joined.chars().filter(|c| *c == 'x').count(),
+            100,
+            "no character is lost to the wrap"
+        );
+        let continuation = &rendered[1].spans[1];
+        assert!(
+            continuation.content.chars().all(|c| c == ' '),
+            "continuations get a blank gutter: {continuation:?}"
+        );
+    }
+
+    #[test]
+    fn split_pair_height_is_the_taller_wrapped_side() {
+        let long = line(LineKind::Added, None, Some(2), &"y".repeat(60));
+        let short = line(LineKind::Deleted, Some(2), None, "one");
+        assert_eq!(split_pair_height(None, None, 4, 80), 1);
+        // right column: 80 - 1 (divider) - 39 (left) = 40 wide, minus the
+        // rail + gutter prefix of 6 = 34 text columns
+        assert_eq!(
+            split_pair_height(Some(&short), Some(&long), 4, 80),
+            60usize.div_ceil(34)
+        );
+    }
+
+    #[test]
+    fn height_prediction_matches_the_render_for_wide_glyphs() {
+        // width-2 glyphs waste a column at odd budgets; plain division
+        // miscounts what the greedy wrapper actually emits
+        let theme = Theme::github_dark();
+        let cjk = line(LineKind::Added, None, Some(2), &"あ".repeat(5));
+        for width in [14u16, 15, 16, 40] {
+            let rendered = render_diff_line(&theme, &cjk, None, 4, width, false, false, &[]);
+            assert_eq!(
+                rendered.len(),
+                diff_line_height(&cjk, 4, width),
+                "width {width}"
+            );
+        }
+        let long = line(LineKind::Added, None, Some(2), &"あ".repeat(441));
+        let rendered = render_diff_line(&theme, &long, None, 4, 100, false, false, &[]);
+        assert_eq!(rendered.len(), diff_line_height(&long, 4, 100));
     }
 
     #[test]

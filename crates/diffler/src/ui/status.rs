@@ -16,7 +16,7 @@ use crate::keymap::Action;
 use crate::theme::Theme;
 use crate::transient::TransientKind;
 use crate::ui::Hint;
-use crate::ui::diff_render::render_hunk_lines;
+use crate::ui::diff_render::{diff_line_height, hunk_gutter_width, render_hunk_lines};
 use crate::ui::{
     commit_meta_spans, cursor_line, diffstat_spans, highlight_spans, proportion_bar, status_bar,
     status_color,
@@ -96,27 +96,16 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16, Vec<Option<usize>>) 
                     index += 1;
                     continue;
                 };
-                let span = 1 + hunk.lines.len();
-                let selected = app
-                    .status
-                    .cursor
-                    .checked_sub(index)
-                    .filter(|offset| *offset < span);
-                if let Some(offset) = selected {
-                    cursor_line_index = lines.len() + offset;
-                }
-                // enrichment lands asynchronously: the hash in the key ties
-                // the spans to the exact content they were computed from
-                let syntax = app
-                    .status
-                    .highlights
-                    .get(&(file_diff.path.clone(), file_diff.sides_hash()))
-                    .map(|cached| (cached.old.as_slice(), cached.new.as_slice()));
-                lines.extend(render_hunk_lines(
-                    &app.theme, hunk, syntax, area.width, selected,
-                ));
-                line_rows.extend((0..span).map(|offset| Some(index + offset)));
-                index += span;
+                index += hunk_block(
+                    app,
+                    file_diff,
+                    hunk,
+                    index,
+                    area.width,
+                    &mut lines,
+                    &mut line_rows,
+                    &mut cursor_line_index,
+                );
             }
             row => {
                 if index > 0
@@ -147,6 +136,56 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16, Vec<Option<usize>>) 
     let height = area.height.max(1) as usize;
     let scroll = cursor_line_index.saturating_sub(height - 1) as u16;
     (lines, scroll, line_rows)
+}
+
+/// Append one expanded hunk (header + wrapped diff lines) with its
+/// line->row table entries; returns how many rows the block spans.
+#[allow(clippy::too_many_arguments)]
+fn hunk_block(
+    app: &App,
+    file_diff: &FileDiff,
+    hunk: &diffler_core::model::Hunk,
+    index: usize,
+    width: u16,
+    lines: &mut Vec<Line<'static>>,
+    line_rows: &mut Vec<Option<usize>>,
+    cursor_line_index: &mut usize,
+) -> usize {
+    let span = 1 + hunk.lines.len();
+    let selected = app
+        .status
+        .cursor
+        .checked_sub(index)
+        .filter(|offset| *offset < span);
+    // long lines wrap, so each diff line can span several terminal rows:
+    // the header is one, then per-line heights
+    let gutter = hunk_gutter_width(hunk);
+    let heights: Vec<usize> = std::iter::once(1)
+        .chain(
+            hunk.lines
+                .iter()
+                .map(|line| diff_line_height(line, gutter, width)),
+        )
+        .collect();
+    if let Some(offset) = selected {
+        let above: usize = heights.iter().take(offset).sum();
+        *cursor_line_index = lines.len() + above;
+    }
+    // enrichment lands asynchronously: the hash in the key ties the spans
+    // to the exact content they were computed from
+    let syntax = app
+        .status
+        .highlights
+        .get(&(file_diff.path.clone(), file_diff.sides_hash()))
+        .map(|cached| (cached.old.as_slice(), cached.new.as_slice()));
+    lines.extend(render_hunk_lines(&app.theme, hunk, syntax, width, selected));
+    line_rows.extend(
+        heights
+            .iter()
+            .enumerate()
+            .flat_map(|(offset, h)| std::iter::repeat_n(Some(index + offset), *h)),
+    );
+    span
 }
 
 fn centered_line(text: &str, style: Style, width: u16) -> Line<'static> {
