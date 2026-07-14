@@ -338,23 +338,6 @@ impl App {
     }
 
     pub(super) fn handle_comments_key(&mut self, key: &KeyEvent) {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        let alt = key.modifiers.contains(KeyModifiers::ALT);
-        if ctrl && key.code == KeyCode::Char('d') {
-            self.delete_selected_overview_comment();
-            return;
-        }
-        if alt && key.code == KeyCode::Char('d') {
-            let entries = match &self.modal {
-                Some(Modal::Comments { entries, .. }) => entries.len(),
-                _ => 0,
-            };
-            self.modal = Some(Modal::Confirm {
-                message: format!("Delete all {entries} comments of this review?"),
-                on_confirm: super::PendingOp::DeleteAllComments,
-            });
-            return;
-        }
         let Some(Modal::Comments { entries, list }) = self.modal.as_mut() else {
             return;
         };
@@ -365,7 +348,19 @@ impl App {
                 let haystack = comment_haystack(entries);
                 list.rerank(&haystack);
             }
-            _ => {}
+            // list-focus keys the dialog owns
+            FuzzyKey::Other => match key.code {
+                KeyCode::Char('d') => self.delete_selected_overview_comment(),
+                KeyCode::Char('D') => {
+                    let entries = entries.len();
+                    self.modal = Some(Modal::Confirm {
+                        message: format!("Delete all {entries} comments of this review?"),
+                        on_confirm: super::PendingOp::DeleteAllComments,
+                    });
+                }
+                _ => {}
+            },
+            FuzzyKey::Consumed => {}
         }
     }
 
@@ -814,7 +809,7 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_d_vanishes_a_local_comment_and_alt_d_wipes_the_review() {
+    fn d_vanishes_a_local_comment_and_capital_d_wipes_the_review() {
         let fixture = standard_fixture();
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         for (line, body) in [(1, "first"), (2, "second"), (3, "third")] {
@@ -831,7 +826,7 @@ mod tests {
             );
         }
         press(&mut app, KeyCode::Char('C'));
-        press_with(&mut app, KeyCode::Char('d'), KeyModifiers::CONTROL);
+        press(&mut app, KeyCode::Char('d'));
         assert!(
             matches!(app.modal, Some(Modal::Confirm { .. })),
             "a single delete asks first"
@@ -843,7 +838,7 @@ mod tests {
         assert_eq!(entries.len(), 2, "one comment vanished");
         assert_eq!(app.review.session.comments.len(), 2);
 
-        press_with(&mut app, KeyCode::Char('d'), KeyModifiers::ALT);
+        press(&mut app, KeyCode::Char('D'));
         assert!(
             matches!(app.modal, Some(Modal::Confirm { .. })),
             "delete-all asks first"
@@ -883,6 +878,7 @@ mod tests {
         fixture.branch("feat/topic");
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         app.open_branch_list(BranchAction::Checkout);
+        press(&mut app, KeyCode::Tab);
         for c in "topi".chars() {
             press(&mut app, KeyCode::Char(c));
         }

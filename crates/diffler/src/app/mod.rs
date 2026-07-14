@@ -1063,7 +1063,7 @@ impl App {
             Action::Help => self.modal = Some(Modal::Help),
             Action::Palette => {
                 let (_, haystack) = self.command_index_haystack();
-                let mut list = fuzzy::FuzzyList::default();
+                let mut list = fuzzy::FuzzyList::typing();
                 list.rerank(&haystack);
                 self.modal = Some(Modal::Palette { list });
             }

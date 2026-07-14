@@ -19,7 +19,7 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
-use crate::app::{App, BranchAction, Modal, Screen, Severity};
+use crate::app::{App, BranchAction, Modal, Screen, Severity, fuzzy};
 use crate::keymap::{Action, render_chord};
 use crate::theme::Theme;
 use crate::transient::TransientKind;
@@ -199,6 +199,19 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) {
     }
 }
 
+/// Dialog footer for the active focus: classic keys in list focus, the
+/// filter hints while typing.
+fn footer_for(list: &fuzzy::FuzzyList, list_keys: &str, verb: &str) -> String {
+    match list.focus {
+        fuzzy::FuzzyFocus::List => {
+            format!(" enter{verb} · j/k move{list_keys} · tab filter · q close ")
+        }
+        fuzzy::FuzzyFocus::Input => {
+            format!(" type to filter · enter{verb} · tab list · esc close ")
+        }
+    }
+}
+
 fn fuzzy_modal(app: &App) -> Option<popup::FuzzyModal> {
     match &app.modal {
         Some(Modal::BranchList {
@@ -214,6 +227,7 @@ fn fuzzy_modal(app: &App) -> Option<popup::FuzzyModal> {
                 title: title.to_owned(),
                 query: list.query.clone(),
                 cursor: list.cursor,
+                typing: matches!(list.focus, fuzzy::FuzzyFocus::Input),
                 items: list
                     .matches
                     .iter()
@@ -226,13 +240,14 @@ fn fuzzy_modal(app: &App) -> Option<popup::FuzzyModal> {
                     })
                     .collect(),
                 selected: list.selected,
-                footer: " enter select · tab cycle · esc back ",
+                footer: footer_for(list, "", " select"),
             })
         }
         Some(Modal::Comments { entries, list }) => Some(popup::FuzzyModal {
             title: format!("Comments — {}", app.active_review_source().label()),
             query: list.query.clone(),
             cursor: list.cursor,
+            typing: matches!(list.focus, fuzzy::FuzzyFocus::Input),
             items: list
                 .matches
                 .iter()
@@ -240,7 +255,7 @@ fn fuzzy_modal(app: &App) -> Option<popup::FuzzyModal> {
                 .map(|e| (e.label.clone(), String::new()))
                 .collect(),
             selected: list.selected,
-            footer: " enter jump · c-d delete · a-d delete all · esc back ",
+            footer: footer_for(list, " · d/D delete", " jump"),
         }),
         Some(Modal::Palette { list }) => {
             let commands = app.command_index();
@@ -248,6 +263,7 @@ fn fuzzy_modal(app: &App) -> Option<popup::FuzzyModal> {
                 title: "Commands".to_owned(),
                 query: list.query.clone(),
                 cursor: list.cursor,
+                typing: matches!(list.focus, fuzzy::FuzzyFocus::Input),
                 items: list
                     .matches
                     .iter()
@@ -255,7 +271,7 @@ fn fuzzy_modal(app: &App) -> Option<popup::FuzzyModal> {
                     .map(|c| (c.label.to_owned(), c.chord.clone()))
                     .collect(),
                 selected: list.selected,
-                footer: " enter run · tab cycle · esc close ",
+                footer: footer_for(list, "", " run"),
             })
         }
         _ => None,

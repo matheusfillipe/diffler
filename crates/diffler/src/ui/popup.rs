@@ -453,9 +453,11 @@ pub(crate) struct FuzzyModal {
     pub query: String,
     /// Character index of the query cursor.
     pub cursor: usize,
+    /// Input focus: the query line shows its cursor block.
+    pub typing: bool,
     pub items: Vec<(String, String)>,
     pub selected: usize,
-    pub footer: &'static str,
+    pub footer: String,
 }
 
 impl FuzzyModal {
@@ -491,13 +493,18 @@ impl FuzzyModal {
         let mut rest = after.chars();
         let under = rest.next().unwrap_or(' ');
         let fg = Style::new().fg(theme.fg).bg(theme.panel);
+        let cursor_style = if self.typing {
+            Style::new().fg(theme.panel).bg(theme.fg)
+        } else {
+            fg
+        };
         let mut lines = vec![Line::from(vec![
             Span::styled(
                 " > ".to_owned(),
                 Style::new().fg(theme.accent).bg(theme.panel),
             ),
             Span::styled(before.to_owned(), fg),
-            Span::styled(under.to_string(), Style::new().fg(theme.panel).bg(theme.fg)),
+            Span::styled(under.to_string(), cursor_style),
             Span::styled(rest.as_str().to_owned(), fg),
         ])];
 
@@ -519,7 +526,7 @@ impl FuzzyModal {
             ]));
         }
         lines.push(Line::styled(
-            self.footer,
+            self.footer.clone(),
             Style::new().fg(theme.dim).bg(theme.panel),
         ));
         frame.render_widget(

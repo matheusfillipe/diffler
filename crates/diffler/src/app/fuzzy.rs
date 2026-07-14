@@ -1,6 +1,7 @@
 //! fzf-style list state shared by the command palette and the pick-one
-//! dialogs: printable keys filter, the cursor rides the best match, Enter
-//! takes the selection.
+//! dialogs. Two focuses, toggled with Tab: the list keeps every classic
+//! single-key shortcut (j/k, g/G, the dialog's own keys), the input turns
+//! printable keys into a filter whose best match the selection follows.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
@@ -8,8 +9,18 @@ use nucleo_matcher::{Config, Matcher};
 
 use super::byte_index;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FuzzyFocus {
+    /// Keys navigate and hit the dialog's own shortcuts.
+    #[default]
+    List,
+    /// Keys type into the filter query.
+    Input,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct FuzzyList {
+    pub focus: FuzzyFocus,
     pub query: String,
     /// Character index into `query`.
     pub cursor: usize,
@@ -27,20 +38,35 @@ pub(crate) enum FuzzyKey {
     /// Query changed; the caller re-ranks and the selection reset to the top.
     Edited,
     Consumed,
+    /// Not a list/input key: the dialog's own shortcuts get their turn.
     Other,
 }
 
 impl FuzzyList {
+    pub(crate) fn typing() -> Self {
+        Self {
+            focus: FuzzyFocus::Input,
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn feed(&mut self, key: &KeyEvent) -> FuzzyKey {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc => return FuzzyKey::Cancel,
             KeyCode::Enter => return FuzzyKey::Submit,
-            KeyCode::Tab | KeyCode::Down => {
+            KeyCode::Tab | KeyCode::BackTab => {
+                self.focus = match self.focus {
+                    FuzzyFocus::List => FuzzyFocus::Input,
+                    FuzzyFocus::Input => FuzzyFocus::List,
+                };
+                return FuzzyKey::Consumed;
+            }
+            KeyCode::Down => {
                 self.step(true);
                 return FuzzyKey::Consumed;
             }
-            KeyCode::BackTab | KeyCode::Up => {
+            KeyCode::Up => {
                 self.step(false);
                 return FuzzyKey::Consumed;
             }
@@ -52,6 +78,28 @@ impl FuzzyList {
                 self.step(false);
                 return FuzzyKey::Consumed;
             }
+            _ => {}
+        }
+        match self.focus {
+            FuzzyFocus::List => self.feed_list(key),
+            FuzzyFocus::Input => self.feed_input(key, ctrl),
+        }
+    }
+
+    fn feed_list(&mut self, key: &KeyEvent) -> FuzzyKey {
+        match key.code {
+            KeyCode::Char('j') => self.step(true),
+            KeyCode::Char('k') => self.step(false),
+            KeyCode::Char('g') => self.selected = 0,
+            KeyCode::Char('G') => self.selected = self.matches.len().saturating_sub(1),
+            KeyCode::Char('q') => return FuzzyKey::Cancel,
+            _ => return FuzzyKey::Other,
+        }
+        FuzzyKey::Consumed
+    }
+
+    fn feed_input(&mut self, key: &KeyEvent, ctrl: bool) -> FuzzyKey {
+        match key.code {
             KeyCode::Backspace => {
                 if self.cursor > 0 {
                     let start = byte_index(&self.query, self.cursor - 1);
@@ -60,40 +108,39 @@ impl FuzzyList {
                     self.cursor -= 1;
                     self.selected = 0;
                 }
-                return FuzzyKey::Edited;
+                FuzzyKey::Edited
             }
             KeyCode::Char('u') if ctrl => {
                 self.query.clear();
                 self.cursor = 0;
                 self.selected = 0;
-                return FuzzyKey::Edited;
+                FuzzyKey::Edited
             }
             KeyCode::Char('a') if ctrl => {
                 self.cursor = 0;
-                return FuzzyKey::Consumed;
+                FuzzyKey::Consumed
             }
             KeyCode::Char('e') if ctrl => {
                 self.cursor = self.query.chars().count();
-                return FuzzyKey::Consumed;
+                FuzzyKey::Consumed
             }
             KeyCode::Left => {
                 self.cursor = self.cursor.saturating_sub(1);
-                return FuzzyKey::Consumed;
+                FuzzyKey::Consumed
             }
             KeyCode::Right => {
                 self.cursor = (self.cursor + 1).min(self.query.chars().count());
-                return FuzzyKey::Consumed;
+                FuzzyKey::Consumed
             }
             KeyCode::Char(c) if !ctrl && !key.modifiers.contains(KeyModifiers::ALT) => {
                 let at = byte_index(&self.query, self.cursor);
                 self.query.insert(at, c);
                 self.cursor += 1;
                 self.selected = 0;
-                return FuzzyKey::Edited;
+                FuzzyKey::Edited
             }
-            _ => {}
+            _ => FuzzyKey::Other,
         }
-        FuzzyKey::Other
     }
 
     fn step(&mut self, forward: bool) {
@@ -184,24 +231,36 @@ mod tests {
     }
 
     #[test]
-    fn typing_filters_and_selection_wraps() {
+    fn list_focus_keeps_classic_keys_and_tab_switches_to_typing() {
         let items = hay(&["stage file", "stash", "search"]);
         let mut list = FuzzyList::default();
         list.rerank(&items);
         let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        // list focus: j/k move, other printables fall through to the dialog
+        list.feed(&press(KeyCode::Char('j')));
+        assert_eq!(list.selected, 1);
+        list.feed(&press(KeyCode::Char('k')));
+        assert_eq!(list.selected, 0);
+        assert_eq!(list.feed(&press(KeyCode::Char('d'))), FuzzyKey::Other);
+        assert!(list.query.is_empty(), "list focus never types");
+        assert_eq!(list.feed(&press(KeyCode::Char('q'))), FuzzyKey::Cancel);
+
+        // tab into the input: printables filter, the selection rides the top
+        list.feed(&press(KeyCode::Tab));
+        assert_eq!(list.focus, FuzzyFocus::Input);
         assert_eq!(list.feed(&press(KeyCode::Char('s'))), FuzzyKey::Edited);
         list.rerank(&items);
-        assert_eq!(list.query, "s");
-        assert_eq!(list.matches.len(), 3);
         list.feed(&press(KeyCode::Char('t')));
         list.rerank(&items);
-        assert_eq!(list.matches.len(), 2, "quit drops out of 'st'");
-        list.feed(&press(KeyCode::Tab));
+        assert_eq!(list.query, "st");
+        assert_eq!(list.matches.len(), 2, "search drops out of 'st'");
+        list.feed(&press(KeyCode::Down));
         assert_eq!(list.selected, 1);
+        list.feed(&press(KeyCode::Down));
+        assert_eq!(list.selected, 0, "selection wraps");
+        // tab back out: classic keys again
         list.feed(&press(KeyCode::Tab));
-        assert_eq!(list.selected, 0);
-        list.feed(&press(KeyCode::BackTab));
-        assert_eq!(list.selected, 1);
+        assert_eq!(list.focus, FuzzyFocus::List);
         assert_eq!(list.feed(&press(KeyCode::Esc)), FuzzyKey::Cancel);
     }
 }
