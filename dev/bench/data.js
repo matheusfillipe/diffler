@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1783973555847,
+  "lastUpdate": 1784015994799,
   "repoUrl": "https://github.com/matheusfillipe/diffler",
   "entries": {
     "Benchmark": [
@@ -4895,6 +4895,102 @@ window.BENCHMARK_DATA = {
             "name": "scope_index/20000",
             "value": 71744860,
             "range": "± 3347522",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "committer": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "distinct": true,
+          "id": "7ca75151293b89a4b46d17d9de35ce63a12eead8",
+          "message": "fix: fuzzy dialogs keep their classic keys, tab toggles into the filter",
+          "timestamp": "2026-07-14T09:56:25+02:00",
+          "tree_id": "8618ed0d2669f5d8fee955ae2194da555b6f041c",
+          "url": "https://github.com/matheusfillipe/diffler/commit/7ca75151293b89a4b46d17d9de35ce63a12eead8"
+        },
+        "date": 1784015993917,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "syndiff_emphasis/1000",
+            "value": 6609955,
+            "range": "± 149976",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/1000",
+            "value": 17587,
+            "range": "± 732",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/1000",
+            "value": 4864910,
+            "range": "± 245646",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/1000",
+            "value": 3686808,
+            "range": "± 105838",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/5000",
+            "value": 35275173,
+            "range": "± 1040567",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/5000",
+            "value": 87139,
+            "range": "± 3628",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/5000",
+            "value": 23818756,
+            "range": "± 1069266",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/5000",
+            "value": 19240122,
+            "range": "± 898678",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/20000",
+            "value": 143078358,
+            "range": "± 5072899",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/20000",
+            "value": 378574,
+            "range": "± 13552",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/20000",
+            "value": 97883314,
+            "range": "± 2959149",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/20000",
+            "value": 77658995,
+            "range": "± 3688893",
             "unit": "ns/iter"
           }
         ]
