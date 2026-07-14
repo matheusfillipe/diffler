@@ -22,13 +22,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - name: Verify tag matches Cargo.toml version
         run: |
           ver=$(grep -m1 -E '^version = "' Cargo.toml | sed -E 's/^version = "([^"]+)"/\1/')
           [ "v$ver" = "$GITHUB_REF_NAME" ] || { echo "Cargo.toml $ver != tag $GITHUB_REF_NAME"; exit 1; }
+      - name: Release notes from the commits since the previous tag
+        run: |
+          prev=$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || true)
+          range=${prev:+$prev..}$GITHUB_REF_NAME
+          git log --format='- %s' "$range" \
+            | grep -vE '^- (Release [0-9]|Update package manifests)' > notes.md
+          [ -n "$prev" ] && printf '\n**Full changelog**: %s/compare/%s...%s\n' \
+            "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "$prev" "$GITHUB_REF_NAME" >> notes.md
       - env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "$GITHUB_REF_NAME"
+        run: gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "$GITHUB_REF_NAME" --notes-file notes.md
 
   build:
     needs: create-release
