@@ -89,17 +89,12 @@ Add the server to `opencode.json` in the project, or globally in
 }
 ```
 
-For a `/diffler` command, save this as
-`~/.config/opencode/commands/diffler.md` (or `.opencode/commands/diffler.md`
-per project):
+And install the `/diffler` command (opencode has no package mechanism for
+commands, so this fetches the one maintained in this repo):
 
-```markdown
----
-description: Check the diffler review and respond to feedback
----
-Check the diffler review: call review_status, read get_comments with status
-"open", address each comment in the code, answer with reply_comment and
-propose_resolve, then call wait_for_feedback and start over when it returns.
+```sh
+mkdir -p ~/.config/opencode/commands && curl -fsSLo ~/.config/opencode/commands/diffler.md \
+  https://raw.githubusercontent.com/matheusfillipe/diffler/main/.opencode/commands/diffler.md
 ```
 
 </details>
