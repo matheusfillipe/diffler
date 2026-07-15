@@ -55,16 +55,64 @@ GitHub-release installer (`eget`, `ubi`, ...) works against it too.
 Run `diffler` inside a repository. It starts the TUI and an MCP server on
 port 8417. Connect your agent once:
 
+<details>
+<summary><b>Claude Code</b></summary>
+
 ```sh
 claude mcp add --transport http diffler http://127.0.0.1:8417/mcp
 # or, over stdio, auto-discovering the port:
 claude mcp add diffler -- npx -y diffler-mcp
-# or, as a Claude Code plugin (MCP server plus a /diffler command):
+# or, as a plugin (MCP server plus a /diffler command):
 claude plugin marketplace add matheusfillipe/diffler && claude plugin install diffler@diffler
 ```
 
-Connected agents also get the server's `review` prompt as a command
-(`/diffler:review` in Claude Code) that walks the whole check-and-respond loop.
+Connected, the server's `review` prompt shows up as the `/diffler:review`
+command; the plugin adds a bare `/diffler`.
+
+</details>
+
+<details>
+<summary><b>opencode</b></summary>
+
+Add the server to `opencode.json` in the project, or globally in
+`~/.config/opencode/opencode.json`:
+
+```json
+{
+  "mcp": {
+    "diffler": {
+      "type": "local",
+      "command": ["npx", "-y", "diffler-mcp"],
+      "enabled": true
+    }
+  }
+}
+```
+
+For a `/diffler` command, save this as
+`~/.config/opencode/commands/diffler.md` (or `.opencode/commands/diffler.md`
+per project):
+
+```markdown
+---
+description: Check the diffler review and respond to feedback
+---
+Check the diffler review: call review_status, read get_comments with status
+"open", address each comment in the code, answer with reply_comment and
+propose_resolve, then call wait_for_feedback and start over when it returns.
+```
+
+</details>
+
+<details>
+<summary><b>Any other MCP agent</b></summary>
+
+Point it at `http://127.0.0.1:8417/mcp` (streamable HTTP), or run
+`npx -y diffler-mcp` as a stdio proxy that auto-discovers the port from
+`.diffler/mcp.json`. The server also ships a `review` prompt that
+prompt-aware clients surface as a command.
+
+</details>
 
 The loop: the agent edits files, the diff updates live. You comment lines or
 ranges in the diff view and press `Z` to send feedback. The agent picks the

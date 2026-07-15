@@ -1,0 +1,10 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "diffler": {
+      "type": "local",
+      "command": ["npx", "-y", "diffler-mcp"],
+      "enabled": true
+    }
+  }
+}
