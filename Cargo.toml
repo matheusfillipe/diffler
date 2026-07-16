@@ -65,6 +65,8 @@ uuid = { version = "1", features = ["v4"] }
 unicode-width = "0.2"
 # fuzzy matching for the command palette (Helix's matcher)
 nucleo-matcher = "0.3"
+# CommonMark parser for rendering markdown in comment/reply bodies
+pulldown-cmark = { version = "0.13", default-features = false }
 insta = "1.47"
 tempfile = "3"
 

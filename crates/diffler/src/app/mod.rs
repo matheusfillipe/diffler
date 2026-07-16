@@ -13,6 +13,7 @@ mod diff;
 pub mod enrich;
 pub(crate) mod fuzzy;
 mod log;
+pub mod markdown;
 mod mcp;
 mod modal;
 pub mod pr;

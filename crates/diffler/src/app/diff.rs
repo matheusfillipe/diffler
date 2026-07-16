@@ -14,6 +14,7 @@ use diffler_core::source::ReviewSource;
 use diffler_core::syntax::ScopeIndex;
 use unicode_width::UnicodeWidthStr;
 
+use super::markdown::{self, MdSpan};
 use super::{App, InputOp, Modal, Screen};
 use crate::config::FileLayout;
 use crate::keymap::Action;
@@ -450,29 +451,30 @@ fn tree_position_of_file(rows: &[TreeRow], file_index: usize) -> Option<usize> {
         .position(|row| matches!(&row.node, TreeNode::File { index, .. } if *index == file_index))
 }
 
-/// One display line of a comment block.
+/// One display line of a comment block. Body and reply text carry markdown
+/// styling as flag-tagged runs; [`crate::ui`] maps the flags to concrete styles.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommentLine {
     Header,
-    Body(String),
+    Body(Vec<MdSpan>),
     Reply {
         author: String,
-        text: String,
+        spans: Vec<MdSpan>,
         first: bool,
     },
     Footer,
 }
 
-/// The terminal lines a comment occupies at `row_width` columns, long text
-/// wrapped to fit. Shared by row flattening (for counts) and rendering (for
-/// content) so they can never disagree.
+/// The terminal lines a comment occupies at `row_width` columns, markdown
+/// rendered and long text wrapped to fit. Shared by row flattening (for counts)
+/// and rendering (for content) so they can never disagree.
 pub fn comment_display(comment: &Comment, row_width: u16) -> Vec<CommentLine> {
     // "  ▌ " card bar; below that there is no room to wrap meaningfully
     let budget = (row_width.saturating_sub(4) as usize).max(8);
     let mut lines = vec![CommentLine::Header];
-    for line in comment.body.lines() {
+    for logical in markdown::parse(&comment.body) {
         lines.extend(
-            wrap_text(line, budget, budget)
+            markdown::wrap(&logical, budget, budget)
                 .into_iter()
                 .map(CommentLine::Body),
         );
@@ -482,12 +484,12 @@ pub fn comment_display(comment: &Comment, row_width: u16) -> Vec<CommentLine> {
         // the renderer's two-space indent
         let label = format!("↳ {}: ", reply.author).width();
         let mut first = true;
-        for text in reply.body.lines() {
+        for logical in markdown::parse(&reply.body) {
             let head = budget.saturating_sub(if first { label } else { 2 }).max(8);
-            for wrapped in wrap_text(text, head, budget.saturating_sub(2).max(8)) {
+            for spans in markdown::wrap(&logical, head, budget.saturating_sub(2).max(8)) {
                 lines.push(CommentLine::Reply {
                     author: reply.author.clone(),
-                    text: wrapped,
+                    spans,
                     first,
                 });
                 first = false;
@@ -496,47 +498,6 @@ pub fn comment_display(comment: &Comment, row_width: u16) -> Vec<CommentLine> {
     }
     lines.push(CommentLine::Footer);
     lines
-}
-
-/// Greedy word wrap by display width; a token longer than a whole line is
-/// hard-split. The first line may have a different budget (hanging label).
-fn wrap_text(text: &str, first_width: usize, rest_width: usize) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let (mut line, mut used) = (String::new(), 0usize);
-    let mut budget = first_width;
-    let mut flush = |line: &mut String, used: &mut usize, budget: &mut usize| {
-        out.push(std::mem::take(line));
-        *used = 0;
-        *budget = rest_width;
-    };
-    for word in text.split(' ') {
-        let mut word = word;
-        let sep = usize::from(!line.is_empty());
-        if used + sep + word.width() > budget && !line.is_empty() {
-            flush(&mut line, &mut used, &mut budget);
-        }
-        while word.width() > budget {
-            let split = word
-                .char_indices()
-                .scan(0usize, |w, (i, c)| {
-                    *w += c.to_string().width();
-                    (*w <= budget).then_some(i + c.len_utf8())
-                })
-                .last()
-                .unwrap_or(word.len());
-            line.push_str(&word[..split]);
-            flush(&mut line, &mut used, &mut budget);
-            word = &word[split..];
-        }
-        if !line.is_empty() {
-            line.push(' ');
-            used += 1;
-        }
-        line.push_str(word);
-        used += word.width();
-    }
-    out.push(line);
-    out
 }
 
 /// Hunk and line indices a comment displays under; `None` when the
@@ -3105,20 +3066,24 @@ mod tests {
             .clone();
         session.reply(&id, "agent", "done\nand verified");
         let lines = comment_display(&session.comments[0], u16::MAX);
+        let plain = |s: &str| MdSpan {
+            text: s.to_owned(),
+            ..MdSpan::default()
+        };
         assert_eq!(
             lines,
             vec![
                 CommentLine::Header,
-                CommentLine::Body("first".to_owned()),
-                CommentLine::Body("second".to_owned()),
+                CommentLine::Body(vec![plain("first")]),
+                CommentLine::Body(vec![plain("second")]),
                 CommentLine::Reply {
                     author: "agent".to_owned(),
-                    text: "done".to_owned(),
+                    spans: vec![plain("done")],
                     first: true,
                 },
                 CommentLine::Reply {
                     author: "agent".to_owned(),
-                    text: "and verified".to_owned(),
+                    spans: vec![plain("and verified")],
                     first: false,
                 },
                 CommentLine::Footer,
@@ -3146,12 +3111,13 @@ mod tests {
         session.reply(&id, "agent", "a reply that also runs past the pane");
         let lines = comment_display(&session.comments[0], 30);
         let budget = 30 - 4;
+        let text = |runs: &[MdSpan]| runs.iter().map(|s| s.text.clone()).collect::<String>();
         for line in &lines {
             match line {
-                CommentLine::Body(text) => assert!(text.width() <= budget, "{text:?}"),
-                CommentLine::Reply { text, first, .. } => {
+                CommentLine::Body(runs) => assert!(text(runs).width() <= budget, "{runs:?}"),
+                CommentLine::Reply { spans, first, .. } => {
                     let head = if *first { "↳ agent: ".width() } else { 2 };
-                    assert!(text.width() + head <= budget, "{text:?}");
+                    assert!(text(spans).width() + head <= budget, "{spans:?}");
                 }
                 _ => {}
             }
@@ -3165,7 +3131,7 @@ mod tests {
         let joined: Vec<String> = lines
             .iter()
             .filter_map(|l| match l {
-                CommentLine::Body(t) => Some(t.clone()),
+                CommentLine::Body(runs) => Some(text(runs)),
                 _ => None,
             })
             .collect();
@@ -3191,8 +3157,9 @@ mod tests {
         );
         let lines = comment_display(&session.comments[0], 24);
         for line in &lines {
-            if let CommentLine::Body(text) = line {
-                assert!(text.width() <= 20, "{text:?}");
+            if let CommentLine::Body(runs) = line {
+                let width: usize = runs.iter().map(|s| s.text.width()).sum();
+                assert!(width <= 20, "{runs:?}");
             }
         }
     }

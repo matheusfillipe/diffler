@@ -13,6 +13,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
+use crate::app::markdown::MdSpan;
 use crate::app::{
     App, CommentLine, DiffRow, DiffView, FileHighlights, FileScope, Pane, SplitRow, SplitSide,
     comment_display,
@@ -984,10 +985,14 @@ fn comment_row_line(
             }
             spans
         }
-        CommentLine::Body(text) => vec![bar, Span::styled(text.clone(), fg)],
+        CommentLine::Body(runs) => {
+            let mut spans = vec![bar];
+            spans.extend(runs.iter().map(|run| md_span(run, fg, theme)));
+            spans
+        }
         CommentLine::Reply {
             author,
-            text,
+            spans: runs,
             first,
         } => {
             let mut spans = vec![bar];
@@ -999,7 +1004,7 @@ fn comment_row_line(
             } else {
                 spans.push(Span::styled("  ".to_owned(), fg));
             }
-            spans.push(Span::styled(text.clone(), fg));
+            spans.extend(runs.iter().map(|run| md_span(run, fg, theme)));
             spans
         }
         CommentLine::Footer => vec![Span::styled(
@@ -1008,6 +1013,31 @@ fn comment_row_line(
         )],
     };
     pad_line(spans, bg, width)
+}
+
+/// Map a markdown run's flags onto `base` (the body foreground over the card
+/// background). Recoloring flags (code, link, muted) win over the base fg.
+fn md_span(run: &MdSpan, base: Style, theme: &Theme) -> Span<'static> {
+    let mut style = base;
+    if run.bold {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    if run.italic {
+        style = style.add_modifier(Modifier::ITALIC);
+    }
+    if run.strike {
+        style = style.add_modifier(Modifier::CROSSED_OUT);
+    }
+    if run.code {
+        style = style.fg(theme.accent);
+    }
+    if run.link {
+        style = style.fg(theme.accent).add_modifier(Modifier::UNDERLINED);
+    }
+    if run.muted {
+        style = style.fg(theme.dim);
+    }
+    Span::styled(run.text.clone(), style)
 }
 
 fn pad_line(mut spans: Vec<Span<'static>>, bg: Color, width: u16) -> Line<'static> {
@@ -1305,6 +1335,35 @@ mod tests {
         open_lib_diff(&mut app);
         app.diff.as_mut().unwrap().side_by_side = true;
         insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn markdown_in_a_comment_body_renders_styled() {
+        let (_fixture, mut app) = diff_app();
+        open_lib_diff(&mut app);
+        app.review.session.add_comment(
+            diffler_core::session::Anchor {
+                file: "src/lib.rs".to_owned(),
+                line: Some(1),
+                line_end: None,
+                on_old_side: false,
+                line_text: None,
+            },
+            "reviewer",
+            "call `foo()` then make it **bold**",
+        );
+        app.diff.as_mut().unwrap().invalidate();
+        let terminal = render(&mut app);
+        let buffer = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            buffer.contains("BOLD"),
+            "the **bold** run renders with the bold modifier"
+        );
+        assert!(
+            buffer.contains(&format!("{:?}", app.theme.accent)),
+            "the `code` run renders in the accent color"
+        );
+        insta::assert_snapshot!(terminal.backend());
     }
 
     /// Sidebar file position on screen for the last render.
