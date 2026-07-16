@@ -55,7 +55,8 @@
 # send_feedback = "Z"
 
 [keys.diff]
-# toggle_focus = "<tab>"
+# move_left = "h"
+# move_right = "l"
 # next_function = ")"
 # prev_function = "("
 # delete_comment = "d"

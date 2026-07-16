@@ -709,7 +709,7 @@ mod tests {
                 KeyModifiers::NONE,
             )));
         };
-        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Char('l'));
         press(&mut app, KeyCode::Char('j'));
         press(&mut app, KeyCode::Char('c'));
         assert!(app.modal.is_some(), "comment modal open");

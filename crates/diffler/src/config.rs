@@ -719,6 +719,10 @@ fn parse_bracketed(token: &str) -> Result<KeyPress, ChordError> {
         "tab" => KeyCode::Tab,
         "esc" => KeyCode::Esc,
         "space" => KeyCode::Char(' '),
+        "up" => KeyCode::Up,
+        "down" => KeyCode::Down,
+        "left" => KeyCode::Left,
+        "right" => KeyCode::Right,
         _ => {
             let mut rest_chars = rest.chars();
             match (rest_chars.next(), rest_chars.next()) {

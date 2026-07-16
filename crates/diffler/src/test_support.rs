@@ -138,6 +138,10 @@ pub(crate) fn ctrl_key(c: char) -> AppEvent {
     AppEvent::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
 }
 
+pub(crate) fn code_key(code: KeyCode) -> AppEvent {
+    AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
+}
+
 pub(crate) fn esc_key() -> AppEvent {
     AppEvent::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
 }

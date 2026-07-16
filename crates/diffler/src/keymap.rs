@@ -27,7 +27,6 @@ pub enum Action {
     PrevFile,
     NextUnviewed,
     CycleSidebarMode,
-    ToggleFocus,
     ToggleFold,
     ToggleSideBySide,
     Stage,
@@ -106,7 +105,6 @@ impl Action {
             Self::PrevFile => "prev_file",
             Self::NextUnviewed => "next_unviewed",
             Self::CycleSidebarMode => "cycle_sidebar_mode",
-            Self::ToggleFocus => "toggle_focus",
             Self::ToggleFold => "toggle_fold",
             Self::ToggleSideBySide => "toggle_side_by_side",
             Self::Stage => "stage",
@@ -185,7 +183,6 @@ impl Action {
             Self::PrevFile => "previous file",
             Self::NextUnviewed => "jump to the next unviewed file",
             Self::CycleSidebarMode => "cycle sidebar: tree, list, review buckets",
-            Self::ToggleFocus => "switch focus between sidebar and diff",
             Self::ToggleFold => "fold / unfold",
             Self::ToggleSideBySide => "toggle side-by-side diff",
             Self::Stage => "stage file or hunk",
@@ -246,7 +243,7 @@ impl Action {
         }
     }
 
-    pub(crate) const ALL: [Self; 73] = [
+    pub(crate) const ALL: [Self; 72] = [
         Self::NextFunction,
         Self::PrevFunction,
         Self::DeleteComment,
@@ -268,7 +265,6 @@ impl Action {
         Self::PrevFile,
         Self::NextUnviewed,
         Self::CycleSidebarMode,
-        Self::ToggleFocus,
         Self::ToggleFold,
         Self::ToggleSideBySide,
         Self::Stage,
@@ -424,9 +420,14 @@ const DIFF_DEFAULTS: &[(&str, Action)] = &[
     ("<c-p>", Action::PrevFile),
     ("J", Action::NextFile),
     ("K", Action::PrevFile),
+    ("<tab>", Action::NextFile),
+    ("<s-tab>", Action::PrevFile),
     ("u", Action::NextUnviewed),
     ("t", Action::CycleSidebarMode),
-    ("<tab>", Action::ToggleFocus),
+    ("h", Action::MoveLeft),
+    ("l", Action::MoveRight),
+    ("<left>", Action::MoveLeft),
+    ("<right>", Action::MoveRight),
     ("za", Action::ToggleFold),
     ("|", Action::ToggleSideBySide),
     ("<cr>", Action::Open),
@@ -897,6 +898,9 @@ pub fn press_from_event(event: &KeyEvent) -> KeyPress {
     let (code, shift) = match event.code {
         KeyCode::Char(c) if c.is_alphabetic() => (KeyCode::Char(c), c.is_uppercase()),
         KeyCode::Char(c) => (KeyCode::Char(c), false),
+        // terminals send shift+tab as either BackTab or Tab+SHIFT; normalize to
+        // Tab+shift so a single `<s-tab>` binding matches both
+        KeyCode::BackTab => (KeyCode::Tab, true),
         code => (code, mods.contains(KeyModifiers::SHIFT)),
     };
     KeyPress {

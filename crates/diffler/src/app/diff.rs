@@ -896,7 +896,9 @@ impl App {
             Action::PrevFile => return self.diff_step_file(false),
             Action::NextUnviewed => return self.diff_jump_unviewed(),
             Action::CycleSidebarMode => return self.diff_cycle_sidebar_mode(),
-            Action::ToggleFocus => return self.diff_toggle_focus(),
+            // h/l (and arrows) focus a pane directly; repeats clamp, no cycle
+            Action::MoveLeft => return self.diff_focus(Pane::List),
+            Action::MoveRight => return self.diff_focus(Pane::Diff),
             Action::ToggleSideBySide => return self.toggle_side_by_side(),
             // comment walk works from either pane; land in the diff pane on the
             // comment so it can be read and replied to
@@ -1000,16 +1002,6 @@ impl App {
         } else {
             "unified"
         });
-    }
-
-    fn diff_toggle_focus(&mut self) {
-        let Some(diff) = self.diff.as_mut() else {
-            return;
-        };
-        diff.focus = match diff.focus {
-            Pane::List => Pane::Diff,
-            Pane::Diff => Pane::List,
-        };
     }
 
     fn diff_focus(&mut self, pane: Pane) {
@@ -1786,7 +1778,9 @@ mod tests {
     use crate::app::Screen;
     use crate::config::LoadedConfig;
     use crate::event::AppEvent;
-    use crate::test_support::{Fixture, ctrl_key, key, standard_fixture, two_hunk_fixture};
+    use crate::test_support::{
+        Fixture, code_key, ctrl_key, key, standard_fixture, two_hunk_fixture,
+    };
 
     fn diff_app(fixture: &Fixture) -> App {
         let mut app = App::new(fixture.review(), LoadedConfig::default());
@@ -2077,14 +2071,51 @@ mod tests {
     }
 
     #[test]
-    fn tab_toggles_focus_between_the_panes() {
+    fn h_and_l_focus_the_panes_and_clamp() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
         assert_eq!(focus(&app), Pane::List);
-        app.handle(key('\t'));
+        app.handle(key('l'));
         assert_eq!(focus(&app), Pane::Diff);
-        app.handle(key('\t'));
+        app.handle(key('l'));
+        assert_eq!(
+            focus(&app),
+            Pane::Diff,
+            "repeats stay on the diff, no cycle"
+        );
+        app.handle(key('h'));
         assert_eq!(focus(&app), Pane::List);
+        app.handle(key('h'));
+        assert_eq!(
+            focus(&app),
+            Pane::List,
+            "repeats stay on the sidebar, no cycle"
+        );
+    }
+
+    #[test]
+    fn arrow_keys_focus_the_panes_like_h_and_l() {
+        use crossterm::event::KeyCode;
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        app.handle(code_key(KeyCode::Right));
+        assert_eq!(focus(&app), Pane::Diff);
+        app.handle(code_key(KeyCode::Left));
+        assert_eq!(focus(&app), Pane::List);
+    }
+
+    #[test]
+    fn tab_and_backtab_step_through_files_keeping_focus() {
+        use crossterm::event::KeyCode;
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        let first = selected_path(&app);
+        app.handle(key('\t'));
+        let second = selected_path(&app);
+        assert_ne!(first, second, "tab advances to the next file");
+        assert_eq!(focus(&app), Pane::List, "stepping files keeps focus");
+        app.handle(code_key(KeyCode::BackTab));
+        assert_eq!(selected_path(&app), first, "shift-tab steps back");
     }
 
     #[test]
