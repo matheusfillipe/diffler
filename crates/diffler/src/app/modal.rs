@@ -37,6 +37,7 @@ impl App {
             Some(Modal::BranchList { .. }) => self.handle_branch_list_key(key),
             Some(Modal::Comments { .. }) => self.handle_comments_key(key),
             Some(Modal::Palette { .. }) => return self.handle_palette_key(key),
+            Some(Modal::Themes { .. }) => self.handle_theme_key(key),
             Some(Modal::Help) => match key.code {
                 KeyCode::Esc | KeyCode::Char('q' | '?') => self.modal = None,
                 _ => {}
@@ -509,6 +510,31 @@ impl App {
         Flow::Continue
     }
 
+    pub(super) fn handle_theme_key(&mut self, key: &KeyEvent) {
+        let Some(Modal::Themes { list }) = self.modal.as_mut() else {
+            return;
+        };
+        match list.feed(key) {
+            FuzzyKey::Submit => self.submit_theme(),
+            FuzzyKey::Cancel => self.modal = None,
+            FuzzyKey::Edited => list.rerank(&crate::theme::names()),
+            _ => {}
+        }
+    }
+
+    fn submit_theme(&mut self) {
+        // a query matching nothing keeps the dialog open, like fzf
+        let names = crate::theme::names();
+        let Some(Modal::Themes { list }) = &self.modal else {
+            return;
+        };
+        let Some(name) = selected(list, &names).cloned() else {
+            return;
+        };
+        self.modal = None;
+        self.apply_theme(&name);
+    }
+
     pub(super) fn handle_branch_list_key(&mut self, key: &KeyEvent) {
         let Some(Modal::BranchList { branches, list, .. }) = self.modal.as_mut() else {
             return;
@@ -870,6 +896,26 @@ mod tests {
         }
         press(&mut app, KeyCode::Enter);
         assert!(matches!(app.modal, Some(Modal::Palette { .. })));
+    }
+
+    #[test]
+    fn theme_picker_switches_the_theme_live() {
+        use crate::theme::Theme;
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        assert_eq!(app.theme, Theme::github_dark());
+        press(&mut app, KeyCode::Char('T'));
+        assert!(
+            matches!(app.modal, Some(Modal::Themes { .. })),
+            "T opens the theme picker"
+        );
+        press(&mut app, KeyCode::Tab);
+        for c in "dracula".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        press(&mut app, KeyCode::Enter);
+        assert!(app.modal.is_none());
+        assert_eq!(app.theme, Theme::dracula());
     }
 
     #[test]

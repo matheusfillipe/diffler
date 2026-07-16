@@ -24,8 +24,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub use diff::{
-    CommentLine, DiffRow, DiffView, FileHighlights, FileScope, Pane, SplitRow, SplitSide,
-    comment_display,
+    CommentLine, DiffRow, DiffView, FileHighlights, FileScope, Pane, ScrollAlign, SplitRow,
+    SplitSide, comment_display,
 };
 pub use log::LogView;
 pub(crate) use status::{CI_TITLE, RECENT_TITLE};
@@ -171,6 +171,8 @@ pub enum Modal {
     },
     /// Fuzzy command palette over everything executable on this screen.
     Palette { list: fuzzy::FuzzyList },
+    /// Fuzzy picker over the built-in themes; applies the pick live.
+    Themes { list: fuzzy::FuzzyList },
     /// Verdict picker for a PR review submit: approve, request changes, or
     /// comment only.
     ReviewVerdict { number: u64 },
@@ -1078,6 +1080,7 @@ impl App {
             Action::OpenRuns => self.open_runs(),
             Action::OpenPrs => self.open_prs(),
             Action::CommentsOverview => self.open_comments_overview(),
+            Action::SwitchTheme => self.open_theme_picker(),
             action => match self.screen() {
                 Screen::Status => self.dispatch_status(action),
                 Screen::Log => self.dispatch_log(action),
@@ -1125,6 +1128,27 @@ impl App {
             Some(Screen::Status) | None => {}
         }
         Flow::Continue
+    }
+
+    fn open_theme_picker(&mut self) {
+        let mut list = fuzzy::FuzzyList::default();
+        list.rerank(&crate::theme::names());
+        self.modal = Some(Modal::Themes { list });
+    }
+
+    /// Swap the active theme live: re-pin the syntax highlighter and drop the
+    /// cached highlights so the visible files re-enrich in the new palette.
+    pub(crate) fn apply_theme(&mut self, name: &str) {
+        let (theme, _) = Theme::from_name(name);
+        self.highlighter = Arc::new(diffler_core::highlight::Highlighter::new(theme.syntax));
+        self.theme = theme;
+        if let Some(diff) = self.diff.as_mut() {
+            diff.highlights.clear();
+            diff.clear_enriched();
+            diff.invalidate();
+        }
+        self.queue_enrich_selected();
+        self.info(format!("theme: {name}"));
     }
 
     pub fn info(&mut self, text: impl Into<String>) {

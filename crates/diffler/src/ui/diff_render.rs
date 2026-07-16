@@ -11,8 +11,23 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthChar;
 
-use crate::app::SplitSide;
+use crate::app::{ScrollAlign, SplitSide};
 use crate::theme::Theme;
+
+/// Scroll offset that places the cursor row at `align` within a `height`-line
+/// viewport, given the row's visual start and height.
+pub(super) fn align_scroll(
+    align: ScrollAlign,
+    cur_start: usize,
+    cur_height: usize,
+    height: usize,
+) -> usize {
+    match align {
+        ScrollAlign::Center => (cur_start + cur_height / 2).saturating_sub(height / 2),
+        ScrollAlign::Top => cur_start,
+        ScrollAlign::Bottom => (cur_start + cur_height).saturating_sub(height),
+    }
+}
 
 /// Per-file syntax for both diff sides — `(old, new)` — each indexed by line
 /// number. The renderer picks the side per line via [`line_syntax`].
@@ -534,6 +549,15 @@ mod tests {
     use ratatui::widgets::Paragraph;
 
     use super::*;
+
+    #[test]
+    fn align_scroll_positions_the_cursor_row() {
+        assert_eq!(align_scroll(ScrollAlign::Top, 20, 1, 10), 20);
+        assert_eq!(align_scroll(ScrollAlign::Bottom, 20, 1, 10), 11);
+        assert_eq!(align_scroll(ScrollAlign::Center, 20, 1, 10), 15);
+        // clamps at the top of the buffer
+        assert_eq!(align_scroll(ScrollAlign::Center, 1, 1, 10), 0);
+    }
 
     fn line(kind: LineKind, old: Option<u32>, new: Option<u32>, text: &str) -> DiffLine {
         DiffLine::new(kind, old, new, text.to_owned())

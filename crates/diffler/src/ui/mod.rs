@@ -178,7 +178,12 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) {
             }
             .render(frame, &app.theme);
         }
-        Some(Modal::BranchList { .. } | Modal::Comments { .. } | Modal::Palette { .. }) => {
+        Some(
+            Modal::BranchList { .. }
+            | Modal::Comments { .. }
+            | Modal::Palette { .. }
+            | Modal::Themes { .. },
+        ) => {
             if let Some(modal) = fuzzy_modal(app) {
                 modal.render(frame, &app.theme);
             }
@@ -274,6 +279,20 @@ fn fuzzy_modal(app: &App) -> Option<popup::FuzzyModal> {
                 footer: footer_for(list, "", " run"),
             })
         }
+        Some(Modal::Themes { list }) => Some(popup::FuzzyModal {
+            title: "Theme".to_owned(),
+            query: list.query.clone(),
+            cursor: list.cursor,
+            typing: matches!(list.focus, fuzzy::FuzzyFocus::Input),
+            items: list
+                .matches
+                .iter()
+                .filter_map(|index| crate::theme::NAMES.get(*index))
+                .map(|name| ((*name).to_owned(), String::new()))
+                .collect(),
+            selected: list.selected,
+            footer: footer_for(list, "", " apply"),
+        }),
         _ => None,
     }
 }

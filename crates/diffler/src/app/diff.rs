@@ -27,6 +27,14 @@ pub enum Pane {
     Diff,
 }
 
+/// Where to place the cursor line in the viewport (vim `zz`/`zt`/`zb`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollAlign {
+    Center,
+    Top,
+    Bottom,
+}
+
 /// Fold state of the review layout's two buckets.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct BucketFolds {
@@ -127,6 +135,9 @@ pub struct DiffView {
     /// First visible row of the diff pane; the renderer keeps the cursor in
     /// view.
     pub scroll: usize,
+    /// One-shot scroll positioning (zz/zt/zb); the renderer applies it once it
+    /// knows the wrapped row heights, then clears it.
+    pub(crate) scroll_align: Option<ScrollAlign>,
     /// Side-by-side (old left / new right) pane; pinned at open from
     /// `ui.side_by_side`, then `|` toggles it live.
     pub side_by_side: bool,
@@ -182,6 +193,7 @@ impl DiffView {
             tree_cursor: 0,
             cursor: 0,
             scroll: 0,
+            scroll_align: None,
             side_by_side,
             split_scroll: 0,
             sidebar: ratatui::layout::Rect::default(),
@@ -966,6 +978,9 @@ impl App {
             Action::PrevHunk => self.diff_jump(false, |row| matches!(row, DiffRow::Hunk { .. })),
             Action::NextFunction => self.diff_jump_function(true),
             Action::PrevFunction => self.diff_jump_function(false),
+            Action::CenterCursor => self.diff_align(ScrollAlign::Center),
+            Action::CursorTop => self.diff_align(ScrollAlign::Top),
+            Action::CursorBottom => self.diff_align(ScrollAlign::Bottom),
             Action::Open => self.diff_focus(Pane::List),
             // side-by-side is a read-only view; commenting and selection stay
             // in the unified pane, reachable by toggling back with `|`
@@ -1007,6 +1022,12 @@ impl App {
     fn diff_focus(&mut self, pane: Pane) {
         if let Some(diff) = self.diff.as_mut() {
             diff.focus = pane;
+        }
+    }
+
+    fn diff_align(&mut self, align: ScrollAlign) {
+        if let Some(diff) = self.diff.as_mut() {
+            diff.scroll_align = Some(align);
         }
     }
 

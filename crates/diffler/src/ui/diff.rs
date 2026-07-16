@@ -24,7 +24,7 @@ use crate::theme::Theme;
 use crate::tree::{Bucket, TreeNode};
 use crate::ui::Hint;
 use crate::ui::diff_render::{
-    diff_line_height, file_gutter_width, hunk_header, line_syntax, render_diff_line,
+    align_scroll, diff_line_height, file_gutter_width, hunk_header, line_syntax, render_diff_line,
     render_split_pair, split_pair_height,
 };
 use crate::ui::{diffstat_spans, proportion_bar, status_bar, status_color};
@@ -264,7 +264,10 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
             (Some(s), Some(h)) => (*s, *h),
             _ => (0, 1),
         };
-        let mut scroll = diff.split_scroll.min(total.saturating_sub(1));
+        let base = diff.scroll_align.take().map_or(diff.split_scroll, |a| {
+            align_scroll(a, sel_start, sel_height, height)
+        });
+        let mut scroll = base.min(total.saturating_sub(1));
         if sel_start < scroll {
             scroll = sel_start;
         }
@@ -340,7 +343,10 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
         (Some(s), Some(h)) => (*s, *h),
         _ => (0, 1),
     };
-    let mut scroll = diff.scroll.min(total.saturating_sub(1));
+    let base = diff.scroll_align.take().map_or(diff.scroll, |a| {
+        align_scroll(a, cur_start, cur_height, height)
+    });
+    let mut scroll = base.min(total.saturating_sub(1));
     if cur_start < scroll {
         scroll = cur_start;
     }
@@ -1335,6 +1341,63 @@ mod tests {
         open_lib_diff(&mut app);
         app.diff.as_mut().unwrap().side_by_side = true;
         insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn zt_zb_zz_align_the_cursor_row_in_the_viewport() {
+        let fixture = standard_fixture();
+        let body: String = (0..100).fold(String::new(), |mut s, i| {
+            use std::fmt::Write;
+            let _ = writeln!(s, "line {i}");
+            s
+        });
+        fixture.write("src/lib.rs", &body);
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.author = "reviewer".to_owned();
+        app.open_working_tree_diff(None);
+        open_lib_diff(&mut app);
+        render(&mut app);
+
+        let mid = app.diff.as_ref().unwrap().rows.len() / 2;
+        app.diff.as_mut().unwrap().cursor = mid;
+
+        let pane_row_of = |app: &App, row: usize| {
+            app.diff
+                .as_ref()
+                .unwrap()
+                .line_rows
+                .iter()
+                .position(|r| *r == Some(row))
+        };
+
+        app.handle(key('z'));
+        app.handle(key('t'));
+        render(&mut app);
+        assert_eq!(
+            pane_row_of(&app, mid),
+            Some(0),
+            "zt puts the cursor at the top"
+        );
+
+        app.handle(key('z'));
+        app.handle(key('b'));
+        render(&mut app);
+        let viewport = app.diff.as_ref().unwrap().viewport as usize;
+        assert_eq!(
+            pane_row_of(&app, mid),
+            Some(viewport - 1),
+            "zb puts the cursor at the bottom"
+        );
+
+        app.handle(key('z'));
+        app.handle(key('z'));
+        render(&mut app);
+        let at = pane_row_of(&app, mid).expect("cursor visible after zz");
+        let center = viewport / 2;
+        assert!(
+            at.abs_diff(center) <= 1,
+            "zz centers the cursor (row {at}, center {center})"
+        );
     }
 
     #[test]

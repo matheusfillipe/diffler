@@ -35,6 +35,14 @@ pub struct Theme {
     pub syntax: SyntaxTheme,
 }
 
+/// Built-in theme names, in picker order; each resolves via [`Theme::from_name`].
+pub const NAMES: &[&str] = &["github-dark", "github-light", "dracula"];
+
+/// Owned copy of [`NAMES`] for the fuzzy picker's haystack and item list.
+pub fn names() -> Vec<String> {
+    NAMES.iter().map(|s| (*s).to_owned()).collect()
+}
+
 impl Theme {
     pub fn github_dark() -> Self {
         let bg = Color::Rgb(0x0d, 0x11, 0x17);
