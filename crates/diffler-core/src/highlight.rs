@@ -17,12 +17,18 @@ pub struct Highlighter {
 /// Syntax-highlight palette, paired with a UI theme so foreground colors stay
 /// legible against the diff backgrounds (a dark UI needs dark-theme syntax, a
 /// light UI light-theme syntax).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum SyntaxTheme {
     #[default]
     OneHalfDark,
     OneHalfLight,
     Dracula,
+    CatppuccinMocha,
+    TokyoNight,
+    GruvboxDark,
+    Nord,
+    RosePine,
+    Kanagawa,
 }
 
 /// Foreground color + style for a byte range of one line.
@@ -142,6 +148,7 @@ impl SyntaxTheme {
         })
     }
 
+    #[allow(clippy::too_many_lines)]
     fn color(self, category: &str) -> Option<(u8, u8, u8)> {
         let c = match self {
             SyntaxTheme::OneHalfDark => match category {
@@ -179,6 +186,74 @@ impl SyntaxTheme {
                 "constant" | "number" => (189, 147, 249),
                 "escape" | "attribute" => (255, 184, 108),
                 "variable" | "punctuation" => (248, 248, 242),
+                _ => return None,
+            },
+            SyntaxTheme::CatppuccinMocha => match category {
+                "keyword" | "label" => (203, 166, 247),
+                "function" => (137, 180, 250),
+                "type" | "constructor" => (249, 226, 175),
+                "string" => (166, 227, 161),
+                "comment" => (127, 132, 156),
+                "constant" | "number" | "attribute" => (250, 179, 135),
+                "operator" | "escape" => (137, 220, 235),
+                "property" | "tag" => (243, 139, 168),
+                "variable" | "punctuation" => (205, 214, 244),
+                _ => return None,
+            },
+            SyntaxTheme::TokyoNight => match category {
+                "keyword" | "label" => (187, 154, 247),
+                "function" => (122, 162, 247),
+                "type" | "constructor" => (42, 195, 222),
+                "string" => (158, 206, 106),
+                "comment" => (99, 109, 150),
+                "constant" | "number" | "attribute" => (255, 158, 100),
+                "operator" | "escape" => (137, 221, 255),
+                "property" | "tag" => (247, 118, 142),
+                "variable" | "punctuation" => (192, 202, 245),
+                _ => return None,
+            },
+            SyntaxTheme::GruvboxDark => match category {
+                "keyword" | "label" => (251, 73, 52),
+                "function" => (184, 187, 38),
+                "type" | "constructor" => (250, 189, 47),
+                "string" => (142, 192, 124),
+                "comment" => (146, 131, 116),
+                "constant" | "number" => (211, 134, 155),
+                "operator" | "escape" | "attribute" => (254, 128, 25),
+                "property" | "tag" => (131, 165, 152),
+                "variable" | "punctuation" => (235, 219, 178),
+                _ => return None,
+            },
+            SyntaxTheme::Nord => match category {
+                "keyword" | "label" | "operator" | "escape" => (129, 161, 193),
+                "function" => (136, 192, 208),
+                "type" | "constructor" | "property" | "tag" => (143, 188, 187),
+                "string" => (163, 190, 140),
+                "comment" => (123, 136, 161),
+                "constant" | "number" | "attribute" => (180, 142, 173),
+                "variable" | "punctuation" => (216, 222, 233),
+                _ => return None,
+            },
+            SyntaxTheme::RosePine => match category {
+                "keyword" | "label" | "operator" | "escape" => (49, 116, 143),
+                "function" => (235, 188, 186),
+                "type" | "constructor" | "property" | "tag" => (156, 207, 216),
+                "string" => (246, 193, 119),
+                "comment" => (129, 124, 153),
+                "constant" | "number" | "attribute" => (196, 167, 231),
+                "variable" | "punctuation" => (224, 222, 244),
+                _ => return None,
+            },
+            SyntaxTheme::Kanagawa => match category {
+                "keyword" | "label" => (149, 127, 184),
+                "function" => (126, 156, 216),
+                "type" | "constructor" => (122, 168, 159),
+                "string" => (152, 187, 108),
+                "comment" => (144, 140, 128),
+                "constant" | "number" | "attribute" => (210, 126, 153),
+                "operator" | "escape" => (127, 180, 202),
+                "property" | "tag" => (106, 149, 137),
+                "variable" | "punctuation" => (220, 215, 186),
                 _ => return None,
             },
         };

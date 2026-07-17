@@ -25,7 +25,7 @@ struct Cli {
     #[arg(long, global = true)]
     no_mcp: bool,
 
-    /// UI theme: github-dark, github-light, or dracula (overrides `ui.theme`)
+    /// UI theme name (overrides `ui.theme`)
     #[arg(long, global = true)]
     theme: Option<String>,
 

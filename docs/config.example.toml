@@ -10,7 +10,6 @@
 #   diffler config --dump
 
 [ui]
-# theme: "github-dark" (default), "github-light", or "dracula"
 # theme = "github-dark"
 # context_lines = 3
 # recent_commits = 10

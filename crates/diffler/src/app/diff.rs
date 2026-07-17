@@ -27,7 +27,6 @@ pub enum Pane {
     Diff,
 }
 
-/// Where to place the cursor line in the viewport (vim `zz`/`zt`/`zb`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScrollAlign {
     Center,
@@ -135,8 +134,7 @@ pub struct DiffView {
     /// First visible row of the diff pane; the renderer keeps the cursor in
     /// view.
     pub scroll: usize,
-    /// One-shot scroll positioning (zz/zt/zb); the renderer applies it once it
-    /// knows the wrapped row heights, then clears it.
+    /// Applied once the renderer knows the wrapped row heights, then cleared.
     pub(crate) scroll_align: Option<ScrollAlign>,
     /// Side-by-side (old left / new right) pane; pinned at open from
     /// `ui.side_by_side`, then `|` toggles it live.
@@ -908,7 +906,6 @@ impl App {
             Action::PrevFile => return self.diff_step_file(false),
             Action::NextUnviewed => return self.diff_jump_unviewed(),
             Action::CycleSidebarMode => return self.diff_cycle_sidebar_mode(),
-            // h/l (and arrows) focus a pane directly; repeats clamp, no cycle
             Action::MoveLeft => return self.diff_focus(Pane::List),
             Action::MoveRight => return self.diff_focus(Pane::Diff),
             Action::ToggleSideBySide => return self.toggle_side_by_side(),

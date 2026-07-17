@@ -14,8 +14,6 @@ use unicode_width::UnicodeWidthChar;
 use crate::app::{ScrollAlign, SplitSide};
 use crate::theme::Theme;
 
-/// Scroll offset that places the cursor row at `align` within a `height`-line
-/// viewport, given the row's visual start and height.
 pub(super) fn align_scroll(
     align: ScrollAlign,
     cur_start: usize,

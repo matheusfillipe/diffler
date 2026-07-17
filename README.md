@@ -182,6 +182,11 @@ result and where each value came from:
 diffler config --dump
 ```
 
+## Themes
+
+Built-in themes, switchable live with `T`. See
+[showcase/THEMES.md](showcase/THEMES.md) for the gallery.
+
 ## Development
 
 ```sh
