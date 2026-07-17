@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784274816787,
+  "lastUpdate": 1784278917380,
   "repoUrl": "https://github.com/matheusfillipe/diffler",
   "entries": {
     "Benchmark": [
@@ -5951,6 +5951,102 @@ window.BENCHMARK_DATA = {
             "name": "scope_index/20000",
             "value": 73670264,
             "range": "± 742314",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "committer": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "distinct": true,
+          "id": "6614bfa58b3c57da58d11076e52ff47e97b50b9d",
+          "message": "feat: six dark themes (catppuccin, tokyo night, gruvbox, nord, rose pine, kanagawa) + showcase gallery",
+          "timestamp": "2026-07-17T10:34:46+02:00",
+          "tree_id": "bc9df7e83455641eb41299dab0062394e7af2de6",
+          "url": "https://github.com/matheusfillipe/diffler/commit/6614bfa58b3c57da58d11076e52ff47e97b50b9d"
+        },
+        "date": 1784278916593,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "syndiff_emphasis/1000",
+            "value": 8294977,
+            "range": "± 176476",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/1000",
+            "value": 18296,
+            "range": "± 204",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/1000",
+            "value": 6032696,
+            "range": "± 88316",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/1000",
+            "value": 4557101,
+            "range": "± 15592",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/5000",
+            "value": 42916959,
+            "range": "± 693677",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/5000",
+            "value": 97700,
+            "range": "± 517",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/5000",
+            "value": 29582646,
+            "range": "± 64687",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/5000",
+            "value": 22683217,
+            "range": "± 88449",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/20000",
+            "value": 177069196,
+            "range": "± 1194203",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/20000",
+            "value": 392585,
+            "range": "± 3609",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/20000",
+            "value": 118503130,
+            "range": "± 444261",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/20000",
+            "value": 90501974,
+            "range": "± 511224",
             "unit": "ns/iter"
           }
         ]
