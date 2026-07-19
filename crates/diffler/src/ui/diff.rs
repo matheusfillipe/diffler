@@ -1864,6 +1864,18 @@ mod tests {
     }
 
     #[test]
+    fn markdown_diff_highlights_headings_and_inline_code() {
+        let fixture = Fixture::new();
+        fixture.write(
+            "notes.md",
+            "# Recording notes\n\nUse `record()` and set **duration** first.\n\n1. call `search(q)`\n2. share it\n",
+        );
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_working_tree_file("notes.md");
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
     fn diff_pane_renders_a_sliding_window_and_jumps_to_extremes() {
         // a single file with ~2000 lines: the model dwarfs the viewport
         let fixture = Fixture::new();

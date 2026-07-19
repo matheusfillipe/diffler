@@ -35,6 +35,11 @@ impl LanguageRegistry {
             return None;
         }
         let entry = self.for_path(path)?;
+        // markdown's block tree is coarse (a paragraph is one opaque node); the
+        // textual word-diff emphasizes prose edits far better than an AST diff.
+        if entry.name == "markdown" {
+            return None;
+        }
         let old_ts = parse(entry, old_src)?;
         let new_ts = parse(entry, new_src)?;
         let old_tree = build_tree(old_ts.walk(), old_src);
