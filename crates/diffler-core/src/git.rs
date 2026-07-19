@@ -439,12 +439,8 @@ impl Vcs for GitVcs {
 
     fn network_argv(&self, op: NetworkOp) -> Vec<String> {
         // shelling to `git` (not git2) so the user's credential helper, SSH
-        // agent, and config drive auth; PushSetUpstream targets HEAD so the
-        // current branch publishes to its same-named remote ref
+        // agent, and config drive auth
         let args: &[&str] = match op {
-            NetworkOp::Push => &["push"],
-            NetworkOp::PushSetUpstream => &["push", "-u", "origin", "HEAD"],
-            NetworkOp::Pull => &["pull"],
             NetworkOp::Fetch => &["fetch"],
             NetworkOp::FetchAll => &["fetch", "--all"],
         };

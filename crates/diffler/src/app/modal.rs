@@ -38,6 +38,8 @@ impl App {
             Some(Modal::Comments { .. }) => self.handle_comments_key(key),
             Some(Modal::Palette { .. }) => return self.handle_palette_key(key),
             Some(Modal::Themes { .. }) => self.handle_theme_key(key),
+            Some(Modal::RemoteList { .. }) => self.handle_remote_list_key(key),
+            Some(Modal::PullDiverged { .. }) => self.handle_pull_diverged_key(key),
             Some(Modal::Help) => match key.code {
                 KeyCode::Esc | KeyCode::Char('q' | '?') => self.modal = None,
                 _ => {}
@@ -69,6 +71,16 @@ impl App {
                 self.delete_overview_comment(&id, keep);
             }
             PendingOp::DeleteAllComments => self.delete_all_comments(),
+            PendingOp::RunGit { label, argv } => self.queue_network(label, argv),
+            PendingOp::ForcePull { .. } => self.queue_network(
+                "reset --hard",
+                vec![
+                    "git".to_owned(),
+                    "reset".to_owned(),
+                    "--hard".to_owned(),
+                    "@{u}".to_owned(),
+                ],
+            ),
         }
     }
 
@@ -533,6 +545,65 @@ impl App {
         };
         self.modal = None;
         self.apply_theme(&name);
+    }
+
+    pub(super) fn handle_remote_list_key(&mut self, key: &KeyEvent) {
+        let Some(Modal::RemoteList { remotes, list, .. }) = self.modal.as_mut() else {
+            return;
+        };
+        match list.feed(key) {
+            FuzzyKey::Submit => self.submit_remote_list(),
+            FuzzyKey::Cancel => self.modal = None,
+            FuzzyKey::Edited => {
+                let haystack = remotes.clone();
+                list.rerank(&haystack);
+            }
+            _ => {}
+        }
+    }
+
+    fn submit_remote_list(&mut self) {
+        let Some(Modal::RemoteList {
+            remotes,
+            list,
+            purpose,
+        }) = &self.modal
+        else {
+            return;
+        };
+        let purpose = *purpose;
+        let Some(remote) = selected(list, remotes).cloned() else {
+            return;
+        };
+        self.modal = None;
+        self.remote_chosen(&remote, purpose);
+    }
+
+    pub(super) fn handle_pull_diverged_key(&mut self, key: &KeyEvent) {
+        let Some(Modal::PullDiverged { upstream }) = &self.modal else {
+            return;
+        };
+        match key.code {
+            KeyCode::Char('r') => {
+                self.modal = None;
+                self.pull_rebase();
+            }
+            KeyCode::Char('m') => {
+                self.modal = None;
+                self.pull_merge();
+            }
+            KeyCode::Char('f') => {
+                let upstream = upstream.clone();
+                self.modal = Some(Modal::Confirm {
+                    message: format!(
+                        "Discard your local commits and uncommitted changes, resetting hard to {upstream}?"
+                    ),
+                    on_confirm: PendingOp::ForcePull { upstream },
+                });
+            }
+            KeyCode::Esc | KeyCode::Char('q') => self.modal = None,
+            _ => {}
+        }
     }
 
     pub(super) fn handle_branch_list_key(&mut self, key: &KeyEvent) {

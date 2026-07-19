@@ -16,6 +16,7 @@ mod log;
 pub mod markdown;
 mod mcp;
 mod modal;
+mod network;
 pub mod pr;
 mod search;
 mod status;
@@ -114,6 +115,16 @@ pub enum PendingOp {
     },
     /// Wipe every deletable comment of the active review.
     DeleteAllComments,
+    /// Run a queued git op after the user confirms (set-upstream, force-push).
+    RunGit {
+        label: String,
+        argv: Vec<String>,
+    },
+    /// Discard local commits: reset --hard to `upstream`, after a destructive
+    /// confirm.
+    ForcePull {
+        upstream: String,
+    },
 }
 
 /// What an input modal does with its buffer on submit.
@@ -173,11 +184,26 @@ pub enum Modal {
     Palette { list: fuzzy::FuzzyList },
     /// Fuzzy picker over the built-in themes; applies the pick live.
     Themes { list: fuzzy::FuzzyList },
+    /// Remote picker feeding `purpose` with the selected remote name.
+    RemoteList {
+        remotes: Vec<String>,
+        list: fuzzy::FuzzyList,
+        purpose: RemotePurpose,
+    },
+    /// Reconcile choice when a pull finds the branch diverged from `upstream`.
+    PullDiverged { upstream: String },
     /// Verdict picker for a PR review submit: approve, request changes, or
     /// comment only.
     ReviewVerdict { number: u64 },
     /// Keymap listing for the screen the popup opened over.
     Help,
+}
+
+/// What choosing a remote in [`Modal::RemoteList`] does next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemotePurpose {
+    SetUpstreamPush,
+    Pull,
 }
 
 /// One row of the comments overview: where it anchors and what to show.
@@ -494,6 +520,9 @@ pub struct App {
     /// reporting back through [`AppEvent::GitDone`]. Set by a push/pull/fetch
     /// transient leaf, taken once by the loop.
     pub pending_git: Option<GitOp>,
+    /// Argv of the last push, so a rejection can offer a `--force-with-lease`
+    /// retry against the same target.
+    pub(crate) last_push_argv: Option<Vec<String>>,
     /// Watcher health flag, set by `watch::spawn_watcher`. `None` (no
     /// watcher) counts as unhealthy: the tick fallback polls instead.
     pub watcher_healthy: Option<Arc<AtomicBool>>,
@@ -631,6 +660,7 @@ impl App {
             pending_clipboard: None,
             pending_editor: None,
             pending_git: None,
+            last_push_argv: None,
             watcher_healthy: None,
             refresh_flash: 0,
             feedback_tx: tokio::sync::watch::Sender::new(0),
@@ -1313,6 +1343,8 @@ impl App {
             } else {
                 self.info(format!("{label}: {summary}"));
             }
+        } else if self.network_recovery(label, output) {
+            // a recovery dialog now owns the screen; suppress the raw error
         } else if summary.is_empty() {
             self.error(format!("{label} failed"));
         } else {
@@ -2228,38 +2260,78 @@ mod tests {
     }
 
     #[test]
-    fn push_transient_leaf_queues_the_push_argv_and_label() {
+    fn push_with_an_upstream_queues_a_plain_push() {
         let (_fixture, mut app) = app();
+        app.head.upstream = Some("origin/main".to_owned());
         app.handle(key('P'));
-        assert_eq!(
-            app.transient.map(|t| t.kind),
-            Some(TransientKind::Push),
-            "P opens the push transient"
-        );
+        assert_eq!(app.transient.map(|t| t.kind), Some(TransientKind::Push));
         app.handle(key('p'));
-        assert_eq!(app.transient, None, "the leaf closes the transient");
         let git = app.pending_git.clone().expect("pending git op");
         assert_eq!(git.label, "push");
         assert_eq!(git.argv, vec!["git".to_owned(), "push".to_owned()]);
-        // a running status shows immediately so the next draw reflects it
-        let message = app.message.expect("running status");
-        assert!(
-            message.text.contains("running git push"),
-            "{}",
-            message.text
-        );
+        assert!(app.message.expect("running status").text.contains("push"));
     }
 
     #[test]
-    fn push_set_upstream_leaf_queues_the_u_argv() {
-        let (_fixture, mut app) = app();
+    fn push_without_an_upstream_confirms_set_upstream_to_the_only_remote() {
+        let fixture = standard_fixture();
+        fixture.remote("codeberg", "https://example.invalid/r.git");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.head.upstream = None;
         app.handle(key('P'));
-        app.handle(key('u'));
+        app.handle(key('p'));
+        assert!(
+            matches!(app.modal, Some(Modal::Confirm { .. })),
+            "no upstream asks first: {:?}",
+            app.modal
+        );
+        app.confirm_modal();
         let git = app.pending_git.clone().expect("pending git op");
         assert_eq!(git.label, "push -u");
         assert_eq!(
             git.argv,
-            vec!["git", "push", "-u", "origin", "HEAD"]
+            vec!["git", "push", "-u", "codeberg", "HEAD"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>(),
+            "sets upstream to the actual remote, not a hardcoded origin"
+        );
+    }
+
+    #[test]
+    fn push_with_multiple_remotes_opens_a_remote_chooser() {
+        let fixture = standard_fixture();
+        fixture.remote("origin", "https://example.invalid/a.git");
+        fixture.remote("codeberg", "https://example.invalid/b.git");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.head.upstream = None;
+        app.push_set_upstream();
+        assert!(
+            matches!(app.modal, Some(Modal::RemoteList { .. })),
+            "multiple remotes ask which one: {:?}",
+            app.modal
+        );
+    }
+
+    #[test]
+    fn a_rejected_push_offers_force_with_lease() {
+        let (_fixture, mut app) = app();
+        app.last_push_argv = Some(vec!["git".to_owned(), "push".to_owned()]);
+        app.handle(AppEvent::GitDone {
+            label: "push".to_owned(),
+            ok: false,
+            output: " ! [rejected]        main -> main (non-fast-forward)\n".to_owned(),
+        });
+        assert!(
+            matches!(app.modal, Some(Modal::Confirm { .. })),
+            "a non-fast-forward asks before forcing: {:?}",
+            app.modal
+        );
+        app.confirm_modal();
+        let git = app.pending_git.clone().expect("pending git op");
+        assert_eq!(
+            git.argv,
+            vec!["git", "push", "--force-with-lease"]
                 .into_iter()
                 .map(str::to_owned)
                 .collect::<Vec<_>>()
@@ -2267,8 +2339,68 @@ mod tests {
     }
 
     #[test]
-    fn pull_and_fetch_leaves_queue_their_argv() {
+    fn a_rejected_force_with_lease_does_not_re_offer_force() {
         let (_fixture, mut app) = app();
+        app.handle(AppEvent::GitDone {
+            label: "push --force-with-lease".to_owned(),
+            ok: false,
+            output: "! [rejected] (stale info)\n".to_owned(),
+        });
+        assert_eq!(
+            app.modal, None,
+            "no force loop; the conflict is a real error"
+        );
+        assert_eq!(app.message.expect("error").severity, Severity::Error);
+    }
+
+    #[test]
+    fn a_diverged_pull_offers_rebase_merge_or_force() {
+        let (_fixture, mut app) = app();
+        app.head.upstream = Some("origin/main".to_owned());
+        app.handle(AppEvent::GitDone {
+            label: "pull".to_owned(),
+            ok: false,
+            output:
+                "hint: You have divergent branches and need to specify how to reconcile them.\n"
+                    .to_owned(),
+        });
+        assert!(matches!(app.modal, Some(Modal::PullDiverged { .. })));
+        app.handle(key('r'));
+        assert_eq!(
+            app.pending_git.take().expect("rebase op").argv,
+            vec!["git", "pull", "--rebase"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn force_pull_needs_a_second_destructive_confirm() {
+        let (_fixture, mut app) = app();
+        app.modal = Some(Modal::PullDiverged {
+            upstream: "origin/main".to_owned(),
+        });
+        app.handle(key('f'));
+        assert!(
+            matches!(app.modal, Some(Modal::Confirm { .. })),
+            "force asks a second time before discarding: {:?}",
+            app.modal
+        );
+        app.confirm_modal();
+        assert_eq!(
+            app.pending_git.take().expect("reset op").argv,
+            vec!["git", "reset", "--hard", "@{u}"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn pull_with_an_upstream_queues_a_plain_pull_and_fetch_leaves_queue_argv() {
+        let (_fixture, mut app) = app();
+        app.head.upstream = Some("origin/main".to_owned());
         app.handle(key('p'));
         app.handle(key('p'));
         assert_eq!(

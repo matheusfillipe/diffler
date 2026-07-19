@@ -1020,12 +1020,6 @@ fn network_argv_maps_each_op_to_the_git_cli() {
     fx.write("a.txt", "x\n");
     fx.commit_all("base");
     let v = vcs(&fx);
-    assert_eq!(v.network_argv(NetworkOp::Push), ["git", "push"]);
-    assert_eq!(
-        v.network_argv(NetworkOp::PushSetUpstream),
-        ["git", "push", "-u", "origin", "HEAD"]
-    );
-    assert_eq!(v.network_argv(NetworkOp::Pull), ["git", "pull"]);
     assert_eq!(v.network_argv(NetworkOp::Fetch), ["git", "fetch"]);
     assert_eq!(
         v.network_argv(NetworkOp::FetchAll),

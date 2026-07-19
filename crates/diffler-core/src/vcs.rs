@@ -56,9 +56,6 @@ pub struct BranchInfo {
 /// without diffler holding any credentials.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetworkOp {
-    Push,
-    PushSetUpstream,
-    Pull,
     Fetch,
     FetchAll,
 }
