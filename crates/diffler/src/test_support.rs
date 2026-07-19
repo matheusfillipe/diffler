@@ -76,6 +76,10 @@ impl Fixture {
             .expect("commit");
     }
 
+    pub(crate) fn remote(&self, name: &str, url: &str) {
+        self.repo.remote(name, url).expect("remote");
+    }
+
     pub(crate) fn branch(&self, name: &str) {
         let head = self
             .repo

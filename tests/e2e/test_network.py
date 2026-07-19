@@ -20,10 +20,13 @@ def test_push_set_upstream_to_a_local_bare_remote(tmp_path):
     )
     try:
         tui.wait_for("Head:")
-        # P opens the push transient; u pushes and sets upstream to origin HEAD
+        # P opens the push transient; u resolves the remote and asks before
+        # setting upstream (the failsafe), y confirms
         tui.send("P")
         tui.wait_for("Push")
         tui.send("u")
+        tui.wait_for("set it as upstream")
+        tui.send("y")
         # a "running …" status shows while the subprocess runs; the success
         # toast then reads "push -u: <summary>". Waiting for that colon form
         # both proves success (errors show only the stderr line, never the

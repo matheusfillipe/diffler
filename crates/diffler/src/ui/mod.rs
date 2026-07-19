@@ -182,11 +182,24 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) {
             Modal::BranchList { .. }
             | Modal::Comments { .. }
             | Modal::Palette { .. }
-            | Modal::Themes { .. },
+            | Modal::Themes { .. }
+            | Modal::RemoteList { .. },
         ) => {
             if let Some(modal) = fuzzy_modal(app) {
                 modal.render(frame, &app.theme);
             }
+        }
+        Some(Modal::PullDiverged { upstream }) => {
+            popup::Popup {
+                title: format!("Diverged from {upstream}"),
+                entries: vec![
+                    ("r".to_owned(), "rebase your commits on top".to_owned()),
+                    ("m".to_owned(), "merge".to_owned()),
+                    ("f".to_owned(), "force (discard local commits)".to_owned()),
+                    ("esc".to_owned(), "cancel".to_owned()),
+                ],
+            }
+            .render(frame, &app.theme);
         }
         Some(Modal::ReviewVerdict { number }) => {
             popup::Popup {
@@ -292,6 +305,20 @@ fn fuzzy_modal(app: &App) -> Option<popup::FuzzyModal> {
                 .collect(),
             selected: list.selected,
             footer: footer_for(list, "", " apply"),
+        }),
+        Some(Modal::RemoteList { remotes, list, .. }) => Some(popup::FuzzyModal {
+            title: "Remote".to_owned(),
+            query: list.query.clone(),
+            cursor: list.cursor,
+            typing: matches!(list.focus, fuzzy::FuzzyFocus::Input),
+            items: list
+                .matches
+                .iter()
+                .filter_map(|index| remotes.get(*index))
+                .map(|name| (name.clone(), String::new()))
+                .collect(),
+            selected: list.selected,
+            footer: footer_for(list, "", " select"),
         }),
         _ => None,
     }
