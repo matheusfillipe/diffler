@@ -4,11 +4,13 @@
 //! Raw HTML is dropped rather than shown, so a stray tag in an agent reply does
 //! not leak into the card.
 
-use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+use diffler_core::highlight::{Highlighter, StyledRange};
+use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use unicode_width::UnicodeWidthStr;
 
 /// A styled text run with no line breaks. Flags compose (bold + italic), so
-/// nested emphasis survives; `code`/`link`/`muted` additionally recolor.
+/// nested emphasis survives; `code`/`link`/`muted` additionally recolor. `fg`
+/// carries a fenced code block's syntax color, overriding the flag styling.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools)] // flags compose; an enum cannot
 pub struct MdSpan {
@@ -19,6 +21,7 @@ pub struct MdSpan {
     pub strike: bool,
     pub link: bool,
     pub muted: bool,
+    pub fg: Option<(u8, u8, u8)>,
 }
 
 impl MdSpan {
@@ -47,7 +50,7 @@ struct Flags {
 /// block boundaries, list items, and code-block lines each start a new logical
 /// line; a comment's own newlines are kept (GitHub renders them).
 #[allow(clippy::too_many_lines)] // one arm per markdown event; a flat match reads best
-pub fn parse(src: &str) -> Vec<Vec<MdSpan>> {
+pub fn parse(src: &str, highlighter: Option<&Highlighter>) -> Vec<Vec<MdSpan>> {
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_STRIKETHROUGH);
     opts.insert(Options::ENABLE_TASKLISTS);
@@ -56,6 +59,7 @@ pub fn parse(src: &str) -> Vec<Vec<MdSpan>> {
     let mut flags = Flags::default();
     let mut list_depth: usize = 0;
     let mut code_block: Option<String> = None;
+    let mut code_lang: Option<String> = None;
     let mut link_url: Option<String> = None;
     // a list item's own paragraph must not flush the bullet onto its own line
     let mut item_paragraph = false;
@@ -105,18 +109,27 @@ pub fn parse(src: &str) -> Vec<Vec<MdSpan>> {
                     flush(&mut line, &mut lines);
                 }
             }
-            Event::Start(Tag::CodeBlock(_)) => {
+            Event::Start(Tag::CodeBlock(kind)) => {
                 flush(&mut line, &mut lines);
                 code_block = Some(String::new());
+                code_lang = match kind {
+                    CodeBlockKind::Fenced(lang) if !lang.is_empty() => Some(lang.into_string()),
+                    _ => None,
+                };
             }
             Event::End(TagEnd::CodeBlock) => {
                 if let Some(buf) = code_block.take() {
-                    for text in buf.trim_end_matches('\n').split('\n') {
-                        lines.push(vec![MdSpan {
-                            text: text.to_owned(),
-                            code: true,
-                            ..MdSpan::default()
-                        }]);
+                    let body = buf.trim_end_matches('\n');
+                    let colors = code_lang
+                        .take()
+                        .zip(highlighter)
+                        .map(|(lang, hl)| hl.highlight_lang(&lang, body));
+                    for (i, text) in body.split('\n').enumerate() {
+                        let ranges = colors
+                            .as_ref()
+                            .and_then(|per_line| per_line.get(i))
+                            .map_or(&[][..], Vec::as_slice);
+                        lines.push(code_line_spans(text, ranges));
                     }
                 }
             }
@@ -253,19 +266,26 @@ fn flatten(word: &[MdSpan]) -> Vec<(char, &MdSpan)> {
 }
 
 /// Split runs into words (contiguous non-space styled pieces); every space,
-/// including run-internal ones, is a break opportunity. Code runs stay whole so
-/// their internal whitespace (indentation, alignment) survives the wrap.
+/// including run-internal ones, is a break opportunity. Adjacent code runs join
+/// into one word so a highlighted code line's whitespace (indentation, the gaps
+/// between colored tokens) survives the wrap intact.
 fn split_words(runs: &[MdSpan]) -> Vec<Vec<MdSpan>> {
     let mut words: Vec<Vec<MdSpan>> = Vec::new();
     let mut cur: Vec<MdSpan> = Vec::new();
+    let mut cur_code = false;
     for run in runs {
         if run.code {
-            if !cur.is_empty() {
+            if !cur.is_empty() && !cur_code {
                 words.push(std::mem::take(&mut cur));
             }
-            words.push(vec![run.clone()]);
+            cur.push(run.clone());
+            cur_code = true;
             continue;
         }
+        if cur_code && !cur.is_empty() {
+            words.push(std::mem::take(&mut cur));
+        }
+        cur_code = false;
         for (i, part) in run.text.split(' ').enumerate() {
             if i > 0 && !cur.is_empty() {
                 words.push(std::mem::take(&mut cur));
@@ -305,11 +325,55 @@ fn same_style(a: &MdSpan, b: &MdSpan) -> bool {
         && a.strike == b.strike
         && a.link == b.link
         && a.muted == b.muted
+        && a.fg == b.fg
+}
+
+/// One code-block line as `code` runs, carrying each highlighted token's color
+/// and leaving the gaps between them uncolored.
+fn code_line_spans(text: &str, ranges: &[StyledRange]) -> Vec<MdSpan> {
+    let mut sorted: Vec<&StyledRange> = ranges.iter().collect();
+    sorted.sort_by_key(|r| r.range.start);
+    let mut spans: Vec<MdSpan> = Vec::new();
+    let mut pos = 0;
+    for r in sorted {
+        let start = r.range.start.max(pos).min(text.len());
+        let end = r.range.end.min(text.len());
+        if start >= end {
+            continue;
+        }
+        if let Some(gap) = text.get(pos..start).filter(|g| !g.is_empty()) {
+            spans.push(code_span(gap, None));
+        }
+        if let Some(seg) = text.get(start..end) {
+            spans.push(code_span(seg, Some(r.fg)));
+        }
+        pos = end;
+    }
+    if let Some(rest) = text.get(pos..).filter(|g| !g.is_empty()) {
+        spans.push(code_span(rest, None));
+    }
+    if spans.is_empty() {
+        spans.push(code_span(text, None));
+    }
+    spans
+}
+
+fn code_span(text: &str, fg: Option<(u8, u8, u8)>) -> MdSpan {
+    MdSpan {
+        text: text.to_owned(),
+        code: true,
+        fg,
+        ..MdSpan::default()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse(src: &str) -> Vec<Vec<MdSpan>> {
+        super::parse(src, None)
+    }
 
     fn text(lines: &[Vec<MdSpan>]) -> String {
         lines
@@ -346,6 +410,34 @@ mod tests {
         let lines = parse("```\nlet x = 1;\nlet y = 2;\n```");
         assert_eq!(text(&lines), "let x = 1;\nlet y = 2;");
         assert!(lines.iter().all(|l| l.iter().all(|s| s.code)));
+    }
+
+    #[test]
+    fn fenced_code_block_gets_syntax_colors() {
+        let hl = Highlighter::default();
+        let lines = super::parse("```rust\nfn f() {}\n```", Some(&hl));
+        assert_eq!(text(&lines), "fn f() {}");
+        assert!(lines[0].iter().all(|s| s.code), "still code runs");
+        let colors: std::collections::HashSet<_> = lines[0].iter().filter_map(|s| s.fg).collect();
+        assert!(
+            colors.len() > 1,
+            "keyword and identifier differ: {colors:?}"
+        );
+        // whitespace and layout survive the wrap
+        assert_eq!(wrap(&lines[0], 40, 40).len(), 1);
+        assert_eq!(
+            wrap(&lines[0], 40, 40)[0]
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<String>(),
+            "fn f() {}"
+        );
+    }
+
+    #[test]
+    fn code_block_without_highlighter_stays_plain() {
+        let lines = super::parse("```rust\nfn f() {}\n```", None);
+        assert!(lines[0].iter().all(|s| s.code && s.fg.is_none()));
     }
 
     #[test]

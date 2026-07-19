@@ -56,6 +56,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let review = &app.review;
     let blast = &app.blast;
     let search = app.search.as_ref();
+    let highlighter = app.highlighter.as_ref();
     if let Some(diff) = app.diff.as_mut() {
         // comment wrap follows the diff pane's inner width: the body minus
         // the sidebar column and the pane block's two border columns
@@ -72,6 +73,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             blast,
             blast_inflight: &app.blast_inflight,
             search,
+            highlighter,
         };
         draw_body(frame, body, &ctx, diff);
     }
@@ -89,6 +91,7 @@ struct RenderCtx<'a> {
     blast: &'a std::collections::HashMap<String, crate::app::blast::FileBlast>,
     blast_inflight: &'a std::collections::HashSet<String>,
     search: Option<&'a Search>,
+    highlighter: &'a diffler_core::highlight::Highlighter,
 }
 
 fn draw_body(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut DiffView) {
@@ -291,6 +294,7 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
             top_row.get_or_insert(index);
             let rendered = split_row_lines(
                 theme,
+                ctx.highlighter,
                 session,
                 file,
                 highlights,
@@ -377,6 +381,7 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
             .unwrap_or_default();
         let rendered = row_lines(
             theme,
+            ctx.highlighter,
             session,
             model,
             diff,
@@ -421,6 +426,7 @@ fn split_row_height(file: &FileDiff, row: &SplitRow, gutter: usize, width: u16) 
 #[allow(clippy::too_many_arguments)]
 fn split_row_lines(
     theme: &Theme,
+    highlighter: &diffler_core::highlight::Highlighter,
     session: &Session,
     file: &FileDiff,
     highlights: Option<&FileHighlights>,
@@ -467,7 +473,13 @@ fn split_row_lines(
         } => match session.comments.get(comment) {
             Some(comment) => {
                 vec![comment_row_line(
-                    theme, comment, line, outdated, width, on_cursor,
+                    theme,
+                    highlighter,
+                    comment,
+                    line,
+                    outdated,
+                    width,
+                    on_cursor,
                 )]
             }
             None => vec![Line::default()],
@@ -741,6 +753,7 @@ fn row_height(model: &DiffModel, row: &DiffRow, width: u16) -> usize {
 #[allow(clippy::too_many_arguments)]
 fn row_lines(
     theme: &Theme,
+    highlighter: &diffler_core::highlight::Highlighter,
     session: &Session,
     model: &DiffModel,
     diff: &DiffView,
@@ -786,7 +799,13 @@ fn row_lines(
         } => match session.comments.get(*comment) {
             Some(comment) => {
                 vec![comment_row_line(
-                    theme, comment, *line, *outdated, width, selected,
+                    theme,
+                    highlighter,
+                    comment,
+                    *line,
+                    *outdated,
+                    width,
+                    selected,
                 )]
             }
             None => vec![Line::default()],
@@ -939,8 +958,10 @@ fn pane_header_line(
     pad_line(spans, bg, width)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn comment_row_line(
     theme: &Theme,
+    highlighter: &diffler_core::highlight::Highlighter,
     comment: &Comment,
     line: usize,
     outdated: bool,
@@ -962,7 +983,7 @@ fn comment_row_line(
     let bar = Span::styled("  ▌ ".to_owned(), Style::new().fg(accent).bg(bg));
     let dim = Style::new().fg(theme.dim).bg(bg);
     let fg = Style::new().fg(theme.fg).bg(bg);
-    let lines = comment_display(comment, width);
+    let lines = comment_display(comment, width, Some(highlighter));
     let Some(part) = lines.get(line) else {
         return Line::default();
     };
@@ -1042,6 +1063,9 @@ fn md_span(run: &MdSpan, base: Style, theme: &Theme) -> Span<'static> {
     }
     if run.muted {
         style = style.fg(theme.dim);
+    }
+    if let Some((r, g, b)) = run.fg {
+        style = style.fg(Color::Rgb(r, g, b));
     }
     Span::styled(run.text.clone(), style)
 }
@@ -1397,6 +1421,42 @@ mod tests {
         assert!(
             at.abs_diff(center) <= 1,
             "zz centers the cursor (row {at}, center {center})"
+        );
+    }
+
+    #[test]
+    fn fenced_code_block_in_a_comment_is_syntax_highlighted() {
+        let (_fixture, mut app) = diff_app();
+        open_lib_diff(&mut app);
+        app.review.session.add_comment(
+            diffler_core::session::Anchor {
+                file: "src/lib.rs".to_owned(),
+                line: Some(1),
+                line_end: None,
+                on_old_side: false,
+                line_text: None,
+            },
+            "reviewer",
+            "try this:\n```rust\nfn answer() -> u32 { 42 }\n```",
+        );
+        app.diff.as_mut().unwrap().invalidate();
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn md_span_applies_the_syntax_color() {
+        let theme = crate::theme::Theme::github_dark();
+        let run = crate::app::markdown::MdSpan {
+            text: "fn".to_owned(),
+            code: true,
+            fg: Some((1, 2, 3)),
+            ..Default::default()
+        };
+        let span = super::md_span(&run, theme.base(), &theme);
+        assert_eq!(
+            span.style.fg,
+            Some(ratatui::style::Color::Rgb(1, 2, 3)),
+            "fg overrides the code accent"
         );
     }
 

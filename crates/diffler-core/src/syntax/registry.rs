@@ -51,6 +51,7 @@ pub struct LangEntry {
 pub struct LanguageRegistry {
     entries: Vec<LangEntry>,
     by_ext: HashMap<&'static str, usize>,
+    by_name: HashMap<&'static str, usize>,
 }
 
 impl LanguageRegistry {
@@ -61,6 +62,7 @@ impl LanguageRegistry {
         let mut r = Self {
             entries: Vec::new(),
             by_ext: HashMap::new(),
+            by_name: HashMap::new(),
         };
 
         r.add(
@@ -220,6 +222,7 @@ impl LanguageRegistry {
             config,
             tags,
         });
+        self.by_name.insert(name, idx);
         for ext in extensions {
             self.by_ext.insert(ext, idx);
         }
@@ -229,6 +232,21 @@ impl LanguageRegistry {
     pub fn for_path(&self, path: &str) -> Option<&LangEntry> {
         let ext = Path::new(path).extension()?.to_str()?;
         let &idx = self.by_ext.get(ext)?;
+        self.entries.get(idx)
+    }
+
+    /// The entry for a markdown fence token (`rust`, `py`, `c++`, ...), matched
+    /// by grammar name then extension.
+    pub fn for_token(&self, token: &str) -> Option<&LangEntry> {
+        let token = token.trim().to_ascii_lowercase();
+        let token = match token.as_str() {
+            "c++" => "cpp",
+            "c#" | "csharp" => "cs",
+            "shell" => "bash",
+            "golang" => "go",
+            other => other,
+        };
+        let &idx = self.by_name.get(token).or_else(|| self.by_ext.get(token))?;
         self.entries.get(idx)
     }
 }

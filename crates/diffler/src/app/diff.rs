@@ -6,7 +6,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use diffler_core::feedback::{self, FeedbackOptions};
-use diffler_core::highlight::StyledRange;
+use diffler_core::highlight::{Highlighter, StyledRange};
 use diffler_core::model::{DiffModel, FileDiff, LineKind};
 use diffler_core::review::Review;
 use diffler_core::session::{Anchor, Comment, CommentStatus, Session};
@@ -478,11 +478,15 @@ pub enum CommentLine {
 /// The terminal lines a comment occupies at `row_width` columns, markdown
 /// rendered and long text wrapped to fit. Shared by row flattening (for counts)
 /// and rendering (for content) so they can never disagree.
-pub fn comment_display(comment: &Comment, row_width: u16) -> Vec<CommentLine> {
+pub fn comment_display(
+    comment: &Comment,
+    row_width: u16,
+    highlighter: Option<&Highlighter>,
+) -> Vec<CommentLine> {
     // "  ▌ " card bar; below that there is no room to wrap meaningfully
     let budget = (row_width.saturating_sub(4) as usize).max(8);
     let mut lines = vec![CommentLine::Header];
-    for logical in markdown::parse(&comment.body) {
+    for logical in markdown::parse(&comment.body, highlighter) {
         lines.extend(
             markdown::wrap(&logical, budget, budget)
                 .into_iter()
@@ -494,7 +498,7 @@ pub fn comment_display(comment: &Comment, row_width: u16) -> Vec<CommentLine> {
         // the renderer's two-space indent
         let label = format!("↳ {}: ", reply.author).width();
         let mut first = true;
-        for logical in markdown::parse(&reply.body) {
+        for logical in markdown::parse(&reply.body, highlighter) {
             let head = budget.saturating_sub(if first { label } else { 2 }).max(8);
             for spans in markdown::wrap(&logical, head, budget.saturating_sub(2).max(8)) {
                 lines.push(CommentLine::Reply {
@@ -542,7 +546,7 @@ fn push_comment_rows(
         let Some(c) = session.comments.get(comment) else {
             continue;
         };
-        let count = comment_display(c, wrap_width).len();
+        let count = comment_display(c, wrap_width, None).len();
         rows.extend((0..count).map(|line| DiffRow::Comment {
             comment,
             line,
@@ -650,7 +654,7 @@ fn push_split_comments(
         let Some(c) = session.comments.get(comment) else {
             continue;
         };
-        let count = comment_display(c, wrap_width).len();
+        let count = comment_display(c, wrap_width, None).len();
         rows.extend((0..count).map(|line| SplitRow::Comment {
             comment,
             line,
@@ -3114,7 +3118,7 @@ mod tests {
             .id
             .clone();
         session.reply(&id, "agent", "done\nand verified");
-        let lines = comment_display(&session.comments[0], u16::MAX);
+        let lines = comment_display(&session.comments[0], u16::MAX, None);
         let plain = |s: &str| MdSpan {
             text: s.to_owned(),
             ..MdSpan::default()
@@ -3158,7 +3162,7 @@ mod tests {
             .id
             .clone();
         session.reply(&id, "agent", "a reply that also runs past the pane");
-        let lines = comment_display(&session.comments[0], 30);
+        let lines = comment_display(&session.comments[0], 30, None);
         let budget = 30 - 4;
         let text = |runs: &[MdSpan]| runs.iter().map(|s| s.text.clone()).collect::<String>();
         for line in &lines {
@@ -3204,7 +3208,7 @@ mod tests {
             "reviewer",
             "https://example.invalid/a/very/long/unbroken/path/segment/thing",
         );
-        let lines = comment_display(&session.comments[0], 24);
+        let lines = comment_display(&session.comments[0], 24, None);
         for line in &lines {
             if let CommentLine::Body(runs) = line {
                 let width: usize = runs.iter().map(|s| s.text.width()).sum();
