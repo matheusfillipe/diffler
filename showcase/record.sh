@@ -82,8 +82,10 @@ review = {
                 "line_text": text,
             },
             "body": "Use `verify_bearer` here, good. Make sure it does a "
-                    "**constant-time** compare, not `==` on the raw bytes, or a "
-                    "mismatch leaks the prefix by timing.",
+                    "**constant-time** compare:\n\n```rust\n"
+                    "fn verify_bearer(token: &str) -> bool {\n"
+                    "    expected().as_bytes().ct_eq(token.as_bytes()).into()\n"
+                    "}\n```\n\nOtherwise a mismatch leaks the prefix by timing.",
             "status": "replied",
             "replies": [
                 {

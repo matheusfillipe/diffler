@@ -286,16 +286,26 @@ impl LanguageRegistry {
         self.entries.get(idx)
     }
 
+    /// The entry for a markdown fence token (`rust`, `py`, `c++`, ...), matched
+    /// by grammar name then extension.
+    pub fn for_token(&self, token: &str) -> Option<&LangEntry> {
+        let token = token.trim().to_ascii_lowercase();
+        let token = match token.as_str() {
+            "c++" => "cpp",
+            "c#" | "csharp" => "cs",
+            "shell" => "bash",
+            "golang" => "go",
+            other => other,
+        };
+        let &idx = self.by_name.get(token).or_else(|| self.by_ext.get(token))?;
+        self.entries.get(idx)
+    }
+
     /// Highlight config for a tree-sitter injection language name (the inline
     /// markdown grammar, or a fenced code block's language). `None` leaves the
     /// injected region plain.
     pub fn config_for_injection(&self, lang: &str) -> Option<&HighlightConfiguration> {
-        let &idx = self
-            .by_name
-            .get(lang)
-            .or_else(|| self.by_ext.get(lang))
-            .or_else(|| self.by_name.get(injection_alias(lang)))?;
-        self.entries.get(idx)?.config.as_ref()
+        self.for_token(lang)?.config.as_ref()
     }
 
     /// Inline markdown captures (emphasis, code spans, links) as byte range plus
@@ -392,18 +402,6 @@ fn recognized_highlight(capture: &str) -> Option<&'static str> {
                     .is_some_and(|r| r.starts_with('.'))
         })
         .max_by_key(|name| name.len())
-}
-
-/// Fenced-code language tags that aren't file extensions (extensions resolve
-/// through `by_ext`).
-fn injection_alias(lang: &str) -> &str {
-    match lang {
-        "shell" => "bash",
-        "c++" => "cpp",
-        "c#" | "csharp" => "c-sharp",
-        "golang" => "go",
-        other => other,
-    }
 }
 
 impl Default for LanguageRegistry {

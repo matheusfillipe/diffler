@@ -59,13 +59,26 @@ impl Highlighter {
     /// Returns one `Vec<StyledRange>` per line (without trailing newlines).
     /// Unknown languages produce empty ranges per line (plain rendering).
     pub fn highlight(&self, path: &str, content: &str) -> Vec<Vec<StyledRange>> {
+        self.highlight_entry(self.registry.for_path(path), content)
+    }
+
+    /// Highlight `content` as a markdown fence token (`rust`, `py`, ...).
+    pub fn highlight_lang(&self, token: &str, content: &str) -> Vec<Vec<StyledRange>> {
+        self.highlight_entry(self.registry.for_token(token), content)
+    }
+
+    fn highlight_entry(
+        &self,
+        entry: Option<&crate::syntax::registry::LangEntry>,
+        content: &str,
+    ) -> Vec<Vec<StyledRange>> {
         let bounds = crate::syntax::line_bounds(content);
         let mut out: Vec<Vec<StyledRange>> = vec![Vec::new(); bounds.len()];
 
         if content.len() > crate::syntax::MAX_PARSE_BYTES {
             return out;
         }
-        let Some(entry) = self.registry.for_path(path) else {
+        let Some(entry) = entry else {
             return out;
         };
         let Some(config) = entry.config.as_ref() else {
