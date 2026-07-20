@@ -638,8 +638,12 @@ pub fn rehunk_file(file: &FileDiff, context: u32) -> Option<Vec<Hunk>> {
     }
     let (old, new) = (file.old_text.as_deref()?, file.new_text.as_deref()?);
     let as_path = Path::new(&file.path);
+    // libgit2's context math overflows on a huge value (the whole-file
+    // sentinel u32::MAX), yielding zero context on some platforms; the line
+    // count is enough to show the whole file and stays in range everywhere
+    let cap = u32::try_from(old.lines().count().max(new.lines().count())).unwrap_or(u32::MAX);
     let mut opts = git2::DiffOptions::new();
-    opts.context_lines(context);
+    opts.context_lines(context.min(cap));
     let patch = git2::Patch::from_buffers(
         old.as_bytes(),
         Some(as_path),
