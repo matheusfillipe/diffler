@@ -1,6 +1,6 @@
 # Maintainer: Matheus Fillipe <matheus.fillipe@syte.ms>
 pkgname=diffler-bin
-pkgver=0.6.2
+pkgver=0.6.3
 pkgrel=1
 pkgdesc="Terminal code review for AI coding agents"
 arch=('x86_64' 'aarch64')
@@ -8,10 +8,10 @@ url="https://github.com/matheusfillipe/diffler"
 license=('MIT' 'Apache-2.0')
 provides=('diffler')
 conflicts=('diffler')
-source_x86_64=("diffler-$pkgver-x86_64.tar.gz::https://github.com/matheusfillipe/diffler/releases/download/v0.6.2/diffler-v0.6.2-x86_64-unknown-linux-musl.tar.gz")
-source_aarch64=("diffler-$pkgver-aarch64.tar.gz::https://github.com/matheusfillipe/diffler/releases/download/v0.6.2/diffler-v0.6.2-aarch64-unknown-linux-musl.tar.gz")
-sha256sums_x86_64=('a9ef45215670fab55d608443bda21cfccd417dc4c95a6874a950125095e2bcf8')
-sha256sums_aarch64=('7ab0196522e832720696db5b802bd1321152d8b94f62c5a67741c6a46fed2b7b')
+source_x86_64=("diffler-$pkgver-x86_64.tar.gz::https://github.com/matheusfillipe/diffler/releases/download/v0.6.3/diffler-v0.6.3-x86_64-unknown-linux-musl.tar.gz")
+source_aarch64=("diffler-$pkgver-aarch64.tar.gz::https://github.com/matheusfillipe/diffler/releases/download/v0.6.3/diffler-v0.6.3-aarch64-unknown-linux-musl.tar.gz")
+sha256sums_x86_64=('bc96989e5235ca4ce7150c3ede5f81bd12d815da2c8184c8138dd882c88707cb')
+sha256sums_aarch64=('0acaed51fc07be937a371f963f31f58bc6009ec4aa29f7a26edfb2cfe6a153bd')
 
 package() {
   local triple
@@ -19,7 +19,7 @@ package() {
     x86_64) triple="x86_64-unknown-linux-musl" ;;
     aarch64) triple="aarch64-unknown-linux-musl" ;;
   esac
-  install -Dm755 "diffler-v0.6.2-$triple/diffler" "$pkgdir/usr/bin/diffler"
-  install -Dm644 "diffler-v0.6.2-$triple/LICENSE-MIT" "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
-  install -Dm644 "diffler-v0.6.2-$triple/LICENSE-APACHE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+  install -Dm755 "diffler-v0.6.3-$triple/diffler" "$pkgdir/usr/bin/diffler"
+  install -Dm644 "diffler-v0.6.3-$triple/LICENSE-MIT" "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
+  install -Dm644 "diffler-v0.6.3-$triple/LICENSE-APACHE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
 }
