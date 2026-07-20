@@ -94,6 +94,42 @@ fn context_lines_shrink_hunk_context() {
 }
 
 #[test]
+fn rehunk_file_expands_context_from_the_files_own_text() {
+    let fx = Fixture::new();
+    let mut base = String::new();
+    for i in 1..=40 {
+        writeln!(base, "line {i}").expect("write");
+    }
+    fx.write("a.txt", &base);
+    fx.commit_all("base");
+    fx.write("a.txt", &base.replace("line 20\n", "LINE TWENTY\n"));
+
+    let model = vcs(&fx).working_tree_diff().expect("diff");
+    let file = &model.files[0];
+    let context_of = |hunks: &[diffler_core::model::Hunk]| -> usize {
+        hunks
+            .iter()
+            .flat_map(|h| &h.lines)
+            .filter(|l| l.kind == LineKind::Context)
+            .count()
+    };
+
+    let default = context_of(&file.hunks);
+    let wider = diffler_core::git::rehunk_file(file, 10).expect("rehunk");
+    let whole = diffler_core::git::rehunk_file(file, u32::MAX).expect("rehunk all");
+
+    assert!(
+        context_of(&wider) > default,
+        "more context lines when widened"
+    );
+    assert_eq!(
+        context_of(&whole),
+        39,
+        "whole file: every unchanged line shown"
+    );
+}
+
+#[test]
 fn clean_tree_is_empty() {
     let fx = Fixture::new();
     fx.write("a.txt", "hello\n");

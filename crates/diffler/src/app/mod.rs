@@ -11,6 +11,7 @@ mod commands;
 mod commit;
 mod diff;
 pub mod enrich;
+mod expand;
 pub(crate) mod fuzzy;
 mod log;
 pub mod markdown;

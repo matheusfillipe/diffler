@@ -1936,6 +1936,54 @@ mod tests {
     }
 
     #[test]
+    fn expand_whole_file_reveals_the_unchanged_lines() {
+        use std::fmt::Write as _;
+        let fixture = Fixture::new();
+        let mut base = String::new();
+        for i in 1..=10 {
+            let _ = writeln!(base, "line {i}");
+        }
+        fixture.write("notes.txt", &base);
+        fixture.commit_all("base");
+        fixture.write("notes.txt", &base.replace("line 5\n", "LINE FIVE\n"));
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_working_tree_file("notes.txt");
+        app.handle(key('='));
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn expansion_reflows_rows_after_a_refresh_re_enriches() {
+        use std::fmt::Write as _;
+        let fixture = Fixture::new();
+        let mut base = String::new();
+        for i in 1..=40 {
+            let _ = writeln!(base, "line {i}");
+        }
+        fixture.write("a.txt", &base);
+        fixture.commit_all("base");
+        fixture.write("a.txt", &base.replace("line 20\n", "LINE TWENTY\n"));
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_working_tree_file("a.txt");
+
+        app.handle(key('=')); // whole-file expand
+        let _ = render(&mut app); // draw the expanded rows, clearing rows_dirty
+
+        // a real content change (as a watcher refresh would see) rebuilds the
+        // model at default context; the per-file override lives on the view
+        fixture.write("a.txt", &base.replace("line 30\n", "LINE THIRTY\n"));
+        app.refresh();
+        app.queue_enrich_selected(); // enrichment reinstalls the override in on_enriched
+        let _ = render(&mut app);
+
+        let rows = app.diff.as_ref().expect("diff").rows().len();
+        assert!(
+            rows > 20,
+            "rows re-flow to the whole file after re-enrich, got {rows}"
+        );
+    }
+
+    #[test]
     fn diff_pane_renders_a_sliding_window_and_jumps_to_extremes() {
         // a single file with ~2000 lines: the model dwarfs the viewport
         let fixture = Fixture::new();
