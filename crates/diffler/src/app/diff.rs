@@ -170,6 +170,9 @@ pub struct DiffView {
     /// enrichment runs once. Cleared whenever the underlying model is
     /// rebuilt (refresh) so a fresh unenriched file gets re-enriched.
     enriched: HashSet<String>,
+    /// Per-file diff context override (path -> git context lines, `u32::MAX`
+    /// for the whole file). Absent means the source's default context.
+    pub(crate) context: HashMap<String, u32>,
 }
 
 impl DiffView {
@@ -208,6 +211,7 @@ impl DiffView {
             highlights: HashMap::new(),
             scopes: HashMap::new(),
             enriched: HashSet::new(),
+            context: HashMap::new(),
         };
         view.ensure_rows(review);
         view
@@ -294,11 +298,16 @@ impl DiffView {
             .map(|f| f.path.clone())
     }
 
-    /// Mark the row list stale. Selection is dropped with it: visual
-    /// anchors are row indices and would dangle across a rebuild.
-    pub(crate) fn invalidate(&mut self) {
+    /// Mark the row list stale, dropping any visual anchor (a row index that
+    /// would dangle across a rebuild). Enrichment caches survive.
+    pub(crate) fn mark_rows_dirty(&mut self) {
         self.rows_dirty = true;
         self.visual_anchor = None;
+    }
+
+    /// Mark rows stale and forget enrichment, so a rebuilt model re-enriches.
+    pub(crate) fn invalidate(&mut self) {
+        self.mark_rows_dirty();
         self.enriched.clear();
     }
 
@@ -982,6 +991,9 @@ impl App {
             Action::CenterCursor => self.diff_align(ScrollAlign::Center),
             Action::CursorTop => self.diff_align(ScrollAlign::Top),
             Action::CursorBottom => self.diff_align(ScrollAlign::Bottom),
+            Action::ExpandContext => self.expand_context(),
+            Action::CollapseContext => self.collapse_context(),
+            Action::ExpandWholeFile => self.expand_whole_file(),
             Action::Open => self.diff_focus(Pane::List),
             // side-by-side is a read-only view; commenting and selection stay
             // in the unified pane, reachable by toggling back with `|`

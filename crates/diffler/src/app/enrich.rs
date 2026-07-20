@@ -169,6 +169,7 @@ impl App {
         let Some(diff) = self.diff.as_mut() else {
             return;
         };
+        let context = diff.context.get(&outcome.path).copied();
         let same = |file: &FileDiff| file.path == outcome.path && file.sides_hash() == outcome.hash;
         let file = match diff.commit_model.as_mut() {
             Some(model) => model.files.iter_mut().find(|f| same(f)),
@@ -178,10 +179,16 @@ impl App {
             return;
         };
         file.hunks = outcome.hunks;
+        // enrichment ships default-context hunks; reinstalling the expansion
+        // reshapes them, so the row list must re-flow to match
+        let reshaped = context.is_some_and(|context| super::expand::apply_context(file, context));
         diff.highlights
             .insert(outcome.path.clone(), outcome.highlights);
         diff.scopes.insert(outcome.path.clone(), outcome.scope);
         diff.mark_enriched(&outcome.path);
+        if reshaped {
+            diff.mark_rows_dirty();
+        }
     }
 }
 

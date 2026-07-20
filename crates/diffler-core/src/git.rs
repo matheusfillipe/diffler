@@ -614,21 +614,7 @@ fn build_file(
     let old_text = blob_text(repo, delta.old_file().id());
     let new_text = new_side_text(repo, &delta, &file_path);
 
-    let mut hunks = Vec::new();
-    for h in 0..patch.num_hunks() {
-        let (hunk, _) = patch.hunk(h)?;
-        let lines = hunk_model_lines(&patch, h)?;
-        let id = hunk_id(&file_path, &lines);
-        hunks.push(Hunk {
-            id,
-            old_start: hunk.old_start(),
-            old_lines: hunk.old_lines(),
-            new_start: hunk.new_start(),
-            new_lines: hunk.new_lines(),
-            context: hunk_context(&hunk),
-            lines,
-        });
-    }
+    let hunks = patch_hunks(&patch, &file_path)?;
 
     Ok(Some(FileDiff {
         path: file_path,
@@ -640,6 +626,50 @@ fn build_file(
         hunks,
         hashes: crate::model::HashCache::default(),
     }))
+}
+
+/// Re-diff a file's own old/new text at `context` lines of surrounding context
+/// (`u32::MAX` for the whole file), yielding the hunks the diff pane would show
+/// at that context. `None` for binary files or when a side's text is absent, so
+/// the caller keeps its current hunks.
+pub fn rehunk_file(file: &FileDiff, context: u32) -> Option<Vec<Hunk>> {
+    if file.binary {
+        return None;
+    }
+    let (old, new) = (file.old_text.as_deref()?, file.new_text.as_deref()?);
+    let as_path = Path::new(&file.path);
+    let mut opts = git2::DiffOptions::new();
+    opts.context_lines(context);
+    let patch = git2::Patch::from_buffers(
+        old.as_bytes(),
+        Some(as_path),
+        new.as_bytes(),
+        Some(as_path),
+        Some(&mut opts),
+    )
+    .ok()?;
+    patch_hunks(&patch, &file.path).ok()
+}
+
+/// Assemble model hunks from a git2 patch. Shared by the initial diff and the
+/// context re-diff so line numbers, ids, and section headings can't drift.
+fn patch_hunks(patch: &git2::Patch<'_>, file_path: &str) -> Result<Vec<Hunk>, VcsError> {
+    let mut hunks = Vec::with_capacity(patch.num_hunks());
+    for h in 0..patch.num_hunks() {
+        let (hunk, _) = patch.hunk(h)?;
+        let lines = hunk_model_lines(patch, h)?;
+        let id = hunk_id(file_path, &lines);
+        hunks.push(Hunk {
+            id,
+            old_start: hunk.old_start(),
+            old_lines: hunk.old_lines(),
+            new_start: hunk.new_start(),
+            new_lines: hunk.new_lines(),
+            context: hunk_context(&hunk),
+            lines,
+        });
+    }
+    Ok(hunks)
 }
 
 /// git's section heading for a hunk: the text git appends after the second
