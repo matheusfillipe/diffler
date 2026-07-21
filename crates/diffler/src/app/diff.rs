@@ -958,6 +958,7 @@ impl App {
             Action::Open => self.diff_tree_activate(),
             Action::ToggleFold => self.diff_toggle_dir_fold(),
             Action::MarkViewed => self.diff_toggle_viewed(),
+            Action::UnviewAll => self.diff_unview_all(),
             Action::OpenEditor => self.editor_at_diff_cursor(),
             // copy is file/all scoped, not line scoped: works from the list
             Action::CopyFileFeedback => self.copy_file_or_selection(),
@@ -1008,6 +1009,7 @@ impl App {
             Action::Resolve => self.resolve_at_cursor(),
             Action::DeleteComment => self.delete_comment_at_cursor(),
             Action::MarkViewed => self.diff_toggle_viewed(),
+            Action::UnviewAll => self.diff_unview_all(),
             Action::CopyFileFeedback => self.copy_file_or_selection(),
             Action::CopyAllFeedback => self.copy_feedback(false),
             Action::OpenEditor => self.editor_at_diff_cursor(),
@@ -1664,6 +1666,27 @@ impl App {
             let rows = sidebar_rows(diff, review);
             diff.reseat_tree_cursor(&rows);
         }
+    }
+
+    fn diff_unview_all(&mut self) {
+        let source = self.active_review_source();
+        let session = self.review.session_for_mut(&source);
+        if session.viewed.is_empty() {
+            self.info("no files marked viewed");
+            return;
+        }
+        session.clear_viewed();
+        if let Err(err) = self.review.save_for(&source) {
+            self.error(err.to_string());
+            return;
+        }
+        // every file returns to the to-review bucket, so re-seat the sidebar
+        let review = &self.review;
+        if let Some(diff) = self.diff.as_mut() {
+            let rows = sidebar_rows(diff, review);
+            diff.reseat_tree_cursor(&rows);
+        }
+        self.info("cleared all viewed marks");
     }
 
     /// Move the sidebar selection to the next not-viewed file below it, if
@@ -2567,6 +2590,32 @@ mod tests {
             selected_path(&app),
             paths[2],
             "no unviewed file below: selection stays"
+        );
+    }
+
+    #[test]
+    fn capital_u_clears_all_viewed_marks() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        let paths: Vec<String> = app
+            .review
+            .model()
+            .files
+            .iter()
+            .map(|f| f.path.clone())
+            .collect();
+        for _ in &paths {
+            app.handle(key('v'));
+        }
+        assert!(
+            paths.iter().all(|p| app.is_path_viewed(p)),
+            "all marked first"
+        );
+
+        app.handle(key('U'));
+        assert!(
+            paths.iter().all(|p| !app.is_path_viewed(p)),
+            "U cleared every viewed mark"
         );
     }
 

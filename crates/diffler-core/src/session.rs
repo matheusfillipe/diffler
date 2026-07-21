@@ -170,6 +170,11 @@ impl Session {
         self.viewed.remove(path);
     }
 
+    /// Drop every viewed mark, sending all files back to the review pile.
+    pub fn clear_viewed(&mut self) {
+        self.viewed.clear();
+    }
+
     /// A stale hash means the file changed since it was marked: not viewed
     /// anymore (auto-reset semantics).
     pub fn is_viewed(&self, path: &str, current_hash: &str) -> bool {
@@ -297,6 +302,16 @@ mod tests {
         s.mark_viewed("a.txt", "hash-1");
         s.unmark_viewed("a.txt");
         assert!(!s.is_viewed("a.txt", "hash-1"));
+    }
+
+    #[test]
+    fn clear_viewed_drops_every_mark() {
+        let mut s = Session::default();
+        s.mark_viewed("a.txt", "hash-1");
+        s.mark_viewed("b.txt", "hash-2");
+        s.clear_viewed();
+        assert!(!s.is_viewed("a.txt", "hash-1"));
+        assert!(!s.is_viewed("b.txt", "hash-2"));
     }
 
     /// One file, one hunk: context(1/1), deleted(2), added(2), context(3/3).

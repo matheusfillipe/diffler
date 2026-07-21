@@ -26,6 +26,7 @@ pub enum Action {
     NextFile,
     PrevFile,
     NextUnviewed,
+    UnviewAll,
     CycleSidebarMode,
     ToggleFold,
     ToggleSideBySide,
@@ -111,6 +112,7 @@ impl Action {
             Self::NextFile => "next_file",
             Self::PrevFile => "prev_file",
             Self::NextUnviewed => "next_unviewed",
+            Self::UnviewAll => "unview_all",
             Self::CycleSidebarMode => "cycle_sidebar_mode",
             Self::ToggleFold => "toggle_fold",
             Self::ToggleSideBySide => "toggle_side_by_side",
@@ -196,6 +198,7 @@ impl Action {
             Self::NextFile => "next file",
             Self::PrevFile => "previous file",
             Self::NextUnviewed => "jump to the next unviewed file",
+            Self::UnviewAll => "clear all viewed marks",
             Self::CycleSidebarMode => "cycle sidebar: tree, list, review buckets",
             Self::ToggleFold => "fold / unfold",
             Self::ToggleSideBySide => "toggle side-by-side diff",
@@ -264,7 +267,7 @@ impl Action {
         }
     }
 
-    pub(crate) const ALL: [Self; 79] = [
+    pub(crate) const ALL: [Self; 80] = [
         Self::CenterCursor,
         Self::CursorTop,
         Self::CursorBottom,
@@ -292,6 +295,7 @@ impl Action {
         Self::NextFile,
         Self::PrevFile,
         Self::NextUnviewed,
+        Self::UnviewAll,
         Self::CycleSidebarMode,
         Self::ToggleFold,
         Self::ToggleSideBySide,
@@ -452,6 +456,7 @@ const DIFF_DEFAULTS: &[(&str, Action)] = &[
     ("<tab>", Action::NextFile),
     ("<s-tab>", Action::PrevFile),
     ("u", Action::NextUnviewed),
+    ("U", Action::UnviewAll),
     ("t", Action::CycleSidebarMode),
     ("T", Action::SwitchTheme),
     ("h", Action::MoveLeft),
