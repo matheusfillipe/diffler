@@ -713,7 +713,7 @@ dependencies = [
 
 [[package]]
 name = "diffler"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "async-trait",
  "axum",
@@ -745,7 +745,7 @@ dependencies = [
 
 [[package]]
 name = "diffler-core"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "criterion",
  "git2",
