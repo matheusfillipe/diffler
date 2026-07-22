@@ -178,6 +178,21 @@ fn markdown_face(name: &str) -> Option<(&'static str, bool, bool)> {
     Some(face)
 }
 
+/// Fold a grammar's own capture category onto the palette's, so every theme
+/// styles it without carrying an entry for it. Applied before the face is
+/// chosen, so a folded comment stays italic like a native one.
+fn palette_category(category: &str) -> &str {
+    match category {
+        "boolean" => "constant",
+        "conditional" | "storageclass" => "keyword",
+        "field" => "property",
+        "parameter" => "variable",
+        // SQL tags comments `@comment @spell`, and the last capture wins
+        "spell" => "comment",
+        other => other,
+    }
+}
+
 impl SyntaxTheme {
     /// Style for a tree-sitter capture name, matched by its leading category
     /// (`function.method` -> `function`). `None` leaves the span at default fg.
@@ -189,7 +204,7 @@ impl SyntaxTheme {
                 italic,
             });
         }
-        let category = name.split('.').next().unwrap_or(name);
+        let category = palette_category(name.split('.').next().unwrap_or(name));
         let italic = category == "comment";
         let fg = self.color(category)?;
         Some(StyleSpec {
@@ -333,6 +348,44 @@ mod tests {
         assert!(
             lines.iter().any(|line| !line.is_empty()),
             "expected styled ranges for a .yml file"
+        );
+    }
+
+    #[test]
+    fn sql_is_highlighted() {
+        let hl = Highlighter::default();
+        let lines = hl.highlight("q.sql", "SELECT id FROM users WHERE active = true;\n");
+        assert!(
+            lines.iter().any(|line| !line.is_empty()),
+            "expected styled ranges for a .sql file"
+        );
+    }
+
+    #[test]
+    fn sql_line_and_block_comments_style_alike() {
+        let hl = Highlighter::default();
+        let lines = hl.highlight("q.sql", "-- one\n/* two */\n");
+        let style = |line: &[StyledRange]| line.first().map(|r| (r.fg, r.italic));
+        assert_eq!(
+            style(&lines[0]),
+            style(&lines[1]),
+            "a -- comment styles like a block comment"
+        );
+        assert!(style(&lines[0]).is_some(), "comments are styled at all");
+    }
+
+    #[test]
+    fn sql_numbers_are_not_styled_as_strings() {
+        let hl = Highlighter::default();
+        let lines = hl.highlight("q.sql", "SELECT 42, 1.5, 'txt';\n");
+        let colors: Vec<(u8, u8, u8)> = lines[0].iter().map(|r| r.fg).collect();
+        let string_fg = (152, 195, 121);
+        let number_fg = (209, 154, 102);
+        assert!(colors.contains(&number_fg), "numbers get the number color");
+        assert_eq!(
+            colors.iter().filter(|c| **c == string_fg).count(),
+            1,
+            "only the quoted literal is a string: {colors:?}"
         );
     }
 

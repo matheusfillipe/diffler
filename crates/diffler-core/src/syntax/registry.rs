@@ -16,20 +16,26 @@ use crate::syntax::MAX_PARSE_BYTES;
 /// so listing the general categories is enough to color every grammar.
 pub const HIGHLIGHT_NAMES: &[&str] = &[
     "attribute",
+    "boolean",
     "comment",
+    "conditional",
     "constant",
     "constant.builtin",
     "constructor",
+    "field",
     "function",
     "function.builtin",
     "keyword",
     "label",
     "number",
     "operator",
+    "parameter",
     "property",
     "punctuation",
     "punctuation.bracket",
     "punctuation.delimiter",
+    "spell",
+    "storageclass",
     "string",
     "string.escape",
     "string.special",
@@ -210,6 +216,20 @@ impl LanguageRegistry {
             &["yml", "yaml"],
             tree_sitter_yaml::LANGUAGE.into(),
             tree_sitter_yaml::HIGHLIGHTS_QUERY,
+            None,
+        );
+        // the grammar's own numeric patterns are guarded by Lua-style `%d`
+        // predicates that tree-sitter's regex engine never matches, leaving
+        // every number styled as a string; a later pattern wins, so this one
+        // restores number coloring
+        r.add(
+            "sql",
+            &["sql"],
+            tree_sitter_sequel::LANGUAGE.into(),
+            &format!(
+                "{}\n((literal) @number (#match? @number \"^[-+]?[0-9][0-9.]*$\"))\n",
+                tree_sitter_sequel::HIGHLIGHTS_QUERY
+            ),
             None,
         );
         // The block grammar highlights headings/markers and injects fenced code
