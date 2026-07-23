@@ -30,7 +30,7 @@ notify-debouncer-full = "0.7"
 futures-util = { version = "0.3", default-features = false }
 # <2.2: 2.2.0's reqwest client transport does not compile (upstream typo,
 # from_bytes_stream vs from_byte_stream); lift the cap once fixed
-rmcp = { version = ">=2.1, <2.2", features = ["server", "transport-streamable-http-server"] }
+rmcp = { version = ">=2.1, <2.3", features = ["server", "transport-streamable-http-server"] }
 axum = "0.8"
 url = "2"
 tree-sitter = "0.26"
