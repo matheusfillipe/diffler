@@ -34,6 +34,7 @@ tree-sitter-html.workspace = true
 tree-sitter-css.workspace = true
 tree-sitter-yaml.workspace = true
 tree-sitter-md.workspace = true
+tree-sitter-sequel.workspace = true
 # runtime dependency: store's atomic save writes through a NamedTempFile
 tempfile.workspace = true
 
