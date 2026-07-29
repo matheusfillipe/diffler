@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785365835233,
+  "lastUpdate": 1785366280248,
   "repoUrl": "https://github.com/matheusfillipe/diffler",
   "entries": {
     "Benchmark": [
@@ -7583,6 +7583,102 @@ window.BENCHMARK_DATA = {
             "name": "scope_index/20000",
             "value": 98819780,
             "range": "± 2170339",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "distinct": true,
+          "id": "a4bfb4319274dc625e0d2dc2e618c6a94cf3c273",
+          "message": "chore(deps): bump actions/setup-node from 6 to 7\n\nBumps [actions/setup-node](https://github.com/actions/setup-node) from 6 to 7.\n- [Release notes](https://github.com/actions/setup-node/releases)\n- [Commits](https://github.com/actions/setup-node/compare/v6...v7)\n\n---\nupdated-dependencies:\n- dependency-name: actions/setup-node\n  dependency-version: '7'\n  dependency-type: direct:production\n  update-type: version-update:semver-major\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>",
+          "timestamp": "2026-07-30T01:01:03+02:00",
+          "tree_id": "33dd7c80c1191e96ae1a5e98e0ef5adbb6037464",
+          "url": "https://github.com/matheusfillipe/diffler/commit/a4bfb4319274dc625e0d2dc2e618c6a94cf3c273"
+        },
+        "date": 1785366279494,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "syndiff_emphasis/1000",
+            "value": 8153911,
+            "range": "± 115327",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/1000",
+            "value": 19068,
+            "range": "± 322",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/1000",
+            "value": 5905648,
+            "range": "± 33598",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/1000",
+            "value": 4491706,
+            "range": "± 14536",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/5000",
+            "value": 40563924,
+            "range": "± 402472",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/5000",
+            "value": 97166,
+            "range": "± 369",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/5000",
+            "value": 29559977,
+            "range": "± 577367",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/5000",
+            "value": 22375532,
+            "range": "± 116025",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/20000",
+            "value": 177940474,
+            "range": "± 1419413",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/20000",
+            "value": 390686,
+            "range": "± 5397",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/20000",
+            "value": 120668596,
+            "range": "± 1617784",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/20000",
+            "value": 91192649,
+            "range": "± 2012712",
             "unit": "ns/iter"
           }
         ]
