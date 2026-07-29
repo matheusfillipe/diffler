@@ -18,6 +18,11 @@ pub enum EditorPurpose {
         msg_path: std::path::PathBuf,
         use_index: bool,
     },
+    /// Read the file back as the pull-request body and reopen the form.
+    PrBody {
+        msg_path: std::path::PathBuf,
+        draft: Box<crate::app::pr_create::PrDraft>,
+    },
     /// The human edited a file under review; refresh to pick up changes.
     OpenFile { path: String },
 }

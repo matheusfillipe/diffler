@@ -570,6 +570,31 @@ impl ForgeProvider for GitHubProvider {
         Ok(pr.into_pr())
     }
 
+    async fn create_pr(&self, new: &crate::ci::NewPullRequest) -> Result<PullRequest> {
+        let mut args = vec![
+            "pr".to_owned(),
+            "create".to_owned(),
+            "--base".to_owned(),
+            new.base.clone(),
+            "--head".to_owned(),
+            new.head.clone(),
+            "--title".to_owned(),
+            new.title.clone(),
+            "--body".to_owned(),
+            new.body.clone(),
+        ];
+        if new.draft {
+            args.push("--draft".to_owned());
+        }
+        let raw = self.runner.run("gh", &args).await?;
+        // the command answers with the new PR's url and nothing machine-readable
+        let number = pr_number_from_url(&raw).ok_or_else(|| CiError::Parse {
+            what: "pr create".to_owned(),
+            message: format!("no pull-request url in the output: {}", raw.trim()),
+        })?;
+        self.pr(number).await
+    }
+
     async fn current_pr(&self) -> Result<Option<PullRequest>> {
         let Some(branch) = &self.branch else {
             return Ok(None);
@@ -1116,6 +1141,15 @@ fn review_payload(review: &crate::ci::NewPrReview) -> serde_json::Value {
     // can never fail
     #[allow(clippy::expect_used)]
     serde_json::to_value(payload).expect("wire payload of plain fields always serializes")
+}
+
+/// The number from a pull-request url anywhere in `output`, so the url the
+/// create command prints can be turned back into a PR to open.
+fn pr_number_from_url(output: &str) -> Option<u64> {
+    output.split_whitespace().rev().find_map(|token| {
+        let (_, tail) = token.rsplit_once("/pull/")?;
+        tail.trim_end_matches('/').parse().ok()
+    })
 }
 
 /// ISO-8601 → unix seconds; an unrecognized shape collapses to zero.
@@ -1731,5 +1765,57 @@ jobs:
         assert_eq!(pr.head_oid, "headsha");
         assert_eq!(pr.base_ref, "main");
         assert_eq!(pr.head_ref, "feat/x");
+    }
+}
+
+#[cfg(test)]
+mod create_pr_tests {
+    use super::*;
+    use crate::ci::exec::test_support::RecordingRunner;
+    use crate::ci::provider::NewPullRequest;
+    use std::sync::Arc;
+
+    const VIEWED: &str = r#"{"number":7,"title":"a title","url":"https://github.com/acme/widgets/pull/7",
+        "baseRefName":"main","headRefName":"feat/x","headRefOid":"abc","author":{"login":"reviewer"}}"#;
+
+    #[tokio::test]
+    async fn create_passes_the_fields_and_resolves_the_new_number() {
+        let runner = Arc::new(RecordingRunner::new(&[
+            ("pr create", "https://github.com/acme/widgets/pull/7\n"),
+            ("pr view", VIEWED),
+        ]));
+        let provider = GitHubProvider::new(
+            Box::new(Arc::clone(&runner)),
+            Vec::new(),
+            Some("feat/x".to_owned()),
+            YamlCache::default(),
+        );
+        let pr = provider
+            .create_pr(&NewPullRequest {
+                base: "main".to_owned(),
+                head: "feat/x".to_owned(),
+                title: "a title".to_owned(),
+                body: "a body".to_owned(),
+                draft: true,
+            })
+            .await
+            .expect("created");
+        assert_eq!(pr.number, 7);
+        let create = runner.calls().remove(0);
+        for expected in ["--base main", "--head feat/x", "--title a title", "--draft"] {
+            assert!(
+                create.contains(expected),
+                "{expected} missing from {create}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_number_is_read_from_the_url_the_command_prints() {
+        assert_eq!(
+            pr_number_from_url("https://github.com/acme/widgets/pull/12\n"),
+            Some(12)
+        );
+        assert_eq!(pr_number_from_url("nothing useful here"), None);
     }
 }

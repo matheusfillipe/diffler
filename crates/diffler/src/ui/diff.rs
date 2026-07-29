@@ -1184,7 +1184,32 @@ mod tests {
     #[test]
     fn review_verdict_picker_renders_its_choices() {
         let (_fixture, mut app) = diff_app();
-        app.modal = Some(crate::app::Modal::ReviewVerdict { number: 7 });
+        let comment = crate::ci::NewPrComment {
+            number: 7,
+            head_oid: "abc".to_owned(),
+            path: "src/lib.rs".to_owned(),
+            line: 2,
+            start_line: None,
+            new_side: true,
+            body: "looks off".to_owned(),
+        };
+        let pending = crate::app::pr::PrPending {
+            review_comments: vec![comment.clone(), comment],
+            replies: vec![crate::app::pr::PrPost::Reply {
+                number: 7,
+                comment_id: "c1".to_owned(),
+                reply_index: 0,
+                parent_remote_id: "r1".to_owned(),
+                body: "and this".to_owned(),
+            }],
+            agent_withheld: 2,
+            file_level: 1,
+            ..Default::default()
+        };
+        app.modal = Some(crate::app::Modal::ReviewVerdict {
+            number: 7,
+            summary: pending.summary(),
+        });
         insta::assert_snapshot!(render(&mut app).backend());
     }
 
@@ -1669,18 +1694,6 @@ mod tests {
             vec!["lib"],
             "only the matched word lights up, not the whole row: {spans:?}"
         );
-    }
-
-    #[test]
-    fn sidebar_renders_as_a_flat_list_when_configured() {
-        let fixture = standard_fixture();
-        let mut loaded = LoadedConfig::default();
-        loaded.config.ui.diff_file_layout = crate::config::FileLayout::List;
-        let mut app = App::new(fixture.review(), loaded);
-        app.author = "reviewer".to_owned();
-        app.open_working_tree_diff(None);
-        assert_eq!(app.diff.as_ref().unwrap().focus, Pane::List);
-        insta::assert_snapshot!(render(&mut app).backend());
     }
 
     #[test]

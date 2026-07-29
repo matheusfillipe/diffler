@@ -11,18 +11,21 @@
 
 [ui]
 # theme = "github-dark"
+# Lines of unchanged code around each hunk; `+`/`-`/`=` change it live.
 # context_lines = 3
 # recent_commits = 10
-# File-list layout per view: "list" (flat magit-style, one row per file with
-# its full path) or "tree" (collapsible directories). Status defaults to the
-# flat list; the diff sidebar defaults to the tree. The diff sidebar also
-# accepts "review": files split into "To review" and a folded "Viewed" bucket
-# (GitHub-style; an edited file falls back into "To review"). `t` cycles the
-# layouts live.
+# The status screen lists files as "list" (flat magit-style, one row per file
+# with its full path) or "tree" (collapsible directories).
 # status_file_layout = "list"
+# The diff sidebar lists them as "tree" or "review": split into "To review" and
+# a folded "Viewed" bucket, where an edited file falls back into "To review".
+# `t` cycles the two live.
 # diff_file_layout = "tree"
 # Open the diff pane side-by-side (old left, new right); `|` toggles it live.
 # side_by_side = false
+# Emphasize what changed in the syntax tree, so a reindented or rewrapped block
+# highlights only the tokens that differ. Set false for the textual engine.
+# semantic_diff = true
 
 [mcp]
 # enabled = true
@@ -32,10 +35,29 @@
 # Editor command; unset falls back to $DIFFLER_EDITOR, then $EDITOR.
 # command = "nvim"
 
+[ci]
+# Which forge serves runs and pull requests. "auto" detects it from the
+# remote; force it with "github", "gitlab", or "forgejo".
+# provider = "auto"
+# poll_seconds = 5
+
+[ci.gitlab]
+# Self-hosted instance, when the remote does not name it.
+# host = "gitlab.example.com"
+
+[ci.forgejo]
+# Self-hosted instance; a forced forgejo provider targets codeberg.org without
+# this.
+# host = "codeberg.org"
+
 # Key remaps per screen: action name -> chord. Chords are single keys ("q",
 # "V"), ctrl combos ("<c-r>"), specials ("<cr>", "<tab>"), or two-key
 # sequences ("cc", "gg"). Unlisted actions keep their built-in binding;
 # `?` in the TUI shows the effective keymap.
+#
+# Motions are omitted below: j / k / gg / G and the paging keys, / n N to
+# search, <c-k> for the command palette, ? for help, q to go back. `?` in the
+# TUI lists what the screen you are on binds.
 
 [keys.status]
 # palette = "<c-k>"   # fuzzy command palette, bound on every screen
@@ -44,40 +66,80 @@
 # stage_all = "S"
 # unstage_all = "U"
 # discard = "x"
-# commit_flow = "cc"
-# branch_popup = "b"
-# log_view = "ll"
+# mark_viewed = "v"
+# next_section = "<c-n>"
+# prev_section = "<c-p>"
+# toggle_fold = "<tab>"
 # open = "<cr>"
 # open_review_diff = "D"
-# toggle_fold = "<tab>"
-# refresh = "<c-r>"
+# open_runs = "o"
+# switch_theme = "T"
+# next_hunk = "}"
+# prev_hunk = "{"
+# open_editor = "e"
 # send_feedback = "Z"
+# comments_overview = "C"
+# refresh = "<c-r>"
+
+# Prefix keys on the status screen, named after the transient menu each opens.
+# Their rows live in the matching [keys.<name>] table below.
+# commit = "c"
+# branch = "b"
+# log_menu = "l"
+# push = "P"
+# pull = "p"
+# fetch = "f"
+# stash = "z"
 
 [keys.diff]
 # move_left = "h"
 # move_right = "l"
-# next_function = ")"
-# prev_function = "("
-# delete_comment = "d"
-# open = "<cr>"
-# next_file = "<c-n>"
+# next_file = "<c-n>"      # also J, K, <tab>, <s-tab>
 # prev_file = "<c-p>"
 # next_unviewed = "u"
+# mark_viewed = "v"
+# unview_all = "U"
 # cycle_sidebar_mode = "t"
+# toggle_side_by_side = "|"
+# expand_context = "+"
+# collapse_context = "-"
+# expand_whole_file = "="
 # comment = "c"
 # visual_select = "V"
 # reply = "r"
 # resolve = "R"
-# mark_viewed = "v"
+# delete_comment = "d"
+# comments_overview = "C"
+# submit_review = "S"
+# send_feedback = "Z"
 # copy_file_feedback = "y"
 # copy_all_feedback = "Y"
-# open_editor = "e"
 # next_hunk = "}"
 # prev_hunk = "{"
-
-[keys.log]
+# next_function = ")"
+# prev_function = "("
+# next_comment = "]"
+# prev_comment = "["
+# center_cursor = "zz"
+# cursor_top = "zt"
+# cursor_bottom = "zb"
+# toggle_fold = "za"
+# impact = "x"
+# switch_theme = "T"
+# open_editor = "e"
 # open = "<cr>"
 # refresh = "<c-r>"
+
+[keys.log]
+# visual_select = "V"
+# open = "<cr>"
+# refresh = "<c-r>"
+
+[keys.ci_log]
+# toggle_fold = "<tab>"    # also <cr>
+# visual_select = "V"
+# copy_file_feedback = "y"
+# copy_all_feedback = "Y"
 
 [keys.prs]
 # open = "<cr>"
@@ -90,3 +152,38 @@
 # zoom_in = "+"
 # zoom_out = "-"
 # open = "<cr>"
+
+# Transient menus. The table name is the prefix key's action; each entry
+# rebinds one row of the menu.
+
+[keys.commit]
+# commit = "c"
+# extend = "e"
+# amend = "a"
+# reword = "w"
+
+[keys.branch]
+# checkout = "b"
+# create_checkout = "c"
+# create = "n"
+# delete = "D"
+# prs = "p"
+# pr_create = "P"
+
+[keys.log_menu]
+# current = "l"
+
+[keys.push]
+# push = "p"
+# set_upstream = "u"
+
+[keys.pull]
+# pull = "p"
+
+[keys.fetch]
+# fetch = "f"
+# all = "a"
+
+[keys.stash]
+# push = "z"
+# pop = "p"

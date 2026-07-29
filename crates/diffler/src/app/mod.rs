@@ -19,6 +19,7 @@ mod mcp;
 mod modal;
 mod network;
 pub mod pr;
+pub mod pr_create;
 mod search;
 mod status;
 
@@ -51,6 +52,10 @@ use crate::transient::{Transient, TransientKind, TransientResolve};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Flow {
     Continue,
+    /// The event left the screen exactly as it was, so the loop can skip the
+    /// draw. A terminal nobody is reading fills up otherwise, and the writes
+    /// block the loop that answers the agent.
+    Idle,
     Quit,
 }
 
@@ -143,6 +148,12 @@ pub enum InputOp {
     CreateBranch {
         checkout: bool,
     },
+    /// One text field of the pull request being composed; the draft rides
+    /// along so the form comes back with the rest of it intact.
+    PrField {
+        draft: Box<crate::app::pr_create::PrDraft>,
+        field: crate::app::pr_create::PrField,
+    },
     /// The optional top-level body of a PR review; empty submits without one.
     ReviewBody {
         number: u64,
@@ -195,7 +206,15 @@ pub enum Modal {
     PullDiverged { upstream: String },
     /// Verdict picker for a PR review submit: approve, request changes, or
     /// comment only.
-    ReviewVerdict { number: u64 },
+    ReviewVerdict {
+        number: u64,
+        /// What the submit will send, resolved when the dialog opens.
+        summary: Vec<String>,
+    },
+    /// Compose a pull request for the checked-out branch.
+    CreatePr {
+        draft: Box<crate::app::pr_create::PrDraft>,
+    },
     /// Keymap listing for the screen the popup opened over.
     Help,
 }
@@ -307,6 +326,7 @@ pub enum CiRequest {
     Pr,
     Prs,
     PrComments(u64),
+    CreatePr(Box<crate::ci::NewPullRequest>),
     Detail(crate::ci::RunId),
     Extras(crate::ci::RunId),
     Log {
@@ -517,6 +537,8 @@ pub struct App {
     /// Editor subprocess the main loop runs with the terminal suspended,
     /// then reports back through [`App::editor_finished`].
     pub pending_editor: Option<EditorRequest>,
+    /// A pull request waiting on its branch to reach the forge.
+    pub pending_pr_create: Option<Box<crate::ci::NewPullRequest>>,
     /// Network git op the main loop runs in the background (terminal stays up),
     /// reporting back through [`AppEvent::GitDone`]. Set by a push/pull/fetch
     /// transient leaf, taken once by the loop.
@@ -660,6 +682,7 @@ impl App {
             message,
             pending_clipboard: None,
             pending_editor: None,
+            pending_pr_create: None,
             pending_git: None,
             last_push_argv: None,
             watcher_healthy: None,
@@ -786,25 +809,7 @@ impl App {
                     self.handle_key(&key)
                 }
             }
-            AppEvent::Tick => {
-                self.expire_pending();
-                self.refresh_flash = self.refresh_flash.saturating_sub(1);
-                self.tick_count = self.tick_count.wrapping_add(1);
-                if self.tick_count.is_multiple_of(FALLBACK_REFRESH_TICKS)
-                    && self.watcher_unhealthy()
-                {
-                    self.refresh();
-                }
-                // re-poll the active CI screen on a relaxed cadence (250ms ticks);
-                // saturating + clamp so a pathological config can't zero or overflow it
-                let poll_ticks =
-                    u32::try_from(self.config.ci.poll_seconds.max(1).saturating_mul(4))
-                        .unwrap_or(u32::MAX);
-                if self.tick_count.is_multiple_of(poll_ticks) {
-                    self.queue_ci_poll();
-                }
-                Flow::Continue
-            }
+            AppEvent::Tick => self.on_tick(),
             AppEvent::RefreshDone(result) => {
                 self.on_refresh_done(*result);
                 Flow::Continue
@@ -820,6 +825,10 @@ impl App {
                 Flow::Continue
             }
             AppEvent::CiPr(pr) => self.on_pr_event(pr),
+            AppEvent::PrCreated(result) => {
+                self.on_pr_created(*result);
+                Flow::Continue
+            }
             AppEvent::CiPrs(prs) => self.on_prs_event(prs),
             AppEvent::PrComments {
                 number,
@@ -1077,15 +1086,46 @@ impl App {
         }
     }
 
-    fn expire_pending(&mut self) {
+    /// One 250ms beat: age the timed UI state and re-poll what the screen is
+    /// watching. `Idle` when the beat left the screen untouched, so the loop
+    /// can skip a draw nobody would see.
+    fn on_tick(&mut self) -> Flow {
+        let mut changed = self.expire_pending();
+        changed |= self.refresh_flash > 0;
+        let which_key = self.which_key_panel().is_some();
+        self.refresh_flash = self.refresh_flash.saturating_sub(1);
+        self.tick_count = self.tick_count.wrapping_add(1);
+        // the which-key panel reveals on a tick count, so the tick that crosses
+        // its delay is the frame that shows it
+        changed |= self.which_key_panel().is_some() != which_key;
+        if self.tick_count.is_multiple_of(FALLBACK_REFRESH_TICKS) && self.watcher_unhealthy() {
+            self.refresh();
+            changed = true;
+        }
+        // re-poll the active CI screen on a relaxed cadence (250ms ticks);
+        // saturating + clamp so a pathological config can't zero or overflow it
+        let poll_ticks =
+            u32::try_from(self.config.ci.poll_seconds.max(1).saturating_mul(4)).unwrap_or(u32::MAX);
+        // the poll itself paints nothing; its answer arrives as an event
+        if self.tick_count.is_multiple_of(poll_ticks) {
+            self.queue_ci_poll();
+        }
+        if changed { Flow::Continue } else { Flow::Idle }
+    }
+
+    /// True when the wait dropped the half-typed chord, so the caller can tell
+    /// the keymap state moved on.
+    fn expire_pending(&mut self) -> bool {
         if self.pending.is_empty() {
-            return;
+            return false;
         }
         self.pending_ticks += 1;
-        if self.pending_ticks >= PENDING_TIMEOUT_TICKS {
-            self.pending.clear();
-            self.pending_ticks = 0;
+        if self.pending_ticks < PENDING_TIMEOUT_TICKS {
+            return false;
         }
+        self.pending.clear();
+        self.pending_ticks = 0;
+        true
     }
 
     fn dispatch(&mut self, action: Action) -> Flow {
@@ -1110,6 +1150,7 @@ impl App {
             Action::SearchPrev => self.search_step_or_follow(false),
             Action::OpenRuns => self.open_runs(),
             Action::OpenPrs => self.open_prs(),
+            Action::CreatePr => self.create_pr_start(),
             Action::CommentsOverview => self.open_comments_overview(),
             Action::SwitchTheme => self.open_theme_picker(),
             action => match self.screen() {
@@ -1310,6 +1351,15 @@ impl App {
     /// several git ops can be in flight and an unrelated one finishing first
     /// must not consume the continuation slots.
     fn git_finished(&mut self, label: &str, ok: bool, output: &str) {
+        if label == Self::PR_CREATE_PUSH {
+            if ok {
+                self.refresh();
+                self.pr_create_after_push();
+                return;
+            }
+            // the branch never reached the forge, so there is nothing to open
+            self.pending_pr_create = None;
+        }
         if label.starts_with(Self::PR_FETCH_PREFIX) {
             if let Some(pr) = self.pending_pr_open.take().filter(|_| ok) {
                 match self.resolve_pr_range(&pr) {
@@ -2503,6 +2553,47 @@ mod tests {
         assert_eq!(app.refresh_flash, REFRESH_FLASH_TICKS);
         app.handle(AppEvent::Tick);
         assert_eq!(app.refresh_flash, REFRESH_FLASH_TICKS - 1);
+    }
+
+    #[test]
+    fn a_tick_that_paints_nothing_reports_idle_so_the_loop_skips_the_draw() {
+        let (_fixture, mut app) = app();
+        // the flash from opening still has frames to give
+        while app.refresh_flash > 0 {
+            assert_eq!(app.handle(AppEvent::Tick), Flow::Continue);
+        }
+        assert_eq!(app.handle(AppEvent::Tick), Flow::Idle);
+    }
+
+    #[test]
+    fn the_tick_that_reveals_the_which_key_panel_asks_for_a_draw() {
+        let (_fixture, mut app) = app();
+        while app.handle(AppEvent::Tick) == Flow::Continue {}
+        app.handle(key('b'));
+        assert!(
+            app.which_key_panel().is_none(),
+            "the panel waits out its delay"
+        );
+        let mut ticks = 0;
+        while app.handle(AppEvent::Tick) == Flow::Idle {
+            ticks += 1;
+            assert!(ticks < 20, "the panel never revealed");
+        }
+        assert!(app.which_key_panel().is_some());
+    }
+
+    #[test]
+    fn an_expiring_chord_asks_for_a_draw_because_the_hint_row_shows_it() {
+        let (_fixture, mut app) = app();
+        while app.handle(AppEvent::Tick) == Flow::Continue {}
+        app.handle(key('g')); // half of `gg`
+        assert!(!app.pending.is_empty());
+        let mut ticks = 0;
+        while app.handle(AppEvent::Tick) == Flow::Idle {
+            ticks += 1;
+            assert!(ticks < 20, "the chord never expired");
+        }
+        assert!(app.pending.is_empty());
     }
 
     #[test]

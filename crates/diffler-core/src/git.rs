@@ -234,6 +234,60 @@ impl Vcs for GitVcs {
         Ok(entries)
     }
 
+    fn default_branch(&self, remote: &str) -> Result<Option<String>, VcsError> {
+        // the remote's own HEAD is authoritative; it exists once the remote
+        // has been cloned or fetched with `--set-head`
+        let head_ref = format!("refs/remotes/{remote}/HEAD");
+        let prefix = format!("refs/remotes/{remote}/");
+        if let Ok(reference) = self.repo.find_reference(&head_ref)
+            && let Ok(Some(target)) = reference.symbolic_target()
+            // the whole remainder, so a branch named `release/2.x` survives
+            && let Some(name) = target.strip_prefix(prefix.as_str())
+        {
+            return Ok(Some(name.to_owned()));
+        }
+        for name in ["main", "master"] {
+            if self
+                .repo
+                .find_branch(name, git2::BranchType::Local)
+                .or_else(|_| {
+                    self.repo
+                        .find_branch(&format!("{remote}/{name}"), git2::BranchType::Remote)
+                })
+                .is_ok()
+            {
+                return Ok(Some(name.to_owned()));
+            }
+        }
+        Ok(None)
+    }
+
+    fn commits_between(&self, base: &str, head: &str) -> Result<Vec<LogEntry>, VcsError> {
+        let (base, head) = (
+            self.repo.revparse_single(base)?,
+            self.repo.revparse_single(head)?,
+        );
+        let mut walk = self.repo.revwalk()?;
+        walk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)?;
+        walk.push(head.id())?;
+        walk.hide(base.id())?;
+        let mut entries = Vec::new();
+        for oid in walk {
+            let oid = oid?;
+            let commit = self.repo.find_commit(oid)?;
+            let full = oid.to_string();
+            entries.push(LogEntry {
+                oid7: short7(&full),
+                oid: full,
+                refs: Vec::new(),
+                subject: commit.summary()?.unwrap_or_default().to_owned(),
+                author: commit.author().name().unwrap_or_default().to_owned(),
+                time_unix: commit.time().seconds(),
+            });
+        }
+        Ok(entries)
+    }
+
     fn branches(&self) -> Result<Vec<BranchInfo>, VcsError> {
         let mut out = Vec::new();
         for entry in self.repo.branches(Some(git2::BranchType::Local))? {

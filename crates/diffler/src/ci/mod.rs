@@ -19,7 +19,8 @@ pub use model::{
     ts_sort_key,
 };
 pub use provider::{
-    ForgeProvider, NewPrComment, NewPrReview, ProviderKind, ReviewVerdict, capabilities_for,
+    ForgeProvider, NewPrComment, NewPrReview, NewPullRequest, ProviderKind, ReviewVerdict,
+    capabilities_for,
 };
 pub use providers::{ForgejoProvider, GitHubProvider, GitLabProvider, YamlCache};
 

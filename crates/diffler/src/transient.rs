@@ -123,6 +123,7 @@ const BRANCH_GROUPS: &[DefaultGroup] = &[(
         ("create", "n", Action::BranchCreate, "Create"),
         ("delete", "D", Action::BranchDelete, "Delete"),
         ("prs", "p", Action::OpenPrs, "Pull requests"),
+        ("pr_create", "P", Action::CreatePr, "Open a pull request"),
     ],
 )];
 

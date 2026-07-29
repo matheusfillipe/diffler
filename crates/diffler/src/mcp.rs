@@ -34,7 +34,11 @@ use crate::event::AppEvent;
 /// Author label stamped on replies the agent writes through MCP.
 pub const AGENT_AUTHOR: &str = "agent";
 
-const DEFAULT_WAIT_SECONDS: u64 = 300;
+/// Agent HTTP clients drop a tool call that sends nothing for about a minute
+/// (Claude Code cuts at 60 s), and a review pause easily outlasts that, so the
+/// caller polls again to keep waiting. Answering a wait costs a further
+/// `REQUEST_TIMEOUT` at worst, so both together stay inside that minute.
+const DEFAULT_WAIT_SECONDS: u64 = 25;
 const MAX_WAIT_SECONDS: u64 = 540;
 /// How long a tool call waits for the app to respond before giving up.
 /// The editor suspension is the main source of delays; 30 s is generous.
@@ -227,7 +231,8 @@ pub struct WaitForFeedbackParams {
     /// Return once the feedback epoch exceeds this value. Defaults to the
     /// current epoch, i.e. wait for the next human send.
     pub since_epoch: Option<u64>,
-    /// Long-poll timeout (default 300, max 540).
+    /// Long-poll timeout (default 25, max 540). Values past your client's
+    /// request timeout fail the call.
     pub timeout_seconds: Option<u64>,
 }
 
@@ -489,7 +494,7 @@ impl DifflerMcp {
     }
 
     #[tool(
-        description = "Long-poll until the human sends feedback (comments, replies, or the send key). Returns the new epoch and all open/replied comments, or timed_out."
+        description = "Long-poll until the human sends feedback (comments, replies, or the send key). Returns the new epoch and all open/replied comments, or timed_out. A timed_out result means the human is still reviewing: call again with the epoch it returned to keep waiting."
     )]
     async fn wait_for_feedback(
         &self,
@@ -554,8 +559,10 @@ impl DifflerMcp {
              4. Answer each with reply_comment (what you changed and why), then \
              propose_resolve; only the human can resolve for real, in the TUI.\n\
              5. Call wait_for_feedback with the latest epoch and start over when it \
-             returns — the human just sent new feedback. If it times out, call it \
-             again; if the connection fails, diffler is closed, so stop.",
+             returns — the human just sent new feedback. It answers within a minute; \
+             a timed_out result means they are still reviewing, so call it again. \
+             If the call itself fails, check review_status: diffler is closed only \
+             when that fails too, otherwise keep waiting.",
         )]
     }
 }
@@ -931,6 +938,26 @@ mod tests {
             started.elapsed(),
             Duration::from_secs(MAX_WAIT_SECONDS),
             "a timeout above the cap must clamp to {MAX_WAIT_SECONDS}s"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_feedback_defaults_inside_the_client_request_timeout() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_feedback_tx, feedback_rx) = tokio::sync::watch::channel(0u64);
+        let handler = DifflerMcp::new(tx, feedback_rx);
+        let started = tokio::time::Instant::now();
+        let Json(response) = handler
+            .wait_for_feedback(Parameters(WaitForFeedbackParams {
+                since_epoch: None,
+                timeout_seconds: None,
+            }))
+            .await
+            .unwrap();
+        assert!(response.timed_out, "no feedback ever arrives");
+        assert!(
+            started.elapsed() + REQUEST_TIMEOUT < Duration::from_secs(60),
+            "the wait plus the reply it still owes must beat a 60 s client cut"
         );
     }
 
