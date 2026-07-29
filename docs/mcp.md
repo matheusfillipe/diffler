@@ -17,7 +17,7 @@ while diffler is open.
 - **reply_comment**: answer a comment in place; you see the reply immediately.
 - **propose_resolve**: mark a comment replied with a short note. Only you resolve it, in the TUI.
 - **mark_viewed**: mark a file viewed in the review you're currently looking at.
-- **wait_for_feedback**: long-poll until you send feedback (a comment, reply, or the send key), then return the new epoch and all open/replied comments. This is how the agent waits for its turn.
+- **wait_for_feedback**: long-poll until you send feedback (a comment, reply, or the send key), then return the new epoch and all open/replied comments. This is how the agent waits for its turn. It answers within a minute; the agent polls again to wait longer.
 
 ## Prompt
 
