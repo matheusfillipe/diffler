@@ -14,13 +14,12 @@
 # Lines of unchanged code around each hunk; `+`/`-`/`=` change it live.
 # context_lines = 3
 # recent_commits = 10
-# File-list layout per view: "list" (flat magit-style, one row per file with
-# its full path) or "tree" (collapsible directories). Status defaults to the
-# flat list; the diff sidebar defaults to the tree. The diff sidebar also
-# accepts "review": files split into "To review" and a folded "Viewed" bucket
-# (GitHub-style; an edited file falls back into "To review"). `t` cycles the
-# layouts live.
+# The status screen lists files as "list" (flat magit-style, one row per file
+# with its full path) or "tree" (collapsible directories).
 # status_file_layout = "list"
+# The diff sidebar lists them as "tree" or "review": split into "To review" and
+# a folded "Viewed" bucket, where an edited file falls back into "To review".
+# `t` cycles the two live.
 # diff_file_layout = "tree"
 # Open the diff pane side-by-side (old left, new right); `|` toggles it live.
 # side_by_side = false

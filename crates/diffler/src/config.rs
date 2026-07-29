@@ -386,15 +386,15 @@ fn read_layer(path: &Path, warnings: &mut Vec<String>) -> Result<PartialConfig, 
     .map_err(parse_err)
 }
 
-/// Apply a layer's file-layout value: an unknown string keeps the prior value
-/// (the default) and warns, matching the theme key's lenient handling, rather
-/// than aborting the parse. The review layout only makes sense where viewed
-/// marks exist, so `allow_review` gates it to the diff sidebar key.
+/// Apply a layer's file-layout value: a value the key does not accept keeps
+/// the prior value (the default) and warns, matching the theme key's lenient
+/// handling. Each key takes its own set: the review layout needs viewed marks,
+/// and the flat list is only worth having where the paths are short.
 fn set_layout(
     value: Option<String>,
     target: &mut FileLayout,
     key: &str,
-    allow_review: bool,
+    accepted: &[FileLayout],
     origin: &Origin,
     origins: &mut BTreeMap<String, Origin>,
     warnings: &mut Vec<String>,
@@ -407,10 +407,13 @@ fn set_layout(
         warnings.push(warning);
         return;
     }
-    if layout == FileLayout::Review && !allow_review {
-        warnings.push(format!(
-            "{key} does not support \"review\" (diff sidebar only), using \"{target}\""
-        ));
+    if !accepted.contains(&layout) {
+        let names = accepted
+            .iter()
+            .map(|accepted| format!("\"{accepted}\""))
+            .collect::<Vec<_>>()
+            .join(" or ");
+        warnings.push(format!("{key} takes {names}, using \"{target}\""));
         return;
     }
     *target = layout;
@@ -464,7 +467,7 @@ fn apply_layer(
         layer.ui.status_file_layout,
         &mut config.ui.status_file_layout,
         "ui.status_file_layout",
-        false,
+        &[FileLayout::List, FileLayout::Tree],
         origin,
         origins,
         warnings,
@@ -473,7 +476,7 @@ fn apply_layer(
         layer.ui.diff_file_layout,
         &mut config.ui.diff_file_layout,
         "ui.diff_file_layout",
-        true,
+        &[FileLayout::Tree, FileLayout::Review],
         origin,
         origins,
         warnings,
@@ -923,15 +926,15 @@ mod tests {
     fn file_layouts_override_in_either_direction() {
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().join("project.toml");
-        // flip both away from their defaults: status to tree, diff to list
+        // flip both away from their defaults: status to tree, diff to review
         fs::write(
             &project,
-            "[ui]\nstatus_file_layout = \"tree\"\ndiff_file_layout = \"list\"\n",
+            "[ui]\nstatus_file_layout = \"tree\"\ndiff_file_layout = \"review\"\n",
         )
         .unwrap();
         let loaded = load_layers(None, Some(&project), &CliOverrides::default()).unwrap();
         assert_eq!(loaded.config.ui.status_file_layout, FileLayout::Tree);
-        assert_eq!(loaded.config.ui.diff_file_layout, FileLayout::List);
+        assert_eq!(loaded.config.ui.diff_file_layout, FileLayout::Review);
         assert_eq!(
             loaded.origins["ui.status_file_layout"],
             Origin::Project(project.clone())
@@ -944,21 +947,22 @@ mod tests {
     }
 
     #[test]
-    fn review_layout_applies_to_the_diff_sidebar_only() {
+    fn each_screen_rejects_the_layout_it_does_not_offer() {
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().join("project.toml");
+        // the status screen has no viewed marks, the diff sidebar no flat list
         fs::write(
             &project,
-            "[ui]\nstatus_file_layout = \"review\"\ndiff_file_layout = \"review\"\n",
+            "[ui]\nstatus_file_layout = \"review\"\ndiff_file_layout = \"list\"\n",
         )
         .unwrap();
         let loaded = load_layers(None, Some(&project), &CliOverrides::default()).unwrap();
-        assert_eq!(loaded.config.ui.diff_file_layout, FileLayout::Review);
-        // the status screen has no viewed marks: review is rejected there
         assert_eq!(loaded.config.ui.status_file_layout, FileLayout::List);
-        assert_eq!(loaded.warnings.len(), 1);
-        let warning = &loaded.warnings[0];
-        assert!(warning.contains("diff sidebar only"), "explains: {warning}");
+        assert_eq!(loaded.config.ui.diff_file_layout, FileLayout::Tree);
+        assert_eq!(loaded.warnings.len(), 2);
+        for warning in &loaded.warnings {
+            assert!(warning.contains("takes"), "names what it takes: {warning}");
+        }
     }
 
     #[test]

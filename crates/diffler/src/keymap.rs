@@ -201,7 +201,7 @@ impl Action {
             Self::PrevFile => "previous file",
             Self::NextUnviewed => "jump to the next unviewed file",
             Self::UnviewAll => "clear all viewed marks",
-            Self::CycleSidebarMode => "cycle sidebar: tree, list, review buckets",
+            Self::CycleSidebarMode => "cycle sidebar: tree, review buckets",
             Self::ToggleFold => "fold / unfold",
             Self::ToggleSideBySide => "toggle side-by-side diff",
             Self::Stage => "stage file or hunk",

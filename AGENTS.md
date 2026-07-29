@@ -99,10 +99,11 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   `v` viewed, `y`/`Y` yank feedback as markdown, `e` `$EDITOR` jump), Runs (the
   CI run list), Graph (CI run detail / LSP call-hierarchy trace, shared
   node-graph component), Prs (open PRs of the repo's forge), and CiLog (a
-  job's log folded into its real steps). The diff sidebar has three layouts
-  (`t` cycles): tree, flat list, and review — to-review vs a folded viewed
-  bucket, membership derived from the hash-keyed viewed marks so an edited file
-  falls back into to-review. OSC52 clipboard works over ssh/tmux.
+  job's log folded into its real steps). The diff sidebar has two layouts
+  (`t` cycles): tree, and review (to-review vs a folded viewed bucket,
+  membership derived from the hash-keyed viewed marks so an edited file falls
+  back into to-review). The status screen keeps the flat magit list. OSC52
+  clipboard works over ssh/tmux.
 - **Config.** TOML, XDG-layered (built-in defaults → `~/.config/diffler/config.toml`
   → `<repo>/.diffler/config.toml` → CLI flags; every flag has a config key).
   `diffler config --dump` prints the merged config with origins.

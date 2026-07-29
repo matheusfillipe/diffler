@@ -137,7 +137,7 @@ Vim-like: `j`/`k`/`gg`/`G` motions, `/` search, and
 | `v` / `u` / `U` | in the diff view: mark the file viewed / jump to the next unviewed / clear every mark |
 | `+` / `-` / `=` | widen / narrow the context around a hunk, or open the whole file |
 | `\|` | side-by-side diff |
-| `t` | cycle the sidebar: tree, list, review buckets (viewed files fold away, come back if they change) |
+| `t` | cycle the sidebar: file tree, review buckets (viewed files fold away, come back if they change) |
 | `Z` | send feedback to the agent |
 | `C` | overview of every comment: Enter jumps, `d`/`D` delete one/all |
 | `S` | submit stacked PR comments as one review |
