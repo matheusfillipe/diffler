@@ -6,7 +6,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use diffler_core::feedback::{self, FeedbackOptions};
-use diffler_core::highlight::StyledRange;
+use diffler_core::highlight::{Highlighter, StyledRange};
 use diffler_core::model::{DiffModel, FileDiff, LineKind};
 use diffler_core::review::Review;
 use diffler_core::session::{Anchor, Comment, CommentStatus, Session};
@@ -14,6 +14,7 @@ use diffler_core::source::ReviewSource;
 use diffler_core::syntax::ScopeIndex;
 use unicode_width::UnicodeWidthStr;
 
+use super::markdown::{self, MdSpan};
 use super::{App, InputOp, Modal, Screen};
 use crate::config::FileLayout;
 use crate::keymap::Action;
@@ -24,6 +25,13 @@ use crate::tree::{self, Bucket, TreeNode, TreeRow};
 pub enum Pane {
     List,
     Diff,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollAlign {
+    Center,
+    Top,
+    Bottom,
 }
 
 /// Fold state of the review layout's two buckets.
@@ -126,6 +134,8 @@ pub struct DiffView {
     /// First visible row of the diff pane; the renderer keeps the cursor in
     /// view.
     pub scroll: usize,
+    /// Applied once the renderer knows the wrapped row heights, then cleared.
+    pub(crate) scroll_align: Option<ScrollAlign>,
     /// Side-by-side (old left / new right) pane; pinned at open from
     /// `ui.side_by_side`, then `|` toggles it live.
     pub side_by_side: bool,
@@ -160,6 +170,9 @@ pub struct DiffView {
     /// enrichment runs once. Cleared whenever the underlying model is
     /// rebuilt (refresh) so a fresh unenriched file gets re-enriched.
     enriched: HashSet<String>,
+    /// Per-file diff context override (path -> git context lines, `u32::MAX`
+    /// for the whole file). Absent means the source's default context.
+    pub(crate) context: HashMap<String, u32>,
 }
 
 impl DiffView {
@@ -181,6 +194,7 @@ impl DiffView {
             tree_cursor: 0,
             cursor: 0,
             scroll: 0,
+            scroll_align: None,
             side_by_side,
             split_scroll: 0,
             sidebar: ratatui::layout::Rect::default(),
@@ -197,6 +211,7 @@ impl DiffView {
             highlights: HashMap::new(),
             scopes: HashMap::new(),
             enriched: HashSet::new(),
+            context: HashMap::new(),
         };
         view.ensure_rows(review);
         view
@@ -283,11 +298,16 @@ impl DiffView {
             .map(|f| f.path.clone())
     }
 
-    /// Mark the row list stale. Selection is dropped with it: visual
-    /// anchors are row indices and would dangle across a rebuild.
-    pub(crate) fn invalidate(&mut self) {
+    /// Mark the row list stale, dropping any visual anchor (a row index that
+    /// would dangle across a rebuild). Enrichment caches survive.
+    pub(crate) fn mark_rows_dirty(&mut self) {
         self.rows_dirty = true;
         self.visual_anchor = None;
+    }
+
+    /// Mark rows stale and forget enrichment, so a rebuilt model re-enriches.
+    pub(crate) fn invalidate(&mut self) {
+        self.mark_rows_dirty();
         self.enriched.clear();
     }
 
@@ -351,24 +371,19 @@ impl DiffView {
 
     /// The flattened sidebar rows over the model's files. The tree layout
     /// groups files under collapsible directory rows (honoring the folded
-    /// set); the flat list is a degenerate tree — one File row per file at
-    /// depth 0, carrying its full path, no Dir rows — so `tree_cursor` and the
-    /// file-navigation helpers work unchanged for both. The review layout
-    /// splits files into a to-review and a viewed bucket under foldable
-    /// Section rows; bucket membership reads the hash-keyed viewed marks, so
-    /// an edited file falls back into to-review by itself. Files keep their
-    /// model index.
+    /// set). The review layout splits files into a to-review and a viewed
+    /// bucket under foldable Section rows; bucket membership reads the
+    /// hash-keyed viewed marks, so an edited file falls back into to-review by
+    /// itself. Files keep their model index.
     pub(crate) fn tree_rows(&self, model: &DiffModel, session: &Session) -> Vec<TreeRow> {
         match self.layout {
-            FileLayout::List => {
-                let paths: Vec<&str> = model.files.iter().map(|f| f.path.as_str()).collect();
-                tree::flat_rows(&paths)
-            }
-            FileLayout::Tree => {
+            FileLayout::Review => self.review_rows(model, session),
+            // list belongs to the status screen (config rejects it here); a
+            // stray value degrades to the tree
+            FileLayout::Tree | FileLayout::List => {
                 let paths: Vec<&str> = model.files.iter().map(|f| f.path.as_str()).collect();
                 tree::visible_rows(&paths, &self.folded_dirs)
             }
-            FileLayout::Review => self.review_rows(model, session),
         }
     }
 
@@ -409,12 +424,11 @@ impl DiffView {
         rows
     }
 
-    /// Advance the sidebar layout: tree → list → review → tree.
+    /// Advance the sidebar layout: tree → review → tree.
     pub(crate) fn cycle_layout(&mut self) -> FileLayout {
         self.layout = match self.layout {
-            FileLayout::Tree => FileLayout::List,
-            FileLayout::List => FileLayout::Review,
             FileLayout::Review => FileLayout::Tree,
+            _ => FileLayout::Review,
         };
         self.layout
     }
@@ -450,29 +464,34 @@ fn tree_position_of_file(rows: &[TreeRow], file_index: usize) -> Option<usize> {
         .position(|row| matches!(&row.node, TreeNode::File { index, .. } if *index == file_index))
 }
 
-/// One display line of a comment block.
+/// One display line of a comment block. Body and reply text carry markdown
+/// styling as flag-tagged runs; [`crate::ui`] maps the flags to concrete styles.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommentLine {
     Header,
-    Body(String),
+    Body(Vec<MdSpan>),
     Reply {
         author: String,
-        text: String,
+        spans: Vec<MdSpan>,
         first: bool,
     },
     Footer,
 }
 
-/// The terminal lines a comment occupies at `row_width` columns, long text
-/// wrapped to fit. Shared by row flattening (for counts) and rendering (for
-/// content) so they can never disagree.
-pub fn comment_display(comment: &Comment, row_width: u16) -> Vec<CommentLine> {
+/// The terminal lines a comment occupies at `row_width` columns, markdown
+/// rendered and long text wrapped to fit. Shared by row flattening (for counts)
+/// and rendering (for content) so they can never disagree.
+pub fn comment_display(
+    comment: &Comment,
+    row_width: u16,
+    highlighter: Option<&Highlighter>,
+) -> Vec<CommentLine> {
     // "  ▌ " card bar; below that there is no room to wrap meaningfully
     let budget = (row_width.saturating_sub(4) as usize).max(8);
     let mut lines = vec![CommentLine::Header];
-    for line in comment.body.lines() {
+    for logical in markdown::parse(&comment.body, highlighter) {
         lines.extend(
-            wrap_text(line, budget, budget)
+            markdown::wrap(&logical, budget, budget)
                 .into_iter()
                 .map(CommentLine::Body),
         );
@@ -482,12 +501,12 @@ pub fn comment_display(comment: &Comment, row_width: u16) -> Vec<CommentLine> {
         // the renderer's two-space indent
         let label = format!("↳ {}: ", reply.author).width();
         let mut first = true;
-        for text in reply.body.lines() {
+        for logical in markdown::parse(&reply.body, highlighter) {
             let head = budget.saturating_sub(if first { label } else { 2 }).max(8);
-            for wrapped in wrap_text(text, head, budget.saturating_sub(2).max(8)) {
+            for spans in markdown::wrap(&logical, head, budget.saturating_sub(2).max(8)) {
                 lines.push(CommentLine::Reply {
                     author: reply.author.clone(),
-                    text: wrapped,
+                    spans,
                     first,
                 });
                 first = false;
@@ -496,47 +515,6 @@ pub fn comment_display(comment: &Comment, row_width: u16) -> Vec<CommentLine> {
     }
     lines.push(CommentLine::Footer);
     lines
-}
-
-/// Greedy word wrap by display width; a token longer than a whole line is
-/// hard-split. The first line may have a different budget (hanging label).
-fn wrap_text(text: &str, first_width: usize, rest_width: usize) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let (mut line, mut used) = (String::new(), 0usize);
-    let mut budget = first_width;
-    let mut flush = |line: &mut String, used: &mut usize, budget: &mut usize| {
-        out.push(std::mem::take(line));
-        *used = 0;
-        *budget = rest_width;
-    };
-    for word in text.split(' ') {
-        let mut word = word;
-        let sep = usize::from(!line.is_empty());
-        if used + sep + word.width() > budget && !line.is_empty() {
-            flush(&mut line, &mut used, &mut budget);
-        }
-        while word.width() > budget {
-            let split = word
-                .char_indices()
-                .scan(0usize, |w, (i, c)| {
-                    *w += c.to_string().width();
-                    (*w <= budget).then_some(i + c.len_utf8())
-                })
-                .last()
-                .unwrap_or(word.len());
-            line.push_str(&word[..split]);
-            flush(&mut line, &mut used, &mut budget);
-            word = &word[split..];
-        }
-        if !line.is_empty() {
-            line.push(' ');
-            used += 1;
-        }
-        line.push_str(word);
-        used += word.width();
-    }
-    out.push(line);
-    out
 }
 
 /// Hunk and line indices a comment displays under; `None` when the
@@ -571,7 +549,7 @@ fn push_comment_rows(
         let Some(c) = session.comments.get(comment) else {
             continue;
         };
-        let count = comment_display(c, wrap_width).len();
+        let count = comment_display(c, wrap_width, None).len();
         rows.extend((0..count).map(|line| DiffRow::Comment {
             comment,
             line,
@@ -679,7 +657,7 @@ fn push_split_comments(
         let Some(c) = session.comments.get(comment) else {
             continue;
         };
-        let count = comment_display(c, wrap_width).len();
+        let count = comment_display(c, wrap_width, None).len();
         rows.extend((0..count).map(|line| SplitRow::Comment {
             comment,
             line,
@@ -935,7 +913,8 @@ impl App {
             Action::PrevFile => return self.diff_step_file(false),
             Action::NextUnviewed => return self.diff_jump_unviewed(),
             Action::CycleSidebarMode => return self.diff_cycle_sidebar_mode(),
-            Action::ToggleFocus => return self.diff_toggle_focus(),
+            Action::MoveLeft => return self.diff_focus(Pane::List),
+            Action::MoveRight => return self.diff_focus(Pane::Diff),
             Action::ToggleSideBySide => return self.toggle_side_by_side(),
             // comment walk works from either pane; land in the diff pane on the
             // comment so it can be read and replied to
@@ -973,6 +952,7 @@ impl App {
             Action::Open => self.diff_tree_activate(),
             Action::ToggleFold => self.diff_toggle_dir_fold(),
             Action::MarkViewed => self.diff_toggle_viewed(),
+            Action::UnviewAll => self.diff_unview_all(),
             Action::OpenEditor => self.editor_at_diff_cursor(),
             // copy is file/all scoped, not line scoped: works from the list
             Action::CopyFileFeedback => self.copy_file_or_selection(),
@@ -1003,6 +983,12 @@ impl App {
             Action::PrevHunk => self.diff_jump(false, |row| matches!(row, DiffRow::Hunk { .. })),
             Action::NextFunction => self.diff_jump_function(true),
             Action::PrevFunction => self.diff_jump_function(false),
+            Action::CenterCursor => self.diff_align(ScrollAlign::Center),
+            Action::CursorTop => self.diff_align(ScrollAlign::Top),
+            Action::CursorBottom => self.diff_align(ScrollAlign::Bottom),
+            Action::ExpandContext => self.expand_context(),
+            Action::CollapseContext => self.collapse_context(),
+            Action::ExpandWholeFile => self.expand_whole_file(),
             Action::Open => self.diff_focus(Pane::List),
             // side-by-side is a read-only view; commenting and selection stay
             // in the unified pane, reachable by toggling back with `|`
@@ -1017,6 +1003,7 @@ impl App {
             Action::Resolve => self.resolve_at_cursor(),
             Action::DeleteComment => self.delete_comment_at_cursor(),
             Action::MarkViewed => self.diff_toggle_viewed(),
+            Action::UnviewAll => self.diff_unview_all(),
             Action::CopyFileFeedback => self.copy_file_or_selection(),
             Action::CopyAllFeedback => self.copy_feedback(false),
             Action::OpenEditor => self.editor_at_diff_cursor(),
@@ -1041,19 +1028,15 @@ impl App {
         });
     }
 
-    fn diff_toggle_focus(&mut self) {
-        let Some(diff) = self.diff.as_mut() else {
-            return;
-        };
-        diff.focus = match diff.focus {
-            Pane::List => Pane::Diff,
-            Pane::Diff => Pane::List,
-        };
-    }
-
     fn diff_focus(&mut self, pane: Pane) {
         if let Some(diff) = self.diff.as_mut() {
             diff.focus = pane;
+        }
+    }
+
+    fn diff_align(&mut self, align: ScrollAlign) {
+        if let Some(diff) = self.diff.as_mut() {
+            diff.scroll_align = Some(align);
         }
     }
 
@@ -1280,7 +1263,7 @@ impl App {
         }
     }
 
-    /// `t`: cycle the sidebar layout (tree → list → review), keeping the
+    /// `t`: cycle the sidebar layout (tree → review), keeping the
     /// pane's file and re-seating the tree cursor on its row when visible.
     fn diff_cycle_sidebar_mode(&mut self) {
         let review = &self.review;
@@ -1679,6 +1662,27 @@ impl App {
         }
     }
 
+    fn diff_unview_all(&mut self) {
+        let source = self.active_review_source();
+        let session = self.review.session_for_mut(&source);
+        if session.viewed.is_empty() {
+            self.info("no files marked viewed");
+            return;
+        }
+        session.clear_viewed();
+        if let Err(err) = self.review.save_for(&source) {
+            self.error(err.to_string());
+            return;
+        }
+        // every file returns to the to-review bucket, so re-seat the sidebar
+        let review = &self.review;
+        if let Some(diff) = self.diff.as_mut() {
+            let rows = sidebar_rows(diff, review);
+            diff.reseat_tree_cursor(&rows);
+        }
+        self.info("cleared all viewed marks");
+    }
+
     /// Move the sidebar selection to the next not-viewed file below it, if
     /// any; otherwise stay put.
     fn diff_advance_to_unviewed(&mut self) {
@@ -1825,7 +1829,9 @@ mod tests {
     use crate::app::Screen;
     use crate::config::LoadedConfig;
     use crate::event::AppEvent;
-    use crate::test_support::{Fixture, ctrl_key, key, standard_fixture, two_hunk_fixture};
+    use crate::test_support::{
+        Fixture, code_key, ctrl_key, key, standard_fixture, two_hunk_fixture,
+    };
 
     fn diff_app(fixture: &Fixture) -> App {
         let mut app = App::new(fixture.review(), LoadedConfig::default());
@@ -2029,38 +2035,7 @@ mod tests {
     }
 
     #[test]
-    fn the_list_sidebar_layout_is_flat_with_full_paths_and_no_dirs() {
-        let fixture = standard_fixture();
-        let app = diff_app_with_layout(&fixture, crate::config::FileLayout::List);
-        // flat: every row is a file carrying its full repo-relative path, no
-        // dir rows, in model order
-        assert_eq!(
-            tree_kinds(&app),
-            vec![
-                "file:ci.yml".to_owned(),
-                "file:src/lib.rs".to_owned(),
-                "file:todo.md".to_owned(),
-            ]
-        );
-    }
-
-    #[test]
-    fn list_sidebar_jk_walks_files_and_selects_them() {
-        let fixture = standard_fixture();
-        let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::List);
-        // cursor opens on the shown file (ci.yml, model index 0, first row)
-        assert_eq!(tree_cursor(&app), 0);
-        assert_eq!(selected_path(&app), "ci.yml");
-        app.handle(key('j'));
-        assert_eq!(selected_path(&app), "src/lib.rs");
-        app.handle(key('j'));
-        assert_eq!(selected_path(&app), "todo.md");
-        app.handle(key('k'));
-        assert_eq!(selected_path(&app), "src/lib.rs");
-    }
-
-    #[test]
-    fn list_gg_and_g_jump_to_the_first_and_last_visible_row() {
+    fn gg_and_g_jump_to_the_first_and_last_visible_row() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
         let last = tree_row_count(&app) - 1;
@@ -2116,14 +2091,51 @@ mod tests {
     }
 
     #[test]
-    fn tab_toggles_focus_between_the_panes() {
+    fn h_and_l_focus_the_panes_and_clamp() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
         assert_eq!(focus(&app), Pane::List);
-        app.handle(key('\t'));
+        app.handle(key('l'));
         assert_eq!(focus(&app), Pane::Diff);
-        app.handle(key('\t'));
+        app.handle(key('l'));
+        assert_eq!(
+            focus(&app),
+            Pane::Diff,
+            "repeats stay on the diff, no cycle"
+        );
+        app.handle(key('h'));
         assert_eq!(focus(&app), Pane::List);
+        app.handle(key('h'));
+        assert_eq!(
+            focus(&app),
+            Pane::List,
+            "repeats stay on the sidebar, no cycle"
+        );
+    }
+
+    #[test]
+    fn arrow_keys_focus_the_panes_like_h_and_l() {
+        use crossterm::event::KeyCode;
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        app.handle(code_key(KeyCode::Right));
+        assert_eq!(focus(&app), Pane::Diff);
+        app.handle(code_key(KeyCode::Left));
+        assert_eq!(focus(&app), Pane::List);
+    }
+
+    #[test]
+    fn tab_and_backtab_step_through_files_keeping_focus() {
+        use crossterm::event::KeyCode;
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        let first = selected_path(&app);
+        app.handle(key('\t'));
+        let second = selected_path(&app);
+        assert_ne!(first, second, "tab advances to the next file");
+        assert_eq!(focus(&app), Pane::List, "stepping files keeps focus");
+        app.handle(code_key(KeyCode::BackTab));
+        assert_eq!(selected_path(&app), first, "shift-tab steps back");
     }
 
     #[test]
@@ -2545,6 +2557,32 @@ mod tests {
     }
 
     #[test]
+    fn capital_u_clears_all_viewed_marks() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        let paths: Vec<String> = app
+            .review
+            .model()
+            .files
+            .iter()
+            .map(|f| f.path.clone())
+            .collect();
+        for _ in &paths {
+            app.handle(key('v'));
+        }
+        assert!(
+            paths.iter().all(|p| app.is_path_viewed(p)),
+            "all marked first"
+        );
+
+        app.handle(key('U'));
+        assert!(
+            paths.iter().all(|p| !app.is_path_viewed(p)),
+            "U cleared every viewed mark"
+        );
+    }
+
+    #[test]
     fn unmarking_viewed_does_not_move_the_selection() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
@@ -2649,16 +2687,10 @@ mod tests {
     }
 
     #[test]
-    fn t_cycles_the_sidebar_through_tree_list_and_review() {
+    fn t_cycles_the_sidebar_between_the_tree_and_the_review_buckets() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
         assert!(tree_kinds(&app).contains(&"dir".to_owned()));
-        app.handle(key('t'));
-        assert_eq!(
-            tree_kinds(&app),
-            ["file:ci.yml", "file:src/lib.rs", "file:todo.md"],
-            "list: one flat row per file"
-        );
         app.handle(key('t'));
         assert_eq!(tree_kinds(&app)[0], "section:To review:3");
         app.handle(key('t'));
@@ -3104,21 +3136,25 @@ mod tests {
             .id
             .clone();
         session.reply(&id, "agent", "done\nand verified");
-        let lines = comment_display(&session.comments[0], u16::MAX);
+        let lines = comment_display(&session.comments[0], u16::MAX, None);
+        let plain = |s: &str| MdSpan {
+            text: s.to_owned(),
+            ..MdSpan::default()
+        };
         assert_eq!(
             lines,
             vec![
                 CommentLine::Header,
-                CommentLine::Body("first".to_owned()),
-                CommentLine::Body("second".to_owned()),
+                CommentLine::Body(vec![plain("first")]),
+                CommentLine::Body(vec![plain("second")]),
                 CommentLine::Reply {
                     author: "agent".to_owned(),
-                    text: "done".to_owned(),
+                    spans: vec![plain("done")],
                     first: true,
                 },
                 CommentLine::Reply {
                     author: "agent".to_owned(),
-                    text: "and verified".to_owned(),
+                    spans: vec![plain("and verified")],
                     first: false,
                 },
                 CommentLine::Footer,
@@ -3144,14 +3180,15 @@ mod tests {
             .id
             .clone();
         session.reply(&id, "agent", "a reply that also runs past the pane");
-        let lines = comment_display(&session.comments[0], 30);
+        let lines = comment_display(&session.comments[0], 30, None);
         let budget = 30 - 4;
+        let text = |runs: &[MdSpan]| runs.iter().map(|s| s.text.clone()).collect::<String>();
         for line in &lines {
             match line {
-                CommentLine::Body(text) => assert!(text.width() <= budget, "{text:?}"),
-                CommentLine::Reply { text, first, .. } => {
+                CommentLine::Body(runs) => assert!(text(runs).width() <= budget, "{runs:?}"),
+                CommentLine::Reply { spans, first, .. } => {
                     let head = if *first { "↳ agent: ".width() } else { 2 };
-                    assert!(text.width() + head <= budget, "{text:?}");
+                    assert!(text(spans).width() + head <= budget, "{spans:?}");
                 }
                 _ => {}
             }
@@ -3165,7 +3202,7 @@ mod tests {
         let joined: Vec<String> = lines
             .iter()
             .filter_map(|l| match l {
-                CommentLine::Body(t) => Some(t.clone()),
+                CommentLine::Body(runs) => Some(text(runs)),
                 _ => None,
             })
             .collect();
@@ -3189,10 +3226,11 @@ mod tests {
             "reviewer",
             "https://example.invalid/a/very/long/unbroken/path/segment/thing",
         );
-        let lines = comment_display(&session.comments[0], 24);
+        let lines = comment_display(&session.comments[0], 24, None);
         for line in &lines {
-            if let CommentLine::Body(text) = line {
-                assert!(text.width() <= 20, "{text:?}");
+            if let CommentLine::Body(runs) = line {
+                let width: usize = runs.iter().map(|s| s.text.width()).sum();
+                assert!(width <= 20, "{runs:?}");
             }
         }
     }

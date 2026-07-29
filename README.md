@@ -118,7 +118,10 @@ rather paste it into a prompt.
 The same review works against real pull requests: the status screen shows the
 branch's PR (and `b` `p` lists all open ones; reviewing never needs a
 checkout). PR comments sync in as regular threads, yours stack locally, and
-`S` submits them as a single review on the forge.
+`S` submits them as a single review on the forge. `b` `P` opens a new one from
+the current branch, filling the title and body from its commits and pushing
+first when the forge has not seen the branch yet. Replies the agent wrote stay
+local: what goes out carries your name, so it is what you wrote.
 
 ## Keys
 
@@ -131,11 +134,14 @@ Vim-like: `j`/`k`/`gg`/`G` motions, `/` search, and
 | `s` / `u` | stage / unstage |
 | `cc` | commit |
 | `c` | comment the diff line (`V` selects a range first) |
-| `v` / `u` | in the diff view: mark the file viewed / jump to the next unviewed file |
-| `t` | cycle the sidebar: tree, list, review buckets (viewed files fold away, come back if they change) |
+| `v` / `u` / `U` | in the diff view: mark the file viewed / jump to the next unviewed / clear every mark |
+| `+` / `-` / `=` | widen / narrow the context around a hunk, or open the whole file |
+| `\|` | side-by-side diff |
+| `t` | cycle the sidebar: file tree, review buckets (viewed files fold away, come back if they change) |
 | `Z` | send feedback to the agent |
 | `C` | overview of every comment: Enter jumps, `d`/`D` delete one/all |
 | `S` | submit stacked PR comments as one review |
+| `b` `P` | open a pull request for the current branch |
 | `y` / `Y` | copy feedback as markdown (file / all) |
 | `x` | in the diff view: graph who calls the symbol under the cursor |
 | `e` | open the file in `$EDITOR` |
@@ -145,10 +151,13 @@ Vim-like: `j`/`k`/`gg`/`G` motions, `/` search, and
 Every binding is remappable, see
 [docs/config.example.toml](docs/config.example.toml).
 
-The diff view is two panes: a file sidebar and the selected file's diff. `TAB`
-moves focus between them; `j`/`k` change the selected file from the sidebar or
-scroll the diff when focused there; `J`/`K` (or `<c-n>`/`<c-p>`) switch files
-from either.
+The diff view is two panes: a file sidebar and the selected file's diff. `h`
+and `l` (or the left/right arrows) focus the sidebar and the diff; `j`/`k`
+change the selected file from the sidebar or scroll the diff when focused there;
+`<tab>`/`<s-tab>`, `J`/`K`, or `<c-n>`/`<c-p>` step through files from either.
+
+Diffs are compared on the syntax tree, so a reindented or rewrapped block
+highlights only the tokens that actually differ.
 
 The mouse works too (including over tmux): the wheel scrolls the pane under the
 pointer, and a left click selects a row. Clicking a section, directory, or
@@ -181,6 +190,13 @@ result and where each value came from:
 ```sh
 diffler config --dump
 ```
+
+## Themes
+
+Switchable live with `T`, or set `ui.theme`. The
+[gallery](showcase/THEMES.md) shows each one.
+
+![the diff view in catppuccin-mocha: a review comment with the agent's reply threaded under it](showcase/img/catppuccin-mocha.png)
 
 ## Development
 

@@ -56,9 +56,6 @@ pub struct BranchInfo {
 /// without diffler holding any credentials.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetworkOp {
-    Push,
-    PushSetUpstream,
-    Pull,
     Fetch,
     FetchAll,
 }
@@ -98,6 +95,14 @@ pub trait Vcs: Send {
     fn resolve(&self, revision: &str) -> Result<String, VcsError>;
     /// History from HEAD, newest first.
     fn log(&self, limit: usize) -> Result<Vec<LogEntry>, VcsError>;
+
+    /// The branch a pull request merges into by default; `None` when the
+    /// repository offers no answer.
+    fn default_branch(&self, remote: &str) -> Result<Option<String>, VcsError>;
+
+    /// Commits reachable from `head` but not `base`, newest first: what a
+    /// pull request from `head` would carry.
+    fn commits_between(&self, base: &str, head: &str) -> Result<Vec<LogEntry>, VcsError>;
     /// Local branches.
     fn branches(&self) -> Result<Vec<BranchInfo>, VcsError>;
     /// Stage a whole file (worktree deletions become staged deletions).

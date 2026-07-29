@@ -11,11 +11,15 @@ mod commands;
 mod commit;
 mod diff;
 pub mod enrich;
+mod expand;
 pub(crate) mod fuzzy;
 mod log;
+pub mod markdown;
 mod mcp;
 mod modal;
+mod network;
 pub mod pr;
+pub mod pr_create;
 mod search;
 mod status;
 
@@ -23,8 +27,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub use diff::{
-    CommentLine, DiffRow, DiffView, FileHighlights, FileScope, Pane, SplitRow, SplitSide,
-    comment_display,
+    CommentLine, DiffRow, DiffView, FileHighlights, FileScope, Pane, ScrollAlign, SplitRow,
+    SplitSide, comment_display,
 };
 pub use log::LogView;
 pub(crate) use status::{CI_TITLE, RECENT_TITLE};
@@ -48,6 +52,10 @@ use crate::transient::{Transient, TransientKind, TransientResolve};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Flow {
     Continue,
+    /// The event left the screen exactly as it was, so the loop can skip the
+    /// draw. A terminal nobody is reading fills up otherwise, and the writes
+    /// block the loop that answers the agent.
+    Idle,
     Quit,
 }
 
@@ -113,6 +121,16 @@ pub enum PendingOp {
     },
     /// Wipe every deletable comment of the active review.
     DeleteAllComments,
+    /// Run a queued git op after the user confirms (set-upstream, force-push).
+    RunGit {
+        label: String,
+        argv: Vec<String>,
+    },
+    /// Discard local commits: reset --hard to `upstream`, after a destructive
+    /// confirm.
+    ForcePull {
+        upstream: String,
+    },
 }
 
 /// What an input modal does with its buffer on submit.
@@ -129,6 +147,12 @@ pub enum InputOp {
     },
     CreateBranch {
         checkout: bool,
+    },
+    /// One text field of the pull request being composed; the draft rides
+    /// along so the form comes back with the rest of it intact.
+    PrField {
+        draft: Box<crate::app::pr_create::PrDraft>,
+        field: crate::app::pr_create::PrField,
     },
     /// The optional top-level body of a PR review; empty submits without one.
     ReviewBody {
@@ -170,11 +194,36 @@ pub enum Modal {
     },
     /// Fuzzy command palette over everything executable on this screen.
     Palette { list: fuzzy::FuzzyList },
+    /// Fuzzy picker over the built-in themes; applies the pick live.
+    Themes { list: fuzzy::FuzzyList },
+    /// Remote picker feeding `purpose` with the selected remote name.
+    RemoteList {
+        remotes: Vec<String>,
+        list: fuzzy::FuzzyList,
+        purpose: RemotePurpose,
+    },
+    /// Reconcile choice when a pull finds the branch diverged from `upstream`.
+    PullDiverged { upstream: String },
     /// Verdict picker for a PR review submit: approve, request changes, or
     /// comment only.
-    ReviewVerdict { number: u64 },
+    ReviewVerdict {
+        number: u64,
+        /// What the submit will send, resolved when the dialog opens.
+        summary: Vec<String>,
+    },
+    /// Compose a pull request for the checked-out branch.
+    CreatePr {
+        draft: Box<crate::app::pr_create::PrDraft>,
+    },
     /// Keymap listing for the screen the popup opened over.
     Help,
+}
+
+/// What choosing a remote in [`Modal::RemoteList`] does next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemotePurpose {
+    SetUpstreamPush,
+    Pull,
 }
 
 /// One row of the comments overview: where it anchors and what to show.
@@ -277,6 +326,7 @@ pub enum CiRequest {
     Pr,
     Prs,
     PrComments(u64),
+    CreatePr(Box<crate::ci::NewPullRequest>),
     Detail(crate::ci::RunId),
     Extras(crate::ci::RunId),
     Log {
@@ -487,10 +537,15 @@ pub struct App {
     /// Editor subprocess the main loop runs with the terminal suspended,
     /// then reports back through [`App::editor_finished`].
     pub pending_editor: Option<EditorRequest>,
+    /// A pull request waiting on its branch to reach the forge.
+    pub pending_pr_create: Option<Box<crate::ci::NewPullRequest>>,
     /// Network git op the main loop runs in the background (terminal stays up),
     /// reporting back through [`AppEvent::GitDone`]. Set by a push/pull/fetch
     /// transient leaf, taken once by the loop.
     pub pending_git: Option<GitOp>,
+    /// Argv of the last push, so a rejection can offer a `--force-with-lease`
+    /// retry against the same target.
+    pub(crate) last_push_argv: Option<Vec<String>>,
     /// Watcher health flag, set by `watch::spawn_watcher`. `None` (no
     /// watcher) counts as unhealthy: the tick fallback polls instead.
     pub watcher_healthy: Option<Arc<AtomicBool>>,
@@ -627,7 +682,9 @@ impl App {
             message,
             pending_clipboard: None,
             pending_editor: None,
+            pending_pr_create: None,
             pending_git: None,
+            last_push_argv: None,
             watcher_healthy: None,
             refresh_flash: 0,
             feedback_tx: tokio::sync::watch::Sender::new(0),
@@ -752,25 +809,7 @@ impl App {
                     self.handle_key(&key)
                 }
             }
-            AppEvent::Tick => {
-                self.expire_pending();
-                self.refresh_flash = self.refresh_flash.saturating_sub(1);
-                self.tick_count = self.tick_count.wrapping_add(1);
-                if self.tick_count.is_multiple_of(FALLBACK_REFRESH_TICKS)
-                    && self.watcher_unhealthy()
-                {
-                    self.refresh();
-                }
-                // re-poll the active CI screen on a relaxed cadence (250ms ticks);
-                // saturating + clamp so a pathological config can't zero or overflow it
-                let poll_ticks =
-                    u32::try_from(self.config.ci.poll_seconds.max(1).saturating_mul(4))
-                        .unwrap_or(u32::MAX);
-                if self.tick_count.is_multiple_of(poll_ticks) {
-                    self.queue_ci_poll();
-                }
-                Flow::Continue
-            }
+            AppEvent::Tick => self.on_tick(),
             AppEvent::RefreshDone(result) => {
                 self.on_refresh_done(*result);
                 Flow::Continue
@@ -786,6 +825,10 @@ impl App {
                 Flow::Continue
             }
             AppEvent::CiPr(pr) => self.on_pr_event(pr),
+            AppEvent::PrCreated(result) => {
+                self.on_pr_created(*result);
+                Flow::Continue
+            }
             AppEvent::CiPrs(prs) => self.on_prs_event(prs),
             AppEvent::PrComments {
                 number,
@@ -1043,15 +1086,46 @@ impl App {
         }
     }
 
-    fn expire_pending(&mut self) {
+    /// One 250ms beat: age the timed UI state and re-poll what the screen is
+    /// watching. `Idle` when the beat left the screen untouched, so the loop
+    /// can skip a draw nobody would see.
+    fn on_tick(&mut self) -> Flow {
+        let mut changed = self.expire_pending();
+        changed |= self.refresh_flash > 0;
+        let which_key = self.which_key_panel().is_some();
+        self.refresh_flash = self.refresh_flash.saturating_sub(1);
+        self.tick_count = self.tick_count.wrapping_add(1);
+        // the which-key panel reveals on a tick count, so the tick that crosses
+        // its delay is the frame that shows it
+        changed |= self.which_key_panel().is_some() != which_key;
+        if self.tick_count.is_multiple_of(FALLBACK_REFRESH_TICKS) && self.watcher_unhealthy() {
+            self.refresh();
+            changed = true;
+        }
+        // re-poll the active CI screen on a relaxed cadence (250ms ticks);
+        // saturating + clamp so a pathological config can't zero or overflow it
+        let poll_ticks =
+            u32::try_from(self.config.ci.poll_seconds.max(1).saturating_mul(4)).unwrap_or(u32::MAX);
+        // the poll itself paints nothing; its answer arrives as an event
+        if self.tick_count.is_multiple_of(poll_ticks) {
+            self.queue_ci_poll();
+        }
+        if changed { Flow::Continue } else { Flow::Idle }
+    }
+
+    /// True when the wait dropped the half-typed chord, so the caller can tell
+    /// the keymap state moved on.
+    fn expire_pending(&mut self) -> bool {
         if self.pending.is_empty() {
-            return;
+            return false;
         }
         self.pending_ticks += 1;
-        if self.pending_ticks >= PENDING_TIMEOUT_TICKS {
-            self.pending.clear();
-            self.pending_ticks = 0;
+        if self.pending_ticks < PENDING_TIMEOUT_TICKS {
+            return false;
         }
+        self.pending.clear();
+        self.pending_ticks = 0;
+        true
     }
 
     fn dispatch(&mut self, action: Action) -> Flow {
@@ -1076,7 +1150,9 @@ impl App {
             Action::SearchPrev => self.search_step_or_follow(false),
             Action::OpenRuns => self.open_runs(),
             Action::OpenPrs => self.open_prs(),
+            Action::CreatePr => self.create_pr_start(),
             Action::CommentsOverview => self.open_comments_overview(),
+            Action::SwitchTheme => self.open_theme_picker(),
             action => match self.screen() {
                 Screen::Status => self.dispatch_status(action),
                 Screen::Log => self.dispatch_log(action),
@@ -1124,6 +1200,27 @@ impl App {
             Some(Screen::Status) | None => {}
         }
         Flow::Continue
+    }
+
+    fn open_theme_picker(&mut self) {
+        let mut list = fuzzy::FuzzyList::default();
+        list.rerank(&crate::theme::names());
+        self.modal = Some(Modal::Themes { list });
+    }
+
+    /// Swap the active theme live: re-pin the syntax highlighter and drop the
+    /// cached highlights so the visible files re-enrich in the new palette.
+    pub(crate) fn apply_theme(&mut self, name: &str) {
+        let (theme, _) = Theme::from_name(name);
+        self.highlighter = Arc::new(diffler_core::highlight::Highlighter::new(theme.syntax));
+        self.theme = theme;
+        if let Some(diff) = self.diff.as_mut() {
+            diff.highlights.clear();
+            diff.clear_enriched();
+            diff.invalidate();
+        }
+        self.queue_enrich_selected();
+        self.info(format!("theme: {name}"));
     }
 
     pub fn info(&mut self, text: impl Into<String>) {
@@ -1254,6 +1351,15 @@ impl App {
     /// several git ops can be in flight and an unrelated one finishing first
     /// must not consume the continuation slots.
     fn git_finished(&mut self, label: &str, ok: bool, output: &str) {
+        if label == Self::PR_CREATE_PUSH {
+            if ok {
+                self.refresh();
+                self.pr_create_after_push();
+                return;
+            }
+            // the branch never reached the forge, so there is nothing to open
+            self.pending_pr_create = None;
+        }
         if label.starts_with(Self::PR_FETCH_PREFIX) {
             if let Some(pr) = self.pending_pr_open.take().filter(|_| ok) {
                 match self.resolve_pr_range(&pr) {
@@ -1288,6 +1394,8 @@ impl App {
             } else {
                 self.info(format!("{label}: {summary}"));
             }
+        } else if self.network_recovery(label, output) {
+            // a recovery dialog now owns the screen; suppress the raw error
         } else if summary.is_empty() {
             self.error(format!("{label} failed"));
         } else {
@@ -2203,38 +2311,78 @@ mod tests {
     }
 
     #[test]
-    fn push_transient_leaf_queues_the_push_argv_and_label() {
+    fn push_with_an_upstream_queues_a_plain_push() {
         let (_fixture, mut app) = app();
+        app.head.upstream = Some("origin/main".to_owned());
         app.handle(key('P'));
-        assert_eq!(
-            app.transient.map(|t| t.kind),
-            Some(TransientKind::Push),
-            "P opens the push transient"
-        );
+        assert_eq!(app.transient.map(|t| t.kind), Some(TransientKind::Push));
         app.handle(key('p'));
-        assert_eq!(app.transient, None, "the leaf closes the transient");
         let git = app.pending_git.clone().expect("pending git op");
         assert_eq!(git.label, "push");
         assert_eq!(git.argv, vec!["git".to_owned(), "push".to_owned()]);
-        // a running status shows immediately so the next draw reflects it
-        let message = app.message.expect("running status");
-        assert!(
-            message.text.contains("running git push"),
-            "{}",
-            message.text
-        );
+        assert!(app.message.expect("running status").text.contains("push"));
     }
 
     #[test]
-    fn push_set_upstream_leaf_queues_the_u_argv() {
-        let (_fixture, mut app) = app();
+    fn push_without_an_upstream_confirms_set_upstream_to_the_only_remote() {
+        let fixture = standard_fixture();
+        fixture.remote("codeberg", "https://example.invalid/r.git");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.head.upstream = None;
         app.handle(key('P'));
-        app.handle(key('u'));
+        app.handle(key('p'));
+        assert!(
+            matches!(app.modal, Some(Modal::Confirm { .. })),
+            "no upstream asks first: {:?}",
+            app.modal
+        );
+        app.confirm_modal();
         let git = app.pending_git.clone().expect("pending git op");
         assert_eq!(git.label, "push -u");
         assert_eq!(
             git.argv,
-            vec!["git", "push", "-u", "origin", "HEAD"]
+            vec!["git", "push", "-u", "codeberg", "HEAD"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>(),
+            "sets upstream to the actual remote, not a hardcoded origin"
+        );
+    }
+
+    #[test]
+    fn push_with_multiple_remotes_opens_a_remote_chooser() {
+        let fixture = standard_fixture();
+        fixture.remote("origin", "https://example.invalid/a.git");
+        fixture.remote("codeberg", "https://example.invalid/b.git");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.head.upstream = None;
+        app.push_set_upstream();
+        assert!(
+            matches!(app.modal, Some(Modal::RemoteList { .. })),
+            "multiple remotes ask which one: {:?}",
+            app.modal
+        );
+    }
+
+    #[test]
+    fn a_rejected_push_offers_force_with_lease() {
+        let (_fixture, mut app) = app();
+        app.last_push_argv = Some(vec!["git".to_owned(), "push".to_owned()]);
+        app.handle(AppEvent::GitDone {
+            label: "push".to_owned(),
+            ok: false,
+            output: " ! [rejected]        main -> main (non-fast-forward)\n".to_owned(),
+        });
+        assert!(
+            matches!(app.modal, Some(Modal::Confirm { .. })),
+            "a non-fast-forward asks before forcing: {:?}",
+            app.modal
+        );
+        app.confirm_modal();
+        let git = app.pending_git.clone().expect("pending git op");
+        assert_eq!(
+            git.argv,
+            vec!["git", "push", "--force-with-lease"]
                 .into_iter()
                 .map(str::to_owned)
                 .collect::<Vec<_>>()
@@ -2242,8 +2390,68 @@ mod tests {
     }
 
     #[test]
-    fn pull_and_fetch_leaves_queue_their_argv() {
+    fn a_rejected_force_with_lease_does_not_re_offer_force() {
         let (_fixture, mut app) = app();
+        app.handle(AppEvent::GitDone {
+            label: "push --force-with-lease".to_owned(),
+            ok: false,
+            output: "! [rejected] (stale info)\n".to_owned(),
+        });
+        assert_eq!(
+            app.modal, None,
+            "no force loop; the conflict is a real error"
+        );
+        assert_eq!(app.message.expect("error").severity, Severity::Error);
+    }
+
+    #[test]
+    fn a_diverged_pull_offers_rebase_merge_or_force() {
+        let (_fixture, mut app) = app();
+        app.head.upstream = Some("origin/main".to_owned());
+        app.handle(AppEvent::GitDone {
+            label: "pull".to_owned(),
+            ok: false,
+            output:
+                "hint: You have divergent branches and need to specify how to reconcile them.\n"
+                    .to_owned(),
+        });
+        assert!(matches!(app.modal, Some(Modal::PullDiverged { .. })));
+        app.handle(key('r'));
+        assert_eq!(
+            app.pending_git.take().expect("rebase op").argv,
+            vec!["git", "pull", "--rebase"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn force_pull_needs_a_second_destructive_confirm() {
+        let (_fixture, mut app) = app();
+        app.modal = Some(Modal::PullDiverged {
+            upstream: "origin/main".to_owned(),
+        });
+        app.handle(key('f'));
+        assert!(
+            matches!(app.modal, Some(Modal::Confirm { .. })),
+            "force asks a second time before discarding: {:?}",
+            app.modal
+        );
+        app.confirm_modal();
+        assert_eq!(
+            app.pending_git.take().expect("reset op").argv,
+            vec!["git", "reset", "--hard", "@{u}"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn pull_with_an_upstream_queues_a_plain_pull_and_fetch_leaves_queue_argv() {
+        let (_fixture, mut app) = app();
+        app.head.upstream = Some("origin/main".to_owned());
         app.handle(key('p'));
         app.handle(key('p'));
         assert_eq!(
@@ -2345,6 +2553,47 @@ mod tests {
         assert_eq!(app.refresh_flash, REFRESH_FLASH_TICKS);
         app.handle(AppEvent::Tick);
         assert_eq!(app.refresh_flash, REFRESH_FLASH_TICKS - 1);
+    }
+
+    #[test]
+    fn a_tick_that_paints_nothing_reports_idle_so_the_loop_skips_the_draw() {
+        let (_fixture, mut app) = app();
+        // the flash from opening still has frames to give
+        while app.refresh_flash > 0 {
+            assert_eq!(app.handle(AppEvent::Tick), Flow::Continue);
+        }
+        assert_eq!(app.handle(AppEvent::Tick), Flow::Idle);
+    }
+
+    #[test]
+    fn the_tick_that_reveals_the_which_key_panel_asks_for_a_draw() {
+        let (_fixture, mut app) = app();
+        while app.handle(AppEvent::Tick) == Flow::Continue {}
+        app.handle(key('b'));
+        assert!(
+            app.which_key_panel().is_none(),
+            "the panel waits out its delay"
+        );
+        let mut ticks = 0;
+        while app.handle(AppEvent::Tick) == Flow::Idle {
+            ticks += 1;
+            assert!(ticks < 20, "the panel never revealed");
+        }
+        assert!(app.which_key_panel().is_some());
+    }
+
+    #[test]
+    fn an_expiring_chord_asks_for_a_draw_because_the_hint_row_shows_it() {
+        let (_fixture, mut app) = app();
+        while app.handle(AppEvent::Tick) == Flow::Continue {}
+        app.handle(key('g')); // half of `gg`
+        assert!(!app.pending.is_empty());
+        let mut ticks = 0;
+        while app.handle(AppEvent::Tick) == Flow::Idle {
+            ticks += 1;
+            assert!(ticks < 20, "the chord never expired");
+        }
+        assert!(app.pending.is_empty());
     }
 
     #[test]

@@ -56,3 +56,24 @@ def test_first_frame_and_file_switch_stay_interactive(tmp_path, home):
             assert took < SWITCH_CEILING, f"switch to file_{step} took {took:.2f}s"
     finally:
         tui.close()
+
+
+def test_an_untouched_screen_writes_nothing_to_the_terminal(repo, home):
+    """A terminal nobody drains fills up and blocks the loop that answers the
+    agent, so an idle diffler must emit zero bytes."""
+    tui = Tui([str(BIN), "--no-mcp", str(repo)], cwd=str(repo), env=tui_env(home))
+    try:
+        tui.wait_for("Unstaged changes")
+        tui.send("D")  # the review diff, where enrichment lands after the frame
+        tui.wait_for("app.txt")
+        for _ in range(20):  # let every background worker settle
+            tui._feed(timeout=0.2)
+
+        settled = len(tui.raw)
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            tui._feed(timeout=0.2)
+        idle = len(tui.raw) - settled
+        assert idle == 0, f"{idle} bytes written while idle: {tui.raw[settled:]!r}"
+    finally:
+        tui.close()

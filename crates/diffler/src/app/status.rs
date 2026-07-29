@@ -562,11 +562,9 @@ impl App {
             Action::BranchCreateCheckout => self.branch_name_input(true),
             Action::BranchCreate => self.branch_name_input(false),
             Action::BranchDelete => self.open_branch_list(BranchAction::Delete),
-            Action::Push => self.request_network(NetworkOp::Push, "push"),
-            Action::PushSetUpstream => {
-                self.request_network(NetworkOp::PushSetUpstream, "push -u");
-            }
-            Action::Pull => self.request_network(NetworkOp::Pull, "pull"),
+            Action::Push => self.push(),
+            Action::PushSetUpstream => self.push_set_upstream(),
+            Action::Pull => self.pull(),
             Action::Fetch => self.request_network(NetworkOp::Fetch, "fetch"),
             Action::FetchAll => self.request_network(NetworkOp::FetchAll, "fetch --all"),
             Action::StashPush => self.stash_push(),

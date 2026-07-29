@@ -17,12 +17,18 @@ pub struct Highlighter {
 /// Syntax-highlight palette, paired with a UI theme so foreground colors stay
 /// legible against the diff backgrounds (a dark UI needs dark-theme syntax, a
 /// light UI light-theme syntax).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum SyntaxTheme {
     #[default]
     OneHalfDark,
     OneHalfLight,
     Dracula,
+    CatppuccinMocha,
+    TokyoNight,
+    GruvboxDark,
+    Nord,
+    RosePine,
+    Kanagawa,
 }
 
 /// Foreground color + style for a byte range of one line.
@@ -53,13 +59,26 @@ impl Highlighter {
     /// Returns one `Vec<StyledRange>` per line (without trailing newlines).
     /// Unknown languages produce empty ranges per line (plain rendering).
     pub fn highlight(&self, path: &str, content: &str) -> Vec<Vec<StyledRange>> {
+        self.highlight_entry(self.registry.for_path(path), content)
+    }
+
+    /// Highlight `content` as a markdown fence token (`rust`, `py`, ...).
+    pub fn highlight_lang(&self, token: &str, content: &str) -> Vec<Vec<StyledRange>> {
+        self.highlight_entry(self.registry.for_token(token), content)
+    }
+
+    fn highlight_entry(
+        &self,
+        entry: Option<&crate::syntax::registry::LangEntry>,
+        content: &str,
+    ) -> Vec<Vec<StyledRange>> {
         let bounds = crate::syntax::line_bounds(content);
         let mut out: Vec<Vec<StyledRange>> = vec![Vec::new(); bounds.len()];
 
         if content.len() > crate::syntax::MAX_PARSE_BYTES {
             return out;
         }
-        let Some(entry) = self.registry.for_path(path) else {
+        let Some(entry) = entry else {
             return out;
         };
         let Some(config) = entry.config.as_ref() else {
@@ -67,7 +86,10 @@ impl Highlighter {
         };
 
         let mut ts = TsHighlighter::new();
-        let Ok(events) = ts.highlight(config, content.as_bytes(), None, |_| None) else {
+        let registry = &self.registry;
+        let Ok(events) = ts.highlight(config, content.as_bytes(), None, move |lang| {
+            registry.config_for_injection(lang)
+        }) else {
             return out;
         };
 
@@ -87,22 +109,16 @@ impl Highlighter {
                         && let Some(name) = HIGHLIGHT_NAMES.get(name_idx)
                         && let Some(style) = self.theme.style(name)
                     {
-                        crate::syntax::split_range_by_line(
-                            &bounds,
-                            &starts,
-                            &(start..end),
-                            |li, r| {
-                                if let Some(line) = out.get_mut(li) {
-                                    line.push(StyledRange {
-                                        range: r,
-                                        fg: style.fg,
-                                        bold: style.bold,
-                                        italic: style.italic,
-                                    });
-                                }
-                            },
-                        );
+                        push_styled(&mut out, &bounds, &starts, &(start..end), &style);
                     }
+                }
+            }
+        }
+
+        if entry.name == "markdown" {
+            for (range, name) in self.registry.markdown_inline_spans(content) {
+                if let Some(style) = self.theme.style(name) {
+                    push_styled(&mut out, &bounds, &starts, &range, &style);
                 }
             }
         }
@@ -128,11 +144,67 @@ struct StyleSpec {
     italic: bool,
 }
 
+fn push_styled(
+    out: &mut [Vec<StyledRange>],
+    bounds: &[(usize, usize)],
+    starts: &[usize],
+    range: &Range<usize>,
+    style: &StyleSpec,
+) {
+    crate::syntax::split_range_by_line(bounds, starts, range, |li, r| {
+        if let Some(line) = out.get_mut(li) {
+            line.push(StyledRange {
+                range: r,
+                fg: style.fg,
+                bold: style.bold,
+                italic: style.italic,
+            });
+        }
+    });
+}
+
+/// Palette category and face for markdown `text.*` captures, reusing the general
+/// syntax colors (headings as functions, code spans as strings, links as
+/// properties) so every theme styles markdown with no extra color tables.
+fn markdown_face(name: &str) -> Option<(&'static str, bool, bool)> {
+    let face = match name {
+        "text.title" => ("function", true, false),
+        "text.strong" => ("variable", true, false),
+        "text.emphasis" => ("variable", false, true),
+        "text.literal" => ("string", false, false),
+        "text.uri" | "text.reference" => ("property", false, false),
+        _ => return None,
+    };
+    Some(face)
+}
+
+/// Fold a grammar's own capture category onto the palette's, so every theme
+/// styles it without carrying an entry for it. Applied before the face is
+/// chosen, so a folded comment stays italic like a native one.
+fn palette_category(category: &str) -> &str {
+    match category {
+        "boolean" => "constant",
+        "conditional" | "storageclass" => "keyword",
+        "field" => "property",
+        "parameter" => "variable",
+        // SQL tags comments `@comment @spell`, and the last capture wins
+        "spell" => "comment",
+        other => other,
+    }
+}
+
 impl SyntaxTheme {
     /// Style for a tree-sitter capture name, matched by its leading category
     /// (`function.method` -> `function`). `None` leaves the span at default fg.
     fn style(self, name: &str) -> Option<StyleSpec> {
-        let category = name.split('.').next().unwrap_or(name);
+        if let Some((category, bold, italic)) = markdown_face(name) {
+            return Some(StyleSpec {
+                fg: self.color(category)?,
+                bold,
+                italic,
+            });
+        }
+        let category = palette_category(name.split('.').next().unwrap_or(name));
         let italic = category == "comment";
         let fg = self.color(category)?;
         Some(StyleSpec {
@@ -142,6 +214,7 @@ impl SyntaxTheme {
         })
     }
 
+    #[allow(clippy::too_many_lines)]
     fn color(self, category: &str) -> Option<(u8, u8, u8)> {
         let c = match self {
             SyntaxTheme::OneHalfDark => match category {
@@ -181,6 +254,74 @@ impl SyntaxTheme {
                 "variable" | "punctuation" => (248, 248, 242),
                 _ => return None,
             },
+            SyntaxTheme::CatppuccinMocha => match category {
+                "keyword" | "label" => (203, 166, 247),
+                "function" => (137, 180, 250),
+                "type" | "constructor" => (249, 226, 175),
+                "string" => (166, 227, 161),
+                "comment" => (127, 132, 156),
+                "constant" | "number" | "attribute" => (250, 179, 135),
+                "operator" | "escape" => (137, 220, 235),
+                "property" | "tag" => (243, 139, 168),
+                "variable" | "punctuation" => (205, 214, 244),
+                _ => return None,
+            },
+            SyntaxTheme::TokyoNight => match category {
+                "keyword" | "label" => (187, 154, 247),
+                "function" => (122, 162, 247),
+                "type" | "constructor" => (42, 195, 222),
+                "string" => (158, 206, 106),
+                "comment" => (99, 109, 150),
+                "constant" | "number" | "attribute" => (255, 158, 100),
+                "operator" | "escape" => (137, 221, 255),
+                "property" | "tag" => (247, 118, 142),
+                "variable" | "punctuation" => (192, 202, 245),
+                _ => return None,
+            },
+            SyntaxTheme::GruvboxDark => match category {
+                "keyword" | "label" => (251, 73, 52),
+                "function" => (184, 187, 38),
+                "type" | "constructor" => (250, 189, 47),
+                "string" => (142, 192, 124),
+                "comment" => (146, 131, 116),
+                "constant" | "number" => (211, 134, 155),
+                "operator" | "escape" | "attribute" => (254, 128, 25),
+                "property" | "tag" => (131, 165, 152),
+                "variable" | "punctuation" => (235, 219, 178),
+                _ => return None,
+            },
+            SyntaxTheme::Nord => match category {
+                "keyword" | "label" | "operator" | "escape" => (129, 161, 193),
+                "function" => (136, 192, 208),
+                "type" | "constructor" | "property" | "tag" => (143, 188, 187),
+                "string" => (163, 190, 140),
+                "comment" => (123, 136, 161),
+                "constant" | "number" | "attribute" => (180, 142, 173),
+                "variable" | "punctuation" => (216, 222, 233),
+                _ => return None,
+            },
+            SyntaxTheme::RosePine => match category {
+                "keyword" | "label" | "operator" | "escape" => (49, 116, 143),
+                "function" => (235, 188, 186),
+                "type" | "constructor" | "property" | "tag" => (156, 207, 216),
+                "string" => (246, 193, 119),
+                "comment" => (129, 124, 153),
+                "constant" | "number" | "attribute" => (196, 167, 231),
+                "variable" | "punctuation" => (224, 222, 244),
+                _ => return None,
+            },
+            SyntaxTheme::Kanagawa => match category {
+                "keyword" | "label" => (149, 127, 184),
+                "function" => (126, 156, 216),
+                "type" | "constructor" => (122, 168, 159),
+                "string" => (152, 187, 108),
+                "comment" => (144, 140, 128),
+                "constant" | "number" | "attribute" => (210, 126, 153),
+                "operator" | "escape" => (127, 180, 202),
+                "property" | "tag" => (106, 149, 137),
+                "variable" | "punctuation" => (220, 215, 186),
+                _ => return None,
+            },
         };
         Some(c)
     }
@@ -211,6 +352,44 @@ mod tests {
     }
 
     #[test]
+    fn sql_is_highlighted() {
+        let hl = Highlighter::default();
+        let lines = hl.highlight("q.sql", "SELECT id FROM users WHERE active = true;\n");
+        assert!(
+            lines.iter().any(|line| !line.is_empty()),
+            "expected styled ranges for a .sql file"
+        );
+    }
+
+    #[test]
+    fn sql_line_and_block_comments_style_alike() {
+        let hl = Highlighter::default();
+        let lines = hl.highlight("q.sql", "-- one\n/* two */\n");
+        let style = |line: &[StyledRange]| line.first().map(|r| (r.fg, r.italic));
+        assert_eq!(
+            style(&lines[0]),
+            style(&lines[1]),
+            "a -- comment styles like a block comment"
+        );
+        assert!(style(&lines[0]).is_some(), "comments are styled at all");
+    }
+
+    #[test]
+    fn sql_numbers_are_not_styled_as_strings() {
+        let hl = Highlighter::default();
+        let lines = hl.highlight("q.sql", "SELECT 42, 1.5, 'txt';\n");
+        let colors: Vec<(u8, u8, u8)> = lines[0].iter().map(|r| r.fg).collect();
+        let string_fg = (152, 195, 121);
+        let number_fg = (209, 154, 102);
+        assert!(colors.contains(&number_fg), "numbers get the number color");
+        assert_eq!(
+            colors.iter().filter(|c| **c == string_fg).count(),
+            1,
+            "only the quoted literal is a string: {colors:?}"
+        );
+    }
+
+    #[test]
     fn ranges_cover_within_line_bounds() {
         let hl = Highlighter::default();
         let src = "fn main() { let x = \"hi\"; }\n";
@@ -231,6 +410,67 @@ mod tests {
         assert!(
             lines[1].iter().all(|r| r.fg == string_color),
             "inside-string line must keep string color"
+        );
+    }
+
+    #[test]
+    fn markdown_highlights_headings_and_inline_code() {
+        let hl = Highlighter::default();
+        let src = "# Title\n\nSome `code` and **bold** text.\n";
+        let lines = hl.highlight("readme.md", src);
+        assert!(!lines[0].is_empty(), "heading line should be styled");
+        // `code` is styled by the by-hand inline pass over the block (inline) node
+        assert!(
+            lines[2].iter().any(|r| r.fg == (152, 195, 121)),
+            "inline `code` should get the string color"
+        );
+    }
+
+    #[test]
+    fn markdown_inline_code_offset_is_absolute_not_range_relative() {
+        // inline content starts well past byte 0 (after a heading and blank
+        // lines); the code span must still land on its own line
+        let hl = Highlighter::default();
+        let src = "# A longer heading here\n\nintro line\n\nthen `code` appears.\n";
+        let lines = hl.highlight("readme.md", src);
+        let code_line = "then `code` appears.";
+        let styled: Vec<_> = lines[4]
+            .iter()
+            .filter(|r| r.fg == (152, 195, 121))
+            .collect();
+        assert!(!styled.is_empty(), "code span should be styled on line 4");
+        for r in styled {
+            assert!(
+                r.range.end <= code_line.len(),
+                "range {:?} escapes the line (offsets not absolute)",
+                r.range
+            );
+            assert_eq!(&code_line[r.range.clone()], "`code`");
+        }
+    }
+
+    #[test]
+    fn markdown_fenced_code_block_gets_language_highlight() {
+        let hl = Highlighter::default();
+        let src = "text\n\n```rust\nfn f() {}\n```\n";
+        let lines = hl.highlight("readme.md", src);
+        // `fn` keyword inside the fence is highlighted by the injected rust grammar
+        assert!(
+            lines[3].iter().any(|r| r.fg == (198, 120, 221)),
+            "fenced rust `fn` should get the keyword color"
+        );
+    }
+
+    #[test]
+    fn markdown_fence_tag_resolves_by_extension() {
+        // an `rs` fence tag is a file extension, not a grammar name; it resolves
+        // to rust through the extension table
+        let hl = Highlighter::default();
+        let src = "text\n\n```rs\nfn f() {}\n```\n";
+        let lines = hl.highlight("readme.md", src);
+        assert!(
+            lines[3].iter().any(|r| r.fg == (198, 120, 221)),
+            "an `rs` fence should resolve to rust via by_ext"
         );
     }
 

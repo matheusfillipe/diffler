@@ -13,6 +13,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
+use crate::app::markdown::MdSpan;
 use crate::app::{
     App, CommentLine, DiffRow, DiffView, FileHighlights, FileScope, Pane, SplitRow, SplitSide,
     comment_display,
@@ -23,7 +24,7 @@ use crate::theme::Theme;
 use crate::tree::{Bucket, TreeNode};
 use crate::ui::Hint;
 use crate::ui::diff_render::{
-    diff_line_height, file_gutter_width, hunk_header, line_syntax, render_diff_line,
+    align_scroll, diff_line_height, file_gutter_width, hunk_header, line_syntax, render_diff_line,
     render_split_pair, split_pair_height,
 };
 use crate::ui::{diffstat_spans, proportion_bar, status_bar, status_color};
@@ -55,6 +56,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let review = &app.review;
     let blast = &app.blast;
     let search = app.search.as_ref();
+    let highlighter = app.highlighter.as_ref();
     if let Some(diff) = app.diff.as_mut() {
         // comment wrap follows the diff pane's inner width: the body minus
         // the sidebar column and the pane block's two border columns
@@ -71,6 +73,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             blast,
             blast_inflight: &app.blast_inflight,
             search,
+            highlighter,
         };
         draw_body(frame, body, &ctx, diff);
     }
@@ -88,6 +91,7 @@ struct RenderCtx<'a> {
     blast: &'a std::collections::HashMap<String, crate::app::blast::FileBlast>,
     blast_inflight: &'a std::collections::HashSet<String>,
     search: Option<&'a Search>,
+    highlighter: &'a diffler_core::highlight::Highlighter,
 }
 
 fn draw_body(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut DiffView) {
@@ -263,7 +267,10 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
             (Some(s), Some(h)) => (*s, *h),
             _ => (0, 1),
         };
-        let mut scroll = diff.split_scroll.min(total.saturating_sub(1));
+        let base = diff.scroll_align.take().map_or(diff.split_scroll, |a| {
+            align_scroll(a, sel_start, sel_height, height)
+        });
+        let mut scroll = base.min(total.saturating_sub(1));
         if sel_start < scroll {
             scroll = sel_start;
         }
@@ -287,6 +294,7 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
             top_row.get_or_insert(index);
             let rendered = split_row_lines(
                 theme,
+                ctx.highlighter,
                 session,
                 file,
                 highlights,
@@ -339,7 +347,10 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
         (Some(s), Some(h)) => (*s, *h),
         _ => (0, 1),
     };
-    let mut scroll = diff.scroll.min(total.saturating_sub(1));
+    let base = diff.scroll_align.take().map_or(diff.scroll, |a| {
+        align_scroll(a, cur_start, cur_height, height)
+    });
+    let mut scroll = base.min(total.saturating_sub(1));
     if cur_start < scroll {
         scroll = cur_start;
     }
@@ -370,6 +381,7 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
             .unwrap_or_default();
         let rendered = row_lines(
             theme,
+            ctx.highlighter,
             session,
             model,
             diff,
@@ -414,6 +426,7 @@ fn split_row_height(file: &FileDiff, row: &SplitRow, gutter: usize, width: u16) 
 #[allow(clippy::too_many_arguments)]
 fn split_row_lines(
     theme: &Theme,
+    highlighter: &diffler_core::highlight::Highlighter,
     session: &Session,
     file: &FileDiff,
     highlights: Option<&FileHighlights>,
@@ -460,7 +473,13 @@ fn split_row_lines(
         } => match session.comments.get(comment) {
             Some(comment) => {
                 vec![comment_row_line(
-                    theme, comment, line, outdated, width, on_cursor,
+                    theme,
+                    highlighter,
+                    comment,
+                    line,
+                    outdated,
+                    width,
+                    on_cursor,
                 )]
             }
             None => vec![Line::default()],
@@ -734,6 +753,7 @@ fn row_height(model: &DiffModel, row: &DiffRow, width: u16) -> usize {
 #[allow(clippy::too_many_arguments)]
 fn row_lines(
     theme: &Theme,
+    highlighter: &diffler_core::highlight::Highlighter,
     session: &Session,
     model: &DiffModel,
     diff: &DiffView,
@@ -779,7 +799,13 @@ fn row_lines(
         } => match session.comments.get(*comment) {
             Some(comment) => {
                 vec![comment_row_line(
-                    theme, comment, *line, *outdated, width, selected,
+                    theme,
+                    highlighter,
+                    comment,
+                    *line,
+                    *outdated,
+                    width,
+                    selected,
                 )]
             }
             None => vec![Line::default()],
@@ -932,8 +958,10 @@ fn pane_header_line(
     pad_line(spans, bg, width)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn comment_row_line(
     theme: &Theme,
+    highlighter: &diffler_core::highlight::Highlighter,
     comment: &Comment,
     line: usize,
     outdated: bool,
@@ -955,7 +983,7 @@ fn comment_row_line(
     let bar = Span::styled("  ▌ ".to_owned(), Style::new().fg(accent).bg(bg));
     let dim = Style::new().fg(theme.dim).bg(bg);
     let fg = Style::new().fg(theme.fg).bg(bg);
-    let lines = comment_display(comment, width);
+    let lines = comment_display(comment, width, Some(highlighter));
     let Some(part) = lines.get(line) else {
         return Line::default();
     };
@@ -984,10 +1012,14 @@ fn comment_row_line(
             }
             spans
         }
-        CommentLine::Body(text) => vec![bar, Span::styled(text.clone(), fg)],
+        CommentLine::Body(runs) => {
+            let mut spans = vec![bar];
+            spans.extend(runs.iter().map(|run| md_span(run, fg, theme)));
+            spans
+        }
         CommentLine::Reply {
             author,
-            text,
+            spans: runs,
             first,
         } => {
             let mut spans = vec![bar];
@@ -999,7 +1031,7 @@ fn comment_row_line(
             } else {
                 spans.push(Span::styled("  ".to_owned(), fg));
             }
-            spans.push(Span::styled(text.clone(), fg));
+            spans.extend(runs.iter().map(|run| md_span(run, fg, theme)));
             spans
         }
         CommentLine::Footer => vec![Span::styled(
@@ -1008,6 +1040,34 @@ fn comment_row_line(
         )],
     };
     pad_line(spans, bg, width)
+}
+
+/// Map a markdown run's flags onto `base` (the body foreground over the card
+/// background). Recoloring flags (code, link, muted) win over the base fg.
+fn md_span(run: &MdSpan, base: Style, theme: &Theme) -> Span<'static> {
+    let mut style = base;
+    if run.bold {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    if run.italic {
+        style = style.add_modifier(Modifier::ITALIC);
+    }
+    if run.strike {
+        style = style.add_modifier(Modifier::CROSSED_OUT);
+    }
+    if run.code {
+        style = style.fg(theme.accent);
+    }
+    if run.link {
+        style = style.fg(theme.accent).add_modifier(Modifier::UNDERLINED);
+    }
+    if run.muted {
+        style = style.fg(theme.dim);
+    }
+    if let Some((r, g, b)) = run.fg {
+        style = style.fg(Color::Rgb(r, g, b));
+    }
+    Span::styled(run.text.clone(), style)
 }
 
 fn pad_line(mut spans: Vec<Span<'static>>, bg: Color, width: u16) -> Line<'static> {
@@ -1124,7 +1184,32 @@ mod tests {
     #[test]
     fn review_verdict_picker_renders_its_choices() {
         let (_fixture, mut app) = diff_app();
-        app.modal = Some(crate::app::Modal::ReviewVerdict { number: 7 });
+        let comment = crate::ci::NewPrComment {
+            number: 7,
+            head_oid: "abc".to_owned(),
+            path: "src/lib.rs".to_owned(),
+            line: 2,
+            start_line: None,
+            new_side: true,
+            body: "looks off".to_owned(),
+        };
+        let pending = crate::app::pr::PrPending {
+            review_comments: vec![comment.clone(), comment],
+            replies: vec![crate::app::pr::PrPost::Reply {
+                number: 7,
+                comment_id: "c1".to_owned(),
+                reply_index: 0,
+                parent_remote_id: "r1".to_owned(),
+                body: "and this".to_owned(),
+            }],
+            agent_withheld: 2,
+            file_level: 1,
+            ..Default::default()
+        };
+        app.modal = Some(crate::app::Modal::ReviewVerdict {
+            number: 7,
+            summary: pending.summary(),
+        });
         insta::assert_snapshot!(render(&mut app).backend());
     }
 
@@ -1307,6 +1392,128 @@ mod tests {
         insta::assert_snapshot!(render(&mut app).backend());
     }
 
+    #[test]
+    fn zt_zb_zz_align_the_cursor_row_in_the_viewport() {
+        let fixture = standard_fixture();
+        let body: String = (0..100).fold(String::new(), |mut s, i| {
+            use std::fmt::Write;
+            let _ = writeln!(s, "line {i}");
+            s
+        });
+        fixture.write("src/lib.rs", &body);
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.author = "reviewer".to_owned();
+        app.open_working_tree_diff(None);
+        open_lib_diff(&mut app);
+        render(&mut app);
+
+        let mid = app.diff.as_ref().unwrap().rows.len() / 2;
+        app.diff.as_mut().unwrap().cursor = mid;
+
+        let pane_row_of = |app: &App, row: usize| {
+            app.diff
+                .as_ref()
+                .unwrap()
+                .line_rows
+                .iter()
+                .position(|r| *r == Some(row))
+        };
+
+        app.handle(key('z'));
+        app.handle(key('t'));
+        render(&mut app);
+        assert_eq!(
+            pane_row_of(&app, mid),
+            Some(0),
+            "zt puts the cursor at the top"
+        );
+
+        app.handle(key('z'));
+        app.handle(key('b'));
+        render(&mut app);
+        let viewport = app.diff.as_ref().unwrap().viewport as usize;
+        assert_eq!(
+            pane_row_of(&app, mid),
+            Some(viewport - 1),
+            "zb puts the cursor at the bottom"
+        );
+
+        app.handle(key('z'));
+        app.handle(key('z'));
+        render(&mut app);
+        let at = pane_row_of(&app, mid).expect("cursor visible after zz");
+        let center = viewport / 2;
+        assert!(
+            at.abs_diff(center) <= 1,
+            "zz centers the cursor (row {at}, center {center})"
+        );
+    }
+
+    #[test]
+    fn fenced_code_block_in_a_comment_is_syntax_highlighted() {
+        let (_fixture, mut app) = diff_app();
+        open_lib_diff(&mut app);
+        app.review.session.add_comment(
+            diffler_core::session::Anchor {
+                file: "src/lib.rs".to_owned(),
+                line: Some(1),
+                line_end: None,
+                on_old_side: false,
+                line_text: None,
+            },
+            "reviewer",
+            "try this:\n```rust\nfn answer() -> u32 { 42 }\n```",
+        );
+        app.diff.as_mut().unwrap().invalidate();
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn md_span_applies_the_syntax_color() {
+        let theme = crate::theme::Theme::github_dark();
+        let run = crate::app::markdown::MdSpan {
+            text: "fn".to_owned(),
+            code: true,
+            fg: Some((1, 2, 3)),
+            ..Default::default()
+        };
+        let span = super::md_span(&run, theme.base(), &theme);
+        assert_eq!(
+            span.style.fg,
+            Some(ratatui::style::Color::Rgb(1, 2, 3)),
+            "fg overrides the code accent"
+        );
+    }
+
+    #[test]
+    fn markdown_in_a_comment_body_renders_styled() {
+        let (_fixture, mut app) = diff_app();
+        open_lib_diff(&mut app);
+        app.review.session.add_comment(
+            diffler_core::session::Anchor {
+                file: "src/lib.rs".to_owned(),
+                line: Some(1),
+                line_end: None,
+                on_old_side: false,
+                line_text: None,
+            },
+            "reviewer",
+            "call `foo()` then make it **bold**",
+        );
+        app.diff.as_mut().unwrap().invalidate();
+        let terminal = render(&mut app);
+        let buffer = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            buffer.contains("BOLD"),
+            "the **bold** run renders with the bold modifier"
+        );
+        assert!(
+            buffer.contains(&format!("{:?}", app.theme.accent)),
+            "the `code` run renders in the accent color"
+        );
+        insta::assert_snapshot!(terminal.backend());
+    }
+
     /// Sidebar file position on screen for the last render.
     fn sidebar_file_pos(app: &App) -> (u16, u16, usize) {
         let diff = app.diff.as_ref().unwrap();
@@ -1487,18 +1694,6 @@ mod tests {
             vec!["lib"],
             "only the matched word lights up, not the whole row: {spans:?}"
         );
-    }
-
-    #[test]
-    fn sidebar_renders_as_a_flat_list_when_configured() {
-        let fixture = standard_fixture();
-        let mut loaded = LoadedConfig::default();
-        loaded.config.ui.diff_file_layout = crate::config::FileLayout::List;
-        let mut app = App::new(fixture.review(), loaded);
-        app.author = "reviewer".to_owned();
-        app.open_working_tree_diff(None);
-        assert_eq!(app.diff.as_ref().unwrap().focus, Pane::List);
-        insta::assert_snapshot!(render(&mut app).backend());
     }
 
     #[test]
@@ -1739,6 +1934,66 @@ mod tests {
         // two files viewed; the sidebar cursor sits on the last unviewed
         // file, progress reads 2/3
         insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn markdown_diff_highlights_headings_and_inline_code() {
+        let fixture = Fixture::new();
+        fixture.write(
+            "notes.md",
+            "# Recording notes\n\nUse `record()` and set **duration** first.\n\n1. call `search(q)`\n2. share it\n",
+        );
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_working_tree_file("notes.md");
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn expand_whole_file_reveals_the_unchanged_lines() {
+        use std::fmt::Write as _;
+        let fixture = Fixture::new();
+        let mut base = String::new();
+        for i in 1..=10 {
+            let _ = writeln!(base, "line {i}");
+        }
+        fixture.write("notes.txt", &base);
+        fixture.commit_all("base");
+        fixture.write("notes.txt", &base.replace("line 5\n", "LINE FIVE\n"));
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_working_tree_file("notes.txt");
+        app.handle(key('='));
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn expansion_reflows_rows_after_a_refresh_re_enriches() {
+        use std::fmt::Write as _;
+        let fixture = Fixture::new();
+        let mut base = String::new();
+        for i in 1..=40 {
+            let _ = writeln!(base, "line {i}");
+        }
+        fixture.write("a.txt", &base);
+        fixture.commit_all("base");
+        fixture.write("a.txt", &base.replace("line 20\n", "LINE TWENTY\n"));
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_working_tree_file("a.txt");
+
+        app.handle(key('=')); // whole-file expand
+        let _ = render(&mut app); // draw the expanded rows, clearing rows_dirty
+
+        // a real content change (as a watcher refresh would see) rebuilds the
+        // model at default context; the per-file override lives on the view
+        fixture.write("a.txt", &base.replace("line 30\n", "LINE THIRTY\n"));
+        app.refresh();
+        app.queue_enrich_selected(); // enrichment reinstalls the override in on_enriched
+        let _ = render(&mut app);
+
+        let rows = app.diff.as_ref().expect("diff").rows().len();
+        assert!(
+            rows > 20,
+            "rows re-flow to the whole file after re-enrich, got {rows}"
+        );
     }
 
     #[test]

@@ -23,14 +23,27 @@ def free_port():
     return port
 
 
+def _attr(obj, *names):
+    """First attribute that exists: the SDK renamed its camelCase fields."""
+    for name in names:
+        value = getattr(obj, name, None)
+        if value is not None:
+            return value
+    return None
+
+
 async def _call_tool(url, name, arguments):
-    async with streamable_http_client(url) as (read, write, _get_session_id):
+    # the SDK yields (read, write) or (read, write, get_session_id) by version
+    async with streamable_http_client(url) as streams:
+        read, write = streams[0], streams[1]
         async with ClientSession(read, write) as session:
             await session.initialize()
             result = await session.call_tool(name, arguments)
-            assert not result.isError, f"tool {name} errored: {result.content}"
-            if result.structuredContent is not None:
-                return result.structuredContent
+            errored = _attr(result, "is_error", "isError")
+            assert not errored, f"tool {name} errored: {result.content}"
+            structured = _attr(result, "structured_content", "structuredContent")
+            if structured is not None:
+                return structured
             return json.loads(result.content[0].text)
 
 

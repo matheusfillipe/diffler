@@ -49,6 +49,84 @@ pub enum PrPost {
     },
 }
 
+/// What submitting a PR review would send to the forge.
+#[derive(Debug, Default)]
+pub(crate) struct PrPending {
+    /// One entry per body: replies under an unsent comment flatten onto its
+    /// anchor.
+    pub review_comments: Vec<crate::ci::NewPrComment>,
+    pub comment_ids: Vec<String>,
+    /// Replies onto threads the forge already owns.
+    pub replies: Vec<PrPost>,
+    /// Agent-written bodies held back: a forge post carries the human's name.
+    pub agent_withheld: usize,
+    pub file_level: usize,
+}
+
+impl PrPending {
+    pub(crate) fn summary(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        let (comments, replies) = (self.review_comments.len(), self.replies.len());
+        lines.push(match (comments, replies) {
+            (0, 0) => "no comments pending".to_owned(),
+            (c, 0) => format!("posting {c} {}", plural(c, "comment", "comments")),
+            (0, r) => format!("posting {r} thread {}", plural(r, "reply", "replies")),
+            (c, r) => format!(
+                "posting {}: {c} {}, {r} thread {}",
+                comments + replies,
+                plural(c, "comment", "comments"),
+                plural(r, "reply", "replies")
+            ),
+        });
+        if self.agent_withheld > 0 {
+            lines.push(format!(
+                "{} agent {} held back (the forge post is yours)",
+                self.agent_withheld,
+                plural(self.agent_withheld, "reply", "replies")
+            ));
+        }
+        if self.file_level > 0 {
+            lines.push(format!(
+                "{} whole-file {} held back (a review carries line comments only)",
+                self.file_level,
+                plural(self.file_level, "comment", "comments")
+            ));
+        }
+        lines
+    }
+}
+
+fn plural<'a>(count: usize, one: &'a str, many: &'a str) -> &'a str {
+    if count == 1 { one } else { many }
+}
+
+/// Hand a published comment's unposted replies to the forge copy coming back
+/// for it, and report the local ids those roots now stand in for. A comment
+/// keeps replies that were held back, so its local original outlives the
+/// submit and would otherwise sit beside the forge copy as a duplicate.
+fn absorb_published_locals(roots: &mut [Comment], locals: &[Comment]) -> Vec<String> {
+    let mut absorbed = Vec::new();
+    for root in roots {
+        let Some(local) = locals.iter().find(|c| {
+            c.remote_id.is_none()
+                && c.body == root.body
+                && c.anchor.file == root.anchor.file
+                && c.anchor.line == root.anchor.line
+        }) else {
+            continue;
+        };
+        root.replies.extend(
+            local
+                .replies
+                .iter()
+                .filter(|r| r.remote_id.is_none())
+                .cloned(),
+        );
+        absorbed.push(local.id.clone());
+    }
+    absorbed
+}
+
 impl App {
     /// Open the forge's PR list; the entries arrive as an event.
     pub(crate) fn open_prs(&mut self) {
@@ -260,10 +338,11 @@ impl App {
                     .cloned(),
             );
         }
+        let absorbed = absorb_published_locals(&mut roots, &session.comments);
         let mut merged: Vec<Comment> = session
             .comments
             .iter()
-            .filter(|c| c.remote_id.is_none())
+            .filter(|c| c.remote_id.is_none() && !absorbed.contains(&c.id))
             .cloned()
             .collect();
         merged.extend(roots);
@@ -289,10 +368,13 @@ impl App {
             self.info("not reviewing a PR — nothing to submit");
             return;
         };
-        if !self.pr_ranges.contains_key(&number) {
+        let Some(pending) = self.pr_pending(number) else {
             return;
-        }
-        self.modal = Some(super::Modal::ReviewVerdict { number });
+        };
+        self.modal = Some(super::Modal::ReviewVerdict {
+            number,
+            summary: pending.summary(),
+        });
     }
 
     /// The verdict is chosen; ask for the review's optional summary body.
@@ -304,17 +386,12 @@ impl App {
         );
     }
 
-    /// Queue everything pending in the PR review as one forge review with
-    /// `verdict` and `body` (plus individual replies to existing threads),
-    /// so the forge sends a single notification.
-    pub(crate) fn queue_pr_review(&mut self, number: u64, verdict: ReviewVerdict, body: &str) {
-        let Some((_, head)) = self.pr_ranges.get(&number).cloned() else {
-            return;
-        };
+    /// Everything a submit would send. The confirmation and the posting read
+    /// the same plan, so the dialog describes exactly what goes out.
+    pub(crate) fn pr_pending(&self, number: u64) -> Option<PrPending> {
+        let (_, head) = self.pr_ranges.get(&number).cloned()?;
         let session = self.review.session_for(&ReviewSource::pr(number));
-        let mut review_comments = Vec::new();
-        let mut comment_ids = Vec::new();
-        let mut replies = Vec::new();
+        let mut pending = PrPending::default();
         for comment in &session.comments {
             match (&comment.remote_id, comment.anchor.line) {
                 (None, Some(line)) => {
@@ -323,28 +400,46 @@ impl App {
                         Some(end) if end != line => (Some(line), end),
                         _ => (None, line),
                     };
-                    // unsent replies under an unsent comment ride along in the
-                    // review at the same anchor: a flattened thread beats a
-                    // lost reply
-                    let bodies = std::iter::once(comment.body.clone())
-                        .chain(comment.replies.iter().map(|r| r.body.clone()));
-                    for body in bodies {
-                        review_comments.push(crate::ci::NewPrComment {
+                    // a human reply under an unsent comment rides along at the
+                    // same anchor: a flattened thread beats a lost reply
+                    let bodies = std::iter::once((&comment.author, &comment.body)).chain(
+                        comment
+                            .replies
+                            .iter()
+                            .map(|reply| (&reply.author, &reply.body)),
+                    );
+                    let (mut posted, mut withheld) = (false, false);
+                    for (author, body) in bodies {
+                        if author == crate::mcp::AGENT_AUTHOR {
+                            pending.agent_withheld += 1;
+                            withheld = true;
+                            continue;
+                        }
+                        posted = true;
+                        pending.review_comments.push(crate::ci::NewPrComment {
                             number,
                             head_oid: head.clone(),
                             path: comment.anchor.file.clone(),
                             line,
                             start_line,
                             new_side: !comment.anchor.on_old_side,
-                            body,
+                            body: body.clone(),
                         });
                     }
-                    comment_ids.push(comment.id.clone());
+                    // an id here deletes the local comment once the forge acks,
+                    // which would take any withheld reply down with it
+                    if posted && !withheld {
+                        pending.comment_ids.push(comment.id.clone());
+                    }
                 }
                 (Some(parent), _) => {
                     for (reply_index, reply) in comment.replies.iter().enumerate() {
                         if reply.remote_id.is_none() {
-                            replies.push(PrPost::Reply {
+                            if reply.author == crate::mcp::AGENT_AUTHOR {
+                                pending.agent_withheld += 1;
+                                continue;
+                            }
+                            pending.replies.push(PrPost::Reply {
                                 number,
                                 comment_id: comment.id.clone(),
                                 reply_index,
@@ -359,11 +454,31 @@ impl App {
         }
         // reviews carry line comments only; a line-less (whole-file) anchor
         // has no review slot on the forge
-        let file_level = session
+        pending.file_level = session
             .comments
             .iter()
             .filter(|c| c.remote_id.is_none() && c.anchor.line.is_none())
             .count();
+        Some(pending)
+    }
+
+    /// Queue everything pending in the PR review as one forge review with
+    /// `verdict` and `body` (plus individual replies to existing threads),
+    /// so the forge sends a single notification.
+    pub(crate) fn queue_pr_review(&mut self, number: u64, verdict: ReviewVerdict, body: &str) {
+        let Some((_, head)) = self.pr_ranges.get(&number).cloned() else {
+            return;
+        };
+        let Some(PrPending {
+            review_comments,
+            comment_ids,
+            replies,
+            file_level,
+            ..
+        }) = self.pr_pending(number)
+        else {
+            return;
+        };
         // GitHub requires a summary for request-changes; a bare COMMENT
         // review with nothing to say is an empty notification
         if verdict == ReviewVerdict::RequestChanges && body.is_empty() {
@@ -400,10 +515,17 @@ impl App {
             ReviewVerdict::RequestChanges => "requesting changes",
             ReviewVerdict::Comment => "commenting",
         };
-        let mut message = format!("submitting review — {label} ({total} comments)…");
+        let mut message = format!(
+            "submitting review — {label} ({total} {})…",
+            plural(total, "comment", "comments")
+        );
         if file_level > 0 {
             use std::fmt::Write as _;
-            let _ = write!(message, " {file_level} whole-file comment(s) stay local");
+            let _ = write!(
+                message,
+                " {file_level} whole-file {} held back",
+                plural(file_level, "comment", "comments")
+            );
         }
         self.info(message);
     }
@@ -674,6 +796,178 @@ mod tests {
         assert_eq!(app.pending_pr_open.as_ref().map(|p| p.number), Some(9));
     }
 
+    /// The dialog must describe the posts the submit actually makes.
+    #[test]
+    fn the_submit_summary_counts_what_gets_posted_including_agent_replies() {
+        let fixture = standard_fixture();
+        fixture.write("src/lib.rs", "pub fn answer() -> u32 {\n    43\n}\n");
+        fixture.stage("src/lib.rs");
+        fixture.commit_all("bump");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let head = app.review.vcs.resolve("HEAD").expect("head oid");
+        let base = app.review.vcs.resolve("HEAD~1").expect("base oid");
+        app.open_pr_diff(3, &base, &head);
+        app.sync_pr_comments(
+            3,
+            &[PrComment {
+                id: "55".into(),
+                path: "src/lib.rs".into(),
+                line: Some(1),
+                new_side: true,
+                body: "remote".into(),
+                author: "alice".into(),
+                reply_to: None,
+                start_line: None,
+                thread_id: None,
+                resolved: false,
+                at: 1,
+            }],
+        );
+        let source = ReviewSource::pr(3);
+        let session = app.review.session_for_mut(&source);
+        let remote_id = session.comments[0].id.clone();
+        session.reply(&remote_id, crate::mcp::AGENT_AUTHOR, "agent on the thread");
+        let local = session
+            .add_comment(
+                Anchor {
+                    file: "src/lib.rs".into(),
+                    line: Some(2),
+                    line_end: None,
+                    on_old_side: false,
+                    line_text: None,
+                },
+                "reviewer",
+                "human comment",
+            )
+            .id
+            .clone();
+        session.reply(&local, crate::mcp::AGENT_AUTHOR, "agent under the comment");
+        session.add_comment(
+            Anchor {
+                file: "src/lib.rs".into(),
+                line: None,
+                line_end: None,
+                on_old_side: false,
+                line_text: None,
+            },
+            "reviewer",
+            "file level",
+        );
+
+        let pending = app.pr_pending(3).expect("plan");
+        assert_eq!(pending.review_comments.len(), 1);
+        assert_eq!(pending.review_comments[0].body, "human comment");
+        assert!(pending.replies.is_empty(), "the agent's thread reply stays");
+        assert_eq!(pending.agent_withheld, 2);
+        assert_eq!(pending.file_level, 1);
+        assert_eq!(
+            pending.summary(),
+            vec![
+                "posting 1 comment".to_owned(),
+                "2 agent replies held back (the forge post is yours)".to_owned(),
+                "1 whole-file comment held back (a review carries line comments only)".to_owned(),
+            ]
+        );
+
+        app.queue_pr_review(3, ReviewVerdict::Comment, "");
+        let posted: Vec<String> = app
+            .pending_pr_posts
+            .iter()
+            .flat_map(|post| match post {
+                PrPost::Review { review, .. } => {
+                    review.comments.iter().map(|c| c.body.clone()).collect()
+                }
+                PrPost::Reply { body, .. } => vec![body.clone()],
+                _ => Vec::new(),
+            })
+            .collect();
+        assert_eq!(
+            posted,
+            vec!["human comment".to_owned()],
+            "nothing the agent wrote reaches the forge"
+        );
+    }
+
+    /// Publishing a comment deletes the local copy once the forge acks it, so
+    /// a reply that was never posted has to survive the handover.
+    #[test]
+    fn a_withheld_agent_reply_survives_publishing_its_parent() {
+        let fixture = standard_fixture();
+        fixture.write("src/lib.rs", "pub fn answer() -> u32 {\n    43\n}\n");
+        fixture.stage("src/lib.rs");
+        fixture.commit_all("bump");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let head = app.review.vcs.resolve("HEAD").expect("head oid");
+        let base = app.review.vcs.resolve("HEAD~1").expect("base oid");
+        app.open_pr_diff(3, &base, &head);
+        let source = ReviewSource::pr(3);
+        let session = app.review.session_for_mut(&source);
+        let local = session
+            .add_comment(
+                Anchor {
+                    file: "src/lib.rs".into(),
+                    line: Some(2),
+                    line_end: None,
+                    on_old_side: false,
+                    line_text: None,
+                },
+                "reviewer",
+                "why 43?",
+            )
+            .id
+            .clone();
+        session.reply(&local, crate::mcp::AGENT_AUTHOR, "because tests say so");
+
+        app.queue_pr_review(3, ReviewVerdict::Comment, "");
+        let post = app.pending_pr_posts.remove(0);
+        app.handle(crate::event::AppEvent::PrPosted {
+            post: Box::new(post),
+            result: Ok(None),
+        });
+        assert!(
+            !app.review.session_for(&source).comments.is_empty(),
+            "the ack must not delete a comment still holding withheld text"
+        );
+
+        // the forge hands the comment back; the held reply moves onto its copy
+        app.handle(crate::event::AppEvent::PrComments {
+            number: 3,
+            comments: vec![PrComment {
+                id: "900".into(),
+                path: "src/lib.rs".into(),
+                line: Some(2),
+                start_line: None,
+                new_side: true,
+                body: "why 43?".into(),
+                author: "reviewer".into(),
+                reply_to: None,
+                thread_id: Some("T_a".into()),
+                resolved: false,
+                at: 5,
+            }],
+            pr: Some(crate::ci::PullRequest {
+                number: 3,
+                title: "t".into(),
+                url: None,
+                base_ref: "main".into(),
+                head_ref: "feat".into(),
+                head_oid: head.clone(),
+                author: "reviewer".into(),
+            }),
+        });
+        let comments = &app.review.session_for(&source).comments;
+        assert_eq!(comments.len(), 1, "no duplicate of the published comment");
+        assert_eq!(
+            comments[0]
+                .replies
+                .iter()
+                .map(|r| &r.body)
+                .collect::<Vec<_>>(),
+            vec!["because tests say so"],
+            "the agent's reply rode across the handover"
+        );
+    }
+
     #[test]
     fn commenting_through_the_modal_queues_a_forge_post() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -709,7 +1003,7 @@ mod tests {
                 KeyModifiers::NONE,
             )));
         };
-        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Char('l'));
         press(&mut app, KeyCode::Char('j'));
         press(&mut app, KeyCode::Char('c'));
         assert!(app.modal.is_some(), "comment modal open");
@@ -725,7 +1019,7 @@ mod tests {
         assert!(
             matches!(
                 app.modal,
-                Some(crate::app::Modal::ReviewVerdict { number: 3 })
+                Some(crate::app::Modal::ReviewVerdict { number: 3, .. })
             ),
             "S opens the verdict picker: {:?}",
             app.modal

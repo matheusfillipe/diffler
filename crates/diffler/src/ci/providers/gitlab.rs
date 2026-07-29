@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::ci::error::{Result, parse_json};
+use crate::ci::error::{CiError, Result, parse_json};
 use crate::ci::exec::CommandRunner;
 use crate::ci::model::{
     CiJob, CiRun, JobId, JobStatus, LogChunk, PullRequest, RunDetail, RunExtras, RunId,
@@ -107,9 +107,60 @@ impl ForgeProvider for GitLabProvider {
         Ok(Vec::new())
     }
 
+    async fn create_pr(&self, new: &crate::ci::NewPullRequest) -> Result<PullRequest> {
+        let mut args = vec![
+            "mr".to_owned(),
+            "create".to_owned(),
+            "--source-branch".to_owned(),
+            new.head.clone(),
+            "--target-branch".to_owned(),
+            new.base.clone(),
+            "--title".to_owned(),
+            new.title.clone(),
+            "--description".to_owned(),
+            new.body.clone(),
+            "--yes".to_owned(),
+        ];
+        if new.draft {
+            args.push("--draft".to_owned());
+        }
+        let raw = self.runner.run("glab", &args).await?;
+        let url = mr_url(&raw).ok_or_else(|| CiError::Parse {
+            what: "mr create".to_owned(),
+            message: format!("no merge-request url in the output: {}", raw.trim()),
+        })?;
+        let number = mr_iid_from_url(url).ok_or_else(|| CiError::Parse {
+            what: "mr create".to_owned(),
+            message: format!("no iid in {url}"),
+        })?;
+        Ok(PullRequest {
+            number,
+            title: new.title.clone(),
+            url: Some(url.to_owned()),
+            base_ref: new.base.clone(),
+            head_ref: new.head.clone(),
+            head_oid: String::new(),
+            author: String::new(),
+        })
+    }
+
     async fn current_pr(&self) -> Result<Option<PullRequest>> {
         Ok(None)
     }
+}
+
+/// The merge-request url in `output`, which carries trailing chatter of its own.
+fn mr_url(output: &str) -> Option<&str> {
+    output
+        .split_whitespace()
+        .rev()
+        .find(|token| token.contains("/merge_requests/"))
+}
+
+/// The iid trailing a merge-request url (`.../-/merge_requests/7`).
+fn mr_iid_from_url(url: &str) -> Option<u64> {
+    let (_, tail) = url.rsplit_once("/merge_requests/")?;
+    tail.trim_end_matches('/').parse().ok()
 }
 
 /// Order jobs into stages (by first appearance) and link each job to every job
@@ -287,5 +338,40 @@ mod tests {
             .expect("log");
         assert_eq!(chunk.text, "");
         assert_eq!(chunk.next_offset, 5);
+    }
+}
+
+#[cfg(test)]
+mod create_pr_tests {
+    use super::*;
+    use crate::ci::exec::test_support::RecordingRunner;
+    use crate::ci::provider::NewPullRequest;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn create_sends_the_branch_pair_and_reads_the_iid() {
+        let runner = Arc::new(RecordingRunner::new(&[(
+            "mr create",
+            "Creating merge request\nhttps://gitlab.com/acme/widgets/-/merge_requests/7\n",
+        )]));
+        let provider = GitLabProvider::new(Box::new(Arc::clone(&runner)), None);
+        let pr = provider
+            .create_pr(&NewPullRequest {
+                base: "main".to_owned(),
+                head: "feat/x".to_owned(),
+                title: "a title".to_owned(),
+                body: "a body".to_owned(),
+                draft: false,
+            })
+            .await
+            .expect("created");
+        assert_eq!(pr.number, 7);
+        assert_eq!(
+            pr.url.as_deref(),
+            Some("https://gitlab.com/acme/widgets/-/merge_requests/7")
+        );
+        let call = runner.calls().remove(0);
+        assert!(call.contains("--source-branch feat/x"), "{call}");
+        assert!(call.contains("--target-branch main"), "{call}");
     }
 }

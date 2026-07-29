@@ -386,15 +386,15 @@ fn read_layer(path: &Path, warnings: &mut Vec<String>) -> Result<PartialConfig, 
     .map_err(parse_err)
 }
 
-/// Apply a layer's file-layout value: an unknown string keeps the prior value
-/// (the default) and warns, matching the theme key's lenient handling, rather
-/// than aborting the parse. The review layout only makes sense where viewed
-/// marks exist, so `allow_review` gates it to the diff sidebar key.
+/// Apply a layer's file-layout value: a value the key does not accept keeps
+/// the prior value (the default) and warns, matching the theme key's lenient
+/// handling. Each key takes its own set: the review layout needs viewed marks,
+/// and the flat list is only worth having where the paths are short.
 fn set_layout(
     value: Option<String>,
     target: &mut FileLayout,
     key: &str,
-    allow_review: bool,
+    accepted: &[FileLayout],
     origin: &Origin,
     origins: &mut BTreeMap<String, Origin>,
     warnings: &mut Vec<String>,
@@ -407,10 +407,13 @@ fn set_layout(
         warnings.push(warning);
         return;
     }
-    if layout == FileLayout::Review && !allow_review {
-        warnings.push(format!(
-            "{key} does not support \"review\" (diff sidebar only), using \"{target}\""
-        ));
+    if !accepted.contains(&layout) {
+        let names = accepted
+            .iter()
+            .map(|accepted| format!("\"{accepted}\""))
+            .collect::<Vec<_>>()
+            .join(" or ");
+        warnings.push(format!("{key} takes {names}, using \"{target}\""));
         return;
     }
     *target = layout;
@@ -464,7 +467,7 @@ fn apply_layer(
         layer.ui.status_file_layout,
         &mut config.ui.status_file_layout,
         "ui.status_file_layout",
-        false,
+        &[FileLayout::List, FileLayout::Tree],
         origin,
         origins,
         warnings,
@@ -473,7 +476,7 @@ fn apply_layer(
         layer.ui.diff_file_layout,
         &mut config.ui.diff_file_layout,
         "ui.diff_file_layout",
-        true,
+        &[FileLayout::Tree, FileLayout::Review],
         origin,
         origins,
         warnings,
@@ -719,6 +722,10 @@ fn parse_bracketed(token: &str) -> Result<KeyPress, ChordError> {
         "tab" => KeyCode::Tab,
         "esc" => KeyCode::Esc,
         "space" => KeyCode::Char(' '),
+        "up" => KeyCode::Up,
+        "down" => KeyCode::Down,
+        "left" => KeyCode::Left,
+        "right" => KeyCode::Right,
         _ => {
             let mut rest_chars = rest.chars();
             match (rest_chars.next(), rest_chars.next()) {
@@ -919,15 +926,15 @@ mod tests {
     fn file_layouts_override_in_either_direction() {
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().join("project.toml");
-        // flip both away from their defaults: status to tree, diff to list
+        // flip both away from their defaults: status to tree, diff to review
         fs::write(
             &project,
-            "[ui]\nstatus_file_layout = \"tree\"\ndiff_file_layout = \"list\"\n",
+            "[ui]\nstatus_file_layout = \"tree\"\ndiff_file_layout = \"review\"\n",
         )
         .unwrap();
         let loaded = load_layers(None, Some(&project), &CliOverrides::default()).unwrap();
         assert_eq!(loaded.config.ui.status_file_layout, FileLayout::Tree);
-        assert_eq!(loaded.config.ui.diff_file_layout, FileLayout::List);
+        assert_eq!(loaded.config.ui.diff_file_layout, FileLayout::Review);
         assert_eq!(
             loaded.origins["ui.status_file_layout"],
             Origin::Project(project.clone())
@@ -940,21 +947,22 @@ mod tests {
     }
 
     #[test]
-    fn review_layout_applies_to_the_diff_sidebar_only() {
+    fn each_screen_rejects_the_layout_it_does_not_offer() {
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().join("project.toml");
+        // the status screen has no viewed marks, the diff sidebar no flat list
         fs::write(
             &project,
-            "[ui]\nstatus_file_layout = \"review\"\ndiff_file_layout = \"review\"\n",
+            "[ui]\nstatus_file_layout = \"review\"\ndiff_file_layout = \"list\"\n",
         )
         .unwrap();
         let loaded = load_layers(None, Some(&project), &CliOverrides::default()).unwrap();
-        assert_eq!(loaded.config.ui.diff_file_layout, FileLayout::Review);
-        // the status screen has no viewed marks: review is rejected there
         assert_eq!(loaded.config.ui.status_file_layout, FileLayout::List);
-        assert_eq!(loaded.warnings.len(), 1);
-        let warning = &loaded.warnings[0];
-        assert!(warning.contains("diff sidebar only"), "explains: {warning}");
+        assert_eq!(loaded.config.ui.diff_file_layout, FileLayout::Tree);
+        assert_eq!(loaded.warnings.len(), 2);
+        for warning in &loaded.warnings {
+            assert!(warning.contains("takes"), "names what it takes: {warning}");
+        }
     }
 
     #[test]
@@ -1232,4 +1240,120 @@ mod tests {
         assert_eq!(loaded.config.keys.diff["next"], "j");
         assert!(loaded.warnings.is_empty());
     }
+
+    /// Uncomment the `# key = value` lines of the example config, leaving the
+    /// prose comments alone, so the documentation can be loaded and compared
+    /// against the built-in defaults.
+    fn uncommented_example() -> String {
+        const EXAMPLE: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/config.example.toml"
+        ));
+        EXAMPLE
+            .lines()
+            .map(|line| match line.strip_prefix("# ") {
+                Some(rest) if is_assignment(rest) => rest,
+                _ => line,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn is_assignment(line: &str) -> bool {
+        line.split_once(" = ").is_some_and(|(key, _)| {
+            !key.is_empty() && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+    }
+
+    #[test]
+    fn example_config_documents_the_real_keys_and_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("example.toml");
+        fs::write(&path, uncommented_example()).unwrap();
+        let loaded = load_layers(Some(&path), None, &CliOverrides::default()).unwrap();
+        assert_eq!(loaded.warnings, Vec::<String>::new());
+
+        assert_eq!(loaded.config.ui, UiConfig::default());
+        assert_eq!(loaded.config.mcp, McpConfig::default());
+        assert_eq!(loaded.config.ci.provider, CiConfig::default().provider);
+        assert_eq!(
+            loaded.config.ci.poll_seconds,
+            CiConfig::default().poll_seconds
+        );
+
+        let keys = &loaded.config.keys;
+        for (context, documented) in [
+            (crate::keymap::Context::Status, &keys.status),
+            (crate::keymap::Context::Diff, &keys.diff),
+            (crate::keymap::Context::Log, &keys.log),
+            (crate::keymap::Context::CiLog, &keys.ci_log),
+            (crate::keymap::Context::Graph, &keys.graph),
+            (crate::keymap::Context::Prs, &keys.prs),
+        ] {
+            let (_, warnings) = crate::keymap::Keymap::for_context(context, keys);
+            assert_eq!(warnings, Vec::<String>::new(), "{context:?}");
+            let (built_in, _) = crate::keymap::Keymap::for_context(context, &KeysConfig::default());
+            for (name, chord) in documented {
+                if let Some(kind) = crate::transient::TransientKind::ALL
+                    .into_iter()
+                    .find(|kind| kind.name() == name)
+                {
+                    assert_eq!(
+                        built_in.prefix_chord(kind).as_deref(),
+                        Some(chord.as_str()),
+                        "{context:?} {name}"
+                    );
+                    continue;
+                }
+                assert!(
+                    built_in.bindings().iter().any(|(built, action)| {
+                        action.name() == name && crate::keymap::render_chord(built) == *chord
+                    }),
+                    "[keys.{context:?}] {name} = {chord:?} is not a built-in binding"
+                );
+            }
+            for (_, action) in built_in.bindings() {
+                assert!(
+                    OMITTED_MOTIONS.contains(&action.name())
+                        || documented.contains_key(action.name()),
+                    "{} is bound on {context:?} but undocumented in the example config",
+                    action.name()
+                );
+            }
+        }
+
+        for kind in crate::transient::TransientKind::ALL {
+            let (documented, warnings) =
+                crate::transient::Transient::build(kind, &loaded.config.keys);
+            assert_eq!(warnings, Vec::<String>::new(), "{}", kind.name());
+            let (built_in, _) = crate::transient::Transient::build(kind, &KeysConfig::default());
+            assert_eq!(documented, built_in, "{}", kind.name());
+            assert_eq!(
+                keys.transient(kind).len(),
+                built_in.flat_entries().count(),
+                "the {} menu documents a different number of rows than it has",
+                kind.name()
+            );
+        }
+    }
+
+    /// Motions the example config leaves to the `?` popup, so the reverse check
+    /// below only demands the bindings a user would want to remap.
+    const OMITTED_MOTIONS: &[&str] = &[
+        "move_down",
+        "move_up",
+        "go_top",
+        "go_bottom",
+        "half_page_down",
+        "half_page_up",
+        "full_page_down",
+        "full_page_up",
+        "search",
+        "search_next",
+        "search_prev",
+        "palette",
+        "help",
+        "quit",
+        "back",
+    ];
 }

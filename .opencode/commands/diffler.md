@@ -10,8 +10,10 @@ Check the diffler review and respond to the human's feedback:
 4. Answer each with `reply_comment` (what you changed and why), then
    `propose_resolve`; only the human can resolve for real, in the TUI.
 5. Call `wait_for_feedback` with the latest epoch and start over when it
-   returns. If it times out, call it again; if the connection fails, diffler
-   is closed, so stop.
+   returns. It answers within a minute; a `timed_out` result means the human is
+   still reviewing, so call it again. If the call itself fails, check
+   `review_status`: diffler is closed only when that fails too, otherwise keep
+   waiting.
 
 If the diffler tools are missing, the TUI isn't running: ask the human to
 run `diffler` in the repository first.

@@ -76,6 +76,10 @@ impl Fixture {
             .expect("commit");
     }
 
+    pub(crate) fn remote(&self, name: &str, url: &str) {
+        self.repo.remote(name, url).expect("remote");
+    }
+
     pub(crate) fn branch(&self, name: &str) {
         let head = self
             .repo
@@ -136,6 +140,10 @@ pub(crate) fn key(c: char) -> AppEvent {
 
 pub(crate) fn ctrl_key(c: char) -> AppEvent {
     AppEvent::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
+}
+
+pub(crate) fn code_key(code: KeyCode) -> AppEvent {
+    AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
 }
 
 pub(crate) fn esc_key() -> AppEvent {

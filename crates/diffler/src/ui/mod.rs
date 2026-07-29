@@ -175,15 +175,38 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) {
             popup::Popup {
                 title: format!("Help — {screen} keys"),
                 entries: help_entries(app),
+                summary: Vec::new(),
             }
             .render(frame, &app.theme);
         }
-        Some(Modal::BranchList { .. } | Modal::Comments { .. } | Modal::Palette { .. }) => {
+        Some(
+            Modal::BranchList { .. }
+            | Modal::Comments { .. }
+            | Modal::Palette { .. }
+            | Modal::Themes { .. }
+            | Modal::RemoteList { .. },
+        ) => {
             if let Some(modal) = fuzzy_modal(app) {
                 modal.render(frame, &app.theme);
             }
         }
-        Some(Modal::ReviewVerdict { number }) => {
+        Some(Modal::PullDiverged { upstream }) => {
+            popup::Popup {
+                title: format!("Diverged from {upstream}"),
+                entries: vec![
+                    ("r".to_owned(), "rebase your commits on top".to_owned()),
+                    ("m".to_owned(), "merge".to_owned()),
+                    ("f".to_owned(), "force (discard local commits)".to_owned()),
+                    ("esc".to_owned(), "cancel".to_owned()),
+                ],
+                summary: Vec::new(),
+            }
+            .render(frame, &app.theme);
+        }
+        Some(Modal::CreatePr { draft }) => {
+            popup::CreatePrForm { draft }.render(frame, &app.theme);
+        }
+        Some(Modal::ReviewVerdict { number, summary }) => {
             popup::Popup {
                 title: format!("Submit review — PR #{number}"),
                 entries: vec![
@@ -192,6 +215,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) {
                     ("c".to_owned(), "comment only".to_owned()),
                     ("esc".to_owned(), "cancel".to_owned()),
                 ],
+                summary: summary.clone(),
             }
             .render(frame, &app.theme);
         }
@@ -274,6 +298,34 @@ fn fuzzy_modal(app: &App) -> Option<popup::FuzzyModal> {
                 footer: footer_for(list, "", " run"),
             })
         }
+        Some(Modal::Themes { list }) => Some(popup::FuzzyModal {
+            title: "Theme".to_owned(),
+            query: list.query.clone(),
+            cursor: list.cursor,
+            typing: matches!(list.focus, fuzzy::FuzzyFocus::Input),
+            items: list
+                .matches
+                .iter()
+                .filter_map(|index| crate::theme::NAMES.get(*index))
+                .map(|name| ((*name).to_owned(), String::new()))
+                .collect(),
+            selected: list.selected,
+            footer: footer_for(list, "", " apply"),
+        }),
+        Some(Modal::RemoteList { remotes, list, .. }) => Some(popup::FuzzyModal {
+            title: "Remote".to_owned(),
+            query: list.query.clone(),
+            cursor: list.cursor,
+            typing: matches!(list.focus, fuzzy::FuzzyFocus::Input),
+            items: list
+                .matches
+                .iter()
+                .filter_map(|index| remotes.get(*index))
+                .map(|name| (name.clone(), String::new()))
+                .collect(),
+            selected: list.selected,
+            footer: footer_for(list, "", " select"),
+        }),
         _ => None,
     }
 }
