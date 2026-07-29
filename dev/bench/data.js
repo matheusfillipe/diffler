@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785353581318,
+  "lastUpdate": 1785365364360,
   "repoUrl": "https://github.com/matheusfillipe/diffler",
   "entries": {
     "Benchmark": [
@@ -7391,6 +7391,102 @@ window.BENCHMARK_DATA = {
             "name": "scope_index/20000",
             "value": 90298966,
             "range": "± 987859",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "distinct": true,
+          "id": "0f03bf9ea1ad85976441649d6d574a2a91627a75",
+          "message": "chore(deps): bump the deps group across 1 directory with 11 updates\n\nBumps the deps group with 11 updates in the / directory:\n\n| Package | From | To |\n| --- | --- | --- |\n| [async-trait](https://github.com/dtolnay/async-trait) | `0.1.89` | `0.1.91` |\n| [time](https://github.com/time-rs/time) | `0.3.53` | `0.3.54` |\n| [tokio](https://github.com/tokio-rs/tokio) | `1.52.3` | `1.53.1` |\n| [clap](https://github.com/clap-rs/clap) | `4.6.1` | `4.6.4` |\n| [thiserror](https://github.com/dtolnay/thiserror) | `2.0.18` | `2.0.19` |\n| [rmcp](https://github.com/modelcontextprotocol/rust-sdk) | `2.1.0` | `3.0.0` |\n| [tree-sitter](https://github.com/tree-sitter/tree-sitter) | `0.26.10` | `0.26.11` |\n| [tree-sitter-highlight](https://github.com/tree-sitter/tree-sitter) | `0.26.10` | `0.26.11` |\n| [serde_json](https://github.com/serde-rs/json) | `1.0.150` | `1.0.151` |\n| [toml](https://github.com/toml-rs/toml) | `1.1.2+spec-1.1.0` | `1.1.4+spec-1.1.0` |\n| [uuid](https://github.com/uuid-rs/uuid) | `1.23.4` | `1.24.0` |\n\n\n\nUpdates `async-trait` from 0.1.89 to 0.1.91\n- [Release notes](https://github.com/dtolnay/async-trait/releases)\n- [Commits](https://github.com/dtolnay/async-trait/compare/0.1.89...0.1.91)\n\nUpdates `time` from 0.3.53 to 0.3.54\n- [Release notes](https://github.com/time-rs/time/releases)\n- [Changelog](https://github.com/time-rs/time/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/time-rs/time/compare/v0.3.53...v0.3.54)\n\nUpdates `tokio` from 1.52.3 to 1.53.1\n- [Release notes](https://github.com/tokio-rs/tokio/releases)\n- [Commits](https://github.com/tokio-rs/tokio/compare/tokio-1.52.3...tokio-1.53.1)\n\nUpdates `clap` from 4.6.1 to 4.6.4\n- [Release notes](https://github.com/clap-rs/clap/releases)\n- [Changelog](https://github.com/clap-rs/clap/blob/master/CHANGELOG.md)\n- [Commits](https://github.com/clap-rs/clap/compare/clap_complete-v4.6.1...clap_complete-v4.6.4)\n\nUpdates `thiserror` from 2.0.18 to 2.0.19\n- [Release notes](https://github.com/dtolnay/thiserror/releases)\n- [Commits](https://github.com/dtolnay/thiserror/compare/2.0.18...2.0.19)\n\nUpdates `rmcp` from 2.1.0 to 3.0.0\n- [Release notes](https://github.com/modelcontextprotocol/rust-sdk/releases)\n- [Changelog](https://github.com/modelcontextprotocol/rust-sdk/blob/main/release-plz.toml)\n- [Commits](https://github.com/modelcontextprotocol/rust-sdk/compare/rmcp-v2.1.0...rmcp-v3.0.0)\n\nUpdates `tree-sitter` from 0.26.10 to 0.26.11\n- [Release notes](https://github.com/tree-sitter/tree-sitter/releases)\n- [Commits](https://github.com/tree-sitter/tree-sitter/compare/v0.26.10...v0.26.11)\n\nUpdates `tree-sitter-highlight` from 0.26.10 to 0.26.11\n- [Release notes](https://github.com/tree-sitter/tree-sitter/releases)\n- [Commits](https://github.com/tree-sitter/tree-sitter/compare/v0.26.10...v0.26.11)\n\nUpdates `serde_json` from 1.0.150 to 1.0.151\n- [Release notes](https://github.com/serde-rs/json/releases)\n- [Commits](https://github.com/serde-rs/json/compare/v1.0.150...v1.0.151)\n\nUpdates `toml` from 1.1.2+spec-1.1.0 to 1.1.4+spec-1.1.0\n- [Commits](https://github.com/toml-rs/toml/compare/toml-v1.1.2...toml-v1.1.4)\n\nUpdates `uuid` from 1.23.4 to 1.24.0\n- [Release notes](https://github.com/uuid-rs/uuid/releases)\n- [Commits](https://github.com/uuid-rs/uuid/compare/v1.23.4...v1.24.0)\n\n---\nupdated-dependencies:\n- dependency-name: async-trait\n  dependency-version: 0.1.91\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: deps\n- dependency-name: clap\n  dependency-version: 4.6.3\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: deps\n- dependency-name: rmcp\n  dependency-version: 2.2.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: deps\n- dependency-name: serde_json\n  dependency-version: 1.0.151\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: deps\n- dependency-name: thiserror\n  dependency-version: 2.0.19\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: deps\n- dependency-name: time\n  dependency-version: 0.3.54\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: deps\n- dependency-name: tokio\n  dependency-version: 1.53.1\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: deps\n- dependency-name: toml\n  dependency-version: 1.1.3+spec-1.1.0\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: deps\n- dependency-name: tree-sitter\n  dependency-version: 0.26.11\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: deps\n- dependency-name: tree-sitter-highlight\n  dependency-version: 0.26.11\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: deps\n- dependency-name: uuid\n  dependency-version: 1.24.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: deps\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>",
+          "timestamp": "2026-07-30T00:45:28+02:00",
+          "tree_id": "d86d5fcf1547a813d1abb1ddf13b658dd1fb5714",
+          "url": "https://github.com/matheusfillipe/diffler/commit/0f03bf9ea1ad85976441649d6d574a2a91627a75"
+        },
+        "date": 1785365363966,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "syndiff_emphasis/1000",
+            "value": 7932515,
+            "range": "± 27748",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/1000",
+            "value": 20048,
+            "range": "± 176",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/1000",
+            "value": 5801988,
+            "range": "± 129381",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/1000",
+            "value": 4489369,
+            "range": "± 70309",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/5000",
+            "value": 39261105,
+            "range": "± 288980",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/5000",
+            "value": 99900,
+            "range": "± 396",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/5000",
+            "value": 29190626,
+            "range": "± 490965",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/5000",
+            "value": 22490495,
+            "range": "± 72458",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/20000",
+            "value": 170005285,
+            "range": "± 2741205",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/20000",
+            "value": 402585,
+            "range": "± 1680",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/20000",
+            "value": 118684423,
+            "range": "± 895365",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/20000",
+            "value": 90652854,
+            "range": "± 384191",
             "unit": "ns/iter"
           }
         ]
