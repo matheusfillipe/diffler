@@ -16,7 +16,7 @@ impl App {
                 _ => {}
             },
             Some(Modal::Input { .. }) => self.handle_input_key(key),
-            Some(Modal::ReviewVerdict { number }) => {
+            Some(Modal::ReviewVerdict { number, .. }) => {
                 use crate::ci::ReviewVerdict;
                 let number = *number;
                 let verdict = match key.code {

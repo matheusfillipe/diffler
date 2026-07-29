@@ -195,7 +195,11 @@ pub enum Modal {
     PullDiverged { upstream: String },
     /// Verdict picker for a PR review submit: approve, request changes, or
     /// comment only.
-    ReviewVerdict { number: u64 },
+    ReviewVerdict {
+        number: u64,
+        /// What the submit will send, resolved when the dialog opens.
+        summary: Vec<String>,
+    },
     /// Keymap listing for the screen the popup opened over.
     Help,
 }

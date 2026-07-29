@@ -175,6 +175,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) {
             popup::Popup {
                 title: format!("Help — {screen} keys"),
                 entries: help_entries(app),
+                summary: Vec::new(),
             }
             .render(frame, &app.theme);
         }
@@ -198,10 +199,11 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) {
                     ("f".to_owned(), "force (discard local commits)".to_owned()),
                     ("esc".to_owned(), "cancel".to_owned()),
                 ],
+                summary: Vec::new(),
             }
             .render(frame, &app.theme);
         }
-        Some(Modal::ReviewVerdict { number }) => {
+        Some(Modal::ReviewVerdict { number, summary }) => {
             popup::Popup {
                 title: format!("Submit review — PR #{number}"),
                 entries: vec![
@@ -210,6 +212,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) {
                     ("c".to_owned(), "comment only".to_owned()),
                     ("esc".to_owned(), "cancel".to_owned()),
                 ],
+                summary: summary.clone(),
             }
             .render(frame, &app.theme);
         }

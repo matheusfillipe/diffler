@@ -17,6 +17,8 @@ pub struct Popup {
     pub title: String,
     /// `(key label, description)` pairs.
     pub entries: Vec<(String, String)>,
+    /// Consequences of the action, shown above the keys.
+    pub summary: Vec<String>,
 }
 
 /// Cells between columns when the help popup wraps into multiple columns.
@@ -64,9 +66,13 @@ impl Popup {
         let dim = Style::new().fg(theme.dim).bg(theme.panel);
         let fg = Style::new().fg(theme.fg).bg(theme.panel);
 
-        let mut lines = vec![Line::styled("Actions", dim)];
-        // one row goes to the "Actions" heading
-        let rows = body_rows.saturating_sub(1).max(1);
+        let mut lines: Vec<Line<'static>> = self
+            .summary
+            .iter()
+            .map(|text| Line::styled(format!(" {text}"), fg))
+            .collect();
+        lines.push(Line::styled("Actions", dim));
+        let rows = body_rows.saturating_sub(lines.len()).max(1);
         if self.entries.len() <= rows {
             for (key, description) in &self.entries {
                 lines.push(Line::from(vec![
@@ -662,6 +668,7 @@ mod tests {
     #[test]
     fn popup_renders_as_bottom_split() {
         let popup = Popup {
+            summary: Vec::new(),
             title: "Branch".to_owned(),
             entries: vec![
                 ("c".to_owned(), "create and checkout".to_owned()),
@@ -680,6 +687,7 @@ mod tests {
             .map(|i| (format!("k{i}"), format!("action_{i}")))
             .collect();
         let popup = Popup {
+            summary: Vec::new(),
             title: "Many keys".to_owned(),
             entries,
         };
