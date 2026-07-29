@@ -43,7 +43,9 @@ impl App {
             return;
         }
         let template = editor::commit_template(staged);
-        self.queue_message_editor(template, |msg_path| EditorPurpose::Commit { msg_path });
+        self.queue_message_editor("COMMIT_EDITMSG", template, |msg_path| {
+            EditorPurpose::Commit { msg_path }
+        });
     }
 
     /// `c e`: extend HEAD with the staged index, reusing its message — no
@@ -90,36 +92,42 @@ impl App {
             &[]
         };
         let template = editor::amend_template(&existing, staged);
-        self.queue_message_editor(template, move |msg_path| EditorPurpose::Amend {
-            msg_path,
-            use_index,
+        self.queue_message_editor("COMMIT_EDITMSG", template, move |msg_path| {
+            EditorPurpose::Amend {
+                msg_path,
+                use_index,
+            }
         });
     }
 
-    /// Write `template` to `COMMIT_EDITMSG` and queue the editor on it. The
-    /// gitdir comes from libgit2 (not `<root>/.git`) so linked worktrees work.
+    /// Write `template` to `file_name` in the git dir and queue the editor on
+    /// it. The gitdir comes from libgit2 (not `<root>/.git`) so linked
+    /// worktrees work. Reports whether the editor was queued, so a caller
+    /// holding state for the round trip can put it back when it was not.
     pub(super) fn queue_message_editor(
         &mut self,
+        file_name: &str,
         template: String,
         purpose: impl FnOnce(std::path::PathBuf) -> EditorPurpose,
-    ) {
+    ) -> bool {
         let git_dir = match self.review.vcs.git_dir() {
             Ok(dir) => dir,
             Err(err) => {
                 self.error(err.to_string());
-                return;
+                return false;
             }
         };
-        let msg_path = git_dir.join("COMMIT_EDITMSG");
+        let msg_path = git_dir.join(file_name);
         if let Err(err) = std::fs::write(&msg_path, template) {
             self.error(format!("cannot write {}: {err}", msg_path.display()));
-            return;
+            return false;
         }
         let cmd = editor::command_for(&self.editor_command(), &msg_path, None);
         self.pending_editor = Some(EditorRequest {
             cmd,
             purpose: purpose(msg_path),
         });
+        true
     }
 
     /// Run the backend amend and report. `message` `None` reuses HEAD's
@@ -149,6 +157,21 @@ impl App {
                 msg_path,
                 use_index,
             } => self.finish_amend(&msg_path, use_index, outcome),
+            EditorPurpose::PrBody {
+                msg_path,
+                mut draft,
+            } => {
+                match outcome {
+                    Ok(_) => match std::fs::read_to_string(&msg_path) {
+                        Ok(body) => draft.body = body,
+                        Err(err) => {
+                            self.error(format!("cannot read {}: {err}", msg_path.display()));
+                        }
+                    },
+                    Err(err) => self.error(format!("editor failed: {err}")),
+                }
+                self.modal = Some(super::Modal::CreatePr { draft });
+            }
             EditorPurpose::OpenFile { path } => {
                 if let Err(err) = outcome {
                     self.error(format!("editor failed: {err}"));

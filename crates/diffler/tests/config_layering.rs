@@ -70,12 +70,12 @@ fn file_layout_override_dumps_with_its_origin() {
     init_repo(repo.path());
     write_config(
         &xdg.path().join("diffler"),
-        "[ui]\nstatus_file_layout = \"tree\"\ndiff_file_layout = \"list\"\n",
+        "[ui]\nstatus_file_layout = \"tree\"\ndiff_file_layout = \"review\"\n",
     );
 
     let out = stdout(&dump(repo.path(), Some(xdg.path()), None, &[]));
     assert!(out.contains("status_file_layout = \"tree\""));
-    assert!(out.contains("diff_file_layout = \"list\""));
+    assert!(out.contains("diff_file_layout = \"review\""));
     assert!(out.contains("# ui.status_file_layout = global:"));
     assert!(out.contains("# ui.diff_file_layout = global:"));
 }

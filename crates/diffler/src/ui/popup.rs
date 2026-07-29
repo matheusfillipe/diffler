@@ -306,6 +306,91 @@ fn pad(text: &str, width: usize) -> String {
     format!("{text}{}", " ".repeat(pad))
 }
 
+/// The pull-request draft as a form, the field under the cursor marked.
+#[derive(Debug, Clone)]
+pub struct CreatePrForm<'a> {
+    pub draft: &'a crate::app::pr_create::PrDraft,
+}
+
+/// Wide enough for a title and a branch pair.
+const CREATE_PR_WIDTH: u16 = 76;
+
+impl CreatePrForm<'_> {
+    pub fn render(&self, frame: &mut Frame<'_>, theme: &Theme) {
+        use crate::app::pr_create::PrField;
+        let draft = self.draft;
+        let body_lines = draft.body.lines().count();
+        let head = if draft.needs_push {
+            format!(
+                "{}  ({} commits, pushes on create)",
+                draft.head, draft.commits
+            )
+        } else {
+            format!("{}  ({} commits)", draft.head, draft.commits)
+        };
+        let rows = [
+            (PrField::Base, "base ", draft.base.clone()),
+            (PrField::Title, "title", draft.title.clone()),
+            (
+                PrField::Body,
+                "body ",
+                match body_lines {
+                    0 => "empty                    ⏎ edit in $EDITOR".to_owned(),
+                    n => format!("{n} lines                 ⏎ edit in $EDITOR"),
+                },
+            ),
+            (
+                PrField::Draft,
+                "draft",
+                if draft.draft { "yes" } else { "no" }.to_owned(),
+            ),
+        ];
+        let fg = Style::new().fg(theme.fg).bg(theme.panel);
+        let dim = Style::new().fg(theme.dim).bg(theme.panel);
+        let label = Style::new().fg(theme.purple).bg(theme.panel);
+        let mut lines = vec![
+            Line::from(vec![
+                Span::styled(" head  ".to_owned(), label),
+                Span::styled(head, dim),
+            ]),
+            Line::styled(String::new(), dim),
+        ];
+        for (field, name, value) in rows {
+            let picked = field == draft.field;
+            let marker = if picked { "▌" } else { " " };
+            let value_style = if picked {
+                Style::new()
+                    .fg(theme.fg)
+                    .bg(theme.panel)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                fg
+            };
+            lines.push(Line::from(vec![
+                Span::styled(marker.to_owned(), Style::new().fg(theme.accent)),
+                Span::styled(format!("{name}  "), label),
+                Span::styled(value, value_style),
+            ]));
+        }
+        lines.push(Line::styled(String::new(), dim));
+        lines.push(Line::styled(
+            " j/k move   ⏎ edit   d draft   c create   esc cancel".to_owned(),
+            dim,
+        ));
+
+        let width = CREATE_PR_WIDTH.min(frame.area().width);
+        let height = (lines.len() as u16 + 2).min(frame.area().height);
+        let area = centered(frame.area(), width, height);
+        frame.render_widget(Clear, area);
+        frame.render_widget(
+            Paragraph::new(lines)
+                .style(Style::new().fg(theme.fg).bg(theme.panel))
+                .block(bordered_block(theme, " Create pull request ")),
+            area,
+        );
+    }
+}
+
 /// Yes/no question rendered as a small centered modal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfirmDialog {
@@ -569,7 +654,7 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::widgets::Block;
@@ -578,7 +663,7 @@ mod tests {
 
     /// Render a widget over a themed background so the split/overlay
     /// boundaries are visible in the snapshot.
-    fn render(draw: impl Fn(&mut Frame<'_>, &Theme)) -> Terminal<TestBackend> {
+    pub(super) fn render(draw: impl Fn(&mut Frame<'_>, &Theme)) -> Terminal<TestBackend> {
         let theme = Theme::github_dark();
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -768,5 +853,28 @@ mod tests {
             !content.contains("line 4 "),
             "older lines scroll away: {content}"
         );
+    }
+}
+
+#[cfg(test)]
+mod create_pr_tests {
+    use super::tests::render;
+    use super::*;
+    use crate::app::pr_create::{PrDraft, PrField};
+
+    #[test]
+    fn create_pr_form_renders() {
+        let draft = PrDraft {
+            base: "main".to_owned(),
+            head: "feat/pr-create".to_owned(),
+            title: "pr create".to_owned(),
+            body: "- first\n- second\n".to_owned(),
+            draft: false,
+            commits: 2,
+            needs_push: true,
+            field: PrField::Title,
+        };
+        let terminal = render(|frame, theme| CreatePrForm { draft: &draft }.render(frame, theme));
+        insta::assert_snapshot!(terminal.backend());
     }
 }

@@ -122,8 +122,15 @@ async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<
         app.watcher_healthy = Some(handle.healthy.clone());
     }
     let mcp = start_mcp(&mut app, &tx);
+    let mut needs_draw = true;
     loop {
-        terminal.draw(|frame| ui::draw(frame, &mut app))?;
+        if needs_draw {
+            // rendering writes to the tty and handling an event runs git: both
+            // block, so hand the worker back to the runtime for the duration or
+            // a slow repo stalls the MCP server and the watcher with it
+            tokio::task::block_in_place(|| terminal.draw(|frame| ui::draw(frame, &mut app)))?;
+            needs_draw = false;
+        }
         if let Some(text) = app.pending_clipboard.take() {
             // OSC52 addresses the terminal emulator, not the screen: it must
             // bypass ratatui's buffer and go out raw, right after the draw so
@@ -152,6 +159,8 @@ async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<
             terminal.clear()?;
             events = event::spawn_event_loop(tx.clone());
             app.editor_finished(purpose, outcome);
+            // the screen came back blank from the suspend
+            needs_draw = true;
             continue;
         }
         if let Some(app::GitOp { label, argv }) = app.pending_git.take() {
@@ -173,17 +182,23 @@ async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<
             continue;
         }
         let Some(event) = rx.recv().await else { break };
-        if app.handle(event) == Flow::Quit {
-            break;
+        match tokio::task::block_in_place(|| app.handle(event)) {
+            Flow::Quit => break,
+            Flow::Continue => needs_draw = true,
+            Flow::Idle => {}
         }
         // drain whatever queued while handling so one draw covers the batch:
         // held-down keys and watcher bursts otherwise pay a full draw (and its
         // first-view enrichment) per event and the UI lags behind the input
         let mut quit = false;
         while let Ok(event) = rx.try_recv() {
-            if app.handle(event) == Flow::Quit {
-                quit = true;
-                break;
+            match tokio::task::block_in_place(|| app.handle(event)) {
+                Flow::Quit => {
+                    quit = true;
+                    break;
+                }
+                Flow::Continue => needs_draw = true,
+                Flow::Idle => {}
             }
             if app.pending_editor.is_some()
                 || app.pending_git.is_some()
@@ -438,6 +453,12 @@ async fn run_ci_request(
             Err(err) => AppEvent::CiError(err.to_string()),
         },
         CiRequest::Pr => AppEvent::CiPr(provider.current_pr().await.unwrap_or(None)),
+        CiRequest::CreatePr(new) => AppEvent::PrCreated(Box::new(
+            provider
+                .create_pr(&new)
+                .await
+                .map_err(|err| err.to_string()),
+        )),
         CiRequest::Prs => match provider.list_prs().await {
             Ok(prs) => AppEvent::CiPrs(prs),
             Err(err) => AppEvent::CiError(err.to_string()),

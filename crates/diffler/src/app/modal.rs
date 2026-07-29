@@ -16,6 +16,7 @@ impl App {
                 _ => {}
             },
             Some(Modal::Input { .. }) => self.handle_input_key(key),
+            Some(Modal::CreatePr { .. }) => return self.handle_create_pr_key(key),
             Some(Modal::ReviewVerdict { number, .. }) => {
                 use crate::ci::ReviewVerdict;
                 let number = *number;
@@ -103,7 +104,7 @@ impl App {
                 buffer.insert(byte_index(buffer, *cursor), '\n');
                 *cursor += 1;
             }
-            KeyCode::Esc => self.modal = None,
+            KeyCode::Esc => self.cancel_input(),
             KeyCode::Enter => self.submit_input(),
             code => {
                 let Some(Modal::Input { buffer, cursor, .. }) = self.modal.as_mut() else {
@@ -184,6 +185,60 @@ impl App {
         }
     }
 
+    pub(super) fn handle_create_pr_key(&mut self, key: &KeyEvent) -> Flow {
+        let Some(Modal::CreatePr { draft }) = self.modal.as_mut() else {
+            return Flow::Continue;
+        };
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => draft.field = draft.field.step(true),
+            KeyCode::Char('k') | KeyCode::Up => draft.field = draft.field.step(false),
+            KeyCode::Char('d') => draft.draft = !draft.draft,
+            KeyCode::Char('c') => self.create_pr_submit(),
+            KeyCode::Esc | KeyCode::Char('q') => self.modal = None,
+            KeyCode::Enter => {
+                let field = draft.field;
+                let Some(Modal::CreatePr { draft }) = self.modal.take() else {
+                    return Flow::Continue;
+                };
+                self.edit_pr_field(draft, field);
+            }
+            _ => {}
+        }
+        Flow::Continue
+    }
+
+    fn edit_pr_field(
+        &mut self,
+        draft: Box<crate::app::pr_create::PrDraft>,
+        field: crate::app::pr_create::PrField,
+    ) {
+        use crate::app::pr_create::PrField;
+        match field {
+            PrField::Draft => {
+                let mut draft = draft;
+                draft.draft = !draft.draft;
+                self.modal = Some(Modal::CreatePr { draft });
+            }
+            PrField::Body => {
+                let template = draft.body.clone();
+                let restore = draft.clone();
+                let queued = self.queue_message_editor("PR_EDITMSG", template, move |msg_path| {
+                    crate::editor::EditorPurpose::PrBody { msg_path, draft }
+                });
+                if !queued {
+                    self.modal = Some(Modal::CreatePr { draft: restore });
+                }
+            }
+            PrField::Base | PrField::Title => {
+                let (title, buffer) = match field {
+                    PrField::Base => ("Base branch".to_owned(), draft.base.clone()),
+                    _ => ("Title".to_owned(), draft.title.clone()),
+                };
+                self.open_input(title, buffer, InputOp::PrField { draft, field });
+            }
+        }
+    }
+
     /// Open the text-input modal with the cursor at the end of `buffer` (so a
     /// prefilled edit lands ready to append). An empty buffer starts at column 0.
     pub(crate) fn open_input(&mut self, title: String, buffer: String, on_submit: InputOp) {
@@ -197,6 +252,18 @@ impl App {
 
     /// An empty buffer submits as a cancel — comments and replies must say
     /// something to be worth persisting.
+    /// Leave the input. A field of the create form hands its draft back
+    /// rather than dropping it, so one abandoned edit cannot lose the rest.
+    pub(super) fn cancel_input(&mut self) {
+        if let Some(Modal::Input {
+            on_submit: InputOp::PrField { draft, .. },
+            ..
+        }) = self.modal.take()
+        {
+            self.modal = Some(Modal::CreatePr { draft });
+        }
+    }
+
     pub(super) fn submit_input(&mut self) {
         let Some(Modal::Input {
             buffer, on_submit, ..
@@ -206,11 +273,26 @@ impl App {
         };
         let body = buffer.trim();
         // the review summary is optional; everything else needs content
-        if body.is_empty() && !matches!(on_submit, InputOp::ReviewBody { .. }) {
+        if body.is_empty()
+            && !matches!(
+                on_submit,
+                InputOp::ReviewBody { .. } | InputOp::PrField { .. }
+            )
+        {
             return;
         }
         let source = self.active_review_source();
         match on_submit {
+            InputOp::PrField { mut draft, field } => {
+                use crate::app::pr_create::PrField;
+                if !body.is_empty() {
+                    match field {
+                        PrField::Base => body.clone_into(&mut draft.base),
+                        _ => body.clone_into(&mut draft.title),
+                    }
+                }
+                self.modal = Some(Modal::CreatePr { draft });
+            }
             InputOp::ReviewBody { number, verdict } => {
                 let body = body.to_owned();
                 self.queue_pr_review(number, verdict, &body);

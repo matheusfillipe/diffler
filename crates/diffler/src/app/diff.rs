@@ -371,24 +371,19 @@ impl DiffView {
 
     /// The flattened sidebar rows over the model's files. The tree layout
     /// groups files under collapsible directory rows (honoring the folded
-    /// set); the flat list is a degenerate tree — one File row per file at
-    /// depth 0, carrying its full path, no Dir rows — so `tree_cursor` and the
-    /// file-navigation helpers work unchanged for both. The review layout
-    /// splits files into a to-review and a viewed bucket under foldable
-    /// Section rows; bucket membership reads the hash-keyed viewed marks, so
-    /// an edited file falls back into to-review by itself. Files keep their
-    /// model index.
+    /// set). The review layout splits files into a to-review and a viewed
+    /// bucket under foldable Section rows; bucket membership reads the
+    /// hash-keyed viewed marks, so an edited file falls back into to-review by
+    /// itself. Files keep their model index.
     pub(crate) fn tree_rows(&self, model: &DiffModel, session: &Session) -> Vec<TreeRow> {
         match self.layout {
-            FileLayout::List => {
-                let paths: Vec<&str> = model.files.iter().map(|f| f.path.as_str()).collect();
-                tree::flat_rows(&paths)
-            }
-            FileLayout::Tree => {
+            FileLayout::Review => self.review_rows(model, session),
+            // list belongs to the status screen (config rejects it here); a
+            // stray value degrades to the tree
+            FileLayout::Tree | FileLayout::List => {
                 let paths: Vec<&str> = model.files.iter().map(|f| f.path.as_str()).collect();
                 tree::visible_rows(&paths, &self.folded_dirs)
             }
-            FileLayout::Review => self.review_rows(model, session),
         }
     }
 
@@ -429,12 +424,11 @@ impl DiffView {
         rows
     }
 
-    /// Advance the sidebar layout: tree → list → review → tree.
+    /// Advance the sidebar layout: tree → review → tree.
     pub(crate) fn cycle_layout(&mut self) -> FileLayout {
         self.layout = match self.layout {
-            FileLayout::Tree => FileLayout::List,
-            FileLayout::List => FileLayout::Review,
             FileLayout::Review => FileLayout::Tree,
+            _ => FileLayout::Review,
         };
         self.layout
     }
@@ -1269,7 +1263,7 @@ impl App {
         }
     }
 
-    /// `t`: cycle the sidebar layout (tree → list → review), keeping the
+    /// `t`: cycle the sidebar layout (tree → review), keeping the
     /// pane's file and re-seating the tree cursor on its row when visible.
     fn diff_cycle_sidebar_mode(&mut self) {
         let review = &self.review;
@@ -2041,38 +2035,7 @@ mod tests {
     }
 
     #[test]
-    fn the_list_sidebar_layout_is_flat_with_full_paths_and_no_dirs() {
-        let fixture = standard_fixture();
-        let app = diff_app_with_layout(&fixture, crate::config::FileLayout::List);
-        // flat: every row is a file carrying its full repo-relative path, no
-        // dir rows, in model order
-        assert_eq!(
-            tree_kinds(&app),
-            vec![
-                "file:ci.yml".to_owned(),
-                "file:src/lib.rs".to_owned(),
-                "file:todo.md".to_owned(),
-            ]
-        );
-    }
-
-    #[test]
-    fn list_sidebar_jk_walks_files_and_selects_them() {
-        let fixture = standard_fixture();
-        let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::List);
-        // cursor opens on the shown file (ci.yml, model index 0, first row)
-        assert_eq!(tree_cursor(&app), 0);
-        assert_eq!(selected_path(&app), "ci.yml");
-        app.handle(key('j'));
-        assert_eq!(selected_path(&app), "src/lib.rs");
-        app.handle(key('j'));
-        assert_eq!(selected_path(&app), "todo.md");
-        app.handle(key('k'));
-        assert_eq!(selected_path(&app), "src/lib.rs");
-    }
-
-    #[test]
-    fn list_gg_and_g_jump_to_the_first_and_last_visible_row() {
+    fn gg_and_g_jump_to_the_first_and_last_visible_row() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
         let last = tree_row_count(&app) - 1;
@@ -2724,16 +2687,10 @@ mod tests {
     }
 
     #[test]
-    fn t_cycles_the_sidebar_through_tree_list_and_review() {
+    fn t_cycles_the_sidebar_between_the_tree_and_the_review_buckets() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
         assert!(tree_kinds(&app).contains(&"dir".to_owned()));
-        app.handle(key('t'));
-        assert_eq!(
-            tree_kinds(&app),
-            ["file:ci.yml", "file:src/lib.rs", "file:todo.md"],
-            "list: one flat row per file"
-        );
         app.handle(key('t'));
         assert_eq!(tree_kinds(&app)[0], "section:To review:3");
         app.handle(key('t'));

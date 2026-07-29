@@ -203,6 +203,9 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) {
             }
             .render(frame, &app.theme);
         }
+        Some(Modal::CreatePr { draft }) => {
+            popup::CreatePrForm { draft }.render(frame, &app.theme);
+        }
         Some(Modal::ReviewVerdict { number, summary }) => {
             popup::Popup {
                 title: format!("Submit review — PR #{number}"),

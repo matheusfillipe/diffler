@@ -1697,18 +1697,6 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_renders_as_a_flat_list_when_configured() {
-        let fixture = standard_fixture();
-        let mut loaded = LoadedConfig::default();
-        loaded.config.ui.diff_file_layout = crate::config::FileLayout::List;
-        let mut app = App::new(fixture.review(), loaded);
-        app.author = "reviewer".to_owned();
-        app.open_working_tree_diff(None);
-        assert_eq!(app.diff.as_ref().unwrap().focus, Pane::List);
-        insta::assert_snapshot!(render(&mut app).backend());
-    }
-
-    #[test]
     fn sidebar_scrolls_to_keep_the_cursor_visible() {
         let fixture = crate::test_support::Fixture::new();
         fixture.write(".keep", "x\n");

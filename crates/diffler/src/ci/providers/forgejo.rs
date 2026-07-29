@@ -43,6 +43,26 @@ impl ForgejoProvider {
     }
 
     async fn get(&self, path: &str) -> Result<String> {
+        self.call(path, &[]).await
+    }
+
+    /// POST `body` as JSON. Forgejo answers with the created resource.
+    async fn post(&self, path: &str, body: &serde_json::Value) -> Result<String> {
+        self.call(
+            path,
+            &[
+                "-X".to_owned(),
+                "POST".to_owned(),
+                "-H".to_owned(),
+                "Content-Type: application/json".to_owned(),
+                "--data-binary".to_owned(),
+                body.to_string(),
+            ],
+        )
+        .await
+    }
+
+    async fn call(&self, path: &str, extra: &[String]) -> Result<String> {
         let host = self
             .host
             .as_deref()
@@ -59,6 +79,7 @@ impl ForgejoProvider {
             args.push("-H".to_owned());
             args.push(format!("Authorization: token {token}"));
         }
+        args.extend_from_slice(extra);
         args.push(format!("https://{host}/api/v1/repos/{}/{path}", self.repo));
         // a failed exec embeds the argv in the error, which the status bar
         // renders — never let the token through
@@ -133,6 +154,24 @@ impl ForgeProvider for ForgejoProvider {
         let raw = self.get("pulls?state=open&limit=50").await?;
         let pulls: Vec<PullItem> = parse_json("pr list", &raw)?;
         Ok(pulls.into_iter().map(PullItem::into_pr).collect())
+    }
+
+    async fn create_pr(&self, new: &crate::ci::NewPullRequest) -> Result<PullRequest> {
+        // Forgejo marks a draft with a WIP: title prefix
+        let title = if new.draft {
+            format!("WIP: {}", new.title)
+        } else {
+            new.title.clone()
+        };
+        let payload = serde_json::json!({
+            "base": new.base,
+            "head": new.head,
+            "title": title,
+            "body": new.body,
+        });
+        let raw = self.post("pulls", &payload).await?;
+        let pull: PullItem = parse_json("pr create", &raw)?;
+        Ok(pull.into_pr())
     }
 
     async fn current_pr(&self) -> Result<Option<PullRequest>> {
@@ -382,5 +421,57 @@ mod tests {
         .await
         .expect_err("malformed body must not silently read as \"no PR\"");
         assert!(matches!(err, CiError::Parse { .. }));
+    }
+}
+
+#[cfg(test)]
+mod create_pr_tests {
+    use super::*;
+    use crate::ci::exec::test_support::RecordingRunner;
+    use crate::ci::provider::NewPullRequest;
+    use std::sync::Arc;
+
+    fn request(draft: bool) -> NewPullRequest {
+        NewPullRequest {
+            base: "main".to_owned(),
+            head: "feat/x".to_owned(),
+            title: "a title".to_owned(),
+            body: "a body".to_owned(),
+            draft,
+        }
+    }
+
+    fn provider(runner: &Arc<RecordingRunner>) -> ForgejoProvider {
+        ForgejoProvider::new(
+            Box::new(Arc::clone(runner)),
+            Some("codeberg.org".to_owned()),
+            "acme/widgets".to_owned(),
+            None,
+            None,
+        )
+    }
+
+    const CREATED: &str = r#"{"number":7,"title":"a title","html_url":"https://codeberg.org/acme/widgets/pulls/7",
+        "head":{"ref":"feat/x","sha":"abc"},"base":{"ref":"main","sha":"def"},"user":{"login":"reviewer"}}"#;
+
+    #[tokio::test]
+    async fn create_posts_json_and_reads_the_pull_back() {
+        let runner = Arc::new(RecordingRunner::new(&[("pulls", CREATED)]));
+        let pr = provider(&runner)
+            .create_pr(&request(false))
+            .await
+            .expect("created");
+        assert_eq!((pr.number, pr.head_ref.as_str()), (7, "feat/x"));
+        let call = runner.calls().remove(0);
+        assert!(call.contains("-X POST"), "{call}");
+        assert!(call.contains(r#""title":"a title""#), "{call}");
+    }
+
+    #[tokio::test]
+    async fn a_draft_becomes_a_wip_title() {
+        let runner = Arc::new(RecordingRunner::new(&[("pulls", CREATED)]));
+        let _ = provider(&runner).create_pr(&request(true)).await;
+        let call = runner.calls().remove(0);
+        assert!(call.contains(r#""title":"WIP: a title""#), "{call}");
     }
 }
