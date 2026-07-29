@@ -52,6 +52,10 @@ use crate::transient::{Transient, TransientKind, TransientResolve};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Flow {
     Continue,
+    /// The event left the screen exactly as it was, so the loop can skip the
+    /// draw. A terminal nobody is reading fills up otherwise, and the writes
+    /// block the loop that answers the agent.
+    Idle,
     Quit,
 }
 
@@ -805,25 +809,7 @@ impl App {
                     self.handle_key(&key)
                 }
             }
-            AppEvent::Tick => {
-                self.expire_pending();
-                self.refresh_flash = self.refresh_flash.saturating_sub(1);
-                self.tick_count = self.tick_count.wrapping_add(1);
-                if self.tick_count.is_multiple_of(FALLBACK_REFRESH_TICKS)
-                    && self.watcher_unhealthy()
-                {
-                    self.refresh();
-                }
-                // re-poll the active CI screen on a relaxed cadence (250ms ticks);
-                // saturating + clamp so a pathological config can't zero or overflow it
-                let poll_ticks =
-                    u32::try_from(self.config.ci.poll_seconds.max(1).saturating_mul(4))
-                        .unwrap_or(u32::MAX);
-                if self.tick_count.is_multiple_of(poll_ticks) {
-                    self.queue_ci_poll();
-                }
-                Flow::Continue
-            }
+            AppEvent::Tick => self.on_tick(),
             AppEvent::RefreshDone(result) => {
                 self.on_refresh_done(*result);
                 Flow::Continue
@@ -1100,15 +1086,46 @@ impl App {
         }
     }
 
-    fn expire_pending(&mut self) {
+    /// One 250ms beat: age the timed UI state and re-poll what the screen is
+    /// watching. `Idle` when the beat left the screen untouched, so the loop
+    /// can skip a draw nobody would see.
+    fn on_tick(&mut self) -> Flow {
+        let mut changed = self.expire_pending();
+        changed |= self.refresh_flash > 0;
+        let which_key = self.which_key_panel().is_some();
+        self.refresh_flash = self.refresh_flash.saturating_sub(1);
+        self.tick_count = self.tick_count.wrapping_add(1);
+        // the which-key panel reveals on a tick count, so the tick that crosses
+        // its delay is the frame that shows it
+        changed |= self.which_key_panel().is_some() != which_key;
+        if self.tick_count.is_multiple_of(FALLBACK_REFRESH_TICKS) && self.watcher_unhealthy() {
+            self.refresh();
+            changed = true;
+        }
+        // re-poll the active CI screen on a relaxed cadence (250ms ticks);
+        // saturating + clamp so a pathological config can't zero or overflow it
+        let poll_ticks =
+            u32::try_from(self.config.ci.poll_seconds.max(1).saturating_mul(4)).unwrap_or(u32::MAX);
+        // the poll itself paints nothing; its answer arrives as an event
+        if self.tick_count.is_multiple_of(poll_ticks) {
+            self.queue_ci_poll();
+        }
+        if changed { Flow::Continue } else { Flow::Idle }
+    }
+
+    /// True when the wait dropped the half-typed chord, so the caller can tell
+    /// the keymap state moved on.
+    fn expire_pending(&mut self) -> bool {
         if self.pending.is_empty() {
-            return;
+            return false;
         }
         self.pending_ticks += 1;
-        if self.pending_ticks >= PENDING_TIMEOUT_TICKS {
-            self.pending.clear();
-            self.pending_ticks = 0;
+        if self.pending_ticks < PENDING_TIMEOUT_TICKS {
+            return false;
         }
+        self.pending.clear();
+        self.pending_ticks = 0;
+        true
     }
 
     fn dispatch(&mut self, action: Action) -> Flow {
@@ -2536,6 +2553,47 @@ mod tests {
         assert_eq!(app.refresh_flash, REFRESH_FLASH_TICKS);
         app.handle(AppEvent::Tick);
         assert_eq!(app.refresh_flash, REFRESH_FLASH_TICKS - 1);
+    }
+
+    #[test]
+    fn a_tick_that_paints_nothing_reports_idle_so_the_loop_skips_the_draw() {
+        let (_fixture, mut app) = app();
+        // the flash from opening still has frames to give
+        while app.refresh_flash > 0 {
+            assert_eq!(app.handle(AppEvent::Tick), Flow::Continue);
+        }
+        assert_eq!(app.handle(AppEvent::Tick), Flow::Idle);
+    }
+
+    #[test]
+    fn the_tick_that_reveals_the_which_key_panel_asks_for_a_draw() {
+        let (_fixture, mut app) = app();
+        while app.handle(AppEvent::Tick) == Flow::Continue {}
+        app.handle(key('b'));
+        assert!(
+            app.which_key_panel().is_none(),
+            "the panel waits out its delay"
+        );
+        let mut ticks = 0;
+        while app.handle(AppEvent::Tick) == Flow::Idle {
+            ticks += 1;
+            assert!(ticks < 20, "the panel never revealed");
+        }
+        assert!(app.which_key_panel().is_some());
+    }
+
+    #[test]
+    fn an_expiring_chord_asks_for_a_draw_because_the_hint_row_shows_it() {
+        let (_fixture, mut app) = app();
+        while app.handle(AppEvent::Tick) == Flow::Continue {}
+        app.handle(key('g')); // half of `gg`
+        assert!(!app.pending.is_empty());
+        let mut ticks = 0;
+        while app.handle(AppEvent::Tick) == Flow::Idle {
+            ticks += 1;
+            assert!(ticks < 20, "the chord never expired");
+        }
+        assert!(app.pending.is_empty());
     }
 
     #[test]
