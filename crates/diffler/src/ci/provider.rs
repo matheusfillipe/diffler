@@ -129,6 +129,22 @@ pub trait ForgeProvider: Send + Sync {
     async fn pr(&self, _number: u64) -> Result<PullRequest> {
         Err(CiError::Unsupported("PR lookup"))
     }
+
+    /// Open a pull request. Default: unsupported.
+    async fn create_pr(&self, _new: &NewPullRequest) -> Result<PullRequest> {
+        Err(CiError::Unsupported("opening a pull request"))
+    }
+}
+
+/// A pull request to open: `head` merges into `base` on the forge the provider
+/// speaks to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewPullRequest {
+    pub base: String,
+    pub head: String,
+    pub title: String,
+    pub body: String,
+    pub draft: bool,
 }
 
 /// The event a submitted review carries on the forge.

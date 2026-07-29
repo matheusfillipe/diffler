@@ -438,6 +438,12 @@ async fn run_ci_request(
             Err(err) => AppEvent::CiError(err.to_string()),
         },
         CiRequest::Pr => AppEvent::CiPr(provider.current_pr().await.unwrap_or(None)),
+        CiRequest::CreatePr(new) => AppEvent::PrCreated(Box::new(
+            provider
+                .create_pr(&new)
+                .await
+                .map_err(|err| err.to_string()),
+        )),
         CiRequest::Prs => match provider.list_prs().await {
             Ok(prs) => AppEvent::CiPrs(prs),
             Err(err) => AppEvent::CiError(err.to_string()),

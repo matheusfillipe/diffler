@@ -63,6 +63,8 @@ pub enum AppEvent {
     },
     CiPrs(Vec<crate::ci::PullRequest>),
     CiPr(Option<crate::ci::PullRequest>),
+    /// A composed pull request came back from the forge, or failed to.
+    PrCreated(Box<Result<crate::ci::PullRequest, String>>),
     /// A run's jobs + dependency DAG, mapped onto the graph view.
     CiRunDetail(crate::ci::RunDetail),
     /// A run's artifacts + annotations for the graph page's extras panel.

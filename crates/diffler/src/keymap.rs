@@ -40,6 +40,7 @@ pub enum Action {
     OpenReviewDiff,
     OpenRuns,
     OpenPrs,
+    CreatePr,
     CommentsOverview,
     SubmitReview,
     CommitFlow,
@@ -126,6 +127,7 @@ impl Action {
             Self::OpenReviewDiff => "open_review_diff",
             Self::OpenRuns => "open_runs",
             Self::OpenPrs => "open_prs",
+            Self::CreatePr => "create_pr",
             Self::CommentsOverview => "comments_overview",
             Self::SubmitReview => "submit_review",
             Self::CommitFlow => "commit_flow",
@@ -212,6 +214,7 @@ impl Action {
             Self::OpenReviewDiff => "open the full working-tree diff",
             Self::OpenRuns => "open CI runs",
             Self::OpenPrs => "list open pull requests",
+            Self::CreatePr => "open a pull request for this branch",
             Self::CommentsOverview => "overview of every comment",
             Self::SubmitReview => "submit stacked PR comments as one review",
             Self::CommitFlow => "commit",
@@ -267,7 +270,7 @@ impl Action {
         }
     }
 
-    pub(crate) const ALL: [Self; 80] = [
+    pub(crate) const ALL: [Self; 81] = [
         Self::CenterCursor,
         Self::CursorTop,
         Self::CursorBottom,
@@ -279,6 +282,7 @@ impl Action {
         Self::PrevFunction,
         Self::DeleteComment,
         Self::OpenPrs,
+        Self::CreatePr,
         Self::CommentsOverview,
         Self::SubmitReview,
         Self::MoveDown,

@@ -19,6 +19,7 @@ mod mcp;
 mod modal;
 mod network;
 pub mod pr;
+pub mod pr_create;
 mod search;
 mod status;
 
@@ -143,6 +144,12 @@ pub enum InputOp {
     CreateBranch {
         checkout: bool,
     },
+    /// One text field of the pull request being composed; the draft rides
+    /// along so the form comes back with the rest of it intact.
+    PrField {
+        draft: Box<crate::app::pr_create::PrDraft>,
+        field: crate::app::pr_create::PrField,
+    },
     /// The optional top-level body of a PR review; empty submits without one.
     ReviewBody {
         number: u64,
@@ -199,6 +206,10 @@ pub enum Modal {
         number: u64,
         /// What the submit will send, resolved when the dialog opens.
         summary: Vec<String>,
+    },
+    /// Compose a pull request for the checked-out branch.
+    CreatePr {
+        draft: Box<crate::app::pr_create::PrDraft>,
     },
     /// Keymap listing for the screen the popup opened over.
     Help,
@@ -311,6 +322,7 @@ pub enum CiRequest {
     Pr,
     Prs,
     PrComments(u64),
+    CreatePr(Box<crate::ci::NewPullRequest>),
     Detail(crate::ci::RunId),
     Extras(crate::ci::RunId),
     Log {
@@ -521,6 +533,8 @@ pub struct App {
     /// Editor subprocess the main loop runs with the terminal suspended,
     /// then reports back through [`App::editor_finished`].
     pub pending_editor: Option<EditorRequest>,
+    /// A pull request waiting on its branch to reach the forge.
+    pub pending_pr_create: Option<Box<crate::ci::NewPullRequest>>,
     /// Network git op the main loop runs in the background (terminal stays up),
     /// reporting back through [`AppEvent::GitDone`]. Set by a push/pull/fetch
     /// transient leaf, taken once by the loop.
@@ -664,6 +678,7 @@ impl App {
             message,
             pending_clipboard: None,
             pending_editor: None,
+            pending_pr_create: None,
             pending_git: None,
             last_push_argv: None,
             watcher_healthy: None,
@@ -824,6 +839,10 @@ impl App {
                 Flow::Continue
             }
             AppEvent::CiPr(pr) => self.on_pr_event(pr),
+            AppEvent::PrCreated(result) => {
+                self.on_pr_created(*result);
+                Flow::Continue
+            }
             AppEvent::CiPrs(prs) => self.on_prs_event(prs),
             AppEvent::PrComments {
                 number,
@@ -1114,6 +1133,7 @@ impl App {
             Action::SearchPrev => self.search_step_or_follow(false),
             Action::OpenRuns => self.open_runs(),
             Action::OpenPrs => self.open_prs(),
+            Action::CreatePr => self.create_pr_start(),
             Action::CommentsOverview => self.open_comments_overview(),
             Action::SwitchTheme => self.open_theme_picker(),
             action => match self.screen() {
@@ -1314,6 +1334,15 @@ impl App {
     /// several git ops can be in flight and an unrelated one finishing first
     /// must not consume the continuation slots.
     fn git_finished(&mut self, label: &str, ok: bool, output: &str) {
+        if label == Self::PR_CREATE_PUSH {
+            if ok {
+                self.refresh();
+                self.pr_create_after_push();
+                return;
+            }
+            // the branch never reached the forge, so there is nothing to open
+            self.pending_pr_create = None;
+        }
         if label.starts_with(Self::PR_FETCH_PREFIX) {
             if let Some(pr) = self.pending_pr_open.take().filter(|_| ok) {
                 match self.resolve_pr_range(&pr) {

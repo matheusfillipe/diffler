@@ -114,6 +114,11 @@ impl App {
             if label.contains("force") {
                 return false; // a rejected force-with-lease is a real conflict
             }
+            // opening a pull request never escalates to a force-push: the
+            // human asked to publish a branch, not to overwrite the remote
+            if label == Self::PR_CREATE_PUSH {
+                return false;
+            }
             if no_upstream {
                 self.push_set_upstream();
                 return true;
@@ -159,7 +164,7 @@ impl App {
     }
 }
 
-fn push_upstream_argv(remote: &str) -> Vec<String> {
+pub(super) fn push_upstream_argv(remote: &str) -> Vec<String> {
     vec![
         "git".into(),
         "push".into(),
