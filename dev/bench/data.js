@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785253602269,
+  "lastUpdate": 1785340119741,
   "repoUrl": "https://github.com/matheusfillipe/diffler",
   "entries": {
     "Benchmark": [
@@ -6911,6 +6911,102 @@ window.BENCHMARK_DATA = {
             "name": "scope_index/20000",
             "value": 89240297,
             "range": "± 304311",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "committer": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "distinct": true,
+          "id": "d473d00a50fcc8ce9a4806626f71cb5af0935ff5",
+          "message": "fix: shorten the mcp long-poll so agent clients stop dropping it",
+          "timestamp": "2026-07-29T17:44:33+02:00",
+          "tree_id": "3a0b38a6a56a41bb6d798edf90391a25d149f985",
+          "url": "https://github.com/matheusfillipe/diffler/commit/d473d00a50fcc8ce9a4806626f71cb5af0935ff5"
+        },
+        "date": 1785340118774,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "syndiff_emphasis/1000",
+            "value": 8357328,
+            "range": "± 94229",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/1000",
+            "value": 19483,
+            "range": "± 257",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/1000",
+            "value": 5882510,
+            "range": "± 26220",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/1000",
+            "value": 4495198,
+            "range": "± 21454",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/5000",
+            "value": 43120151,
+            "range": "± 359399",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/5000",
+            "value": 93603,
+            "range": "± 533",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/5000",
+            "value": 30196424,
+            "range": "± 940487",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/5000",
+            "value": 22703786,
+            "range": "± 358995",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/20000",
+            "value": 181449646,
+            "range": "± 1661219",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/20000",
+            "value": 393534,
+            "range": "± 4621",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/20000",
+            "value": 122718221,
+            "range": "± 885090",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/20000",
+            "value": 93078990,
+            "range": "± 935853",
             "unit": "ns/iter"
           }
         ]
