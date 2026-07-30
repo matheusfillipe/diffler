@@ -323,7 +323,7 @@ impl LanguageRegistry {
         );
         r.add(
             "make",
-            &["mk", "mak"],
+            &["mk"],
             tree_sitter_make::LANGUAGE.into(),
             tree_sitter_make::HIGHLIGHTS_QUERY,
             None,
