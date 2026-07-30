@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785436433201,
+  "lastUpdate": 1785436795985,
   "repoUrl": "https://github.com/matheusfillipe/diffler",
   "entries": {
     "Benchmark": [
@@ -7775,6 +7775,102 @@ window.BENCHMARK_DATA = {
             "name": "scope_index/20000",
             "value": 49716753,
             "range": "± 945225",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "committer": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "distinct": true,
+          "id": "7de226489748109628bbae5a559fd4a3fc35bff9",
+          "message": "drop the .mak extension the typo gate rejects",
+          "timestamp": "2026-07-30T20:36:14+02:00",
+          "tree_id": "35d3397b17d38ff62428ce8629708098ccc062ff",
+          "url": "https://github.com/matheusfillipe/diffler/commit/7de226489748109628bbae5a559fd4a3fc35bff9"
+        },
+        "date": 1785436795552,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "syndiff_emphasis/1000",
+            "value": 8180574,
+            "range": "± 64053",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/1000",
+            "value": 20260,
+            "range": "± 2446",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/1000",
+            "value": 5901274,
+            "range": "± 301621",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/1000",
+            "value": 4526597,
+            "range": "± 21235",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/5000",
+            "value": 44279636,
+            "range": "± 1023224",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/5000",
+            "value": 101527,
+            "range": "± 2528",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/5000",
+            "value": 29782745,
+            "range": "± 950556",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/5000",
+            "value": 22546476,
+            "range": "± 543348",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/20000",
+            "value": 177026501,
+            "range": "± 10888363",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/20000",
+            "value": 404085,
+            "range": "± 6231",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/20000",
+            "value": 125513716,
+            "range": "± 6791422",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/20000",
+            "value": 93817196,
+            "range": "± 6226431",
             "unit": "ns/iter"
           }
         ]
