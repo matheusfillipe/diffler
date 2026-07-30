@@ -63,7 +63,7 @@ impl LanguageRegistry {
         let Some(entry) = self.for_path(path) else {
             return ScopeIndex::default();
         };
-        let Some(query) = entry.tags.as_ref() else {
+        let Some(query) = entry.tags() else {
             return ScopeIndex::default();
         };
         let Some(tree) = parse(entry, content) else {

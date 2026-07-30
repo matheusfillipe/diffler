@@ -10,7 +10,7 @@ use tree_sitter_highlight::{HighlightEvent, Highlighter as TsHighlighter};
 use crate::syntax::{HIGHLIGHT_NAMES, LanguageRegistry};
 
 pub struct Highlighter {
-    registry: LanguageRegistry,
+    registry: &'static LanguageRegistry,
     theme: SyntaxTheme,
 }
 
@@ -50,7 +50,7 @@ impl Highlighter {
     /// Build a highlighter whose foregrounds come from `syntax`.
     pub fn new(syntax: SyntaxTheme) -> Self {
         Self {
-            registry: LanguageRegistry::build(),
+            registry: &crate::syntax::registry::REGISTRY,
             theme: syntax,
         }
     }
@@ -81,12 +81,12 @@ impl Highlighter {
         let Some(entry) = entry else {
             return out;
         };
-        let Some(config) = entry.config.as_ref() else {
+        let Some(config) = entry.config() else {
             return out;
         };
 
         let mut ts = TsHighlighter::new();
-        let registry = &self.registry;
+        let registry = self.registry;
         let Ok(events) = ts.highlight(config, content.as_bytes(), None, move |lang| {
             registry.config_for_injection(lang)
         }) else {
@@ -330,6 +330,93 @@ impl SyntaxTheme {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every registered grammar must colour a representative snippet: a crate
+    /// that ships a parser with a broken or absent highlight query would
+    /// otherwise link fine and render plain.
+    #[test]
+    fn every_language_colours_a_sample() {
+        let samples: &[(&str, &str)] = &[
+            ("a.rs", "fn main() { let x = 1; }\n"),
+            ("a.py", "def f():\n    return 1\n"),
+            ("a.js", "const x = 1;\n"),
+            ("a.ts", "const x: number = 1;\n"),
+            ("a.tsx", "const A = () => <div />;\n"),
+            ("a.go", "package main\nfunc main() {}\n"),
+            ("a.c", "int main(void) { return 0; }\n"),
+            ("a.cpp", "int main() { return 0; }\n"),
+            ("A.java", "class A { void f() {} }\n"),
+            ("a.cs", "class A { void F() {} }\n"),
+            ("a.rb", "def f\n  1\nend\n"),
+            ("a.php", "<?php function f() { return 1; }\n"),
+            ("a.sh", "set -e\necho hi\n"),
+            ("a.json", "{\"a\": 1}\n"),
+            ("a.html", "<p>hi</p>\n"),
+            ("a.css", "a { color: red; }\n"),
+            ("a.yml", "name: CI\non: push\n"),
+            ("a.sql", "SELECT id FROM users;\n"),
+            ("a.md", "# Title\n\ntext\n"),
+            ("a.toml", "[package]\nname = \"x\"\n"),
+            (
+                "main.tf",
+                "resource \"aws_s3_bucket\" \"b\" {\n  bucket = var.name\n}\n",
+            ),
+            ("Dockerfile", "FROM alpine:3\nRUN echo hi\n"),
+            ("a.mk", "all:\n\techo hi\n"),
+            ("a.lua", "local function f() return 1 end\n"),
+            ("a.nix", "{ pkgs }: pkgs.hello\n"),
+            ("a.xml", "<root><a b=\"c\"/></root>\n"),
+            ("a.swift", "func f() -> Int { return 1 }\n"),
+            ("a.scala", "object A { def f = 1 }\n"),
+            ("a.ex", "defmodule A do\n  def f, do: 1\nend\n"),
+            ("a.zig", "pub fn main() void {}\n"),
+            ("a.hs", "main :: IO ()\nmain = return ()\n"),
+            ("a.dart", "void main() { var x = 1; }\n"),
+            ("a.ps1", "function Get-Thing { param($x) $x }\n"),
+            ("a.svelte", "<script>let x = 1;</script>\n<p>{x}</p>\n"),
+        ];
+        let hl = Highlighter::default();
+        let plain: Vec<&str> = samples
+            .iter()
+            .filter(|(path, content)| hl.highlight(path, content).iter().all(Vec::is_empty))
+            .map(|(path, _)| *path)
+            .collect();
+        assert!(plain.is_empty(), "rendered plain: {plain:?}");
+    }
+
+    #[test]
+    fn a_build_tool_file_resolves_by_its_name() {
+        let hl = Highlighter::default();
+        for path in ["Makefile", "GNUmakefile", "Dockerfile", "Containerfile"] {
+            let lines = hl.highlight(path, "FROM alpine\nall:\n\techo hi\n");
+            assert!(
+                lines.iter().any(|line| !line.is_empty()),
+                "{path} rendered plain"
+            );
+        }
+    }
+
+    #[test]
+    fn terraform_fences_and_extensions_reach_the_hcl_grammar() {
+        let hl = Highlighter::default();
+        let source = "variable \"name\" {\n  type = string\n}\n";
+        for path in ["main.tf", "vars.tfvars", "config.hcl"] {
+            assert!(
+                hl.highlight(path, source)
+                    .iter()
+                    .any(|line| !line.is_empty()),
+                "{path} rendered plain"
+            );
+        }
+        for token in ["terraform", "hcl", "tf"] {
+            assert!(
+                hl.highlight_lang(token, source)
+                    .iter()
+                    .any(|line| !line.is_empty()),
+                "fence {token} rendered plain"
+            );
+        }
+    }
 
     #[test]
     fn python_keywords_get_distinct_color() {

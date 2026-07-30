@@ -92,6 +92,14 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   emphasis → syntect whole-file highlight sliced onto diff lines → composite
   (syntax-fg over diff-bg over emphasis-bg). GitHub-dark default theme;
   progressive render (a plain first frame is fine).
+- **Grammars.** `syntax::registry::REGISTRY` is one process-wide `LazyLock`
+  holding every bundled grammar; a language compiles its highlight query on
+  first use (~15ms) behind a `OnceLock`, on the enrichment thread. Registering
+  a grammar is therefore free until someone opens that language, and a theme
+  switch reuses the compiled queries. Some grammars extend another (`cpp` over
+  `c`, `svelte` over `html`, `tsx` over `js`+`ts`): register the concatenation
+  or the query silently matches almost nothing. `every_language_colours_a_sample`
+  in `highlight.rs` is the guard.
 - **TUI.** neogit/doom keybindings, every binding configurable. Screens: Status
   (Head + Untracked/Unstaged/Staged sections + recent commits; stage/unstage/
   discard/commit/branch), Log, Diff/review (file sidebar + pane, unified or

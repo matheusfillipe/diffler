@@ -2,9 +2,11 @@
 //! highlight configuration, and (where the grammar ships one) a tags query used
 //! for scope/definition lookup. Built once and reused.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::path::Path;
+use std::sync::{LazyLock, OnceLock};
 
 use tree_sitter::{Language, Parser, Query, QueryCursor, StreamingIterator, Tree};
 use tree_sitter_highlight::HighlightConfiguration;
@@ -56,18 +58,53 @@ pub const HIGHLIGHT_NAMES: &[&str] = &[
 pub struct LangEntry {
     pub name: &'static str,
     pub language: Language,
-    /// `None` when the grammar's highlight query failed to compile; the file
-    /// then renders plain instead of erroring.
-    pub config: Option<HighlightConfiguration>,
-    /// Definition/tags query for scope lookup; `None` when the grammar ships no
-    /// tags query.
-    pub tags: Option<Query>,
+    highlights: Cow<'static, str>,
+    injections: Cow<'static, str>,
+    tags_query: Option<Cow<'static, str>>,
+    /// Compiling a query costs ~15ms, so a grammar pays only once someone opens
+    /// a file in it. Both stay `None` when the grammar's query fails to
+    /// compile: the file renders plain instead of erroring.
+    config: OnceLock<Option<HighlightConfiguration>>,
+    tags: OnceLock<Option<Query>>,
 }
+
+impl LangEntry {
+    pub fn config(&self) -> Option<&HighlightConfiguration> {
+        self.config
+            .get_or_init(|| {
+                HighlightConfiguration::new(
+                    self.language.clone(),
+                    self.name,
+                    &self.highlights,
+                    &self.injections,
+                    "",
+                )
+                .ok()
+                .map(|mut config| {
+                    config.configure(HIGHLIGHT_NAMES);
+                    config
+                })
+            })
+            .as_ref()
+    }
+
+    pub fn tags(&self) -> Option<&Query> {
+        self.tags
+            .get_or_init(|| Query::new(&self.language, self.tags_query.as_deref()?).ok())
+            .as_ref()
+    }
+}
+
+/// The grammars, built once for the process. Registration only records the
+/// grammar and its query text, so this costs microseconds; a theme switch
+/// rebuilds the palette and reuses these.
+pub static REGISTRY: LazyLock<LanguageRegistry> = LazyLock::new(LanguageRegistry::build);
 
 pub struct LanguageRegistry {
     entries: Vec<LangEntry>,
     by_ext: HashMap<&'static str, usize>,
     by_name: HashMap<&'static str, usize>,
+    by_filename: HashMap<&'static str, usize>,
     /// The inline markdown highlight query, applied by hand over the block
     /// grammar's `(inline)` nodes: tree-sitter's generic injection does not
     /// drive the split markdown grammar's inline pass.
@@ -83,6 +120,7 @@ impl LanguageRegistry {
             entries: Vec::new(),
             by_ext: HashMap::new(),
             by_name: HashMap::new(),
+            by_filename: HashMap::new(),
             markdown_inline_query: None,
         };
 
@@ -104,7 +142,7 @@ impl LanguageRegistry {
             "javascript",
             &["js", "jsx", "mjs", "cjs"],
             tree_sitter_javascript::LANGUAGE.into(),
-            &format!(
+            format!(
                 "{}\n{}",
                 tree_sitter_javascript::HIGHLIGHT_QUERY,
                 tree_sitter_javascript::JSX_HIGHLIGHT_QUERY
@@ -115,7 +153,7 @@ impl LanguageRegistry {
             "typescript",
             &["ts", "mts", "cts"],
             tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-            &format!(
+            format!(
                 "{}\n{}",
                 tree_sitter_javascript::HIGHLIGHT_QUERY,
                 tree_sitter_typescript::HIGHLIGHTS_QUERY
@@ -126,7 +164,7 @@ impl LanguageRegistry {
             "tsx",
             &["tsx"],
             tree_sitter_typescript::LANGUAGE_TSX.into(),
-            &format!(
+            format!(
                 "{}\n{}\n{}",
                 tree_sitter_javascript::HIGHLIGHT_QUERY,
                 tree_sitter_javascript::JSX_HIGHLIGHT_QUERY,
@@ -152,7 +190,12 @@ impl LanguageRegistry {
             "cpp",
             &["cpp", "cc", "cxx", "hpp", "hh", "hxx"],
             tree_sitter_cpp::LANGUAGE.into(),
-            tree_sitter_cpp::HIGHLIGHT_QUERY,
+            // the C++ query extends C's; alone it matches only C++ constructs
+            format!(
+                "{}\n{}",
+                tree_sitter_c::HIGHLIGHT_QUERY,
+                tree_sitter_cpp::HIGHLIGHT_QUERY
+            ),
             Some(tree_sitter_cpp::TAGS_QUERY),
         );
         r.add(
@@ -197,11 +240,12 @@ impl LanguageRegistry {
             tree_sitter_json::HIGHLIGHTS_QUERY,
             None,
         );
-        r.add(
+        r.register(
             "html",
             &["html", "htm"],
             tree_sitter_html::LANGUAGE.into(),
             tree_sitter_html::HIGHLIGHTS_QUERY,
+            tree_sitter_html::INJECTIONS_QUERY,
             None,
         );
         r.add(
@@ -226,7 +270,7 @@ impl LanguageRegistry {
             "sql",
             &["sql"],
             tree_sitter_sequel::LANGUAGE.into(),
-            &format!(
+            format!(
                 "{}\n((literal) @number (#match? @number \"^[-+]?[0-9][0-9.]*$\"))\n",
                 tree_sitter_sequel::HIGHLIGHTS_QUERY
             ),
@@ -255,7 +299,133 @@ impl LanguageRegistry {
             None,
         );
 
+        r.add(
+            "toml",
+            &["toml"],
+            tree_sitter_toml_ng::LANGUAGE.into(),
+            tree_sitter_toml_ng::HIGHLIGHTS_QUERY,
+            None,
+        );
+        // the grammar crate ships a parser only; the query is vendored
+        r.add(
+            "hcl",
+            &["tf", "tfvars", "hcl"],
+            tree_sitter_hcl::LANGUAGE.into(),
+            include_str!("../../queries/hcl/highlights.scm"),
+            None,
+        );
+        r.add(
+            "dockerfile",
+            &["dockerfile", "containerfile"],
+            arborium_dockerfile::language().into(),
+            arborium_dockerfile::HIGHLIGHTS_QUERY,
+            None,
+        );
+        r.add(
+            "make",
+            &["mk", "mak"],
+            tree_sitter_make::LANGUAGE.into(),
+            tree_sitter_make::HIGHLIGHTS_QUERY,
+            None,
+        );
+        r.add(
+            "lua",
+            &["lua"],
+            tree_sitter_lua::LANGUAGE.into(),
+            tree_sitter_lua::HIGHLIGHTS_QUERY,
+            Some(tree_sitter_lua::TAGS_QUERY),
+        );
+        r.add(
+            "nix",
+            &["nix"],
+            tree_sitter_nix::LANGUAGE.into(),
+            tree_sitter_nix::HIGHLIGHTS_QUERY,
+            None,
+        );
+        r.add(
+            "xml",
+            &["xml", "xsd", "xslt", "svg"],
+            tree_sitter_xml::LANGUAGE_XML.into(),
+            tree_sitter_xml::XML_HIGHLIGHT_QUERY,
+            None,
+        );
+        r.add(
+            "swift",
+            &["swift"],
+            tree_sitter_swift::LANGUAGE.into(),
+            tree_sitter_swift::HIGHLIGHTS_QUERY,
+            Some(tree_sitter_swift::TAGS_QUERY),
+        );
+        r.add(
+            "scala",
+            &["scala", "sbt"],
+            tree_sitter_scala::LANGUAGE.into(),
+            tree_sitter_scala::HIGHLIGHTS_QUERY,
+            None,
+        );
+        r.add(
+            "elixir",
+            &["ex", "exs"],
+            tree_sitter_elixir::LANGUAGE.into(),
+            tree_sitter_elixir::HIGHLIGHTS_QUERY,
+            Some(tree_sitter_elixir::TAGS_QUERY),
+        );
+        r.add(
+            "zig",
+            &["zig", "zon"],
+            tree_sitter_zig::LANGUAGE.into(),
+            tree_sitter_zig::HIGHLIGHTS_QUERY,
+            None,
+        );
+        r.add(
+            "haskell",
+            &["hs"],
+            tree_sitter_haskell::LANGUAGE.into(),
+            tree_sitter_haskell::HIGHLIGHTS_QUERY,
+            None,
+        );
+        r.add(
+            "dart",
+            &["dart"],
+            tree_sitter_dart::LANGUAGE.into(),
+            tree_sitter_dart::HIGHLIGHTS_QUERY,
+            Some(tree_sitter_dart::TAGS_QUERY),
+        );
+        r.add(
+            "powershell",
+            &["ps1", "psm1", "psd1"],
+            tree_sitter_powershell::LANGUAGE.into(),
+            tree_sitter_powershell::HIGHLIGHTS_QUERY,
+            None,
+        );
+        r.register(
+            "svelte",
+            &["svelte"],
+            tree_sitter_svelte_ng::LANGUAGE.into(),
+            // the svelte query extends html's, and its injections carry
+            // `<script>` and `<style>` into the js and css grammars
+            format!(
+                "{}\n{}",
+                tree_sitter_html::HIGHLIGHTS_QUERY,
+                tree_sitter_svelte_ng::HIGHLIGHTS_QUERY
+            ),
+            tree_sitter_svelte_ng::INJECTIONS_QUERY,
+            None,
+        );
+        r.name_files("make", &["makefile", "gnumakefile"]);
+        r.name_files("dockerfile", &["dockerfile", "containerfile"]);
+
         r
+    }
+
+    /// Route files a build tool names outright (`Makefile`, `Dockerfile`).
+    fn name_files(&mut self, name: &'static str, filenames: &'static [&'static str]) {
+        let Some(&idx) = self.by_name.get(name) else {
+            return;
+        };
+        for file in filenames {
+            self.by_filename.insert(file, idx);
+        }
     }
 
     fn add(
@@ -263,8 +433,8 @@ impl LanguageRegistry {
         name: &'static str,
         extensions: &'static [&'static str],
         language: Language,
-        highlights: &str,
-        tags: Option<&str>,
+        highlights: impl Into<Cow<'static, str>>,
+        tags: Option<&'static str>,
     ) {
         self.register(name, extensions, language, highlights, "", tags);
     }
@@ -274,24 +444,19 @@ impl LanguageRegistry {
         name: &'static str,
         extensions: &'static [&'static str],
         language: Language,
-        highlights: &str,
-        injections: &str,
-        tags: Option<&str>,
+        highlights: impl Into<Cow<'static, str>>,
+        injections: impl Into<Cow<'static, str>>,
+        tags: Option<&'static str>,
     ) {
-        let config =
-            HighlightConfiguration::new(language.clone(), name, highlights, injections, "")
-                .ok()
-                .map(|mut c| {
-                    c.configure(HIGHLIGHT_NAMES);
-                    c
-                });
-        let tags = tags.and_then(|q| Query::new(&language, q).ok());
         let idx = self.entries.len();
         self.entries.push(LangEntry {
             name,
             language,
-            config,
-            tags,
+            highlights: highlights.into(),
+            injections: injections.into(),
+            tags_query: tags.map(Cow::Borrowed),
+            config: OnceLock::new(),
+            tags: OnceLock::new(),
         });
         self.by_name.insert(name, idx);
         for ext in extensions {
@@ -299,8 +464,13 @@ impl LanguageRegistry {
         }
     }
 
-    /// The entry whose grammar handles `path`, keyed by file extension.
+    /// The entry whose grammar handles `path`, by extension or, for the files
+    /// a build tool names outright (`Makefile`, `Dockerfile`), by basename.
     pub fn for_path(&self, path: &str) -> Option<&LangEntry> {
+        let name = Path::new(path).file_name()?.to_str()?.to_ascii_lowercase();
+        if let Some(&idx) = self.by_filename.get(name.as_str()) {
+            return self.entries.get(idx);
+        }
         let ext = Path::new(path).extension()?.to_str()?;
         let &idx = self.by_ext.get(ext)?;
         self.entries.get(idx)
@@ -315,6 +485,10 @@ impl LanguageRegistry {
             "c#" | "csharp" => "cs",
             "shell" => "bash",
             "golang" => "go",
+            "terraform" => "hcl",
+            "docker" => "dockerfile",
+            "makefile" => "make",
+            "pwsh" | "ps" => "powershell",
             other => other,
         };
         let &idx = self.by_name.get(token).or_else(|| self.by_ext.get(token))?;
@@ -325,7 +499,7 @@ impl LanguageRegistry {
     /// markdown grammar, or a fenced code block's language). `None` leaves the
     /// injected region plain.
     pub fn config_for_injection(&self, lang: &str) -> Option<&HighlightConfiguration> {
-        self.for_token(lang)?.config.as_ref()
+        self.for_token(lang)?.config()
     }
 
     /// Inline markdown captures (emphasis, code spans, links) as byte range plus
