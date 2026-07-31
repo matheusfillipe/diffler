@@ -89,9 +89,31 @@ impl Fixture {
         self.repo.branch(name, &head, false).expect("branch");
     }
 
+    /// Point HEAD at an existing branch. The fixture's branches share one
+    /// worktree, so nothing needs checking out.
+    pub(crate) fn checkout(&self, name: &str) {
+        self.repo
+            .set_head(&format!("refs/heads/{name}"))
+            .expect("set head");
+    }
+
     pub(crate) fn review(&self) -> Review {
         Review::open(&self.root).expect("review")
     }
+}
+
+/// A `main` base commit, a `feature` branch one commit ahead of it, and an
+/// uncommitted file on top: what a three-dot review against the base shows.
+pub(crate) fn branch_fixture() -> Fixture {
+    let fixture = Fixture::new();
+    fixture.write("base.rs", "pub fn base() {}\n");
+    fixture.commit_all("base");
+    fixture.branch("feature");
+    fixture.checkout("feature");
+    fixture.write("landed.rs", "pub fn landed() -> u32 {\n    1\n}\n");
+    fixture.commit_all("feature work");
+    fixture.write("dirty.rs", "pub fn dirty() {}\n");
+    fixture
 }
 
 /// One untracked + one modified-unstaged + one staged-new file, exactly the

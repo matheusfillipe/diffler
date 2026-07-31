@@ -181,6 +181,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) {
         }
         Some(
             Modal::BranchList { .. }
+            | Modal::RevList { .. }
             | Modal::Comments { .. }
             | Modal::Palette { .. }
             | Modal::Themes { .. }
@@ -236,6 +237,29 @@ fn footer_for(list: &fuzzy::FuzzyList, list_keys: &str, verb: &str) -> String {
     }
 }
 
+/// A dialog whose rows are plain labels, ranked through the list's matches.
+fn plain_list(
+    title: String,
+    list: &fuzzy::FuzzyList,
+    labels: &[String],
+    verb: &str,
+) -> popup::FuzzyModal {
+    popup::FuzzyModal {
+        title,
+        query: list.query.clone(),
+        cursor: list.cursor,
+        typing: matches!(list.focus, fuzzy::FuzzyFocus::Input),
+        items: list
+            .matches
+            .iter()
+            .filter_map(|index| labels.get(*index))
+            .map(|label| (label.clone(), String::new()))
+            .collect(),
+        selected: list.selected,
+        footer: footer_for(list, "", verb),
+    }
+}
+
 fn fuzzy_modal(app: &App) -> Option<popup::FuzzyModal> {
     match &app.modal {
         Some(Modal::BranchList {
@@ -266,6 +290,14 @@ fn fuzzy_modal(app: &App) -> Option<popup::FuzzyModal> {
                 selected: list.selected,
                 footer: footer_for(list, "", " select"),
             })
+        }
+        Some(Modal::RevList {
+            title,
+            entries,
+            list,
+        }) => {
+            let labels: Vec<String> = entries.iter().map(|c| c.label.clone()).collect();
+            Some(plain_list((*title).to_owned(), list, &labels, " review"))
         }
         Some(Modal::Comments { entries, list }) => Some(popup::FuzzyModal {
             title: format!("Comments — {}", app.active_review_source().label()),
@@ -298,34 +330,15 @@ fn fuzzy_modal(app: &App) -> Option<popup::FuzzyModal> {
                 footer: footer_for(list, "", " run"),
             })
         }
-        Some(Modal::Themes { list }) => Some(popup::FuzzyModal {
-            title: "Theme".to_owned(),
-            query: list.query.clone(),
-            cursor: list.cursor,
-            typing: matches!(list.focus, fuzzy::FuzzyFocus::Input),
-            items: list
-                .matches
-                .iter()
-                .filter_map(|index| crate::theme::NAMES.get(*index))
-                .map(|name| ((*name).to_owned(), String::new()))
-                .collect(),
-            selected: list.selected,
-            footer: footer_for(list, "", " apply"),
-        }),
-        Some(Modal::RemoteList { remotes, list, .. }) => Some(popup::FuzzyModal {
-            title: "Remote".to_owned(),
-            query: list.query.clone(),
-            cursor: list.cursor,
-            typing: matches!(list.focus, fuzzy::FuzzyFocus::Input),
-            items: list
-                .matches
-                .iter()
-                .filter_map(|index| remotes.get(*index))
-                .map(|name| (name.clone(), String::new()))
-                .collect(),
-            selected: list.selected,
-            footer: footer_for(list, "", " select"),
-        }),
+        Some(Modal::Themes { list }) => Some(plain_list(
+            "Theme".to_owned(),
+            list,
+            &crate::theme::names(),
+            " apply",
+        )),
+        Some(Modal::RemoteList { remotes, list, .. }) => {
+            Some(plain_list("Remote".to_owned(), list, remotes, " select"))
+        }
         _ => None,
     }
 }
@@ -587,6 +600,9 @@ pub(super) fn status_bar(app: &App, width: u16) -> Line<'static> {
                     format!(" PR #{number} · {pending} pending ")
                 }
             }
+            Some(source @ diffler_core::source::ReviewSource::Against { .. }) => {
+                format!(" DIFF {} ", source.label())
+            }
             _ => " DIFF ".to_owned(),
         },
         Screen::Log => " LOG ".to_owned(),
@@ -674,6 +690,18 @@ mod tests {
         let bar = super::status_bar(&app, 80);
         let text: String = bar.spans.iter().map(|s| s.content.clone()).collect();
         assert!(text.contains(" PR #7 "), "{text}");
+    }
+
+    #[test]
+    fn the_status_bar_names_the_revision_an_against_review_diffs_from() {
+        use crate::app::App;
+
+        let fixture = crate::test_support::branch_fixture();
+        let mut app = App::new(fixture.review(), crate::config::LoadedConfig::default());
+        app.open_against_diff("main");
+        let bar = super::status_bar(&app, 80);
+        let text: String = bar.spans.iter().map(|s| s.content.clone()).collect();
+        assert!(text.contains(" DIFF vs main "), "{text}");
     }
 
     #[test]

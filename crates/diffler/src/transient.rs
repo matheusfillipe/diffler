@@ -13,6 +13,7 @@ use crate::keymap::{Action, render_chord};
 pub enum TransientKind {
     Commit,
     Branch,
+    Diff,
     Log,
     Push,
     Pull,
@@ -27,6 +28,8 @@ impl TransientKind {
         match self {
             Self::Commit => "commit",
             Self::Branch => "branch",
+            // `[keys.diff]` is already the diff screen's keymap
+            Self::Diff => "diff_menu",
             Self::Log => "log_menu",
             Self::Push => "push",
             Self::Pull => "pull",
@@ -40,6 +43,7 @@ impl TransientKind {
         match self {
             Self::Commit => "Commit",
             Self::Branch => "Branch",
+            Self::Diff => "Diff against",
             Self::Log => "Log",
             Self::Push => "Push",
             Self::Pull => "Pull",
@@ -48,9 +52,10 @@ impl TransientKind {
         }
     }
 
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Commit,
         Self::Branch,
+        Self::Diff,
         Self::Log,
         Self::Push,
         Self::Pull,
@@ -127,6 +132,22 @@ const BRANCH_GROUPS: &[DefaultGroup] = &[(
     ],
 )];
 
+const DIFF_GROUPS: &[DefaultGroup] = &[(
+    "Diff the working tree against",
+    &[
+        ("base", "d", Action::DiffBase, "Base branch"),
+        ("last_commit", "c", Action::DiffLastCommit, "Last commit"),
+        ("branch", "b", Action::DiffBranch, "A branch"),
+        ("commit", "s", Action::DiffCommit, "A commit from the log"),
+        (
+            "working",
+            "w",
+            Action::DiffWorkingTree,
+            "HEAD (working tree)",
+        ),
+    ],
+)];
+
 const LOG_GROUPS: &[DefaultGroup] = &[(
     "Log",
     &[("current", "l", Action::LogView, "Current branch")],
@@ -168,6 +189,7 @@ impl TransientKind {
         match self {
             Self::Commit => COMMIT_GROUPS,
             Self::Branch => BRANCH_GROUPS,
+            Self::Diff => DIFF_GROUPS,
             Self::Log => LOG_GROUPS,
             Self::Push => PUSH_GROUPS,
             Self::Pull => PULL_GROUPS,
@@ -366,6 +388,31 @@ mod tests {
         assert_eq!(
             branch.resolve(&press("D")),
             TransientResolve::Action(Action::BranchDelete)
+        );
+    }
+
+    #[test]
+    fn diff_transient_resolves_its_leaves() {
+        let diff = transient(TransientKind::Diff);
+        assert_eq!(
+            diff.resolve(&press("d")),
+            TransientResolve::Action(Action::DiffBase)
+        );
+        assert_eq!(
+            diff.resolve(&press("c")),
+            TransientResolve::Action(Action::DiffLastCommit)
+        );
+        assert_eq!(
+            diff.resolve(&press("b")),
+            TransientResolve::Action(Action::DiffBranch)
+        );
+        assert_eq!(
+            diff.resolve(&press("s")),
+            TransientResolve::Action(Action::DiffCommit)
+        );
+        assert_eq!(
+            diff.resolve(&press("w")),
+            TransientResolve::Action(Action::DiffWorkingTree)
         );
     }
 

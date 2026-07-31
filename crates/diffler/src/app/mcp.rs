@@ -13,8 +13,8 @@ use crate::mcp::{
 };
 
 /// The [`ReviewSource`] variants whose diffs are computed once and cached;
-/// `WorkingTree` always reads live and never reaches [`App::source_model`]'s
-/// cache path.
+/// `WorkingTree` and `Against` always read live and never reach
+/// [`App::source_model`]'s cache path.
 enum CachedKind<'a> {
     Commit(&'a str),
     Range(&'a str, &'a str),
@@ -106,6 +106,11 @@ impl App {
             ReviewSource::WorkingTree => {
                 return std::sync::Arc::new(self.review.model().clone());
             }
+            // live like the working tree, so caching it would go stale; the
+            // open view already holds a model the refresh keeps current
+            ReviewSource::Against { rev } => {
+                return std::sync::Arc::new(self.against_model_for(rev));
+            }
             ReviewSource::Commit { oid } => CachedKind::Commit(oid),
             ReviewSource::Range { oldest, newest } => CachedKind::Range(oldest, newest),
             ReviewSource::Pr { number } => CachedKind::Pr(*number),
@@ -137,8 +142,14 @@ impl App {
     fn comments_response(&mut self, keep: impl Fn(CommentStatus) -> bool) -> Vec<CommentInfo> {
         let mut out = Vec::new();
         for (source, session) in self.review.all_reviews().unwrap_or_default() {
+            let comments: Vec<_> = session.comments.iter().filter(|c| keep(c.status)).collect();
+            // a live source rebuilds its model here, so an agent poll must not
+            // pay for one whose comments it is about to discard
+            if comments.is_empty() {
+                continue;
+            }
             let model = self.source_model(&source);
-            for comment in session.comments.iter().filter(|c| keep(c.status)) {
+            for comment in comments {
                 out.push(comment_info(comment, &model, &source));
             }
         }
@@ -270,6 +281,39 @@ mod tests {
             .id
             .clone();
         (fixture, app, id)
+    }
+
+    /// A live source rebuilds its diff whenever the agent asks for comments, so
+    /// one contributing nothing must not be built at all. The cache is the
+    /// observable: a commit source populates it the moment its model is built.
+    #[test]
+    fn a_source_contributing_no_comments_builds_no_model() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let oid = app.status.recent[0].oid.clone();
+        app.review
+            .ensure_source(&ReviewSource::commit(&oid))
+            .expect("source");
+
+        assert!(app.comments_response(|_| true).is_empty());
+        assert!(
+            app.source_models.is_empty(),
+            "a commentless source was diffed anyway"
+        );
+
+        // and it is built as soon as the source has something to say
+        app.review.session.add_comment(
+            Anchor {
+                file: "src/lib.rs".to_owned(),
+                line: Some(2),
+                line_end: None,
+                on_old_side: false,
+                line_text: Some("    42".to_owned()),
+            },
+            "human",
+            "why 42?",
+        );
+        assert_eq!(app.comments_response(|_| true).len(), 1);
     }
 
     #[test]

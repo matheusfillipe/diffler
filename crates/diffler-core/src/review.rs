@@ -22,6 +22,17 @@ pub enum ReviewError {
     Store(#[from] StoreError),
 }
 
+/// One landed off-thread refresh.
+#[derive(Debug)]
+pub struct Refreshed {
+    pub status: StatusModel,
+    pub model: DiffModel,
+    /// The [`ReviewSource::Against`] rev the caller asked about and its
+    /// recomputed diff. The rev rides along so a review swapped while the
+    /// worker ran can ignore an answer meant for the previous one.
+    pub against: Option<(String, Result<DiffModel, VcsError>)>,
+}
+
 pub struct Review {
     pub repo_root: PathBuf,
     pub vcs: Box<dyn Vcs>,
@@ -92,14 +103,22 @@ impl Review {
 
     /// Compute a refresh on a separate repo handle, so it can run off the UI
     /// thread; the result is applied later with [`Review::install_refresh`].
+    /// `against` recomputes the open three-dot review in the same pass, since
+    /// it tracks edits and cannot be pinned like a commit's diff.
     pub fn compute_refresh(
         repo_root: &Path,
         context_lines: u32,
-    ) -> Result<(StatusModel, DiffModel), ReviewError> {
+        against: Option<&str>,
+    ) -> Result<Refreshed, ReviewError> {
         let vcs = GitVcs::open_with_context(repo_root, context_lines)?;
         let status = vcs.status()?;
         let model = vcs.working_tree_diff()?;
-        Ok((status, model))
+        let against = against.map(|rev| (rev.to_owned(), crate::vcs::against_diff(&vcs, rev)));
+        Ok(Refreshed {
+            status,
+            model,
+            against,
+        })
     }
 
     /// Swap in freshly computed status + diff and reconcile viewed marks.
@@ -253,6 +272,42 @@ mod tests {
         assert!(review.model_is_cached(), "access caches the model");
         let eager = review.vcs.working_tree_diff().expect("diff");
         assert_eq!(lazy, eager, "lazy model equals the eager build");
+    }
+
+    #[allow(clippy::expect_used)]
+    fn git(root: &std::path::Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .status()
+            .expect("git");
+        assert!(status.success(), "git {args:?}");
+    }
+
+    #[test]
+    fn against_a_base_branch_shows_committed_and_uncommitted_work() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        init_repo(root);
+        git(root, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+        write(root, "base.txt", "base\n");
+        commit_all(root, "base");
+        git(root, &["checkout", "-q", "-b", "feature"]);
+        write(root, "committed.txt", "landed\n");
+        commit_all(root, "feature work");
+        // main moves on after the fork: three-dot keeps it out of the diff
+        git(root, &["checkout", "-q", "main"]);
+        write(root, "elsewhere.txt", "not mine\n");
+        commit_all(root, "base moved on");
+        git(root, &["checkout", "-q", "feature"]);
+        write(root, "dirty.txt", "still editing\n");
+
+        let root = repo::discover(root).expect("discover");
+        let review = Review::open(&root).expect("open");
+        let model = crate::vcs::against_diff(review.vcs.as_ref(), "main").expect("against");
+        let paths: Vec<&str> = model.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, ["committed.txt", "dirty.txt"]);
     }
 
     #[test]

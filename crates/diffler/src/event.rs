@@ -25,18 +25,9 @@ pub enum AppEvent {
     Blast(Box<crate::app::blast::BlastOutcome>),
     /// A background enrichment (emphasis/highlight/scope) finished.
     Enriched(Box<crate::app::enrich::EnrichOutcome>),
-    /// An off-thread repo refresh finished (status + working diff), or failed.
-    RefreshDone(
-        Box<
-            Result<
-                (
-                    diffler_core::vcs::StatusModel,
-                    diffler_core::model::DiffModel,
-                ),
-                String,
-            >,
-        >,
-    ),
+    /// An off-thread repo refresh finished (status + working diff, plus the
+    /// open three-dot diff when one is up), or failed.
+    RefreshDone(Box<Result<diffler_core::review::Refreshed, String>>),
     /// Agent tool call routed through the event channel so the app stays
     /// the single owner of the review state (`mcp` module).
     Mcp(McpRequest),

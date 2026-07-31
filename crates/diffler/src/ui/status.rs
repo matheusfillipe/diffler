@@ -942,6 +942,24 @@ mod tests {
     }
 
     #[test]
+    fn which_key_diff_panel_renders_after_the_reveal_tick() {
+        let fixture = standard_fixture();
+        let mut app = app_for(&fixture);
+        app.handle(key('d'));
+        app.handle(AppEvent::Tick);
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn the_diff_transient_picks_a_branch_to_review_against() {
+        let fixture = crate::test_support::branch_fixture();
+        let mut app = app_for(&fixture);
+        app.handle(key('d'));
+        app.handle(key('b'));
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
     fn which_key_commit_panel_renders_after_the_reveal_tick() {
         let fixture = standard_fixture();
         let mut app = app_for(&fixture);

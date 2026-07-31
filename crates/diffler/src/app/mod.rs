@@ -35,6 +35,7 @@ pub(crate) use status::{CI_TITLE, RECENT_TITLE};
 pub use status::{Row, Section, StatusView};
 
 use crossterm::event::{KeyCode, KeyEvent};
+use diffler_core::model::DiffModel;
 use diffler_core::review::Review;
 use diffler_core::session::Anchor;
 use diffler_core::source::ReviewSource;
@@ -187,6 +188,12 @@ pub enum Modal {
         list: fuzzy::FuzzyList,
         action: BranchAction,
     },
+    /// Revision picker for a three-dot review: branches or log commits.
+    RevList {
+        title: &'static str,
+        entries: Vec<RevChoice>,
+        list: fuzzy::FuzzyList,
+    },
     /// Every comment of the active review; Enter jumps to it in the diff.
     Comments {
         entries: Vec<CommentJump>,
@@ -224,6 +231,13 @@ pub enum Modal {
 pub enum RemotePurpose {
     SetUpstreamPush,
     Pull,
+}
+
+/// One row of the revision picker: what to diff against, and how it reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevChoice {
+    pub rev: String,
+    pub label: String,
 }
 
 /// One row of the comments overview: where it anchors and what to show.
@@ -277,6 +291,7 @@ impl Keymaps {
 struct Transients {
     commit: Transient,
     branch: Transient,
+    diff: Transient,
     log: Transient,
     push: Transient,
     pull: Transient,
@@ -289,6 +304,7 @@ impl Transients {
         match kind {
             TransientKind::Commit => &self.commit,
             TransientKind::Branch => &self.branch,
+            TransientKind::Diff => &self.diff,
             TransientKind::Log => &self.log,
             TransientKind::Push => &self.push,
             TransientKind::Pull => &self.pull,
@@ -348,6 +364,7 @@ fn build_transients(
     Transients {
         commit: build(TransientKind::Commit),
         branch: build(TransientKind::Branch),
+        diff: build(TransientKind::Diff),
         log: build(TransientKind::Log),
         push: build(TransientKind::Push),
         pull: build(TransientKind::Pull),
@@ -1272,24 +1289,20 @@ impl App {
             return;
         }
         self.refresh_state = RefreshState::Running;
-        let result = Review::compute_refresh(&self.review.repo_root, self.config.ui.context_lines)
-            .map_err(|err| err.to_string());
+        let against = self.against_rev().map(str::to_owned);
+        let result = Review::compute_refresh(
+            &self.review.repo_root,
+            self.config.ui.context_lines,
+            against.as_deref(),
+        )
+        .map_err(|err| err.to_string());
         self.on_refresh_done(result);
     }
 
-    fn on_refresh_done(
-        &mut self,
-        result: Result<
-            (
-                diffler_core::vcs::StatusModel,
-                diffler_core::model::DiffModel,
-            ),
-            String,
-        >,
-    ) {
+    fn on_refresh_done(&mut self, result: Result<diffler_core::review::Refreshed, String>) {
         self.refresh_state = self.refresh_state.finish();
         match result {
-            Ok((status, model)) => self.apply_refresh(status, model),
+            Ok(refreshed) => self.apply_refresh(refreshed),
             Err(message) => self.error(message),
         }
         if let Some(AfterRefresh::CreatePr) = self.after_refresh.take() {
@@ -1298,11 +1311,12 @@ impl App {
     }
 
     /// Install a computed refresh.
-    pub(crate) fn apply_refresh(
-        &mut self,
-        status: diffler_core::vcs::StatusModel,
-        model: diffler_core::model::DiffModel,
-    ) {
+    pub(crate) fn apply_refresh(&mut self, refreshed: diffler_core::review::Refreshed) {
+        let diffler_core::review::Refreshed {
+            status,
+            model,
+            against,
+        } = refreshed;
         self.now_unix = now_unix();
         let status_anchor = self.status_cursor_anchor();
         let diff_anchor_path = self.diff_cursor_path();
@@ -1326,16 +1340,43 @@ impl App {
         }
         self.restore_status_cursor(status_anchor);
         self.refresh_log();
+        let swap = against.and_then(|(rev, result)| self.against_swap(&rev, result));
         if let Some(diff) = self.diff.as_mut() {
+            let moved = !unchanged || swap.is_some();
+            if let Some(model) = swap {
+                diff.commit_model = Some(model);
+            }
             // invalidating drops the visual selection, so a no-op refresh
             // must leave rows, emphasis, and memos alone
-            if !unchanged {
+            if moved {
                 diff.clear_enriched();
                 diff.invalidate();
             }
             diff.ensure_rows(&self.review);
         }
         self.restore_diff_cursor(diff_anchor_path);
+    }
+
+    /// The recomputed three-dot diff to swap into the open view. `None` when
+    /// the view moved on to another source, when the diff did not actually
+    /// change (a rebuild carries no emphasis), or when the recompute failed.
+    fn against_swap(
+        &mut self,
+        rev: &str,
+        result: Result<diffler_core::model::DiffModel, diffler_core::vcs::VcsError>,
+    ) -> Option<diffler_core::model::DiffModel> {
+        let shown = self
+            .diff
+            .as_ref()
+            .filter(|diff| diff.source == ReviewSource::against(rev))
+            .map(|diff| diff.commit_model.as_ref().map(DiffModel::fingerprint))?;
+        match result {
+            Ok(model) => (shown != Some(model.fingerprint())).then_some(model),
+            Err(err) => {
+                self.error(err.to_string());
+                None
+            }
+        }
     }
 
     fn watcher_unhealthy(&self) -> bool {

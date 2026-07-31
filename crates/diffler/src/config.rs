@@ -180,6 +180,7 @@ pub struct KeysConfig {
     pub prs: BTreeMap<String, String>,
     pub commit: BTreeMap<String, String>,
     pub branch: BTreeMap<String, String>,
+    pub diff_menu: BTreeMap<String, String>,
     pub log_menu: BTreeMap<String, String>,
     pub push: BTreeMap<String, String>,
     pub pull: BTreeMap<String, String>,
@@ -193,6 +194,7 @@ impl KeysConfig {
         match kind {
             crate::transient::TransientKind::Commit => &self.commit,
             crate::transient::TransientKind::Branch => &self.branch,
+            crate::transient::TransientKind::Diff => &self.diff_menu,
             crate::transient::TransientKind::Log => &self.log_menu,
             crate::transient::TransientKind::Push => &self.push,
             crate::transient::TransientKind::Pull => &self.pull,
@@ -545,6 +547,11 @@ fn apply_layer(
         (layer.keys.prs, &mut config.keys.prs, "prs"),
         (layer.keys.commit, &mut config.keys.commit, "commit"),
         (layer.keys.branch, &mut config.keys.branch, "branch"),
+        (
+            layer.keys.diff_menu,
+            &mut config.keys.diff_menu,
+            "diff_menu",
+        ),
         (layer.keys.log_menu, &mut config.keys.log_menu, "log_menu"),
         (layer.keys.push, &mut config.keys.push, "push"),
         (layer.keys.pull, &mut config.keys.pull, "pull"),

@@ -551,7 +551,11 @@ impl App {
             Action::UnstageAll => self.unstage_all(),
             Action::Discard => self.discard_at_cursor(),
             Action::Open => self.open_at_cursor(),
-            Action::OpenReviewDiff => self.open_working_tree_diff(None),
+            Action::OpenReviewDiff | Action::DiffWorkingTree => self.open_working_tree_diff(None),
+            Action::DiffBase => self.diff_against_base(),
+            Action::DiffLastCommit => self.open_against_diff("HEAD~1"),
+            Action::DiffBranch => self.diff_against_branch(),
+            Action::DiffCommit => self.diff_against_commit(),
             Action::MarkViewed => self.toggle_viewed(),
             Action::LogView => self.open_log(),
             Action::CommitFlow => self.commit_flow(),
@@ -573,6 +577,54 @@ impl App {
             other => {
                 self.info(format!("{} is not implemented yet", other.name()));
             }
+        }
+    }
+
+    /// Review against the branch a pull request would target: the primary
+    /// remote's default branch, or a local main/master.
+    fn diff_against_base(&mut self) {
+        let remotes = self.review.vcs.remotes().unwrap_or_default();
+        let primary = remotes
+            .iter()
+            .find(|name| *name == "origin")
+            .or_else(|| remotes.first())
+            .map_or("origin", String::as_str);
+        match self.review.vcs.default_branch(primary) {
+            Ok(Some(branch)) => self.open_against_diff(&branch),
+            Ok(None) => self.info("no base branch detected; pick one with d b"),
+            Err(err) => self.error(err.to_string()),
+        }
+    }
+
+    fn diff_against_branch(&mut self) {
+        match self.review.vcs.all_branches() {
+            Ok(branches) => {
+                let entries = branches
+                    .into_iter()
+                    .map(|name| super::RevChoice {
+                        rev: name.clone(),
+                        label: name,
+                    })
+                    .collect();
+                self.open_rev_list("Diff against branch", entries);
+            }
+            Err(err) => self.error(err.to_string()),
+        }
+    }
+
+    fn diff_against_commit(&mut self) {
+        match self.review.vcs.log(super::log::LOG_LIMIT) {
+            Ok(entries) => {
+                let entries = entries
+                    .into_iter()
+                    .map(|entry| super::RevChoice {
+                        label: format!("{} {}", entry.oid7, entry.subject),
+                        rev: entry.oid,
+                    })
+                    .collect();
+                self.open_rev_list("Diff against commit", entries);
+            }
+            Err(err) => self.error(err.to_string()),
         }
     }
 

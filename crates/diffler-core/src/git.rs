@@ -46,6 +46,19 @@ impl GitVcs {
         self.repo.workdir().ok_or(VcsError::NoWorkdir)
     }
 
+    /// `base` tree vs workdir+index including untracked, renames folded in.
+    /// `None` is the empty tree (an unborn branch).
+    fn workdir_diff(&self, base: Option<&git2::Tree<'_>>) -> Result<DiffModel, VcsError> {
+        let mut diff = self.repo.diff_tree_to_workdir_with_index(
+            base,
+            Some(&mut workdir_diff_options(self.context_lines)),
+        )?;
+        let mut find = git2::DiffFindOptions::new();
+        find.renames(true);
+        diff.find_similar(Some(&mut find))?;
+        diff_to_model(&self.repo, &mut diff)
+    }
+
     /// Whether any tracked file differs from HEAD or the index — i.e. there is
     /// something `git stash` would save. Untracked files don't count, matching
     /// stash's default.
@@ -131,15 +144,12 @@ impl Vcs for GitVcs {
     }
 
     fn working_tree_diff(&self) -> Result<DiffModel, VcsError> {
-        let head_tree = self.head_tree()?;
-        let mut diff = self.repo.diff_tree_to_workdir_with_index(
-            head_tree.as_ref(),
-            Some(&mut workdir_diff_options(self.context_lines)),
-        )?;
-        let mut find = git2::DiffFindOptions::new();
-        find.renames(true);
-        diff.find_similar(Some(&mut find))?;
-        diff_to_model(&self.repo, &mut diff)
+        self.workdir_diff(self.head_tree()?.as_ref())
+    }
+
+    fn tree_to_workdir_diff(&self, base_oid: &str) -> Result<DiffModel, VcsError> {
+        let base = self.repo.find_commit(git2::Oid::from_str(base_oid)?)?;
+        self.workdir_diff(Some(&base.tree()?))
     }
 
     fn commit_diff(&self, oid: &str) -> Result<DiffModel, VcsError> {
@@ -299,6 +309,22 @@ impl Vcs for GitVcs {
                 name,
                 is_head: branch.is_head(),
             });
+        }
+        Ok(out)
+    }
+
+    fn all_branches(&self) -> Result<Vec<String>, VcsError> {
+        let mut out = Vec::new();
+        for entry in self.repo.branches(None)? {
+            let (branch, _) = entry?;
+            let Some(name) = branch.name()?.map(str::to_owned) else {
+                continue;
+            };
+            // refs/remotes/<remote>/HEAD is a symbolic alias, not a branch
+            if name.ends_with("/HEAD") {
+                continue;
+            }
+            out.push(name);
         }
         Ok(out)
     }

@@ -4,8 +4,10 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use std::path::Path;
 
-use super::fuzzy::{FuzzyKey, FuzzyList, branch_haystack, comment_haystack, selected};
-use super::{App, BranchAction, Flow, InputOp, Modal, PendingOp, byte_index};
+use super::fuzzy::{
+    FuzzyKey, FuzzyList, branch_haystack, comment_haystack, rev_haystack, selected,
+};
+use super::{App, BranchAction, Flow, InputOp, Modal, PendingOp, RevChoice, byte_index};
 
 impl App {
     pub(super) fn handle_modal_key(&mut self, key: &KeyEvent) -> Flow {
@@ -36,6 +38,7 @@ impl App {
                 }
             }
             Some(Modal::BranchList { .. }) => self.handle_branch_list_key(key),
+            Some(Modal::RevList { .. }) => self.handle_rev_list_key(key),
             Some(Modal::Comments { .. }) => self.handle_comments_key(key),
             Some(Modal::Palette { .. }) => return self.handle_palette_key(key),
             Some(Modal::Themes { .. }) => self.handle_theme_key(key),
@@ -378,6 +381,50 @@ impl App {
                 self.error(err.to_string());
             }
         }
+    }
+
+    /// Pick what to diff the working tree against. Enter opens the three-dot
+    /// review for the chosen revision.
+    pub(super) fn open_rev_list(&mut self, title: &'static str, entries: Vec<RevChoice>) {
+        if entries.is_empty() {
+            self.modal = None;
+            self.info("nothing to diff against");
+            return;
+        }
+        let mut list = FuzzyList::default();
+        list.rerank(&rev_haystack(&entries));
+        self.modal = Some(Modal::RevList {
+            title,
+            entries,
+            list,
+        });
+    }
+
+    pub(super) fn handle_rev_list_key(&mut self, key: &KeyEvent) {
+        let Some(Modal::RevList { entries, list, .. }) = self.modal.as_mut() else {
+            return;
+        };
+        match list.feed(key) {
+            FuzzyKey::Submit => self.submit_rev_list(),
+            FuzzyKey::Cancel => self.modal = None,
+            FuzzyKey::Edited => {
+                let haystack = rev_haystack(entries);
+                list.rerank(&haystack);
+            }
+            _ => {}
+        }
+    }
+
+    fn submit_rev_list(&mut self) {
+        // a query matching nothing keeps the dialog open, like fzf
+        let Some(Modal::RevList { entries, list, .. }) = &self.modal else {
+            return;
+        };
+        let Some(rev) = selected(list, entries).map(|choice| choice.rev.clone()) else {
+            return;
+        };
+        self.modal = None;
+        self.open_against_diff(&rev);
     }
 
     /// The comments overview: every comment of the active review, ordered by

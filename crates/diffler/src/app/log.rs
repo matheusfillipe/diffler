@@ -7,7 +7,7 @@ use super::App;
 use crate::keymap::Action;
 
 /// How much history one log screen loads (neogit's default max-count).
-const LOG_LIMIT: usize = 256;
+pub(super) const LOG_LIMIT: usize = 256;
 
 pub struct LogView {
     pub entries: Vec<LogEntry>,

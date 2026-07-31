@@ -196,6 +196,10 @@ pub(crate) fn branch_haystack(branches: &[diffler_core::vcs::BranchInfo]) -> Vec
     branches.iter().map(|b| b.name.clone()).collect()
 }
 
+pub(crate) fn rev_haystack(entries: &[super::RevChoice]) -> Vec<String> {
+    entries.iter().map(|e| e.label.clone()).collect()
+}
+
 pub(crate) fn comment_haystack(entries: &[super::CommentJump]) -> Vec<String> {
     entries
         .iter()

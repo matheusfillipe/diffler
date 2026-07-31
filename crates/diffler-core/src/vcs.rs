@@ -79,6 +79,9 @@ pub trait Vcs: Send {
     fn status(&self) -> Result<StatusModel, VcsError>;
     /// HEAD vs workdir+index including untracked files: the review view.
     fn working_tree_diff(&self) -> Result<DiffModel, VcsError>;
+    /// [`Vcs::working_tree_diff`] taken from an arbitrary base commit instead
+    /// of HEAD, so uncommitted work shows alongside the commits since `base`.
+    fn tree_to_workdir_diff(&self, base_oid: &str) -> Result<DiffModel, VcsError>;
     /// Changes a single commit introduced over its first parent.
     fn commit_diff(&self, oid: &str) -> Result<DiffModel, VcsError>;
     /// Combined diff of a contiguous commit range, from the first parent of
@@ -105,6 +108,9 @@ pub trait Vcs: Send {
     fn commits_between(&self, base: &str, head: &str) -> Result<Vec<LogEntry>, VcsError>;
     /// Local branches.
     fn branches(&self) -> Result<Vec<BranchInfo>, VcsError>;
+    /// Local and remote-tracking branch names, for pickers that name a
+    /// revision rather than check one out.
+    fn all_branches(&self) -> Result<Vec<String>, VcsError>;
     /// Stage a whole file (worktree deletions become staged deletions).
     fn stage(&self, rel: &Path) -> Result<(), VcsError>;
     /// Stage one hunk out of the unstaged (or untracked) changes of a file.
@@ -147,4 +153,13 @@ pub trait Vcs: Send {
     fn remote_url(&self, name: &str) -> Result<Option<String>, VcsError>;
     /// Names of every configured remote, for multi-remote CI detection.
     fn remotes(&self) -> Result<Vec<String>, VcsError>;
+}
+
+/// Three-dot diff of `rev` against the working tree: `merge-base(rev, HEAD)`
+/// vs index + worktree + untracked. Commits `rev` gained since the branch
+/// forked stay out of it; uncommitted work stays in.
+pub fn against_diff(vcs: &dyn Vcs, rev: &str) -> Result<DiffModel, VcsError> {
+    let head = vcs.resolve("HEAD")?;
+    let base = vcs.merge_base(&vcs.resolve(rev)?, &head)?;
+    vcs.tree_to_workdir_diff(&base)
 }

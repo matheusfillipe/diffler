@@ -142,6 +142,7 @@ Vim-like: `j`/`k`/`gg`/`G` motions, `/` search, and
 | `C` | overview of every comment: Enter jumps, `d`/`D` delete one/all |
 | `S` | submit stacked PR comments as one review |
 | `b` `P` | open a pull request for the current branch |
+| `d` | review the working tree against something else: `d` base branch, `c` last commit, `b` a branch, `s` a commit, `w` HEAD |
 | `y` / `Y` | copy feedback as markdown (file / all) |
 | `x` | in the diff view: graph who calls the symbol under the cursor |
 | `e` | open the file in `$EDITOR` |

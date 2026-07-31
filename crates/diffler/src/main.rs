@@ -259,10 +259,12 @@ fn dispatch_refresh(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     app.refresh_state = app::RefreshState::Running;
     let root = app.review.repo_root.clone();
     let context = app.config.ui.context_lines;
+    let against = app.against_rev().map(str::to_owned);
     let tx = tx.clone();
     tokio::task::spawn_blocking(move || {
-        let result = diffler_core::review::Review::compute_refresh(&root, context)
-            .map_err(|err| err.to_string());
+        let result =
+            diffler_core::review::Review::compute_refresh(&root, context, against.as_deref())
+                .map_err(|err| err.to_string());
         let _ = tx.send(AppEvent::RefreshDone(Box::new(result)));
     });
 }

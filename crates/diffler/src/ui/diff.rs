@@ -512,6 +512,7 @@ fn pane_title(source: &ReviewSource) -> String {
             format!("Diff {}..{}", short(oldest), short(newest))
         }
         ReviewSource::Pr { number } => format!("PR #{number}"),
+        ReviewSource::Against { .. } => format!("Diff {}", source.label()),
     }
 }
 
@@ -1178,6 +1179,14 @@ mod tests {
         app.open_working_tree_diff(None);
         // one viewed file in the folded bucket, two left to review
         app.handle(key('v'));
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn an_against_review_names_its_base_in_the_chip_and_the_pane_title() {
+        let fixture = crate::test_support::branch_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_against_diff("main");
         insta::assert_snapshot!(render(&mut app).backend());
     }
 

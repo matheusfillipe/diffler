@@ -85,6 +85,7 @@
 # Their rows live in the matching [keys.<name>] table below.
 # commit = "c"
 # branch = "b"
+# diff_menu = "d"
 # log_menu = "l"
 # push = "P"
 # pull = "p"
@@ -169,6 +170,13 @@
 # delete = "D"
 # prs = "p"
 # pr_create = "P"
+
+[keys.diff_menu]
+# base = "d"
+# last_commit = "c"
+# branch = "b"
+# commit = "s"
+# working = "w"
 
 [keys.log_menu]
 # current = "l"

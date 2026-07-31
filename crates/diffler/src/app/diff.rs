@@ -797,6 +797,47 @@ impl App {
         }
     }
 
+    /// Review everything the working tree carries over `rev`: the branch's
+    /// commits plus whatever is still uncommitted. The model tracks edits, so
+    /// the off-thread refresh recomputes it (see `App::against_rev`).
+    pub(crate) fn open_against_diff(&mut self, rev: &str) {
+        match diffler_core::vcs::against_diff(self.review.vcs.as_ref(), rev) {
+            Ok(model) => {
+                let source = ReviewSource::against(rev);
+                if let Some(diff) = self.diff.as_mut().filter(|d| d.source == source) {
+                    diff.commit_model = Some(model);
+                    diff.invalidate();
+                    diff.ensure_rows(&self.review);
+                } else {
+                    self.install_diff_view(source, Some(model));
+                }
+            }
+            Err(err) => self.error(err.to_string()),
+        }
+    }
+
+    /// The `Against` diff for `rev` outside the render path (agent tool calls):
+    /// the open view's model when it is showing that rev, else a fresh compute.
+    /// A backend error degrades to an empty diff, like the cached sources.
+    pub(crate) fn against_model_for(&self, rev: &str) -> DiffModel {
+        self.diff
+            .as_ref()
+            .filter(|d| d.source == ReviewSource::against(rev))
+            .and_then(|d| d.commit_model.clone())
+            .unwrap_or_else(|| {
+                diffler_core::vcs::against_diff(self.review.vcs.as_ref(), rev).unwrap_or_default()
+            })
+    }
+
+    /// The rev of the open `Against` review, so the refresh worker recomputes
+    /// its diff alongside the working tree.
+    pub fn against_rev(&self) -> Option<&str> {
+        match self.diff.as_ref().map(|d| &d.source) {
+            Some(ReviewSource::Against { rev }) => Some(rev),
+            _ => None,
+        }
+    }
+
     /// Open the combined diff of a contiguous commit range (oldest to newest,
     /// full oids), pinned like a single commit's diff.
     pub(crate) fn open_range_diff(&mut self, oldest: &str, newest: &str) {
@@ -3362,6 +3403,115 @@ mod tests {
                     .is_some_and(|l| l.text.contains("fn "))
         );
         assert!(on_def, "cursor row {} is a definition line", diff.cursor);
+    }
+
+    /// Paths of the open review's diff, in sidebar order.
+    fn against_paths(app: &App) -> Vec<String> {
+        app.diff
+            .as_ref()
+            .and_then(|diff| diff.commit_model.as_ref())
+            .expect("pinned model")
+            .files
+            .iter()
+            .map(|f| f.path.clone())
+            .collect()
+    }
+
+    fn against_main(fixture: &Fixture) -> App {
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.handle(key('d'));
+        app.handle(key('d'));
+        app
+    }
+
+    #[test]
+    fn the_diff_transient_reviews_the_branch_against_its_base() {
+        let fixture = crate::test_support::branch_fixture();
+        let app = against_main(&fixture);
+        let diff = app.diff.as_ref().expect("diff view");
+        assert_eq!(diff.source, ReviewSource::against("main"));
+        assert_eq!(app.against_rev(), Some("main"));
+        // the branch commit and the uncommitted file, both
+        assert_eq!(against_paths(&app), ["dirty.rs", "landed.rs"]);
+        assert_eq!(app.screen(), Screen::Diff);
+    }
+
+    #[test]
+    fn an_against_review_tracks_edits_through_the_refresh() {
+        let fixture = crate::test_support::branch_fixture();
+        let mut app = against_main(&fixture);
+        fixture.write("later.rs", "pub fn later() {}\n");
+        app.queue_refresh();
+        app.settle_refresh();
+        assert_eq!(against_paths(&app), ["dirty.rs", "landed.rs", "later.rs"]);
+    }
+
+    #[test]
+    fn a_refresh_answering_for_another_rev_leaves_the_open_review_alone() {
+        let fixture = crate::test_support::branch_fixture();
+        let mut app = against_main(&fixture);
+        app.apply_refresh(diffler_core::review::Refreshed {
+            status: diffler_core::vcs::StatusModel::default(),
+            model: DiffModel::default(),
+            against: Some(("develop".to_owned(), Ok(DiffModel::default()))),
+        });
+        assert_eq!(against_paths(&app), ["dirty.rs", "landed.rs"]);
+    }
+
+    #[test]
+    fn the_branch_picker_reviews_against_the_chosen_branch() {
+        let fixture = crate::test_support::branch_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.handle(key('d'));
+        app.handle(key('b'));
+        assert!(matches!(app.modal, Some(Modal::RevList { .. })));
+        app.handle(code_key(crossterm::event::KeyCode::Tab));
+        for c in "main".chars() {
+            app.handle(key(c));
+        }
+        app.handle(key('\n'));
+        assert!(app.modal.is_none());
+        let diff = app.diff.as_ref().expect("diff view");
+        assert_eq!(diff.source, ReviewSource::against("main"));
+    }
+
+    #[test]
+    fn the_commit_picker_reviews_against_the_chosen_commit() {
+        let fixture = crate::test_support::branch_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.handle(key('d'));
+        app.handle(key('s'));
+        let Some(Modal::RevList { entries, .. }) = &app.modal else {
+            panic!("rev picker open, got {:?}", app.modal);
+        };
+        assert!(entries[0].label.contains("feature work"), "{entries:?}");
+        // newest first, so the top entry is HEAD: only the dirty file is over it
+        app.handle(key('\n'));
+        assert_eq!(against_paths(&app), ["dirty.rs"]);
+    }
+
+    #[test]
+    fn a_rev_that_does_not_resolve_reports_instead_of_panicking() {
+        let fixture = crate::test_support::branch_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_against_diff("no-such-branch");
+        assert!(app.diff.is_none());
+        assert!(
+            matches!(&app.message, Some(m) if m.severity == crate::app::Severity::Error),
+            "{:?}",
+            app.message
+        );
+    }
+
+    #[test]
+    fn w_goes_back_to_the_plain_working_tree_review() {
+        let fixture = crate::test_support::branch_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.handle(key('d'));
+        app.handle(key('w'));
+        let diff = app.diff.as_ref().expect("diff view");
+        assert_eq!(diff.source, ReviewSource::WorkingTree);
+        assert_eq!(app.against_rev(), None);
     }
 
     fn fixture_content(app: &crate::app::App) -> String {
