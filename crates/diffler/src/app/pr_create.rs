@@ -309,6 +309,32 @@ mod tests {
         );
     }
 
+    /// The forge call is addressed against the pushed head, which only the
+    /// landed refresh carries.
+    #[test]
+    fn the_forge_call_waits_for_the_refresh_the_finished_push_queues() {
+        let fixture = crate::test_support::standard_fixture();
+        let mut app = App::new(fixture.review(), crate::config::LoadedConfig::default());
+        app.pending_pr_create = Some(Box::new(NewPullRequest {
+            base: "main".to_owned(),
+            head: "feat/x".to_owned(),
+            title: "a title".to_owned(),
+            body: String::new(),
+            draft: false,
+        }));
+        app.handle(crate::event::AppEvent::GitDone {
+            label: App::PR_CREATE_PUSH.to_owned(),
+            ok: true,
+            output: String::new(),
+        });
+        assert!(app.pending_ci.is_none(), "the create holds for the refresh");
+        app.settle_refresh();
+        assert!(matches!(
+            app.pending_ci,
+            Some(super::super::CiRequest::CreatePr(_))
+        ));
+    }
+
     #[test]
     fn a_title_left_empty_keeps_the_form_open() {
         let fixture = crate::test_support::standard_fixture();

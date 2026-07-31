@@ -2678,7 +2678,8 @@ mod tests {
         assert_eq!(tree_kinds(&app)[0], "section:To review:2");
         // the file changes on disk: its hash no longer matches the mark
         fixture.write("ci.yml", "on: push\njobs: {}\n");
-        app.refresh();
+        app.handle(AppEvent::RepoChanged);
+        app.settle_refresh();
         assert_eq!(
             tree_kinds(&app)[0],
             "section:To review:3",
@@ -2982,7 +2983,7 @@ mod tests {
         // nothing changed on disk: a watcher echo or poll tick refresh
         // must not kill the selection
         app.handle(AppEvent::RepoChanged);
-        app.refresh();
+        app.settle_refresh();
         assert!(
             app.diff.as_ref().unwrap().visual_anchor.is_some(),
             "no-op refresh keeps the selection"
@@ -2998,7 +2999,7 @@ mod tests {
         app.handle(key('V'));
         fixture.write("zzz.md", "new\n");
         app.handle(AppEvent::RepoChanged);
-        app.refresh();
+        app.settle_refresh();
         assert!(
             app.diff.as_ref().unwrap().visual_anchor.is_none(),
             "rows shifted: a stale anchor would dangle"

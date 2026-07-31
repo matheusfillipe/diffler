@@ -1985,7 +1985,8 @@ mod tests {
         // a real content change (as a watcher refresh would see) rebuilds the
         // model at default context; the per-file override lives on the view
         fixture.write("a.txt", &base.replace("line 30\n", "LINE THIRTY\n"));
-        app.refresh();
+        app.handle(crate::event::AppEvent::RepoChanged);
+        app.settle_refresh();
         app.queue_enrich_selected(); // enrichment reinstalls the override in on_enriched
         let _ = render(&mut app);
 

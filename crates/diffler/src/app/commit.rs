@@ -135,8 +135,13 @@ impl App {
     pub(super) fn apply_amend(&mut self, message: Option<&str>, use_index: bool) {
         match self.review.vcs.amend(message, use_index) {
             Ok(oid) => {
-                self.refresh();
-                let subject = self.head.subject.clone();
+                // an extend reuses HEAD's message, so its subject is the one
+                // already on screen
+                let subject = message
+                    .and_then(|text| text.lines().next())
+                    .unwrap_or(&self.head.subject)
+                    .to_owned();
+                self.queue_refresh();
                 let oid7 = oid.get(..7).unwrap_or(&oid).to_owned();
                 if self.message.is_none() {
                     self.info(format!("amended {oid7} {subject}"));
@@ -176,7 +181,7 @@ impl App {
                 if let Err(err) = outcome {
                     self.error(format!("editor failed: {err}"));
                 }
-                self.refresh();
+                self.queue_refresh();
                 if self.message.is_none() {
                     self.info(format!("edited {path}"));
                 }
@@ -212,7 +217,7 @@ impl App {
             Ok(oid) => {
                 let subject = message.lines().next().unwrap_or_default().to_owned();
                 let oid7 = oid.get(..7).unwrap_or(&oid).to_owned();
-                self.refresh();
+                self.queue_refresh();
                 if self.message.is_none() {
                     self.info(format!("committed {oid7} {subject}"));
                 }

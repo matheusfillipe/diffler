@@ -385,6 +385,14 @@ impl RefreshState {
     }
 }
 
+/// Work held back until the queued refresh lands, for the few flows that read
+/// repo state the refresh is about to move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AfterRefresh {
+    /// Send the pull request the finished push was clearing the way for.
+    CreatePr,
+}
+
 /// A git remote diffler can pull CI from: its name, the detected forge, and the
 /// remote URL the provider is built from.
 #[derive(Debug, Clone)]
@@ -461,6 +469,8 @@ pub struct App {
         std::collections::HashMap<String, std::sync::Arc<diffler_core::model::DiffModel>>,
     /// Off-thread refresh lifecycle: repo changes queue one worker at a time.
     pub refresh_state: RefreshState,
+    /// Continuation the next landed refresh runs.
+    pub(crate) after_refresh: Option<AfterRefresh>,
     /// Blast-radius results per file path, keyed valid by content hash.
     pub blast: std::collections::HashMap<String, blast::FileBlast>,
     /// Graph screen shows a reference graph for this file (instead of a CI run).
@@ -647,6 +657,7 @@ impl App {
             ci_remotes,
             source_models: std::collections::HashMap::new(),
             refresh_state: RefreshState::Idle,
+            after_refresh: None,
             blast: std::collections::HashMap::new(),
             impact_title: None,
             impact_targets: std::collections::HashMap::new(),
@@ -852,7 +863,7 @@ impl App {
             }
             AppEvent::CiError(message) => self.on_ci_error(message),
             AppEvent::RepoChanged => {
-                self.refresh_state = self.refresh_state.queue();
+                self.queue_refresh();
                 self.refresh_flash = REFRESH_FLASH_TICKS;
                 // a checkout may have changed the branch; re-resolve its PR
                 self.pr_checked = false;
@@ -1099,8 +1110,7 @@ impl App {
         // its delay is the frame that shows it
         changed |= self.which_key_panel().is_some() != which_key;
         if self.tick_count.is_multiple_of(FALLBACK_REFRESH_TICKS) && self.watcher_unhealthy() {
-            self.refresh();
-            changed = true;
+            self.queue_refresh();
         }
         // re-poll the active CI screen on a relaxed cadence (250ms ticks);
         // saturating + clamp so a pathological config can't zero or overflow it
@@ -1133,7 +1143,7 @@ impl App {
         match action {
             Action::Quit => return Flow::Quit,
             Action::Back => return self.pop_screen(),
-            Action::Refresh => self.refresh(),
+            Action::Refresh => self.queue_refresh(),
             Action::Help => self.modal = Some(Modal::Help),
             Action::Palette => {
                 let (_, haystack) = self.command_index_haystack();
@@ -1237,19 +1247,34 @@ impl App {
         });
     }
 
-    /// Run a VCS mutation, then refresh so the sections reflect reality.
+    /// Run a VCS mutation, then queue a refresh so the sections catch up with
+    /// reality.
     pub(crate) fn vcs_op(&mut self, op: impl FnOnce(&dyn Vcs) -> Result<(), VcsError>) {
         match op(self.review.vcs.as_ref()) {
-            Ok(()) => self.refresh(),
+            Ok(()) => self.queue_refresh(),
             Err(err) => self.error(err.to_string()),
         }
     }
 
-    pub(crate) fn refresh(&mut self) {
-        match Review::compute_refresh(&self.review.repo_root, self.config.ui.context_lines) {
-            Ok((status, model)) => self.apply_refresh(status, model),
-            Err(err) => self.error(err.to_string()),
+    /// Ask the runtime for a repo refresh. It runs on the blocking pool and
+    /// lands as [`AppEvent::RefreshDone`], so nothing after this call sees the
+    /// new state; work that has to goes in `after_refresh`.
+    pub(crate) fn queue_refresh(&mut self) {
+        self.refresh_state = self.refresh_state.queue();
+    }
+
+    /// Run the queued refresh inline, mirroring `dispatch_refresh` in the
+    /// runtime down to the guard: with nothing queued there is nothing to
+    /// settle, so a test that expects state to move has to have asked for it.
+    #[cfg(test)]
+    pub(crate) fn settle_refresh(&mut self) {
+        if self.refresh_state != RefreshState::Queued {
+            return;
         }
+        self.refresh_state = RefreshState::Running;
+        let result = Review::compute_refresh(&self.review.repo_root, self.config.ui.context_lines)
+            .map_err(|err| err.to_string());
+        self.on_refresh_done(result);
     }
 
     fn on_refresh_done(
@@ -1267,9 +1292,12 @@ impl App {
             Ok((status, model)) => self.apply_refresh(status, model),
             Err(message) => self.error(message),
         }
+        if let Some(AfterRefresh::CreatePr) = self.after_refresh.take() {
+            self.pr_create_after_push();
+        }
     }
 
-    /// Install a computed refresh (from the sync path or the worker).
+    /// Install a computed refresh.
     pub(crate) fn apply_refresh(
         &mut self,
         status: diffler_core::vcs::StatusModel,
@@ -1344,17 +1372,18 @@ impl App {
     }
 
     /// Report a finished network op: the first non-empty output line as a
-    /// success toast (label + summary), or as an error on failure. Refresh
-    /// first (head/log/ahead-behind may have moved), then set the toast so a
-    /// clean refresh does not clobber it. A pending PR open/switch routes to
-    /// its own continuation instead — gated on the fetch's own label, since
-    /// several git ops can be in flight and an unrelated one finishing first
-    /// must not consume the continuation slots.
+    /// success toast (label + summary), or as an error on failure. The queued
+    /// refresh (head/log/ahead-behind may have moved) lands after the toast, so
+    /// a refresh that fails replaces it with its error. A pending PR
+    /// open/switch routes to its own continuation instead — gated on the
+    /// fetch's own label, since several git ops can be in flight and an
+    /// unrelated one finishing first must not consume the continuation slots.
     fn git_finished(&mut self, label: &str, ok: bool, output: &str) {
         if label == Self::PR_CREATE_PUSH {
             if ok {
-                self.refresh();
-                self.pr_create_after_push();
+                // the create is addressed against the pushed head
+                self.queue_refresh();
+                self.after_refresh = Some(AfterRefresh::CreatePr);
                 return;
             }
             // the branch never reached the forge, so there is nothing to open
@@ -1383,11 +1412,7 @@ impl App {
             .unwrap_or("")
             .to_owned();
         self.message = None;
-        self.refresh();
-        // a refresh error already occupies the message slot; leave it
-        if self.message.is_some() {
-            return;
-        }
+        self.queue_refresh();
         if ok {
             if summary.is_empty() {
                 self.info(format!("{label} done"));
@@ -1918,6 +1943,7 @@ mod tests {
         };
         std::fs::write(&msg_path, "add ci config\n\n# comment to strip\n").unwrap();
         app.editor_finished(EditorPurpose::Commit { msg_path }, Ok(true));
+        app.settle_refresh();
         assert_eq!(app.section_files(Section::Staged).len(), 0);
         assert_eq!(app.head.subject, "add ci config");
         let message = app.message.expect("message");
@@ -1969,6 +1995,7 @@ mod tests {
             },
             Ok(true),
         );
+        app.settle_refresh();
         assert_eq!(app.section_files(Section::Untracked).len(), 2);
         assert_eq!(app.message.expect("message").text, "edited src/lib.rs");
     }
@@ -2029,6 +2056,7 @@ mod tests {
         let subject_before = app.head.subject.clone();
         app.handle(key('c'));
         app.handle(key('e'));
+        app.settle_refresh();
         assert_eq!(app.pending_editor, None, "extend runs without the editor");
         assert_eq!(
             app.section_files(Section::Staged).len(),
@@ -2083,6 +2111,7 @@ mod tests {
             },
             Ok(true),
         );
+        app.settle_refresh();
         assert_eq!(app.head.subject, "reworded subject");
         assert_eq!(
             app.section_files(Section::Staged).len(),
@@ -2116,6 +2145,7 @@ mod tests {
             },
             Ok(true),
         );
+        app.settle_refresh();
         assert_eq!(app.head.subject, "just a reword");
         // the previously staged ci.yml stays staged: reword left the tree alone
         assert!(
@@ -2176,6 +2206,7 @@ mod tests {
         assert!(matches!(app.modal, Some(Modal::Input { .. })));
         type_text(&mut app, "feat/x");
         app.handle(key('\n'));
+        app.settle_refresh();
         assert_eq!(app.modal, None);
         assert_eq!(app.head.branch.as_deref(), Some("feat/x"));
         let message = app.message.expect("message");
@@ -2230,6 +2261,7 @@ mod tests {
         fixture.branch("feat/topic");
         branch_list_cursor_to(&mut app, 'b', "feat/topic");
         app.handle(key('\n'));
+        app.settle_refresh();
         assert_eq!(app.modal, None);
         assert_eq!(app.head.branch.as_deref(), Some("feat/topic"));
         let message = app.message.expect("message");
@@ -2548,7 +2580,7 @@ mod tests {
         assert_eq!(app.section_files(Section::Untracked).len(), 1);
         fixture.write("zzz.md", "new\n");
         app.handle(AppEvent::RepoChanged);
-        app.refresh();
+        app.settle_refresh();
         assert_eq!(app.section_files(Section::Untracked).len(), 2);
         assert_eq!(app.refresh_flash, REFRESH_FLASH_TICKS);
         app.handle(AppEvent::Tick);
@@ -2605,6 +2637,7 @@ mod tests {
         for _ in 0..FALLBACK_REFRESH_TICKS {
             app.handle(AppEvent::Tick);
         }
+        app.settle_refresh();
         assert_eq!(
             app.section_files(Section::Untracked).len(),
             1,
@@ -2614,6 +2647,7 @@ mod tests {
         for _ in 0..FALLBACK_REFRESH_TICKS {
             app.handle(AppEvent::Tick);
         }
+        app.settle_refresh();
         assert_eq!(
             app.section_files(Section::Untracked).len(),
             2,

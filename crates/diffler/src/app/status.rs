@@ -1445,6 +1445,7 @@ mod tests {
         let (_fixture, mut app) = app();
         cursor_to(&mut app, file_row_in(Section::Unstaged));
         app.handle(key('s'));
+        app.settle_refresh();
         assert_eq!(app.section_files(Section::Unstaged).len(), 0);
         let staged: Vec<_> = app
             .section_files(Section::Staged)
@@ -1459,6 +1460,7 @@ mod tests {
         let (_fixture, mut app) = app();
         cursor_to(&mut app, file_row_in(Section::Untracked));
         app.handle(key('s'));
+        app.settle_refresh();
         assert_eq!(app.section_files(Section::Untracked).len(), 0);
         assert!(
             app.section_files(Section::Staged)
@@ -1492,6 +1494,7 @@ mod tests {
         let (_fixture, mut app) = app();
         cursor_to(&mut app, file_row_in(Section::Staged));
         app.handle(key('u'));
+        app.settle_refresh();
         assert_eq!(app.section_files(Section::Staged).len(), 0);
         // ci.yml was a staged new file: unstaging makes it untracked again
         assert!(
@@ -1510,6 +1513,7 @@ mod tests {
         app.handle(key('}'));
         assert!(is_hunk_header(&app.visible_rows()[app.status.cursor]));
         app.handle(key('s'));
+        app.settle_refresh();
         let in_section = |section: Section| {
             app.section_files(section)
                 .iter()
@@ -1523,10 +1527,12 @@ mod tests {
     fn stage_all_and_unstage_all_move_everything() {
         let (_fixture, mut app) = app();
         app.handle(key('S'));
+        app.settle_refresh();
         assert_eq!(app.section_files(Section::Untracked).len(), 0);
         assert_eq!(app.section_files(Section::Unstaged).len(), 0);
         assert_eq!(app.section_files(Section::Staged).len(), 3);
         app.handle(key('U'));
+        app.settle_refresh();
         assert_eq!(app.section_files(Section::Staged).len(), 0);
     }
 
@@ -1554,6 +1560,7 @@ mod tests {
         cursor_to(&mut app, file_row_in(Section::Unstaged));
         app.handle(key('x'));
         app.handle(key('y'));
+        app.settle_refresh();
         assert_eq!(app.modal, None);
         assert_eq!(app.section_files(Section::Unstaged).len(), 0);
         let content = std::fs::read_to_string(fixture.root.join("src/lib.rs")).unwrap();
@@ -1566,6 +1573,7 @@ mod tests {
         cursor_to(&mut app, file_row_in(Section::Untracked));
         app.handle(key('x'));
         app.handle(key('y'));
+        app.settle_refresh();
         assert!(!fixture.root.join("todo.md").exists());
         assert_eq!(app.section_files(Section::Untracked).len(), 0);
     }
@@ -1814,6 +1822,7 @@ mod tests {
         assert_eq!(app.section_files(Section::Untracked).len(), 1);
         fixture.write("another.md", "more\n");
         app.handle(ctrl_key('r'));
+        app.settle_refresh();
         assert_eq!(app.section_files(Section::Untracked).len(), 2);
     }
 
@@ -1824,6 +1833,7 @@ mod tests {
         // a new untracked file shifts every row below the untracked section
         fixture.write("aaa.md", "first\n");
         app.handle(ctrl_key('r'));
+        app.settle_refresh();
         let Some((section, file, _)) = app
             .visible_rows()
             .get(app.status.cursor)
@@ -1843,6 +1853,7 @@ mod tests {
         cursor_to(&mut app, file_row_in(Section::Untracked));
         fixture.stage("todo.md");
         app.handle(ctrl_key('r'));
+        app.settle_refresh();
         // todo.md moved to staged: the anchor follows the path there
         let row = app.visible_rows()[app.status.cursor].clone();
         let (section, file, _) = app.row_file(&row).expect("file row");
@@ -1871,6 +1882,7 @@ mod tests {
         fixture.write("notes.txt", "alpha\nbeta\n");
         fixture.commit_all("second commit");
         app.handle(ctrl_key('r'));
+        app.settle_refresh();
         assert_eq!(app.status.recent.len(), 2);
         assert_eq!(app.status.recent[0].subject, "second commit");
     }
