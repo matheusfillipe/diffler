@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 import socket
+import threading
 
 from mcp import ClientSession
 
@@ -47,8 +48,26 @@ async def _call_tool(url, name, arguments):
             return json.loads(result.content[0].text)
 
 
-def call_tool(url, name, arguments=None):
-    return asyncio.run(_call_tool(url, name, arguments or {}))
+def call_tool(tui, url, name, arguments=None):
+    """Round-trip a tool call on a worker thread while this one keeps
+    draining the PTY. A terminal nobody reads fills after about a kilobyte on
+    macOS and blocks the very loop that answers the call."""
+    outcome = {}
+
+    def run():
+        try:
+            outcome["value"] = asyncio.run(_call_tool(url, name, arguments or {}))
+        except BaseException as error:  # re-raised on the calling thread
+            outcome["error"] = error
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    while worker.is_alive():
+        tui._feed(timeout=0.1)
+    worker.join()
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["value"]
 
 
 def mcp_url(tui):
@@ -65,7 +84,7 @@ def test_review_status_and_get_comments_round_trip(spawn, repo):
     tui = spawn("--port", str(free_port()))
     url = mcp_url(tui)
 
-    status = call_tool(url, "review_status")
+    status = call_tool(tui, url, "review_status")
     assert status["repo"] == repo.name
     assert status["branch"] == "main"
     paths = {entry["path"] for entry in status["files_changed"]}
@@ -84,7 +103,7 @@ def test_review_status_and_get_comments_round_trip(spawn, repo):
     tui.send("\r")
     tui.wait_for("▌ reviewer")
 
-    comments = call_tool(url, "get_comments")["comments"]
+    comments = call_tool(tui, url, "get_comments")["comments"]
     assert [c["body"] for c in comments] == ["ship it"]
     assert comments[0]["file"] == "app.txt"
     assert comments[0]["line"] == 2

@@ -24,7 +24,7 @@ expression: render(&mut app).backend()
 "│                       │why                                                                   │                       │"
 "│                       │enter submit  ·  a-enter newline  ·  esc cancel                       │                       │"
 "│                       ╰──────────────────────────────────────────────────────────────────────╯                       │"
-"│                            ││                                                                                        │"
+"│                                                                                                                      │"
 "│                            ││                                                                                        │"
 "│                            ││                                                                                        │"
 "│                            ││                                                                                        │"
