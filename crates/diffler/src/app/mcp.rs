@@ -301,19 +301,26 @@ mod tests {
             "a commentless source was diffed anyway"
         );
 
-        // and it is built as soon as the source has something to say
-        app.review.session.add_comment(
-            Anchor {
-                file: "src/lib.rs".to_owned(),
-                line: Some(2),
-                line_end: None,
-                on_old_side: false,
-                line_text: Some("    42".to_owned()),
-            },
-            "human",
-            "why 42?",
-        );
+        // and it is built as soon as that source has something to say
+        app.review
+            .session_for_mut(&ReviewSource::commit(&oid))
+            .add_comment(
+                Anchor {
+                    file: "src/lib.rs".to_owned(),
+                    line: Some(2),
+                    line_end: None,
+                    on_old_side: false,
+                    line_text: Some("    42".to_owned()),
+                },
+                "human",
+                "why 42?",
+            );
         assert_eq!(app.comments_response(|_| true).len(), 1);
+        assert!(
+            app.source_models
+                .contains_key(&ReviewSource::commit(&oid).key()),
+            "the commented source was diffed"
+        );
     }
 
     #[test]

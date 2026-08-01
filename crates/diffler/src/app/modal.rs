@@ -255,8 +255,8 @@ impl App {
 
     /// An empty buffer submits as a cancel — comments and replies must say
     /// something to be worth persisting.
-    /// Leave the input. A field of the create form hands its draft back
-    /// rather than dropping it, so one abandoned edit cannot lose the rest.
+    /// Leave the input. A field of the create form hands its draft back, so
+    /// one abandoned edit keeps the rest of the form.
     pub(super) fn cancel_input(&mut self) {
         if let Some(Modal::Input {
             on_submit: InputOp::PrField { draft, .. },

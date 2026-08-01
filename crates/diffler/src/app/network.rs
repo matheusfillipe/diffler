@@ -114,8 +114,7 @@ impl App {
             if label.contains("force") {
                 return false; // a rejected force-with-lease is a real conflict
             }
-            // opening a pull request never escalates to a force-push: the
-            // human asked to publish a branch, not to overwrite the remote
+            // a pull-request push only ever publishes the branch as it stands
             if label == Self::PR_CREATE_PUSH {
                 return false;
             }

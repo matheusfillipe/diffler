@@ -501,8 +501,8 @@ fn anchored(
 
 fn review_payload(review: &NewPrReview) -> serde_json::Value {
     let event = match review.verdict {
-        // the API spells approval `APPROVED`; an unrecognized event silently
-        // an unrecognised event quietly creates a pending, invisible review
+        // the API spells approval `APPROVED`; an unrecognised event quietly
+        // creates a pending, invisible review
         ReviewVerdict::Approve => "APPROVED",
         ReviewVerdict::RequestChanges => "REQUEST_CHANGES",
         ReviewVerdict::Comment => "COMMENT",

@@ -1275,7 +1275,7 @@ impl App {
 
     /// Ask the runtime for a repo refresh. It runs on the blocking pool and
     /// lands as [`AppEvent::RefreshDone`], so nothing after this call sees the
-    /// new state; work that has to goes in `after_refresh`.
+    /// new state; work that needs it goes in `after_refresh`.
     pub(crate) fn queue_refresh(&mut self) {
         self.refresh_state = self.refresh_state.queue();
     }
