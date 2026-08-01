@@ -1,6 +1,6 @@
 pkgbase = diffler-bin
 	pkgdesc = Terminal code review for AI coding agents
-	pkgver = 0.6.7
+	pkgver = 0.6.8
 	pkgrel = 1
 	url = https://github.com/matheusfillipe/diffler
 	arch = x86_64
@@ -9,9 +9,9 @@ pkgbase = diffler-bin
 	license = Apache-2.0
 	provides = diffler
 	conflicts = diffler
-	source_x86_64 = diffler-0.6.7-x86_64.tar.gz::https://github.com/matheusfillipe/diffler/releases/download/v0.6.7/diffler-v0.6.7-x86_64-unknown-linux-musl.tar.gz
-	sha256sums_x86_64 = de99dbb91827519e4ea5e9599c14d6e9ced1dfeebc9b0fb249fda9e3db0b2687
-	source_aarch64 = diffler-0.6.7-aarch64.tar.gz::https://github.com/matheusfillipe/diffler/releases/download/v0.6.7/diffler-v0.6.7-aarch64-unknown-linux-musl.tar.gz
-	sha256sums_aarch64 = 58ee18b63e7d6e8d86ddf9da1e2d27af9d2f6437681b5d87dde740f8463627ea
+	source_x86_64 = diffler-0.6.8-x86_64.tar.gz::https://github.com/matheusfillipe/diffler/releases/download/v0.6.8/diffler-v0.6.8-x86_64-unknown-linux-musl.tar.gz
+	sha256sums_x86_64 = 1cd8844cf393481330889dccc04696dfbf074d1882c5f1f1a8f2b6e2e0bb1483
+	source_aarch64 = diffler-0.6.8-aarch64.tar.gz::https://github.com/matheusfillipe/diffler/releases/download/v0.6.8/diffler-v0.6.8-aarch64-unknown-linux-musl.tar.gz
+	sha256sums_aarch64 = 61bb0001241b0aaf77132336a880871ce8ec5225bcdbb5bd9aa91b43302bb645
 
 pkgname = diffler-bin
