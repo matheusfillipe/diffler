@@ -51,10 +51,14 @@ async function startBackend() {
   };
 }
 
-function driveProxy(repo) {
-  const child = spawn(process.execPath, [PROXY, "--repo", repo], {
-    cwd: repo,
-    stdio: ["pipe", "pipe", "inherit"],
+function driveProxy(cwd, args = ["--repo", cwd]) {
+  const child = spawn(process.execPath, [PROXY, ...args], {
+    cwd,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  let stderr = "";
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk.toString("utf8");
   });
   const pending = new Map();
   let buffer = "";
@@ -90,29 +94,35 @@ function driveProxy(repo) {
   };
   const notify = (method, params) =>
     child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`);
-  return { child, request, notify, kill: () => child.kill() };
+  return { child, request, notify, stderr: () => stderr, kill: () => child.kill() };
 }
 
-const writeEndpoint = (repo, port) =>
+async function handshake(proxy) {
+  await proxy.request("initialize", {
+    protocolVersion: "2025-06-18",
+    capabilities: {},
+    clientInfo: { name: "test", version: "0" },
+  });
+  proxy.notify("notifications/initialized");
+  return proxy;
+}
+
+const tmpRepo = () => mkdtempSync(join(tmpdir(), "diffler-mcp-"));
+
+const writeEndpoint = (repo, port) => {
+  mkdirSync(join(repo, ".diffler"), { recursive: true });
   writeFileSync(join(repo, ".diffler", "mcp.json"), JSON.stringify({ port }));
+};
 
 const callPing = (proxy) => proxy.request("tools/call", { name: "ping", arguments: {} });
 
 test("proxy bridges, survives diffler restart on a new port", async () => {
-  const repo = mkdtempSync(join(tmpdir(), "diffler-mcp-"));
-  mkdirSync(join(repo, ".diffler"));
+  const repo = tmpRepo();
   let backend = await startBackend();
   writeEndpoint(repo, backend.port);
 
-  const proxy = driveProxy(repo);
+  const proxy = await handshake(driveProxy(repo));
   try {
-    await proxy.request("initialize", {
-      protocolVersion: "2025-06-18",
-      capabilities: {},
-      clientInfo: { name: "test", version: "0" },
-    });
-    proxy.notify("notifications/initialized");
-
     const tools = await proxy.request("tools/list", {});
     assert.deepEqual(
       tools.result.tools.map((t) => t.name),
@@ -136,5 +146,59 @@ test("proxy bridges, survives diffler restart on a new port", async () => {
     proxy.kill();
     await backend.close().catch(() => {});
     rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("discovers the endpoint from a nested subdirectory", async () => {
+  const repo = tmpRepo();
+  const nested = join(repo, "crates", "diffler", "src");
+  mkdirSync(nested, { recursive: true });
+  const backend = await startBackend();
+  writeEndpoint(repo, backend.port);
+
+  // no --repo: the editor's cwd is all the proxy gets
+  const proxy = await handshake(driveProxy(nested, []));
+  try {
+    const pong = await callPing(proxy);
+    assert.equal(pong.result.content[0].text, "pong", "walked up to the repo root");
+  } finally {
+    proxy.kill();
+    await backend.close();
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("an explicit port wins over discovery", async () => {
+  const repo = tmpRepo();
+  const backend = await startBackend();
+  const stale = await startBackend();
+  await stale.close();
+  writeEndpoint(repo, stale.port);
+
+  const proxy = await handshake(driveProxy(repo, ["--port", String(backend.port)]));
+  try {
+    const pong = await callPing(proxy);
+    assert.equal(pong.result.content[0].text, "pong", "used the flag, not the endpoint file");
+  } finally {
+    proxy.kill();
+    await backend.close();
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("no endpoint file anywhere up the tree names the directory", async () => {
+  const dir = tmpRepo();
+  const proxy = await handshake(driveProxy(dir, []));
+  try {
+    const tools = await proxy.request("tools/list", {});
+    assert.deepEqual(tools.result.tools, [], "nothing to forward");
+
+    const call = await callPing(proxy);
+    assert.equal(call.result.isError, true);
+    assert.match(call.result.content[0].text, /no diffler is running in .* or any parent/);
+    assert.match(proxy.stderr(), /no diffler is running in .* or any parent/);
+  } finally {
+    proxy.kill();
+    rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -31,8 +31,9 @@ Or in a checked-in `.mcp.json`:
 }
 ```
 
-Run Claude from the repo root and the proxy auto-discovers the port from
-`.diffler/mcp.json`. No diffler running ⇒ the proxy exits with a clear error.
+Start Claude anywhere inside the repo and the proxy auto-discovers the port
+from `.diffler/mcp.json`. No diffler running ⇒ every tool call reports which
+directory it searched.
 
 ## Configuration
 
@@ -40,8 +41,8 @@ Resolution order (first match wins):
 
 1. `--url <url>` / `DIFFLER_MCP_URL` — full endpoint, e.g. `http://127.0.0.1:8417/mcp`
 2. `--port <n>` / `DIFFLER_MCP_PORT` and `--host <h>` / `DIFFLER_MCP_HOST`
-3. the live port in `<repo>/.diffler/mcp.json` (`--repo <path>`, default: cwd)
-4. `http://127.0.0.1:8417/mcp`
+3. the live port in the nearest `.diffler/mcp.json`, searching the start
+   directory (`--repo <path>`, default: cwd) and then each parent
 
 ```json
 {

@@ -1,6 +1,11 @@
 {
-  "diffler": {
-    "command": "npx",
-    "args": ["-y", "diffler-mcp"]
+  "mcpServers": {
+    "diffler": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "diffler-mcp"
+      ]
+    }
   }
 }

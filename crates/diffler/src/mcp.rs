@@ -105,9 +105,13 @@ pub struct ReviewStatusResponse {
     pub branch: Option<String>,
     pub oid7: String,
     pub files_changed: Vec<FileEntry>,
+    #[schemars(with = "Count")]
     pub open_comments: usize,
+    #[schemars(with = "Count")]
     pub replied_comments: usize,
+    #[schemars(with = "Count")]
     pub resolved_comments: usize,
+    #[schemars(with = "Count")]
     pub feedback_epoch: u64,
     /// Every persisted review and its comment counts; `files_changed` above is
     /// the working-tree review, the default the human starts on.
@@ -122,8 +126,11 @@ pub struct ReviewSummary {
     pub source: String,
     /// Human-facing description (e.g. "commit a1b2c3", "range a1b2c3..d4e5f6").
     pub label: String,
+    #[schemars(with = "Count")]
     pub open_comments: usize,
+    #[schemars(with = "Count")]
     pub replied_comments: usize,
+    #[schemars(with = "Count")]
     pub resolved_comments: usize,
 }
 
@@ -147,7 +154,9 @@ pub struct CommentInfo {
     /// Human-facing description of that review (what the human was looking at).
     pub source_label: String,
     pub file: String,
+    #[schemars(with = "Option<Count>")]
     pub line: Option<u32>,
+    #[schemars(with = "Option<Count>")]
     pub line_end: Option<u32>,
     /// Which side of the diff the line numbers count: "old" or "new".
     pub side: String,
@@ -190,6 +199,7 @@ pub struct OkResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub struct WaitForFeedbackResponse {
+    #[schemars(with = "Count")]
     pub epoch: u64,
     pub timed_out: bool,
     pub comments: Vec<CommentInfo>,
@@ -230,10 +240,37 @@ pub struct MarkViewedParams {
 pub struct WaitForFeedbackParams {
     /// Return once the feedback epoch exceeds this value. Defaults to the
     /// current epoch, i.e. wait for the next human send.
+    #[schemars(with = "Option<Count>")]
     pub since_epoch: Option<u64>,
     /// Long-poll timeout (default 25, max 540). Values past your client's
     /// request timeout fail the call.
+    #[schemars(with = "Option<Count>")]
     pub timeout_seconds: Option<u64>,
+}
+
+/// Schema stand-in for every unsigned field in the tool types. `usize`/`u32`/
+/// `u64` derive `format: "uint"`/`"uint32"`/`"uint64"`, none of which JSON
+/// Schema registers, so strict validators warn on every tool schema. rmcp
+/// hardcodes its generator, leaving `#[schemars(with = "Count")]` (or
+/// `Option<Count>`, which keeps the field optional) as the per-field opt-out.
+struct Count;
+
+impl schemars::JsonSchema for Count {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Count".into()
+    }
+
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        "diffler::mcp::Count".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({ "type": "integer", "minimum": 0 })
+    }
 }
 
 pub const fn comment_status_name(status: CommentStatus) -> &'static str {
@@ -991,6 +1028,26 @@ mod tests {
         let body = std::fs::read_to_string(&path)
             .expect("file survives: it names the still-running instance");
         assert!(body.contains("\"port\": 2222"), "{body}");
+    }
+
+    // Rust's integer formats ("uint", "uint32", "uint64") are not registered
+    // JSON Schema formats, and strict clients warn on every one they see.
+    #[test]
+    fn tool_schemas_use_no_unregistered_format() {
+        for tool in DifflerMcp::tool_router().list_all() {
+            for (part, schema) in [
+                ("input", Some(&*tool.input_schema)),
+                ("output", tool.output_schema.as_deref()),
+            ] {
+                let Some(schema) = schema else { continue };
+                let text = serde_json::to_string(schema).expect("schema serializes");
+                assert!(
+                    !text.contains("\"format\""),
+                    "{} {part} schema carries a format keyword: {text}",
+                    tool.name
+                );
+            }
+        }
     }
 
     // spawn_mcp falls back to :0 only on AddrInUse, not on other errors.

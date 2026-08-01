@@ -3,7 +3,7 @@
 // (re)connecting so it survives diffler quitting and restarting on a new port.
 
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -15,7 +15,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 
 const DEFAULT_HOST = "127.0.0.1";
-const DEFAULT_PORT = 8417;
+const ENDPOINT_FILE = join(".diffler", "mcp.json");
 
 function parseArgs(argv) {
   const opts = {};
@@ -41,12 +41,27 @@ function parseArgs(argv) {
   return opts;
 }
 
-function discoverPort(repo) {
-  try {
-    const port = JSON.parse(readFileSync(join(repo, ".diffler", "mcp.json"), "utf8")).port;
-    return typeof port === "number" ? port : undefined;
-  } catch {
-    return undefined;
+// Each diffler publishes its live port under its own repo root, so the walk-up
+// finds the instance owning the directory the editor launched from. Falling
+// back to a fixed port would instead attach to whichever repo's diffler happens
+// to hold it and serve that repo's review.
+function discoverPort(from) {
+  const start = resolve(from);
+  let dir = start;
+  for (;;) {
+    try {
+      const { port } = JSON.parse(readFileSync(join(dir, ENDPOINT_FILE), "utf8"));
+      if (typeof port === "number") {
+        return port;
+      }
+    } catch {
+      // unreadable or malformed reads like absent: keep walking up
+    }
+    const parent = dirname(dir);
+    if (parent === dir) {
+      throw new Error(`no diffler is running in ${start} or any parent (no ${ENDPOINT_FILE})`);
+    }
+    dir = parent;
   }
 }
 
@@ -57,8 +72,7 @@ function resolveUrl(opts) {
     return explicit;
   }
   const host = opts.host || env.DIFFLER_MCP_HOST || DEFAULT_HOST;
-  const repo = opts.repo || process.cwd();
-  const port = opts.port || env.DIFFLER_MCP_PORT || discoverPort(repo) || DEFAULT_PORT;
+  const port = opts.port || env.DIFFLER_MCP_PORT || discoverPort(opts.repo || process.cwd());
   return `http://${host}:${port}/mcp`;
 }
 
@@ -134,7 +148,11 @@ async function main() {
   });
 
   await server.connect(new StdioServerTransport());
-  void ensureUpstream().catch(() => {});
+  // stdout is the MCP channel, so the startup diagnosis goes to stderr, where
+  // clients surface it; the proxy stays up and reconnects when diffler starts
+  void ensureUpstream().catch((err) => {
+    process.stderr.write(`diffler-mcp: ${err.message ?? err}\n`);
+  });
 }
 
 main().catch((err) => {
