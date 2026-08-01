@@ -44,17 +44,21 @@ Resolution order (first match wins):
 3. the live port in the nearest `.diffler/mcp.json`, searching the start
    directory (`--repo <path>`, default: cwd) and then each parent
 
+Discovery covers the normal case, so nothing needs configuring:
+
 ```json
 {
   "mcpServers": {
     "diffler": {
       "command": "npx",
-      "args": ["-y", "diffler-mcp", "--port", "8417"],
-      "env": { "DIFFLER_MCP_HOST": "127.0.0.1" }
+      "args": ["-y", "diffler-mcp"]
     }
   }
 }
 ```
+
+Reach for `--port`, `--host` or `--repo` when diffler runs somewhere the walk-up
+cannot see, such as another machine over a tunnel.
 
 ## Prefer HTTP directly?
 
