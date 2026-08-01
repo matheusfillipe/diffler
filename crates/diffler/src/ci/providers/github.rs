@@ -547,7 +547,7 @@ impl ForgeProvider for GitHubProvider {
         self.runner.run("gh", &args).await.map(|_| ())
     }
 
-    async fn delete_pr_comment(&self, remote_id: &str) -> Result<()> {
+    async fn delete_pr_comment(&self, _number: u64, remote_id: &str) -> Result<()> {
         let args = [
             "api".to_owned(),
             "-X".to_owned(),

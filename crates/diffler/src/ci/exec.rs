@@ -30,7 +30,7 @@ impl CommandRunner for RealRunner {
         if !output.status.success() {
             return Err(CiError::Exec {
                 cmd: format!("{program} {}", args.join(" ")),
-                message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+                message: failure_message(&output.stdout, &output.stderr),
             });
         }
         String::from_utf8(output.stdout).map_err(|err| CiError::Parse {
@@ -38,6 +38,19 @@ impl CommandRunner for RealRunner {
             message: err.to_string(),
         })
     }
+}
+
+/// Both streams of a failed run, joined. `curl --fail-with-body` explains the
+/// exit code on stderr and carries the forge's rejection reason on stdout, so
+/// dropping either loses why a write was refused.
+fn failure_message(stdout: &[u8], stderr: &[u8]) -> String {
+    let stdout = String::from_utf8_lossy(stdout);
+    let stderr = String::from_utf8_lossy(stderr);
+    [stderr.trim(), stdout.trim()]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(": ")
 }
 
 #[cfg(test)]
@@ -100,6 +113,20 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failure_keeps_the_response_body_beside_the_exit_reason() {
+        let message = failure_message(
+            br#"{"message":"approve your own pull is not allowed"}"#,
+            b"curl: (22) The requested URL returned error: 422",
+        );
+        assert_eq!(
+            message,
+            r#"curl: (22) The requested URL returned error: 422: {"message":"approve your own pull is not allowed"}"#
+        );
+        assert_eq!(failure_message(b"", b"boom"), "boom");
+        assert_eq!(failure_message(b"boom", b""), "boom");
+    }
 
     #[tokio::test]
     async fn real_runner_reports_a_missing_binary() {

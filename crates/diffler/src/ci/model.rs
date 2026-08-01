@@ -214,6 +214,9 @@ pub struct RunExtras {
 pub struct Capabilities {
     pub dag: DagSource,
     pub logs: LogMode,
+    /// diffler can tell this forge a review thread is resolved. Where it
+    /// cannot, a resolution stays local to the review session.
+    pub resolve_threads: bool,
 }
 
 /// Where a provider's dependency edges come from.

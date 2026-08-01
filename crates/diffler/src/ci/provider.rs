@@ -27,14 +27,17 @@ pub fn capabilities_for(kind: ProviderKind) -> Capabilities {
         ProviderKind::GitHub => Capabilities {
             dag: DagSource::ConfigFile,
             logs: LogMode::Dump,
+            resolve_threads: true,
         },
         ProviderKind::GitLab => Capabilities {
             dag: DagSource::RunApi,
             logs: LogMode::Poll,
+            resolve_threads: false,
         },
         ProviderKind::Forgejo => Capabilities {
             dag: DagSource::None,
             logs: LogMode::None,
+            resolve_threads: false,
         },
     }
 }
@@ -119,8 +122,9 @@ pub trait ForgeProvider: Send + Sync {
         Err(CiError::Unsupported("editing PR comments"))
     }
 
-    /// Delete one of our own review comments. Default: unsupported.
-    async fn delete_pr_comment(&self, _remote_id: &str) -> Result<()> {
+    /// Delete one of our own review comments. `number` is carried because a
+    /// forge can scope the delete route to the PR. Default: unsupported.
+    async fn delete_pr_comment(&self, _number: u64, _remote_id: &str) -> Result<()> {
         Err(CiError::Unsupported("deleting PR comments"))
     }
 

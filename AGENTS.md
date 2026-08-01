@@ -151,7 +151,11 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   needs a checkout. The branch's PR is a status row; `b p` lists all open PRs
   (Enter reviews, `b` checks out). Forge review comments sync into the session
   (`remote_id` marks forge-owned rows); local comments and replies post back
-  through queued workers (GitHub via `gh`; Forgejo/GitLab decline politely).
+  through queued workers (GitHub via `gh`, Forgejo over its REST API; GitLab
+  declines politely). A Forgejo thread has no handle of its own, so it is the
+  comments sharing a review, a path and a signed line, rooted at the lowest id;
+  the forge exposes no resolution API, so `Capabilities::resolve_threads` is
+  false there and a resolve stays in the local session.
 - **Non-goals.** Worktree/workspace management, agent orchestration,
   structural diff, task tracking.
 

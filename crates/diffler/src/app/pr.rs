@@ -286,6 +286,7 @@ impl App {
             });
         }
         let inflight = self.pr_posts_inflight.clone();
+        let forge_resolves = self.forge_resolves_threads();
         for item in remote.iter().filter(|c| c.reply_to.is_some()) {
             if let Some(root) = roots.iter_mut().find(|c| c.remote_id == item.reply_to) {
                 root.replies.push(Reply {
@@ -319,7 +320,9 @@ impl App {
             } else {
                 match (root.status, prior.status) {
                     (CommentStatus::Resolved, _) => CommentStatus::Resolved,
-                    (_, CommentStatus::Resolved) => CommentStatus::Open,
+                    // a forge with no resolution API reports every thread
+                    // open, so there the local flip is the only record
+                    (_, CommentStatus::Resolved) if forge_resolves => CommentStatus::Open,
                     (_, prior) => prior,
                 }
             };
@@ -703,6 +706,10 @@ impl App {
         comment_id: &str,
         resolved: bool,
     ) -> bool {
+        // a forge with no resolution API keeps the flip in the session
+        if !self.forge_resolves_threads() {
+            return true;
+        }
         let thread = self
             .review
             .session_for(&ReviewSource::pr(number))
@@ -722,6 +729,15 @@ impl App {
         };
         self.queue_pr_post(post);
         true
+    }
+
+    /// Whether the repo's forge can be told a thread is resolved. Where it
+    /// can't, the flip stays in the local session; a queued post would come
+    /// back as an error and revert it.
+    fn forge_resolves_threads(&self) -> bool {
+        self.ci_remotes()
+            .first()
+            .is_none_or(|remote| crate::ci::capabilities_for(remote.detected.kind).resolve_threads)
     }
 }
 
@@ -1271,6 +1287,47 @@ mod tests {
             .expect("range comment");
         assert_eq!(ranged.anchor.line, Some(1));
         assert_eq!(ranged.anchor.line_end, Some(3));
+    }
+
+    #[test]
+    fn a_forge_without_resolution_keeps_the_local_resolve() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.ci_remotes = vec![super::super::CiRemote {
+            name: "origin".into(),
+            detected: crate::ci::Detected {
+                kind: crate::ci::ProviderKind::Forgejo,
+                host: Some("forge.example.com".into()),
+            },
+            url: None,
+        }];
+        let listing = [PrComment {
+            id: "100".into(),
+            path: "app.txt".into(),
+            line: Some(2),
+            new_side: true,
+            body: "remote root".into(),
+            author: "alice".into(),
+            reply_to: None,
+            start_line: None,
+            thread_id: Some("500".into()),
+            resolved: false,
+            at: 10,
+        }];
+        app.sync_pr_comments(7, &listing);
+        let source = ReviewSource::pr(7);
+        let id = app.review.session_for(&source).comments[0].id.clone();
+        // the toggle queues nothing where the forge can't be told
+        assert!(app.queue_pr_resolve(7, &id, true));
+        assert!(app.pending_pr_posts.is_empty());
+        app.review.session_for_mut(&source).resolve(&id);
+        // the forge reports every thread open, so the next poll must not
+        // read that as "someone unresolved it"
+        app.sync_pr_comments(7, &listing);
+        assert_eq!(
+            app.review.session_for(&source).comments[0].status,
+            CommentStatus::Resolved
+        );
     }
 
     #[test]
