@@ -722,6 +722,24 @@ mod tests {
     }
 
     #[test]
+    fn no_chrome_in_the_which_key_panel_reaches_for_bold() {
+        let fixture = standard_fixture();
+        let mut app = app_for(&fixture);
+        app.handle(key('b'));
+        app.handle(AppEvent::Tick);
+        assert!(app.which_key_panel().is_some(), "the panel is revealed");
+        let terminal = render(&mut app);
+        let bold = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .filter(|cell| cell.modifier.contains(ratatui::style::Modifier::BOLD))
+            .count();
+        assert_eq!(bold, 0, "bold chrome in the which-key panel");
+    }
+
+    #[test]
     fn no_chrome_in_the_command_palette_reaches_for_bold() {
         let fixture = standard_fixture();
         let mut app = app_for(&fixture);

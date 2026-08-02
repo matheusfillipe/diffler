@@ -564,11 +564,11 @@ pub(super) fn elide(s: &str, max: usize) -> String {
 }
 
 /// A list row under the cursor: the band across its full width, and its
-/// leading cell given over to the accent bar. Every list on every screen goes
-/// through here, so the bar means one thing and a row holds its columns as the
-/// cursor arrives. Rows lead with an indent cell for the bar to claim.
+/// leading cell given over to the accent bar. The flat lists share this so the
+/// bar means one thing and a row holds its columns as the cursor arrives. The
+/// diff sidebar builds its own equivalent, because its band also carries which
+/// pane has focus.
 pub(super) fn cursor_line(line: Line<'static>, theme: &Theme, width: u16) -> Line<'static> {
-    let pad = (width as usize).saturating_sub(line.width());
     let mut spans: Vec<Span<'static>> = line
         .spans
         .into_iter()
@@ -577,18 +577,21 @@ pub(super) fn cursor_line(line: Line<'static>, theme: &Theme, width: u16) -> Lin
             Span::styled(span.content, style)
         })
         .collect();
+    claim_lead_cell(&mut spans, theme);
+    let used: usize = spans.iter().map(Span::width).sum();
+    let pad = (width as usize).saturating_sub(used);
     if pad > 0 {
         spans.push(Span::styled(
             " ".repeat(pad),
             Style::new().bg(theme.cursor_line),
         ));
     }
-    claim_lead_cell(&mut spans, theme);
     Line::from(spans)
 }
 
-/// Replace the row's first cell with the cursor bar, keeping every column
-/// where it was. A row with nothing to give up gets the bar in front.
+/// Rows lead with an indent cell for the bar to claim, so claiming it holds
+/// every following column in place. A row leading with something wider, or
+/// with nothing at all, takes the bar in front and shifts.
 fn claim_lead_cell(spans: &mut Vec<Span<'static>>, theme: &Theme) {
     let bar = |bg| Span::styled("▌", Style::new().fg(theme.accent).bg(bg));
     let Some(first) = spans.first_mut() else {
@@ -775,10 +778,13 @@ mod tests {
     }
 
     #[test]
-    fn a_row_with_no_lead_cell_to_spare_keeps_all_of_its_own_content() {
+    fn a_row_with_no_lead_cell_to_spare_still_bands_exactly_its_width() {
         let theme = Theme::github_dark();
-        let banded = cursor_line(Line::from(Span::raw("")), &theme, 6);
-        let text: String = banded.spans.iter().map(|s| s.content.clone()).collect();
-        assert!(text.starts_with('▌'), "{text}");
+        for row in [Span::raw(""), Span::raw("世界"), Span::raw("x")] {
+            let banded = cursor_line(Line::from(row.clone()), &theme, 6);
+            let text: String = banded.spans.iter().map(|s| s.content.clone()).collect();
+            assert!(text.starts_with('▌'), "{text}");
+            assert_eq!(banded.width(), 6, "{:?} overflows its row", row.content);
+        }
     }
 }

@@ -3,7 +3,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
@@ -204,10 +204,7 @@ impl WhichKeyPanel<'_> {
             .border_style(Style::new().fg(theme.border).bg(theme.panel))
             .title(Span::styled(
                 format!(" {} ", self.transient.kind.title()),
-                Style::new()
-                    .fg(theme.accent)
-                    .bg(theme.panel)
-                    .add_modifier(Modifier::BOLD),
+                Style::new().fg(theme.accent).bg(theme.panel),
             ));
         frame.render_widget(
             Paragraph::new(lines)
@@ -812,8 +809,7 @@ pub(super) mod tests {
         let buffer = terminal.backend().buffer();
         let theme = Theme::github_dark();
         let bg = |x: u16, y: u16| buffer.cell((x, y)).expect("in bounds").bg;
-        // every corner, so no strip of the ground stays lit; the status row is
-        // the last one, where the old drop shadow used to stop short
+        // every corner, so no strip of the ground stays lit
         for (x, y) in [(0, 0), (119, 0), (0, 39), (119, 39)] {
             assert_eq!(bg(x, y), darkened(theme.bg), "({x},{y}) behind the dialog");
         }
