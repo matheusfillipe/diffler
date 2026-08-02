@@ -128,9 +128,9 @@ pub enum FileStatus {
 }
 
 impl FileStatus {
-    /// Single-character indicator used in the diff sidebar. Shapes rather
-    /// than letters, so the status survives a palette a reader cannot
-    /// separate by hue; colour reinforces what the shape already says.
+    /// Single-character shape naming the status in the diff sidebar. It reads
+    /// by form alone, so a palette whose hues a reader cannot separate still
+    /// carries the status; colour reinforces it.
     pub const fn glyph(self) -> char {
         match self {
             Self::Added => '+',

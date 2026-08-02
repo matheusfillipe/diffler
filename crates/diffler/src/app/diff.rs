@@ -156,10 +156,10 @@ pub struct DiffView {
     pub visual_anchor: Option<usize>,
     /// Body height of the last diff-pane render, drives half-page motions.
     pub(crate) viewport: u16,
-    /// Rows for the selected file only.
     /// The open in-place comment editor, if any. It owns the diff pane's keys
     /// while it is up and occupies the rows its result will.
     pub(crate) composer: Option<Composer>,
+    /// Rows for the selected file only.
     pub(crate) rows: Vec<DiffRow>,
     /// Last render's pane line -> row index table; wrapped rows span several
     /// lines, so mouse hits map back through it.
@@ -527,8 +527,7 @@ pub fn comment_display(
     row_width: u16,
     highlighter: Option<&Highlighter>,
 ) -> Vec<CommentLine> {
-    // "  ▌ " card bar; below that there is no room to wrap meaningfully
-    let budget = (row_width.saturating_sub(4) as usize).max(8);
+    let budget = super::composer::card_budget(row_width);
     let mut lines = vec![CommentLine::Header];
     for logical in markdown::parse(&comment.body, highlighter) {
         lines.extend(
@@ -2686,6 +2685,40 @@ mod tests {
             composer_rows(&app).len(),
             before + 1,
             "one more row once the text passes the wrap budget"
+        );
+    }
+
+    /// The composer wraps the raw buffer per character and the finished card
+    /// word-wraps its markdown, so they only have to agree on the budget. An
+    /// unbroken token exactly that wide is where a mismatch shows.
+    #[test]
+    fn a_draft_and_the_comment_it_becomes_wrap_to_the_same_budget() {
+        let width = 48;
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        select_file(&mut app, "src/lib.rs");
+        app.diff.as_mut().unwrap().set_wrap_width(width);
+        app.diff.as_mut().unwrap().cursor = added_line_position(&app);
+        app.handle(key('c'));
+        type_text(
+            &mut app,
+            &"w".repeat(super::super::composer::card_budget(width)),
+        );
+        let drafted = composer_rows(&app).len();
+        app.handle(key('\n'));
+        app.diff.as_mut().unwrap().ensure_rows(&app.review);
+        let landed = app
+            .diff
+            .as_ref()
+            .unwrap()
+            .rows()
+            .iter()
+            .filter(|row| matches!(row, DiffRow::Comment { .. }))
+            .count();
+        assert_eq!(drafted, 3, "header, the one full row, footer");
+        assert_eq!(
+            drafted, landed,
+            "writing a comment and reading it back take the same rows"
         );
     }
 

@@ -90,13 +90,13 @@ struct RenderCtx<'a> {
     highlighter: &'a diffler_core::highlight::Highlighter,
 }
 
-/// Columns of empty background between the two panes, the gap that reads as
-/// their divider now that neither is boxed.
+/// Columns of empty background between the two panes. The gap is what reads
+/// as their divider.
 const PANE_GAP: u16 = 1;
 
 fn draw_body(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut DiffView) {
-    // the sidebar keeps the columns its border used to spend, plus the pane's
-    // left one; the gap gives back the last
+    // the sidebar takes one column beyond its content so the gap and the
+    // pane's own left column both stay clear of it
     let width = (sidebar_width(area.width) + 1).min(area.width);
     let [list_area, _gap, pane_area] = Layout::horizontal([
         Constraint::Length(width),
