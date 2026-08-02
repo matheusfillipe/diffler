@@ -25,8 +25,8 @@ use crate::theme::Theme;
 use crate::tree::{Bucket, TreeNode};
 use crate::ui::Hint;
 use crate::ui::diff_render::{
-    align_scroll, cursor_band, diff_line_height, file_gutter_width, hunk_header, line_syntax,
-    render_diff_line, render_split_pair, split_pair_height,
+    LineFlags, PairSelection, align_scroll, cursor_band, diff_line_height, file_gutter_width,
+    hunk_header, line_syntax, render_diff_line, render_split_pair, split_pair_height,
 };
 use crate::ui::{diffstat_spans, proportion_bar, status_bar, status_color};
 
@@ -90,6 +90,35 @@ struct RenderCtx<'a> {
     highlighter: &'a diffler_core::highlight::Highlighter,
 }
 
+/// Whether a row sits under the cursor, and whether its pane holds focus
+/// (focus decides how bright the cursor band renders).
+#[derive(Clone, Copy)]
+struct RowState {
+    selected: bool,
+    focused: bool,
+}
+
+/// A sidebar tree row's shared rendering inputs: theme, its indent depth, the
+/// pane width, cursor/focus state, and any search ranges to highlight.
+#[derive(Clone, Copy)]
+struct TreeRowCtx<'a> {
+    theme: &'a Theme,
+    depth: usize,
+    width: u16,
+    on_cursor: bool,
+    focused: bool,
+    search: &'a [(std::ops::Range<usize>, bool)],
+}
+
+/// The side-by-side view's currently open file: its diff, cached highlights,
+/// and gutter width, constant for every row while that file is open.
+#[derive(Clone, Copy)]
+struct SplitFileCtx<'a> {
+    file: &'a FileDiff,
+    highlights: Option<&'a FileHighlights>,
+    gutter: usize,
+}
+
 /// Columns of empty background between the two panes. The gap is what reads
 /// as their divider.
 const PANE_GAP: u16 = 1;
@@ -145,17 +174,18 @@ fn draw_sidebar(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &m
                 .filter(|_| focused)
                 .map(|s| s.ranges_for(row_index))
                 .unwrap_or_default();
+            let row_ctx = TreeRowCtx {
+                theme,
+                depth: row.depth,
+                width: inner.width,
+                on_cursor,
+                focused,
+                search: &ranges,
+            };
             match &row.node {
-                TreeNode::Dir { name, path } => sidebar_dir_line(
-                    theme,
-                    name,
-                    diff.folded_dirs.contains(path),
-                    row.depth,
-                    inner.width,
-                    on_cursor,
-                    focused,
-                    &ranges,
-                ),
+                TreeNode::Dir { name, path } => {
+                    sidebar_dir_line(&row_ctx, name, diff.folded_dirs.contains(path))
+                }
                 TreeNode::Section {
                     bucket,
                     count,
@@ -175,18 +205,7 @@ fn draw_sidebar(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &m
                     };
                     let viewed = session.is_viewed(&file.path, &file.content_hash());
                     let open = open_comment_count(session, &file.path);
-                    sidebar_file_line(
-                        theme,
-                        file,
-                        name,
-                        viewed,
-                        open,
-                        row.depth,
-                        inner.width,
-                        on_cursor,
-                        focused,
-                        &ranges,
-                    )
+                    sidebar_file_line(&row_ctx, file, name, viewed, open)
                 }
             }
         })
@@ -269,9 +288,15 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
         let (sel, side) = diff.split_cursor(&split);
         let height = rows_area.height.max(1) as usize;
         let gutter = file_gutter_width(file);
+        let highlights = diff.highlights.get(&file.path);
+        let file_ctx = SplitFileCtx {
+            file,
+            highlights,
+            gutter,
+        };
         let heights: Vec<usize> = split
             .iter()
-            .map(|row| split_row_height(file, row, gutter, rows_area.width))
+            .map(|row| split_row_height(file_ctx, row, rows_area.width))
             .collect();
         let mut starts = Vec::with_capacity(heights.len());
         let mut total = 0usize;
@@ -294,7 +319,6 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
             scroll = (sel_start + sel_height).saturating_sub(height);
         }
         diff.split_scroll = scroll;
-        let highlights = diff.highlights.get(&file.path);
         let mut lines: Vec<Line<'static>> = Vec::with_capacity(height);
         let mut top_row = None;
         for (index, row) in split.iter().enumerate() {
@@ -309,16 +333,14 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
             }
             top_row.get_or_insert(index);
             let rendered = split_row_lines(
-                theme,
-                ctx.highlighter,
-                session,
-                file,
-                highlights,
-                gutter,
+                ctx,
+                file_ctx,
                 rows_area.width,
                 row,
-                index == sel,
-                focused,
+                RowState {
+                    selected: index == sel,
+                    focused,
+                },
                 side,
                 diff.composer.as_ref(),
             );
@@ -398,15 +420,15 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
             .map(|s| s.ranges_for(index))
             .unwrap_or_default();
         let rendered = row_lines(
-            theme,
-            ctx.highlighter,
-            session,
+            ctx,
             model,
             diff,
             row,
             rows_area.width,
-            selected(index),
-            focused,
+            RowState {
+                selected: selected(index),
+                focused,
+            },
             &ranges,
         );
         for (offset, line) in rendered.into_iter().enumerate() {
@@ -425,41 +447,45 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
     render_scope_crumb(frame, crumb_area, theme, diff.scopes.get(&file.path), top);
 }
 
-#[allow(clippy::too_many_arguments)]
 /// Terminal rows a split row occupies at `width`; only pairs can wrap.
-fn split_row_height(file: &FileDiff, row: &SplitRow, gutter: usize, width: u16) -> usize {
+fn split_row_height(file_ctx: SplitFileCtx<'_>, row: &SplitRow, width: u16) -> usize {
     let SplitRow::Pair { hunk, left, right } = *row else {
         return 1;
     };
-    let Some(hunk) = file.hunks.get(hunk) else {
+    let Some(hunk) = file_ctx.file.hunks.get(hunk) else {
         return 1;
     };
     split_pair_height(
         left.and_then(|i| hunk.lines.get(i)),
         right.and_then(|i| hunk.lines.get(i)),
-        gutter,
+        file_ctx.gutter,
         width,
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn split_row_lines(
-    theme: &Theme,
-    highlighter: &diffler_core::highlight::Highlighter,
-    session: &Session,
-    file: &FileDiff,
-    highlights: Option<&FileHighlights>,
-    gutter: usize,
+    ctx: &RenderCtx<'_>,
+    file_ctx: SplitFileCtx<'_>,
     width: u16,
     row: &SplitRow,
-    on_cursor: bool,
-    focused: bool,
+    state: RowState,
     cursor_side: Option<SplitSide>,
     composer: Option<&Composer>,
 ) -> Vec<Line<'static>> {
+    let SplitFileCtx {
+        file,
+        highlights,
+        gutter,
+    } = file_ctx;
     match *row {
         SplitRow::Hunk { hunk } => match file.hunks.get(hunk) {
-            Some(hunk) => vec![hunk_header(theme, hunk, width, on_cursor, focused)],
+            Some(hunk) => vec![hunk_header(
+                ctx.theme,
+                hunk,
+                width,
+                state.selected,
+                state.focused,
+            )],
             None => vec![Line::default()],
         },
         SplitRow::Pair { hunk, left, right } => {
@@ -471,45 +497,43 @@ fn split_row_lines(
                     (
                         line,
                         highlights.and_then(|hl| split_side_syntax(hl, line, side)),
-                        line_annotated(session, &file.path, line),
+                        line_annotated(ctx.session, &file.path, line),
                     )
                 })
             };
-            let sel_left = on_cursor && !matches!(cursor_side, Some(SplitSide::Right));
-            let sel_right = on_cursor && !matches!(cursor_side, Some(SplitSide::Left));
+            let sel_left = state.selected && !matches!(cursor_side, Some(SplitSide::Right));
+            let sel_right = state.selected && !matches!(cursor_side, Some(SplitSide::Left));
             render_split_pair(
-                theme,
+                ctx.theme,
                 cell(left, SplitSide::Left),
                 cell(right, SplitSide::Right),
                 gutter,
                 width,
-                sel_left,
-                sel_right,
-                focused,
+                PairSelection {
+                    left: sel_left,
+                    right: sel_right,
+                    focused: state.focused,
+                },
             )
         }
         SplitRow::Comment {
             comment,
             line,
             outdated,
-        } => match session.comments.get(comment) {
+        } => match ctx.session.comments.get(comment) {
             Some(comment) => {
-                vec![comment_row_line(
-                    theme,
-                    highlighter,
-                    comment,
-                    line,
-                    outdated,
-                    width,
-                    on_cursor,
-                    focused,
-                )]
+                vec![comment_row_line(ctx, comment, line, outdated, width, state)]
             }
             None => vec![Line::default()],
         },
         SplitRow::Composer { line } => match composer {
             Some(composer) => vec![composer_row_line(
-                theme, composer, line, width, on_cursor, focused,
+                ctx.theme,
+                composer,
+                line,
+                width,
+                state.selected,
+                state.focused,
             )],
             None => vec![Line::default()],
         },
@@ -593,17 +617,15 @@ fn tree_lead(theme: &Theme, depth: usize, bg: Color, on_cursor: bool) -> Span<'s
 }
 
 /// A directory row: indent, fold arrow, and the dim directory name.
-#[allow(clippy::too_many_arguments)]
-fn sidebar_dir_line(
-    theme: &Theme,
-    name: &str,
-    folded: bool,
-    depth: usize,
-    width: u16,
-    on_cursor: bool,
-    focused: bool,
-    search: &[(std::ops::Range<usize>, bool)],
-) -> Line<'static> {
+fn sidebar_dir_line(rc: &TreeRowCtx<'_>, name: &str, folded: bool) -> Line<'static> {
+    let &TreeRowCtx {
+        theme,
+        depth,
+        width,
+        on_cursor,
+        focused,
+        search,
+    } = rc;
     let bg = sidebar_row_bg(theme, on_cursor, focused);
     let arrow = if folded { "▸ " } else { "▾ " };
     let name_style = Style::new()
@@ -645,19 +667,21 @@ fn sidebar_section_line(
 /// A file row: indent, status glyph (colored), basename, then the viewed and
 /// comment-count marks and the `+A -B` diffstat. The diffstat is dropped first
 /// when the sidebar is too narrow to keep the name and marks legible.
-#[allow(clippy::too_many_arguments)]
 fn sidebar_file_line(
-    theme: &Theme,
+    rc: &TreeRowCtx<'_>,
     file: &FileDiff,
     name: &str,
     viewed: bool,
     open: usize,
-    depth: usize,
-    width: u16,
-    on_cursor: bool,
-    focused: bool,
-    search: &[(std::ops::Range<usize>, bool)],
 ) -> Line<'static> {
+    let &TreeRowCtx {
+        theme,
+        depth,
+        width,
+        on_cursor,
+        focused,
+        search,
+    } = rc;
     let bg = sidebar_row_bg(theme, on_cursor, focused);
     let dim = Style::new().fg(theme.dim).bg(bg);
     let glyph = file.status.glyph();
@@ -781,25 +805,26 @@ fn row_height(model: &DiffModel, row: &DiffRow, width: u16) -> usize {
         .unwrap_or(1)
 }
 
-// mirrors render_diff_line's orthogonal styling inputs plus the search ranges
-#[allow(clippy::too_many_arguments)]
 fn row_lines(
-    theme: &Theme,
-    highlighter: &diffler_core::highlight::Highlighter,
-    session: &Session,
+    ctx: &RenderCtx<'_>,
     model: &DiffModel,
     diff: &DiffView,
     row: &DiffRow,
     width: u16,
-    selected: bool,
-    focused: bool,
+    state: RowState,
     search: &[(std::ops::Range<usize>, bool)],
 ) -> Vec<Line<'static>> {
     let highlights = &diff.highlights;
     match row {
         DiffRow::Hunk { file, hunk } => {
             match model.files.get(*file).and_then(|f| f.hunks.get(*hunk)) {
-                Some(hunk) => vec![hunk_header(theme, hunk, width, selected, focused)],
+                Some(hunk) => vec![hunk_header(
+                    ctx.theme,
+                    hunk,
+                    width,
+                    state.selected,
+                    state.focused,
+                )],
                 None => vec![Line::default()],
             }
         }
@@ -813,16 +838,18 @@ fn row_lines(
             let syntax = highlights
                 .get(&file.path)
                 .and_then(|cached| line_syntax(&cached.old, &cached.new, line));
-            let annotated = line_annotated(session, &file.path, line);
+            let annotated = line_annotated(ctx.session, &file.path, line);
             render_diff_line(
-                theme,
+                ctx.theme,
                 line,
                 syntax,
                 file_gutter_width(file),
                 width,
-                selected,
-                focused,
-                annotated,
+                LineFlags {
+                    selected: state.selected,
+                    focused: state.focused,
+                    annotated,
+                },
                 search,
             )
         }
@@ -830,24 +857,22 @@ fn row_lines(
             comment,
             line,
             outdated,
-        } => match session.comments.get(*comment) {
+        } => match ctx.session.comments.get(*comment) {
             Some(comment) => {
                 vec![comment_row_line(
-                    theme,
-                    highlighter,
-                    comment,
-                    *line,
-                    *outdated,
-                    width,
-                    selected,
-                    focused,
+                    ctx, comment, *line, *outdated, width, state,
                 )]
             }
             None => vec![Line::default()],
         },
         DiffRow::Composer { line } => match diff.composer.as_ref() {
             Some(composer) => vec![composer_row_line(
-                theme, composer, *line, width, selected, focused,
+                ctx.theme,
+                composer,
+                *line,
+                width,
+                state.selected,
+                state.focused,
             )],
             None => vec![Line::default()],
         },
@@ -972,19 +997,17 @@ fn pane_header_line(
     pad_line(spans, bg, width)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn comment_row_line(
-    theme: &Theme,
-    highlighter: &diffler_core::highlight::Highlighter,
+    ctx: &RenderCtx<'_>,
     comment: &Comment,
     line: usize,
     outdated: bool,
     width: u16,
-    selected: bool,
-    focused: bool,
+    state: RowState,
 ) -> Line<'static> {
-    let bg = if selected {
-        cursor_band(theme, theme.bg, focused)
+    let theme = ctx.theme;
+    let bg = if state.selected {
+        cursor_band(theme, theme.bg, state.focused)
     } else {
         theme.bg
     };
@@ -998,7 +1021,7 @@ fn comment_row_line(
     let bar = Span::styled("  ▌ ".to_owned(), Style::new().fg(accent).bg(bg));
     let dim = Style::new().fg(theme.dim).bg(bg);
     let fg = Style::new().fg(theme.fg).bg(bg);
-    let lines = comment_display(comment, width, Some(highlighter));
+    let lines = comment_display(comment, width, Some(ctx.highlighter));
     let Some(part) = lines.get(line) else {
         return Line::default();
     };
@@ -1740,18 +1763,15 @@ mod tests {
             .cloned()
             .expect("src/lib.rs present");
         // a wide row so the name is not clipped; "lib" is bytes 0..3 of "lib.rs"
-        let spans = super::sidebar_file_line(
-            &app.theme,
-            &file,
-            "lib.rs",
-            false,
-            0,
-            0,
-            80,
-            false,
-            true,
-            &[(0..3, true)],
-        );
+        let rc = super::TreeRowCtx {
+            theme: &app.theme,
+            depth: 0,
+            width: 80,
+            on_cursor: false,
+            focused: true,
+            search: &[(0..3, true)],
+        };
+        let spans = super::sidebar_file_line(&rc, &file, "lib.rs", false, 0);
         let highlighted: Vec<&str> = spans
             .iter()
             .filter(|s| s.style.bg == Some(app.theme.search_current))

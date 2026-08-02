@@ -55,9 +55,11 @@ pub fn render_hunk_lines(
             per_line,
             gutter,
             width,
-            selected == Some(index + 1),
-            true,
-            false,
+            LineFlags {
+                selected: selected == Some(index + 1),
+                focused: true,
+                annotated: false,
+            },
             &[],
         )
     }));
@@ -194,23 +196,31 @@ pub fn diff_line_height(line: &DiffLine, gutter: usize, width: u16) -> usize {
     greedy_rows(char_widths(&line.text), budget)
 }
 
+/// A diff line's selection/annotation state, orthogonal to its content.
+#[derive(Clone, Copy)]
+pub struct LineFlags {
+    pub selected: bool,
+    pub focused: bool,
+    pub annotated: bool,
+}
+
 /// Render one diff line: gutter numbers, then the text composited from the
 /// optional per-line syntax spans (fg) and the line's emphasis ranges (bg).
 /// Text wider than the pane wraps onto continuation rows under a blank gutter.
-// orthogonal styling inputs (gutter, selection, annotation, search ranges); a
-// params struct would not read more clearly
-#[allow(clippy::too_many_arguments)]
 pub fn render_diff_line(
     theme: &Theme,
     line: &DiffLine,
     syntax: Option<&[StyledRange]>,
     gutter: usize,
     width: u16,
-    selected: bool,
-    focused: bool,
-    annotated: bool,
+    flags: LineFlags,
     search: &[(Range<usize>, bool)],
 ) -> Vec<Line<'static>> {
+    let LineFlags {
+        selected,
+        focused,
+        annotated,
+    } = flags;
     let (base_bg, emph_bg) = line_backgrounds(theme, line, selected, focused, annotated);
 
     let number = |n: Option<u32>| match n {
@@ -370,16 +380,23 @@ pub fn split_pair_height(
     side(left, left_w).max(side(right, right_w))
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Which side of a split row is under the cursor, and whether the pane holds
+/// focus. `left`/`right` and `focused` are independent: only the cursor's side
+/// carries `left`/`right`, both keep `focused` for how bright that reads.
+#[derive(Clone, Copy)]
+pub struct PairSelection {
+    pub left: bool,
+    pub right: bool,
+    pub focused: bool,
+}
+
 pub fn render_split_pair(
     theme: &Theme,
     left: SplitCell<'_>,
     right: SplitCell<'_>,
     gutter: usize,
     width: u16,
-    sel_left: bool,
-    sel_right: bool,
-    focused: bool,
+    selection: PairSelection,
 ) -> Vec<Line<'static>> {
     let total = width as usize;
     let left_w = total.saturating_sub(1) / 2;
@@ -390,8 +407,8 @@ pub fn render_split_pair(
         SplitSide::Left,
         gutter,
         left_w,
-        sel_left,
-        focused,
+        selection.left,
+        selection.focused,
     );
     let mut right_rows = side_rows(
         theme,
@@ -399,23 +416,23 @@ pub fn render_split_pair(
         SplitSide::Right,
         gutter,
         right_w,
-        sel_right,
-        focused,
+        selection.right,
+        selection.focused,
     );
     let rows = left_rows.len().max(right_rows.len());
     let filler = |cell: SplitCell<'_>, selected: bool, col_width: usize| {
         let bg = match cell {
-            Some((line, ..)) => line_backgrounds(theme, line, selected, focused, false).0,
-            None if selected => cursor_band(theme, theme.panel, focused),
+            Some((line, ..)) => line_backgrounds(theme, line, selected, selection.focused, false).0,
+            None if selected => cursor_band(theme, theme.panel, selection.focused),
             None => theme.panel,
         };
         vec![Span::styled(" ".repeat(col_width), Style::new().bg(bg))]
     };
     while left_rows.len() < rows {
-        left_rows.push(filler(left, sel_left, left_w));
+        left_rows.push(filler(left, selection.left, left_w));
     }
     while right_rows.len() < rows {
-        right_rows.push(filler(right, sel_right, right_w));
+        right_rows.push(filler(right, selection.right, right_w));
     }
     left_rows
         .into_iter()
@@ -639,6 +656,14 @@ mod tests {
         DiffLine::new(kind, old, new, text.to_owned())
     }
 
+    fn focused_flags() -> LineFlags {
+        LineFlags {
+            selected: false,
+            focused: true,
+            annotated: false,
+        }
+    }
+
     fn sample_hunk() -> Hunk {
         let mut deleted = line(LineKind::Deleted, Some(2), None, "    41");
         deleted.emphasis.push(5..6);
@@ -764,7 +789,12 @@ mod tests {
         let theme = Theme::github_dark();
         let mut added = line(LineKind::Added, None, Some(1), "let x = 42;");
         added.emphasis.push(8..10);
-        let rendered = render_diff_line(&theme, &added, None, 4, 60, true, false, false, &[]);
+        let flags = LineFlags {
+            selected: true,
+            focused: false,
+            annotated: false,
+        };
+        let rendered = render_diff_line(&theme, &added, None, 4, 60, flags, &[]);
         let emphasized: String = rendered[0]
             .spans
             .iter()
@@ -846,9 +876,11 @@ mod tests {
             Some(&syntax),
             4,
             60,
-            false,
-            true,
-            false,
+            LineFlags {
+                selected: false,
+                focused: true,
+                annotated: false,
+            },
             &[],
         );
         assert_eq!(rendered.len(), 1, "short line stays one row");
@@ -876,7 +908,7 @@ mod tests {
         // reindents/moves included: there is no in-between render state
         let theme = Theme::github_dark();
         let reindented = line(LineKind::Added, None, Some(2), "    <Form>");
-        let rendered = render_diff_line(&theme, &reindented, None, 3, 60, false, true, false, &[]);
+        let rendered = render_diff_line(&theme, &reindented, None, 3, 60, focused_flags(), &[]);
         assert!(
             rendered[0]
                 .spans
@@ -892,7 +924,7 @@ mod tests {
         let text = "x".repeat(100);
         let long = line(LineKind::Added, None, Some(2), &text);
         let width = 40u16;
-        let rendered = render_diff_line(&theme, &long, None, 4, width, false, true, false, &[]);
+        let rendered = render_diff_line(&theme, &long, None, 4, width, focused_flags(), &[]);
         assert_eq!(rendered.len(), diff_line_height(&long, 4, width));
         assert!(rendered.len() > 1, "100 columns cannot fit in 40");
         for row in &rendered {
@@ -935,7 +967,7 @@ mod tests {
         let theme = Theme::github_dark();
         let cjk = line(LineKind::Added, None, Some(2), &"あ".repeat(5));
         for width in [14u16, 15, 16, 40] {
-            let rendered = render_diff_line(&theme, &cjk, None, 4, width, false, true, false, &[]);
+            let rendered = render_diff_line(&theme, &cjk, None, 4, width, focused_flags(), &[]);
             assert_eq!(
                 rendered.len(),
                 diff_line_height(&cjk, 4, width),
@@ -943,7 +975,7 @@ mod tests {
             );
         }
         let long = line(LineKind::Added, None, Some(2), &"あ".repeat(441));
-        let rendered = render_diff_line(&theme, &long, None, 4, 100, false, true, false, &[]);
+        let rendered = render_diff_line(&theme, &long, None, 4, 100, focused_flags(), &[]);
         assert_eq!(rendered.len(), diff_line_height(&long, 4, 100));
     }
 

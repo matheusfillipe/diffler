@@ -96,16 +96,12 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16, Vec<Option<usize>>) 
                     index += 1;
                     continue;
                 };
-                index += hunk_block(
-                    app,
-                    file_diff,
-                    hunk,
-                    index,
-                    area.width,
-                    &mut lines,
-                    &mut line_rows,
-                    &mut cursor_line_index,
-                );
+                let mut accum = BodyAccum {
+                    lines: &mut lines,
+                    line_rows: &mut line_rows,
+                    cursor_line_index: &mut cursor_line_index,
+                };
+                index += hunk_block(app, file_diff, hunk, index, area.width, &mut accum);
             }
             row => {
                 if index > 0
@@ -138,18 +134,23 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16, Vec<Option<usize>>) 
     (lines, scroll, line_rows)
 }
 
+/// The body's growing output: rendered lines, their line->row table, and the
+/// screen line the cursor row starts at, threaded through the row loop.
+struct BodyAccum<'a> {
+    lines: &'a mut Vec<Line<'static>>,
+    line_rows: &'a mut Vec<Option<usize>>,
+    cursor_line_index: &'a mut usize,
+}
+
 /// Append one expanded hunk (header + wrapped diff lines) with its
 /// line->row table entries; returns how many rows the block spans.
-#[allow(clippy::too_many_arguments)]
 fn hunk_block(
     app: &App,
     file_diff: &FileDiff,
     hunk: &diffler_core::model::Hunk,
     index: usize,
     width: u16,
-    lines: &mut Vec<Line<'static>>,
-    line_rows: &mut Vec<Option<usize>>,
-    cursor_line_index: &mut usize,
+    accum: &mut BodyAccum<'_>,
 ) -> usize {
     let span = 1 + hunk.lines.len();
     let selected = app
@@ -169,7 +170,7 @@ fn hunk_block(
         .collect();
     if let Some(offset) = selected {
         let above: usize = heights.iter().take(offset).sum();
-        *cursor_line_index = lines.len() + above;
+        *accum.cursor_line_index = accum.lines.len() + above;
     }
     // enrichment lands asynchronously: the hash in the key ties the spans
     // to the exact content they were computed from
@@ -178,8 +179,10 @@ fn hunk_block(
         .highlights
         .get(&(file_diff.path.clone(), file_diff.sides_hash()))
         .map(|cached| (cached.old.as_slice(), cached.new.as_slice()));
-    lines.extend(render_hunk_lines(&app.theme, hunk, syntax, width, selected));
-    line_rows.extend(
+    accum
+        .lines
+        .extend(render_hunk_lines(&app.theme, hunk, syntax, width, selected));
+    accum.line_rows.extend(
         heights
             .iter()
             .enumerate()
