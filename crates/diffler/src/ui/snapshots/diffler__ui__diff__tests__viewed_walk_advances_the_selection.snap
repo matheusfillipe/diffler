@@ -6,7 +6,7 @@ expression: render(&mut app).backend()
 " Files                           Diff                                                                                   "
 " ▾ src                           untracked todo.md                                                           +1 -0 █████"
 "   M lib.rs ✓             +1 -1  @@ -0,0 +1,1 @@                                                                        "
-" A ci.yml ✓               +1 -0          1 - [ ] review                                                                 "
+" A ci.yml ✓               +1 -0 ▌        1 - [ ] review                                                                 "
 "▌? todo.md                +1 -0                                                                                         "
 "                                                                                                                        "
 "                                                                                                                        "

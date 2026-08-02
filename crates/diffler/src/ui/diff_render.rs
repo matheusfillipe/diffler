@@ -270,8 +270,14 @@ fn line_backgrounds(
     (base_bg, emph_bg)
 }
 
-fn rail(_line: &DiffLine) -> &'static str {
-    " "
+/// The reserved leading cell: a bar on a changed line, blank on context.
+/// [`rail_color`] already tints it, so the kind of a line reads from the
+/// margin even where the background tint is washed out.
+fn rail(line: &DiffLine) -> &'static str {
+    match line.kind {
+        LineKind::Added | LineKind::Deleted => "▌",
+        LineKind::Context => " ",
+    }
 }
 
 fn rail_color(theme: &Theme, line: &DiffLine) -> Color {

@@ -7,7 +7,7 @@ expression: render(&mut app).backend()
 "▌? dirty.rs               +1 -0  untracked dirty.rs                                                          +1 -0 █████"
 " A landed.rs              +3 -0  dirty                                                                                  "
 "                                 @@ -0,0 +1,1 @@                                                                        "
-"                                         1 pub fn dirty() {}                                                            "
+"                                ▌        1 pub fn dirty() {}                                                            "
 "                                                                                                                        "
 "                                                                                                                        "
 "                                                                                                                        "
