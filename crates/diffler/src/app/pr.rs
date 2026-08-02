@@ -1138,7 +1138,7 @@ mod tests {
                 KeyModifiers::NONE,
             )));
         };
-        press(&mut app, KeyCode::Char(']'));
+        press(&mut app, KeyCode::Char('}'));
         press(&mut app, KeyCode::Char('r'));
         let kinds: Vec<String> = app
             .diff

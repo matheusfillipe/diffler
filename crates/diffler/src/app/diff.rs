@@ -2231,7 +2231,7 @@ mod tests {
     }
 
     #[test]
-    fn bracket_keys_walk_between_comments() {
+    fn brace_keys_walk_between_comments() {
         let fixture = two_hunk_fixture();
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         let anchor = |line: u32| Anchor {
@@ -2259,18 +2259,18 @@ mod tests {
                 Some(DiffRow::Comment { line: 0, .. })
             )
         };
-        app.handle(key(']'));
-        assert!(on_header(&app), "] lands on a comment header");
+        app.handle(key('}'));
+        assert!(on_header(&app), "}} lands on a comment header");
         let first = app.diff.as_ref().unwrap().cursor;
-        app.handle(key(']'));
+        app.handle(key('}'));
         assert!(on_header(&app));
         let second = app.diff.as_ref().unwrap().cursor;
-        assert!(second > first, "] advances to the next comment");
-        app.handle(key('['));
+        assert!(second > first, "}} advances to the next comment");
+        app.handle(key('{'));
         assert_eq!(
             app.diff.as_ref().unwrap().cursor,
             first,
-            "[ returns to the previous comment"
+            "{{ returns to the previous comment"
         );
     }
 
@@ -3002,12 +3002,12 @@ mod tests {
         // the cursor starts on the first hunk header (no file row precedes it)
         let first = app.diff.as_ref().unwrap().cursor;
         assert!(matches!(rows(&app)[first], DiffRow::Hunk { hunk: 0, .. }));
-        app.handle(key('}'));
+        app.handle(key(']'));
         assert!(matches!(
             rows(&app)[app.diff.as_ref().unwrap().cursor],
             DiffRow::Hunk { hunk: 1, .. }
         ));
-        app.handle(key('{'));
+        app.handle(key('['));
         assert_eq!(app.diff.as_ref().unwrap().cursor, first);
     }
 

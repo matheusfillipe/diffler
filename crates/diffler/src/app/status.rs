@@ -1454,14 +1454,14 @@ mod tests {
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         cursor_to(&mut app, file_row_in(Section::Unstaged));
         app.handle(key('\t'));
-        app.handle(key('}'));
+        app.handle(key(']'));
         let first = app.status.cursor;
         assert!(is_hunk_header(&app.visible_rows()[first]));
-        app.handle(key('}'));
+        app.handle(key(']'));
         let second = app.status.cursor;
         assert!(second > first, "second hunk header is further down");
         assert!(is_hunk_header(&app.visible_rows()[second]));
-        app.handle(key('{'));
+        app.handle(key('['));
         assert_eq!(app.status.cursor, first);
     }
 
@@ -1562,7 +1562,7 @@ mod tests {
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         cursor_to(&mut app, file_row_in(Section::Unstaged));
         app.handle(key('\t'));
-        app.handle(key('}'));
+        app.handle(key(']'));
         assert!(is_hunk_header(&app.visible_rows()[app.status.cursor]));
         app.handle(key('s'));
         app.settle_refresh();
