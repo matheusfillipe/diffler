@@ -379,12 +379,12 @@ impl CreatePrForm<'_> {
         ));
 
         let width = CREATE_PR_WIDTH.min(frame.area().width);
-        let height = (lines.len() as u16 + 2).min(frame.area().height);
+        let height = (lines.len() as u16 + 1).min(frame.area().height);
         let area = floating(frame, theme, width, height);
         frame.render_widget(
             Paragraph::new(lines)
                 .style(Style::new().fg(theme.fg).bg(theme.panel))
-                .block(bordered_block(theme, " Create pull request ")),
+                .block(dialog_block(theme, " Create pull request ", Borders::TOP)),
             area,
         );
     }
@@ -400,7 +400,7 @@ impl ConfirmDialog {
     pub fn render(&self, frame: &mut Frame<'_>, theme: &Theme) {
         let width = (self.message.len() as u16 + 4).clamp(24, frame.area().width);
         let area = floating(frame, theme, width, 4);
-        let block = bordered_block(theme, " Confirm ");
+        let block = dialog_block(theme, " Confirm ", Borders::ALL);
         let body = vec![
             Line::styled(
                 self.message.clone(),
@@ -449,10 +449,10 @@ impl InputModal {
             "enter submit  ·  a-enter newline  ·  esc cancel",
             Style::new().fg(theme.dim).bg(theme.panel),
         ));
-        // +2 for the borders
-        let height = lines.len() as u16 + 2;
+        // +1 for the top rule carrying the title
+        let height = lines.len() as u16 + 1;
         let area = floating(frame, theme, box_w, height);
-        let block = bordered_block(theme, &format!(" {} ", self.title));
+        let block = dialog_block(theme, &format!(" {} ", self.title), Borders::TOP);
         frame.render_widget(
             Paragraph::new(lines)
                 .style(Style::new().fg(theme.fg).bg(theme.panel))
@@ -565,8 +565,8 @@ impl FuzzyModal {
             + 4;
         let max_rows = (frame.area().height.saturating_sub(6) as usize).max(1);
         let visible = self.items.len().min(max_rows);
-        // +4: borders, the query line, and the footer
-        let height = visible as u16 + 4;
+        // +3: the top rule, the query line, and the footer
+        let height = visible as u16 + 3;
         let width = width.min(frame.area().width);
         let area = floating(frame, theme, width, height);
 
@@ -619,14 +619,22 @@ impl FuzzyModal {
         frame.render_widget(
             Paragraph::new(lines)
                 .style(Style::new().fg(theme.fg).bg(theme.panel))
-                .block(bordered_block(theme, &format!(" {} ", self.title))),
+                .block(dialog_block(
+                    theme,
+                    &format!(" {} ", self.title),
+                    Borders::TOP,
+                )),
             area,
         );
     }
 }
 
-fn bordered_block(theme: &Theme, title: &str) -> Block<'static> {
-    Block::bordered()
+/// A floating dialog's frame. Most carry a single top rule under their
+/// title, the way the which-key panel does; the confirm dialog keeps a full
+/// box because a question that blocks the keyboard should look enclosed.
+fn dialog_block(theme: &Theme, title: &str, borders: Borders) -> Block<'static> {
+    Block::new()
+        .borders(borders)
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(theme.border).bg(theme.panel))
         .title(Span::styled(
