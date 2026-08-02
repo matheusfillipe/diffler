@@ -4,7 +4,7 @@
 use diffler_core::model::FileDiff;
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
@@ -300,10 +300,7 @@ fn header_spans(
     folded: bool,
     search: &[(Range<usize>, bool)],
 ) -> Vec<Span<'static>> {
-    let title_style = Style::new()
-        .fg(theme.accent)
-        .bg(theme.bg)
-        .add_modifier(Modifier::BOLD);
+    let title_style = Style::new().fg(theme.accent).bg(theme.bg);
     let mut spans = vec![Span::styled(
         if folded { " ▸ " } else { " ▾ " },
         theme.dim_style(),
@@ -705,6 +702,42 @@ mod tests {
         let fixture = standard_fixture();
         let mut app = app_for(&fixture);
         insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    /// Weight is reserved for content that is itself bold: markdown emphasis
+    /// and syntax keywords. Chrome says what it is with colour.
+    #[test]
+    fn no_chrome_on_the_status_screen_reaches_for_bold() {
+        let fixture = standard_fixture();
+        let mut app = app_for(&fixture);
+        let terminal = render(&mut app);
+        let buffer = terminal.backend().buffer();
+        let bold: Vec<String> = buffer
+            .content()
+            .iter()
+            .filter(|cell| cell.modifier.contains(ratatui::style::Modifier::BOLD))
+            .map(|cell| cell.symbol().to_owned())
+            .collect();
+        assert!(bold.is_empty(), "bold chrome: {bold:?}");
+    }
+
+    #[test]
+    fn no_chrome_in_the_command_palette_reaches_for_bold() {
+        let fixture = standard_fixture();
+        let mut app = app_for(&fixture);
+        app.handle(crate::test_support::ctrl_key('k'));
+        let terminal = render(&mut app);
+        let buffer = terminal.backend().buffer();
+        assert!(
+            terminal.backend().to_string().contains("Commands"),
+            "the palette is open"
+        );
+        let bold = buffer
+            .content()
+            .iter()
+            .filter(|cell| cell.modifier.contains(ratatui::style::Modifier::BOLD))
+            .count();
+        assert_eq!(bold, 0, "bold chrome in the palette");
     }
 
     #[test]

@@ -623,8 +623,7 @@ fn sidebar_section_line(
     let arrow = if folded { "▸ " } else { "▾ " };
     let label_style = Style::new()
         .fg(if on_cursor { theme.accent } else { theme.fg })
-        .bg(bg)
-        .add_modifier(Modifier::BOLD);
+        .bg(bg);
     let spans = vec![
         tree_lead(theme, 0, bg, on_cursor),
         Span::styled(arrow.to_owned(), Style::new().fg(theme.dim).bg(bg)),
@@ -923,10 +922,7 @@ fn pane_header_line(
     let mut spans = vec![Span::styled(format!(" {mode:<10}"), dim)];
     spans.push(Span::styled(
         file.path.clone(),
-        Style::new()
-            .fg(theme.accent)
-            .bg(bg)
-            .add_modifier(Modifier::BOLD),
+        Style::new().fg(theme.accent).bg(bg),
     ));
     if file.binary {
         spans.push(Span::styled(" (binary)".to_owned(), dim));
@@ -995,18 +991,9 @@ fn comment_row_line(
         CommentLine::Header => {
             let mut spans = vec![
                 bar,
-                Span::styled(
-                    comment.author.clone(),
-                    Style::new()
-                        .fg(theme.purple)
-                        .bg(bg)
-                        .add_modifier(Modifier::BOLD),
-                ),
+                Span::styled(comment.author.clone(), Style::new().fg(theme.purple).bg(bg)),
                 Span::styled(" · ".to_owned(), dim),
-                Span::styled(
-                    status_label.to_owned(),
-                    Style::new().fg(accent).bg(bg).add_modifier(Modifier::BOLD),
-                ),
+                Span::styled(status_label.to_owned(), Style::new().fg(accent).bg(bg)),
             ];
             if outdated {
                 spans.push(Span::styled(

@@ -45,10 +45,7 @@ impl Popup {
             .border_style(Style::new().fg(theme.border).bg(theme.panel))
             .title(Span::styled(
                 format!(" {} ", self.title),
-                Style::new()
-                    .fg(theme.accent)
-                    .bg(theme.panel)
-                    .add_modifier(Modifier::BOLD),
+                Style::new().fg(theme.accent).bg(theme.panel),
             ));
         frame.render_widget(
             Paragraph::new(lines)
@@ -59,10 +56,7 @@ impl Popup {
     }
 
     fn lines(&self, theme: &Theme, body_rows: usize) -> Vec<Line<'static>> {
-        let key_style = Style::new()
-            .fg(theme.purple)
-            .bg(theme.panel)
-            .add_modifier(Modifier::BOLD);
+        let key_style = Style::new().fg(theme.purple).bg(theme.panel);
         let dim = Style::new().fg(theme.dim).bg(theme.panel);
         let fg = Style::new().fg(theme.fg).bg(theme.panel);
 
@@ -251,10 +245,7 @@ fn render_bands(
     bands: &[Vec<usize>],
     theme: &Theme,
 ) -> Vec<Line<'static>> {
-    let key_style = Style::new()
-        .fg(theme.purple)
-        .bg(theme.panel)
-        .add_modifier(Modifier::BOLD);
+    let key_style = Style::new().fg(theme.purple).bg(theme.panel);
     let dim = Style::new().fg(theme.dim).bg(theme.panel);
     let fg = Style::new().fg(theme.fg).bg(theme.panel);
     let sep = " ".repeat(WHICH_KEY_COL_SPACING);
@@ -359,10 +350,7 @@ impl CreatePrForm<'_> {
             let picked = field == draft.field;
             let marker = if picked { "▌" } else { " " };
             let value_style = if picked {
-                Style::new()
-                    .fg(theme.fg)
-                    .bg(theme.panel)
-                    .add_modifier(Modifier::BOLD)
+                Style::new().fg(theme.fg).bg(theme.panel)
             } else {
                 fg
             };
@@ -639,10 +627,7 @@ fn dialog_block(theme: &Theme, title: &str, borders: Borders) -> Block<'static> 
         .border_style(Style::new().fg(theme.border).bg(theme.panel))
         .title(Span::styled(
             title.to_owned(),
-            Style::new()
-                .fg(theme.accent)
-                .bg(theme.panel)
-                .add_modifier(Modifier::BOLD),
+            Style::new().fg(theme.accent).bg(theme.panel),
         ))
 }
 
