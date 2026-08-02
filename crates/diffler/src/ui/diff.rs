@@ -13,6 +13,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
+use crate::app::composer::{Composer, ComposerKind, ComposerLine};
 use crate::app::markdown::MdSpan;
 use crate::app::{
     App, CommentLine, DiffRow, DiffView, FileHighlights, FileScope, Pane, SplitRow, SplitSide,
@@ -319,6 +320,7 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
                 index == sel,
                 focused,
                 side,
+                diff.composer.as_ref(),
             );
             for (offset, line) in rendered.into_iter().enumerate() {
                 let at = start + offset;
@@ -453,6 +455,7 @@ fn split_row_lines(
     on_cursor: bool,
     focused: bool,
     cursor_side: Option<SplitSide>,
+    composer: Option<&Composer>,
 ) -> Vec<Line<'static>> {
     match *row {
         SplitRow::Hunk { hunk } => match file.hunks.get(hunk) {
@@ -502,6 +505,12 @@ fn split_row_lines(
                     focused,
                 )]
             }
+            None => vec![Line::default()],
+        },
+        SplitRow::Composer { line } => match composer {
+            Some(composer) => vec![composer_row_line(
+                theme, composer, line, width, on_cursor, focused,
+            )],
             None => vec![Line::default()],
         },
     }
@@ -836,6 +845,12 @@ fn row_lines(
             }
             None => vec![Line::default()],
         },
+        DiffRow::Composer { line } => match diff.composer.as_ref() {
+            Some(composer) => vec![composer_row_line(
+                theme, composer, *line, width, selected, focused,
+            )],
+            None => vec![Line::default()],
+        },
     }
 }
 
@@ -1031,6 +1046,77 @@ fn comment_row_line(
         )],
     };
     pad_line(spans, bg, width)
+}
+
+/// The open composer, drawn as the card it is about to become: same bar, same
+/// wrap, with the caret shown as a reversed cell so the writer sees where the
+/// next character lands.
+fn composer_row_line(
+    theme: &Theme,
+    composer: &Composer,
+    line: usize,
+    width: u16,
+    selected: bool,
+    focused: bool,
+) -> Line<'static> {
+    let bg = if selected {
+        cursor_band(theme, theme.bg, focused)
+    } else {
+        theme.bg
+    };
+    let accent = theme.accent;
+    let bar = Span::styled("  ▌ ".to_owned(), Style::new().fg(accent).bg(bg));
+    let dim = Style::new().fg(theme.dim).bg(bg);
+    let fg = Style::new().fg(theme.fg).bg(bg);
+    let lines = composer.display(width);
+    let Some(part) = lines.get(line) else {
+        return Line::default();
+    };
+    let spans = match part {
+        ComposerLine::Header => vec![
+            bar,
+            Span::styled(composer_title(composer), Style::new().fg(accent).bg(bg)),
+        ],
+        ComposerLine::Body { text, cursor } => {
+            let mut spans = vec![bar];
+            let Some(column) = *cursor else {
+                spans.push(Span::styled(text.clone(), fg));
+                return pad_line(spans, bg, width);
+            };
+            let head: String = text.chars().take(column).collect();
+            let under = text.chars().nth(column).unwrap_or(' ');
+            let tail: String = text.chars().skip(column + 1).collect();
+            spans.push(Span::styled(head, fg));
+            spans.push(Span::styled(
+                under.to_string(),
+                fg.add_modifier(Modifier::REVERSED),
+            ));
+            spans.push(Span::styled(tail, fg));
+            spans
+        }
+        ComposerLine::Footer => vec![
+            Span::styled("  ▌ ".to_owned(), Style::new().fg(accent).bg(bg)),
+            Span::styled("enter".to_owned(), fg),
+            Span::styled(" submit · ".to_owned(), dim),
+            Span::styled("a-enter".to_owned(), fg),
+            Span::styled(" newline · ".to_owned(), dim),
+            Span::styled("esc".to_owned(), fg),
+            Span::styled(" cancel".to_owned(), dim),
+        ],
+    };
+    pad_line(spans, bg, width)
+}
+
+fn composer_title(composer: &Composer) -> String {
+    match &composer.kind {
+        ComposerKind::New { anchor } => match (anchor.line, anchor.line_end) {
+            (Some(line), Some(end)) => format!("comment on {}:{line}-{end}", anchor.file),
+            (Some(line), None) => format!("comment on {}:{line}", anchor.file),
+            _ => format!("comment on {}", anchor.file),
+        },
+        ComposerKind::Reply { .. } => "reply".to_owned(),
+        ComposerKind::Edit { .. } => "editing".to_owned(),
+    }
 }
 
 /// Map a markdown run's flags onto `base` (the body foreground over the card
@@ -1583,7 +1669,7 @@ mod tests {
         let (x, y0, ..) = first_two_pane_lines(&app);
         app.handle(mouse_click(x, y0));
         app.handle(mouse_click(x, y0));
-        assert!(app.modal.is_some(), "double-click opened the comment input");
+        assert!(app.composer_open(), "double-click opened the composer");
     }
 
     #[test]
@@ -2043,7 +2129,62 @@ mod tests {
     }
 
     #[test]
-    fn comment_input_modal_renders_over_the_diff() {
+    fn a_click_cannot_reach_past_an_open_composer() {
+        let (_fixture, mut app) = diff_app();
+        open_lib_diff(&mut app);
+        cursor_to_added_line(&mut app);
+        app.handle(key('c'));
+        for c in "half written".chars() {
+            app.handle(key(c));
+        }
+        render(&mut app);
+        // the gesture that opens a fresh composer over this one, and the one
+        // that would switch files out from under it
+        let (x, y0, ..) = first_two_pane_lines(&app);
+        app.handle(mouse_click(x, y0));
+        app.handle(mouse_click(x, y0));
+        app.handle(mouse_click(1, 3));
+        let composer = app
+            .diff
+            .as_ref()
+            .and_then(|d| d.composer.as_ref())
+            .expect("the draft survives stray clicks");
+        assert_eq!(composer.buffer, "half written");
+    }
+
+    #[test]
+    fn a_file_level_composer_renders_at_the_top_of_the_pane() {
+        let (_fixture, mut app) = diff_app();
+        open_lib_diff(&mut app);
+        app.diff.as_mut().unwrap().focus = Pane::List;
+        app.handle(key('c'));
+        for c in "applies to the whole file".chars() {
+            app.handle(key(c));
+        }
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn a_reply_composer_renders_under_the_thread_it_answers() {
+        let (_fixture, mut app) = diff_app();
+        open_lib_diff(&mut app);
+        cursor_to_added_line(&mut app);
+        app.handle(key('c'));
+        for c in "why?".chars() {
+            app.handle(key(c));
+        }
+        app.handle(key('\n'));
+        let line = app.diff.as_ref().unwrap().cursor;
+        app.diff.as_mut().unwrap().cursor = line;
+        app.handle(key('r'));
+        for c in "because".chars() {
+            app.handle(key(c));
+        }
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn the_composer_renders_under_the_line_it_comments_on() {
         let (_fixture, mut app) = diff_app();
         open_lib_diff(&mut app);
         cursor_to_added_line(&mut app);

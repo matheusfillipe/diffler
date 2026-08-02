@@ -14,8 +14,9 @@ use diffler_core::source::ReviewSource;
 use diffler_core::syntax::ScopeIndex;
 use unicode_width::UnicodeWidthStr;
 
+use super::composer::{Composer, ComposerKind};
 use super::markdown::{self, MdSpan};
-use super::{App, InputOp, Modal, Screen};
+use super::{App, Modal, Screen};
 use crate::config::FileLayout;
 use crate::keymap::Action;
 use crate::tree::{self, Bucket, TreeNode, TreeRow};
@@ -89,6 +90,10 @@ pub enum DiffRow {
         line: usize,
         outdated: bool,
     },
+    /// One display line of the open composer, sitting where its result will.
+    Composer {
+        line: usize,
+    },
 }
 
 /// Per-line syntax spans for both sides of one file, keyed by the
@@ -152,6 +157,9 @@ pub struct DiffView {
     /// Body height of the last diff-pane render, drives half-page motions.
     pub(crate) viewport: u16,
     /// Rows for the selected file only.
+    /// The open in-place comment editor, if any. It owns the diff pane's keys
+    /// while it is up and occupies the rows its result will.
+    pub(crate) composer: Option<Composer>,
     pub(crate) rows: Vec<DiffRow>,
     /// Last render's pane line -> row index table; wrapped rows span several
     /// lines, so mouse hits map back through it.
@@ -159,7 +167,7 @@ pub struct DiffView {
     rows_dirty: bool,
     /// Pane row width comments wrap to; set from the last draw, MAX until
     /// the first frame so unit tests see unwrapped lines.
-    wrap_width: u16,
+    pub(crate) wrap_width: u16,
     /// Rows need a re-flow for a new wrap width (no content change).
     wrap_dirty: bool,
     /// Side-by-side row model, rebuilt with `rows` (not per frame).
@@ -184,6 +192,7 @@ impl DiffView {
         side_by_side: bool,
     ) -> Self {
         let mut view = Self {
+            composer: None,
             source,
             commit_model,
             focus: Pane::List,
@@ -287,6 +296,13 @@ impl DiffView {
                     .unwrap_or(0),
                 None,
             ),
+            DiffRow::Composer { line } => (
+                split
+                    .iter()
+                    .position(|r| matches!(r, SplitRow::Composer { line: l } if *l == line))
+                    .unwrap_or(0),
+                None,
+            ),
         }
     }
 
@@ -316,8 +332,13 @@ impl DiffView {
     pub(crate) fn set_wrap_width(&mut self, width: u16) {
         if width > 0 && self.wrap_width != width {
             self.wrap_width = width;
-            self.wrap_dirty = true;
+            self.mark_reflow();
         }
+    }
+
+    /// Rebuild the pane's rows, leaving the sidebar's file list as it is.
+    pub(crate) fn mark_reflow(&mut self) {
+        self.wrap_dirty = true;
     }
 
     pub(crate) fn ensure_rows(&mut self, review: &Review) {
@@ -327,8 +348,10 @@ impl DiffView {
         let model = self.commit_model.as_ref().unwrap_or_else(|| review.model());
         self.selected = self.selected.min(model.files.len().saturating_sub(1));
         let session = review.session_for(&self.source);
-        self.rows = build_rows(model, session, self.selected, self.wrap_width);
-        self.split_rows = build_split_rows(model, session, self.selected, self.wrap_width);
+        let composer = self.composer.as_ref();
+        self.rows = build_rows(model, session, self.selected, self.wrap_width, composer);
+        self.split_rows =
+            build_split_rows(model, session, self.selected, self.wrap_width, composer);
         self.cursor = self.cursor.min(self.rows.len().saturating_sub(1));
         self.scroll = self.scroll.min(self.rows.len().saturating_sub(1));
         // the file list may have shifted (refresh) or folds may hide the old
@@ -340,6 +363,24 @@ impl DiffView {
         }
         self.rows_dirty = false;
         self.wrap_dirty = false;
+        self.seat_cursor_on_caret();
+    }
+
+    /// Park the pane cursor on the composer's caret row, so the pane scrolls
+    /// to the text being written and holds it there when a rebuild shifts the
+    /// card's rows.
+    fn seat_cursor_on_caret(&mut self) {
+        let Some(composer) = self.composer.as_ref() else {
+            return;
+        };
+        let caret = composer.caret_line(self.wrap_width);
+        if let Some(row) = self
+            .rows
+            .iter()
+            .position(|row| matches!(row, DiffRow::Composer { line } if *line == caret))
+        {
+            self.cursor = row;
+        }
     }
 
     /// Seat the tree cursor on the selected file's row, or clamp it into
@@ -539,23 +580,78 @@ fn anchor_target(file: &FileDiff, anchor: &Anchor) -> Option<(usize, usize)> {
     None
 }
 
+/// The open composer and the rows it draws, carried through row building so
+/// its rows land exactly where its result will.
+struct Draft<'a> {
+    composer: &'a Composer,
+    height: usize,
+}
+
+impl Draft<'_> {
+    fn new(composer: Option<&Composer>, wrap_width: u16) -> Option<Draft<'_>> {
+        let composer = composer?;
+        Some(Draft {
+            height: composer.display(wrap_width).len(),
+            composer,
+        })
+    }
+
+    fn edits(&self, id: &str) -> bool {
+        matches!(self.composer.kind, ComposerKind::Edit { .. })
+            && self.composer.comment_id() == Some(id)
+    }
+
+    fn replies_to(&self, id: &str) -> bool {
+        matches!(self.composer.kind, ComposerKind::Reply { .. })
+            && self.composer.comment_id() == Some(id)
+    }
+
+    /// The hunk and line the composer's new comment will display under, or
+    /// `None` when it is file-level or belongs to another file.
+    fn new_at(&self, file: &FileDiff) -> Option<(usize, usize)> {
+        let anchor = self.composer.anchor()?;
+        (anchor.file == file.path).then(|| anchor_target(file, anchor))?
+    }
+
+    /// A file-level new comment: the composer opens above the diff, where a
+    /// whole-file comment renders.
+    fn is_unanchored(&self, file: &FileDiff) -> bool {
+        self.composer
+            .anchor()
+            .is_some_and(|anchor| anchor.file == file.path && anchor_target(file, anchor).is_none())
+    }
+}
+
 fn push_comment_rows(
     rows: &mut Vec<DiffRow>,
     session: &Session,
     comments: &[(usize, bool)],
     wrap_width: u16,
+    draft: Option<&Draft<'_>>,
 ) {
     for &(comment, outdated) in comments {
         let Some(c) = session.comments.get(comment) else {
             continue;
         };
+        if draft.is_some_and(|d| d.edits(&c.id)) {
+            push_draft_rows(rows, draft);
+            continue;
+        }
         let count = comment_display(c, wrap_width, None).len();
         rows.extend((0..count).map(|line| DiffRow::Comment {
             comment,
             line,
             outdated,
         }));
+        if draft.is_some_and(|d| d.replies_to(&c.id)) {
+            push_draft_rows(rows, draft);
+        }
     }
+}
+
+fn push_draft_rows(rows: &mut Vec<DiffRow>, draft: Option<&Draft<'_>>) {
+    let Some(draft) = draft else { return };
+    rows.extend((0..draft.height).map(|line| DiffRow::Composer { line }));
 }
 
 /// Bucket a file's comments by their `(hunk, line)` anchor for inline display.
@@ -592,13 +688,20 @@ fn build_rows(
     session: &Session,
     selected: usize,
     wrap_width: u16,
+    composer: Option<&Composer>,
 ) -> Vec<DiffRow> {
     let mut rows = Vec::new();
     let Some(file) = model.files.get(selected) else {
         return rows;
     };
+    let draft = Draft::new(composer, wrap_width);
+    let draft = draft.as_ref();
     let (by_line, unanchored) = collect_comments(file, session, model);
-    push_comment_rows(&mut rows, session, &unanchored, wrap_width);
+    push_comment_rows(&mut rows, session, &unanchored, wrap_width, draft);
+    if draft.is_some_and(|d| d.is_unanchored(file)) {
+        push_draft_rows(&mut rows, draft);
+    }
+    let new_at = draft.and_then(|d| d.new_at(file));
     for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
         rows.push(DiffRow::Hunk {
             file: selected,
@@ -611,7 +714,10 @@ fn build_rows(
                 line: line_idx,
             });
             if let Some(list) = by_line.get(&(hunk_idx, line_idx)) {
-                push_comment_rows(&mut rows, session, list, wrap_width);
+                push_comment_rows(&mut rows, session, list, wrap_width, draft);
+            }
+            if new_at == Some((hunk_idx, line_idx)) {
+                push_draft_rows(&mut rows, draft);
             }
         }
     }
@@ -645,6 +751,9 @@ pub enum SplitRow {
         line: usize,
         outdated: bool,
     },
+    Composer {
+        line: usize,
+    },
 }
 
 fn push_split_comments(
@@ -652,23 +761,37 @@ fn push_split_comments(
     session: &Session,
     comments: &[(usize, bool)],
     wrap_width: u16,
+    draft: Option<&Draft<'_>>,
 ) {
     for &(comment, outdated) in comments {
         let Some(c) = session.comments.get(comment) else {
             continue;
         };
+        if draft.is_some_and(|d| d.edits(&c.id)) {
+            push_split_draft_rows(rows, draft);
+            continue;
+        }
         let count = comment_display(c, wrap_width, None).len();
         rows.extend((0..count).map(|line| SplitRow::Comment {
             comment,
             line,
             outdated,
         }));
+        if draft.is_some_and(|d| d.replies_to(&c.id)) {
+            push_split_draft_rows(rows, draft);
+        }
     }
+}
+
+fn push_split_draft_rows(rows: &mut Vec<SplitRow>, draft: Option<&Draft<'_>>) {
+    let Some(draft) = draft else { return };
+    rows.extend((0..draft.height).map(|line| SplitRow::Composer { line }));
 }
 
 /// Emit a change block as aligned pairs: deletions on the left, additions on
 /// the right, zipped by position with `None` filling the shorter side. Any
 /// comment anchored to a paired line follows its row.
+#[allow(clippy::too_many_arguments)]
 fn flush_change_block(
     rows: &mut Vec<SplitRow>,
     session: &Session,
@@ -677,6 +800,8 @@ fn flush_change_block(
     dels: &[usize],
     adds: &[usize],
     wrap_width: u16,
+    draft: Option<&Draft<'_>>,
+    new_at: Option<(usize, usize)>,
 ) {
     for k in 0..dels.len().max(adds.len()) {
         let left = dels.get(k).copied();
@@ -684,7 +809,10 @@ fn flush_change_block(
         rows.push(SplitRow::Pair { hunk, left, right });
         for line in [left, right].into_iter().flatten() {
             if let Some(list) = by_line.get(&(hunk, line)) {
-                push_split_comments(rows, session, list, wrap_width);
+                push_split_comments(rows, session, list, wrap_width, draft);
+            }
+            if new_at == Some((hunk, line)) {
+                push_split_draft_rows(rows, draft);
             }
         }
     }
@@ -697,13 +825,20 @@ pub(crate) fn build_split_rows(
     session: &Session,
     selected: usize,
     wrap_width: u16,
+    composer: Option<&Composer>,
 ) -> Vec<SplitRow> {
     let mut rows = Vec::new();
     let Some(file) = model.files.get(selected) else {
         return rows;
     };
+    let draft = Draft::new(composer, wrap_width);
+    let draft = draft.as_ref();
     let (by_line, unanchored) = collect_comments(file, session, model);
-    push_split_comments(&mut rows, session, &unanchored, wrap_width);
+    push_split_comments(&mut rows, session, &unanchored, wrap_width, draft);
+    if draft.is_some_and(|d| d.is_unanchored(file)) {
+        push_split_draft_rows(&mut rows, draft);
+    }
+    let new_at = draft.and_then(|d| d.new_at(file));
     for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
         rows.push(SplitRow::Hunk { hunk: hunk_idx });
         let mut dels: Vec<usize> = Vec::new();
@@ -712,7 +847,8 @@ pub(crate) fn build_split_rows(
             match line.kind {
                 LineKind::Context => {
                     flush_change_block(
-                        &mut rows, session, &by_line, hunk_idx, &dels, &adds, wrap_width,
+                        &mut rows, session, &by_line, hunk_idx, &dels, &adds, wrap_width, draft,
+                        new_at,
                     );
                     dels.clear();
                     adds.clear();
@@ -722,7 +858,10 @@ pub(crate) fn build_split_rows(
                         right: Some(line_idx),
                     });
                     if let Some(list) = by_line.get(&(hunk_idx, line_idx)) {
-                        push_split_comments(&mut rows, session, list, wrap_width);
+                        push_split_comments(&mut rows, session, list, wrap_width, draft);
+                    }
+                    if new_at == Some((hunk_idx, line_idx)) {
+                        push_split_draft_rows(&mut rows, draft);
                     }
                 }
                 LineKind::Deleted => dels.push(line_idx),
@@ -730,7 +869,7 @@ pub(crate) fn build_split_rows(
             }
         }
         flush_change_block(
-            &mut rows, session, &by_line, hunk_idx, &dels, &adds, wrap_width,
+            &mut rows, session, &by_line, hunk_idx, &dels, &adds, wrap_width, draft, new_at,
         );
     }
     rows
@@ -779,13 +918,26 @@ impl App {
             self.error(err.to_string());
             return;
         }
-        let view = DiffView::new(
+        // a queued open can land while a comment is being written: the draft
+        // rides along when it still belongs here, and is never dropped silently
+        let open = self.diff.take();
+        let same_source = open.as_ref().is_some_and(|open| open.source == source);
+        let draft = open.and_then(|open| open.composer);
+        let mut view = DiffView::new(
             source,
             model,
             &self.review,
             self.config.ui.diff_file_layout,
             self.config.ui.side_by_side,
         );
+        match draft {
+            Some(draft) if same_source => view.composer = Some(draft),
+            Some(draft) if !draft.buffer.trim().is_empty() => {
+                self.error("the diff moved; your unsent draft was dropped");
+                let _ = draft;
+            }
+            _ => {}
+        }
         self.diff = Some(view);
         self.push_screen(Screen::Diff);
     }
@@ -1328,7 +1480,9 @@ impl App {
                 return Some((file.path.clone(), None));
             }
             match diff.rows.get(diff.cursor) {
-                Some(DiffRow::Hunk { .. }) | None => Some((file.path.clone(), None)),
+                Some(DiffRow::Hunk { .. } | DiffRow::Composer { .. }) | None => {
+                    Some((file.path.clone(), None))
+                }
                 Some(DiffRow::Line { hunk, line, .. }) => {
                     let line = file.hunks.get(*hunk)?.lines.get(*line)?;
                     Some((file.path.clone(), line.new_no.or(line.old_no)))
@@ -1550,23 +1704,14 @@ impl App {
         if let Some(comment) = self.comment_at_cursor_row() {
             let comment_id = comment.id.clone();
             let body = comment.body.clone();
-            self.open_input(
-                "Edit comment".to_owned(),
-                body,
-                InputOp::EditComment { comment_id },
-            );
+            self.open_composer(ComposerKind::Edit { comment_id }, body);
             return;
         }
         let Some(anchor) = self.comment_anchor() else {
             self.info("move to a diff line to comment");
             return;
         };
-        let title = match (anchor.line, anchor.line_end) {
-            (Some(line), Some(end)) => format!("Comment {}:{line}-{end}", anchor.file),
-            (Some(line), None) => format!("Comment {}:{line}", anchor.file),
-            _ => format!("Comment {}", anchor.file),
-        };
-        self.open_input(title, String::new(), InputOp::Comment { anchor });
+        self.open_composer(ComposerKind::New { anchor }, String::new());
     }
 
     /// `c` in the file sidebar: a whole-file comment (a line-less anchor) on the
@@ -1587,11 +1732,7 @@ impl App {
             on_old_side: false,
             line_text: None,
         };
-        self.open_input(
-            format!("Comment {path}"),
-            String::new(),
-            InputOp::Comment { anchor },
-        );
+        self.open_composer(ComposerKind::New { anchor }, String::new());
     }
 
     fn comment_at_cursor_row(&self) -> Option<&Comment> {
@@ -1620,12 +1761,7 @@ impl App {
             return;
         };
         let comment_id = comment.id.clone();
-        let author = comment.author.clone();
-        self.open_input(
-            format!("Reply to {author}"),
-            String::new(),
-            InputOp::Reply { comment_id },
-        );
+        self.open_composer(ComposerKind::Reply { comment_id }, String::new());
     }
 
     /// `R`: toggle the comment's resolution. In a PR review the flip is
@@ -2282,10 +2418,10 @@ mod tests {
         let position = added_line_position(&app);
         app.diff.as_mut().unwrap().cursor = position;
         app.handle(key('c'));
-        assert!(matches!(app.modal, Some(Modal::Input { .. })));
+        assert!(app.composer_open());
         type_text(&mut app, "why 42?");
         app.handle(key('\n'));
-        assert_eq!(app.modal, None);
+        assert!(!app.composer_open());
 
         let comment = &app.review.session.comments[0];
         assert_eq!(comment.author, "reviewer");
@@ -2479,7 +2615,7 @@ mod tests {
         let position = added_line_position(&app);
         app.diff.as_mut().unwrap().cursor = position + 1;
         app.handle(key('r'));
-        assert!(matches!(app.modal, Some(Modal::Input { .. })));
+        assert!(app.composer_open());
         type_text(&mut app, "answer");
         app.handle(key('\n'));
         let comment = &app.review.session.comments[0];
@@ -2499,6 +2635,204 @@ mod tests {
         assert_eq!(reloaded.comments[0].status, CommentStatus::Resolved);
     }
 
+    /// Row indices of the composer's rows, in order.
+    fn composer_rows(app: &App) -> Vec<usize> {
+        app.diff
+            .as_ref()
+            .expect("diff view")
+            .rows()
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| matches!(row, DiffRow::Composer { .. }))
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    #[test]
+    fn the_composer_takes_the_rows_under_the_line_it_comments_on() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        select_file(&mut app, "src/lib.rs");
+        let line = added_line_position(&app);
+        app.diff.as_mut().unwrap().cursor = line;
+        app.handle(key('c'));
+        let rows = composer_rows(&app);
+        assert_eq!(
+            rows.first().copied(),
+            Some(line + 1),
+            "the card opens directly under its line"
+        );
+        assert!(rows.len() >= 3, "header, a body row, and the hint footer");
+        assert!(
+            rows.windows(2).all(|pair| pair[1] == pair[0] + 1),
+            "the card is one contiguous block: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn the_composer_grows_a_row_when_the_text_wraps() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        select_file(&mut app, "src/lib.rs");
+        app.diff.as_mut().unwrap().cursor = added_line_position(&app);
+        app.diff.as_mut().unwrap().set_wrap_width(60);
+        app.handle(key('c'));
+        let before = composer_rows(&app).len();
+        type_text(
+            &mut app,
+            &"x".repeat(super::super::composer::card_budget(60) + 1),
+        );
+        assert_eq!(
+            composer_rows(&app).len(),
+            before + 1,
+            "one more row once the text passes the wrap budget"
+        );
+    }
+
+    #[test]
+    fn a_file_level_composer_opens_above_the_diff() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        assert_eq!(focus(&app), Pane::List);
+        app.handle(key('c'));
+        assert_eq!(
+            composer_rows(&app).first().copied(),
+            Some(0),
+            "a whole-file comment is written where it renders, at the top"
+        );
+    }
+
+    #[test]
+    fn a_reply_composer_opens_under_the_thread_it_answers() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        select_file(&mut app, "src/lib.rs");
+        let line = added_line_position(&app);
+        app.diff.as_mut().unwrap().cursor = line;
+        app.handle(key('c'));
+        type_text(&mut app, "question");
+        app.handle(key('\n'));
+        app.diff.as_mut().unwrap().cursor = added_line_position(&app) + 1;
+        app.handle(key('r'));
+        let last_comment = app
+            .diff
+            .as_ref()
+            .unwrap()
+            .rows()
+            .iter()
+            .rposition(|row| matches!(row, DiffRow::Comment { .. }))
+            .expect("the thread being replied to");
+        assert_eq!(
+            composer_rows(&app).first().copied(),
+            Some(last_comment + 1),
+            "the draft reply sits under the whole block"
+        );
+        assert!(last_comment > line, "and the block sits under its line");
+    }
+
+    #[test]
+    fn an_edit_composer_stands_in_for_the_block_it_rewrites() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        select_file(&mut app, "src/lib.rs");
+        let line = added_line_position(&app);
+        app.diff.as_mut().unwrap().cursor = line;
+        app.handle(key('c'));
+        type_text(&mut app, "note");
+        app.handle(key('\n'));
+        app.diff.as_mut().unwrap().cursor = added_line_position(&app) + 1;
+        app.handle(key('c'));
+        assert_eq!(composer_rows(&app).first().copied(), Some(line + 1));
+        assert!(
+            !app.diff
+                .as_ref()
+                .unwrap()
+                .rows()
+                .iter()
+                .any(|row| matches!(row, DiffRow::Comment { .. })),
+            "the comment being edited gives up its rows to the draft"
+        );
+    }
+
+    #[test]
+    fn the_pane_cursor_rides_the_caret_so_a_tall_card_scrolls_with_it() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        select_file(&mut app, "src/lib.rs");
+        app.diff.as_mut().unwrap().set_wrap_width(60);
+        app.diff.as_mut().unwrap().cursor = added_line_position(&app);
+        app.handle(key('c'));
+        let caret_row = |app: &App| {
+            let diff = app.diff.as_ref().unwrap();
+            let caret = diff.composer.as_ref().unwrap().caret_line(diff.wrap_width);
+            diff.rows()
+                .iter()
+                .position(|row| matches!(row, DiffRow::Composer { line } if *line == caret))
+        };
+        assert_eq!(Some(app.diff.as_ref().unwrap().cursor), caret_row(&app));
+        // a card taller than any viewport must keep the cursor on the row the
+        // text is landing on, not on the header far above it
+        for _ in 0..6 {
+            type_text(
+                &mut app,
+                &"y".repeat(super::super::composer::card_budget(60)),
+            );
+        }
+        let rows = composer_rows(&app);
+        assert!(rows.len() > 6, "the card grew tall: {}", rows.len());
+        assert_eq!(Some(app.diff.as_ref().unwrap().cursor), caret_row(&app));
+        assert!(
+            app.diff.as_ref().unwrap().cursor > rows[0],
+            "the cursor left the header behind"
+        );
+    }
+
+    #[test]
+    fn reopening_the_same_source_carries_the_draft_along() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        select_file(&mut app, "src/lib.rs");
+        app.diff.as_mut().unwrap().cursor = added_line_position(&app);
+        app.handle(key('c'));
+        type_text(&mut app, "still writing");
+        // a queued open landing on the source already in view
+        app.open_working_tree_diff(None);
+        assert_eq!(
+            app.diff
+                .as_ref()
+                .and_then(|d| d.composer.as_ref())
+                .map(|c| c.buffer.clone()),
+            Some("still writing".to_owned())
+        );
+    }
+
+    #[test]
+    fn esc_closes_the_composer_and_gives_its_rows_back() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        select_file(&mut app, "src/lib.rs");
+        app.diff.as_mut().unwrap().cursor = added_line_position(&app);
+        app.handle(key('c'));
+        type_text(&mut app, "never mind");
+        app.handle(crate::test_support::esc_key());
+        assert!(!app.composer_open());
+        assert!(composer_rows(&app).is_empty());
+        assert!(app.review.session.comments.is_empty());
+    }
+
+    #[test]
+    fn a_blank_composer_submits_as_a_cancel() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        select_file(&mut app, "src/lib.rs");
+        app.diff.as_mut().unwrap().cursor = added_line_position(&app);
+        app.handle(key('c'));
+        type_text(&mut app, "   ");
+        app.handle(key('\n'));
+        assert!(!app.composer_open());
+        assert!(app.review.session.comments.is_empty());
+    }
+
     #[test]
     fn c_over_a_comment_edits_it() {
         let fixture = standard_fixture();
@@ -2513,10 +2847,15 @@ mod tests {
         // move onto the comment row; `c` edits, prefilled with the body
         app.diff.as_mut().unwrap().cursor = added_line_position(&app) + 1;
         app.handle(key('c'));
-        let Some(Modal::Input { buffer, .. }) = &app.modal else {
-            panic!("edit modal with the current body");
-        };
-        assert_eq!(buffer, "old note", "prefilled with the existing body");
+        let composer = app
+            .diff
+            .as_ref()
+            .and_then(|d| d.composer.as_ref())
+            .expect("the composer opens over the comment");
+        assert_eq!(
+            composer.buffer, "old note",
+            "prefilled with the existing body"
+        );
         // clear and retype
         for _ in 0.."old note".len() {
             app.handle(crate::test_support::key_backspace());
@@ -2545,7 +2884,7 @@ mod tests {
         assert_eq!(focus(&app), Pane::List);
         app.handle(key('c'));
         assert!(
-            matches!(app.modal, Some(Modal::Input { .. })),
+            app.composer_open(),
             "c on a file opens a comment, not a hint"
         );
         type_text(&mut app, "whole-file note");
@@ -3319,7 +3658,7 @@ mod tests {
         let model = diff.model(&app.review);
         let session = app.review.session_for(&ReviewSource::WorkingTree);
         for (index, file) in model.files.iter().enumerate() {
-            for row in build_split_rows(model, session, index, u16::MAX) {
+            for row in build_split_rows(model, session, index, u16::MAX, None) {
                 let SplitRow::Pair { hunk, left, right } = row else {
                     continue;
                 };

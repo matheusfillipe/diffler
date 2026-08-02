@@ -8,6 +8,7 @@ mod ci;
 pub mod ci_log;
 mod commands;
 mod commit;
+pub mod composer;
 mod diff;
 pub mod enrich;
 mod expand;
@@ -37,7 +38,6 @@ pub use status::{Row, Section, StatusView};
 use crossterm::event::{KeyCode, KeyEvent};
 use diffler_core::model::DiffModel;
 use diffler_core::review::Review;
-use diffler_core::session::Anchor;
 use diffler_core::source::ReviewSource;
 use diffler_core::vcs::{BranchInfo, HeadInfo, NetworkOp, Vcs, VcsError};
 
@@ -137,15 +137,6 @@ pub enum PendingOp {
 /// What an input modal does with its buffer on submit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputOp {
-    Comment {
-        anchor: Anchor,
-    },
-    Reply {
-        comment_id: String,
-    },
-    EditComment {
-        comment_id: String,
-    },
     CreateBranch {
         checkout: bool,
     },
@@ -805,6 +796,8 @@ impl App {
             AppEvent::Key(key) if key.kind != crossterm::event::KeyEventKind::Release => {
                 if self.modal.is_some() {
                     self.handle_modal_key(&key)
+                } else if self.composer_open() {
+                    self.handle_composer_key(&key)
                 } else if self.transient.is_some() {
                     self.handle_transient_key(&key)
                 } else if self.search.as_ref().is_some_and(|s| s.open) {
@@ -882,7 +875,9 @@ impl App {
             }
             // mouse only drives the plain screens; a modal or transient owns
             // input while open
-            AppEvent::Mouse(mouse) if self.modal.is_none() && self.transient.is_none() => {
+            AppEvent::Mouse(mouse)
+                if self.modal.is_none() && self.transient.is_none() && !self.composer_open() =>
+            {
                 self.handle_mouse(mouse);
                 Flow::Continue
             }
@@ -1525,6 +1520,7 @@ mod tests {
 
     use super::*;
     use crate::test_support::{Fixture, key, standard_fixture, two_hunk_fixture};
+    use diffler_core::session::Anchor;
 
     fn app() -> (Fixture, App) {
         let fixture = standard_fixture();
@@ -1735,13 +1731,9 @@ mod tests {
     fn human_comment_add_reply_and_resolve_bump_the_epoch() {
         let (_fixture, mut app) = app();
         app.open_working_tree_diff(None);
-        // add a comment via the session-backed input modal path
-        app.modal = Some(Modal::Input {
-            title: "Comment".to_owned(),
-            buffer: "why?".to_owned(),
-            cursor: 4,
-            on_submit: InputOp::Comment {
-                anchor: Anchor {
+        app.open_composer(
+            crate::app::composer::ComposerKind::New {
+                anchor: diffler_core::session::Anchor {
                     file: "src/lib.rs".to_owned(),
                     line: Some(2),
                     line_end: None,
@@ -1749,17 +1741,16 @@ mod tests {
                     line_text: None,
                 },
             },
-        });
+            "why?".to_owned(),
+        );
         app.handle(key('\n'));
         assert_eq!(app.feedback_epoch(), 1, "comment add bumps");
 
         let id = app.review.session.comments[0].id.clone();
-        app.modal = Some(Modal::Input {
-            title: "Reply".to_owned(),
-            buffer: "because".to_owned(),
-            cursor: 7,
-            on_submit: InputOp::Reply { comment_id: id },
-        });
+        app.open_composer(
+            crate::app::composer::ComposerKind::Reply { comment_id: id },
+            "because".to_owned(),
+        );
         app.handle(key('\n'));
         assert_eq!(app.feedback_epoch(), 2, "reply bumps");
     }
@@ -2723,9 +2714,7 @@ mod tests {
             title: "Test".to_owned(),
             buffer: String::new(),
             cursor: 0,
-            on_submit: InputOp::Reply {
-                comment_id: "missing".to_owned(),
-            },
+            on_submit: InputOp::CreateBranch { checkout: false },
         });
         for c in "héllo".chars() {
             app.handle(key(c));
@@ -2751,12 +2740,10 @@ mod tests {
     #[test]
     fn alt_enter_inserts_a_newline_and_the_body_keeps_both_lines() {
         let (_fixture, mut app) = app();
-        app.modal = Some(Modal::Input {
-            title: "Comment".to_owned(),
-            buffer: String::new(),
-            cursor: 0,
-            on_submit: InputOp::Comment {
-                anchor: Anchor {
+        app.open_working_tree_diff(None);
+        app.open_composer(
+            crate::app::composer::ComposerKind::New {
+                anchor: diffler_core::session::Anchor {
                     file: "src/lib.rs".to_owned(),
                     line: Some(2),
                     line_end: None,
@@ -2764,7 +2751,8 @@ mod tests {
                     line_text: None,
                 },
             },
-        });
+            String::new(),
+        );
         for c in "first".chars() {
             app.handle(key(c));
         }
@@ -2775,13 +2763,12 @@ mod tests {
         for c in "second".chars() {
             app.handle(key(c));
         }
-        let Some(Modal::Input { buffer, cursor, .. }) = &app.modal else {
-            panic!("modal should still be up");
-        };
-        assert_eq!(buffer, "first\nsecond");
-        assert_eq!(*cursor, 12);
+        let composer = app.diff.as_ref().and_then(|d| d.composer.as_ref());
+        let composer = composer.expect("the composer is still open");
+        assert_eq!(composer.buffer, "first\nsecond");
+        assert_eq!(composer.cursor, 12);
         app.handle(key('\n'));
-        assert_eq!(app.modal, None);
+        assert!(!app.composer_open());
         assert_eq!(app.review.session.comments[0].body, "first\nsecond");
     }
 
@@ -2792,9 +2779,7 @@ mod tests {
             title: "Test".to_owned(),
             buffer: "ab".to_owned(),
             cursor: 1,
-            on_submit: InputOp::Reply {
-                comment_id: "missing".to_owned(),
-            },
+            on_submit: InputOp::CreateBranch { checkout: false },
         });
         app.handle(AppEvent::Key(KeyEvent::new(
             KeyCode::Char('j'),
@@ -2814,9 +2799,7 @@ mod tests {
             title: "Test".to_owned(),
             buffer: "   ".to_owned(),
             cursor: 3,
-            on_submit: InputOp::Reply {
-                comment_id: "missing".to_owned(),
-            },
+            on_submit: InputOp::CreateBranch { checkout: false },
         });
         app.handle(key('\n'));
         assert_eq!(app.modal, None);

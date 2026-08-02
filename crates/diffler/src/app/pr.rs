@@ -985,7 +985,7 @@ mod tests {
     }
 
     #[test]
-    fn commenting_through_the_modal_queues_a_forge_post() {
+    fn commenting_in_place_queues_a_forge_post() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let fixture = standard_fixture();
         fixture.write("src/lib.rs", "pub fn answer() -> u32 {\n    43\n}\n");
@@ -1022,7 +1022,7 @@ mod tests {
         press(&mut app, KeyCode::Char('l'));
         press(&mut app, KeyCode::Char('j'));
         press(&mut app, KeyCode::Char('c'));
-        assert!(app.modal.is_some(), "comment modal open");
+        assert!(app.composer_open(), "the composer opens in place");
         for ch in "ship it".chars() {
             press(&mut app, KeyCode::Char(ch));
         }
@@ -1100,7 +1100,7 @@ mod tests {
     }
 
     #[test]
-    fn next_comment_then_reply_opens_the_modal_in_a_pr_view() {
+    fn next_comment_then_reply_opens_the_composer_in_a_pr_view() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let fixture = crate::test_support::Fixture::new();
         fixture.write("app.py", "def greet(name):\n    return f\"hello {name}\"\n");
@@ -1151,8 +1151,8 @@ mod tests {
             })
             .unwrap_or_default();
         assert!(
-            app.modal.is_some(),
-            "reply modal after ]+r; cursor={:?} rows={kinds:?}",
+            app.composer_open(),
+            "reply composer after }}+r; cursor={:?} rows={kinds:?}",
             app.diff.as_ref().map(|d| d.cursor)
         );
     }

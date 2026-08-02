@@ -196,7 +196,6 @@ impl App {
         {
             return;
         }
-        let source = self.active_review_source();
         match on_submit {
             InputOp::PrField { mut draft, field } => {
                 use crate::app::pr_create::PrField;
@@ -211,38 +210,6 @@ impl App {
             InputOp::ReviewBody { number, verdict } => {
                 let body = body.to_owned();
                 self.queue_pr_review(number, verdict, &body);
-            }
-            InputOp::Comment { anchor } => {
-                self.review
-                    .session_for_mut(&source)
-                    .add_comment(anchor, &self.author, body);
-                if let Some(diff) = self.diff.as_mut() {
-                    diff.visual_anchor = None;
-                }
-                self.after_session_change();
-            }
-            InputOp::Reply { comment_id } => {
-                if self
-                    .review
-                    .session_for_mut(&source)
-                    .reply(&comment_id, &self.author, body)
-                {
-                    self.after_session_change();
-                } else {
-                    self.error("comment is gone; reply dropped");
-                }
-            }
-            InputOp::EditComment { comment_id } => {
-                if self
-                    .review
-                    .session_for_mut(&source)
-                    .edit_comment(&comment_id, body)
-                {
-                    self.queue_pr_comment_edit(&source, &comment_id, body);
-                    self.after_session_change();
-                } else {
-                    self.error("comment is gone; edit dropped");
-                }
             }
             InputOp::CreateBranch { checkout } => {
                 let name = body.to_owned();
@@ -731,17 +698,9 @@ mod tests {
         let fixture = standard_fixture();
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         app.open_input(
-            "Comment".to_owned(),
+            "New branch".to_owned(),
             prefill.to_owned(),
-            super::super::InputOp::Comment {
-                anchor: Anchor {
-                    file: "src/lib.rs".into(),
-                    line: Some(2),
-                    line_end: None,
-                    on_old_side: false,
-                    line_text: None,
-                },
-            },
+            super::super::InputOp::CreateBranch { checkout: false },
         );
         app
     }

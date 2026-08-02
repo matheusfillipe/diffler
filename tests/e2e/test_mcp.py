@@ -98,7 +98,7 @@ def test_review_status_and_get_comments_round_trip(spawn, repo):
     # the diff pane opens focused on the hunk header; reach +beta2 (line 2)
     tui.send("jjjj")
     tui.send("c")
-    tui.wait_for("Comment app.txt:2")
+    tui.wait_for("comment on app.txt:2")
     tui.send("ship it")
     tui.send("\r")
     tui.wait_for("▌ reviewer")
