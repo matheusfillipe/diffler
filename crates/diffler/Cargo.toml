@@ -50,6 +50,8 @@ tempfile.workspace = true
 rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
 # test-util enables the paused clock for long-poll timeout tests
 tokio = { workspace = true, features = ["test-util"] }
+# fixture setup shared with diffler-core's own tests
+diffler-core = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true

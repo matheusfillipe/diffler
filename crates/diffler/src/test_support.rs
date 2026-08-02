@@ -27,17 +27,9 @@ impl Fixture {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path().join("fixture");
         std::fs::create_dir(&root).expect("repo dir");
-        let mut options = git2::RepositoryInitOptions::new();
-        options.initial_head("main");
-        let repo = git2::Repository::init_opts(&root, &options).expect("init");
-        let mut config = repo.config().expect("config");
-        config.set_str("user.name", "test").expect("config");
-        config.set_str("user.email", "test@test").expect("config");
-        // pin line endings so checkout restores exact bytes; without this,
-        // Windows autocrlf re-CRLFs on discard and the file still reads dirty
-        config.set_str("core.autocrlf", "false").expect("config");
-        config.set_str("core.eol", "lf").expect("config");
-        drop(config);
+        // Windows autocrlf re-CRLFs on discard, so a stale checkout still reads
+        // dirty; init_repo pins core.autocrlf/eol to keep it byte-exact.
+        let repo = diffler_core::test_git::init_repo(&root, Some("main"));
         Self {
             _dir: dir,
             root,
@@ -60,20 +52,10 @@ impl Fixture {
     }
 
     pub(crate) fn commit_all(&self, message: &str) {
-        let mut index = self.repo.index().expect("index");
-        index
-            .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
-            .expect("add");
-        index.write().expect("index write");
-        let tree_id = index.write_tree().expect("tree");
-        let tree = self.repo.find_tree(tree_id).expect("find tree");
+        // fixed time: snapshots pin on the commit oid, which a real clock would churn
         let time = git2::Time::new(1_700_000_000, 0);
         let sig = git2::Signature::new("test", "test@test", &time).expect("sig");
-        let parent = self.repo.head().ok().and_then(|h| h.peel_to_commit().ok());
-        let parents: Vec<&git2::Commit<'_>> = parent.iter().collect();
-        self.repo
-            .commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)
-            .expect("commit");
+        diffler_core::test_git::commit_all(&self.repo, message, &sig);
     }
 
     pub(crate) fn remote(&self, name: &str, url: &str) {

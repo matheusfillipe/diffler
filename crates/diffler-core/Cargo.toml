@@ -56,6 +56,10 @@ tempfile.workspace = true
 [dev-dependencies]
 criterion.workspace = true
 
+# exposes git2 fixture helpers for reuse by this crate's and diffler's tests
+[features]
+test-support = []
+
 [lints]
 workspace = true
 

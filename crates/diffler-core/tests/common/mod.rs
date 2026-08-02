@@ -17,14 +17,7 @@ pub(crate) struct Fixture {
 impl Fixture {
     pub(crate) fn new() -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
-        let repo = git2::Repository::init(dir.path()).expect("init");
-        let mut config = repo.config().expect("config");
-        config.set_str("user.name", "test").expect("config");
-        config.set_str("user.email", "test@test").expect("config");
-        // pin line endings so checkout restores exact bytes across platforms
-        config.set_str("core.autocrlf", "false").expect("config");
-        config.set_str("core.eol", "lf").expect("config");
-        drop(config);
+        let repo = diffler_core::test_git::init_repo(dir.path(), None);
         Self { dir, repo }
     }
 
@@ -41,19 +34,8 @@ impl Fixture {
     }
 
     pub(crate) fn commit_all(&self, message: &str) {
-        let mut index = self.repo.index().expect("index");
-        index
-            .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
-            .expect("add");
-        index.write().expect("index write");
-        let tree_id = index.write_tree().expect("tree");
-        let tree = self.repo.find_tree(tree_id).expect("find tree");
         let sig = self.repo.signature().expect("sig");
-        let parent = self.repo.head().ok().and_then(|h| h.peel_to_commit().ok());
-        let parents: Vec<&git2::Commit<'_>> = parent.iter().collect();
-        self.repo
-            .commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)
-            .expect("commit");
+        diffler_core::test_git::commit_all(&self.repo, message, &sig);
     }
 
     pub(crate) fn stage(&self, rel: &str) {
