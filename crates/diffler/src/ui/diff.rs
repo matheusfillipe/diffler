@@ -566,8 +566,7 @@ fn pane_heading(theme: &Theme, title: &str, focused: bool, bg: Color) -> Line<'s
         format!(" {title}"),
         Style::new()
             .fg(if focused { theme.accent } else { theme.fg })
-            .bg(bg)
-            .add_modifier(Modifier::BOLD),
+            .bg(bg),
     )
 }
 

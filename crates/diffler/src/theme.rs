@@ -2,7 +2,7 @@
 //! each pairing its palette with a matching syntax-highlight theme.
 
 use diffler_core::highlight::SyntaxTheme;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Theme {
@@ -75,7 +75,7 @@ impl Theme {
             added: Color::Rgb(0x3f, 0xb9, 0x50),
             warn_fg: Color::Rgb(0xd2, 0x99, 0x22),
             error_fg: Color::Rgb(0xf8, 0x51, 0x49),
-            chip: Style::new().fg(bg).bg(accent).add_modifier(Modifier::BOLD),
+            chip: Style::new().fg(bg).bg(accent),
             syntax: SyntaxTheme::OneHalfDark,
         }
     }
@@ -102,7 +102,7 @@ impl Theme {
             added: Color::Rgb(0x1a, 0x7f, 0x37),
             warn_fg: Color::Rgb(0x9a, 0x67, 0x00),
             error_fg: Color::Rgb(0xcf, 0x22, 0x2e),
-            chip: Style::new().fg(bg).bg(accent).add_modifier(Modifier::BOLD),
+            chip: Style::new().fg(bg).bg(accent),
             syntax: SyntaxTheme::OneHalfLight,
         }
     }
@@ -129,7 +129,7 @@ impl Theme {
             added: Color::Rgb(0x50, 0xfa, 0x7b),
             warn_fg: Color::Rgb(0xf1, 0xfa, 0x8c),
             error_fg: Color::Rgb(0xff, 0x55, 0x55),
-            chip: Style::new().fg(bg).bg(accent).add_modifier(Modifier::BOLD),
+            chip: Style::new().fg(bg).bg(accent),
             syntax: SyntaxTheme::Dracula,
         }
     }
@@ -156,7 +156,7 @@ impl Theme {
             added: Color::Rgb(0xa6, 0xe3, 0xa1),
             warn_fg: Color::Rgb(0xf9, 0xe2, 0xaf),
             error_fg: Color::Rgb(0xf3, 0x8b, 0xa8),
-            chip: Style::new().fg(bg).bg(accent).add_modifier(Modifier::BOLD),
+            chip: Style::new().fg(bg).bg(accent),
             syntax: SyntaxTheme::CatppuccinMocha,
         }
     }
@@ -183,7 +183,7 @@ impl Theme {
             added: Color::Rgb(0x9e, 0xce, 0x6a),
             warn_fg: Color::Rgb(0xe0, 0xaf, 0x68),
             error_fg: Color::Rgb(0xf7, 0x76, 0x8e),
-            chip: Style::new().fg(bg).bg(accent).add_modifier(Modifier::BOLD),
+            chip: Style::new().fg(bg).bg(accent),
             syntax: SyntaxTheme::TokyoNight,
         }
     }
@@ -210,7 +210,7 @@ impl Theme {
             added: Color::Rgb(0xb8, 0xbb, 0x26),
             warn_fg: Color::Rgb(0xfa, 0xbd, 0x2f),
             error_fg: Color::Rgb(0xfb, 0x49, 0x34),
-            chip: Style::new().fg(bg).bg(accent).add_modifier(Modifier::BOLD),
+            chip: Style::new().fg(bg).bg(accent),
             syntax: SyntaxTheme::GruvboxDark,
         }
     }
@@ -237,7 +237,7 @@ impl Theme {
             added: Color::Rgb(0xa3, 0xbe, 0x8c),
             warn_fg: Color::Rgb(0xeb, 0xcb, 0x8b),
             error_fg: Color::Rgb(0xbf, 0x61, 0x6a),
-            chip: Style::new().fg(bg).bg(accent).add_modifier(Modifier::BOLD),
+            chip: Style::new().fg(bg).bg(accent),
             syntax: SyntaxTheme::Nord,
         }
     }
@@ -264,7 +264,7 @@ impl Theme {
             added: Color::Rgb(0x9c, 0xcf, 0xd8),
             warn_fg: Color::Rgb(0xf6, 0xc1, 0x77),
             error_fg: Color::Rgb(0xeb, 0x6f, 0x92),
-            chip: Style::new().fg(bg).bg(accent).add_modifier(Modifier::BOLD),
+            chip: Style::new().fg(bg).bg(accent),
             syntax: SyntaxTheme::RosePine,
         }
     }
@@ -291,7 +291,7 @@ impl Theme {
             added: Color::Rgb(0x98, 0xbb, 0x6c),
             warn_fg: Color::Rgb(0xe6, 0xc3, 0x84),
             error_fg: Color::Rgb(0xff, 0x5d, 0x62),
-            chip: Style::new().fg(bg).bg(accent).add_modifier(Modifier::BOLD),
+            chip: Style::new().fg(bg).bg(accent),
             syntax: SyntaxTheme::Kanagawa,
         }
     }
