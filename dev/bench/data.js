@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785710430049,
+  "lastUpdate": 1785711783086,
   "repoUrl": "https://github.com/matheusfillipe/diffler",
   "entries": {
     "Benchmark": [
@@ -9503,6 +9503,102 @@ window.BENCHMARK_DATA = {
             "name": "scope_index/20000",
             "value": 91830964,
             "range": "± 1906890",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "committer": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "distinct": true,
+          "id": "8c78813ea90bdb1c7a25c32b916c75714d794c7e",
+          "message": "share the git fixture scaffolding between both crates' tests",
+          "timestamp": "2026-08-03T00:55:52+02:00",
+          "tree_id": "34eddc4d0d3504cbddf7bbcc4bcf146fd895130f",
+          "url": "https://github.com/matheusfillipe/diffler/commit/8c78813ea90bdb1c7a25c32b916c75714d794c7e"
+        },
+        "date": 1785711782752,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "syndiff_emphasis/1000",
+            "value": 8243539,
+            "range": "± 47391",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/1000",
+            "value": 19294,
+            "range": "± 3239",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/1000",
+            "value": 6025018,
+            "range": "± 284302",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/1000",
+            "value": 4568361,
+            "range": "± 45473",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/5000",
+            "value": 42518888,
+            "range": "± 569133",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/5000",
+            "value": 98599,
+            "range": "± 740",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/5000",
+            "value": 29961440,
+            "range": "± 820702",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/5000",
+            "value": 22645836,
+            "range": "± 122610",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/20000",
+            "value": 178876183,
+            "range": "± 2243465",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/20000",
+            "value": 393743,
+            "range": "± 2708",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/20000",
+            "value": 125856073,
+            "range": "± 1511325",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/20000",
+            "value": 93336616,
+            "range": "± 2599563",
             "unit": "ns/iter"
           }
         ]
