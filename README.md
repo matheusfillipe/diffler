@@ -130,6 +130,7 @@ Vim-like: `j`/`k`/`gg`/`G` motions, `/` search, and
 
 | Key | Action |
 | --- | --- |
+| `<c-k>` | command palette: fuzzy-find every action on this screen and its key |
 | `<cr>` | open the thing under the cursor |
 | `s` / `u` | stage / unstage |
 | `cc` | commit |
