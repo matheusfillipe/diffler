@@ -46,7 +46,7 @@ pub fn render_hunk_lines(
     selected: Option<usize>,
 ) -> Vec<Line<'static>> {
     let gutter = hunk_gutter_width(hunk);
-    let mut lines = vec![hunk_header(theme, hunk, width, selected == Some(0))];
+    let mut lines = vec![hunk_header(theme, hunk, width, selected == Some(0), true)];
     lines.extend(hunk.lines.iter().enumerate().flat_map(|(index, line)| {
         let per_line = syntax.and_then(|(old, new)| line_syntax(old, new, line));
         render_diff_line(
@@ -56,6 +56,7 @@ pub fn render_hunk_lines(
             gutter,
             width,
             selected == Some(index + 1),
+            true,
             false,
             &[],
         )
@@ -107,15 +108,41 @@ pub fn file_gutter_width(file: &FileDiff) -> usize {
 /// screen's background.
 const HUNK_BAND: u16 = 45;
 
+/// Share of a cursor band an out-of-focus pane keeps: one bright selection is
+/// on screen at a time, and the quiet one stays findable. Only the band moves
+/// with focus; foregrounds and intra-line emphasis are content.
+const UNFOCUSED_BAND: u16 = 35;
+
+/// The cursor band over `surface`, quieted while its pane is out of focus.
+pub(super) fn cursor_band(theme: &Theme, surface: Color, focused: bool) -> Color {
+    crate::theme::blend(surface, theme.cursor_line, band_strength(100, focused))
+}
+
+/// A band's blend strength, scaled down when its pane is out of focus.
+const fn band_strength(full: u16, focused: bool) -> u16 {
+    if focused {
+        full
+    } else {
+        full * UNFOCUSED_BAND / 100
+    }
+}
+
 /// GitHub-style section separator: a dim full-width band carrying git's
 /// enclosing-section context (the `@@` line numbers are dropped as redundant
 /// with the gutter). When git names no section the band alone reads as the
 /// hunk boundary. Stays a navigable row so `{`/`}` hunk jumps land on it.
-pub fn hunk_header(theme: &Theme, hunk: &Hunk, width: u16, selected: bool) -> Line<'static> {
+pub fn hunk_header(
+    theme: &Theme,
+    hunk: &Hunk,
+    width: u16,
+    selected: bool,
+    focused: bool,
+) -> Line<'static> {
+    let band = crate::theme::blend(theme.panel, theme.border, HUNK_BAND);
     let bg = if selected {
-        theme.cursor_line
+        cursor_band(theme, band, focused)
     } else {
-        crate::theme::blend(theme.panel, theme.border, HUNK_BAND)
+        band
     };
     let ranges = format!(
         "@@ -{},{} +{},{} @@",
@@ -180,10 +207,11 @@ pub fn render_diff_line(
     gutter: usize,
     width: u16,
     selected: bool,
+    focused: bool,
     annotated: bool,
     search: &[(Range<usize>, bool)],
 ) -> Vec<Line<'static>> {
-    let (base_bg, emph_bg) = line_backgrounds(theme, line, selected, annotated);
+    let (base_bg, emph_bg) = line_backgrounds(theme, line, selected, focused, annotated);
 
     let number = |n: Option<u32>| match n {
         Some(n) => format!("{n:>gutter$}"),
@@ -262,11 +290,13 @@ const SELECTION_LIFT: u16 = 55;
 
 /// The line (base) and emphasis backgrounds, given selection/annotation state.
 /// Selection brightens whatever colour the row already carries, so a selected
-/// addition still reads as an addition.
+/// addition still reads as an addition. Only the base moves with focus; the
+/// emphasis colour is content and comes back at full strength.
 fn line_backgrounds(
     theme: &Theme,
     line: &DiffLine,
     selected: bool,
+    focused: bool,
     annotated: bool,
 ) -> (Color, Color) {
     let (line_bg, emph_bg) = match line.kind {
@@ -275,8 +305,8 @@ fn line_backgrounds(
         LineKind::Context => (theme.panel, theme.panel),
     };
     let base_bg = match (selected, line.kind) {
-        (true, LineKind::Context) => theme.cursor_line,
-        (true, _) => crate::theme::blend(line_bg, emph_bg, SELECTION_LIFT),
+        (true, LineKind::Context) => cursor_band(theme, theme.panel, focused),
+        (true, _) => crate::theme::blend(line_bg, emph_bg, band_strength(SELECTION_LIFT, focused)),
         (false, _) if annotated => theme.annotated,
         (false, _) => line_bg,
     };
@@ -340,6 +370,7 @@ pub fn split_pair_height(
     side(left, left_w).max(side(right, right_w))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn render_split_pair(
     theme: &Theme,
     left: SplitCell<'_>,
@@ -348,17 +379,34 @@ pub fn render_split_pair(
     width: u16,
     sel_left: bool,
     sel_right: bool,
+    focused: bool,
 ) -> Vec<Line<'static>> {
     let total = width as usize;
     let left_w = total.saturating_sub(1) / 2;
     let right_w = total.saturating_sub(1 + left_w);
-    let mut left_rows = side_rows(theme, left, SplitSide::Left, gutter, left_w, sel_left);
-    let mut right_rows = side_rows(theme, right, SplitSide::Right, gutter, right_w, sel_right);
+    let mut left_rows = side_rows(
+        theme,
+        left,
+        SplitSide::Left,
+        gutter,
+        left_w,
+        sel_left,
+        focused,
+    );
+    let mut right_rows = side_rows(
+        theme,
+        right,
+        SplitSide::Right,
+        gutter,
+        right_w,
+        sel_right,
+        focused,
+    );
     let rows = left_rows.len().max(right_rows.len());
     let filler = |cell: SplitCell<'_>, selected: bool, col_width: usize| {
         let bg = match cell {
-            Some((line, ..)) => line_backgrounds(theme, line, selected, false).0,
-            None if selected => theme.cursor_line,
+            Some((line, ..)) => line_backgrounds(theme, line, selected, focused, false).0,
+            None if selected => cursor_band(theme, theme.panel, focused),
             None => theme.panel,
         };
         vec![Span::styled(" ".repeat(col_width), Style::new().bg(bg))]
@@ -392,10 +440,11 @@ fn side_rows(
     gutter: usize,
     col_width: usize,
     selected: bool,
+    focused: bool,
 ) -> Vec<Vec<Span<'static>>> {
     let Some((line, syntax, annotated)) = cell else {
         let bg = if selected {
-            theme.cursor_line
+            cursor_band(theme, theme.panel, focused)
         } else {
             theme.panel
         };
@@ -404,7 +453,7 @@ fn side_rows(
             Style::new().bg(bg),
         )]];
     };
-    let (base_bg, emph_bg) = line_backgrounds(theme, line, selected, annotated);
+    let (base_bg, emph_bg) = line_backgrounds(theme, line, selected, focused, annotated);
     let number = match side {
         SplitSide::Left => line.old_no,
         SplitSide::Right => line.new_no,
@@ -672,18 +721,57 @@ mod tests {
             _ => 0,
         };
         let added = line(LineKind::Added, None, Some(1), "x");
-        let (plain, emph) = line_backgrounds(&theme, &added, false, false);
-        let (lit, _) = line_backgrounds(&theme, &added, true, false);
+        let (plain, emph) = line_backgrounds(&theme, &added, false, true, false);
+        let (lit, _) = line_backgrounds(&theme, &added, true, true, false);
         assert!(green(plain) < green(lit), "selection brightens the row");
         assert!(green(lit) < green(emph), "and stays under the emphasis bg");
         assert_ne!(lit, theme.cursor_line, "the addition keeps its own hue");
 
         let context = line(LineKind::Context, Some(1), Some(1), "x");
         assert_eq!(
-            line_backgrounds(&theme, &context, true, false).0,
+            line_backgrounds(&theme, &context, true, true, false).0,
             theme.cursor_line,
             "an unchanged row still gets the plain cursor band"
         );
+    }
+
+    #[test]
+    fn an_unfocused_cursor_quiets_the_band_and_leaves_emphasis_alone() {
+        let theme = Theme::github_dark();
+        let luma = |color| match color {
+            Color::Rgb(r, g, b) => u16::from(r) + u16::from(g) + u16::from(b),
+            _ => 0,
+        };
+        for kind in [LineKind::Context, LineKind::Added, LineKind::Deleted] {
+            let row = line(kind, Some(1), Some(1), "x");
+            let (unmarked, _) = line_backgrounds(&theme, &row, false, false, false);
+            let (bright, emph) = line_backgrounds(&theme, &row, true, true, false);
+            let (quiet, quiet_emph) = line_backgrounds(&theme, &row, true, false, false);
+            assert_ne!(
+                quiet, unmarked,
+                "{kind:?}: the row still reads as the cursor"
+            );
+            assert!(
+                luma(unmarked) < luma(quiet) && luma(quiet) < luma(bright),
+                "{kind:?}: the out-of-focus band sits between the two"
+            );
+            assert_eq!(quiet_emph, emph, "{kind:?}: emphasis never follows focus");
+        }
+    }
+
+    #[test]
+    fn an_unfocused_cursor_on_a_changed_row_keeps_its_intraline_emphasis() {
+        let theme = Theme::github_dark();
+        let mut added = line(LineKind::Added, None, Some(1), "let x = 42;");
+        added.emphasis.push(8..10);
+        let rendered = render_diff_line(&theme, &added, None, 4, 60, true, false, false, &[]);
+        let emphasized: String = rendered[0]
+            .spans
+            .iter()
+            .filter(|s| s.style.bg == Some(theme.add_emph_bg))
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(emphasized, "42", "the emphasis keeps its full-strength bg");
     }
 
     #[test]
@@ -752,7 +840,17 @@ mod tests {
                 italic: false,
             },
         ];
-        let rendered = render_diff_line(&theme, &added, Some(&syntax), 4, 60, false, false, &[]);
+        let rendered = render_diff_line(
+            &theme,
+            &added,
+            Some(&syntax),
+            4,
+            60,
+            false,
+            true,
+            false,
+            &[],
+        );
         assert_eq!(rendered.len(), 1, "short line stays one row");
         let keyword: Vec<_> = rendered[0]
             .spans
@@ -778,7 +876,7 @@ mod tests {
         // reindents/moves included: there is no in-between render state
         let theme = Theme::github_dark();
         let reindented = line(LineKind::Added, None, Some(2), "    <Form>");
-        let rendered = render_diff_line(&theme, &reindented, None, 3, 60, false, false, &[]);
+        let rendered = render_diff_line(&theme, &reindented, None, 3, 60, false, true, false, &[]);
         assert!(
             rendered[0]
                 .spans
@@ -794,7 +892,7 @@ mod tests {
         let text = "x".repeat(100);
         let long = line(LineKind::Added, None, Some(2), &text);
         let width = 40u16;
-        let rendered = render_diff_line(&theme, &long, None, 4, width, false, false, &[]);
+        let rendered = render_diff_line(&theme, &long, None, 4, width, false, true, false, &[]);
         assert_eq!(rendered.len(), diff_line_height(&long, 4, width));
         assert!(rendered.len() > 1, "100 columns cannot fit in 40");
         for row in &rendered {
@@ -837,7 +935,7 @@ mod tests {
         let theme = Theme::github_dark();
         let cjk = line(LineKind::Added, None, Some(2), &"あ".repeat(5));
         for width in [14u16, 15, 16, 40] {
-            let rendered = render_diff_line(&theme, &cjk, None, 4, width, false, false, &[]);
+            let rendered = render_diff_line(&theme, &cjk, None, 4, width, false, true, false, &[]);
             assert_eq!(
                 rendered.len(),
                 diff_line_height(&cjk, 4, width),
@@ -845,7 +943,7 @@ mod tests {
             );
         }
         let long = line(LineKind::Added, None, Some(2), &"あ".repeat(441));
-        let rendered = render_diff_line(&theme, &long, None, 4, 100, false, false, &[]);
+        let rendered = render_diff_line(&theme, &long, None, 4, 100, false, true, false, &[]);
         assert_eq!(rendered.len(), diff_line_height(&long, 4, 100));
     }
 

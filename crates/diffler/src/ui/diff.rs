@@ -24,8 +24,8 @@ use crate::theme::Theme;
 use crate::tree::{Bucket, TreeNode};
 use crate::ui::Hint;
 use crate::ui::diff_render::{
-    align_scroll, diff_line_height, file_gutter_width, hunk_header, line_syntax, render_diff_line,
-    render_split_pair, split_pair_height,
+    align_scroll, cursor_band, diff_line_height, file_gutter_width, hunk_header, line_syntax,
+    render_diff_line, render_split_pair, split_pair_height,
 };
 use crate::ui::{diffstat_spans, proportion_bar, status_bar, status_color};
 
@@ -152,13 +152,22 @@ fn draw_sidebar(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &m
                     row.depth,
                     inner.width,
                     on_cursor,
+                    focused,
                     &ranges,
                 ),
                 TreeNode::Section {
                     bucket,
                     count,
                     folded,
-                } => sidebar_section_line(theme, *bucket, *count, *folded, inner.width, on_cursor),
+                } => sidebar_section_line(
+                    theme,
+                    *bucket,
+                    *count,
+                    *folded,
+                    inner.width,
+                    on_cursor,
+                    focused,
+                ),
                 TreeNode::File { index, name } => {
                     let Some(file) = model.files.get(*index) else {
                         return Line::default();
@@ -174,6 +183,7 @@ fn draw_sidebar(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &m
                         row.depth,
                         inner.width,
                         on_cursor,
+                        focused,
                         &ranges,
                     )
                 }
@@ -307,6 +317,7 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
                 rows_area.width,
                 row,
                 index == sel,
+                focused,
                 side,
             );
             for (offset, line) in rendered.into_iter().enumerate() {
@@ -393,6 +404,7 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
             row,
             rows_area.width,
             selected(index),
+            focused,
             &ranges,
         );
         for (offset, line) in rendered.into_iter().enumerate() {
@@ -439,11 +451,12 @@ fn split_row_lines(
     width: u16,
     row: &SplitRow,
     on_cursor: bool,
+    focused: bool,
     cursor_side: Option<SplitSide>,
 ) -> Vec<Line<'static>> {
     match *row {
         SplitRow::Hunk { hunk } => match file.hunks.get(hunk) {
-            Some(hunk) => vec![hunk_header(theme, hunk, width, on_cursor)],
+            Some(hunk) => vec![hunk_header(theme, hunk, width, on_cursor, focused)],
             None => vec![Line::default()],
         },
         SplitRow::Pair { hunk, left, right } => {
@@ -469,6 +482,7 @@ fn split_row_lines(
                 width,
                 sel_left,
                 sel_right,
+                focused,
             )
         }
         SplitRow::Comment {
@@ -485,6 +499,7 @@ fn split_row_lines(
                     outdated,
                     width,
                     on_cursor,
+                    focused,
                 )]
             }
             None => vec![Line::default()],
@@ -547,6 +562,16 @@ fn open_comment_count(session: &Session, path: &str) -> usize {
         .count()
 }
 
+/// A sidebar row's background: the list surface, or the cursor band over it for
+/// the row under the cursor.
+fn sidebar_row_bg(theme: &Theme, on_cursor: bool, focused: bool) -> Color {
+    if on_cursor {
+        cursor_band(theme, sidebar_bg(theme), focused)
+    } else {
+        sidebar_bg(theme)
+    }
+}
+
 /// Sidebar leading cells: the cursor `▌` marker plus the tree indent for
 /// `depth`. Shared by dir and file rows so columns line up.
 fn tree_lead(theme: &Theme, depth: usize, bg: Color, on_cursor: bool) -> Span<'static> {
@@ -567,13 +592,10 @@ fn sidebar_dir_line(
     depth: usize,
     width: u16,
     on_cursor: bool,
+    focused: bool,
     search: &[(std::ops::Range<usize>, bool)],
 ) -> Line<'static> {
-    let bg = if on_cursor {
-        theme.cursor_line
-    } else {
-        sidebar_bg(theme)
-    };
+    let bg = sidebar_row_bg(theme, on_cursor, focused);
     let arrow = if folded { "▸ " } else { "▾ " };
     let name_style = Style::new()
         .fg(if on_cursor { theme.accent } else { theme.fg })
@@ -595,12 +617,9 @@ fn sidebar_section_line(
     folded: bool,
     width: u16,
     on_cursor: bool,
+    focused: bool,
 ) -> Line<'static> {
-    let bg = if on_cursor {
-        theme.cursor_line
-    } else {
-        sidebar_bg(theme)
-    };
+    let bg = sidebar_row_bg(theme, on_cursor, focused);
     let arrow = if folded { "▸ " } else { "▾ " };
     let label_style = Style::new()
         .fg(if on_cursor { theme.accent } else { theme.fg })
@@ -628,13 +647,10 @@ fn sidebar_file_line(
     depth: usize,
     width: u16,
     on_cursor: bool,
+    focused: bool,
     search: &[(std::ops::Range<usize>, bool)],
 ) -> Line<'static> {
-    let bg = if on_cursor {
-        theme.cursor_line
-    } else {
-        sidebar_bg(theme)
-    };
+    let bg = sidebar_row_bg(theme, on_cursor, focused);
     let dim = Style::new().fg(theme.dim).bg(bg);
     let glyph = file.status.glyph();
     let mut spans = vec![
@@ -768,13 +784,14 @@ fn row_lines(
     row: &DiffRow,
     width: u16,
     selected: bool,
+    focused: bool,
     search: &[(std::ops::Range<usize>, bool)],
 ) -> Vec<Line<'static>> {
     let highlights = &diff.highlights;
     match row {
         DiffRow::Hunk { file, hunk } => {
             match model.files.get(*file).and_then(|f| f.hunks.get(*hunk)) {
-                Some(hunk) => vec![hunk_header(theme, hunk, width, selected)],
+                Some(hunk) => vec![hunk_header(theme, hunk, width, selected, focused)],
                 None => vec![Line::default()],
             }
         }
@@ -796,6 +813,7 @@ fn row_lines(
                 file_gutter_width(file),
                 width,
                 selected,
+                focused,
                 annotated,
                 search,
             )
@@ -814,6 +832,7 @@ fn row_lines(
                     *outdated,
                     width,
                     selected,
+                    focused,
                 )]
             }
             None => vec![Line::default()],
@@ -951,9 +970,10 @@ fn comment_row_line(
     outdated: bool,
     width: u16,
     selected: bool,
+    focused: bool,
 ) -> Line<'static> {
     let bg = if selected {
-        theme.cursor_line
+        cursor_band(theme, theme.bg, focused)
     } else {
         theme.bg
     };
@@ -1304,6 +1324,37 @@ mod tests {
     }
 
     #[test]
+    fn only_the_pane_with_focus_carries_the_bright_cursor_band() {
+        let (_fixture, mut app) = diff_app();
+        open_lib_diff(&mut app);
+        let band = app.theme.cursor_line;
+        let bands = |app: &mut App| {
+            let terminal = render(app);
+            let buffer = terminal.backend().buffer().clone();
+            let diff = app.diff.as_ref().expect("diff view");
+            let count = |area: ratatui::layout::Rect| {
+                (area.top()..area.bottom())
+                    .flat_map(|y| (area.left()..area.right()).map(move |x| (x, y)))
+                    .filter(|&(x, y)| buffer.cell((x, y)).is_some_and(|c| c.bg == band))
+                    .count()
+            };
+            (count(diff.sidebar), count(diff.pane))
+        };
+
+        let (sidebar, pane) = bands(&mut app);
+        assert_eq!(sidebar, 0, "the sidebar gives up its band to the diff pane");
+        assert!(
+            pane > 0,
+            "the focused diff pane holds the bright cursor row"
+        );
+
+        app.diff.as_mut().expect("diff view").focus = Pane::List;
+        let (sidebar, pane) = bands(&mut app);
+        assert!(sidebar > 0, "focus moves the bright band to the sidebar");
+        assert_eq!(pane, 0, "and the diff pane gives it up");
+    }
+
+    #[test]
     fn comment_range_highlights_its_anchored_lines() {
         let (_fixture, mut app) = diff_app();
         open_lib_diff(&mut app);
@@ -1625,6 +1676,7 @@ mod tests {
             0,
             80,
             false,
+            true,
             &[(0..3, true)],
         );
         let highlighted: Vec<&str> = spans
