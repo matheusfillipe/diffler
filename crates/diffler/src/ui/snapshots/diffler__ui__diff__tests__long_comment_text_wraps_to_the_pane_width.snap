@@ -13,7 +13,7 @@ expression: terminal.backend()
 "                                  ▌ reviewer · replied                                                                  "
 "                                  ▌ a negative or far too large answer breaks the callers downstream, so this needs a   "
 "                                  ▌ clamp before it ships to anyone                                                     "
-"                                  ▌ ↳ agent: agreed, clamping to the documented range and adding a regression test so   "
+"                                  ▌ └ agent: agreed, clamping to the documented range and adding a regression test so   "
 "                                  ▌   the next refactor cannot silently drop it                                         "
 "                                  ▌                                                                                     "
 "                                    3    3 }                                                                            "

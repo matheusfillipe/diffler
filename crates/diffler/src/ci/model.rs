@@ -31,7 +31,7 @@ impl JobStatus {
     pub fn glyph(self) -> &'static str {
         match self {
             Self::Ok => "✓",
-            Self::Failed => "✗",
+            Self::Failed => "×",
             Self::Running => "●",
             Self::Queued => "·",
             Self::Skipped => "–",

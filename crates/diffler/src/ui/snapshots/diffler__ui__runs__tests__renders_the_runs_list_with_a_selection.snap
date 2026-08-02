@@ -4,7 +4,7 @@ expression: terminal.backend()
 ---
 " <cr> open graph · / search · ? help                                            "
 "▌ ✓ CI                fix the thing                     main            abc1234 "
-"  ✗ Release           fix the thing                     feature/x       9988776 "
+"  × Release           fix the thing                     feature/x       9988776 "
 "  ● Nightly           fix the thing                     main            0011223 "
 "                                                                                "
 "                                                                                "

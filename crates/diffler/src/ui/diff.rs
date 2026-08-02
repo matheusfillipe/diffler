@@ -1040,7 +1040,7 @@ fn comment_row_line(
             let mut spans = vec![bar];
             if *first {
                 spans.push(Span::styled(
-                    format!("↳ {author}: "),
+                    format!("└ {author}: "),
                     Style::new().fg(theme.purple).bg(bg),
                 ));
             } else {

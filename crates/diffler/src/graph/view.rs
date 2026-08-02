@@ -631,6 +631,6 @@ mod tests {
         let before = v.layout.placements.len();
         v.patch_status([(NodeId::new("build"), NodeStatus::Failed)]);
         assert_eq!(v.layout.placements.len(), before, "topology unchanged");
-        assert!(render(&mut v).backend().to_string().contains("build ✗"));
+        assert!(render(&mut v).backend().to_string().contains("build ×"));
     }
 }

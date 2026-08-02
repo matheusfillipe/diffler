@@ -577,7 +577,7 @@ impl Grid {
     }
 
     /// Draw a group container: a rounded outline with `title` set into the top
-    /// border (`╭─ ▾ test ✗ ─╮`). Member boxes are drawn separately inside it.
+    /// border (`╭─ ▾ test × ─╮`). Member boxes are drawn separately inside it.
     fn draw_cluster(&mut self, x: usize, y: usize, w: usize, h: usize, title: &str) {
         if w < 2 || h < 2 {
             return;

@@ -23,6 +23,6 @@ expression: terminal.backend()
 "artifacts                                                                       "
 "  coverage  2.0 KB                                                              "
 "annotations                                                                     "
-"  ⚠ src/lib.rs:12  unused import                                                "
+"  ! src/lib.rs:12  unused import                                                "
 "                                                                                "
 " GRAPH  zoom: normal                                                            "

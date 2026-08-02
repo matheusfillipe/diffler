@@ -156,8 +156,8 @@ fn extras_lines(extras: &RunExtras, theme: &Theme) -> Vec<Line<'static>> {
         lines.push(Line::styled("annotations", theme.dim_style()));
         for annotation in &extras.annotations {
             let (glyph, color) = match annotation.level {
-                AnnotationLevel::Failure => ("✗", theme.error_fg),
-                AnnotationLevel::Warning => ("⚠", theme.warn_fg),
+                AnnotationLevel::Failure => ("×", theme.error_fg),
+                AnnotationLevel::Warning => ("!", theme.warn_fg),
                 AnnotationLevel::Notice => ("•", theme.accent),
             };
             let mut spans = vec![Span::styled(format!("  {glyph} "), Style::new().fg(color))];

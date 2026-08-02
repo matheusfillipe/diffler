@@ -499,7 +499,7 @@ pub fn comment_display(
     for reply in &comment.replies {
         // the author label only renders on the first line; continuations get
         // the renderer's two-space indent
-        let label = format!("↳ {}: ", reply.author).width();
+        let label = format!("└ {}: ", reply.author).width();
         let mut first = true;
         for logical in markdown::parse(&reply.body, highlighter) {
             let head = budget.saturating_sub(if first { label } else { 2 }).max(8);
@@ -3227,7 +3227,7 @@ mod tests {
             match line {
                 CommentLine::Body(runs) => assert!(text(runs).width() <= budget, "{runs:?}"),
                 CommentLine::Reply { spans, first, .. } => {
-                    let head = if *first { "↳ agent: ".width() } else { 2 };
+                    let head = if *first { "└ agent: ".width() } else { 2 };
                     assert!(text(spans).width() + head <= budget, "{spans:?}");
                 }
                 _ => {}

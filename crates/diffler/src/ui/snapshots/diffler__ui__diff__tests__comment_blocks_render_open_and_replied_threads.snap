@@ -10,7 +10,7 @@ expression: render(&mut app).backend()
 " ○ todo.md                +1 -0     1    1 pub fn answer() -> u32 {                                                     "
 "                                  ▌ reviewer · replied                                                                  "
 "                                  ▌ rename this?                                                                        "
-"                                  ▌ ↳ agent: kept for api compat                                                        "
+"                                  ▌ └ agent: kept for api compat                                                        "
 "                                  ▌                                                                                     "
 "                                ▌   2          41                                                                       "
 "                                ▌        2     42                                                                       "
