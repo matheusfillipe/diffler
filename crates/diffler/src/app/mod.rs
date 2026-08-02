@@ -21,6 +21,7 @@ pub mod pr;
 pub mod pr_create;
 mod search;
 mod status;
+pub mod text_edit;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

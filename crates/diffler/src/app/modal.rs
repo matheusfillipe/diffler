@@ -1,13 +1,14 @@
 //! Modal and input handling, including the branch prompts.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent};
 
 use std::path::Path;
 
 use super::fuzzy::{
     FuzzyKey, FuzzyList, branch_haystack, comment_haystack, rev_haystack, selected,
 };
-use super::{App, BranchAction, Flow, InputOp, Modal, PendingOp, RevChoice, byte_index};
+use super::text_edit;
+use super::{App, BranchAction, Flow, InputOp, Modal, PendingOp, RevChoice};
 
 impl App {
     pub(super) fn handle_modal_key(&mut self, key: &KeyEvent) -> Flow {
@@ -89,102 +90,13 @@ impl App {
     }
 
     pub(super) fn handle_input_key(&mut self, key: &KeyEvent) {
-        // Alt-Enter inserts a newline; Ctrl-J is the fallback for terminals
-        // that swallow the alt modifier
-        let newline = (key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::ALT))
-            || (key.code == KeyCode::Char('j') && key.modifiers.contains(KeyModifiers::CONTROL));
-        // exactly one of ctrl/alt makes an emacs chord: Windows reports AltGr
-        // as ctrl+alt together, and those keys carry text (@, {, €) to insert
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL)
-            && !key.modifiers.contains(KeyModifiers::ALT);
-        let alt = key.modifiers.contains(KeyModifiers::ALT)
-            && !key.modifiers.contains(KeyModifiers::CONTROL);
-        match key.code {
-            _ if newline => {
-                let Some(Modal::Input { buffer, cursor, .. }) = self.modal.as_mut() else {
-                    return;
-                };
-                buffer.insert(byte_index(buffer, *cursor), '\n');
-                *cursor += 1;
-            }
-            KeyCode::Esc => self.cancel_input(),
-            KeyCode::Enter => self.submit_input(),
-            code => {
-                let Some(Modal::Input { buffer, cursor, .. }) = self.modal.as_mut() else {
-                    return;
-                };
-                // the readline/emacs set every shell input carries; these are
-                // widget-internal like Backspace and the arrows, not remappable
-                // screen actions
-                match code {
-                    KeyCode::Char('a') if ctrl => *cursor = line_start(buffer, *cursor),
-                    KeyCode::Char('e') if ctrl => *cursor = line_end(buffer, *cursor),
-                    KeyCode::Char('u') if ctrl => {
-                        let start = line_start(buffer, *cursor);
-                        remove_chars(buffer, start, *cursor);
-                        *cursor = start;
-                    }
-                    KeyCode::Char('k') if ctrl => {
-                        // at line end, kill the newline itself: readline joins
-                        let end = line_end(buffer, *cursor)
-                            .max((*cursor + 1).min(buffer.chars().count()));
-                        remove_chars(buffer, *cursor, end);
-                    }
-                    KeyCode::Char('w') if ctrl => {
-                        let start = prev_word(buffer, *cursor);
-                        remove_chars(buffer, start, *cursor);
-                        *cursor = start;
-                    }
-                    KeyCode::Backspace if alt => {
-                        let start = prev_word(buffer, *cursor);
-                        remove_chars(buffer, start, *cursor);
-                        *cursor = start;
-                    }
-                    KeyCode::Char('d') if alt => {
-                        let end = next_word(buffer, *cursor);
-                        remove_chars(buffer, *cursor, end);
-                    }
-                    KeyCode::Char('b') if alt => *cursor = prev_word(buffer, *cursor),
-                    KeyCode::Char('f') if alt => *cursor = next_word(buffer, *cursor),
-                    KeyCode::Char('b') if ctrl => *cursor = cursor.saturating_sub(1),
-                    KeyCode::Char('f') if ctrl => {
-                        *cursor = (*cursor + 1).min(buffer.chars().count());
-                    }
-                    KeyCode::Char('d') if ctrl => {
-                        if *cursor < buffer.chars().count() {
-                            buffer.remove(byte_index(buffer, *cursor));
-                        }
-                    }
-                    KeyCode::Delete => {
-                        if *cursor < buffer.chars().count() {
-                            buffer.remove(byte_index(buffer, *cursor));
-                        }
-                    }
-                    // terminals with legacy input send ctrl-backspace as ctrl-h
-                    KeyCode::Char('h') if ctrl => {
-                        if *cursor > 0 {
-                            *cursor -= 1;
-                            buffer.remove(byte_index(buffer, *cursor));
-                        }
-                    }
-                    // a char with a lone ctrl/alt held is a chord, never text
-                    KeyCode::Char(c) if !ctrl && !alt => {
-                        buffer.insert(byte_index(buffer, *cursor), c);
-                        *cursor += 1;
-                    }
-                    KeyCode::Backspace => {
-                        if *cursor > 0 {
-                            *cursor -= 1;
-                            buffer.remove(byte_index(buffer, *cursor));
-                        }
-                    }
-                    KeyCode::Left => *cursor = cursor.saturating_sub(1),
-                    KeyCode::Right => *cursor = (*cursor + 1).min(buffer.chars().count()),
-                    KeyCode::Home => *cursor = 0,
-                    KeyCode::End => *cursor = buffer.chars().count(),
-                    _ => {}
-                }
-            }
+        let Some(Modal::Input { buffer, cursor, .. }) = self.modal.as_mut() else {
+            return;
+        };
+        match text_edit::apply(buffer, cursor, key) {
+            text_edit::Edit::Consumed => {}
+            text_edit::Edit::Submit => self.submit_input(),
+            text_edit::Edit::Cancel => self.cancel_input(),
         }
     }
 
@@ -781,67 +693,6 @@ impl App {
             }
         }
     }
-}
-
-/// Char index of the current line's start (just past the previous newline).
-fn line_start(buffer: &str, cursor: usize) -> usize {
-    buffer
-        .chars()
-        .take(cursor)
-        .enumerate()
-        .filter(|&(_, c)| c == '\n')
-        .last()
-        .map_or(0, |(i, _)| i + 1)
-}
-
-/// Char index of the current line's end (the next newline, or the buffer end).
-fn line_end(buffer: &str, cursor: usize) -> usize {
-    buffer
-        .chars()
-        .enumerate()
-        .skip(cursor)
-        .find(|&(_, c)| c == '\n')
-        .map_or_else(|| buffer.chars().count(), |(i, _)| i)
-}
-
-/// Char index of the previous word's start: skip whitespace back, then the
-/// word itself. One whitespace-word rule serves both the ctrl and meta ops —
-/// simpler than readline's split, and right for comment prose.
-fn prev_word(buffer: &str, cursor: usize) -> usize {
-    let chars: Vec<char> = buffer.chars().take(cursor).collect();
-    let ws_at = |i: usize| chars.get(i).is_some_and(|c| c.is_whitespace());
-    let mut i = chars.len();
-    while i > 0 && ws_at(i - 1) {
-        i -= 1;
-    }
-    while i > 0 && !ws_at(i - 1) {
-        i -= 1;
-    }
-    i
-}
-
-/// Char index just past the next word: skip whitespace forward, then the word.
-fn next_word(buffer: &str, cursor: usize) -> usize {
-    let chars: Vec<char> = buffer.chars().collect();
-    let ws_at = |i: usize| chars.get(i).is_some_and(|c| c.is_whitespace());
-    let mut i = cursor.min(chars.len());
-    while i < chars.len() && ws_at(i) {
-        i += 1;
-    }
-    while i < chars.len() && !ws_at(i) {
-        i += 1;
-    }
-    i
-}
-
-/// Remove the chars in `[start, end)` (char indices) from `buffer`.
-fn remove_chars(buffer: &mut String, start: usize, end: usize) {
-    if start >= end {
-        return;
-    }
-    let from = byte_index(buffer, start);
-    let to = byte_index(buffer, end);
-    buffer.replace_range(from..to, "");
 }
 
 #[cfg(test)]
