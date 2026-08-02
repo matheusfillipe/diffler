@@ -222,10 +222,11 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
         (ctx.theme, ctx.session, ctx.review_model, ctx.search);
     let focused = diff.focus == Pane::Diff;
     let title = pane_title(&diff.source);
+    frame.render_widget(Block::new().style(Style::new().bg(theme.panel)), area);
     let [heading, inner] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
     frame.render_widget(
-        Paragraph::new(pane_heading(theme, &title, focused, theme.bg)),
+        Paragraph::new(pane_heading(theme, &title, focused, theme.panel)),
         heading,
     );
 
@@ -238,7 +239,7 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
         frame.render_widget(
             Paragraph::new(Line::styled(
                 " nothing to review",
-                Style::new().fg(theme.dim).bg(theme.bg),
+                Style::new().fg(theme.dim).bg(theme.panel),
             )),
             inner,
         );
@@ -551,10 +552,11 @@ fn pane_title(source: &ReviewSource) -> String {
     }
 }
 
-/// The file sidebar's surface. A step away from the diff pane's background is
-/// what tells the two panes apart, so neither needs a border drawn.
+/// The file sidebar's surface. A step away from the diff pane's surface is
+/// what tells the two panes apart, so neither needs a border drawn: the diff
+/// is the lit card, the file list lies flat on the app background.
 fn sidebar_bg(theme: &Theme) -> Color {
-    theme.panel
+    theme.bg
 }
 
 /// A pane's name as a plain heading row over its own surface, accented when
@@ -985,7 +987,7 @@ fn comment_row_line(
     let bg = if selected {
         theme.cursor_line
     } else {
-        theme.panel
+        theme.bg
     };
     // a solid left bar in the comment's status color turns the block into a
     // distinct card that stands out against the diff lines around it

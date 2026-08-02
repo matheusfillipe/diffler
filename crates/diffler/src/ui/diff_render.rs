@@ -102,6 +102,11 @@ pub fn file_gutter_width(file: &FileDiff) -> usize {
     (max.ilog10() as usize + 1).max(4)
 }
 
+/// How far the hunk band sits off the diff surface, toward the border tint.
+/// It has to clear both surfaces: the diff pane's panel and the status
+/// screen's background.
+const HUNK_BAND: u16 = 45;
+
 /// GitHub-style section separator: a dim full-width band carrying git's
 /// enclosing-section context (the `@@` line numbers are dropped as redundant
 /// with the gutter). When git names no section the band alone reads as the
@@ -110,7 +115,7 @@ pub fn hunk_header(theme: &Theme, hunk: &Hunk, width: u16, selected: bool) -> Li
     let bg = if selected {
         theme.cursor_line
     } else {
-        theme.panel
+        crate::theme::blend(theme.panel, theme.border, HUNK_BAND)
     };
     let ranges = format!(
         "@@ -{},{} +{},{} @@",
@@ -267,7 +272,7 @@ fn line_backgrounds(
     let (line_bg, emph_bg) = match line.kind {
         LineKind::Added => (theme.add_line_bg, theme.add_emph_bg),
         LineKind::Deleted => (theme.del_line_bg, theme.del_emph_bg),
-        LineKind::Context => (theme.bg, theme.bg),
+        LineKind::Context => (theme.panel, theme.panel),
     };
     let base_bg = match (selected, line.kind) {
         (true, LineKind::Context) => theme.cursor_line,
@@ -354,7 +359,7 @@ pub fn render_split_pair(
         let bg = match cell {
             Some((line, ..)) => line_backgrounds(theme, line, selected, false).0,
             None if selected => theme.cursor_line,
-            None => theme.bg,
+            None => theme.panel,
         };
         vec![Span::styled(" ".repeat(col_width), Style::new().bg(bg))]
     };
@@ -368,7 +373,10 @@ pub fn render_split_pair(
         .into_iter()
         .zip(right_rows)
         .map(|(mut spans, right)| {
-            spans.push(Span::styled("│", Style::new().fg(theme.dim).bg(theme.bg)));
+            spans.push(Span::styled(
+                "│",
+                Style::new().fg(theme.dim).bg(theme.panel),
+            ));
             spans.extend(right);
             Line::from(spans)
         })
@@ -389,7 +397,7 @@ fn side_rows(
         let bg = if selected {
             theme.cursor_line
         } else {
-            theme.bg
+            theme.panel
         };
         return vec![vec![Span::styled(
             " ".repeat(col_width),
