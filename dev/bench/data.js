@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785624242027,
+  "lastUpdate": 1785642876189,
   "repoUrl": "https://github.com/matheusfillipe/diffler",
   "entries": {
     "Benchmark": [
@@ -8927,6 +8927,102 @@ window.BENCHMARK_DATA = {
             "name": "scope_index/20000",
             "value": 91556784,
             "range": "± 1249935",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "committer": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "distinct": true,
+          "id": "4d3bc54c2120929a71a9ce4ee28680d79662d773",
+          "message": "remove the lsp call hierarchy and blast radius",
+          "timestamp": "2026-08-02T05:50:52+02:00",
+          "tree_id": "01d24cab1a68d1b9e2370bb824b41cf89d91f45d",
+          "url": "https://github.com/matheusfillipe/diffler/commit/4d3bc54c2120929a71a9ce4ee28680d79662d773"
+        },
+        "date": 1785642875708,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "syndiff_emphasis/1000",
+            "value": 7287104,
+            "range": "± 102658",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/1000",
+            "value": 20066,
+            "range": "± 211",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/1000",
+            "value": 5244964,
+            "range": "± 41769",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/1000",
+            "value": 4140030,
+            "range": "± 69254",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/5000",
+            "value": 39617511,
+            "range": "± 521937",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/5000",
+            "value": 94983,
+            "range": "± 992",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/5000",
+            "value": 26945349,
+            "range": "± 234984",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/5000",
+            "value": 21082443,
+            "range": "± 172711",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/20000",
+            "value": 174247899,
+            "range": "± 4513854",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/20000",
+            "value": 404190,
+            "range": "± 2773",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/20000",
+            "value": 113226697,
+            "range": "± 1865693",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/20000",
+            "value": 85794496,
+            "range": "± 1333796",
             "unit": "ns/iter"
           }
         ]
