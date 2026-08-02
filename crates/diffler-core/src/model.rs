@@ -128,14 +128,16 @@ pub enum FileStatus {
 }
 
 impl FileStatus {
-    /// Single-character indicator used in the diff sidebar (A/M/D/R/?).
+    /// Single-character indicator used in the diff sidebar. Shapes rather
+    /// than letters, so the status survives a palette a reader cannot
+    /// separate by hue; colour reinforces what the shape already says.
     pub const fn glyph(self) -> char {
         match self {
-            Self::Added => 'A',
-            Self::Modified => 'M',
-            Self::Deleted => 'D',
-            Self::Renamed => 'R',
-            Self::Untracked => '?',
+            Self::Added => '+',
+            Self::Modified => '●',
+            Self::Deleted => '−',
+            Self::Renamed => '~',
+            Self::Untracked => '○',
         }
     }
 
@@ -253,11 +255,23 @@ mod tests {
 
     #[test]
     fn file_status_glyph_and_label_cover_all_variants() {
-        assert_eq!(FileStatus::Added.glyph(), 'A');
-        assert_eq!(FileStatus::Modified.glyph(), 'M');
-        assert_eq!(FileStatus::Deleted.glyph(), 'D');
-        assert_eq!(FileStatus::Renamed.glyph(), 'R');
-        assert_eq!(FileStatus::Untracked.glyph(), '?');
+        let glyphs = [
+            FileStatus::Added,
+            FileStatus::Modified,
+            FileStatus::Deleted,
+            FileStatus::Renamed,
+            FileStatus::Untracked,
+        ]
+        .map(FileStatus::glyph);
+        assert_eq!(glyphs, ['+', '●', '−', '~', '○']);
+        let mut distinct = glyphs.to_vec();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(
+            distinct.len(),
+            glyphs.len(),
+            "no two statuses share a shape"
+        );
 
         assert_eq!(FileStatus::Added.label(), "new file");
         assert_eq!(FileStatus::Modified.label(), "modified");

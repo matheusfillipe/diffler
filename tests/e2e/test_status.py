@@ -45,8 +45,8 @@ def test_stage_moves_untracked_file_to_staged(spawn):
     tui.send("j")
     tui.send("s")
     tui.wait_for("Staged changes (1)")
-    # file rows show the status glyph (A = added) and the basename
-    tui.wait_for("A notes.txt")
+    # file rows show the status shape (+ = added) and the basename
+    tui.wait_for("+ notes.txt")
     tui.wait_gone("Untracked (1)")
 
 
