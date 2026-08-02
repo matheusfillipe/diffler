@@ -11,7 +11,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+use ratatui::widgets::{Block, Paragraph};
 
 use crate::app::markdown::MdSpan;
 use crate::app::{
@@ -89,24 +89,39 @@ struct RenderCtx<'a> {
     highlighter: &'a diffler_core::highlight::Highlighter,
 }
 
+/// Columns of empty background between the two panes, the gap that reads as
+/// their divider now that neither is boxed.
+const PANE_GAP: u16 = 1;
+
 fn draw_body(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut DiffView) {
-    let width = sidebar_width(area.width);
-    let [list_area, pane_area] =
-        Layout::horizontal([Constraint::Length(width), Constraint::Min(0)]).areas(area);
+    // the sidebar keeps the columns its border used to spend, plus the pane's
+    // left one; the gap gives back the last
+    let width = (sidebar_width(area.width) + 1).min(area.width);
+    let [list_area, _gap, pane_area] = Layout::horizontal([
+        Constraint::Length(width),
+        Constraint::Length(PANE_GAP),
+        Constraint::Min(0),
+    ])
+    .areas(area);
     draw_sidebar(frame, list_area, ctx, diff);
     draw_pane(frame, pane_area, ctx, diff);
 }
 
-/// Left pane: one row per file in the diff, the selected one highlighted, the
-/// focused pane's border accented.
+/// Left pane: a heading row then one row per file in the diff, the selected
+/// one highlighted.
 fn draw_sidebar(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut DiffView) {
     let (theme, session, review_model, search) =
         (ctx.theme, ctx.session, ctx.review_model, ctx.search);
     let focused = diff.focus == Pane::List;
-    let block = pane_block(theme, "Files", focused);
-    let inner = block.inner(area);
+    let surface = sidebar_bg(theme);
+    frame.render_widget(Block::new().style(Style::new().bg(surface)), area);
+    let [heading, inner] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
+    frame.render_widget(
+        Paragraph::new(pane_heading(theme, "Files", focused, surface)),
+        heading,
+    );
     diff.sidebar = inner;
-    frame.render_widget(block, area);
     let Some(model) = diff.commit_model.as_ref().or(review_model) else {
         return;
     };
@@ -176,9 +191,12 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
         (ctx.theme, ctx.session, ctx.review_model, ctx.search);
     let focused = diff.focus == Pane::Diff;
     let title = pane_title(&diff.source);
-    let block = pane_block(theme, &title, focused);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let [heading, inner] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
+    frame.render_widget(
+        Paragraph::new(pane_heading(theme, &title, focused, theme.bg)),
+        heading,
+    );
 
     let Some((model, file)) = diff
         .commit_model
@@ -502,20 +520,22 @@ fn pane_title(source: &ReviewSource) -> String {
     }
 }
 
-/// Bordered pane with an accent title/border when focused, dim otherwise.
-fn pane_block(theme: &Theme, title: &str, focused: bool) -> Block<'static> {
-    let border = if focused { theme.accent } else { theme.border };
-    Block::new()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(border).bg(theme.bg))
-        .title(Span::styled(
-            format!(" {title} "),
-            Style::new()
-                .fg(if focused { theme.accent } else { theme.dim })
-                .bg(theme.bg)
-                .add_modifier(Modifier::BOLD),
-        ))
+/// The file sidebar's surface. A step away from the diff pane's background is
+/// what tells the two panes apart, so neither needs a border drawn.
+fn sidebar_bg(theme: &Theme) -> Color {
+    theme.panel
+}
+
+/// A pane's name as a plain heading row over its own surface, accented when
+/// the pane holds focus.
+fn pane_heading(theme: &Theme, title: &str, focused: bool, bg: Color) -> Line<'static> {
+    Line::styled(
+        format!(" {title}"),
+        Style::new()
+            .fg(if focused { theme.accent } else { theme.dim })
+            .bg(bg)
+            .add_modifier(Modifier::BOLD),
+    )
 }
 
 fn open_comment_count(session: &Session, path: &str) -> usize {
@@ -551,7 +571,7 @@ fn sidebar_dir_line(
     let bg = if on_cursor {
         theme.cursor_line
     } else {
-        theme.bg
+        sidebar_bg(theme)
     };
     let arrow = if folded { "▸ " } else { "▾ " };
     let name_style = Style::new()
@@ -578,7 +598,7 @@ fn sidebar_section_line(
     let bg = if on_cursor {
         theme.cursor_line
     } else {
-        theme.bg
+        sidebar_bg(theme)
     };
     let arrow = if folded { "▸ " } else { "▾ " };
     let label_style = Style::new()
@@ -612,7 +632,7 @@ fn sidebar_file_line(
     let bg = if on_cursor {
         theme.cursor_line
     } else {
-        theme.bg
+        sidebar_bg(theme)
     };
     let dim = Style::new().fg(theme.dim).bg(bg);
     let glyph = file.status.glyph();
