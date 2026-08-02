@@ -41,4 +41,4 @@ expression: terminal.backend()
 "                                                                                                                        "
 "                                                                                                                        "
 "                                                                                                                        "
-" DIFF  fixture@main  mcp off  viewed 0/3 files                                                                          "
+" DIFF  fixture@main · mcp off · viewed 0/3 files                                                                        "

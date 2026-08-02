@@ -628,34 +628,34 @@ pub(super) fn status_bar(app: &App, width: u16) -> Line<'static> {
         Span::styled(format!(" {repo}@{branch}"), on_panel(theme.fg)),
     ];
     if let Some(port) = app.mcp_port {
-        spans.push(Span::styled(format!("  mcp :{port}"), on_panel(theme.dim)));
+        spans.push(Span::styled(format!(" · mcp :{port}"), on_panel(theme.dim)));
     } else if app.config.mcp.enabled {
         // server is configured but not yet bound (or failed)
-        spans.push(Span::styled("  mcp off", on_panel(theme.dim)));
+        spans.push(Span::styled(" · mcp off", on_panel(theme.dim)));
     }
     if app.refresh_flash > 0 {
-        spans.push(Span::styled("  ↻", on_panel(theme.dim)));
+        spans.push(Span::styled(" · ↻", on_panel(theme.dim)));
     }
     let (files, viewed) = app.viewed_counts();
     if files > 0 {
         // the diff view is the review walk, so its counter reads as progress
         let text = if app.screen() == Screen::Diff {
-            format!("  viewed {viewed}/{files} files")
+            format!(" · viewed {viewed}/{files} files")
         } else {
             let noun = if files == 1 { "file" } else { "files" };
-            format!("  {files} {noun}, {viewed} viewed")
+            format!(" · {files} {noun}, {viewed} viewed")
         };
         spans.push(Span::styled(text, on_panel(theme.dim)));
     }
     if let Some(search) = &app.search {
         let (i, n) = search.count();
         let count = if n == 0 {
-            "  [no match]".to_owned()
+            " [no match]".to_owned()
         } else {
-            format!("  [{i}/{n}]")
+            format!(" [{i}/{n}]")
         };
         spans.push(Span::styled(
-            format!("  /{}", search.query()),
+            format!(" · /{}", search.query()),
             on_panel(theme.accent),
         ));
         spans.push(Span::styled(count, on_panel(theme.dim)));

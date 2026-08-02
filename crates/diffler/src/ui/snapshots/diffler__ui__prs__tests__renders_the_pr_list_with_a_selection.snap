@@ -3,10 +3,10 @@ source: crates/diffler/src/ui/prs.rs
 expression: terminal.backend()
 ---
 " <cr> review · / search · ? help                                                "
-"  #12 Add widgets alice  feat/widgets → main                                    "
-"▌ #9 Fix flaky test bob  fix/flaky → main                                       "
+"  #12 Add widgets alice · feat/widgets → main                                   "
+"▌ #9 Fix flaky test bob · fix/flaky → main                                      "
 "                                                                                "
 "                                                                                "
 "                                                                                "
 "                                                                                "
-" STATUS  fixture@main  mcp off  3 files, 0 viewed                               "
+" STATUS  fixture@main · mcp off · 3 files, 0 viewed                             "

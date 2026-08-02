@@ -41,4 +41,4 @@ expression: render(&mut app).backend()
 "                                                                                                                        "
 "                                                                                                                        "
 "                                                                                                                        "
-" STATUS  fixture@main  mcp off  3 files, 0 viewed                                                                       "
+" STATUS  fixture@main · mcp off · 3 files, 0 viewed                                                                     "

@@ -41,4 +41,4 @@ expression: render(&mut app).backend()
 "                                                                                                                        "
 "                                                                                                                        "
 "                                                                                                                        "
-" DIFF vs main  fixture@feature  mcp off  viewed 0/2 files                                                               "
+" DIFF vs main  fixture@feature · mcp off · viewed 0/2 files                                                             "

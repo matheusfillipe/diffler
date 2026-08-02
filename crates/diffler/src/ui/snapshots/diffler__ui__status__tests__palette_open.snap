@@ -41,4 +41,4 @@ expression: render(&mut app).backend()
 "                               │ amend HEAD (message and content)                   c a │                               "
 "                               │ type to filter · enter run · tab list · esc close      │                               "
 "                               ╰────────────────────────────────────────────────────────╯                               "
-" STATUS  fixture@main  mcp off  3 files, 0 viewed                                                                       "
+" STATUS  fixture@main · mcp off · 3 files, 0 viewed                                                                     "

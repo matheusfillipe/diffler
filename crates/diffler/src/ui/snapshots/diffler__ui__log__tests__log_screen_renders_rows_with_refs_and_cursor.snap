@@ -41,4 +41,4 @@ expression: terminal.backend()
 "                                                                                                                        "
 "                                                                                                                        "
 "                                                                                                                        "
-" LOG  fixture@main  mcp off                                                                                             "
+" LOG  fixture@main · mcp off                                                                                            "

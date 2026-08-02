@@ -64,7 +64,7 @@ fn draw_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 &app.theme,
             ));
             spans.push(Span::styled(
-                format!("  {} → {}", pr.head_ref, pr.base_ref),
+                format!(" · {} → {}", pr.head_ref, pr.base_ref),
                 Style::new().fg(app.theme.purple),
             ));
             Line::from(spans)
