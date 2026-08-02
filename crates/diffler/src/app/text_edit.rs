@@ -1,6 +1,8 @@
 //! The editing surface behind every multi-line text field: the readline/emacs
 //! key set over a `(buffer, char cursor)` pair. Shared by the input modal and
 //! the diff pane's inline comment composer, so both accept the same keys.
+//! Vertical movement lives with the field, which is the only thing that knows
+//! how its text wraps on screen.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -98,33 +100,11 @@ pub fn apply(buffer: &mut String, cursor: &mut usize, key: &KeyEvent) -> Edit {
         }
         KeyCode::Left => *cursor = cursor.saturating_sub(1),
         KeyCode::Right => *cursor = (*cursor + 1).min(buffer.chars().count()),
-        KeyCode::Up => *cursor = step_row(buffer, *cursor, false),
-        KeyCode::Down => *cursor = step_row(buffer, *cursor, true),
         KeyCode::Home => *cursor = 0,
         KeyCode::End => *cursor = buffer.chars().count(),
         _ => {}
     }
     Edit::Consumed
-}
-
-/// The cursor moved one logical line, holding its column where the
-/// destination is long enough. At the first or last line it stays put.
-fn step_row(buffer: &str, cursor: usize, down: bool) -> usize {
-    let start = line_start(buffer, cursor);
-    let column = cursor - start;
-    let (target_start, target_end) = if down {
-        let end = line_end(buffer, cursor);
-        if end == buffer.chars().count() {
-            return cursor;
-        }
-        (end + 1, line_end(buffer, end + 1))
-    } else {
-        if start == 0 {
-            return cursor;
-        }
-        (line_start(buffer, start - 1), start - 1)
-    };
-    (target_start + column).min(target_end)
 }
 
 /// Char index of the current line's start (just past the previous newline).
@@ -218,27 +198,6 @@ mod tests {
         assert_eq!(edit, Edit::Consumed);
         assert_eq!(buffer, "a\nb");
         assert_eq!(cursor, 2);
-    }
-
-    #[test]
-    fn the_arrows_walk_rows_holding_the_column_where_it_fits() {
-        let (mut buffer, mut cursor) = ("long line\nab\nanother".to_owned(), 6);
-        press(&mut buffer, &mut cursor, KeyCode::Down);
-        assert_eq!(cursor, 12, "clamped to the short row's end");
-        press(&mut buffer, &mut cursor, KeyCode::Down);
-        assert_eq!(cursor, 15, "column 2 of the third row");
-        press(&mut buffer, &mut cursor, KeyCode::Up);
-        assert_eq!(cursor, 12);
-    }
-
-    #[test]
-    fn the_arrows_hold_still_at_the_first_and_last_row() {
-        let (mut buffer, mut cursor) = ("one\ntwo".to_owned(), 1);
-        press(&mut buffer, &mut cursor, KeyCode::Up);
-        assert_eq!(cursor, 1);
-        cursor = 5;
-        press(&mut buffer, &mut cursor, KeyCode::Down);
-        assert_eq!(cursor, 5);
     }
 
     #[test]

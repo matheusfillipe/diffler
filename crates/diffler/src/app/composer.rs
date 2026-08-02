@@ -1,7 +1,7 @@
 //! The diff pane's in-place comment editor. It occupies the rows its result
 //! will occupy, so writing a comment and reading it back look the same.
 
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyCode, KeyEvent};
 use diffler_core::session::Anchor;
 use unicode_width::UnicodeWidthChar;
 
@@ -45,8 +45,38 @@ impl Composer {
         }
     }
 
-    pub fn apply(&mut self, key: &crossterm::event::KeyEvent) -> text_edit::Edit {
-        text_edit::apply(&mut self.buffer, &mut self.cursor, key)
+    pub fn apply(&mut self, key: &KeyEvent, row_width: u16) -> text_edit::Edit {
+        match key.code {
+            KeyCode::Up => self.step_visual_row(row_width, false),
+            KeyCode::Down => self.step_visual_row(row_width, true),
+            _ => return text_edit::apply(&mut self.buffer, &mut self.cursor, key),
+        }
+        text_edit::Edit::Consumed
+    }
+
+    /// Move the caret one drawn row, holding its column where the destination
+    /// is long enough. The rows a writer sees are wrapped, so a paragraph too
+    /// long for one row is several rows to move through.
+    fn step_visual_row(&mut self, row_width: u16, down: bool) {
+        let rows = wrap_rows(&self.buffer, card_budget(row_width));
+        let caret = self.caret_line(row_width);
+        // display index 0 is the header
+        let Some(from) = caret.checked_sub(1) else {
+            return;
+        };
+        let Some(to) = (if down {
+            from.checked_add(1)
+        } else {
+            from.checked_sub(1)
+        }) else {
+            return;
+        };
+        let (Some(here), Some(there)) = (rows.get(from), rows.get(to)) else {
+            return;
+        };
+        let column = self.cursor.saturating_sub(here.start);
+        let end = there.start + there.text.chars().count();
+        self.cursor = (there.start + column).min(end);
     }
 
     /// The rows this composer draws, wrapped to the card's text budget. The
@@ -124,7 +154,7 @@ impl App {
             return Flow::Continue;
         };
         let before = shape(composer, width);
-        match composer.apply(key) {
+        match composer.apply(key, width) {
             text_edit::Edit::Consumed => {
                 // the rows only move when the card's height or the caret's row
                 // does; typing within a row leaves every other row where it was
@@ -226,39 +256,24 @@ pub fn card_budget(row_width: u16) -> usize {
 /// column it lands on; sitting at the end of a full row it moves to the next,
 /// which is where the next character will appear.
 fn wrap_with_cursor(buffer: &str, cursor: usize, budget: usize) -> Vec<ComposerLine> {
-    let mut rows = Vec::new();
+    let wrapped = wrap_rows(buffer, budget);
     let mut placed = false;
-    let mut index = 0usize;
-    for (paragraph_no, paragraph) in buffer.split('\n').enumerate() {
-        if paragraph_no > 0 {
-            index += 1;
-        }
-        let mut row = String::new();
-        let mut width = 0usize;
-        let mut row_start = index;
-        for character in paragraph.chars() {
-            let cell = character.width().unwrap_or(0);
-            if width + cell > budget && !row.is_empty() {
-                let at = (cursor >= row_start && cursor < index).then(|| cursor - row_start);
-                placed |= at.is_some();
-                rows.push(ComposerLine::Body {
-                    text: std::mem::take(&mut row),
-                    cursor: at,
-                });
-                width = 0;
-                row_start = index;
+    let mut rows: Vec<ComposerLine> = wrapped
+        .iter()
+        .enumerate()
+        .map(|(index, row)| {
+            let end = row.start + row.text.chars().count();
+            // a cursor at the end of a full row belongs to the next one, where
+            // the character it types will appear
+            let last = index + 1 == wrapped.len();
+            let holds = cursor >= row.start && (cursor < end || (last && cursor == end));
+            placed |= holds;
+            ComposerLine::Body {
+                text: row.text.clone(),
+                cursor: holds.then(|| cursor - row.start),
             }
-            row.push(character);
-            width += cell;
-            index += 1;
-        }
-        let at = (cursor >= row_start && cursor <= index).then(|| cursor - row_start);
-        placed |= at.is_some();
-        rows.push(ComposerLine::Body {
-            text: row,
-            cursor: at,
-        });
-    }
+        })
+        .collect();
     // an out-of-range cursor would leave the caret invisible; park it at the end
     if !placed && let Some(ComposerLine::Body { text, cursor: at }) = rows.last_mut() {
         *at = Some(text.chars().count());
@@ -266,9 +281,50 @@ fn wrap_with_cursor(buffer: &str, cursor: usize, budget: usize) -> Vec<ComposerL
     rows
 }
 
+/// One drawn row of the wrapped buffer and the char index it starts at.
+struct WrappedRow {
+    text: String,
+    start: usize,
+}
+
+/// Break `buffer` into drawn rows of at most `budget` columns, on its newlines
+/// first and then on width.
+fn wrap_rows(buffer: &str, budget: usize) -> Vec<WrappedRow> {
+    let mut rows = Vec::new();
+    let mut index = 0usize;
+    for (paragraph_no, paragraph) in buffer.split('\n').enumerate() {
+        if paragraph_no > 0 {
+            index += 1;
+        }
+        let mut text = String::new();
+        let mut width = 0usize;
+        let mut start = index;
+        for character in paragraph.chars() {
+            let cell = character.width().unwrap_or(0);
+            if width + cell > budget && !text.is_empty() {
+                rows.push(WrappedRow {
+                    text: std::mem::take(&mut text),
+                    start,
+                });
+                width = 0;
+                start = index;
+            }
+            text.push(character);
+            width += cell;
+            index += 1;
+        }
+        rows.push(WrappedRow { text, start });
+    }
+    rows
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn press(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
+    }
 
     fn anchor() -> Anchor {
         Anchor {
@@ -349,6 +405,47 @@ mod tests {
         composer.cursor = budget;
         // the row above is full, so the next character appears on the next one
         assert_eq!(caret(&composer.display(20)), (1, 0));
+    }
+
+    #[test]
+    fn the_arrows_walk_the_wrapped_rows_a_writer_actually_sees() {
+        let width = 40;
+        let budget = card_budget(width);
+        // one paragraph, no newline in it, three drawn rows
+        let mut composer = Composer::new(
+            ComposerKind::New { anchor: anchor() },
+            "z".repeat(budget * 3),
+        );
+        composer.cursor = 5;
+        composer.apply(&press(KeyCode::Down), width);
+        assert_eq!(composer.cursor, budget + 5, "one row down, same column");
+        composer.apply(&press(KeyCode::Down), width);
+        assert_eq!(composer.cursor, budget * 2 + 5);
+        composer.apply(&press(KeyCode::Up), width);
+        assert_eq!(composer.cursor, budget + 5);
+    }
+
+    #[test]
+    fn the_arrows_hold_still_at_the_first_and_last_drawn_row() {
+        let width = 40;
+        let mut composer = Composer::new(ComposerKind::New { anchor: anchor() }, "one".to_owned());
+        composer.cursor = 1;
+        composer.apply(&press(KeyCode::Up), width);
+        assert_eq!(composer.cursor, 1);
+        composer.apply(&press(KeyCode::Down), width);
+        assert_eq!(composer.cursor, 1);
+    }
+
+    #[test]
+    fn a_short_row_clamps_the_column_the_arrow_carries() {
+        let width = 40;
+        let mut composer = Composer::new(
+            ComposerKind::New { anchor: anchor() },
+            "a long first line\nab".to_owned(),
+        );
+        composer.cursor = 10;
+        composer.apply(&press(KeyCode::Down), width);
+        assert_eq!(composer.cursor, 20, "the end of the short row");
     }
 
     #[test]

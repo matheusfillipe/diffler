@@ -921,6 +921,10 @@ impl App {
         // rides along when it still belongs here, and is never dropped silently
         let open = self.diff.take();
         let same_source = open.as_ref().is_some_and(|open| open.source == source);
+        let drafted_path = open
+            .as_ref()
+            .filter(|_| same_source)
+            .and_then(|open| open.composer.as_ref().and(open.selected_path(&self.review)));
         let draft = open.and_then(|open| open.composer);
         let mut view = DiffView::new(
             source,
@@ -930,10 +934,23 @@ impl App {
             self.config.ui.side_by_side,
         );
         match draft {
-            Some(draft) if same_source => view.composer = Some(draft),
+            Some(draft) if same_source => {
+                // the composer only draws on the file it is anchored to, so
+                // the rebuilt view has to land back on it
+                if let Some(index) = drafted_path.and_then(|path| {
+                    view.model(&self.review)
+                        .files
+                        .iter()
+                        .position(|file| file.path == path)
+                }) {
+                    view.selected = index;
+                }
+                view.composer = Some(draft);
+                view.invalidate();
+                view.ensure_rows(&self.review);
+            }
             Some(draft) if !draft.buffer.trim().is_empty() => {
                 self.error("the diff moved; your unsent draft was dropped");
-                let _ = draft;
             }
             _ => {}
         }
@@ -2821,10 +2838,12 @@ mod tests {
     }
 
     #[test]
-    fn reopening_the_same_source_carries_the_draft_along() {
+    fn reopening_the_same_source_keeps_the_draft_on_screen() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
         select_file(&mut app, "src/lib.rs");
+        let file = app.diff.as_ref().unwrap().selected;
+        assert_ne!(file, 0, "the draft is not on the file a reload defaults to");
         app.diff.as_mut().unwrap().cursor = added_line_position(&app);
         app.handle(key('c'));
         type_text(&mut app, "still writing");
@@ -2836,6 +2855,11 @@ mod tests {
                 .and_then(|d| d.composer.as_ref())
                 .map(|c| c.buffer.clone()),
             Some("still writing".to_owned())
+        );
+        assert_eq!(app.diff.as_ref().unwrap().selected, file, "same file");
+        assert!(
+            !composer_rows(&app).is_empty(),
+            "an open composer the pane cannot draw would still eat every key"
         );
     }
 
