@@ -460,7 +460,7 @@ pub(super) enum Hint {
 /// key (a dropped conflict) is dropped too.
 pub(super) fn hint_line(app: &App, items: &[Hint]) -> Line<'static> {
     let keymap = app.active_keymap();
-    let mut parts = Vec::new();
+    let mut parts: Vec<(String, &str)> = Vec::new();
     for item in items {
         match item {
             Hint::Leaf(actions, label) => {
@@ -469,20 +469,25 @@ pub(super) fn hint_line(app: &App, items: &[Hint]) -> Line<'static> {
                     .filter_map(|action| keymap.chord_for(*action))
                     .collect();
                 if chords.len() == actions.len() {
-                    parts.push(format!("{} {label}", chords.join("/")));
+                    parts.push((chords.join("/"), label));
                 }
             }
             Hint::Prefix(kind, label) => {
                 if let Some(chord) = keymap.prefix_chord(*kind) {
-                    parts.push(format!("{chord} {label}"));
+                    parts.push((chord, label));
                 }
             }
         }
     }
-    Line::styled(
-        format!(" Hint: {}", parts.join("  ")),
-        app.theme.dim_style(),
-    )
+    let dim = app.theme.dim_style();
+    let key_style = Style::new().fg(app.theme.fg).bg(app.theme.bg);
+    let mut spans = Vec::new();
+    for (index, (chord, label)) in parts.into_iter().enumerate() {
+        spans.push(Span::styled(if index == 0 { " " } else { " · " }, dim));
+        spans.push(Span::styled(chord, key_style));
+        spans.push(Span::styled(format!(" {label}"), dim));
+    }
+    Line::from(spans)
 }
 
 /// Repaint a row with the cursor-line background, padded to the full width

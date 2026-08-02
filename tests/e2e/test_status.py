@@ -7,7 +7,7 @@ def test_status_screen_renders_and_quits_clean(spawn):
     tui = spawn("--no-mcp")
     # a frame can arrive split across PTY reads: wait for each expectation
     for expected in (
-        "Hint:",
+        "c commit",
         "Head:",
         "main",
         "initial commit",

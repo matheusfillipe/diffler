@@ -2,7 +2,7 @@
 source: crates/diffler/src/ui/diff.rs
 expression: render(&mut app).backend()
 ---
-" Hint: c comment  r reply  v viewed  C comments  ? help                                                                 "
+" c comment · r reply · v viewed · C comments · ? help                                                                   "
 " Files                           Diff                                                                                   "
 "▌● notes.txt              +1 -1  modified  notes.txt                                                         +1 -1 █████"
 "                                 @@ -1,10 +1,10 @@                                                                      "
