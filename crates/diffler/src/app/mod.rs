@@ -4,7 +4,6 @@
 //! `status`, `log`, `diff`, `ci` (runs + graph), `ci_log`, and `pr`
 //! submodules.
 
-pub mod blast;
 mod ci;
 pub mod ci_log;
 mod commands;
@@ -69,7 +68,7 @@ pub enum Screen {
     Diff,
     /// The CI runs start page (list of recent runs for the repo's provider).
     Runs,
-    /// The node-graph view (CI pipeline, caller chains).
+    /// The node-graph view of a CI run.
     Graph,
     /// The open pull requests of the repo's forge.
     Prs,
@@ -488,20 +487,6 @@ pub struct App {
     pub refresh_state: RefreshState,
     /// Continuation the next landed refresh runs.
     pub(crate) after_refresh: Option<AfterRefresh>,
-    /// Blast-radius results per file path, keyed valid by content hash.
-    pub blast: std::collections::HashMap<String, blast::FileBlast>,
-    /// Graph screen shows a reference graph for this file (instead of a CI run).
-    pub impact_title: Option<String>,
-    /// Reference-graph node id → jump target (path, 0-based line).
-    pub impact_targets: std::collections::HashMap<String, (String, u32)>,
-    /// A cursor-scoped call-chain request waiting for the LSP pool.
-    pub pending_chain: Option<blast::ChainJob>,
-    /// The file an `x` trace is outstanding for; a landing outcome that
-    /// doesn't match (or arrives after the user moved on) is dropped.
-    pub(crate) chain_inflight: Option<String>,
-    /// Blast jobs waiting for the runtime's LSP pool.
-    pub pending_blast: Vec<blast::BlastJob>,
-    pub(crate) blast_inflight: std::collections::HashSet<String>,
     /// Enrichment jobs waiting for a blocking-pool worker; drained by the
     /// main loop like the other pending slots.
     pub pending_enrich: Vec<enrich::EnrichJob>,
@@ -675,13 +660,6 @@ impl App {
             source_models: std::collections::HashMap::new(),
             refresh_state: RefreshState::Idle,
             after_refresh: None,
-            blast: std::collections::HashMap::new(),
-            impact_title: None,
-            impact_targets: std::collections::HashMap::new(),
-            pending_chain: None,
-            chain_inflight: None,
-            pending_blast: Vec::new(),
-            blast_inflight: std::collections::HashSet::new(),
             pending_enrich: Vec::new(),
             enrich_inflight: std::collections::HashSet::new(),
             ci_yaml_cache: crate::ci::YamlCache::default(),
@@ -842,8 +820,6 @@ impl App {
                 self.on_refresh_done(*result);
                 Flow::Continue
             }
-            AppEvent::Blast(outcome) => self.on_blast_event(*outcome),
-            AppEvent::Chain(outcome) => self.on_chain_event(*outcome),
             AppEvent::Enriched(outcome) => {
                 self.on_enriched(*outcome);
                 Flow::Continue
@@ -1213,8 +1189,6 @@ impl App {
                 self.graph = None;
                 self.open_run = None;
                 self.open_run_remote = None;
-                self.impact_title = None;
-                self.impact_targets.clear();
                 self.extras = None;
             }
             Some(Screen::CiLog) => {

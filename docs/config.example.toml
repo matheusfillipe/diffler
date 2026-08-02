@@ -125,7 +125,6 @@
 # cursor_top = "zt"
 # cursor_bottom = "zb"
 # toggle_fold = "za"
-# impact = "x"
 # switch_theme = "T"
 # open_editor = "e"
 # open = "<cr>"

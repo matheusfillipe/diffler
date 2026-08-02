@@ -187,8 +187,7 @@ mod tests {
     // surface as RepoChanged, an irrelevant one (under .diffler) must not.
     // macOS FSEvents reports canonicalized paths, so the watched root is
     // canonicalized too — otherwise `relevant`'s prefix-stripping silently
-    // falls back to treating every event as relevant (see lsp_client.rs for
-    // the same canonicalization need against a real OS-level watcher).
+    // falls back to treating every event as relevant.
     #[tokio::test]
     async fn spawn_watcher_emits_repo_changed_for_relevant_writes_only() {
         let dir = tempfile::tempdir().expect("tempdir");

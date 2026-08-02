@@ -1,5 +1,5 @@
 //! Layout + render engines behind one trait, so the renderer is swappable
-//! (ego-centric/radial for LSP maps later) without touching the view.
+//! (ego-centric/radial later) without touching the view.
 //! The view consumes an owned [`Layout`] (no engine lifetimes leak out).
 //!
 //! `Layered` is the favoured engine: longest-path layering assigns each node a

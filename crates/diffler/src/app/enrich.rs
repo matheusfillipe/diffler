@@ -126,7 +126,6 @@ impl App {
         for index in targets {
             self.queue_enrich_file(index);
         }
-        self.queue_blast_selected();
     }
 
     fn queue_enrich_file(&mut self, index: usize) {
@@ -196,16 +195,6 @@ impl App {
     /// Test pump: run queued enrichment inline, as the main loop's workers
     /// would, so snapshots capture the enriched frame.
     pub fn enrich_now(&mut self) {
-        let blast_jobs: Vec<super::blast::BlastJob> = self.pending_blast.drain(..).collect();
-        for job in blast_jobs {
-            self.on_blast(super::blast::BlastOutcome {
-                path: job.path,
-                hash: job.hash,
-                symbols: Vec::new(),
-                diff_files: job.diff_files,
-                note: None,
-            });
-        }
         let jobs: Vec<EnrichJob> = self.pending_enrich.drain(..).collect();
         for job in jobs {
             let outcome = run_enrich(&self.highlighter, job);

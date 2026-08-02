@@ -20,7 +20,6 @@ pub enum Action {
     GoBottom,
     ZoomIn,
     ZoomOut,
-    Impact,
     NextSection,
     PrevSection,
     NextFile,
@@ -110,7 +109,6 @@ impl Action {
             Self::MoveRight => "move_right",
             Self::ZoomIn => "zoom_in",
             Self::ZoomOut => "zoom_out",
-            Self::Impact => "impact",
             Self::GoTop => "go_top",
             Self::GoBottom => "go_bottom",
             Self::NextSection => "next_section",
@@ -204,7 +202,6 @@ impl Action {
             Self::GoBottom => "go to bottom",
             Self::ZoomIn => "zoom in",
             Self::ZoomOut => "zoom out",
-            Self::Impact => "graph callers of the symbol under the cursor",
             Self::NextSection => "next section",
             Self::PrevSection => "previous section",
             Self::NextFile => "next file",
@@ -285,7 +282,7 @@ impl Action {
         }
     }
 
-    pub(crate) const ALL: [Self; 86] = [
+    pub(crate) const ALL: [Self; 85] = [
         Self::CenterCursor,
         Self::CursorTop,
         Self::CursorBottom,
@@ -308,7 +305,6 @@ impl Action {
         Self::GoBottom,
         Self::ZoomIn,
         Self::ZoomOut,
-        Self::Impact,
         Self::NextSection,
         Self::PrevSection,
         Self::NextFile,
@@ -387,7 +383,7 @@ pub enum Context {
     Log,
     /// The CI job-log screen (foldable steps).
     CiLog,
-    /// The node-graph screen (CI pipeline, caller chains).
+    /// The node-graph screen (CI pipeline).
     Graph,
     /// The pull-request list.
     Prs,
@@ -465,7 +461,6 @@ const STATUS_PREFIXES: &[(&str, TransientKind)] = &[
 const NO_PREFIXES: &[(&str, TransientKind)] = &[];
 
 const DIFF_DEFAULTS: &[(&str, Action)] = &[
-    ("x", Action::Impact),
     ("j", Action::MoveDown),
     ("k", Action::MoveUp),
     ("gg", Action::GoTop),

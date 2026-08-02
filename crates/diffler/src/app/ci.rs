@@ -158,11 +158,7 @@ impl App {
     pub(super) fn on_graph_action(&mut self, action: &crate::graph::GraphAction) {
         match action {
             crate::graph::GraphAction::Activated(id) => {
-                if let Some((path, line)) = self.impact_targets.get(&id.0).cloned() {
-                    self.request_editor(&path, Some(line + 1));
-                } else if self.impact_title.is_none() {
-                    self.open_ci_log(crate::ci::JobId(id.0.clone()));
-                }
+                self.open_ci_log(crate::ci::JobId(id.0.clone()));
             }
             crate::graph::GraphAction::Folded { .. } => {}
         }
@@ -383,25 +379,100 @@ mod tests {
         let (_fixture, mut app) = graph_app();
         app.dispatch_graph(Action::GoBottom);
         app.dispatch_graph(Action::Open);
-        // the lone job has no impact target, so activation opens its log
         assert_eq!(app.screen(), Screen::CiLog);
         assert_eq!(app.open_job_name().as_deref(), Some("lint"));
     }
 
+    /// Two jobs wired by a `needs` edge, so movement and search have somewhere
+    /// to go.
+    fn pipeline_app() -> (Fixture, App) {
+        let (fixture, mut app) = app();
+        app.open_run = Some(RunId("7".into()));
+        app.push_screen(Screen::Graph);
+        let detail = RunDetail {
+            run: run("7"),
+            jobs: vec![
+                CiJob {
+                    id: JobId("build".into()),
+                    name: "build".into(),
+                    status: JobStatus::Ok,
+                    needs: vec![],
+                },
+                CiJob {
+                    id: JobId("deploy".into()),
+                    name: "deploy".into(),
+                    status: JobStatus::Ok,
+                    needs: vec![JobId("build".into())],
+                },
+            ],
+        };
+        let mut graph = crate::graph::GraphView::new();
+        graph.set_model(crate::ci::to_model(&detail));
+        app.graph = Some(graph);
+        (fixture, app)
+    }
+
+    fn graph_selection(app: &App) -> Option<String> {
+        app.graph
+            .as_ref()
+            .and_then(crate::graph::GraphView::selected)
+            .map(|id| id.0.clone())
+    }
+
+    fn press(app: &mut App, code: crossterm::event::KeyCode) {
+        app.handle(crate::event::AppEvent::Key(
+            crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::NONE),
+        ));
+    }
+
     #[test]
-    fn on_graph_action_with_an_impact_target_opens_the_editor_instead_of_a_log() {
-        let (_fixture, mut app) = app();
-        app.impact_targets
-            .insert("lint".into(), ("src/lib.rs".into(), 4));
-        app.on_graph_action(&crate::graph::GraphAction::Activated(
-            crate::graph::NodeId::new("lint"),
-        ));
-        assert_eq!(app.screen(), Screen::Status, "no log screen opened");
-        let request = app.pending_editor.expect("editor request queued");
-        assert!(matches!(
-            request.purpose,
-            crate::editor::EditorPurpose::OpenFile { ref path } if path == "src/lib.rs"
-        ));
+    fn graph_movement_routes_through_the_keymap() {
+        use crossterm::event::KeyCode::Char;
+        let (_fixture, mut app) = pipeline_app();
+        assert_eq!(graph_selection(&app).as_deref(), Some("build"));
+        press(&mut app, Char('l'));
+        assert_eq!(
+            graph_selection(&app).as_deref(),
+            Some("deploy"),
+            "l moves right"
+        );
+        press(&mut app, Char('h'));
+        assert_eq!(
+            graph_selection(&app).as_deref(),
+            Some("build"),
+            "h moves back"
+        );
+        press(&mut app, Char('n'));
+        assert_eq!(
+            graph_selection(&app).as_deref(),
+            Some("deploy"),
+            "n follows the edge when no search is up"
+        );
+    }
+
+    #[test]
+    fn slash_search_finds_a_graph_node_and_esc_clears_before_leaving() {
+        use crossterm::event::KeyCode::{Char, Enter, Esc};
+        let (_fixture, mut app) = pipeline_app();
+        press(&mut app, Char('/'));
+        press(&mut app, Char('d'));
+        press(&mut app, Char('e'));
+        press(&mut app, Enter);
+        assert_eq!(
+            graph_selection(&app).as_deref(),
+            Some("deploy"),
+            "search lands on the matching node"
+        );
+        assert_eq!(
+            app.search.as_ref().map(crate::search::Search::count),
+            Some((1, 1))
+        );
+
+        press(&mut app, Esc);
+        assert!(app.search.is_none(), "Esc clears the search");
+        assert_eq!(app.screen(), Screen::Graph);
+        press(&mut app, Char('q'));
+        assert_ne!(app.screen(), Screen::Graph, "q leaves");
     }
 
     #[test]

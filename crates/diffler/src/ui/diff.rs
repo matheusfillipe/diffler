@@ -54,7 +54,6 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     // cache) while theme and review stay read-only
     let theme = &app.theme;
     let review = &app.review;
-    let blast = &app.blast;
     let search = app.search.as_ref();
     let highlighter = app.highlighter.as_ref();
     if let Some(diff) = app.diff.as_mut() {
@@ -70,8 +69,6 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             theme,
             session,
             review_model,
-            blast,
-            blast_inflight: &app.blast_inflight,
             search,
             highlighter,
         };
@@ -88,8 +85,6 @@ struct RenderCtx<'a> {
     theme: &'a Theme,
     session: &'a Session,
     review_model: Option<&'a DiffModel>,
-    blast: &'a std::collections::HashMap<String, crate::app::blast::FileBlast>,
-    blast_inflight: &'a std::collections::HashSet<String>,
     search: Option<&'a Search>,
     highlighter: &'a diffler_core::highlight::Highlighter,
 }
@@ -177,13 +172,8 @@ fn draw_sidebar(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &m
 /// in unified or side-by-side mode.
 #[allow(clippy::too_many_lines)]
 fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut DiffView) {
-    let (theme, session, review_model, blast, search) = (
-        ctx.theme,
-        ctx.session,
-        ctx.review_model,
-        ctx.blast,
-        ctx.search,
-    );
+    let (theme, session, review_model, search) =
+        (ctx.theme, ctx.session, ctx.review_model, ctx.search);
     let focused = diff.focus == Pane::Diff;
     let title = pane_title(&diff.source);
     let block = pane_block(theme, &title, focused);
@@ -222,10 +212,6 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
             file,
             viewed,
             (open, total),
-            blast
-                .get(&file.path)
-                .filter(|b| b.hash == file.sides_hash()),
-            ctx.blast_inflight.contains(&file.sides_hash()),
             header_area.width,
         )),
         header_area,
@@ -889,8 +875,6 @@ fn pane_header_line(
     viewed: bool,
     // (open or replied, total) comment counts for the file
     comments: (usize, usize),
-    impact: Option<&crate::app::blast::FileBlast>,
-    computing: bool,
     width: u16,
 ) -> Line<'static> {
     let bg = theme.panel;
@@ -909,28 +893,6 @@ fn pane_header_line(
     }
     if viewed {
         spans.push(Span::styled(" ✓ viewed".to_owned(), dim));
-    }
-    if computing && impact.is_none() {
-        spans.push(Span::styled(" · scanning refs…".to_owned(), dim));
-    }
-    if let Some(blast) = impact {
-        let refs: usize = blast.symbols.iter().map(|s| s.total_refs).sum();
-        if refs > 0 {
-            spans.push(Span::styled(
-                format!(
-                    " · referenced {refs}× · {} files outside diff",
-                    blast.outside_files()
-                ),
-                Style::new().fg(theme.warn_fg).bg(bg),
-            ));
-        } else if let Some(note) = &blast.note {
-            // a failed scan must read differently from a symbol that
-            // legitimately has zero cross-file references (no badge at all)
-            spans.push(Span::styled(
-                format!(" · ref scan failed: {note}"),
-                Style::new().fg(theme.error_fg).bg(bg),
-            ));
-        }
     }
     // resolved-only files read as done: no count, just a quiet marker
     let (open, total) = comments;
@@ -1286,55 +1248,6 @@ mod tests {
             })
             .expect("added line");
         app.diff.as_mut().unwrap().cursor = position;
-    }
-
-    #[test]
-    fn pane_header_shows_the_impact_badge() {
-        use crate::app::blast::{FileBlast, SymbolImpact};
-        use crate::lsp::RefSite;
-        let (_fixture, mut app) = diff_app();
-        let hash = app.review.model().files[0].sides_hash();
-        let path = app.review.model().files[0].path.clone();
-        app.blast.insert(
-            path,
-            FileBlast {
-                hash,
-                symbols: vec![SymbolImpact {
-                    total_refs: 4,
-                    outside: vec![RefSite {
-                        path: "src/other.rs".into(),
-                        line: 2,
-                    }],
-                }],
-                note: None,
-            },
-        );
-        let content = render(&mut app).backend().to_string();
-        assert!(
-            content.contains("referenced 4× · 1 files outside diff"),
-            "{content}"
-        );
-    }
-
-    #[test]
-    fn pane_header_shows_a_failed_scan_distinctly_from_zero_references() {
-        use crate::app::blast::FileBlast;
-        let (_fixture, mut app) = diff_app();
-        let hash = app.review.model().files[0].sides_hash();
-        let path = app.review.model().files[0].path.clone();
-        app.blast.insert(
-            path,
-            FileBlast {
-                hash,
-                symbols: Vec::new(),
-                note: Some("rust-analyzer connection was lost".to_owned()),
-            },
-        );
-        let content = render(&mut app).backend().to_string();
-        assert!(
-            content.contains("ref scan failed: rust-analyzer connection was lost"),
-            "{content}"
-        );
     }
 
     #[test]

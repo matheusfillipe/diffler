@@ -144,7 +144,6 @@ Vim-like: `j`/`k`/`gg`/`G` motions, `/` search, and
 | `b` `P` | open a pull request for the current branch |
 | `d` | review the working tree against something else: `d` base branch, `c` last commit, `b` a branch, `s` a commit, `w` HEAD |
 | `y` / `Y` | copy feedback as markdown (file / all) |
-| `x` | in the diff view: graph who calls the symbol under the cursor |
 | `e` | open the file in `$EDITOR` |
 | `?` | full keymap for the current screen |
 | `q` | back / quit |

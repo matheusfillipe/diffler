@@ -1,7 +1,6 @@
 use std::path::Path;
 
 use clap::{Parser, Subcommand};
-use diffler::app::blast::LspPool;
 use diffler::app::{self, App, CiRequest, Flow};
 use diffler::event::AppEvent;
 use diffler::{ci, clipboard, config, editor, event, mcp, ui, watch};
@@ -109,7 +108,6 @@ fn print_config_dump(loaded: &config::LoadedConfig) -> color_eyre::Result<()> {
 
 async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let lsp_pool = LspPool::default();
     let mut events = event::spawn_event_loop(tx.clone());
     // a missing watcher is not fatal: the app falls back to periodic polling
     let git_dir = app
@@ -174,7 +172,7 @@ async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<
             });
             continue;
         }
-        dispatch_workers(&mut app, &tx, &lsp_pool);
+        dispatch_workers(&mut app, &tx);
         if let Some(request) = app.pending_ci.take() {
             // service the CI provider call off-thread; the result returns as an
             // event so the active CI screen stays live without blocking the loop
@@ -269,10 +267,8 @@ fn dispatch_refresh(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     });
 }
 
-fn dispatch_workers(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>, lsp_pool: &LspPool) {
+fn dispatch_workers(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     dispatch_enrich(app, tx);
-    dispatch_blast(app, tx, lsp_pool);
-    dispatch_chain(app, tx, lsp_pool);
     dispatch_pr_posts(app, tx);
     dispatch_refresh(app, tx);
 }
@@ -354,34 +350,6 @@ fn dispatch_pr_posts(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
                 post: Box::new(post),
                 result: result.map_err(|err| err.to_string()),
             });
-        });
-    }
-}
-
-fn dispatch_chain(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>, pool: &LspPool) {
-    let Some(job) = app.pending_chain.take() else {
-        return;
-    };
-    let tx = tx.clone();
-    let pool = pool.clone();
-    let root = app.review.repo_root.clone();
-    tokio::spawn(async move {
-        let outcome = app::blast::chain_calls(&pool, &root, &job).await;
-        let _ = tx.send(AppEvent::Chain(Box::new(outcome)));
-    });
-}
-
-/// One task per queued blast job: resolve the language server, reuse or spawn
-/// its client, then symbols ∩ changed lines → references. Unsupported or
-/// missing servers complete with an empty outcome so the job isn't retried.
-fn dispatch_blast(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>, pool: &LspPool) {
-    for job in app.pending_blast.drain(..) {
-        let tx = tx.clone();
-        let pool = pool.clone();
-        let root = app.review.repo_root.clone();
-        tokio::spawn(async move {
-            let outcome = app::blast::blast_refs(&pool, &root, job).await;
-            let _ = tx.send(AppEvent::Blast(Box::new(outcome)));
         });
     }
 }
