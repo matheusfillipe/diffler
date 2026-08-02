@@ -23,6 +23,7 @@ crates/diffler-core/   pure logic, no terminal (errors via thiserror):
 
 crates/diffler/        binary (color-eyre at the top; thiserror for typed errors):
   ui/ app/ tree.rs     ratatui TUI: screens, file sidebar, state
+  app/composer.rs      in-place comment editor (app/text_edit.rs is its key set)
   ci/                  forge seam: CI acquisition + PR review (ForgeProvider trait; gh/glab/Forgejo REST)
   graph/               navigable orthogonal node-graph ratatui component
   keymap.rs config.rs  configurable keybindings, layered TOML config
@@ -120,7 +121,10 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   (Head + Untracked/Unstaged/Staged sections + recent commits; stage/unstage/
   discard/commit/branch), Log, Diff/review (file sidebar + pane, unified or
   `|`-toggled side-by-side; `c` comment, `V` visual select, `r` reply/resolve,
-  `v` viewed, `y`/`Y` yank feedback as markdown, `e` `$EDITOR` jump), Runs (the
+  `v` viewed, `y`/`Y` yank feedback as markdown, `e` `$EDITOR` jump). Comments,
+  replies and edits are written in place: the composer occupies the rows the
+  finished card will, under the anchored line, at the top of the file for a
+  whole-file comment, under the thread for a reply. Runs (the
   CI run list), Graph (CI run detail on the shared node-graph component), Prs
   (open PRs of the repo's forge), and CiLog (a
   job's log folded into its real steps). The diff sidebar has two layouts
