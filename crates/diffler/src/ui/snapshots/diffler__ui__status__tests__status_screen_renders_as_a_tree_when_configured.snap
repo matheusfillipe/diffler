@@ -6,7 +6,7 @@ expression: render(&mut app).backend()
 " Head:     main c1ac28f initial commit                                                                                  "
 " Changes   +3 -1  █████                                                                                                 "
 "                                                                                                                        "
-" ▾ Untracked (1) +1 -0                                                                                                  "
+"▌▾ Untracked (1) +1 -0                                                                                                  "
 "     ○ todo.md +1 -0                                                                                                    "
 "                                                                                                                        "
 " ▾ Unstaged changes (1) +1 -1                                                                                           "

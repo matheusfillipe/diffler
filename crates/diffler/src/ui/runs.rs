@@ -3,7 +3,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
@@ -61,14 +61,6 @@ fn draw_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
             let glyph = run.status.glyph();
             let color = super::ci_status_color(&app.theme, run.status);
             let short = run.commit.chars().take(7).collect::<String>();
-            let marker = if selected { "▌ " } else { "  " };
-            let name_style = if selected {
-                Style::new()
-                    .fg(app.theme.accent)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::new().fg(app.theme.accent)
-            };
             // search rows are "{name} {title}": rebase the match ranges onto
             // the two display segments so `/` highlights like other screens
             let ranges = app
@@ -79,12 +71,12 @@ fn draw_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
             let name_txt = format!("{:<16}", super::elide(&run.name, 16));
             let title_txt = format!("{:<32}", super::elide(&run.title, 32));
             let mut spans = vec![
-                Span::styled(marker, Style::new().fg(app.theme.warn_fg)),
+                Span::raw("  "),
                 Span::styled(format!("{glyph} "), Style::new().fg(color)),
             ];
             spans.extend(super::highlight_spans(
                 &name_txt,
-                name_style,
+                Style::new().fg(app.theme.accent),
                 &clip_ranges(&ranges, 0, run.name.chars().count()),
                 &app.theme,
             ));
@@ -115,7 +107,12 @@ fn draw_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
                     spans.push(Span::styled(age, app.theme.dim_style()));
                 }
             }
-            Line::from(spans)
+            let line = Line::from(spans);
+            if selected {
+                super::cursor_line(line, &app.theme, area.width)
+            } else {
+                line
+            }
         })
         .collect();
     frame.render_widget(Paragraph::new(rows), area);
@@ -159,6 +156,25 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal.draw(|f| draw(f, &mut app)).expect("draw");
         insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn the_selected_run_carries_the_cursor_band_across_the_row() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.runs = vec![
+            run("CI", "main", "abc1234def", JobStatus::Ok),
+            run("Release", "feature/x", "9988776655", JobStatus::Failed),
+        ];
+        let backend = TestBackend::new(80, 8);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|f| draw(f, &mut app)).expect("draw");
+        let buffer = terminal.backend().buffer();
+        let banded = |y: u16| {
+            (0..80).all(|x| buffer.cell((x, y)).expect("in bounds").bg == app.theme.cursor_line)
+        };
+        assert!(banded(1), "the selected row bands edge to edge");
+        assert!(!banded(2), "its neighbour keeps the plain surface");
     }
 
     #[test]

@@ -18,6 +18,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
+use unicode_width::UnicodeWidthChar;
 
 use crate::app::{App, BranchAction, Modal, Screen, Severity, fuzzy};
 use crate::keymap::{Action, render_chord};
@@ -562,6 +563,10 @@ pub(super) fn elide(s: &str, max: usize) -> String {
     }
 }
 
+/// A list row under the cursor: the band across its full width, and its
+/// leading cell given over to the accent bar. Every list on every screen goes
+/// through here, so the bar means one thing and a row holds its columns as the
+/// cursor arrives. Rows lead with an indent cell for the bar to claim.
 pub(super) fn cursor_line(line: Line<'static>, theme: &Theme, width: u16) -> Line<'static> {
     let pad = (width as usize).saturating_sub(line.width());
     let mut spans: Vec<Span<'static>> = line
@@ -578,7 +583,27 @@ pub(super) fn cursor_line(line: Line<'static>, theme: &Theme, width: u16) -> Lin
             Style::new().bg(theme.cursor_line),
         ));
     }
+    claim_lead_cell(&mut spans, theme);
     Line::from(spans)
+}
+
+/// Replace the row's first cell with the cursor bar, keeping every column
+/// where it was. A row with nothing to give up gets the bar in front.
+fn claim_lead_cell(spans: &mut Vec<Span<'static>>, theme: &Theme) {
+    let bar = |bg| Span::styled("▌", Style::new().fg(theme.accent).bg(bg));
+    let Some(first) = spans.first_mut() else {
+        spans.push(bar(theme.cursor_line));
+        return;
+    };
+    let mut rest = first.content.chars();
+    match rest.next() {
+        Some(lead) if lead.width().unwrap_or(0) == 1 => {
+            let bg = first.style.bg.unwrap_or(theme.cursor_line);
+            first.content = rest.collect::<String>().into();
+            spans.insert(0, bar(bg));
+        }
+        _ => spans.insert(0, bar(theme.cursor_line)),
+    }
 }
 
 /// Bottom bar shared by every screen: mode chip, repo@branch, MCP state,
@@ -680,7 +705,7 @@ pub(super) fn status_bar(app: &App, width: u16) -> Line<'static> {
 
 #[cfg(test)]
 mod tests {
-    use super::relative_time;
+    use super::{Line, Span, Theme, cursor_line, relative_time};
 
     #[test]
     fn the_chip_names_the_pr_when_reviewing_one() {
@@ -722,5 +747,38 @@ mod tests {
         assert_eq!(relative_time(now, now - 800 * 86_400), "2y");
         // future commit times (clock skew) clamp to 0s, never negative
         assert_eq!(relative_time(now, now + 500), "0s");
+    }
+
+    #[test]
+    fn the_cursor_bar_takes_the_lead_cell_without_moving_the_row() {
+        let theme = Theme::github_dark();
+        let plain = Line::from(vec![
+            Span::raw(" "),
+            Span::styled("● src/lib.rs", theme.base()),
+        ]);
+        let under_cursor = cursor_line(plain.clone(), &theme, 40);
+        let text: String = under_cursor
+            .spans
+            .iter()
+            .map(|s| s.content.clone())
+            .collect();
+        assert!(text.starts_with("▌● src/lib.rs"), "{text}");
+        assert_eq!(under_cursor.width(), 40, "the band spans the full width");
+        // the glyph sits in the same column either way, so the list holds still
+        let column = |line: &Line<'_>| {
+            line.spans
+                .iter()
+                .flat_map(|s| s.content.chars().collect::<Vec<_>>())
+                .position(|c| c == '●')
+        };
+        assert_eq!(column(&under_cursor), column(&plain));
+    }
+
+    #[test]
+    fn a_row_with_no_lead_cell_to_spare_keeps_all_of_its_own_content() {
+        let theme = Theme::github_dark();
+        let banded = cursor_line(Line::from(Span::raw("")), &theme, 6);
+        let text: String = banded.spans.iter().map(|s| s.content.clone()).collect();
+        assert!(text.starts_with('▌'), "{text}");
     }
 }

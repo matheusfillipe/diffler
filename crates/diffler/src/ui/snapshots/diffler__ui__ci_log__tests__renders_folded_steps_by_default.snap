@@ -4,7 +4,7 @@ expression: terminal.backend()
 ---
 " <tab> fold · / search · ? help                             "
 "                                                            "
-" ▸ Build  1 lines                                           "
+"▌▸ Build  1 lines                                           "
 " ▸ Test  2 lines                                            "
 "                                                            "
 "                                                            "

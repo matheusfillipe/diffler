@@ -10,7 +10,7 @@ expression: render(&mut app).backend()
 " ○ todo.md +1 -0                                                                                                        "
 "                                                                                                                        "
 " ▾ Unstaged changes (1) +1 -1                                                                                           "
-" ● src/lib.rs ✓ +1 -1                                                                                                   "
+"▌● src/lib.rs ✓ +1 -1                                                                                                   "
 "                                                                                                                        "
 " ▾ Staged changes (1) +1 -0                                                                                             "
 " + ci.yml +1 -0                                                                                                         "

@@ -3,7 +3,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
@@ -45,21 +45,15 @@ fn draw_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .take(height)
         .map(|(i, pr)| {
             let selected = i == app.prs_cursor;
-            let marker = if selected { "▌ " } else { "  " };
-            let title_style = if selected {
-                Style::new().fg(app.theme.fg).add_modifier(Modifier::BOLD)
-            } else {
-                Style::new().fg(app.theme.fg)
-            };
             let ranges = app
                 .search
                 .as_ref()
                 .map(|s| s.ranges_for(i))
                 .unwrap_or_default();
-            let mut spans = vec![Span::styled(marker, Style::new().fg(app.theme.warn_fg))];
+            let mut spans = vec![Span::raw("  ")];
             spans.extend(super::highlight_spans(
                 &format!("#{} {} {}", pr.number, pr.title, pr.author),
-                title_style,
+                Style::new().fg(app.theme.fg),
                 &ranges,
                 &app.theme,
             ));
@@ -67,7 +61,12 @@ fn draw_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 format!(" · {} → {}", pr.head_ref, pr.base_ref),
                 Style::new().fg(app.theme.purple),
             ));
-            Line::from(spans)
+            let line = Line::from(spans);
+            if selected {
+                super::cursor_line(line, &app.theme, area.width)
+            } else {
+                line
+            }
         })
         .collect();
     frame.render_widget(Paragraph::new(rows), area);
