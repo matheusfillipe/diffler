@@ -105,37 +105,6 @@ fn draw_body(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
     .areas(area);
     draw_sidebar(frame, list_area, ctx, diff);
     draw_pane(frame, pane_area, ctx, diff);
-    fade_area(
-        frame,
-        if diff.focus == Pane::List {
-            pane_area
-        } else {
-            list_area
-        },
-    );
-}
-
-/// Share of a foreground kept when its pane is out of focus; the rest is the
-/// cell's own background.
-const UNFOCUSED_FG: u16 = 42;
-
-fn toward(fg: Color, bg: Color) -> Color {
-    crate::theme::blend(fg, bg, 100 - UNFOCUSED_FG)
-}
-
-/// Fade every foreground in `area` toward its own background. Which pane holds
-/// focus reads from across the screen without any chrome changing shape, so a
-/// keyboard cursor never sits on a row that reflows.
-fn fade_area(frame: &mut Frame<'_>, area: Rect) {
-    let buffer = frame.buffer_mut();
-    for y in area.top()..area.bottom() {
-        for x in area.left()..area.right() {
-            if let Some(cell) = buffer.cell_mut((x, y)) {
-                let dulled = toward(cell.fg, cell.bg);
-                cell.set_fg(dulled);
-            }
-        }
-    }
 }
 
 /// Left pane: a heading row then one row per file in the diff, the selected
@@ -565,7 +534,7 @@ fn pane_heading(theme: &Theme, title: &str, focused: bool, bg: Color) -> Line<'s
     Line::styled(
         format!(" {title}"),
         Style::new()
-            .fg(if focused { theme.accent } else { theme.fg })
+            .fg(if focused { theme.accent } else { theme.dim })
             .bg(bg),
     )
 }
@@ -1116,21 +1085,6 @@ mod tests {
 
     fn joined(spans: &[ratatui::text::Span<'static>]) -> String {
         spans.iter().map(|s| s.content.as_ref()).collect()
-    }
-
-    #[test]
-    fn an_unfocused_foreground_fades_toward_its_own_background() {
-        use ratatui::style::Color;
-
-        let bg = Color::Rgb(0x00, 0x00, 0x00);
-        assert_eq!(
-            super::toward(Color::Rgb(0xff, 0xff, 0xff), bg),
-            Color::Rgb(107, 107, 107)
-        );
-        // a foreground already sitting on its background has nowhere to fade
-        assert_eq!(super::toward(bg, bg), bg);
-        // palette colours have no components to mix
-        assert_eq!(super::toward(Color::Reset, bg), Color::Reset);
     }
 
     #[test]
