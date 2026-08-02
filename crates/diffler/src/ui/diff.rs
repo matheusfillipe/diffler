@@ -119,16 +119,8 @@ fn draw_body(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
 /// cell's own background.
 const UNFOCUSED_FG: u16 = 42;
 
-/// `fg` pulled toward `bg`. Terminal-palette colours have no components to
-/// mix, so they pass through.
 fn toward(fg: Color, bg: Color) -> Color {
-    let (Color::Rgb(fr, fg_g, fb), Color::Rgb(br, bg_g, bb)) = (fg, bg) else {
-        return fg;
-    };
-    let mix = |f: u8, b: u8| {
-        ((u16::from(f) * UNFOCUSED_FG + u16::from(b) * (100 - UNFOCUSED_FG)) / 100) as u8
-    };
-    Color::Rgb(mix(fr, br), mix(fg_g, bg_g), mix(fb, bb))
+    crate::theme::blend(fg, bg, 100 - UNFOCUSED_FG)
 }
 
 /// Fade every foreground in `area` toward its own background. Which pane holds
@@ -1835,19 +1827,17 @@ mod tests {
         app.handle(key('j'));
         assert!(app.diff.as_ref().unwrap().visual_anchor.is_some());
         let terminal = render(&mut app);
-        // the selection bg covers more cells than the bare cursor line does
-        let bg = format!("{:?}", app.theme.cursor_line);
-        let selected = format!("{:?}", terminal.backend().buffer())
-            .matches(&bg)
-            .count();
+        let lit = terminal.backend().buffer().clone();
         app.diff.as_mut().unwrap().visual_anchor = None;
-        let unselected = format!("{:?}", render(&mut app).backend().buffer())
-            .matches(&bg)
+        let plain = render(&mut app).backend().buffer().clone();
+        // the visual range repaints rows the bare cursor leaves alone
+        let repainted = lit
+            .content
+            .iter()
+            .zip(plain.content.iter())
+            .filter(|(a, b)| a.bg != b.bg)
             .count();
-        assert!(
-            selected > unselected,
-            "selection must paint extra rows: {selected} vs {unselected}"
-        );
+        assert!(repainted > 0, "selection must paint extra rows");
         insta::assert_snapshot!(terminal.backend());
     }
 

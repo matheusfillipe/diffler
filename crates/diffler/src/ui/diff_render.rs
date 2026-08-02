@@ -188,7 +188,9 @@ pub fn render_diff_line(
         vec![
             Span::styled(
                 rail(line),
-                Style::new().fg(rail_color(theme, line)).bg(base_bg),
+                Style::new()
+                    .fg(rail_color(theme, line, selected))
+                    .bg(base_bg),
             ),
             Span::styled(
                 if first {
@@ -248,7 +250,14 @@ fn wrap_spans(spans: Vec<Span<'static>>, budget: usize) -> Vec<Vec<Span<'static>
     rows
 }
 
+/// How far a selected changed line travels from its own tint toward that
+/// tint's emphasis colour. Short of the emphasis itself, so intra-line
+/// emphasis still stands out on the row under the cursor.
+const SELECTION_LIFT: u16 = 55;
+
 /// The line (base) and emphasis backgrounds, given selection/annotation state.
+/// Selection brightens whatever colour the row already carries, so a selected
+/// addition still reads as an addition.
 fn line_backgrounds(
     theme: &Theme,
     line: &DiffLine,
@@ -260,12 +269,11 @@ fn line_backgrounds(
         LineKind::Deleted => (theme.del_line_bg, theme.del_emph_bg),
         LineKind::Context => (theme.bg, theme.bg),
     };
-    let base_bg = if selected {
-        theme.cursor_line
-    } else if annotated {
-        theme.annotated
-    } else {
-        line_bg
+    let base_bg = match (selected, line.kind) {
+        (true, LineKind::Context) => theme.cursor_line,
+        (true, _) => crate::theme::blend(line_bg, emph_bg, SELECTION_LIFT),
+        (false, _) if annotated => theme.annotated,
+        (false, _) => line_bg,
     };
     (base_bg, emph_bg)
 }
@@ -280,7 +288,12 @@ fn rail(line: &DiffLine) -> &'static str {
     }
 }
 
-fn rail_color(theme: &Theme, line: &DiffLine) -> Color {
+/// The rail's tint: the line's kind, or the accent on the row under the
+/// cursor so selection reads on a second channel besides the background.
+fn rail_color(theme: &Theme, line: &DiffLine, selected: bool) -> Color {
+    if selected {
+        return theme.accent;
+    }
     match line.kind {
         LineKind::Added => theme.added,
         LineKind::Deleted => theme.error_fg,
@@ -396,7 +409,9 @@ fn side_rows(
         vec![
             Span::styled(
                 rail(line),
-                Style::new().fg(rail_color(theme, line)).bg(base_bg),
+                Style::new()
+                    .fg(rail_color(theme, line, selected))
+                    .bg(base_bg),
             ),
             Span::styled(
                 if first {
@@ -639,6 +654,28 @@ mod tests {
         let selected = render_hunk_lines(&theme, &sample_hunk(), None, 60, Some(2));
         assert_eq!(plain[1], selected[1], "unselected rows unchanged");
         assert_ne!(plain[2], selected[2], "selected row repainted");
+    }
+
+    #[test]
+    fn selecting_a_changed_line_brightens_its_own_tint() {
+        let theme = Theme::github_dark();
+        let green = |color| match color {
+            Color::Rgb(_, g, _) => g,
+            _ => 0,
+        };
+        let added = line(LineKind::Added, None, Some(1), "x");
+        let (plain, emph) = line_backgrounds(&theme, &added, false, false);
+        let (lit, _) = line_backgrounds(&theme, &added, true, false);
+        assert!(green(plain) < green(lit), "selection brightens the row");
+        assert!(green(lit) < green(emph), "and stays under the emphasis bg");
+        assert_ne!(lit, theme.cursor_line, "the addition keeps its own hue");
+
+        let context = line(LineKind::Context, Some(1), Some(1), "x");
+        assert_eq!(
+            line_backgrounds(&theme, &context, true, false).0,
+            theme.cursor_line,
+            "an unchanged row still gets the plain cursor band"
+        );
     }
 
     #[test]

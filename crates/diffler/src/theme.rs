@@ -345,6 +345,17 @@ impl Theme {
     }
 }
 
+/// `from` moved `percent` of the way toward `to`. Terminal-palette colours
+/// carry no components to mix, so they pass through unchanged.
+pub fn blend(from: Color, to: Color, percent: u16) -> Color {
+    let (Color::Rgb(fr, fg, fb), Color::Rgb(tr, tg, tb)) = (from, to) else {
+        return from;
+    };
+    let mix =
+        |f: u8, t: u8| ((u16::from(f) * (100 - percent) + u16::from(t) * percent) / 100) as u8;
+    Color::Rgb(mix(fr, tr), mix(fg, tg), mix(fb, tb))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
