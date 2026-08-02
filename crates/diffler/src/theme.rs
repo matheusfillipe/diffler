@@ -324,22 +324,6 @@ impl Theme {
         Style::new().fg(self.fg).bg(self.bg)
     }
 
-    /// Drop-shadow fill for floating dialogs, the background darkened.
-    pub fn shadow(&self) -> Color {
-        let Color::Rgb(r, g, b) = self.bg else {
-            return Color::Black;
-        };
-        // a light palette needs only a hint of grey before the band reads as a
-        // border, a dark one has little room below its background
-        let keep = if u16::from(r) + u16::from(g) + u16::from(b) > 3 * 128 {
-            78
-        } else {
-            45
-        };
-        let scale = |c: u8| (u16::from(c) * keep / 100) as u8;
-        Color::Rgb(scale(r), scale(g), scale(b))
-    }
-
     pub fn dim_style(&self) -> Style {
         Style::new().fg(self.dim).bg(self.bg)
     }
@@ -385,16 +369,15 @@ mod tests {
     }
 
     #[test]
-    fn every_theme_shadows_darker_than_its_background_and_panel() {
-        let luma = |color| match color {
-            Color::Rgb(r, g, b) => u16::from(r) + u16::from(g) + u16::from(b),
-            _ => 0,
-        };
+    fn every_theme_mixes_in_rgb_so_blending_reaches_it() {
         for name in NAMES {
             let theme = Theme::from_name(name).0;
-            let shadow = luma(theme.shadow());
-            assert!(shadow < luma(theme.bg), "{name} shadow vs background");
-            assert!(shadow < luma(theme.panel), "{name} shadow vs panel");
+            for (label, color) in [("bg", theme.bg), ("panel", theme.panel), ("fg", theme.fg)] {
+                assert!(
+                    matches!(color, Color::Rgb(..)),
+                    "{name} {label} must be RGB for blend to reach it"
+                );
+            }
         }
     }
 

@@ -3,7 +3,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
@@ -380,7 +380,7 @@ impl CreatePrForm<'_> {
 
         let width = CREATE_PR_WIDTH.min(frame.area().width);
         let height = (lines.len() as u16 + 1).min(frame.area().height);
-        let area = floating(frame, theme, width, height);
+        let area = floating(frame, width, height);
         frame.render_widget(
             Paragraph::new(lines)
                 .style(Style::new().fg(theme.fg).bg(theme.panel))
@@ -399,7 +399,7 @@ pub struct ConfirmDialog {
 impl ConfirmDialog {
     pub fn render(&self, frame: &mut Frame<'_>, theme: &Theme) {
         let width = (self.message.len() as u16 + 4).clamp(24, frame.area().width);
-        let area = floating(frame, theme, width, 4);
+        let area = floating(frame, width, 4);
         let block = dialog_block(theme, " Confirm ", Borders::ALL);
         let body = vec![
             Line::styled(
@@ -451,7 +451,7 @@ impl InputModal {
         ));
         // +1 for the top rule carrying the title
         let height = lines.len() as u16 + 1;
-        let area = floating(frame, theme, box_w, height);
+        let area = floating(frame, box_w, height);
         let block = dialog_block(theme, &format!(" {} ", self.title), Borders::TOP);
         frame.render_widget(
             Paragraph::new(lines)
@@ -568,7 +568,7 @@ impl FuzzyModal {
         // +3: the top rule, the query line, and the footer
         let height = visible as u16 + 3;
         let width = width.min(frame.area().width);
-        let area = floating(frame, theme, width, height);
+        let area = floating(frame, width, height);
 
         let inner = width.saturating_sub(2) as usize;
         let split = self
@@ -657,39 +657,33 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
     }
 }
 
-/// Cells the shadow reaches past the box. Two columns to one row, so the
-/// offset reads square on a terminal's tall cells.
-const SHADOW_X: u16 = 2;
-const SHADOW_Y: u16 = 1;
+/// How far the screen behind a dialog is pushed toward black. Far enough that
+/// the brightest thing back there, a selection band over an emphasised line,
+/// still lands under the dialog's own surface; near enough that the shapes
+/// behind it read as the context the dialog is acting on.
+const SCRIM: u16 = 74;
 
-/// Placement for a centred dialog. Every one goes through here, so they clear
+/// Placement for a centred dialog. Every one goes through here, so they dim
 /// their ground and float alike.
-fn floating(frame: &mut Frame<'_>, theme: &Theme, width: u16, height: u16) -> Rect {
-    let area = centered(frame.area(), width, height);
-    frame.render_widget(Clear, area);
-    let fill = theme.shadow();
-    // the status bar owns the last row; a band cut through it reads as a
-    // rendering fault rather than as depth
-    let floor = frame.area().bottom().saturating_sub(1);
+fn floating(frame: &mut Frame<'_>, width: u16, height: u16) -> Rect {
+    let full = frame.area();
     let buffer = frame.buffer_mut();
-    let mut paint = |x: u16, y: u16| {
-        if y >= floor {
-            return;
-        }
-        if let Some(cell) = buffer.cell_mut((x, y)) {
-            cell.reset();
-            cell.set_bg(fill);
-        }
-    };
-    for y in area.y.saturating_add(SHADOW_Y)..area.bottom().saturating_add(SHADOW_Y) {
-        for x in area.right()..area.right().saturating_add(SHADOW_X) {
-            paint(x, y);
+    for y in full.top()..full.bottom() {
+        for x in full.left()..full.right() {
+            let Some(cell) = buffer.cell_mut((x, y)) else {
+                continue;
+            };
+            cell.set_fg(darkened(cell.fg));
+            cell.set_bg(darkened(cell.bg));
         }
     }
-    for x in area.x.saturating_add(SHADOW_X)..area.right() {
-        paint(x, area.bottom());
-    }
+    let area = centered(full, width, height);
+    frame.render_widget(Clear, area);
     area
+}
+
+fn darkened(color: Color) -> Color {
+    crate::theme::blend(color, Color::Rgb(0, 0, 0), SCRIM)
 }
 
 #[cfg(test)]
@@ -825,42 +819,38 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn a_centered_dialog_casts_a_shadow_down_and_right() {
+    fn a_centered_dialog_dims_every_corner_of_the_screen_behind_it() {
         let dialog = ConfirmDialog {
             message: "Discard changes to src/lib.rs?".to_owned(),
         };
         let terminal = render(|frame, theme| dialog.render(frame, theme));
         let buffer = terminal.backend().buffer();
-        // the confirm box lands at (43,18) 34x4 on the 120x40 test screen
-        let fill = Theme::github_dark().shadow();
+        let theme = Theme::github_dark();
         let bg = |x: u16, y: u16| buffer.cell((x, y)).expect("in bounds").bg;
-        assert_eq!(bg(77, 19), fill, "right edge");
-        assert_eq!(bg(78, 22), fill, "bottom-right corner");
-        assert_eq!(bg(45, 22), fill, "bottom edge");
-        assert_ne!(bg(77, 18), fill, "the shadow starts one row down");
-        assert_ne!(bg(44, 22), fill, "the shadow starts two columns right");
-        assert_ne!(bg(79, 20), fill, "the shadow is two columns wide");
+        // every corner, so no strip of the ground stays lit; the status row is
+        // the last one, where the old drop shadow used to stop short
+        for (x, y) in [(0, 0), (119, 0), (0, 39), (119, 39)] {
+            assert_eq!(bg(x, y), darkened(theme.bg), "({x},{y}) behind the dialog");
+        }
+        // the confirm box lands at (43,18) 34x4 on the 120x40 test screen
+        assert_eq!(bg(60, 20), theme.panel, "the dialog itself stays lit");
     }
 
     #[test]
-    fn a_dialog_against_the_terminal_edge_keeps_its_shadow_on_screen() {
-        // 80 wide, so the dialog fills the row and its right shadow falls off
+    fn the_scrim_darkens_the_text_behind_it_as_well_as_the_ground() {
         let dialog = ConfirmDialog {
-            message: "x".repeat(90),
+            message: "Discard changes to src/lib.rs?".to_owned(),
         };
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        let theme = Theme::github_dark();
-        terminal
-            .draw(|frame| dialog.render(frame, &theme))
-            .expect("draw");
-        let buffer = terminal.backend().buffer();
-        assert_eq!(buffer.area.width, 80);
-        assert_eq!(
-            buffer.cell((2, 14)).expect("in bounds").bg,
-            theme.shadow(),
-            "the bottom edge still draws"
-        );
+        let terminal = render(|frame, theme| dialog.render(frame, theme));
+        let cell = terminal
+            .backend()
+            .buffer()
+            .cell((0, 0))
+            .expect("in bounds")
+            .clone();
+        // the harness writes "status screen content behind the popup" at (0,0)
+        assert_eq!(cell.symbol(), "s");
+        assert_eq!(cell.fg, darkened(Theme::github_dark().fg));
     }
 
     #[test]
