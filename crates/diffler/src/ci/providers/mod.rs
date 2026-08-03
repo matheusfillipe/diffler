@@ -5,5 +5,5 @@ mod github;
 mod gitlab;
 
 pub use forgejo::ForgejoProvider;
-pub use github::{GitHubProvider, YamlCache};
+pub use github::{EtagCache, GitHubProvider, YamlCache};
 pub use gitlab::GitLabProvider;

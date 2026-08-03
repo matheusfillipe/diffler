@@ -16,6 +16,9 @@ pub enum AppEvent {
     Key(KeyEvent),
     Mouse(MouseEvent),
     Resize,
+    /// The terminal gained or lost focus (DEC mode 1004). Terminals without
+    /// focus reporting never send it, so the app treats itself as focused.
+    Focus(bool),
     Tick,
     /// Debounced filesystem change from the watcher (`watch` module).
     RepoChanged,
@@ -85,6 +88,8 @@ pub fn spawn_event_loop(tx: UnboundedSender<AppEvent>) -> JoinHandle<()> {
                     Some(Ok(Event::Key(key))) => Some(AppEvent::Key(key)),
                     Some(Ok(Event::Mouse(mouse))) => Some(AppEvent::Mouse(mouse)),
                     Some(Ok(Event::Resize(_, _))) => Some(AppEvent::Resize),
+                    Some(Ok(Event::FocusGained)) => Some(AppEvent::Focus(true)),
+                    Some(Ok(Event::FocusLost)) => Some(AppEvent::Focus(false)),
                     Some(Ok(_)) => None,
                     Some(Err(_)) | None => {
                         let _ = tx.send(AppEvent::Quit);

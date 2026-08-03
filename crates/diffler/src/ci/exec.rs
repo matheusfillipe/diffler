@@ -14,6 +14,13 @@ pub trait CommandRunner: Send + Sync {
     /// `program` is a static name (e.g. `"gh"`) so a missing binary can be
     /// reported precisely; `args` is the full argument vector.
     async fn run(&self, program: &'static str, args: &[String]) -> Result<String>;
+
+    /// Stdout regardless of the exit status. `gh api` exits 1 on a `304 Not
+    /// Modified`, which is the successful answer to a conditional request, and
+    /// the response it wrote to stdout is the part that matters.
+    async fn run_ignoring_status(&self, program: &'static str, args: &[String]) -> Result<String> {
+        self.run(program, args).await
+    }
 }
 
 /// Spawns the real binary on `PATH`.
@@ -33,6 +40,18 @@ impl CommandRunner for RealRunner {
                 message: failure_message(&output.stdout, &output.stderr),
             });
         }
+        String::from_utf8(output.stdout).map_err(|err| CiError::Parse {
+            what: format!("{program} output"),
+            message: err.to_string(),
+        })
+    }
+
+    async fn run_ignoring_status(&self, program: &'static str, args: &[String]) -> Result<String> {
+        let output = Command::new(program)
+            .args(args)
+            .output()
+            .await
+            .map_err(|_| CiError::CliMissing(program))?;
         String::from_utf8(output.stdout).map_err(|err| CiError::Parse {
             what: format!("{program} output"),
             message: err.to_string(),

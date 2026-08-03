@@ -22,7 +22,7 @@ pub use provider::{
     ForgeProvider, NewPrComment, NewPrReview, NewPullRequest, ProviderKind, ReviewVerdict,
     capabilities_for,
 };
-pub use providers::{ForgejoProvider, GitHubProvider, GitLabProvider, YamlCache};
+pub use providers::{EtagCache, ForgejoProvider, GitHubProvider, GitLabProvider, YamlCache};
 
 use std::path::Path;
 
@@ -103,6 +103,7 @@ pub fn build_provider(
     branch: Option<&str>,
     remote_url: Option<&str>,
     yaml_cache: YamlCache,
+    etags: EtagCache,
 ) -> Box<dyn ForgeProvider + Send> {
     match detected.kind {
         ProviderKind::GitHub => Box::new(GitHubProvider::new(
@@ -110,6 +111,7 @@ pub fn build_provider(
             read_workflows(repo_root),
             branch.map(str::to_owned),
             yaml_cache,
+            etags,
         )),
         ProviderKind::GitLab => Box::new(GitLabProvider::new(
             Box::new(RealRunner),
@@ -278,7 +280,14 @@ mod tests {
         let detected = detect_for_repo(dir.path(), None, &config).expect("detected");
         assert_eq!(detected.host, None);
 
-        let provider = build_provider(&detected, dir.path(), None, None, YamlCache::default());
+        let provider = build_provider(
+            &detected,
+            dir.path(),
+            None,
+            None,
+            YamlCache::default(),
+            EtagCache::default(),
+        );
         let err = provider.list_runs(1).await.expect_err("no host to target");
         assert!(matches!(err, CiError::NotFound(_)), "{err:?}");
     }

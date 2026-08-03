@@ -24,8 +24,22 @@ use crate::ci::provider::{ForgeProvider, ProviderKind};
 /// of the repo's `workflows` YAMLs matches that run's workflow name.
 pub type YamlCache = std::sync::Arc<std::sync::Mutex<HashMap<String, String>>>;
 
+/// The last response GitHub gave for one endpoint, kept so the next poll can
+/// ask conditionally. A `304` answer costs no rate limit, which is what lets
+/// the runs list stay on a live cadence.
+#[derive(Debug, Clone)]
+pub struct Conditional {
+    pub etag: String,
+    pub body: String,
+}
+
+/// Per-endpoint conditional state, shared across provider rebuilds the way
+/// [`YamlCache`] is.
+pub type EtagCache = std::sync::Arc<std::sync::Mutex<HashMap<String, Conditional>>>;
+
 pub struct GitHubProvider {
     runner: Box<dyn CommandRunner>,
+    etags: EtagCache,
     /// Fetched reusable-workflow bodies keyed by contents path (which embeds
     /// the ref, so entries are immutable). Shared across provider rebuilds so
     /// the graph poll doesn't refetch per cycle.
@@ -43,12 +57,57 @@ impl GitHubProvider {
         workflows: Vec<String>,
         branch: Option<String>,
         yaml_cache: YamlCache,
+        etags: EtagCache,
     ) -> Self {
         Self {
             runner,
+            etags,
             yaml_cache,
             workflows,
             branch,
+        }
+    }
+
+    /// `gh api <path>` asking GitHub to answer only if the resource changed.
+    /// An unchanged answer is a `304`, which costs no rate limit, so a live
+    /// poll of a quiet repo is effectively free. `gh` exits non-zero on a
+    /// `304`, so the status comes from the response rather than the exit code.
+    async fn conditional_api(&self, path: &str) -> Result<String> {
+        let known = self
+            .etags
+            .lock()
+            .ok()
+            .and_then(|cache| cache.get(path).cloned());
+        let mut args = vec!["api".to_owned(), "-i".to_owned(), path.to_owned()];
+        if let Some(cached) = &known {
+            args.push("-H".to_owned());
+            args.push(format!("If-None-Match: {}", cached.etag));
+        }
+        let raw = self.runner.run_ignoring_status("gh", &args).await?;
+        let (status, headers, body) = split_response(&raw);
+        match status {
+            Some(304) => known
+                .map(|cached| cached.body)
+                .ok_or_else(|| CiError::Parse {
+                    what: "gh api".to_owned(),
+                    message: "304 without a cached body".to_owned(),
+                }),
+            Some(200) => {
+                if let (Some(etag), Ok(mut cache)) = (header(&headers, "etag"), self.etags.lock()) {
+                    cache.insert(
+                        path.to_owned(),
+                        Conditional {
+                            etag,
+                            body: body.clone(),
+                        },
+                    );
+                }
+                Ok(body)
+            }
+            _ => Err(CiError::Exec {
+                cmd: format!("gh api {path}"),
+                message: raw.lines().next().unwrap_or("no response").to_owned(),
+            }),
         }
     }
 
@@ -270,23 +329,19 @@ impl ForgeProvider for GitHubProvider {
     }
 
     async fn list_runs(&self, limit: usize) -> Result<Vec<CiRun>> {
-        let mut args = vec!["run".to_owned(), "list".to_owned()];
-        if let Some(branch) = &self.branch {
-            args.push("--branch".to_owned());
-            args.push(branch.clone());
-        }
-        args.extend(
-            [
-                "-L",
-                &limit.to_string(),
-                "--json",
-                "databaseId,displayTitle,headBranch,headSha,status,conclusion,workflowName,createdAt,url",
-            ]
-            .map(str::to_owned),
-        );
-        let out = self.runner.run("gh", &args).await?;
-        let raw: Vec<RunListItem> = parse_json("gh run list", &out)?;
-        Ok(raw.into_iter().map(RunListItem::into_run).collect())
+        let branch = self
+            .branch
+            .as_ref()
+            .map(|branch| format!("&branch={branch}"))
+            .unwrap_or_default();
+        let path = format!("repos/{{owner}}/{{repo}}/actions/runs?per_page={limit}{branch}");
+        let out = self.conditional_api(&path).await?;
+        let raw: RunsApi = parse_json("gh api actions/runs", &out)?;
+        Ok(raw
+            .workflow_runs
+            .into_iter()
+            .map(RunApi::into_run)
+            .collect())
     }
 
     async fn run_detail(&self, run: &RunId) -> Result<RunDetail> {
@@ -803,34 +858,63 @@ fn parse_created(raw: &str) -> Option<time::OffsetDateTime> {
     time::OffsetDateTime::parse(raw, &time::format_description::well_known::Rfc3339).ok()
 }
 
+/// Split a `gh api -i` response into its status code, header lines and body.
+fn split_response(raw: &str) -> (Option<u16>, Vec<&str>, String) {
+    let mut lines = raw.lines();
+    let status = lines
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse().ok());
+    let mut headers = Vec::new();
+    for line in lines.by_ref() {
+        if line.trim().is_empty() {
+            break;
+        }
+        headers.push(line);
+    }
+    (status, headers, lines.collect::<Vec<_>>().join("\n"))
+}
+
+fn header(headers: &[&str], name: &str) -> Option<String> {
+    headers.iter().find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        key.trim()
+            .eq_ignore_ascii_case(name)
+            .then(|| value.trim().to_owned())
+    })
+}
+
+/// The REST runs response. GitHub names these fields differently from
+/// `gh run list --json`, and carries both a `url` and an `html_url`, so it
+/// gets its own shape rather than aliases onto [`RunListItem`].
 #[derive(Deserialize)]
-struct RunListItem {
-    #[serde(rename = "databaseId")]
-    database_id: u64,
-    #[serde(rename = "displayTitle")]
+struct RunsApi {
+    workflow_runs: Vec<RunApi>,
+}
+
+#[derive(Deserialize)]
+struct RunApi {
+    id: u64,
+    name: Option<String>,
     display_title: String,
-    #[serde(rename = "headBranch")]
     head_branch: String,
-    #[serde(rename = "headSha")]
     head_sha: String,
     status: String,
     conclusion: Option<String>,
-    #[serde(rename = "workflowName")]
-    workflow_name: String,
-    #[serde(rename = "createdAt")]
     created_at: String,
-    url: String,
+    html_url: String,
 }
 
-impl RunListItem {
+impl RunApi {
     fn into_run(self) -> CiRun {
-        let name = if self.workflow_name.is_empty() {
+        let workflow = self.name.unwrap_or_default();
+        let name = if workflow.is_empty() {
             self.display_title.clone()
         } else {
-            self.workflow_name
+            workflow
         };
         CiRun {
-            id: RunId(self.database_id.to_string()),
+            id: RunId(self.id.to_string()),
             name,
             title: self.display_title,
             branch: self.head_branch,
@@ -838,7 +922,7 @@ impl RunListItem {
             author: String::new(),
             created: parse_created(&self.created_at),
             status: map_status(&self.status, self.conclusion.as_deref()),
-            url: Some(self.url),
+            url: Some(self.html_url),
             remote: None,
         }
     }
@@ -1302,26 +1386,43 @@ jobs:
     runs-on: ubuntu-latest
 ";
 
+    /// A REST runs payload with one completed run on `branch`.
+    fn runs_body(branch: &str) -> String {
+        format!(
+            r#"{{"total_count":1,"workflow_runs":[
+              {{"id":42,"name":"CI","display_title":"fix things","head_branch":"{branch}",
+               "head_sha":"abc1234","status":"completed","conclusion":"success",
+               "created_at":"2026-06-18T10:00:00Z","url":"https://api/runs/42",
+               "html_url":"https://gh/run/42"}}]}}"#
+        )
+    }
+
+    fn ok_response(body: &str, etag: &str) -> String {
+        format!("HTTP/2.0 200 OK\r\nETag: {etag}\r\nContent-Type: application/json\r\n\r\n{body}")
+    }
+
     fn provider(responses: &[(&'static str, &str)]) -> GitHubProvider {
         GitHubProvider::new(
             Box::new(RecordingRunner::new(responses)),
             vec![WORKFLOW.to_owned()],
             None,
             YamlCache::default(),
+            EtagCache::default(),
         )
     }
 
     #[tokio::test]
     async fn list_runs_scopes_to_the_branch() {
-        // the response only matches if `--branch feat/x` was sent
-        let json = r#"[{"databaseId":1,"displayTitle":"x","headBranch":"feat/x","headSha":"a",
-            "status":"completed","conclusion":"success","workflowName":"CI",
-            "createdAt":"2026-06-18T10:00:00Z","url":"u"}]"#;
+        // the response only matches if the branch reached the query string
         let runs = GitHubProvider::new(
-            Box::new(RecordingRunner::new(&[("list --branch feat/x", json)])),
+            Box::new(RecordingRunner::new(&[(
+                "branch=feat/x",
+                &ok_response(&runs_body("feat/x"), "W/\"a\""),
+            )])),
             vec![WORKFLOW.to_owned()],
             Some("feat/x".to_owned()),
             YamlCache::default(),
+            EtagCache::default(),
         )
         .list_runs(10)
         .await
@@ -1345,6 +1446,7 @@ jobs:
             vec![WORKFLOW.to_owned(), RELEASE_WORKFLOW.to_owned()],
             None,
             YamlCache::default(),
+            EtagCache::default(),
         )
         .run_detail(&RunId("9".into()))
         .await
@@ -1354,13 +1456,53 @@ jobs:
     }
 
     #[tokio::test]
-    async fn list_runs_parses_gh_json() {
-        let json = r#"[
-          {"databaseId":42,"displayTitle":"fix things","headBranch":"main","headSha":"abc1234",
-           "status":"completed","conclusion":"success","workflowName":"CI",
-           "createdAt":"2026-06-18T10:00:00Z","url":"https://gh/run/42"}
-        ]"#;
-        let runs = provider(&[("run list", json)])
+    async fn an_unchanged_poll_replays_the_cached_runs_and_sends_the_etag() {
+        let runner = std::sync::Arc::new(RecordingRunner::new(&[
+            ("If-None-Match", "HTTP/2.0 304 Not Modified\r\n\r\n"),
+            (
+                "actions/runs",
+                &ok_response(&runs_body("main"), "W/\"tag1\""),
+            ),
+        ]));
+        let etags = EtagCache::default();
+        let build = || {
+            GitHubProvider::new(
+                Box::new(runner.clone()),
+                vec![WORKFLOW.to_owned()],
+                None,
+                YamlCache::default(),
+                etags.clone(),
+            )
+        };
+        // first poll stores the etag, second is answered 304 from the cache
+        let first = build().list_runs(10).await.expect("first");
+        let second = build().list_runs(10).await.expect("second");
+        assert_eq!(first, second, "a 304 yields the body we already had");
+        assert_eq!(second.len(), 1);
+        let sent = runner.calls();
+        assert!(
+            sent[0].contains("actions/runs") && !sent[0].contains("If-None-Match"),
+            "nothing to be conditional about yet: {:?}",
+            sent[0]
+        );
+        assert!(
+            sent[1].contains("If-None-Match: W/\"tag1\""),
+            "the second poll offers the etag: {:?}",
+            sent[1]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_conditional_request_is_an_error_not_an_empty_list() {
+        let err = provider(&[("actions/runs", "HTTP/2.0 401 Unauthorized\r\n\r\n")])
+            .list_runs(10)
+            .await;
+        assert!(err.is_err(), "a 401 must not read as zero runs");
+    }
+
+    #[tokio::test]
+    async fn list_runs_parses_the_rest_payload() {
+        let runs = provider(&[("actions/runs", &ok_response(&runs_body("main"), "W/\"a\""))])
             .list_runs(10)
             .await
             .expect("runs");
@@ -1369,6 +1511,7 @@ jobs:
         assert_eq!(runs[0].name, "CI");
         assert_eq!(runs[0].branch, "main");
         assert_eq!(runs[0].status, JobStatus::Ok);
+        assert_eq!(runs[0].url.as_deref(), Some("https://gh/run/42"));
         assert!(runs[0].created.is_some());
     }
 
@@ -1428,6 +1571,7 @@ jobs:
             vec![DEPLOY_WORKFLOW.to_owned()],
             None,
             YamlCache::default(),
+            EtagCache::default(),
         )
         .run_detail(&RunId("9".into()))
         .await
@@ -1502,6 +1646,7 @@ jobs:
                 vec![DEPLOY_WORKFLOW.to_owned()],
                 None,
                 cache.clone(),
+                EtagCache::default(),
             )
             .run_detail(&RunId("9".into()))
             .await
@@ -1623,6 +1768,7 @@ jobs:
             vec![],
             Some("feat/x".to_owned()),
             YamlCache::default(),
+            EtagCache::default(),
         )
         .current_pr()
         .await
@@ -1639,6 +1785,7 @@ jobs:
             vec![],
             Some("feat/x".to_owned()),
             YamlCache::default(),
+            EtagCache::default(),
         )
         .current_pr()
         .await
@@ -1716,6 +1863,7 @@ jobs:
             vec![WORKFLOW.to_owned()],
             None,
             YamlCache::default(),
+            EtagCache::default(),
         );
         provider
             .resolve_pr_thread(9, "T_1", true)
@@ -1789,6 +1937,7 @@ mod create_pr_tests {
             Vec::new(),
             Some("feat/x".to_owned()),
             YamlCache::default(),
+            EtagCache::default(),
         );
         let pr = provider
             .create_pr(&NewPullRequest {

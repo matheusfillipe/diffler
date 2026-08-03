@@ -324,6 +324,11 @@ const REFRESH_FLASH_TICKS: u8 = 4;
 /// Poll interval (in 250ms ticks) when the watcher is missing or broken.
 const FALLBACK_REFRESH_TICKS: u32 = 20;
 
+/// How much the CI poll slows while the terminal is unfocused. Focus regained
+/// polls at once, so the only cost of being wrong is a stale board nobody is
+/// looking at.
+const UNFOCUSED_POLL_FACTOR: u64 = 12;
+
 /// What the main loop should fetch from the CI provider off-thread. Mirrors
 /// `GitOp`/`pending_git`: set by the app, taken once by the loop, result
 /// returned as an `AppEvent`.
@@ -487,6 +492,12 @@ pub struct App {
     /// Fetched reusable-workflow YAML shared across per-request provider
     /// rebuilds, so graph polls don't refetch immutable files.
     pub ci_yaml_cache: crate::ci::YamlCache,
+    /// Conditional-request state per CI endpoint, so a poll that finds nothing
+    /// changed costs no rate limit.
+    pub ci_etags: crate::ci::EtagCache,
+    /// Whether the terminal currently has focus. Terminals without focus
+    /// reporting never say otherwise, so this stays true for them.
+    pub focused: bool,
     /// Recent CI runs shown on the Runs screen.
     pub runs: Vec<crate::ci::CiRun>,
     /// The checked-out branch's PR, shown beside the runs section header.
@@ -655,6 +666,8 @@ impl App {
             pending_enrich: Vec::new(),
             enrich_inflight: std::collections::HashSet::new(),
             ci_yaml_cache: crate::ci::YamlCache::default(),
+            ci_etags: crate::ci::EtagCache::default(),
+            focused: true,
             runs: Vec::new(),
             pr: None,
             pr_checked: false,
@@ -808,6 +821,15 @@ impl App {
                 } else {
                     self.handle_key(&key)
                 }
+            }
+            AppEvent::Focus(focused) => {
+                self.focused = focused;
+                // catch up the moment someone looks again, so coming back
+                // never shows a stale board
+                if focused {
+                    self.queue_ci_poll();
+                }
+                Flow::Continue
             }
             AppEvent::Tick => self.on_tick(),
             AppEvent::RefreshDone(result) => {
@@ -1102,9 +1124,15 @@ impl App {
             self.queue_refresh();
         }
         // re-poll the active CI screen on a relaxed cadence (250ms ticks);
-        // saturating + clamp so a pathological config can't zero or overflow it
-        let poll_ticks =
-            u32::try_from(self.config.ci.poll_seconds.max(1).saturating_mul(4)).unwrap_or(u32::MAX);
+        // saturating + clamp so a pathological config can't zero or overflow it.
+        // Nobody watching means nobody to show it to, so an unfocused terminal
+        // drops to a heartbeat and catches up on the focus event.
+        let seconds = if self.focused {
+            self.config.ci.poll_seconds.max(1)
+        } else {
+            self.config.ci.poll_seconds.max(1) * UNFOCUSED_POLL_FACTOR
+        };
+        let poll_ticks = u32::try_from(seconds.saturating_mul(4)).unwrap_or(u32::MAX);
         // the poll itself paints nothing; its answer arrives as an event
         if self.tick_count.is_multiple_of(poll_ticks) {
             self.queue_ci_poll();

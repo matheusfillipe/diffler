@@ -485,4 +485,36 @@ mod tests {
         assert!(app.pending_editor.is_none());
         assert_eq!(app.screen(), Screen::Status);
     }
+
+    #[test]
+    fn losing_focus_slows_the_ci_poll_and_regaining_it_catches_up() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let poll_seconds = app.config.ci.poll_seconds.max(1);
+        let ticks_for = |app: &mut App, seconds: u64| {
+            // drive ticks up to one full focused period and count the polls
+            let mut polls = 0;
+            for _ in 0..(seconds * 4) {
+                app.pending_ci = None;
+                app.handle(crate::event::AppEvent::Tick);
+                if app.pending_ci.is_some() {
+                    polls += 1;
+                }
+            }
+            polls
+        };
+        let focused = ticks_for(&mut app, poll_seconds);
+        app.handle(crate::event::AppEvent::Focus(false));
+        app.pending_ci = None;
+        let unfocused = ticks_for(&mut app, poll_seconds);
+        assert!(focused > 0, "a focused terminal polls");
+        assert_eq!(unfocused, 0, "an unfocused one goes quiet");
+
+        app.pending_ci = None;
+        app.handle(crate::event::AppEvent::Focus(true));
+        assert!(
+            app.pending_ci.is_some(),
+            "regaining focus polls at once rather than waiting out the period"
+        );
+    }
 }

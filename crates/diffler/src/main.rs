@@ -79,12 +79,16 @@ async fn main() -> color_eyre::Result<()> {
 /// apps that request it). Best-effort: a terminal without mouse support just
 /// ignores it.
 fn set_mouse_capture(on: bool) {
-    use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+    use crossterm::event::{
+        DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture,
+    };
     let mut out = std::io::stdout();
+    // focus reporting rides along: a terminal without it ignores the private
+    // mode, and knowing when nobody is looking is what keeps the CI poll cheap
     let _ = if on {
-        crossterm::execute!(out, EnableMouseCapture)
+        crossterm::execute!(out, EnableMouseCapture, EnableFocusChange)
     } else {
-        crossterm::execute!(out, DisableMouseCapture)
+        crossterm::execute!(out, DisableMouseCapture, DisableFocusChange)
     };
 }
 
@@ -280,6 +284,7 @@ fn provider_for(
     repo_root: &Path,
     branch: Option<&str>,
     yaml_cache: ci::YamlCache,
+    etags: ci::EtagCache,
 ) -> Box<dyn ci::ForgeProvider + Send> {
     ci::build_provider(
         &remote.detected,
@@ -287,6 +292,7 @@ fn provider_for(
         branch,
         remote.url.as_deref(),
         yaml_cache,
+        etags,
     )
 }
 
@@ -303,14 +309,16 @@ fn dispatch_pr_posts(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     let repo_root = app.review.repo_root.clone();
     let branch = app.head.branch.clone();
     let yaml_cache = app.ci_yaml_cache.clone();
+    let etags = app.ci_etags.clone();
     for post in std::mem::take(&mut app.pending_pr_posts) {
         let tx = tx.clone();
         let repo_root = repo_root.clone();
         let branch = branch.clone();
         let yaml_cache = yaml_cache.clone();
+        let etags = etags.clone();
         let remote = remote.clone();
         tokio::spawn(async move {
-            let provider = provider_for(&remote, &repo_root, branch.as_deref(), yaml_cache);
+            let provider = provider_for(&remote, &repo_root, branch.as_deref(), yaml_cache, etags);
             let result = match &post {
                 app::pr::PrPost::Review { review, .. } => {
                     provider.submit_pr_review(review).await.map(|()| None)
@@ -380,14 +388,20 @@ fn dispatch_ci(app: &App, request: CiRequest, tx: &mpsc::UnboundedSender<AppEven
     let repo_root = app.review.repo_root.clone();
     let branch = app.head.branch.clone();
     let yaml_cache = app.ci_yaml_cache.clone();
+    let etags = app.ci_etags.clone();
     let tx = tx.clone();
     if matches!(request, CiRequest::Runs) {
         let multi = remotes.len() > 1;
         tokio::spawn(async move {
             let mut all = Vec::new();
             for remote in &remotes {
-                let provider =
-                    provider_for(remote, &repo_root, branch.as_deref(), yaml_cache.clone());
+                let provider = provider_for(
+                    remote,
+                    &repo_root,
+                    branch.as_deref(),
+                    yaml_cache.clone(),
+                    etags.clone(),
+                );
                 if let Ok(mut runs) = provider.list_runs(30).await {
                     if multi {
                         for run in &mut runs {
@@ -409,7 +423,7 @@ fn dispatch_ci(app: &App, request: CiRequest, tx: &mpsc::UnboundedSender<AppEven
         _ => remotes.first().cloned(),
     };
     if let Some(remote) = remote {
-        let provider = provider_for(&remote, &repo_root, branch.as_deref(), yaml_cache);
+        let provider = provider_for(&remote, &repo_root, branch.as_deref(), yaml_cache, etags);
         tokio::spawn(async move {
             let _ = tx.send(run_ci_request(provider, request).await);
         });
