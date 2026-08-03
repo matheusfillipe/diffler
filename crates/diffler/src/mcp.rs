@@ -1076,11 +1076,16 @@ mod agent_command_sync {
     /// steps have to stay identical or one harness quietly teaches a stale
     /// loop. A wording fix that lands in one and not the other is invisible
     /// without this.
+    /// A Windows checkout carries CRLF, so the newlines are normalised before
+    /// the frontmatter is found and the bodies are compared. Matching on `\n`
+    /// alone silently falls through to comparing the frontmatter, which does
+    /// differ, and fails on that platform only.
     fn body(doc: &str) -> String {
+        let doc = doc.replace("\r\n", "\n");
         let after_frontmatter = doc
             .strip_prefix("---\n")
             .and_then(|rest| rest.split_once("\n---\n"))
-            .map_or(doc, |(_, body)| body);
+            .map_or(doc.as_str(), |(_, body)| body);
         after_frontmatter.trim().to_owned()
     }
 
