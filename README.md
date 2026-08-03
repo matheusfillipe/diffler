@@ -12,10 +12,12 @@ have actually reviewed.
 
 If you know Emacs' [magit](https://magit.vc), diffler is basically a
 standalone magit with an MCP server built in: the same fast, keyboard-driven
-git UI, no Emacs required. Launch it in a repo alongside Claude Code or any
-MCP-compatible agent: it shows a live diff of what the agent is doing; you
-read, comment, stage, and commit; the agent picks your feedback up over MCP
-and responds in place. One binary, no browser, no daemon.
+git UI, no Emacs required. The keys follow the
+[Doom Emacs](https://github.com/doomemacs/doomemacs) magit experience, so its
+leader-key transients land where your fingers expect them. Launch it in a repo
+alongside Claude Code or any MCP-compatible agent: it shows a live diff of what
+the agent is doing; you read, comment, stage, and commit; the agent picks your
+feedback up over MCP and responds in place. One binary, no browser, no daemon.
 
 ## Install
 
@@ -23,16 +25,16 @@ and responds in place. One binary, no browser, no daemon.
 cargo install diffler
 ```
 
-The installed command is always `diffler`.
-
 <details>
-<summary><b>Prebuilt binary</b> (no Rust toolchain)</summary>
+<summary><b>Prebuilt binary</b></summary>
+
+Skips the compile, and needs no Rust toolchain.
 
 ```sh
 cargo binstall diffler
 ```
 
-Or download it from the
+Or download it straight from the
 [releases page](https://github.com/matheusfillipe/diffler/releases): macOS,
 Linux and Windows, x86_64 and arm64. Any GitHub-release installer (`eget`,
 `ubi`, ...) works against it too.
@@ -40,7 +42,9 @@ Linux and Windows, x86_64 and arm64. Any GitHub-release installer (`eget`,
 </details>
 
 <details>
-<summary><b>Homebrew</b> (macOS / Linux)</summary>
+<summary><b>Homebrew</b></summary>
+
+macOS and Linux. The tap is this repository.
 
 ```sh
 brew tap matheusfillipe/diffler https://github.com/matheusfillipe/diffler
@@ -50,7 +54,9 @@ brew install diffler
 </details>
 
 <details>
-<summary><b>Scoop</b> (Windows)</summary>
+<summary><b>Scoop</b></summary>
+
+Windows. The bucket is this repository.
 
 ```sh
 scoop bucket add diffler https://github.com/matheusfillipe/diffler
@@ -60,7 +66,10 @@ scoop install diffler
 </details>
 
 <details>
-<summary><b>Arch</b> (AUR)</summary>
+<summary><b>Arch</b></summary>
+
+`diffler-bin` on the AUR ships the prebuilt binary, so it installs without
+building.
 
 ```sh
 yay -S diffler-bin
@@ -69,7 +78,10 @@ yay -S diffler-bin
 </details>
 
 <details>
-<summary><b>Nix</b> (flake, runs the prebuilt binary)</summary>
+<summary><b>Nix</b></summary>
+
+The flake serves the prebuilt binary. `nix run` tries it without installing
+anything, `nix profile install` keeps it.
 
 ```sh
 nix run github:matheusfillipe/diffler
@@ -79,7 +91,10 @@ nix profile install github:matheusfillipe/diffler
 </details>
 
 <details>
-<summary><b>npm</b> (prebuilt binary, one-off or global)</summary>
+<summary><b>npm</b></summary>
+
+A wrapper that fetches the prebuilt binary. The package name is scoped, the
+command it installs is plain `diffler`.
 
 ```sh
 npx @mattfillipe/diffler
