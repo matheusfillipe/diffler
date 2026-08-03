@@ -86,16 +86,30 @@ impl Vcs for GitVcs {
                     None
                 };
                 let commit = head.peel_to_commit()?;
-                let upstream = branch.as_deref().and_then(|name| {
+                let tracking = branch.as_deref().and_then(|name| {
                     let local = self.repo.find_branch(name, git2::BranchType::Local).ok()?;
                     let upstream = local.upstream().ok()?;
-                    upstream.name().ok().flatten().map(str::to_owned)
+                    let name = upstream.name().ok().flatten()?.to_owned();
+                    Some((name, upstream.get().target()))
                 });
+                let (upstream, ahead, behind) = match tracking {
+                    Some((name, Some(target))) => {
+                        let (ahead, behind) = self
+                            .repo
+                            .graph_ahead_behind(commit.id(), target)
+                            .unwrap_or((0, 0));
+                        (Some(name), ahead, behind)
+                    }
+                    Some((name, None)) => (Some(name), 0, 0),
+                    None => (None, 0, 0),
+                };
                 Ok(HeadInfo {
                     branch,
                     oid7: short7(&commit.id().to_string()),
                     subject: commit.summary()?.unwrap_or_default().to_owned(),
                     upstream,
+                    ahead,
+                    behind,
                 })
             }
             Err(err) if err.code() == git2::ErrorCode::UnbornBranch => {
@@ -110,6 +124,8 @@ impl Vcs for GitVcs {
                     oid7: String::new(),
                     subject: String::new(),
                     upstream: None,
+                    ahead: 0,
+                    behind: 0,
                 })
             }
             Err(err) => Err(err.into()),

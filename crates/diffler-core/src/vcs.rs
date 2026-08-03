@@ -32,6 +32,11 @@ pub struct HeadInfo {
     pub subject: String,
     /// Upstream branch shorthand, if configured.
     pub upstream: Option<String>,
+    /// Commits on HEAD the upstream lacks, so work that exists only here is
+    /// visible without running `git status`. Zero without an upstream.
+    pub ahead: usize,
+    /// Commits on the upstream that HEAD lacks.
+    pub behind: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

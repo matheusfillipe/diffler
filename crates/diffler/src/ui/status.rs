@@ -199,6 +199,26 @@ fn centered_line(text: &str, style: Style, width: u16) -> Line<'static> {
     ])
 }
 
+/// How far HEAD has drifted from its upstream: `↑` for commits only this
+/// branch has, `↓` for commits only the remote has. A branch level with its
+/// upstream, or with none at all, shows nothing.
+fn divergence_spans(theme: &Theme, ahead: usize, behind: usize) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    if ahead > 0 {
+        spans.push(Span::styled(
+            format!(" ↑{ahead}"),
+            Style::new().fg(theme.warn_fg).bg(theme.bg),
+        ));
+    }
+    if behind > 0 {
+        spans.push(Span::styled(
+            format!(" ↓{behind}"),
+            Style::new().fg(theme.accent).bg(theme.bg),
+        ));
+    }
+    spans
+}
+
 fn head_line(app: &App) -> Line<'static> {
     let theme = &app.theme;
     let mut spans = vec![Span::styled(" Head:     ", theme.dim_style())];
@@ -209,6 +229,7 @@ fn head_line(app: &App) -> Line<'static> {
         )),
         None => spans.push(Span::styled("(detached)", theme.dim_style())),
     }
+    spans.extend(divergence_spans(theme, app.head.ahead, app.head.behind));
     if app.head.oid7.is_empty() {
         spans.push(Span::styled(" (no commits)", theme.dim_style()));
     } else {
@@ -698,6 +719,60 @@ mod tests {
             .iter()
             .position(|row| matches!(row, Row::File { section: s, .. } if *s == section))
             .expect("file row");
+    }
+
+    #[test]
+    fn the_head_line_counts_commits_the_remote_does_not_have() {
+        let fixture = standard_fixture();
+        fixture.track("main", "HEAD");
+        fixture.write("shipped.rs", "pub fn shipped() {}\n");
+        fixture.commit_all("only here");
+        let mut app = app_for(&fixture);
+        let screen = render(&mut app).backend().to_string();
+        assert!(
+            screen.contains("↑1"),
+            "unpushed commit is on screen: {screen}"
+        );
+        assert!(!screen.contains("↓"), "nothing to pull: {screen}");
+    }
+
+    #[test]
+    fn the_head_line_counts_commits_only_the_remote_has() {
+        let fixture = standard_fixture();
+        fixture.write("remote_only.rs", "pub fn theirs() {}\n");
+        fixture.commit_all("landed upstream");
+        fixture.track("main", "HEAD");
+        // rewind the branch, leaving the tracking ref one commit ahead
+        let parent = fixture.repo.revparse_single("HEAD~1").expect("parent").id();
+        fixture
+            .repo
+            .reference("refs/heads/main", parent, true, "rewind")
+            .expect("rewind");
+        let mut app = app_for(&fixture);
+        let screen = render(&mut app).backend().to_string();
+        assert!(
+            screen.contains("↓1"),
+            "a commit to pull is on screen: {screen}"
+        );
+        assert!(!screen.contains("↑"), "nothing to push: {screen}");
+    }
+
+    #[test]
+    fn a_branch_level_with_its_upstream_says_nothing() {
+        let fixture = standard_fixture();
+        fixture.track("main", "HEAD");
+        let mut app = app_for(&fixture);
+        let screen = render(&mut app).backend().to_string();
+        assert!(!screen.contains("↑"), "in sync stays quiet: {screen}");
+        assert!(!screen.contains("↓"), "in sync stays quiet: {screen}");
+    }
+
+    #[test]
+    fn a_branch_with_no_upstream_says_nothing() {
+        let fixture = standard_fixture();
+        let mut app = app_for(&fixture);
+        let screen = render(&mut app).backend().to_string();
+        assert!(!screen.contains("↑"), "{screen}");
     }
 
     #[test]

@@ -62,6 +62,24 @@ impl Fixture {
         self.repo.remote(name, url).expect("remote");
     }
 
+    /// Give `branch` an upstream at revision `at`. The remote-tracking ref is
+    /// written locally, which is all git needs to count divergence.
+    pub(crate) fn track(&self, branch: &str, at: &str) {
+        // set_upstream resolves the ref back to a remote, so one has to exist
+        if self.repo.find_remote("origin").is_err() {
+            self.remote("origin", "https://example.invalid/repo.git");
+        }
+        let oid = self.repo.revparse_single(at).expect("rev").id();
+        self.repo
+            .reference(&format!("refs/remotes/origin/{branch}"), oid, true, "track")
+            .expect("remote ref");
+        self.repo
+            .find_branch(branch, git2::BranchType::Local)
+            .expect("branch")
+            .set_upstream(Some(&format!("origin/{branch}")))
+            .expect("upstream");
+    }
+
     pub(crate) fn branch(&self, name: &str) {
         let head = self
             .repo

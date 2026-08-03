@@ -1503,6 +1503,8 @@ pub(crate) fn hit_index(
 
 fn empty_head() -> HeadInfo {
     HeadInfo {
+        ahead: 0,
+        behind: 0,
         branch: None,
         oid7: String::new(),
         subject: String::new(),
