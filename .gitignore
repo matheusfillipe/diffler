@@ -19,3 +19,6 @@ target/criterion
 claudedocs/
 .desloppify/
 scorecard.png
+
+# knowledge-graph build output (graphify)
+graphify-out/

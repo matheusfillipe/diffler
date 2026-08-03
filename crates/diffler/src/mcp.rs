@@ -1068,3 +1068,37 @@ mod tests {
         handle.handle.abort();
     }
 }
+
+#[cfg(test)]
+mod agent_command_sync {
+    /// The review loop is written out for two agent harnesses. Only the
+    /// frontmatter differs (each host wants its own shape), so the numbered
+    /// steps have to stay identical or one harness quietly teaches a stale
+    /// loop. A wording fix that lands in one and not the other is invisible
+    /// without this.
+    fn body(doc: &str) -> String {
+        let after_frontmatter = doc
+            .strip_prefix("---\n")
+            .and_then(|rest| rest.split_once("\n---\n"))
+            .map_or(doc, |(_, body)| body);
+        after_frontmatter.trim().to_owned()
+    }
+
+    #[test]
+    fn both_agent_command_files_teach_the_same_review_loop() {
+        const SKILL: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../skills/diffler/SKILL.md"
+        ));
+        const OPENCODE: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../.opencode/commands/diffler.md"
+        ));
+        assert_eq!(
+            body(SKILL),
+            body(OPENCODE),
+            "skills/diffler/SKILL.md and .opencode/commands/diffler.md have drifted; \
+             edit both or neither"
+        );
+    }
+}
