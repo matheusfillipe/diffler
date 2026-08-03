@@ -1211,6 +1211,102 @@ mod tests {
         );
     }
 
+    /// Put the sidebar cursor on the tree row for `dir`.
+    fn cursor_to_dir(app: &mut App, dir: &str) {
+        let review = &app.review;
+        let diff = app.diff.as_ref().expect("diff view");
+        let rows = super::sidebar_rows(diff, review);
+        let at = rows
+            .iter()
+            .position(
+                |row| matches!(&row.node, crate::tree::TreeNode::Dir { path, .. } if path == dir),
+            )
+            .unwrap_or_else(|| panic!("a tree row for {dir}"));
+        let diff = app.diff.as_mut().expect("diff view");
+        diff.focus = Pane::List;
+        diff.tree_cursor = at;
+    }
+
+    fn viewed_paths(app: &App) -> Vec<String> {
+        let source = app.active_review_source();
+        let session = app.review.session_for(&source);
+        let mut out: Vec<String> = app
+            .diff
+            .as_ref()
+            .unwrap()
+            .model(&app.review)
+            .files
+            .iter()
+            .filter(|f| session.is_viewed(&f.path, &f.content_hash()))
+            .map(|f| f.path.clone())
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// Two files directly under `src/`, one nested a level deeper, and one
+    /// outside it entirely, so a subtree mark has something real to cover and
+    /// something to leave alone.
+    fn nested_fixture() -> Fixture {
+        let fixture = Fixture::new();
+        fixture.write("src/lib.rs", "pub fn a() {}\n");
+        fixture.write("src/main.rs", "fn main() {}\n");
+        fixture.write("src/deep/inner.rs", "pub fn b() {}\n");
+        fixture.write("docs/readme.md", "hi\n");
+        fixture.commit_all("initial");
+        fixture.write("src/lib.rs", "pub fn a() -> u32 {\n    1\n}\n");
+        fixture.write("src/main.rs", "fn main() {\n    println!();\n}\n");
+        fixture.write("src/deep/inner.rs", "pub fn b() -> u32 {\n    2\n}\n");
+        fixture.write("docs/readme.md", "hi there\n");
+        fixture
+    }
+
+    #[test]
+    fn viewing_a_directory_marks_the_whole_subtree_and_nothing_outside_it() {
+        let fixture = nested_fixture();
+        let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Tree);
+        cursor_to_dir(&mut app, "src");
+        app.handle(key('v'));
+        assert_eq!(
+            viewed_paths(&app),
+            ["src/deep/inner.rs", "src/lib.rs", "src/main.rs"],
+            "every file under src, including the nested one"
+        );
+    }
+
+    #[test]
+    fn viewing_a_nested_directory_leaves_its_parent_alone() {
+        let fixture = nested_fixture();
+        let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Tree);
+        cursor_to_dir(&mut app, "src/deep");
+        app.handle(key('v'));
+        assert_eq!(viewed_paths(&app), ["src/deep/inner.rs"]);
+    }
+
+    #[test]
+    fn viewing_an_already_viewed_directory_puts_it_back() {
+        let fixture = standard_fixture();
+        let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Tree);
+        cursor_to_dir(&mut app, "src");
+        app.handle(key('v'));
+        assert!(!viewed_paths(&app).is_empty());
+        cursor_to_dir(&mut app, "src");
+        app.handle(key('v'));
+        assert!(
+            viewed_paths(&app).is_empty(),
+            "a second press unmarks the subtree"
+        );
+    }
+
+    #[test]
+    fn viewing_a_file_row_still_marks_only_that_file() {
+        let fixture = standard_fixture();
+        let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Tree);
+        select_file(&mut app, "src/lib.rs");
+        app.handle(key('v'));
+        assert_eq!(viewed_paths(&app), ["src/lib.rs"]);
+    }
+
     #[test]
     fn a_file_level_composer_opens_above_the_diff() {
         let fixture = standard_fixture();

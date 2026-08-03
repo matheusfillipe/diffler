@@ -267,7 +267,7 @@ impl Action {
             Self::VisualSelect => "select a line range",
             Self::Reply => "reply to the comment",
             Self::Resolve => "resolve the comment",
-            Self::MarkViewed => "mark the file viewed",
+            Self::MarkViewed => "mark the file or folder viewed",
             Self::CopyFileFeedback => "copy this file's feedback as markdown",
             Self::CopyAllFeedback => "copy all feedback as markdown",
             Self::Search => "search",

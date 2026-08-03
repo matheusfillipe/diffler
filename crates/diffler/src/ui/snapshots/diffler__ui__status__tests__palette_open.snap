@@ -11,7 +11,7 @@ expression: render(&mut app).backend()
 "                                go to bottom                                         G                                  "
 " ▾ Unstaged changes (1) +1 -1   half page down                                   <c-d>                                  "
 " ● src/lib.rs +1 -1             half page up                                     <c-u>                                  "
-"                                mark the file viewed                                 v                                  "
+"                                mark the file or folder viewed                       v                                  "
 " ▾ Staged changes (1) +1 -0     next section                                     <c-n>                                  "
 " + ci.yml +1 -0                 previous section                                 <c-p>                                  "
 "                                fold / unfold                                    <tab>                                  "

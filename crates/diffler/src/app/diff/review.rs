@@ -7,8 +7,9 @@ use diffler_core::feedback::{self, FeedbackOptions};
 use diffler_core::model::{FileDiff, LineKind};
 use diffler_core::source::ReviewSource;
 
-use super::{ComposerKind, DiffRow, next_unviewed_index, sidebar_rows};
+use super::{ComposerKind, DiffRow, Pane, next_unviewed_index, sidebar_rows};
 use crate::app::{App, Modal};
+use crate::tree::TreeNode;
 
 impl App {
     /// Anchor for a new comment at the cursor (or the visual selection).
@@ -174,6 +175,9 @@ impl App {
     }
 
     pub(super) fn diff_toggle_viewed(&mut self) {
+        if self.diff_toggle_dir_viewed() {
+            return;
+        }
         let Some(path) = self.diff_cursor_path() else {
             return;
         };
@@ -211,6 +215,65 @@ impl App {
             let rows = sidebar_rows(diff, review);
             diff.reseat_tree_cursor(&rows);
         }
+    }
+
+    /// `v` on a sidebar directory row marks every file under it, so a whole
+    /// subtree clears in one keystroke. Reports whether it handled the key.
+    /// Already-viewed throughout means the press unmarks instead, matching how
+    /// a single file toggles.
+    fn diff_toggle_dir_viewed(&mut self) -> bool {
+        let review = &self.review;
+        let Some(diff) = self.diff.as_ref() else {
+            return false;
+        };
+        if diff.focus != Pane::List {
+            return false;
+        }
+        let rows = sidebar_rows(diff, review);
+        let Some(TreeNode::Dir { path, .. }) = rows.get(diff.tree_cursor).map(|row| &row.node)
+        else {
+            return false;
+        };
+        let prefix = format!("{path}/");
+        let files: Vec<(String, String)> = diff
+            .model(review)
+            .files
+            .iter()
+            .filter(|file| file.path.starts_with(&prefix))
+            .map(|file| (file.path.clone(), file.content_hash()))
+            .collect();
+        if files.is_empty() {
+            return false;
+        }
+        let source = self.active_review_source();
+        let session = self.review.session_for(&source);
+        let all_viewed = files
+            .iter()
+            .all(|(path, hash)| session.is_viewed(path, hash));
+        let session = self.review.session_for_mut(&source);
+        for (path, hash) in &files {
+            if all_viewed {
+                session.unmark_viewed(path);
+            } else {
+                session.mark_viewed(path, hash);
+            }
+        }
+        if let Err(err) = self.review.save_for(&source) {
+            self.error(err.to_string());
+        }
+        let count = files.len();
+        self.info(if all_viewed {
+            format!("{count} files back to unviewed")
+        } else {
+            format!("{count} files marked viewed")
+        });
+        // the buckets reshuffle under the cursor in the review layout
+        let review = &self.review;
+        if let Some(diff) = self.diff.as_mut() {
+            let rows = sidebar_rows(diff, review);
+            diff.reseat_tree_cursor(&rows);
+        }
+        true
     }
 
     pub(super) fn diff_unview_all(&mut self) {
