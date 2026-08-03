@@ -19,36 +19,74 @@ and responds in place. One binary, no browser, no daemon.
 
 ## Install
 
-The installed command is always `diffler`. Pick whatever fits:
+```sh
+cargo install diffler
+```
+
+The installed command is always `diffler`.
+
+<details>
+<summary><b>Prebuilt binary</b> (no Rust toolchain)</summary>
 
 ```sh
-# Rust: compile from source, or grab the prebuilt with cargo-binstall
-cargo install diffler
 cargo binstall diffler
+```
 
-# Homebrew (macOS / Linux)
+Or download it from the
+[releases page](https://github.com/matheusfillipe/diffler/releases): macOS,
+Linux and Windows, x86_64 and arm64. Any GitHub-release installer (`eget`,
+`ubi`, ...) works against it too.
+
+</details>
+
+<details>
+<summary><b>Homebrew</b> (macOS / Linux)</summary>
+
+```sh
 brew tap matheusfillipe/diffler https://github.com/matheusfillipe/diffler
 brew install diffler
+```
 
-# Scoop (Windows)
+</details>
+
+<details>
+<summary><b>Scoop</b> (Windows)</summary>
+
+```sh
 scoop bucket add diffler https://github.com/matheusfillipe/diffler
 scoop install diffler
+```
 
-# Arch (AUR)
+</details>
+
+<details>
+<summary><b>Arch</b> (AUR)</summary>
+
+```sh
 yay -S diffler-bin
+```
 
-# Nix (flake, runs the prebuilt binary)
+</details>
+
+<details>
+<summary><b>Nix</b> (flake, runs the prebuilt binary)</summary>
+
+```sh
 nix run github:matheusfillipe/diffler
 nix profile install github:matheusfillipe/diffler
+```
 
-# npm: prebuilt binary, one-off or global
+</details>
+
+<details>
+<summary><b>npm</b> (prebuilt binary, one-off or global)</summary>
+
+```sh
 npx @mattfillipe/diffler
 npm install -g @mattfillipe/diffler
 ```
 
-Or download a prebuilt binary (macOS, Linux, Windows; x86_64 and arm64) from the
-[releases page](https://github.com/matheusfillipe/diffler/releases). Any
-GitHub-release installer (`eget`, `ubi`, ...) works against it too.
+</details>
 
 ## Quickstart
 
