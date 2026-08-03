@@ -221,21 +221,15 @@ capture means the terminal's own text selection needs the usual override
 
 ## How it compares
 
-The closest alternative is [tuicr](https://github.com/agavra/tuicr), also a
-review-first TUI with vim keys. It covers more ground on the version-control
-side, with jj and Mercurial alongside git and both GitHub PRs and GitLab MRs,
-and it hands a review to an agent by exporting markdown with `file:line`
-anchors that the agent then works through. diffler puts the agent on the other
-end of an MCP server, so it reads and answers your comments while you are
-still reading the diff, and it carries the magit-style staging and committing
-alongside.
-
 Pagers like [delta](https://github.com/dandavison/delta) render diffs
 beautifully, and [lazygit](https://github.com/jesseduffield/lazygit) and
 [gitui](https://github.com/gitui-org/gitui) are great general git TUIs.
 diffler is review-first: comments live on diff lines, an agent reads and
 answers them over MCP while you watch, and the same threads work against real
 GitHub/Forgejo PRs, including PRs whose branch you never checked out.
+
+You may also want to check [tuicr](https://github.com/agavra/tuicr), the
+closest alternative.
 
 ## MCP tools
 
