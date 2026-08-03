@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Cut a release. The version lives in the package manifests (Cargo.toml and the
-# npm package), this script is the only thing that changes it — bumping both in
+# npm package), this script is the only thing that changes it: bumping both in
 # lockstep, gating on a green build, then committing, tagging, and pushing. CI
 # builds the binaries and publishes crates.io + npm from the committed versions,
 # never by parsing the tag.
@@ -23,7 +23,7 @@ if [ "$(git branch --show-current)" != "main" ]; then
   exit 1
 fi
 if ! git diff --quiet || ! git diff --cached --quiet; then
-  echo "release: working tree is dirty — commit or stash first" >&2
+  echo "release: working tree is dirty; commit or stash first" >&2
   exit 1
 fi
 git fetch -q origin main
@@ -61,4 +61,4 @@ git add Cargo.toml Cargo.lock npm/diffler/package.json npm/diffler-mcp/package.j
 git commit -m "Release $new"
 git tag "v$new"
 git push origin main "v$new"
-echo "release: pushed v$new — CI builds binaries and publishes crates.io + npm via OIDC"
+echo "release: pushed v$new; CI builds binaries and publishes crates.io + npm via OIDC"

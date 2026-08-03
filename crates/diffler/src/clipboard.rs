@@ -1,7 +1,7 @@
 //! System clipboard. Two mechanisms, used together for reach without native
 //! build deps (so the static musl binaries stay clean): an OSC52 escape
-//! sequence — written to the terminal by the main loop after a draw, never
-//! from rendering — which the terminal forwards even over ssh/tmux; and a
+//! sequence (written to the terminal by the main loop after a draw, never
+//! from rendering) which the terminal forwards even over ssh/tmux; and a
 //! best-effort pipe to the platform clipboard CLI, covering terminals that
 //! don't honor OSC52.
 

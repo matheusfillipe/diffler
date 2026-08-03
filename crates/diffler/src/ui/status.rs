@@ -24,7 +24,7 @@ use crate::ui::{
 
 /// Prefix-only hint entries: top-level keys and the transient prefixes,
 /// rendered against the live keymap so remaps show. Sub-commands stay out of
-/// the hint line — they appear in the which-key panel and the help popup.
+/// the hint line: they appear in the which-key panel and the help popup.
 const HINTS: &[Hint] = &[
     Hint::Prefix(TransientKind::Commit, "commit"),
     Hint::Prefix(TransientKind::Branch, "branch"),
@@ -67,7 +67,7 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16, Vec<Option<usize>>) 
         .any(|row| matches!(row, Row::SectionHeader { .. }));
     if !has_sections {
         lines.push(centered_line(
-            "nothing to review — working tree clean",
+            "nothing to review: working tree clean",
             app.theme.dim_style(),
             area.width,
         ));
@@ -338,7 +338,7 @@ fn dir_spans(
     spans
 }
 
-/// A file row. In the tree layout: indent, status glyph (colored), basename —
+/// A file row. In the tree layout: indent, status glyph (colored), basename;
 /// the directory rows above carry the path. In the flat magit list: a status
 /// glyph plus the full repo-relative path, no indent. Both trail the viewed
 /// check and the file's `+A -B` diffstat.

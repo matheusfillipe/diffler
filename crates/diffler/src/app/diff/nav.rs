@@ -234,7 +234,7 @@ impl App {
     }
 
     /// Unified pane row index under `(col, row)`. `None` in split mode, whose
-    /// paired rows don't map 1:1 — mouse line ops stay in the unified view.
+    /// paired rows don't map 1:1: mouse line ops stay in the unified view.
     fn diff_pane_row_at(&self, col: u16, row: u16) -> Option<usize> {
         let diff = self.diff.as_ref()?;
         if diff.side_by_side {
@@ -392,7 +392,7 @@ impl App {
         self.info(format!("sidebar: {layout}"));
     }
 
-    /// `e`: open the selected file in the editor — at the line for diff line
+    /// `e`: open the selected file in the editor: at the line for diff line
     /// rows (new side, old side for deletions), at the anchor for comment
     /// rows, at the top otherwise (hunk header, or focus on the list).
     fn editor_at_diff_cursor(&mut self) {

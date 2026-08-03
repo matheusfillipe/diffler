@@ -190,7 +190,7 @@ fn push_draft_rows(rows: &mut Vec<DiffRow>, draft: Option<&Draft<'_>>) {
 
 /// Bucket a file's comments by their `(hunk, line)` anchor for inline display.
 /// A line anchor that no longer exists is outdated, and a file-level comment
-/// has no line — both land in the unanchored list, rendered at the top.
+/// has no line: both land in the unanchored list, rendered at the top.
 type CommentBuckets = (
     HashMap<(usize, usize), Vec<(usize, bool)>>,
     Vec<(usize, bool)>,

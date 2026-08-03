@@ -59,7 +59,7 @@ impl GitVcs {
         diff_to_model(&self.repo, &mut diff)
     }
 
-    /// Whether any tracked file differs from HEAD or the index — i.e. there is
+    /// Whether any tracked file differs from HEAD or the index, i.e. there is
     /// something `git stash` would save. Untracked files don't count, matching
     /// stash's default.
     fn has_tracked_changes(&self) -> Result<bool, VcsError> {
@@ -511,7 +511,7 @@ impl Vcs for GitVcs {
             // a conflicting pop leaves the merge in the worktree and keeps the
             // stash entry; say so rather than surfacing a bare libgit2 error
             Err(err) if err.code() == git2::ErrorCode::Conflict => Err(VcsError::Rejected(
-                "stash applied with conflicts; resolve them — the stash was kept".into(),
+                "stash applied with conflicts; resolve them (the stash was kept)".into(),
             )),
             Err(err) => Err(err.into()),
         }

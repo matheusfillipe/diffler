@@ -1,8 +1,7 @@
-//! Char-precise intra-line change emphasis driven by an AST diff (syndiff).
-//! Unlike the textual engine in [`crate::pairing`], reindentation and block
-//! wrapping are not flagged — only the byte ranges that differ structurally
-//! are emphasized — so a reformatted or re-wrapped block highlights just the
-//! tokens that actually changed.
+//! Char-precise intra-line change emphasis driven by an AST diff (syndiff),
+//! the structural counterpart to the textual engine in [`crate::pairing`].
+//! Only the byte ranges that differ structurally are emphasized, so a
+//! reformatted or re-wrapped block highlights just the tokens that changed.
 
 use std::ops::Range;
 
@@ -86,7 +85,7 @@ impl LanguageRegistry {
 /// word-level diff of the paired lines, so only the tokens that actually
 /// changed are emphasized (an edit inside a string scalar shouldn't light up the
 /// whole scalar). Emphasis means "differs from the homolog": a line with no
-/// pair — wholly new or wholly gone — renders plain, never with the stray
+/// pair (wholly new or wholly gone) renders plain, keeping off the stray
 /// fragments the AST diff leaves when it matches a token of new code against
 /// something elsewhere in the old tree.
 fn refine_partial_changes(hunk: &mut Hunk) {
@@ -145,7 +144,7 @@ fn per_line_emphasis(src: &str, ranges: &[Range<usize>]) -> LineEmphasis {
 
 /// Emphasis for an added/deleted `line` from its raw changed byte `ranges`.
 /// Every changed line keeps its full +/- background; emphasis only marks
-/// punctual edits — a line that changed mostly or entirely gets none, because
+/// punctual edits: a line that changed mostly or entirely gets none, because
 /// highlighting almost everything highlights nothing.
 fn classify_line(kind: LineKind, text: &str, ranges: &[Range<usize>]) -> Vec<Range<usize>> {
     let _ = kind;
@@ -299,7 +298,7 @@ mod tests {
         for line in &file.hunks[0].lines {
             assert!(
                 line.emphasis.is_empty(),
-                "no pair, no emphasis — {:?} got {:?}",
+                "no pair, no emphasis: {:?} got {:?}",
                 line.text,
                 line.emphasis
             );

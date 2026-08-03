@@ -1,7 +1,7 @@
 //! The shared sidebar row vocabulary (`TreeRow`/`TreeNode`) and pure
 //! directory-trie flattening, used by the diff sidebar and the status
 //! sections. `visible_rows` turns a file list (repo-relative paths, in input
-//! order) into visible rows honoring fold state — directories before files at
+//! order) into visible rows honoring fold state: directories before files at
 //! each level, input order preserved within a kind, folded directories hiding
 //! their subtree. It only ever emits Dir and File rows; Section rows are
 //! composed by the diff sidebar's review layout on top of the same vocabulary.
@@ -192,8 +192,8 @@ pub fn visible_rows(paths: &[&str], folded: &BTreeSet<String>) -> Vec<TreeRow> {
 }
 
 /// The flat-list rows for `paths`: one `File` row per entry, depth 0, full
-/// path as its name, index into the source slice. A degenerate tree — no
-/// `Dir` rows — so callers can drive the same cursor and file-navigation
+/// path as its name, index into the source slice. A degenerate tree (no
+/// `Dir` rows) so callers can drive the same cursor and file-navigation
 /// logic over the flat list and the tree layout alike.
 pub fn flat_rows(paths: &[&str]) -> Vec<TreeRow> {
     paths

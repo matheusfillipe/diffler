@@ -12,7 +12,7 @@ const MIN_INLINE_RATIO: f32 = 0.5;
 /// Emphasis runs separated by this many characters or fewer merge into one
 /// span: two highlights straddling a two-char gap read as noise, one reads
 /// as the edit. Merging happens before `pairing::MAX_EMPHASIS_RUNS` counts
-/// the runs — tune the two together.
+/// the runs. Tune the two together.
 const MAX_GAP_CHARS: usize = 2;
 
 /// Byte ranges (into each input) that differ between the two lines.
@@ -75,9 +75,9 @@ pub fn intraline(old: &str, new: &str) -> (Vec<Range<usize>>, Vec<Range<usize>>)
     )
 }
 
-/// Emphasis on the line's leading indentation is a reindent artifact, not an
-/// edit — matching the AST engine (`syntax::intraline`), which never flags
-/// reformatting. Whitespace changes inside or after content stay: a trailing
+/// Leading-indentation-only emphasis is a reindent artifact: the AST engine
+/// (`syntax::intraline`) treats reformatting as unchanged, so this drops the
+/// same ranges. Whitespace changes inside or after content stay: a trailing
 /// space or a tab→space swap is invisible without the highlight.
 fn drop_indent_only(text: &str, ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
     ranges

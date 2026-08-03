@@ -2,7 +2,7 @@
 //! emphasis. Within a run, lines pair by best total similarity (delta's
 //! homologous-line model): an unbalanced run pairs each line with its true
 //! counterpart, and lines with no counterpart stay unpaired and render
-//! plain — emphasis only ever contrasts a line against its homolog.
+//! plain: emphasis only ever contrasts a line against its homolog.
 
 use similar::TextDiff;
 
@@ -19,11 +19,11 @@ const MAX_EMPHASIS_SHARE: f32 = 0.7;
 /// More separate emphasis runs than this and the line reads as confetti:
 /// scattered small edits render better as plain +/- lines (jj draws the
 /// same line at 3 inline alternations). Counted after near-adjacent runs
-/// merge under `diff::MAX_GAP_CHARS` — tune the two together.
+/// merge under `diff::MAX_GAP_CHARS`. Tune the two together.
 const MAX_EMPHASIS_RUNS: usize = 3;
 
 /// True when the emphasized ranges cover a minority of the line's
-/// non-whitespace content in a few contiguous runs — a punctual edit worth
+/// non-whitespace content in a few contiguous runs: a punctual edit worth
 /// highlighting. A line that changed (nearly) everywhere, or in many
 /// scattered places, reads better as a plain +/- line.
 pub(crate) fn emphasis_is_punctual(text: &str, ranges: &[std::ops::Range<usize>]) -> bool {
@@ -43,7 +43,7 @@ pub(crate) fn emphasis_is_punctual(text: &str, ranges: &[std::ops::Range<usize>]
             emphasized += 1;
         }
     }
-    // a couple of changed characters is always signal, whatever the ratio —
+    // a couple of changed characters is always signal, whatever the ratio:
     // short lines ("41" → "42") would otherwise lose their only highlight;
     // the run cap stands regardless (whitespace-only runs count zero chars
     // and would ride the shortcut into confetti)
@@ -103,7 +103,7 @@ const MIN_PAIR_RATIO: f32 = 0.5;
 /// the downstream emphasis gates instead.
 const MAX_PAIR_TABLE: usize = 1024;
 
-/// `(deleted, added)` index pairs for a hunk's del/add runs — the shared
+/// `(deleted, added)` index pairs for a hunk's del/add runs: the shared
 /// homologous-line model.
 pub(crate) fn paired_run_indices(lines: &[DiffLine]) -> Vec<(usize, usize)> {
     let kind_at = |i: usize| lines.get(i).map(|l| l.kind);

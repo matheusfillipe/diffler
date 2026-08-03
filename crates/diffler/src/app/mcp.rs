@@ -97,7 +97,7 @@ impl App {
 
     /// The diff a source is reviewing, used to render comment context and judge
     /// outdated-ness. Commit and range diffs are immutable, so they compute
-    /// once and stay cached — agent polls must not stall the render loop.
+    /// once and stay cached: agent polls must not stall the render loop.
     /// Backend errors degrade to an empty diff.
     pub(crate) fn source_model(&mut self, source: &ReviewSource) -> std::sync::Arc<DiffModel> {
         // narrowing to the cacheable sources up front makes WorkingTree

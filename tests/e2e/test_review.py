@@ -92,7 +92,7 @@ def test_copy_emits_osc52_and_send_bumps_feedback(spawn):
     start = tui.raw.index(OSC52_PREFIX) + len(OSC52_PREFIX)
     end = tui.raw.index(b"\x07", start)
     markdown = base64.b64decode(tui.raw[start:end]).decode()
-    assert "## Review feedback — repo @ main (1 comment)" in markdown
+    assert "## Review feedback: repo @ main (1 comment)" in markdown
     assert "### app.txt:2" in markdown
     assert "+beta2" in markdown  # fenced diff context around the anchor
     assert "> ship it" in markdown

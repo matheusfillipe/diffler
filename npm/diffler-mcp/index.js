@@ -140,7 +140,7 @@ async function main() {
         content: [
           {
             type: "text",
-            text: `diffler isn't reachable — is it running in this repo? (${err.message ?? err})`,
+            text: `diffler isn't reachable. Is it running in this repo? (${err.message ?? err})`,
           },
         ],
       };

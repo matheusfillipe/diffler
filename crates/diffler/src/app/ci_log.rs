@@ -66,7 +66,7 @@ impl CiLogView {
     #[must_use]
     pub fn carry_into(self, mut next: CiLogView) -> CiLogView {
         for step in &mut next.steps {
-            // match by name, but never by the empty name — the leading section
+            // match by name, skipping the empty name: the leading section
             // and an unlabeled `##[group]` would otherwise share fold state
             if step.name.is_empty() {
                 continue;

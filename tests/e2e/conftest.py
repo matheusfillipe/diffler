@@ -10,7 +10,7 @@ BIN = REPO_ROOT / "target" / "debug" / "diffler"
 @pytest.fixture(scope="session", autouse=True)
 def binary():
     if not BIN.exists():
-        pytest.fail(f"{BIN} not found — run `cargo build -p diffler` first")
+        pytest.fail(f"{BIN} not found: run `cargo build -p diffler` first")
     return BIN
 
 

@@ -62,7 +62,7 @@ pub struct FileDiff {
 }
 
 /// Memo slots for [`FileDiff::content_hash`]/[`FileDiff::sides_hash`], which
-/// the UI probes every frame — hashing full file contents per frame is the
+/// the UI probes every frame: hashing full file contents per frame is the
 /// cost this avoids. Compares equal always so `FileDiff` equality is on data.
 #[derive(Debug, Clone, Default)]
 pub struct HashCache {

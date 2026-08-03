@@ -1,8 +1,8 @@
 //! Graph screen chrome: a hint line, the embedded `crate::graph::GraphView`,
 //! and a status bar. The component draws the graph body; the host draws the
 //! chrome and supplies the palette. When the open run has artifacts or
-//! annotations, a read-only panel for them is carved off the bottom of the body
-//! — the graph keeps the full body otherwise, so it renders exactly as before.
+//! annotations, a read-only panel for them is carved off the bottom of the body.
+//! The graph keeps the full body otherwise, so it renders exactly as before.
 
 use crate::ci::{AnnotationLevel, RunExtras};
 use ratatui::Frame;
@@ -77,7 +77,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
 }
 
 /// One-line provenance for the open run: where it ran, which workflow,
-/// what commit — the graph alone doesn't say what you're looking at.
+/// what commit: the graph alone doesn't say what you're looking at.
 pub(crate) fn run_header(app: &App, theme: &Theme) -> Line<'static> {
     let Some(run) = app.open_run_summary() else {
         return Line::default();

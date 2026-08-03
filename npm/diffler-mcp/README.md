@@ -7,7 +7,7 @@ review session.
 diffler's MCP server runs **inside the TUI** as a streamable-HTTP endpoint
 (`http://127.0.0.1:8417/mcp` by default) because it serves the live review state
 on the app's main loop. This proxy is spawned by Claude over stdio and forwards
-every tool call to that endpoint — it owns no state itself.
+every tool call to that endpoint: it owns no state itself.
 
 ## Use it with Claude Code
 
@@ -39,7 +39,7 @@ directory it searched.
 
 Resolution order (first match wins):
 
-1. `--url <url>` / `DIFFLER_MCP_URL` — full endpoint, e.g. `http://127.0.0.1:8417/mcp`
+1. `--url <url>` / `DIFFLER_MCP_URL`: full endpoint, e.g. `http://127.0.0.1:8417/mcp`
 2. `--port <n>` / `DIFFLER_MCP_PORT` and `--host <h>` / `DIFFLER_MCP_HOST`
 3. the live port in the nearest `.diffler/mcp.json`, searching the start
    directory (`--repo <path>`, default: cwd) and then each parent

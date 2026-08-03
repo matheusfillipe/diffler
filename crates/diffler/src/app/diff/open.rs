@@ -159,8 +159,8 @@ impl App {
         self.open_pr_review_for(pr);
     }
 
-    /// Review any PR — including one whose branch was never checked out; the
-    /// diff needs only the fetched objects, not a local branch.
+    /// Review any PR, including one whose branch was never checked out; the
+    /// diff needs only the fetched objects.
     pub(crate) fn open_pr_review_for(&mut self, pr: crate::ci::PullRequest) {
         if let Some((base, head)) = self.resolve_pr_range(&pr) {
             self.open_pr_diff(pr.number, &base, &head);

@@ -87,7 +87,7 @@ pub struct CiJob {
     pub needs: Vec<JobId>,
 }
 
-/// A run plus its jobs — `jobs` + each job's `needs` is the dependency graph.
+/// A run plus its jobs: `jobs` + each job's `needs` is the dependency graph.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunDetail {
     pub run: CiRun,

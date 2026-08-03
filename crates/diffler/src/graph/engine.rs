@@ -3,7 +3,7 @@
 //! The view consumes an owned [`Layout`] (no engine lifetimes leak out).
 //!
 //! `Layered` is the favoured engine: longest-path layering assigns each node a
-//! column, then it draws the GitHub-style look — outlined rounded boxes laid out
+//! column, then it draws the GitHub-style look: outlined rounded boxes laid out
 //! left-to-right, wired by clean orthogonal rails.
 
 use std::cmp::Ordering;
@@ -25,7 +25,7 @@ pub struct Placement {
     /// its border, leaving the member boxes their own colors.
     pub container: bool,
     /// A top-level nav gate (ordinary node or container). Horizontal moves and
-    /// `g`/`G` only land on these — crossing columns enters a group at its
+    /// `g`/`G` only land on these: crossing columns enters a group at its
     /// container, never a leg.
     pub selectable: bool,
     /// A group leg drawn inside a container. Reachable by vertical moves (enter
@@ -122,7 +122,7 @@ impl GraphEngine for Layered {
 
 /// Per-node `(column, row-within-column)` from a layered pass: the column is the
 /// longest path from a source; within a column, nodes keep declaration order.
-/// Only flow nodes (ordinary + group roots) are ranked — group members live
+/// Only flow nodes (ordinary + group roots) are ranked: group members live
 /// inside their root's container, not in the column flow. Cycles (call/reference
 /// graphs) are tolerated: a back-edge to a node already on the path adds no depth.
 fn rank_nodes(model: &Model) -> Vec<(usize, usize)> {
@@ -189,7 +189,7 @@ fn longest_path(
 }
 
 // cohesive layout pass: size nodes, place columns, place container members,
-// route, draw — splitting it would only scatter the shared coordinate maps
+// route, draw: splitting it would only scatter the shared coordinate maps
 #[allow(clippy::too_many_lines)]
 fn place_and_draw(model: &Model, ranks: &[(usize, usize)], zoom: Zoom) -> Layout {
     let (box_h, row_gap, col_gap) = zoom.metrics();
@@ -261,7 +261,7 @@ fn place_and_draw(model: &Model, ranks: &[(usize, usize)], zoom: Zoom) -> Layout
         .collect();
     let x_of = |col: usize| col_x.get(col).copied().unwrap_or(0);
 
-    // stack flow units top-to-bottom (cumulative — units vary in height)
+    // stack flow units top-to-bottom (cumulative, units vary in height)
     let mut order = flow.clone();
     order.sort_by_key(|&i| ranks.get(i).copied().unwrap_or_default());
     let mut node_box = vec![(0usize, 0usize); model.nodes.len()];
@@ -415,7 +415,7 @@ fn route_edges(
 
 /// Draw one parent's fan-out as a single fork: a stub out of the parent to a
 /// shared channel, one junction there (├ ┬ ┤ …), then a vertical down/up to each
-/// child's row and a stub into it with an arrowhead. One junction per parent —
+/// child's row and a stub into it with an arrowhead. One junction per parent:
 /// no independent crossings, no stray stubs (corners terminate every rail).
 /// `targets` are each child's `(left_x, mid_y)`.
 fn draw_fork(grid: &mut Grid, parent: (usize, usize), parent_w: usize, targets: &[(usize, usize)]) {
@@ -739,7 +739,7 @@ mod tests {
         let ranks = rank_nodes(&model);
         // a is visited first: descending into b's predecessor (a itself,
         // already on the path) contributes no depth, so b lands at 0 and a's
-        // hop through it lands at 1 — the cycle never inflates either depth
+        // hop through it lands at 1: the cycle never inflates either depth
         assert_eq!(ranks[0], (1, 0), "a: one real hop through b");
         assert_eq!(
             ranks[1],
@@ -751,7 +751,7 @@ mod tests {
     #[test]
     fn draw_fork_draws_one_junction_with_a_stub_and_arrow_per_child() {
         // a parent box ending at x=2, mid-row 2, forking to a child level with
-        // it (row 2) and a child two rows below (row 6) — the level+drop mix
+        // it (row 2) and a child two rows below (row 6), the level+drop mix
         // that a single junction has to carry
         let mut grid = Grid::new(12, 8);
         draw_fork(&mut grid, (0, 2), 2, &[(8, 2), (8, 6)]);

@@ -292,7 +292,7 @@ impl App {
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
         let branch = self.head.branch.clone().unwrap_or_else(|| "?".to_owned());
-        let title = format!("Review feedback — {repo} @ {branch} ({count} {noun})");
+        let title = format!("Review feedback: {repo} @ {branch} ({count} {noun})");
         let model = self
             .diff
             .as_ref()

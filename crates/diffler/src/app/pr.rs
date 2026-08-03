@@ -11,7 +11,7 @@ use crate::ci::{PrComment, ReviewVerdict};
 /// One queued outbound post; results return as events and stamp `remote_id`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PrPost {
-    /// Every pending comment as one review — a single forge notification.
+    /// Every pending comment as one review: a single forge notification.
     Review {
         review: crate::ci::NewPrReview,
         /// Local ids the review covers; forge-owned copies replace them on
@@ -311,7 +311,7 @@ impl App {
             // the forge's resolution is authoritative; other statuses
             // (Replied) are local workflow state and survive the sync. An
             // optimistic flip (either direction) whose post is still in
-            // flight also survives — the forge just hasn't heard yet
+            // flight also survives: the forge just hasn't heard yet
             let flip_inflight = inflight
                 .iter()
                 .any(|key| key.starts_with(&resolve_key_prefix(&root.id)));
@@ -351,7 +351,7 @@ impl App {
         merged.extend(roots);
         merged.sort_by_key(|c| c.at);
         // a poll that changed nothing must not dirty the store: the write wakes
-        // the watcher, which refreshes, which redraws — a self-sustaining storm
+        // the watcher, which refreshes, which redraws (a self-sustaining storm)
         if merged == session.comments {
             return;
         }
@@ -364,11 +364,11 @@ impl App {
         }
     }
 
-    /// `S`: start the review submit — pick the verdict first, then an
+    /// `S`: start the review submit: pick the verdict first, then an
     /// optional summary body, then everything pending posts as one review.
     pub(crate) fn submit_pr_review(&mut self) {
         let ReviewSource::Pr { number } = self.active_review_source() else {
-            self.info("not reviewing a PR — nothing to submit");
+            self.info("not reviewing a PR: nothing to submit");
             return;
         };
         let Some(pending) = self.pr_pending(number) else {
@@ -519,7 +519,7 @@ impl App {
             ReviewVerdict::Comment => "commenting",
         };
         let mut message = format!(
-            "submitting review — {label} ({total} {})…",
+            "submitting review: {label} ({total} {})…",
             plural(total, "comment", "comments")
         );
         if file_level > 0 {
@@ -540,7 +540,7 @@ impl App {
         }
     }
 
-    /// Drop every queued post, freeing the dedup keys — a key left behind
+    /// Drop every queued post, freeing the dedup keys: a key left behind
     /// would block that comment's posts for the rest of the session.
     pub fn drop_pending_pr_posts(&mut self) {
         for post in self.pending_pr_posts.drain(..) {
@@ -549,7 +549,7 @@ impl App {
     }
 
     /// A completed post. A reply stamps its forge id; a submitted review
-    /// hands its comments over to the forge — the local copies go away and
+    /// hands its comments over to the forge: the local copies go away and
     /// the immediate resync brings back the canonical ones.
     pub(crate) fn on_pr_posted(
         &mut self,
@@ -593,7 +593,7 @@ impl App {
                         }
                     }
                     // resolve was applied optimistically; edit already
-                    // landed locally — the next sync confirms both
+                    // landed locally. The next sync confirms both
                     PrPost::Resolve { .. } | PrPost::Edit { .. } => {}
                     PrPost::Delete { comment_id, .. } => {
                         session.comments.retain(|c| c.id != *comment_id);
@@ -644,10 +644,7 @@ impl App {
         if !moved || self.pending_pr_open.is_some() {
             return;
         }
-        self.info(format!(
-            "PR #{} head moved — refreshing the diff",
-            pr.number
-        ));
+        self.info(format!("PR #{} head moved: refreshing the diff", pr.number));
         self.open_pr_review_for(pr.clone());
     }
 
@@ -698,7 +695,7 @@ impl App {
     }
 
     /// Queue a forge thread-resolution toggle. `false` when the comment has
-    /// no thread handle yet (not synced, or a forge without threads) — the
+    /// no thread handle yet (not synced, or a forge without threads): the
     /// caller must not flip anything locally then.
     pub(crate) fn queue_pr_resolve(
         &mut self,
@@ -718,7 +715,7 @@ impl App {
             .find(|c| c.id == comment_id)
             .and_then(|c| c.thread_id.clone());
         let Some(thread_id) = thread else {
-            self.info("no forge thread for this comment yet — sync pending");
+            self.info("no forge thread for this comment yet: sync pending");
             return false;
         };
         let post = PrPost::Resolve {
@@ -770,8 +767,8 @@ fn post_key(post: &PrPost) -> String {
 }
 
 /// Prefix of a resolve toggle's inflight key for `comment_id`, regardless of
-/// direction — an in-flight check that doesn't care which way it flipped
-/// matches on this instead of a direction-specific [`post_key`].
+/// direction. An in-flight check that doesn't care which way it flipped
+/// matches on this prefix; [`post_key`] returns the direction-specific key.
 fn resolve_key_prefix(comment_id: &str) -> String {
     format!("res-{comment_id}-")
 }
@@ -1368,7 +1365,7 @@ mod tests {
         );
 
         // an optimistic flip whose post is still in flight is not stale:
-        // the poll must not flicker it back — in either direction
+        // the poll must not flicker it back, in either direction
         {
             let session = app.review.session_for_mut(&source);
             session.comments[0].status = CommentStatus::Resolved;
@@ -1383,7 +1380,7 @@ mod tests {
         app.pr_posts_inflight.clear();
 
         // the unresolve direction: forge still says resolved while the
-        // unresolve post is in flight — the local Open must survive
+        // unresolve post is in flight: the local Open must survive
         let resolved_listing = [PrComment {
             resolved: true,
             thread_id: Some("T_1".into()),

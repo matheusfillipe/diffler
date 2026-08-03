@@ -1,7 +1,7 @@
 //! `GraphView`: the reusable, IO-free graph component. The host pushes a
 //! [`Model`] in, renders it into any area, and reacts to the [`GraphAction`]s
 //! it emits. It owns only view state (selection, scroll, zoom, collapsed
-//! groups) — no terminal, no event loop, no sources.
+//! groups): no terminal, no event loop, no sources.
 
 use std::collections::HashSet;
 
@@ -19,7 +19,7 @@ use crate::graph::theme::GraphTheme;
 /// What the component asks the host to do. The host owns the side effects.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GraphAction {
-    /// Enter / double-click on a non-foldable node — open it (code, log, …).
+    /// Enter / double-click on a non-foldable node: open it (code, log, …).
     Activated(NodeId),
     /// A group was folded or unfolded.
     Folded { group: String, collapsed: bool },
@@ -86,7 +86,7 @@ impl GraphView {
     }
 
     /// Update node statuses in place (e.g. a live CI poll) without changing
-    /// topology, then re-lay out — positions stay put, colors/glyphs move.
+    /// topology, then re-lay out: positions stay put, colors/glyphs move.
     pub fn patch_status(&mut self, updates: impl IntoIterator<Item = (NodeId, NodeStatus)>) {
         for (id, status) in updates {
             if let Some(node) = self.model.nodes.iter_mut().find(|n| n.id == id) {

@@ -1,6 +1,6 @@
 //! Embedded MCP server: agents read review comments, answer them in place,
 //! and long-poll for the human's feedback. Tool handlers never touch the
-//! review directly — every call is sent through the app event channel as an
+//! review directly: every call is sent through the app event channel as an
 //! [`McpRequest`] and answered by `App::handle_mcp` on the main loop, so the
 //! app stays the single owner of all state (no locks).
 
@@ -427,7 +427,7 @@ impl DifflerMcp {
                 None,
             )),
             Err(_) => Err(ErrorData::internal_error(
-                "diffler is busy (editor open or loop stalled) — retry",
+                "diffler is busy (editor open or loop stalled), retry",
                 None,
             )),
         }
@@ -475,7 +475,7 @@ impl DifflerMcp {
     }
 
     #[tool(
-        description = "List every review the human has — the working tree, individual commits, and commit ranges — each with its comment counts, so you can tell where feedback came from."
+        description = "List every review the human has: the working tree, individual commits, and commit ranges, each with its comment counts, so you can tell where feedback came from."
     )]
     async fn list_reviews(&self) -> Result<Json<ReviewsResponse>, ErrorData> {
         match self.request(McpRequestKind::ListReviews).await? {
@@ -596,7 +596,7 @@ impl DifflerMcp {
              4. Answer each with reply_comment (what you changed and why), then \
              propose_resolve; only the human can resolve for real, in the TUI.\n\
              5. Call wait_for_feedback with the latest epoch and start over when it \
-             returns — the human just sent new feedback. It answers within a minute; \
+             returns: the human just sent new feedback. It answers within a minute; \
              a timed_out result means they are still reviewing, so call it again. \
              If the call itself fails, check review_status: diffler is closed only \
              when that fails too, otherwise keep waiting.",
@@ -672,7 +672,7 @@ pub fn spawn_mcp(
 
 /// The `claude mcp add` hint shown in the status bar at startup.
 pub fn connect_hint(port: u16) -> String {
-    format!("mcp :{port} — claude mcp add --transport http diffler http://127.0.0.1:{port}/mcp")
+    format!("mcp :{port}, claude mcp add --transport http diffler http://127.0.0.1:{port}/mcp")
 }
 
 /// Repo-relative path of the endpoint discovery file an external proxy reads.
@@ -924,7 +924,7 @@ mod tests {
         );
         assert!(
             !info.outdated,
-            "end line text matches snapshot — must NOT be outdated"
+            "end line text matches snapshot: must NOT be outdated"
         );
         // change the snapshot to something that no longer matches line 3
         a.line_text = Some("changed".to_owned());
@@ -934,7 +934,7 @@ mod tests {
             &sample_model(),
             &ReviewSource::WorkingTree,
         );
-        assert!(info2.outdated, "end line text drifted — must be outdated");
+        assert!(info2.outdated, "end line text drifted: must be outdated");
     }
 
     // request_with_timeout returns a "busy" error when the reply

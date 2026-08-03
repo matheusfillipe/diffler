@@ -18,7 +18,7 @@ pub enum ProviderKind {
     Forgejo,
 }
 
-/// The capabilities of a provider kind — a pure function of `kind()`, so it's
+/// The capabilities of a provider kind: a pure function of `kind()`, so it's
 /// exposed standalone: UI code can gate an affordance from just the detected
 /// kind (a [`CiRemote`](crate::app::CiRemote)'s `detected.kind`) without
 /// constructing a full provider first.
@@ -44,7 +44,7 @@ pub fn capabilities_for(kind: ProviderKind) -> Capabilities {
 
 // `Sync` (not just `Send`) is required so the async-trait macro can generate a
 // boxed future for the PR-review methods' default bodies below without
-// knowing the concrete `Self` — every adapter is already `Sync` (their fields
+// knowing the concrete `Self`: every adapter is already `Sync` (their fields
 // are plain owned data plus a `Box<dyn CommandRunner>`, itself `Send + Sync`).
 #[async_trait]
 pub trait ForgeProvider: Send + Sync {

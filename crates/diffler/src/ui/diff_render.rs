@@ -27,7 +27,7 @@ pub(super) fn align_scroll(
     }
 }
 
-/// Per-file syntax for both diff sides — `(old, new)` — each indexed by line
+/// Per-file syntax for both diff sides, `(old, new)`, each indexed by line
 /// number. The renderer picks the side per line via [`line_syntax`].
 pub type SideSyntax<'a> = (&'a [Vec<StyledRange>], &'a [Vec<StyledRange>]);
 

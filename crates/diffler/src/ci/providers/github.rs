@@ -1,7 +1,7 @@
 //! GitHub Actions adapter (via `gh`). The dependency DAG comes from a run's
 //! workflow YAML `jobs.<id>.needs` (the run API omits it); status overlays from
 //! `gh run view`. Logs, steps, artifacts, and annotations all come from the REST
-//! API via `gh api` — the job-log archive 404s until the job finishes, so an
+//! API via `gh api`. The job-log archive 404s until the job finishes, so an
 //! in-progress job returns its live step states with the content still empty.
 //! A `uses:` job calls a reusable workflow whose jobs the caller YAML doesn't
 //! list; that workflow is fetched and inlined so its jobs appear with real edges.
@@ -137,7 +137,7 @@ impl GitHubProvider {
             .await
     }
 
-    /// Fetch and parse the workflow a `uses:` points at — a local `./path` (read
+    /// Fetch and parse the workflow a `uses:` points at: a local `./path` (read
     /// at the run's commit) or a remote `owner/repo/path@ref`.
     async fn fetch_reusable(&self, uses: &str, head_sha: &str) -> Result<Vec<JobSpec>> {
         let path = reusable_contents_path(uses, head_sha).ok_or_else(|| CiError::Parse {
@@ -247,7 +247,7 @@ impl GitHubProvider {
         let mut annotations = Vec::new();
         for job in jobs.jobs {
             // one job's annotations 404ing (a GC'd check run) or rate-limiting
-            // must not drop every other job's — skip it and keep going
+            // must not drop every other job's: skip it and keep going
             let Ok(raw) = self
                 .api(&format!("{}/annotations", job.check_run_url))
                 .await
@@ -350,7 +350,7 @@ impl ForgeProvider for GitHubProvider {
         // other reading of this job's state
         let done = job_finished(&job.status, job.conclusion.as_deref());
 
-        // the log archive (`jobs/{id}/logs`) only exists once the job finishes —
+        // the log archive (`jobs/{id}/logs`) only exists once the job finishes.
         // it 404s while running. so for an in-progress job, return the live step
         // states with no text and keep polling; the content fills in on completion
         let log_path = format!(
@@ -612,7 +612,7 @@ impl ForgeProvider for GitHubProvider {
         let Ok(raw) = self.runner.run("gh", &args).await else {
             return Ok(None);
         };
-        // a malformed response must propagate, same as `pr`/`list_prs` —
+        // a malformed response must propagate, same as `pr`/`list_prs`:
         // treating it as "no PR" would look like a normal, PR-less branch
         let pr: PrView = parse_json("pr view", &raw)?;
         Ok(Some(PullRequest {
@@ -698,7 +698,7 @@ fn scope(caller: &str, child: &str) -> String {
     format!("{caller} / {child}")
 }
 
-/// The `gh api` contents path for a `uses:` target — a local `./path` resolved
+/// The `gh api` contents path for a `uses:` target: a local `./path` resolved
 /// at the run's commit, or a remote `owner/repo/path@ref`. `None` if malformed.
 fn reusable_contents_path(uses: &str, head_sha: &str) -> Option<String> {
     if let Some(local) = uses.strip_prefix("./") {
@@ -789,7 +789,7 @@ fn map_status(status: &str, conclusion: Option<&str>) -> JobStatus {
 }
 
 /// Whether a job has reached a terminal state, classified the same way as
-/// every other reading of `status`/`conclusion` in this file — not a raw
+/// every other reading of `status`/`conclusion` in this file, not a raw
 /// string comparison, which would drift the moment a new terminal status or
 /// conclusion is added to `map_status`.
 fn job_finished(status: &str, conclusion: Option<&str>) -> bool {
@@ -845,7 +845,7 @@ impl RunListItem {
 }
 
 /// The jobs array alone (from the REST `actions/runs/{id}/jobs` response, whose
-/// `total_count` is ignored) — the run meta in [`RunView`] isn't needed for logs.
+/// `total_count` is ignored): the run meta in [`RunView`] isn't needed for logs.
 #[derive(Deserialize)]
 struct JobList {
     jobs: Vec<RunJob>,
@@ -956,9 +956,9 @@ impl From<ArtifactItem> for Artifact {
     }
 }
 
-/// The REST jobs response (`actions/runs/{id}/jobs`), which — unlike
-/// `gh run view --json jobs` — carries each job's `check_run_url`, the handle
-/// the annotations endpoint hangs off.
+/// The REST jobs response (`actions/runs/{id}/jobs`). It carries each job's
+/// `check_run_url`, the handle the annotations endpoint hangs off.
+/// `gh run view --json jobs` omits that field.
 #[derive(Deserialize)]
 struct JobsApi {
     jobs: Vec<JobApi>,
@@ -1271,7 +1271,7 @@ jobs:
     runs-on: ubuntu-latest
 ";
 
-    // caller with a reusable `deploy` job, and the reusable workflow it fetches —
+    // caller with a reusable `deploy` job, and the reusable workflow it fetches,
     // mirrors a real deploy pipeline (a nested `uses:` and a `${{ }}` job name)
     const DEPLOY_WORKFLOW: &str = r"
 name: Auth Service Deploy
@@ -1535,7 +1535,7 @@ jobs:
 
     #[tokio::test]
     async fn job_log_fetches_a_completed_job_from_the_rest_api() {
-        // the REST jobs response uses `id` (not `databaseId`) — the alias covers it
+        // the REST jobs response uses `id` (not `databaseId`): the alias covers it
         let jobs = r#"{"jobs":[{"id":7,"name":"lint","status":"completed","conclusion":"success",
             "steps":[{"name":"Run x","status":"completed","conclusion":"success",
                       "started_at":"2026-06-20T00:00:00Z","completed_at":"2026-06-20T00:00:03Z"}]}]}"#;
@@ -1602,7 +1602,7 @@ jobs:
     #[tokio::test]
     async fn run_extras_degrades_to_artifacts_when_annotations_fail() {
         // the jobs list is fetchable but its one job's annotations call has no
-        // recorded response (the mock errors) — artifacts must survive
+        // recorded response (the mock errors): artifacts must survive
         let artifacts =
             r#"{"artifacts":[{"name":"coverage","size_in_bytes":2048,"expired":false}]}"#;
         let jobs =

@@ -1,6 +1,6 @@
 //! GitLab CI adapter (CLI-only via `glab api`, REST). The dependency graph is
 //! derived from pipeline stages (jobs in a stage depend on all jobs in the
-//! previous stage) — GitLab's default pipeline view. The exact `needs` DAG is a
+//! previous stage), GitLab's default pipeline view. The exact `needs` DAG is a
 //! GraphQL refinement left for later. Logs poll the job trace by offset.
 
 use async_trait::async_trait;
@@ -164,7 +164,7 @@ fn mr_iid_from_url(url: &str) -> Option<u64> {
 }
 
 /// Order jobs into stages (by first appearance) and link each job to every job
-/// in the previous stage — GitLab's stage-sequenced pipeline graph.
+/// in the previous stage, GitLab's stage-sequenced pipeline graph.
 fn jobs_with_stage_edges(raw: &[JobItem]) -> Vec<CiJob> {
     let mut stage_order: Vec<String> = Vec::new();
     for job in raw {

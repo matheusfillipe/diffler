@@ -1,5 +1,5 @@
 //! Terminal event pump: crossterm's async stream plus a periodic tick,
-//! multiplexed onto one channel. Kept thin — all decisions live in
+//! multiplexed onto one channel. Kept thin: all decisions live in
 //! `App::handle`, which is what the tests drive.
 
 use std::time::Duration;

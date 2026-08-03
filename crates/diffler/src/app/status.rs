@@ -54,7 +54,7 @@ impl Section {
 }
 
 /// One cursor-addressable row of the status screen: section headers, directory
-/// rows, file rows, and — when a file is expanded inline — hunk headers and
+/// rows, file rows, and (when a file is expanded inline) hunk headers and
 /// diff lines, plus the trailing Recent commits section. Holds an owned
 /// directory path (the fold key), so it is `Clone`, not `Copy`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -255,8 +255,8 @@ impl App {
             if self.is_folded(section) {
                 continue;
             }
-            // List renders a degenerate tree — one File row per file at depth 0,
-            // no Dir rows — so the same cursor/navigation model serves both
+            // List renders a degenerate tree (one File row per file at depth 0,
+            // no Dir rows), so the same cursor/navigation model serves both
             // layouts; Tree groups files under collapsible directory rows.
             for tree_row in self.section_layout_rows(section, files) {
                 match tree_row.node {
@@ -324,7 +324,7 @@ impl App {
 
     /// Searchable `(row index, text)` pairs for the `/` search: section
     /// titles, directory names, file paths, and recent-commit lines. Inline
-    /// diff rows are left out — the diff view is where code is searched.
+    /// diff rows are left out: the diff view is where code is searched.
     pub(crate) fn status_search_rows(&self) -> Vec<(usize, String)> {
         self.visible_rows()
             .iter()
@@ -376,8 +376,8 @@ impl App {
     /// Queue background enrichment (intra-line emphasis + syntax highlight)
     /// for every currently-expanded inline diff. Cheap and deduped by
     /// content, so the renderer calls it per frame; the expanded rows draw
-    /// plain until the outcome lands as an `AppEvent::Enriched` event — draw
-    /// never computes.
+    /// plain until the outcome lands as an `AppEvent::Enriched` event: draw
+    /// only renders.
     pub(crate) fn queue_enrich_status_expanded(&mut self) {
         let semantic = self.config.ui.semantic_diff;
         for section in Section::ALL {
@@ -477,7 +477,7 @@ impl App {
                 self.status.cursor = self.status.cursor.saturating_add_signed(delta).min(last);
             }
             // single-click selects; double-click activates (open file/commit,
-            // or fold the section/dir/recent header) — like `<cr>`/`<tab>`
+            // or fold the section/dir/recent header), like `<cr>`/`<tab>`
             MouseGesture::Press { col, row } => {
                 self.status_select_at(col, row);
             }
@@ -634,7 +634,7 @@ impl App {
             return;
         };
         // For an expanded inline diff line, pass the line number so the
-        // editor opens at the right spot — same as the dedicated diff view.
+        // editor opens at the right spot, same as the dedicated diff view.
         let line_no = if let Row::DiffLine {
             section,
             file,
@@ -937,8 +937,8 @@ impl App {
         self.clamp_cursor();
     }
 
-    /// Move the cursor onto the first visible row matching `pred`, if any —
-    /// the re-seat every fold toggle needs once the row set it sits in shifts.
+    /// Move the cursor onto the first visible row matching `pred`, if any.
+    /// Every fold toggle needs this re-seat once the row set it sits in shifts.
     fn seat_cursor_on(&mut self, pred: impl Fn(&Row) -> bool) {
         if let Some(position) = self.visible_rows().iter().position(pred) {
             self.status.cursor = position;
@@ -1986,7 +1986,7 @@ mod tests {
     #[test]
     fn partially_staged_file_expanded_in_both_sections_settles() {
         // the same path carries different content in Unstaged and Staged, so
-        // each side needs its own cache entry — a path-keyed cache would make
+        // each side needs its own cache entry: a path-keyed cache would make
         // the two sections evict each other and re-enrich forever
         let fixture = standard_fixture();
         fixture.stage("src/lib.rs");

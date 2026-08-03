@@ -92,11 +92,11 @@ fn parse_host(url: &str) -> Option<String> {
 /// Construct the provider for a detected forge. GitLab targets the detected host;
 /// GitHub scopes the runs list to `branch` and carries every workflow YAML so
 /// each run's DAG is built from its own workflow. A Forgejo detection with no
-/// resolvable host (no `[ci.forgejo] host` and no parseable remote) is passed
-/// through as `None` rather than guessing `codeberg.org` — same fail-closed
-/// shape as `detect_for_repo` returning `None` when it has no signal at all —
-/// so the built provider errors on every call instead of risking the token
-/// going to the wrong host.
+/// resolvable host (no `[ci.forgejo] host` and no parseable remote) passes
+/// through as `None`, never guessed as `codeberg.org`. `detect_for_repo`
+/// already returns `None` for that same no-signal case, so this keeps the
+/// same fail-closed shape: the built provider errors on every call, keeping
+/// the token off the wrong host.
 pub fn build_provider(
     detected: &Detected,
     repo_root: &Path,

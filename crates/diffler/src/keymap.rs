@@ -679,7 +679,7 @@ impl Keymap {
             }
         }
         // a transient prefix fires on its single key before any chord starting
-        // with that key can accumulate — a multi-key chord whose first key is a
+        // with that key can accumulate: a multi-key chord whose first key is a
         // live prefix is therefore unreachable
         let new_bindings_that_clash: Vec<(Chord, Action)> = self
             .bindings
@@ -771,7 +771,7 @@ impl Keymap {
                 _ => None,
             })
             .collect();
-        // first key of every multi-key chord — a prefix on that key swallows
+        // first key of every multi-key chord: a prefix on that key swallows
         // the press before the chord can accumulate
         let chord_firsts: Vec<(KeyPress, Action)> = self
             .bindings
@@ -881,7 +881,7 @@ impl Keymap {
     }
 
     /// All `(chord, action)` pairs in binding order, defaults first then
-    /// config overrides — what the help popup lists.
+    /// config overrides: what the help popup lists.
     pub fn bindings(&self) -> &[(Chord, Action)] {
         &self.bindings
     }
@@ -952,7 +952,7 @@ fn render_press(press: &KeyPress) -> String {
 
 /// Normalize a crossterm key event into the chord-matching shape. Letters
 /// carry shift via their case (matching `parse_chord`); shifted symbols like
-/// `{` already encode shift in the character, so the modifier is dropped —
+/// `{` already encode shift in the character, so the modifier is dropped:
 /// terminals disagree on whether they report it.
 pub fn press_from_event(event: &KeyEvent) -> KeyPress {
     let mods = event.modifiers;
@@ -1330,7 +1330,7 @@ mod tests {
     #[test]
     fn leaf_override_onto_chord_starting_with_live_prefix_warns_and_falls_back() {
         // `cx` can never fire in the status context because `c` is the commit
-        // prefix — the transient opens before the second key is seen. The
+        // prefix: the transient opens before the second key is seen. The
         // override must be rejected and the action fall back to its default.
         let mut keys = KeysConfig::default();
         keys.status.insert("discard".to_owned(), "cx".to_owned());

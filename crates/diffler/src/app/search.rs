@@ -39,8 +39,8 @@ impl App {
         }
     }
 
-    /// `n`/`N`: step the committed search, or — on the graph, where the same
-    /// keys walk edges when no search is up — follow an edge instead.
+    /// `n`/`N`: step the committed search, or follow an edge on the graph,
+    /// where the same keys walk edges when no search is up.
     pub(super) fn search_step_or_follow(&mut self, forward: bool) {
         if self.search.is_none()
             && self.screen() == Screen::Graph
@@ -208,7 +208,7 @@ mod tests {
 
     // standard_fixture's status rows (flat layout): Untracked header,
     // todo.md, Unstaged header, src/lib.rs, Staged header, ci.yml, Recent
-    // commits header — src/lib.rs sits at index 3, ci.yml at index 5.
+    // commits header: src/lib.rs sits at index 3, ci.yml at index 5.
 
     #[test]
     fn slash_search_filters_status_rows_and_moves_the_cursor_live() {
@@ -243,7 +243,7 @@ mod tests {
     #[test]
     fn escape_cancels_the_status_search_and_restores_the_origin_cursor() {
         let (_fixture, mut app) = app();
-        app.status.cursor = 2; // the Unstaged section header — the search origin
+        app.status.cursor = 2; // the Unstaged section header, the search origin
         app.handle(key('/'));
         for c in "ci.yml".chars() {
             app.handle(key(c));

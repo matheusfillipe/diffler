@@ -38,8 +38,8 @@ pub struct Review {
     pub vcs: Box<dyn Vcs>,
     pub status: StatusModel,
     /// HEAD vs workdir+index including untracked: the review view. Computed
-    /// lazily on first [`Review::model`] access — the status screen is the
-    /// initial view and never needs the whole working diff up front.
+    /// lazily on first [`Review::model`] access: the status screen is the
+    /// initial view and needs no working diff up front.
     model: OnceCell<DiffModel>,
     /// The working-tree review session, the default view.
     pub session: Session,

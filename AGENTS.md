@@ -1,10 +1,10 @@
-# diffler — agent guide
+# diffler: agent guide
 
 Terminal code-review companion for AI agents. Launched in a repo, it renders a
 live neogit-style git UI and embeds an MCP server, so an agent reads review
 comments in place, replies, and reacts to feedback. The human reviews and drives
-git; the agent responds; the diff updates live. Philosophy: YAGNI/KISS — one
-small native binary, alternate-screen TUI, no daemon, no browser.
+git; the agent responds; the diff updates live. Philosophy: YAGNI/KISS (one
+small native binary, alternate-screen TUI, no daemon, no browser).
 
 ## Layout
 
@@ -35,12 +35,12 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
 
 ## Commands (just; see `just --list`)
 
-- `just check` — clippy, run after every change
-- `just test` — nextest + doctests
-- `just fix` — clippy --fix + fmt
-- `just snap` — insta snapshot tests; read `.snap.new` diffs before `just snap-accept`
-- `just e2e` — PTY end-to-end suite (needs `uv`; CI runs it in a separate job)
-- `just ci` — fmt+clippy+tests gate, must pass before any commit (CI additionally runs msrv, deny, typos, dupes, machete, coverage)
+- `just check`: clippy, run after every change
+- `just test`: nextest + doctests
+- `just fix`: clippy --fix + fmt
+- `just snap`: insta snapshot tests; read `.snap.new` diffs before `just snap-accept`
+- `just e2e`: PTY end-to-end suite (needs `uv`; CI runs it in a separate job)
+- `just ci`: fmt+clippy+tests gate, must pass before any commit (CI additionally runs msrv, deny, typos, dupes, machete, coverage)
 - `showcase/record.sh`: regenerate `showcase/img/*.png`, one screenshot per theme
   (needs `vhs`). It seeds a throwaway repo with a review and shoots the diff
   screen, so rerun it after anything that changes how that screen looks. The
@@ -54,13 +54,13 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
 - No `println!`/stdout writes in the TUI (corrupts the screen; clippy denies it).
 - Async: never block in async fns; `spawn_blocking` for CPU/IO-heavy work.
 - TUI changes need TestBackend + insta snapshot coverage. A changed snapshot is a
-  behavior change — read the diff, never accept blindly, never edit `.snap` by hand.
+  behavior change: read the diff, never accept blindly, never edit `.snap` by hand.
 - Run `just e2e` after rendering/behavior changes: `just ci` skips it, and glyph
   or timing changes can pass ci yet break the PTY suite.
 - PTY e2e probes must drain output continuously (the suite's wait helpers do);
   a bare sleep fills the PTY buffer and freezes the app under test.
 - Test fixtures and sample data use generic mock names ("reviewer",
-  "acme/widgets") — never real usernames, handles, or emails.
+  "acme/widgets"), never real usernames, handles, or emails.
 - Hooks are managed by prek (`prek install` once). If a hook fails, fix the cause.
   Never `git commit --no-verify`.
 - Review before committing: in Claude Code run `/rev` on the working tree for any
@@ -72,14 +72,14 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
 ## Architecture & decisions
 
 - **Layering.** Nothing above the `Vcs` trait may import git2. Only the git2
-  backend exists; the trait is there because jj is planned — but no second
+  backend exists; the trait is there because jj is planned, but no second
   backend is built or stubbed (YAGNI).
 - **Runtime.** One tokio runtime: MCP server (axum, `127.0.0.1:{port}/mcp`),
   notify watcher (debounce ~200ms → refresh), main task = the ratatui loop.
   `App` owns all state; workers (git, CI, editor, clipboard, refresh,
   enrichment) are spawned off "pending" slots and answer over the event
   channel. Watcher refreshes and per-file enrichment (emphasis/highlight/
-  scope) run on the blocking pool — the pane renders plain until results
+  scope) run on the blocking pool: the pane renders plain until results
   land; draw never computes. Caches: hash-memoized per-file hashes, enriched
   models, commit/range models, CI workflow YAML. Perf guard: `just bench`
   (criterion, recorded on main by CI) + `tests/e2e/test_perf.py` ceilings.
@@ -93,7 +93,7 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   `range-<a>-<b>`, `pr-<n>`, `against-<rev>`}. Legacy `.diffler/session.json`
   migrates to `reviews/working.json`.
   `.diffler/` self-gitignores. No daemon: agent tool calls fail while the TUI is
-  down (by design — harnesses retry).
+  down (by design, harnesses retry).
 - **Three-dot review (`Against{rev}`).** `d` on the status screen opens the diff
   transient: the base branch, `HEAD~1`, a branch, a commit from the log, or back
   to the plain working tree. The diff is `merge-base(rev, HEAD)` vs
@@ -140,10 +140,10 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   `mark_viewed`, `wait_for_feedback`. Comments are tagged with their source.
   Agent triggering is the `wait_for_feedback` long-poll (MCP can't initiate agent
   turns); the human's "send" key unblocks it. `propose_resolve` only marks a
-  comment Replied — only the human resolves it, in the TUI.
+  comment Replied. Only the human resolves it, in the TUI.
 - **PR review.** `ReviewSource::Pr{number}` keys review state on the PR number
   (survives pushes); the diff is `merge-base..head` via `Vcs::tree_diff`,
-  fetching `refs/pull/<n>/head` when the head isn't local — reviewing never
+  fetching `refs/pull/<n>/head` when the head isn't local: reviewing never
   needs a checkout. The branch's PR is a status row; `b p` lists all open PRs
   (Enter reviews, `b` checks out). Forge review comments sync into the session
   (`remote_id` marks forge-owned rows); local comments and replies post back
@@ -164,7 +164,7 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   commits, tags `vX.Y.Z`, and pushes. The version lives in the manifests; the tag
   mirrors them.
 - **CI does the rest** (`.github/workflows/release.yml`, tag-triggered) via
-  **OIDC trusted publishing — no stored tokens**: build 6 prebuilt targets →
+  **OIDC trusted publishing (no stored tokens)**: build 6 prebuilt targets →
   publish the GitHub release → crates.io (`diffler-core` + `diffler`) + npm
   (`@mattfillipe/diffler` binary wrapper + `diffler-mcp` proxy). The
   `package-managers` job renders + commits Homebrew (`Formula/`), Scoop

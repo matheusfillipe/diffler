@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Push the repo's packaging/aur/{PKGBUILD,.SRCINFO} to the AUR. Run locally — it
+# Push the repo's packaging/aur/{PKGBUILD,.SRCINFO} to the AUR. Run locally: it
 # uses your aur@aur.archlinux.org SSH key. CI keeps those files version-synced on
 # every release; this publishes them whenever you choose.
 set -euo pipefail
@@ -10,7 +10,7 @@ ver=$(grep -m1 '^pkgver=' "$root/packaging/aur/PKGBUILD" | cut -d= -f2)
 # that predates it would silently publish the previous version
 latest=$(git -C "$root" tag --list 'v*' --sort=-v:refname | head -1)
 if [ "v$ver" != "$latest" ]; then
-  echo "aur: PKGBUILD is $ver but the latest tag is $latest — git pull first" >&2
+  echo "aur: PKGBUILD is $ver but the latest tag is $latest: git pull first" >&2
   exit 1
 fi
 remote="ssh://aur@aur.archlinux.org/diffler-bin.git"

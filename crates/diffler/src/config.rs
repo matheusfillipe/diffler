@@ -1,10 +1,10 @@
 //! Layered TOML configuration: defaults → global file → project file → CLI.
 //!
 //! The global file lives at `$XDG_CONFIG_HOME/diffler/config.toml` (fallback
-//! `~/.config/diffler/config.toml`) on every OS, macOS included — unix-first,
+//! `~/.config/diffler/config.toml`) on every OS, macOS included: unix-first,
 //! no platform dirs, so the config stays greppable and editable in one place.
 //!
-//! literal '<' is not bindable (no `<lt>` escape) — known v1 limit.
+//! literal '<' is not bindable (no `<lt>` escape), a known v1 limit.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -40,7 +40,7 @@ pub enum FileLayout {
 
 impl FileLayout {
     /// Parse a config string, falling back to `default` with a warning on an
-    /// unknown value — the same lenient flow the theme key uses, so a typo
+    /// unknown value: the same lenient flow the theme key uses, so a typo
     /// never aborts startup.
     fn from_str(value: &str, key: &str, default: Self) -> (Self, Option<String>) {
         match value {

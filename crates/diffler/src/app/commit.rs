@@ -48,8 +48,8 @@ impl App {
         });
     }
 
-    /// `c e`: extend HEAD with the staged index, reusing its message — no
-    /// editor. Refused on an empty index (nothing to add) or unborn branch.
+    /// `c e`: extend HEAD with the staged index, reusing its message (no
+    /// editor). Refused on an empty index (nothing to add) or unborn branch.
     pub(crate) fn commit_extend(&mut self) {
         if self.review.status.staged.files.is_empty() {
             self.info("nothing staged");

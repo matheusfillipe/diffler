@@ -1,4 +1,4 @@
-//! The engine-agnostic graph model. A plain directed graph — cycles are
+//! The engine-agnostic graph model. A plain directed graph: cycles are
 //! allowed (CI pipelines are DAGs, but call/reference maps are not), so layout
 //! engines, not the model, decide how to handle back-edges. Front-ends (GitHub
 //! Actions today; DOT/mermaid later) all build this same shape.

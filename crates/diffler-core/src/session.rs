@@ -70,7 +70,7 @@ pub struct Comment {
     /// Forge-side id once synced/posted; `None` for purely local comments.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_id: Option<String>,
-    /// The forge's review-thread handle, where the forge has one — what
+    /// The forge's review-thread handle, where the forge has one: what
     /// thread resolution posts against.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread_id: Option<String>,

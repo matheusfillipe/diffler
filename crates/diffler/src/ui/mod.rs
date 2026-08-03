@@ -174,7 +174,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) {
                 Screen::CiLog => "logs",
             };
             popup::Popup {
-                title: format!("Help — {screen} keys"),
+                title: format!("Help: {screen} keys"),
                 entries: help_entries(app),
                 summary: Vec::new(),
             }
@@ -210,7 +210,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) {
         }
         Some(Modal::ReviewVerdict { number, summary }) => {
             popup::Popup {
-                title: format!("Submit review — PR #{number}"),
+                title: format!("Submit review: PR #{number}"),
                 entries: vec![
                     ("a".to_owned(), "approve".to_owned()),
                     ("x".to_owned(), "request changes".to_owned()),
@@ -301,7 +301,7 @@ fn fuzzy_modal(app: &App) -> Option<popup::FuzzyModal> {
             Some(plain_list((*title).to_owned(), list, &labels, " review"))
         }
         Some(Modal::Comments { entries, list }) => Some(popup::FuzzyModal {
-            title: format!("Comments — {}", app.active_review_source().label()),
+            title: format!("Comments: {}", app.active_review_source().label()),
             query: list.query.clone(),
             cursor: list.cursor,
             typing: matches!(list.focus, fuzzy::FuzzyFocus::Input),
@@ -344,8 +344,8 @@ fn fuzzy_modal(app: &App) -> Option<popup::FuzzyModal> {
     }
 }
 
-/// Help popup entries: the active keymap's leaves, then — on the status
-/// screen — each transient's prefix and its grouped sub-keys, so the popup
+/// Help popup entries: the active keymap's leaves, then, on the status
+/// screen, each transient's prefix and its grouped sub-keys, so the popup
 /// documents the full two-level map.
 fn help_entries(app: &App) -> Vec<(String, String)> {
     let keymap = app.active_keymap();

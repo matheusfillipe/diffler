@@ -1,6 +1,6 @@
 //! Forgejo/Codeberg adapter. Forgejo exposes a GitHub-shaped Actions REST API,
 //! fetched with `curl` through the same `CommandRunner` seam the other adapters
-//! use — a public repo needs no token; a PAT is read from the environment.
+//! use: a public repo needs no token; a PAT is read from the environment.
 //! Job logs and the dependency DAG aren't wired yet; `Capabilities` says so.
 
 use std::collections::HashMap;
@@ -103,7 +103,7 @@ impl ForgejoProvider {
         args.extend_from_slice(extra);
         args.push(format!("https://{host}/api/v1/repos/{}/{path}", self.repo));
         // a failed exec embeds the argv in the error, which the status bar
-        // renders — never let the token through
+        // renders: never let the token through
         self.runner.run("curl", &args).await.map_err(|err| {
             let Some(token) = &self.token else { return err };
             match err {
@@ -333,7 +333,7 @@ impl ForgeProvider for ForgejoProvider {
             return Ok(None);
         };
         let raw = self.get("pulls?state=open&limit=50").await?;
-        // a malformed response must propagate, same as `list_prs` — treating
+        // a malformed response must propagate, same as `list_prs`: treating
         // it as "no PR" would look like a normal, PR-less branch
         let pulls: Vec<PullItem> = parse_json("pr list", &raw)?;
         Ok(pulls

@@ -5,7 +5,7 @@
 
 use std::ops::Range;
 
-/// A byte range within row `row`'s text. The row index is the pane's own — the
+/// A byte range within row `row`'s text. The row index is the pane's own, the
 /// one it uses to move its cursor and to key its rendered rows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Match {
@@ -120,7 +120,7 @@ impl Search {
 }
 
 /// Plain-substring matches with smartcase. Byte ranges index the original row
-/// text — ASCII case-folding preserves byte length, so a fold-space match maps
+/// text: ASCII case-folding preserves byte length, so a fold-space match maps
 /// back unchanged.
 pub fn find_matches(rows: &[(usize, String)], query: &str) -> Vec<Match> {
     if query.is_empty() {

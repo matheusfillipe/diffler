@@ -468,7 +468,7 @@ pub struct App {
     pub diff: Option<DiffView>,
     /// The embedded CI graph component, present while the Graph screen is up.
     pub graph: Option<crate::graph::GraphView>,
-    /// CI remotes for the repo — one per distinct forge across all git remotes,
+    /// CI remotes for the repo: one per distinct forge across all git remotes,
     /// computed at startup. Empty when no provider could be determined.
     ci_remotes: Vec<CiRemote>,
     /// Immutable commit/range diff models the MCP handlers serve, computed
@@ -747,7 +747,7 @@ impl App {
         }
     }
 
-    /// Keymap of the active screen, with config remaps applied — what the
+    /// Keymap of the active screen, with config remaps applied: what the
     /// hint lines and the help popup render from.
     pub fn active_keymap(&self) -> &Keymap {
         match self.screen().context() {
@@ -887,7 +887,7 @@ impl App {
 
     /// Translate a raw mouse event into a [`MouseGesture`] and dispatch it to
     /// the active screen. Each screen implements `*_mouse(MouseGesture)` and
-    /// must handle every variant — so the `match self.screen()` here is the one
+    /// must handle every variant, so the `match self.screen()` here is the one
     /// place that forces a new screen to wire up mouse support (it won't
     /// compile without an arm), and the exhaustive gesture match in each
     /// handler forces every interaction to be considered.
@@ -934,7 +934,7 @@ impl App {
     }
 
     /// Mouse on the logs screen: wheel scrolls the cursor, click positions it,
-    /// double-click folds the step, drag extends a selection — mirroring the
+    /// double-click folds the step, drag extends a selection, mirroring the
     /// diff/log screens so the foldable log behaves the same under the pointer.
     fn register_click_is_double(&mut self, col: u16, row: u16) -> bool {
         let now = std::time::Instant::now();
@@ -1019,7 +1019,7 @@ impl App {
         }
     }
 
-    /// The built transient for `kind`, with config overrides applied — what
+    /// The built transient for `kind`, with config overrides applied: what
     /// the help popup reads.
     pub fn transient(&self, kind: TransientKind) -> &Transient {
         self.transients.get(kind)
@@ -1386,9 +1386,9 @@ impl App {
     /// success toast (label + summary), or as an error on failure. The queued
     /// refresh (head/log/ahead-behind may have moved) lands after the toast, so
     /// a refresh that fails replaces it with its error. A pending PR
-    /// open/switch routes to its own continuation instead — gated on the
-    /// fetch's own label, since several git ops can be in flight and an
-    /// unrelated one finishing first must not consume the continuation slots.
+    /// open/switch routes to its own continuation, gated on the fetch's own
+    /// label, since several git ops can be in flight and an unrelated one
+    /// finishing first must not consume the continuation slots.
     fn git_finished(&mut self, label: &str, ok: bool, output: &str) {
         if label == Self::PR_CREATE_PUSH {
             if ok {
@@ -2542,7 +2542,7 @@ mod tests {
             author: String::new(),
         });
         // ops run detached, so a pull can finish while the PR fetch is still
-        // in flight — its completion must not consume the continuation
+        // in flight. Its completion must not consume the continuation
         app.handle(AppEvent::GitDone {
             label: "pull".to_owned(),
             ok: true,

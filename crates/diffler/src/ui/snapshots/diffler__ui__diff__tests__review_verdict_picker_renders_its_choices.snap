@@ -33,7 +33,7 @@ expression: render(&mut app).backend()
 "                                                                                                                        "
 "                                                                                                                        "
 "                                                                                                                        "
-" Submit review — PR #7 ─────────────────────────────────────────────────────────────────────────────────────────────────"
+" Submit review: PR #7 ──────────────────────────────────────────────────────────────────────────────────────────────────"
 " posting 3: 2 comments, 1 thread reply                                                                                  "
 " 2 agent replies held back (the forge post is yours)                                                                    "
 " 1 whole-file comment held back (a review carries line comments only)                                                   "

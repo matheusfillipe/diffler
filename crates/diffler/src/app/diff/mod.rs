@@ -828,7 +828,7 @@ mod tests {
     fn ctrl_n_and_ctrl_p_walk_only_file_rows_skipping_directories() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
-        // tree: dir src, lib.rs, ci.yml, todo.md — c-n/c-p never land on a dir
+        // tree: dir src, lib.rs, ci.yml, todo.md. c-n/c-p never land on a dir
         app.handle(key('g'));
         app.handle(key('g'));
         assert!(matches!(
@@ -1732,7 +1732,7 @@ mod tests {
             &app.review.session,
             app.review.model(),
             &FeedbackOptions {
-                title: &format!("Review feedback — {repo} @ main (1 comment)"),
+                title: &format!("Review feedback: {repo} @ main (1 comment)"),
                 file_filter: Some("src/lib.rs"),
                 include_resolved: false,
             },

@@ -83,7 +83,7 @@ pub fn spawn_watcher(
 /// commit floods it). Project lockfiles (Cargo.lock, uv.lock, etc.) are
 /// kept because they represent real working-tree changes worth reviewing.
 fn relevant(path: &Path, repo_root: &Path, git_dir: &Path) -> bool {
-    // git metadata, wherever the gitdir lives — in-tree `.git` or a linked
+    // git metadata, wherever the gitdir lives: in-tree `.git` or a linked
     // worktree's external dir under the main repo
     if let Ok(rel) = path.strip_prefix(git_dir) {
         return !(is_lockfile(path) || rel.starts_with("objects"));
@@ -186,7 +186,7 @@ mod tests {
     // End-to-end against the real notify backend: a relevant write must
     // surface as RepoChanged, an irrelevant one (under .diffler) must not.
     // macOS FSEvents reports canonicalized paths, so the watched root is
-    // canonicalized too — otherwise `relevant`'s prefix-stripping silently
+    // canonicalized too. otherwise `relevant`'s prefix-stripping silently
     // falls back to treating every event as relevant.
     #[tokio::test]
     async fn spawn_watcher_emits_repo_changed_for_relevant_writes_only() {

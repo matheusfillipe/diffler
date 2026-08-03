@@ -129,7 +129,7 @@ pub trait Vcs: Send {
     /// Amend HEAD, returning the new commit id. `message` `None` reuses HEAD's
     /// message (extend); `Some` rewords it. `use_index` true folds the staged
     /// index into the new tree (extend/amend); false keeps HEAD's tree (a
-    /// pure reword). Local-only — no network.
+    /// pure reword). Local-only: no network.
     fn amend(&self, message: Option<&str>, use_index: bool) -> Result<String, VcsError>;
     fn create_branch(&self, name: &str, checkout: bool) -> Result<(), VcsError>;
     /// Refused for the currently checked-out branch.
@@ -137,7 +137,7 @@ pub trait Vcs: Send {
     fn checkout(&self, name: &str) -> Result<(), VcsError>;
     /// Stash tracked changes (staged + unstaged), reverting the worktree to
     /// HEAD; untracked files are left in place, matching `git stash`. `message`
-    /// `None` lets the backend label it. Local-only — no network.
+    /// `None` lets the backend label it. Local-only: no network.
     fn stash_push(&self, message: Option<&str>) -> Result<(), VcsError>;
     /// Restore the most recent stash and drop it. Refused when there is no
     /// stash or the pop would conflict.

@@ -165,7 +165,7 @@ impl App {
         });
     }
 
-    /// An empty buffer submits as a cancel — comments and replies must say
+    /// An empty buffer submits as a cancel: comments and replies must say
     /// something to be worth persisting.
     /// Leave the input. A field of the create form hands its draft back, so
     /// one abandoned edit keeps the rest of the form.
@@ -420,7 +420,7 @@ impl App {
         }
     }
 
-    /// Delete one comment outright. Forge-owned comments decline — the next
+    /// Delete one comment outright. Forge-owned comments decline: the next
     /// sync would just re-import them.
     pub(super) fn delete_comment_by_id(&mut self, id: &str) -> bool {
         let source = self.active_review_source();
@@ -437,7 +437,7 @@ impl App {
                 self.queue_pr_comment_delete(number, id, &remote_id);
                 self.info("deleting the comment on the forge…");
             } else {
-                self.info("forge comment — open the PR review to delete it");
+                self.info("forge comment: open the PR review to delete it");
             }
             return false;
         }

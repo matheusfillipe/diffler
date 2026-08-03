@@ -26,7 +26,7 @@ impl ScopeIndex {
         self.defs.is_empty()
     }
 
-    /// 0-based start rows of every definition, sorted and deduped — the jump
+    /// 0-based start rows of every definition, sorted and deduped: the jump
     /// targets for function/definition motions.
     pub fn def_starts(&self) -> Vec<usize> {
         let mut rows: Vec<usize> = self.defs.iter().map(|d| d.start_row).collect();
@@ -55,7 +55,7 @@ impl ScopeIndex {
 impl LanguageRegistry {
     /// Parse `content` and index its definition spans for scope lookup. Returns
     /// an empty index when the language is unsupported, has no tags query, the
-    /// file is too large, or parsing fails — callers then show no breadcrumb.
+    /// file is too large, or parsing fails, so callers show no breadcrumb.
     pub fn scope_index(&self, path: &str, content: &str) -> ScopeIndex {
         if content.len() > MAX_PARSE_BYTES {
             return ScopeIndex::default();

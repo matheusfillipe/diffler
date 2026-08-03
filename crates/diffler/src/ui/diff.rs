@@ -1,4 +1,4 @@
-//! Diff/review screen: a two-pane layout — a left file sidebar listing every
+//! Diff/review screen: a two-pane layout with a left file sidebar listing every
 //! file in the diff (status, viewed mark, comment count) and a right pane that
 //! renders the visible slice of the selected file's hunks, lines, and inline
 //! comment blocks, keeping the cursor in view.
@@ -706,8 +706,8 @@ fn sidebar_file_line(
         .fg(if on_cursor { theme.accent } else { theme.fg })
         .bg(bg);
     // highlight the whole name, then clip the spans so a match stays lit on the
-    // visible part; a flat-list path (with a `/`) front-elides so its tail —
-    // the basename, the file's identity — stays in view
+    // visible part; a flat-list path (with a `/`) front-elides so its tail
+    // (the basename, the file's identity) stays in view
     let highlighted = super::highlight_spans(name, name_style, search, theme);
     spans.extend(clip_spans(
         highlighted,
@@ -722,7 +722,7 @@ fn sidebar_file_line(
         spans.push(Span::styled(format!(" ·{open}"), dim));
     }
     // GitHub-PR style: the file's `+A -B` hugs the right edge, but only if it
-    // fits after the name and marks — name + marks stay legible first
+    // fits after the name and marks: name + marks stay legible first
     let (added, deleted) = file.diffstat();
     let stat = diffstat_spans(theme, added, deleted, bg);
     let stat_width: usize = stat.iter().map(Span::width).sum();
@@ -739,8 +739,8 @@ fn sidebar_file_line(
 
 /// Clip a name's already-styled `spans` to `room` cells, preserving each span's
 /// style (so a search highlight survives on the visible cells). `front` elides
-/// from the left with a leading `…` — for flat-list paths, keeping the tail
-/// basename in view — otherwise from the right with a trailing `…`. The ellipsis
+/// from the left with a leading `…` (for flat-list paths, keeping the tail
+/// basename in view), otherwise from the right with a trailing `…`. The ellipsis
 /// takes `ellipsis_style`. Char-based, multibyte-safe.
 fn clip_spans(
     spans: Vec<Span<'static>>,
@@ -911,7 +911,7 @@ fn render_scope_crumb(
     frame.render_widget(Paragraph::new(scope_line(theme, &crumbs, area.width)), area);
 }
 
-/// Whether `line` falls inside any comment's anchored range for `file_path` —
+/// Whether `line` falls inside any comment's anchored range for `file_path`:
 /// drives the GitHub-style highlight marking a multi-line comment's scope.
 fn line_annotated(session: &Session, file_path: &str, line: &DiffLine) -> bool {
     session.comments.iter().any(|c| {
