@@ -28,6 +28,10 @@ pub(crate) const CI_TITLE: &str = "CI runs";
 /// Heading for the trailing Branches section.
 pub(crate) const BRANCHES_TITLE: &str = "Branches";
 
+/// Heading for the leading Open-pull-requests section (when a forge is
+/// detected).
+pub(crate) const PRS_TITLE: &str = "Open pull requests";
+
 /// How many recent runs the inline status section shows (the full list lives on
 /// the Runs screen).
 const CI_INLINE_LIMIT: usize = 5;
@@ -35,6 +39,10 @@ const CI_INLINE_LIMIT: usize = 5;
 /// How many local branches the inline status section shows (the full list is
 /// reachable through the branch picker).
 const BRANCHES_INLINE_LIMIT: usize = 10;
+
+/// How many of the repo's other open PRs the inline status section shows (the
+/// full list is reachable through the Prs screen).
+const PRS_INLINE_LIMIT: usize = 5;
 
 /// Status screen sections, in display order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +70,44 @@ impl Section {
             Self::Staged => 2,
         }
     }
+}
+
+/// The status screen's collapsible groups below (and including) the
+/// unpushed-commits list, each addressed by one slot of
+/// [`StatusView::group_folded`] instead of a bool field apiece.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Group {
+    /// Commits on HEAD its upstream lacks: local and actionable, so it opens
+    /// unfolded.
+    Unpushed,
+    /// The repo's open pull requests, minus the branch's own (already shown
+    /// above the divider). Fetched lazily: nothing is requested from the
+    /// forge until this group is first unfolded.
+    Prs,
+    Branches,
+    Recent,
+    Ci,
+}
+
+impl Group {
+    pub(crate) fn index(self) -> usize {
+        match self {
+            Self::Unpushed => 0,
+            Self::Prs => 1,
+            Self::Branches => 2,
+            Self::Recent => 3,
+            Self::Ci => 4,
+        }
+    }
+}
+
+/// Only Unpushed opens by default: the rest of the repo band starts folded.
+fn default_group_folded() -> [bool; 5] {
+    let mut folded = [true; 5];
+    if let Some(slot) = folded.get_mut(Group::Unpushed.index()) {
+        *slot = false;
+    }
+    folded
 }
 
 /// One cursor-addressable row of the status screen: section headers, directory
@@ -120,6 +166,16 @@ pub enum Row {
     /// repo). Furniture, not a cursor-addressable row: it never holds the
     /// cursor, has no search label, and is skipped by every movement.
     RepoDivider,
+    /// Header of the leading Open-pull-requests section; `None` while the
+    /// first fetch is still in flight.
+    PrsHeader {
+        count: Option<usize>,
+    },
+    /// One PR in the inline section, other than the branch's own; `index`
+    /// into `App::other_prs`.
+    OpenPr {
+        index: usize,
+    },
     /// Header of the trailing Branches section.
     BranchesHeader {
         count: usize,
@@ -158,6 +214,8 @@ pub(super) enum CursorAnchor {
     Recent,
     Commit(usize),
     Pr,
+    Prs,
+    PrsRow(usize),
     Branches,
     BranchRow(usize),
     Ci,
@@ -165,23 +223,19 @@ pub(super) enum CursorAnchor {
 }
 
 /// All state owned by the status screen.
-#[allow(clippy::struct_excessive_bools)] // independent per-section fold flags, not a state machine
 pub struct StatusView {
     pub cursor: usize,
     pub folded: [bool; 3],
     /// Commits on HEAD its upstream lacks: local, free to act on, so shown
     /// unfolded by default.
     pub unpushed: Vec<LogEntry>,
-    pub unpushed_folded: bool,
     pub recent: Vec<LogEntry>,
-    pub recent_folded: bool,
-    /// Whether the trailing CI-runs section is collapsed.
-    pub ci_folded: bool,
     /// Local branches, newest tip first, capped to `BRANCHES_INLINE_LIMIT`.
     pub branches: Vec<BranchInfo>,
-    /// Whether the trailing Branches section is collapsed; the whole repo
-    /// band starts folded, unlike the always-open branch band above it.
-    pub branches_folded: bool,
+    /// Fold state of the repo-band groups (and Unpushed above them), indexed
+    /// by [`Group::index`]. The whole repo band starts folded, unlike the
+    /// always-open branch band above it.
+    pub group_folded: [bool; 5],
     /// Body height of the last render, so half-page motions step by a screenful.
     pub(crate) viewport: u16,
     /// Per-section set of file paths whose inline diff is expanded.
@@ -197,6 +251,14 @@ pub struct StatusView {
     /// different content, and each needs its own entry to stay settled.
     /// Filled lazily, only for expanded files.
     pub(crate) highlights: HashMap<(String, String), FileHighlights>,
+    /// Whether `App::prs` has been fetched at least once, so the inline
+    /// Open-pull-requests group can tell "nothing fetched yet" (still shown,
+    /// no count) from "the repo truly has no open PRs" (hidden).
+    pub prs_loaded: bool,
+    /// A PR-list fetch is out and its answer has not landed. Unfolding again
+    /// while one is in flight would put a second identical request on the wire,
+    /// since `prs_loaded` only turns true once the first one answers.
+    pub prs_in_flight: bool,
     /// Last render's body rect, line scroll, and per-rendered-line row index
     /// (rows vary in height, so a screen row maps back to a `visible_rows`
     /// index only through this table). Drives mouse hit-testing.
@@ -215,17 +277,16 @@ impl StatusView {
             cursor: 0,
             folded: [false; 3],
             unpushed,
-            unpushed_folded: false,
             recent,
-            recent_folded: true,
-            ci_folded: true,
             branches,
-            branches_folded: true,
+            group_folded: default_group_folded(),
             viewport: 0,
             expanded: [const { BTreeSet::new() }; 3],
             folded_dirs: [const { BTreeSet::new() }; 3],
             enriched: [const { BTreeSet::new() }; 3],
             highlights: HashMap::new(),
+            prs_loaded: false,
+            prs_in_flight: false,
             body: ratatui::layout::Rect::default(),
             scroll: 0,
             line_rows: Vec::new(),
@@ -281,6 +342,24 @@ impl App {
             .unwrap_or(false)
     }
 
+    pub fn is_group_folded(&self, group: Group) -> bool {
+        self.status
+            .group_folded
+            .get(group.index())
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// The repo's open PRs minus the current branch's own (already shown
+    /// above the divider as `Row::Pr`), for the inline repo-band list.
+    pub(crate) fn other_prs(&self) -> Vec<&crate::ci::PullRequest> {
+        let own = self.pr.as_ref().map(|pr| pr.number);
+        self.prs
+            .iter()
+            .filter(|pr| Some(pr.number) != own)
+            .collect()
+    }
+
     pub fn is_expanded(&self, section: Section, path: &str) -> bool {
         self.status
             .expanded
@@ -327,6 +406,7 @@ impl App {
     /// Flattened cursor-addressable rows given current fold/expansion state.
     /// Empty sections are hidden, neogit-style; blank separators are a
     /// rendering concern, so j/k skip them by construction.
+    #[allow(clippy::too_many_lines)] // one flat block per band, straight-line by design
     pub fn visible_rows(&self) -> Vec<Row> {
         let mut rows = Vec::new();
         for section in Section::ALL {
@@ -388,7 +468,7 @@ impl App {
             rows.push(Row::UnpushedHeader {
                 count: self.status.unpushed.len(),
             });
-            if !self.status.unpushed_folded {
+            if !self.is_group_folded(Group::Unpushed) {
                 rows.extend((0..self.status.unpushed.len()).map(|index| Row::Unpushed { index }));
             }
         }
@@ -397,18 +477,34 @@ impl App {
         if self.pr.is_some() {
             rows.push(Row::Pr);
         }
-        // this-repo band, folded by default: branches, recent commits, CI runs
-        let has_repo_band = !self.status.branches.is_empty()
+        // this-repo band, folded by default: open PRs, branches, recent commits, CI runs
+        //
+        // a forge is known before the PR list is ever fetched, so the group can
+        // show (and be unfolded to trigger the fetch) before any count is known;
+        // once fetched, an empty repo-wide result hides the group entirely
+        let has_prs_group =
+            !self.ci_remotes().is_empty() && (!self.status.prs_loaded || !self.prs.is_empty());
+        let has_repo_band = has_prs_group
+            || !self.status.branches.is_empty()
             || !self.status.recent.is_empty()
             || !self.runs.is_empty();
         if has_repo_band {
             rows.push(Row::RepoDivider);
         }
+        if has_prs_group {
+            rows.push(Row::PrsHeader {
+                count: self.status.prs_loaded.then_some(self.other_prs().len()),
+            });
+            if !self.is_group_folded(Group::Prs) {
+                let shown = self.other_prs().len().min(PRS_INLINE_LIMIT);
+                rows.extend((0..shown).map(|index| Row::OpenPr { index }));
+            }
+        }
         if !self.status.branches.is_empty() {
             rows.push(Row::BranchesHeader {
                 count: self.status.branches.len(),
             });
-            if !self.status.branches_folded {
+            if !self.is_group_folded(Group::Branches) {
                 let shown = self.status.branches.len().min(BRANCHES_INLINE_LIMIT);
                 rows.extend((0..shown).map(|index| Row::Branch { index }));
             }
@@ -417,7 +513,7 @@ impl App {
             rows.push(Row::RecentHeader {
                 count: self.status.recent.len(),
             });
-            if !self.status.recent_folded {
+            if !self.is_group_folded(Group::Recent) {
                 rows.extend((0..self.status.recent.len()).map(|index| Row::Commit { index }));
             }
         }
@@ -425,7 +521,7 @@ impl App {
             rows.push(Row::CiHeader {
                 count: self.runs.len(),
             });
-            if !self.status.ci_folded {
+            if !self.is_group_folded(Group::Ci) {
                 let shown = self.runs.len().min(CI_INLINE_LIMIT);
                 rows.extend((0..shown).map(|index| Row::CiRun { index }));
             }
@@ -460,6 +556,12 @@ impl App {
             Row::CiHeader { .. } => CI_TITLE.to_owned(),
             Row::Pr => {
                 let pr = self.pr.as_ref()?;
+                format!("PR #{} {}", pr.number, pr.title)
+            }
+            Row::PrsHeader { .. } => PRS_TITLE.to_owned(),
+            Row::OpenPr { index } => {
+                let pr = self.other_prs();
+                let pr = pr.get(*index)?;
                 format!("PR #{} {}", pr.number, pr.title)
             }
             Row::CiRun { index } => self.runs.get(*index)?.name.clone(),
@@ -633,6 +735,7 @@ impl App {
                 | Row::Unpushed { .. }
                 | Row::Commit { .. }
                 | Row::Branch { .. }
+                | Row::OpenPr { .. }
                 | Row::CiRun { .. },
             ) => {
                 self.open_at_cursor();
@@ -641,6 +744,7 @@ impl App {
                 Row::SectionHeader { .. }
                 | Row::Dir { .. }
                 | Row::UnpushedHeader { .. }
+                | Row::PrsHeader { .. }
                 | Row::BranchesHeader { .. }
                 | Row::RecentHeader { .. }
                 | Row::CiHeader { .. },
@@ -825,6 +929,8 @@ impl App {
             | Row::Unpushed { .. }
             | Row::Pr
             | Row::RepoDivider
+            | Row::PrsHeader { .. }
+            | Row::OpenPr { .. }
             | Row::BranchesHeader { .. }
             | Row::Branch { .. }
             | Row::RecentHeader { .. }
@@ -959,6 +1065,14 @@ impl App {
                 self.open_commit_diff(&oid);
             }
             Row::Pr => self.open_pr_review(),
+            // a PR row reviews that PR directly; the header opens the full list
+            Row::OpenPr { index } => {
+                let Some(pr) = self.other_prs().get(*index).map(|pr| (*pr).clone()) else {
+                    return;
+                };
+                self.open_pr_review_for(pr);
+            }
+            Row::PrsHeader { .. } => self.open_prs(),
             // a branch row checks it out directly; the header opens the full picker
             Row::Branch { index } => {
                 let Some(name) = self.status.branches.get(*index).map(|b| b.name.clone()) else {
@@ -1081,24 +1195,46 @@ impl App {
                 );
             }
             Row::UnpushedHeader { .. } | Row::Unpushed { .. } => {
-                self.status.unpushed_folded ^= true;
-                self.seat_cursor_on(|row| matches!(row, Row::UnpushedHeader { .. }));
+                self.toggle_group(Group::Unpushed, |row| {
+                    matches!(row, Row::UnpushedHeader { .. })
+                });
+            }
+            Row::PrsHeader { .. } | Row::OpenPr { .. } => {
+                self.toggle_group(Group::Prs, |row| matches!(row, Row::PrsHeader { .. }));
+                // the list is fetched once, the first time the group opens;
+                // a re-fold and re-unfold rides the regular CI poll instead
+                if !self.is_group_folded(Group::Prs)
+                    && !self.status.prs_loaded
+                    && !self.status.prs_in_flight
+                {
+                    self.status.prs_in_flight = true;
+                    self.pending_ci = Some(super::CiRequest::Prs);
+                }
             }
             Row::RecentHeader { .. } | Row::Commit { .. } => {
-                self.status.recent_folded ^= true;
-                self.seat_cursor_on(|row| matches!(row, Row::RecentHeader { .. }));
+                self.toggle_group(Group::Recent, |row| matches!(row, Row::RecentHeader { .. }));
             }
             Row::Pr | Row::RepoDivider => {}
             Row::BranchesHeader { .. } | Row::Branch { .. } => {
-                self.status.branches_folded ^= true;
-                self.seat_cursor_on(|row| matches!(row, Row::BranchesHeader { .. }));
+                self.toggle_group(Group::Branches, |row| {
+                    matches!(row, Row::BranchesHeader { .. })
+                });
             }
             Row::CiHeader { .. } | Row::CiRun { .. } => {
-                self.status.ci_folded ^= true;
-                self.seat_cursor_on(|row| matches!(row, Row::CiHeader { .. }));
+                self.toggle_group(Group::Ci, |row| matches!(row, Row::CiHeader { .. }));
             }
         }
         self.clamp_cursor();
+    }
+
+    /// Fold/unfold one repo-band group (or the always-open Unpushed group
+    /// above it) and land the cursor on its header, the way every one of
+    /// these toggles must.
+    fn toggle_group(&mut self, group: Group, is_header: impl Fn(&Row) -> bool) {
+        if let Some(folded) = self.status.group_folded.get_mut(group.index()) {
+            *folded ^= true;
+        }
+        self.seat_cursor_on(is_header);
     }
 
     /// Move the cursor onto the first visible row matching `pred`, if any.
@@ -1151,6 +1287,8 @@ impl App {
             Row::Pr => CursorAnchor::Pr,
             // furniture: the cursor never actually rests here
             Row::RepoDivider => return None,
+            Row::PrsHeader { .. } => CursorAnchor::Prs,
+            Row::OpenPr { index } => CursorAnchor::PrsRow(*index),
             Row::BranchesHeader { .. } => CursorAnchor::Branches,
             Row::Branch { index } => CursorAnchor::BranchRow(*index),
             Row::CiHeader { .. } => CursorAnchor::Ci,
@@ -1168,7 +1306,6 @@ impl App {
 
     /// Re-seat the cursor after rows changed: exact hunk → same file in the
     /// same section → same path anywhere → the section header → clamp.
-    #[allow(clippy::too_many_lines)] // one match arm per anchor kind, flat by design
     pub(super) fn restore_status_cursor(&mut self, anchor: Option<CursorAnchor>) {
         let Some(anchor) = anchor else {
             self.clamp_cursor();
@@ -1179,42 +1316,37 @@ impl App {
             CursorAnchor::Section(section) => rows
                 .iter()
                 .position(|r| matches!(r, Row::SectionHeader { section: s, .. } if s == section)),
-            CursorAnchor::Unpushed => rows
-                .iter()
-                .position(|r| matches!(r, Row::UnpushedHeader { .. })),
-            CursorAnchor::UnpushedCommit(index) => rows
-                .iter()
-                .position(|r| matches!(r, Row::Unpushed { index: i } if i == index))
-                .or_else(|| {
-                    rows.iter()
-                        .position(|r| matches!(r, Row::UnpushedHeader { .. }))
-                }),
-            CursorAnchor::Recent => rows
-                .iter()
-                .position(|r| matches!(r, Row::RecentHeader { .. })),
-            CursorAnchor::Commit(index) => rows
-                .iter()
-                .position(|r| matches!(r, Row::Commit { index: i } if i == index))
-                .or_else(|| {
-                    rows.iter()
-                        .position(|r| matches!(r, Row::RecentHeader { .. }))
-                }),
-            CursorAnchor::Pr => rows.iter().position(|r| matches!(r, Row::Pr)),
-            CursorAnchor::Branches => rows
-                .iter()
-                .position(|r| matches!(r, Row::BranchesHeader { .. })),
-            CursorAnchor::BranchRow(index) => rows
-                .iter()
-                .position(|r| matches!(r, Row::Branch { index: i } if i == index))
-                .or_else(|| {
-                    rows.iter()
-                        .position(|r| matches!(r, Row::BranchesHeader { .. }))
-                }),
-            CursorAnchor::Ci => rows.iter().position(|r| matches!(r, Row::CiHeader { .. })),
-            CursorAnchor::CiRun(index) => rows
-                .iter()
-                .position(|r| matches!(r, Row::CiRun { index: i } if i == index))
-                .or_else(|| rows.iter().position(|r| matches!(r, Row::CiHeader { .. }))),
+            CursorAnchor::Unpushed => header_pos(&rows, |r| matches!(r, Row::UnpushedHeader { .. })),
+            CursorAnchor::UnpushedCommit(index) => indexed_or_header(
+                &rows,
+                |r| matches!(r, Row::Unpushed { index: i } if i == index),
+                |r| matches!(r, Row::UnpushedHeader { .. }),
+            ),
+            CursorAnchor::Recent => header_pos(&rows, |r| matches!(r, Row::RecentHeader { .. })),
+            CursorAnchor::Commit(index) => indexed_or_header(
+                &rows,
+                |r| matches!(r, Row::Commit { index: i } if i == index),
+                |r| matches!(r, Row::RecentHeader { .. }),
+            ),
+            CursorAnchor::Pr => header_pos(&rows, |r| matches!(r, Row::Pr)),
+            CursorAnchor::Prs => header_pos(&rows, |r| matches!(r, Row::PrsHeader { .. })),
+            CursorAnchor::PrsRow(index) => indexed_or_header(
+                &rows,
+                |r| matches!(r, Row::OpenPr { index: i } if i == index),
+                |r| matches!(r, Row::PrsHeader { .. }),
+            ),
+            CursorAnchor::Branches => header_pos(&rows, |r| matches!(r, Row::BranchesHeader { .. })),
+            CursorAnchor::BranchRow(index) => indexed_or_header(
+                &rows,
+                |r| matches!(r, Row::Branch { index: i } if i == index),
+                |r| matches!(r, Row::BranchesHeader { .. }),
+            ),
+            CursorAnchor::Ci => header_pos(&rows, |r| matches!(r, Row::CiHeader { .. })),
+            CursorAnchor::CiRun(index) => indexed_or_header(
+                &rows,
+                |r| matches!(r, Row::CiRun { index: i } if i == index),
+                |r| matches!(r, Row::CiHeader { .. }),
+            ),
             // a folded dir survives a refresh by its path; fall back to the
             // section header when the directory is gone
             CursorAnchor::Dir { section, path } => rows
@@ -1283,6 +1415,23 @@ impl App {
     }
 }
 
+/// A header row's position, for a [`CursorAnchor`] that names nothing else.
+fn header_pos(rows: &[Row], header: impl Fn(&Row) -> bool) -> Option<usize> {
+    rows.iter().position(header)
+}
+
+/// An indexed row's position, falling back to its group's header once the
+/// item itself is gone (moved section, disappeared commit, and so on).
+fn indexed_or_header(
+    rows: &[Row],
+    at: impl Fn(&Row) -> bool,
+    header: impl Fn(&Row) -> bool,
+) -> Option<usize> {
+    rows.iter()
+        .position(at)
+        .or_else(|| header_pos(rows, header))
+}
+
 fn is_hunk_header(row: &Row) -> bool {
     matches!(row, Row::HunkHeader { .. })
 }
@@ -1292,6 +1441,7 @@ fn is_section_header(row: &Row) -> bool {
         row,
         Row::SectionHeader { .. }
             | Row::UnpushedHeader { .. }
+            | Row::PrsHeader { .. }
             | Row::BranchesHeader { .. }
             | Row::RecentHeader { .. }
             | Row::CiHeader { .. }
@@ -1340,7 +1490,7 @@ fn nearest_selectable(rows: &[Row], index: usize, forward: bool) -> usize {
 mod tests {
     use diffler_core::source::ReviewSource;
 
-    use super::super::Screen;
+    use super::super::{CiRequest, Screen};
     use super::*;
     use crate::app::App;
     use crate::config::LoadedConfig;
@@ -1396,7 +1546,7 @@ mod tests {
             url: None,
             remote: None,
         }];
-        app.status.ci_folded = false;
+        app.status.group_folded[Group::Ci.index()] = false;
         cursor_to(&mut app, |row| matches!(row, Row::CiRun { .. }));
         app.handle(AppEvent::Key(KeyEvent::new(
             KeyCode::Enter,
@@ -2159,10 +2309,10 @@ mod tests {
     fn recent_commits_are_cached_and_folded_by_default() {
         let (_fixture, mut app) = app();
         assert_eq!(app.status.recent.len(), 1);
-        assert!(app.status.recent_folded);
+        assert!(app.is_group_folded(Group::Recent));
         cursor_to(&mut app, |row| matches!(row, Row::RecentHeader { .. }));
         app.handle(key('\t'));
-        assert!(!app.status.recent_folded);
+        assert!(!app.is_group_folded(Group::Recent));
         assert!(
             app.visible_rows()
                 .iter()
@@ -2192,7 +2342,7 @@ mod tests {
         let app = App::new(fixture.review(), LoadedConfig::default());
         assert_eq!(app.status.unpushed.len(), 2);
         assert_eq!(app.status.unpushed[0].subject, "second unpushed");
-        assert!(!app.status.unpushed_folded);
+        assert!(!app.is_group_folded(Group::Unpushed));
         let rows = app.visible_rows();
         let unpushed_at = rows
             .iter()
@@ -2330,7 +2480,7 @@ mod tests {
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         let total = app.status.branches.len();
         assert!(total > super::BRANCHES_INLINE_LIMIT);
-        app.status.branches_folded = false;
+        app.status.group_folded[Group::Branches.index()] = false;
         let rows = app.visible_rows();
         assert!(
             rows.iter()
@@ -2351,7 +2501,7 @@ mod tests {
         let fixture = standard_fixture();
         fixture.branch("feat/topic");
         let mut app = App::new(fixture.review(), LoadedConfig::default());
-        assert!(app.status.branches_folded);
+        assert!(app.is_group_folded(Group::Branches));
         assert!(
             !app.visible_rows()
                 .iter()
@@ -2359,7 +2509,7 @@ mod tests {
         );
         cursor_to(&mut app, |row| matches!(row, Row::BranchesHeader { .. }));
         app.handle(key('\t'));
-        assert!(!app.status.branches_folded);
+        assert!(!app.is_group_folded(Group::Branches));
         assert!(
             app.visible_rows()
                 .iter()
@@ -2372,7 +2522,7 @@ mod tests {
         let fixture = standard_fixture();
         fixture.branch("feat/topic");
         let mut app = App::new(fixture.review(), LoadedConfig::default());
-        app.status.branches_folded = false;
+        app.status.group_folded[Group::Branches.index()] = false;
         let target = app
             .status
             .branches
@@ -2513,6 +2663,246 @@ mod tests {
             "the PR row inserts above the repo band without dragging the cursor: {:?}",
             app.cursor_row()
         );
+    }
+
+    fn github_remote() -> crate::app::CiRemote {
+        crate::app::CiRemote {
+            name: "origin".into(),
+            detected: crate::ci::Detected {
+                kind: crate::ci::ProviderKind::GitHub,
+                host: None,
+            },
+            url: None,
+        }
+    }
+
+    fn pull_request(number: u64) -> crate::ci::PullRequest {
+        crate::ci::PullRequest {
+            number,
+            title: format!("pr {number}"),
+            url: None,
+            base_ref: "main".into(),
+            head_ref: format!("feat/{number}"),
+            head_oid: "0000000000000000000000000000000000000abc".into(),
+            author: "reviewer".into(),
+        }
+    }
+
+    /// Mirrors the production loop, which only ever calls the CI provider
+    /// once a request is actually queued: ties the assertion to a real forge
+    /// call, not just to `pending_ci` bookkeeping.
+    async fn dispatch_if_queued(app: &App, provider: &crate::ci::GitHubProvider) {
+        use crate::ci::ForgeProvider;
+        if matches!(app.pending_ci, Some(CiRequest::Prs)) {
+            let _ = provider.list_prs().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_folded_prs_group_issues_no_forge_request_until_unfolded() {
+        use crate::ci::GitHubProvider;
+        use crate::ci::test_support::RecordingRunner;
+        use std::sync::Arc;
+
+        // the forge is on the repo before the app is built, so eagerly queueing
+        // the list at construction is a reachable mistake this test can catch
+        let fixture = standard_fixture();
+        fixture.remote("origin", "https://github.com/acme/widgets.git");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        assert!(!app.ci_remotes().is_empty(), "the forge is detected");
+        assert!(
+            !matches!(app.pending_ci, Some(CiRequest::Prs)),
+            "startup asks the forge for nothing this group needs: {:?}",
+            app.pending_ci
+        );
+        assert!(
+            app.visible_rows()
+                .iter()
+                .any(|row| matches!(row, Row::PrsHeader { count: None })),
+            "the group shows itself, countless, before any fetch"
+        );
+
+        let runner = Arc::new(RecordingRunner::new(&[("pr list", "[]")]));
+        let provider = GitHubProvider::new(
+            Box::new(runner.clone()),
+            Vec::new(),
+            None,
+            crate::ci::YamlCache::default(),
+            crate::ci::EtagCache::default(),
+        );
+
+        dispatch_if_queued(&app, &provider).await;
+        assert!(
+            runner.calls().is_empty(),
+            "a folded group must not fetch: {:?}",
+            runner.calls()
+        );
+
+        cursor_to(&mut app, |row| matches!(row, Row::PrsHeader { .. }));
+        app.handle(key('\t'));
+        assert!(matches!(app.pending_ci, Some(CiRequest::Prs)));
+        dispatch_if_queued(&app, &provider).await;
+        assert_eq!(
+            runner.calls().len(),
+            1,
+            "unfolding for the first time triggers exactly one fetch: {:?}",
+            runner.calls()
+        );
+    }
+
+    #[tokio::test]
+    async fn folding_and_reopening_mid_flight_does_not_ask_twice() {
+        let (_fixture, mut app) = app();
+        app.ci_remotes = vec![github_remote()];
+        cursor_to(&mut app, |row| matches!(row, Row::PrsHeader { .. }));
+        app.handle(key('\t'));
+        assert!(matches!(app.pending_ci, Some(CiRequest::Prs)));
+        // the request is on the wire; its answer has not landed
+        app.pending_ci = None;
+        app.handle(key('\t'));
+        app.handle(key('\t'));
+        assert!(
+            app.pending_ci.is_none(),
+            "a second identical request never reaches the forge: {:?}",
+            app.pending_ci
+        );
+        app.on_prs_event(Vec::new());
+        assert!(app.status.prs_loaded);
+        assert!(!app.status.prs_in_flight);
+    }
+
+    #[test]
+    fn the_current_branchs_own_pr_is_not_repeated_in_the_inline_list() {
+        let (_fixture, mut app) = app();
+        app.ci_remotes = vec![github_remote()];
+        app.pr = Some(pull_request(7));
+        app.prs = vec![pull_request(7), pull_request(8)];
+        app.status.prs_loaded = true;
+        app.status.group_folded[Group::Prs.index()] = false;
+        let numbers: Vec<u64> = app
+            .visible_rows()
+            .iter()
+            .filter_map(|row| match row {
+                Row::OpenPr { index } => app.other_prs().get(*index).map(|pr| pr.number),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            numbers,
+            vec![8],
+            "the branch's own PR is shown once, above the divider"
+        );
+        assert!(
+            app.visible_rows()
+                .iter()
+                .any(|row| matches!(row, Row::PrsHeader { count: Some(1) })),
+            "the header counts what the list can show: {:?}",
+            app.visible_rows()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_folded_prs_group_stops_polling_the_forge() {
+        let (_fixture, mut app) = app();
+        app.ci_remotes = vec![github_remote()];
+        // the branch's own PR resolves first and owns the slot until it does
+        app.pr_checked = true;
+        app.status.prs_loaded = true;
+        app.status.group_folded[Group::Prs.index()] = false;
+        app.on_ci_runs(Vec::new());
+        assert!(
+            matches!(app.pending_ci, Some(CiRequest::Prs)),
+            "an open group keeps its list fresh"
+        );
+        app.pending_ci = None;
+        app.status.group_folded[Group::Prs.index()] = true;
+        app.on_ci_runs(Vec::new());
+        assert!(
+            app.pending_ci.is_none(),
+            "folding it away stops the poll: {:?}",
+            app.pending_ci
+        );
+    }
+
+    #[test]
+    fn prs_group_header_counts_every_pr_while_rows_cap_at_the_limit() {
+        let (_fixture, mut app) = app();
+        app.ci_remotes = vec![github_remote()];
+        app.prs = (0..(super::PRS_INLINE_LIMIT as u64 + 2))
+            .map(pull_request)
+            .collect();
+        app.status.prs_loaded = true;
+        app.status.group_folded[Group::Prs.index()] = false;
+        let rows = app.visible_rows();
+        let total = app.prs.len();
+        assert!(
+            rows.iter()
+                .any(|row| matches!(row, Row::PrsHeader { count: Some(c) } if *c == total)),
+            "the header counts every open PR, not the capped number: {rows:?}"
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|row| matches!(row, Row::OpenPr { .. }))
+                .count(),
+            super::PRS_INLINE_LIMIT,
+            "only the newest fit inline: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn enter_on_the_prs_header_opens_the_full_prs_screen() {
+        let (_fixture, mut app) = app();
+        app.ci_remotes = vec![github_remote()];
+        cursor_to(&mut app, |row| matches!(row, Row::PrsHeader { .. }));
+        app.handle(key('\n'));
+        assert_eq!(app.screen(), Screen::Prs);
+    }
+
+    #[test]
+    fn enter_on_an_open_pr_row_reviews_that_pr() {
+        let (_fixture, mut app) = app();
+        app.ci_remotes = vec![github_remote()];
+        app.prs = vec![pull_request(9)];
+        app.status.prs_loaded = true;
+        app.status.group_folded[Group::Prs.index()] = false;
+        cursor_to(&mut app, |row| matches!(row, Row::OpenPr { .. }));
+        app.handle(key('\n'));
+        // the fixture never fetched PR 9's head, so the open queues a fetch
+        // the same way the branch's own PR row does
+        let git = app.pending_git.take().expect("fetch queued");
+        assert!(
+            git.argv.iter().any(|a| a == "refs/pull/9/head"),
+            "{:?}",
+            git.argv
+        );
+        assert_eq!(app.pending_pr_open.as_ref().map(|p| p.number), Some(9));
+    }
+
+    #[test]
+    fn a_pr_list_landing_late_leaves_the_cursor_on_the_same_row() {
+        let (_fixture, mut app) = app();
+        app.ci_remotes = vec![github_remote()];
+        app.status.group_folded[Group::Prs.index()] = false;
+        cursor_to(&mut app, |row| matches!(row, Row::RecentHeader { .. }));
+        app.handle(AppEvent::CiPrs(vec![pull_request(141), pull_request(142)]));
+        assert!(
+            matches!(app.cursor_row(), Some(Row::RecentHeader { .. })),
+            "the PR rows insert above the repo band without dragging the cursor: {:?}",
+            app.cursor_row()
+        );
+    }
+
+    #[test]
+    fn group_fold_defaults_survive_the_group_refactor() {
+        let (_fixture, app) = app();
+        assert!(
+            !app.is_group_folded(Group::Unpushed),
+            "unpushed opens by default"
+        );
+        assert!(app.is_group_folded(Group::Prs));
+        assert!(app.is_group_folded(Group::Branches));
+        assert!(app.is_group_folded(Group::Recent));
+        assert!(app.is_group_folded(Group::Ci));
     }
 
     fn type_query(app: &mut App, query: &str) {

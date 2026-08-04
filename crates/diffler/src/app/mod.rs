@@ -32,8 +32,8 @@ pub use diff::{
     SplitSide, comment_display,
 };
 pub use log::LogView;
-pub(crate) use status::{BRANCHES_TITLE, CI_TITLE, RECENT_TITLE, UNPUSHED_TITLE};
-pub use status::{Row, Section, StatusView};
+pub(crate) use status::{BRANCHES_TITLE, CI_TITLE, PRS_TITLE, RECENT_TITLE, UNPUSHED_TITLE};
+pub use status::{Group, Row, Section, StatusView};
 
 use crossterm::event::{KeyCode, KeyEvent};
 use diffler_core::model::DiffModel;
@@ -475,7 +475,7 @@ pub struct App {
     pub graph: Option<crate::graph::GraphView>,
     /// CI remotes for the repo: one per distinct forge across all git remotes,
     /// computed at startup. Empty when no provider could be determined.
-    ci_remotes: Vec<CiRemote>,
+    pub(crate) ci_remotes: Vec<CiRemote>,
     /// Immutable commit/range diff models the MCP handlers serve, computed
     /// once per source (agent polls must not stall the render loop).
     source_models:
@@ -1426,6 +1426,8 @@ impl App {
     }
 
     fn on_ci_error(&mut self, message: String) -> Flow {
+        // a failed fetch frees the slot, so a later unfold can try again
+        self.status.prs_in_flight = false;
         self.error(message);
         Flow::Continue
     }

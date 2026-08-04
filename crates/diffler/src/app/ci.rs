@@ -33,7 +33,9 @@ impl App {
     }
 
     /// Fold a branch-scoped runs poll into the inline section, then resolve the
-    /// branch's PR once (not every poll) via the single `pending_ci` slot.
+    /// branch's PR once (not every poll), and refresh the open-PRs group while
+    /// it is on screen, via the single `pending_ci` slot. A folded group costs
+    /// nothing: the list is only worth re-fetching where someone can see it.
     pub(super) fn on_ci_runs(&mut self, runs: Vec<crate::ci::CiRun>) {
         self.runs = runs;
         self.runs_cursor = self.runs_cursor.min(self.runs.len().saturating_sub(1));
@@ -41,6 +43,8 @@ impl App {
         self.clamp_cursor();
         if !self.pr_checked {
             self.pending_ci = Some(CiRequest::Pr);
+        } else if self.status.prs_loaded && !self.is_group_folded(super::status::Group::Prs) {
+            self.pending_ci = Some(CiRequest::Prs);
         }
     }
 

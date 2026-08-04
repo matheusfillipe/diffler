@@ -11,7 +11,9 @@ use ratatui::widgets::Paragraph;
 
 use std::ops::Range;
 
-use crate::app::{App, BRANCHES_TITLE, CI_TITLE, RECENT_TITLE, Row, Section, UNPUSHED_TITLE};
+use crate::app::{
+    App, BRANCHES_TITLE, CI_TITLE, Group, PRS_TITLE, RECENT_TITLE, Row, Section, UNPUSHED_TITLE,
+};
 use crate::config::FileLayout;
 use crate::keymap::Action;
 use crate::theme::Theme;
@@ -111,6 +113,7 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16, Vec<Option<usize>>) 
                         Row::SectionHeader { .. }
                             | Row::UnpushedHeader { .. }
                             | Row::RepoDivider
+                            | Row::PrsHeader { .. }
                             | Row::BranchesHeader { .. }
                             | Row::RecentHeader { .. }
                             | Row::CiHeader { .. }
@@ -275,7 +278,7 @@ fn row_line(
             let mut spans = header_spans(
                 theme,
                 section.title(),
-                *count,
+                Some(*count),
                 app.is_folded(*section),
                 search,
             );
@@ -286,8 +289,8 @@ fn row_line(
         Row::UnpushedHeader { count } => header_spans(
             theme,
             UNPUSHED_TITLE,
-            *count,
-            app.status.unpushed_folded,
+            Some(*count),
+            app.is_group_folded(Group::Unpushed),
             search,
         ),
         Row::Unpushed { index } => {
@@ -297,8 +300,8 @@ fn row_line(
         Row::RecentHeader { count } => header_spans(
             theme,
             RECENT_TITLE,
-            *count,
-            app.status.recent_folded,
+            Some(*count),
+            app.is_group_folded(Group::Recent),
             search,
         ),
         Row::Dir {
@@ -325,16 +328,28 @@ fn row_line(
             let entry = app.status.recent.get(*index);
             commit_spans(app, entry, theme, width, search)
         }
-        Row::CiHeader { count } => {
-            header_spans(theme, CI_TITLE, *count, app.status.ci_folded, search)
-        }
+        Row::CiHeader { count } => header_spans(
+            theme,
+            CI_TITLE,
+            Some(*count),
+            app.is_group_folded(Group::Ci),
+            search,
+        ),
         Row::Pr => pr_spans(app, theme, search),
         Row::RepoDivider => repo_divider_spans(theme, width),
+        Row::PrsHeader { count } => header_spans(
+            theme,
+            PRS_TITLE,
+            *count,
+            app.is_group_folded(Group::Prs),
+            search,
+        ),
+        Row::OpenPr { index } => open_pr_spans(app, *index, theme, search),
         Row::BranchesHeader { count } => header_spans(
             theme,
             BRANCHES_TITLE,
-            *count,
-            app.status.branches_folded,
+            Some(*count),
+            app.is_group_folded(Group::Branches),
             search,
         ),
         Row::Branch { index } => branch_spans(app, *index, theme, width, search),
@@ -350,10 +365,14 @@ fn row_line(
     }
 }
 
+/// A collapsible section header: fold arrow, title, and an item count. `count`
+/// is `None` while a lazily-fetched group's first fetch is still in flight, so
+/// the header shows the group exists without claiming a total it doesn't
+/// know yet.
 fn header_spans(
     theme: &Theme,
     title: &str,
-    count: usize,
+    count: Option<usize>,
     folded: bool,
     search: &[(Range<usize>, bool)],
 ) -> Vec<Span<'static>> {
@@ -363,7 +382,9 @@ fn header_spans(
         theme.dim_style(),
     )];
     spans.extend(highlight_spans(title, title_style, search, theme));
-    spans.push(Span::styled(format!(" ({count})"), theme.dim_style()));
+    if let Some(count) = count {
+        spans.push(Span::styled(format!(" ({count})"), theme.dim_style()));
+    }
     spans
 }
 
@@ -465,10 +486,13 @@ fn commit_spans(
 }
 
 /// The branch's open PR as a selectable row: `⇄ PR #12 title → base`.
-fn pr_spans(app: &App, theme: &Theme, search: &[(Range<usize>, bool)]) -> Vec<Span<'static>> {
-    let Some(pr) = &app.pr else {
-        return Vec::new();
-    };
+/// One PR row: `⇄ PR #12 title → base`, shared by the branch's own PR and
+/// the repo-band list of other open PRs.
+fn pr_row_spans(
+    pr: &crate::ci::PullRequest,
+    theme: &Theme,
+    search: &[(Range<usize>, bool)],
+) -> Vec<Span<'static>> {
     let mut spans = vec![Span::styled(
         "  ⇄ ".to_owned(),
         Style::new().fg(theme.accent),
@@ -484,6 +508,23 @@ fn pr_spans(app: &App, theme: &Theme, search: &[(Range<usize>, bool)]) -> Vec<Sp
         theme.dim_style(),
     ));
     spans
+}
+
+fn pr_spans(app: &App, theme: &Theme, search: &[(Range<usize>, bool)]) -> Vec<Span<'static>> {
+    app.pr
+        .as_ref()
+        .map_or_else(Vec::new, |pr| pr_row_spans(pr, theme, search))
+}
+
+fn open_pr_spans(
+    app: &App,
+    index: usize,
+    theme: &Theme,
+    search: &[(Range<usize>, bool)],
+) -> Vec<Span<'static>> {
+    app.other_prs()
+        .get(index)
+        .map_or_else(Vec::new, |pr| pr_row_spans(pr, theme, search))
 }
 
 /// A local branch row: name, divergence from its upstream, age right-aligned
@@ -604,7 +645,7 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    use crate::app::{App, Row, Section};
+    use crate::app::{App, Group, Row, Section};
     use crate::config::LoadedConfig;
     use crate::event::AppEvent;
     use crate::test_support::{
@@ -632,7 +673,7 @@ mod tests {
             run("CI", "main", "abc1234def", JobStatus::Failed),
             run("Release", "main", "9988776655", JobStatus::Ok),
         ];
-        app.status.ci_folded = false;
+        app.status.group_folded[Group::Ci.index()] = false;
         insta::assert_snapshot!(render(&mut app).backend());
     }
 
@@ -657,7 +698,7 @@ mod tests {
             run("origin", JobStatus::Ok),
             run("codeberg", JobStatus::Running),
         ];
-        app.status.ci_folded = false;
+        app.status.group_folded[Group::Ci.index()] = false;
         insta::assert_snapshot!(render(&mut app).backend());
     }
 
@@ -778,13 +819,14 @@ mod tests {
             .iter()
             .position(|r| matches!(r, Row::RecentHeader { .. }))
             .expect("a recent-commits header");
-        let folded = app.status.recent_folded;
+        let folded = app.is_group_folded(Group::Recent);
         let (x, y) = screen_pos(&app, target);
         app.handle(mouse_click(x, y));
         app.handle(mouse_click(x, y));
         assert_eq!(app.status.cursor, target);
         assert_ne!(
-            app.status.recent_folded, folded,
+            app.is_group_folded(Group::Recent),
+            folded,
             "double-click toggled the fold"
         );
     }
@@ -1073,6 +1115,43 @@ mod tests {
     }
 
     #[test]
+    fn open_prs_group_unfolded_lists_the_repos_other_prs() {
+        let fixture = standard_fixture();
+        let mut app = app_for(&fixture);
+        app.ci_remotes = vec![crate::app::CiRemote {
+            name: "origin".into(),
+            detected: crate::ci::Detected {
+                kind: crate::ci::ProviderKind::GitHub,
+                host: None,
+            },
+            url: None,
+        }];
+        app.prs = vec![
+            crate::ci::PullRequest {
+                number: 141,
+                title: "stop burning the GitHub rate limit on CI polls".into(),
+                url: None,
+                base_ref: "main".into(),
+                head_ref: "feat/rate-limit".into(),
+                head_oid: "0000000000000000000000000000000000000abc".into(),
+                author: "reviewer".into(),
+            },
+            crate::ci::PullRequest {
+                number: 142,
+                title: "mark a whole folder viewed from the tree".into(),
+                url: None,
+                base_ref: "main".into(),
+                head_ref: "feat/mark-folder".into(),
+                head_oid: "0000000000000000000000000000000000000def".into(),
+                author: "reviewer".into(),
+            },
+        ];
+        app.status.prs_loaded = true;
+        app.status.group_folded[Group::Prs.index()] = false;
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
     fn branches_unfolded_show_divergence_and_age() {
         let fixture = standard_fixture();
         fixture.branch("feat/topic");
@@ -1080,7 +1159,7 @@ mod tests {
         fixture.write("shipped.rs", "pub fn shipped() {}\n");
         fixture.commit_all("only here");
         let mut app = app_for(&fixture);
-        app.status.branches_folded = false;
+        app.status.group_folded[Group::Branches.index()] = false;
         // pin "now" an hour past the newest branch tip so the ages render stably
         app.now_unix = app
             .status

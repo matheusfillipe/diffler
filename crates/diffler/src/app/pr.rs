@@ -140,8 +140,14 @@ impl App {
     }
 
     pub(crate) fn on_prs_event(&mut self, prs: Vec<crate::ci::PullRequest>) -> super::Flow {
+        // the inline repo-band group renders from `prs` too; a landing list
+        // can insert rows above whatever the status cursor sits on
+        let anchor = self.status_cursor_anchor();
         self.prs = prs;
+        self.status.prs_loaded = true;
+        self.status.prs_in_flight = false;
         self.prs_cursor = self.prs_cursor.min(self.prs.len().saturating_sub(1));
+        self.restore_status_cursor(anchor);
         super::Flow::Continue
     }
 

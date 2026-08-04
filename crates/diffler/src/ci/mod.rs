@@ -12,6 +12,8 @@ mod providers;
 
 pub use detect::{Detected, detect};
 pub use error::{CiError, Result};
+#[cfg(test)]
+pub(crate) use exec::test_support;
 pub use exec::{CommandRunner, RealRunner};
 pub use model::{
     Annotation, AnnotationLevel, Artifact, Capabilities, CiJob, CiRun, DagSource, JobId, JobStatus,
