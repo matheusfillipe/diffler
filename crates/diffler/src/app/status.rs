@@ -6,13 +6,17 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 use diffler_core::model::FileDiff;
-use diffler_core::vcs::{LogEntry, NetworkOp};
+use diffler_core::vcs::{HeadInfo, LogEntry, NetworkOp, Vcs, VcsError};
 
 use super::enrich::EnrichOutcome;
 use super::{App, BranchAction, FileHighlights, Modal, PendingOp};
 use crate::config::FileLayout;
 use crate::keymap::Action;
 use crate::tree::{self, TreeNode, TreeRow};
+
+/// Heading for the trailing unpushed-commits section, shared by the renderer
+/// and the search labels so a `/` match lines up with the displayed text.
+pub(crate) const UNPUSHED_TITLE: &str = "Unpushed";
 
 /// Heading for the trailing recent-commits section, shared by the renderer and
 /// the search labels so a `/` match lines up with the displayed text.
@@ -88,6 +92,15 @@ pub enum Row {
         hunk: usize,
         line: usize,
     },
+    /// Header of the trailing Unpushed section: commits on HEAD its
+    /// upstream doesn't have yet.
+    UnpushedHeader {
+        count: usize,
+    },
+    /// One such commit; `index` into `StatusView::unpushed`.
+    Unpushed {
+        index: usize,
+    },
     RecentHeader {
         count: usize,
     },
@@ -120,6 +133,8 @@ pub(super) enum CursorAnchor {
         path: String,
         hunk: Option<usize>,
     },
+    Unpushed,
+    UnpushedCommit(usize),
     Recent,
     Commit(usize),
     Pr,
@@ -131,6 +146,10 @@ pub(super) enum CursorAnchor {
 pub struct StatusView {
     pub cursor: usize,
     pub folded: [bool; 3],
+    /// Commits on HEAD its upstream lacks: local, free to act on, so shown
+    /// unfolded by default.
+    pub unpushed: Vec<LogEntry>,
+    pub unpushed_folded: bool,
     pub recent: Vec<LogEntry>,
     pub recent_folded: bool,
     /// Whether the trailing CI-runs section is collapsed.
@@ -159,10 +178,12 @@ pub struct StatusView {
 }
 
 impl StatusView {
-    pub(super) fn new(recent: Vec<LogEntry>) -> Self {
+    pub(super) fn new(unpushed: Vec<LogEntry>, recent: Vec<LogEntry>) -> Self {
         Self {
             cursor: 0,
             folded: [false; 3],
+            unpushed,
+            unpushed_folded: false,
             recent,
             recent_folded: true,
             ci_folded: false,
@@ -184,6 +205,26 @@ impl StatusView {
             set.clear();
         }
     }
+}
+
+/// The Unpushed and Recent commit lists, as `(unpushed, recent)`. Loaded
+/// together and returned or discarded as a pair: recent is filtered against
+/// unpushed, so applying one without the other leaves a pushed commit missing
+/// from both sections. Recent is walked deep enough to still fill `limit`
+/// after the unpushed commits are taken out of it.
+pub(super) fn load_commit_lists(
+    vcs: &dyn Vcs,
+    head: &HeadInfo,
+    limit: usize,
+) -> Result<(Vec<LogEntry>, Vec<LogEntry>), VcsError> {
+    let unpushed = match head.upstream.as_deref().filter(|_| head.ahead > 0) {
+        Some(upstream) => vcs.commits_between(upstream, "HEAD")?,
+        None => Vec::new(),
+    };
+    let mut recent = vcs.log(limit + unpushed.len())?;
+    recent.retain(|entry| !unpushed.iter().any(|ahead| ahead.oid == entry.oid));
+    recent.truncate(limit);
+    Ok((unpushed, recent))
 }
 
 impl App {
@@ -297,6 +338,14 @@ impl App {
                 }
             }
         }
+        if !self.status.unpushed.is_empty() {
+            rows.push(Row::UnpushedHeader {
+                count: self.status.unpushed.len(),
+            });
+            if !self.status.unpushed_folded {
+                rows.extend((0..self.status.unpushed.len()).map(|index| Row::Unpushed { index }));
+            }
+        }
         if !self.status.recent.is_empty() {
             rows.push(Row::RecentHeader {
                 count: self.status.recent.len(),
@@ -336,6 +385,8 @@ impl App {
     fn status_row_label(&self, row: &Row) -> Option<String> {
         Some(match row {
             Row::SectionHeader { section, .. } => section.title().to_owned(),
+            Row::UnpushedHeader { .. } => UNPUSHED_TITLE.to_owned(),
+            Row::Unpushed { index } => self.status.unpushed.get(*index)?.subject.clone(),
             Row::RecentHeader { .. } => RECENT_TITLE.to_owned(),
             Row::Dir { name, .. } => name.clone(),
             Row::File { section, index, .. } => self
@@ -510,12 +561,15 @@ impl App {
 
     fn status_activate_cursor(&mut self) {
         match self.cursor_row() {
-            Some(Row::File { .. } | Row::Commit { .. } | Row::CiRun { .. }) => {
+            Some(
+                Row::File { .. } | Row::Unpushed { .. } | Row::Commit { .. } | Row::CiRun { .. },
+            ) => {
                 self.open_at_cursor();
             }
             Some(
                 Row::SectionHeader { .. }
                 | Row::Dir { .. }
+                | Row::UnpushedHeader { .. }
                 | Row::RecentHeader { .. }
                 | Row::CiHeader { .. },
             ) => {
@@ -684,6 +738,8 @@ impl App {
                 .map(|f| (section, f, Some(hunk))),
             Row::Dir { .. }
             | Row::SectionHeader { .. }
+            | Row::UnpushedHeader { .. }
+            | Row::Unpushed { .. }
             | Row::RecentHeader { .. }
             | Row::Commit { .. }
             | Row::Pr
@@ -804,6 +860,12 @@ impl App {
             return;
         };
         match &row {
+            Row::Unpushed { index } => {
+                let Some(oid) = self.status.unpushed.get(*index).map(|e| e.oid.clone()) else {
+                    return;
+                };
+                self.open_commit_diff(&oid);
+            }
             Row::Commit { index } => {
                 let Some(oid) = self.status.recent.get(*index).map(|e| e.oid.clone()) else {
                     return;
@@ -924,6 +986,10 @@ impl App {
                     |row| matches!(row, Row::File { section: s, index, .. } if *s == section && *index == file),
                 );
             }
+            Row::UnpushedHeader { .. } | Row::Unpushed { .. } => {
+                self.status.unpushed_folded ^= true;
+                self.seat_cursor_on(|row| matches!(row, Row::UnpushedHeader { .. }));
+            }
             Row::RecentHeader { .. } | Row::Commit { .. } => {
                 self.status.recent_folded ^= true;
                 self.seat_cursor_on(|row| matches!(row, Row::RecentHeader { .. }));
@@ -980,6 +1046,8 @@ impl App {
                 section: *section,
                 path: path.clone(),
             },
+            Row::UnpushedHeader { .. } => CursorAnchor::Unpushed,
+            Row::Unpushed { index } => CursorAnchor::UnpushedCommit(*index),
             Row::RecentHeader { .. } => CursorAnchor::Recent,
             Row::Commit { index } => CursorAnchor::Commit(*index),
             Row::Pr => CursorAnchor::Pr,
@@ -1008,6 +1076,16 @@ impl App {
             CursorAnchor::Section(section) => rows
                 .iter()
                 .position(|r| matches!(r, Row::SectionHeader { section: s, .. } if s == section)),
+            CursorAnchor::Unpushed => rows
+                .iter()
+                .position(|r| matches!(r, Row::UnpushedHeader { .. })),
+            CursorAnchor::UnpushedCommit(index) => rows
+                .iter()
+                .position(|r| matches!(r, Row::Unpushed { index: i } if i == index))
+                .or_else(|| {
+                    rows.iter()
+                        .position(|r| matches!(r, Row::UnpushedHeader { .. }))
+                }),
             CursorAnchor::Recent => rows
                 .iter()
                 .position(|r| matches!(r, Row::RecentHeader { .. })),
@@ -1100,7 +1178,10 @@ fn is_hunk_header(row: &Row) -> bool {
 fn is_section_header(row: &Row) -> bool {
     matches!(
         row,
-        Row::SectionHeader { .. } | Row::RecentHeader { .. } | Row::CiHeader { .. }
+        Row::SectionHeader { .. }
+            | Row::UnpushedHeader { .. }
+            | Row::RecentHeader { .. }
+            | Row::CiHeader { .. }
     )
 }
 
@@ -1937,6 +2018,104 @@ mod tests {
         app.settle_refresh();
         assert_eq!(app.status.recent.len(), 2);
         assert_eq!(app.status.recent[0].subject, "second commit");
+    }
+
+    #[test]
+    fn unpushed_section_lists_commits_ahead_of_the_upstream_before_recent() {
+        let fixture = standard_fixture();
+        fixture.track("main", "HEAD");
+        fixture.write("shipped_one.rs", "pub fn one() {}\n");
+        fixture.commit_all("first unpushed");
+        fixture.write("shipped_two.rs", "pub fn two() {}\n");
+        fixture.commit_all("second unpushed");
+        let app = App::new(fixture.review(), LoadedConfig::default());
+        assert_eq!(app.status.unpushed.len(), 2);
+        assert_eq!(app.status.unpushed[0].subject, "second unpushed");
+        assert!(!app.status.unpushed_folded);
+        let rows = app.visible_rows();
+        let unpushed_at = rows
+            .iter()
+            .position(|r| matches!(r, Row::UnpushedHeader { count: 2 }))
+            .expect("unpushed header with both commits");
+        let recent_at = rows
+            .iter()
+            .position(|r| matches!(r, Row::RecentHeader { .. }))
+            .expect("recent header");
+        assert!(unpushed_at < recent_at, "unpushed comes before recent");
+    }
+
+    #[test]
+    fn unpushed_section_is_absent_with_nothing_ahead() {
+        let (_fixture, app) = app();
+        assert!(app.status.unpushed.is_empty());
+        assert!(
+            !app.visible_rows()
+                .iter()
+                .any(|row| matches!(row, Row::UnpushedHeader { .. }))
+        );
+    }
+
+    #[test]
+    fn recent_commits_exclude_the_unpushed_oids() {
+        let fixture = standard_fixture();
+        fixture.track("main", "HEAD");
+        fixture.write("shipped.rs", "pub fn shipped() {}\n");
+        fixture.commit_all("only here");
+        let app = App::new(fixture.review(), LoadedConfig::default());
+        assert_eq!(app.status.unpushed.len(), 1);
+        assert_eq!(app.status.unpushed[0].subject, "only here");
+        assert!(
+            app.status.recent.iter().all(|e| e.subject != "only here"),
+            "recent excludes the unpushed commit: {:?}",
+            app.status.recent
+        );
+        assert!(
+            app.status
+                .recent
+                .iter()
+                .any(|e| e.subject == "initial commit"),
+            "recent still carries the already-pushed commit"
+        );
+    }
+
+    #[test]
+    fn pushing_moves_a_commit_from_unpushed_into_recent() {
+        let fixture = standard_fixture();
+        fixture.track("main", "HEAD");
+        fixture.write("shipped.rs", "pub fn shipped() {}\n");
+        fixture.commit_all("only here");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        assert_eq!(app.status.unpushed.len(), 1);
+        fixture.track("main", "HEAD");
+        app.handle(ctrl_key('r'));
+        app.settle_refresh();
+        assert!(app.status.unpushed.is_empty());
+        assert!(
+            app.status.recent.iter().any(|e| e.subject == "only here"),
+            "the pushed commit lands in recent rather than vanishing: {:?}",
+            app.status.recent
+        );
+    }
+
+    #[test]
+    fn unpushed_commits_do_not_eat_into_the_recent_list() {
+        let fixture = standard_fixture();
+        fixture.track("main", "HEAD");
+        let mut config = LoadedConfig::default();
+        config.config.ui.recent_commits = 2;
+        for n in 0..4 {
+            fixture.write(&format!("ahead{n}.rs"), "pub fn ahead() {}\n");
+            fixture.commit_all(&format!("unpushed {n}"));
+        }
+        let app = App::new(fixture.review(), config);
+        assert_eq!(app.status.unpushed.len(), 4);
+        assert_eq!(
+            app.status.recent.len(),
+            1,
+            "the fixture has one pushed commit and all of it should survive: {:?}",
+            app.status.recent
+        );
+        assert_eq!(app.status.recent[0].subject, "initial commit");
     }
 
     fn type_query(app: &mut App, query: &str) {

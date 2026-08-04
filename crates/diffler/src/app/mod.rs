@@ -32,7 +32,7 @@ pub use diff::{
     SplitSide, comment_display,
 };
 pub use log::LogView;
-pub(crate) use status::{CI_TITLE, RECENT_TITLE};
+pub(crate) use status::{CI_TITLE, RECENT_TITLE, UNPUSHED_TITLE};
 pub use status::{Row, Section, StatusView};
 
 use crossterm::event::{KeyCode, KeyEvent};
@@ -629,16 +629,17 @@ impl App {
                 empty_head()
             }
         };
-        let recent = match review.vcs.log(config.ui.recent_commits) {
-            Ok(entries) => entries,
-            Err(err) => {
-                message = Some(StatusMessage {
-                    text: err.to_string(),
-                    severity: Severity::Error,
-                });
-                Vec::new()
-            }
-        };
+        let (unpushed, recent) =
+            match status::load_commit_lists(review.vcs.as_ref(), &head, config.ui.recent_commits) {
+                Ok(lists) => lists,
+                Err(err) => {
+                    message = Some(StatusMessage {
+                        text: err.to_string(),
+                        severity: Severity::Error,
+                    });
+                    (Vec::new(), Vec::new())
+                }
+            };
 
         let ci_remotes = detect_ci_remotes(&review, &config.ci);
 
@@ -652,7 +653,7 @@ impl App {
             // a good-enough human label for feedback exports
             author: std::env::var("USER").unwrap_or_else(|_| "you".to_owned()),
             screens: vec![Screen::Status],
-            status: StatusView::new(recent),
+            status: StatusView::new(unpushed, recent),
             log: None,
             diff: None,
             graph: None,
@@ -1332,8 +1333,15 @@ impl App {
             Ok(head) => self.head = head,
             Err(err) => self.error(err.to_string()),
         }
-        match self.review.vcs.log(self.config.ui.recent_commits) {
-            Ok(entries) => self.status.recent = entries,
+        match status::load_commit_lists(
+            self.review.vcs.as_ref(),
+            &self.head,
+            self.config.ui.recent_commits,
+        ) {
+            Ok((unpushed, recent)) => {
+                self.status.unpushed = unpushed;
+                self.status.recent = recent;
+            }
             Err(err) => self.error(err.to_string()),
         }
         self.restore_status_cursor(status_anchor);

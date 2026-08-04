@@ -2,6 +2,7 @@
 //! diff expansion, recent commits, and the status bar.
 
 use diffler_core::model::FileDiff;
+use diffler_core::vcs::LogEntry;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -10,7 +11,7 @@ use ratatui::widgets::Paragraph;
 
 use std::ops::Range;
 
-use crate::app::{App, CI_TITLE, RECENT_TITLE, Row, Section};
+use crate::app::{App, CI_TITLE, RECENT_TITLE, Row, Section, UNPUSHED_TITLE};
 use crate::config::FileLayout;
 use crate::keymap::Action;
 use crate::theme::Theme;
@@ -107,7 +108,10 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16, Vec<Option<usize>>) 
                 if index > 0
                     && matches!(
                         row,
-                        Row::SectionHeader { .. } | Row::RecentHeader { .. } | Row::CiHeader { .. }
+                        Row::SectionHeader { .. }
+                            | Row::UnpushedHeader { .. }
+                            | Row::RecentHeader { .. }
+                            | Row::CiHeader { .. }
                     )
                 {
                     lines.push(Line::default());
@@ -273,6 +277,17 @@ fn row_line(
             spans.extend(diffstat_spans(theme, added, deleted, theme.bg));
             spans
         }
+        Row::UnpushedHeader { count } => header_spans(
+            theme,
+            UNPUSHED_TITLE,
+            *count,
+            app.status.unpushed_folded,
+            search,
+        ),
+        Row::Unpushed { index } => {
+            let entry = app.status.unpushed.get(*index);
+            commit_spans(app, entry, theme, width, search)
+        }
         Row::RecentHeader { count } => header_spans(
             theme,
             RECENT_TITLE,
@@ -300,7 +315,10 @@ fn row_line(
             let file = app.section_files(*section).get(*index);
             file_spans(app, file, theme, *depth, search)
         }
-        Row::Commit { index } => commit_spans(app, *index, theme, width, search),
+        Row::Commit { index } => {
+            let entry = app.status.recent.get(*index);
+            commit_spans(app, entry, theme, width, search)
+        }
         Row::CiHeader { count } => {
             header_spans(theme, CI_TITLE, *count, app.status.ci_folded, search)
         }
@@ -401,12 +419,12 @@ fn file_spans(
 
 fn commit_spans(
     app: &App,
-    index: usize,
+    entry: Option<&LogEntry>,
     theme: &Theme,
     width: u16,
     search: &[(Range<usize>, bool)],
 ) -> Vec<Span<'static>> {
-    let Some(entry) = app.status.recent.get(index) else {
+    let Some(entry) = entry else {
         return Vec::new();
     };
     let mut spans = vec![Span::styled(
@@ -946,6 +964,34 @@ mod tests {
             .status
             .recent
             .iter()
+            .map(|e| e.time_unix)
+            .max()
+            .unwrap_or(0)
+            + 3661;
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn unpushed_section_renders_above_recent_commits() {
+        // commit_all stages everything in the worktree, so the upstream and
+        // the unpushed commits are set up before any dirty files, keeping
+        // Untracked alongside Unpushed in the rendered order
+        let fixture = Fixture::new();
+        fixture.write("base.rs", "pub fn base() {}\n");
+        fixture.commit_all("initial commit");
+        fixture.track("main", "HEAD");
+        fixture.write("shipped_one.rs", "pub fn one() {}\n");
+        fixture.commit_all("first unpushed");
+        fixture.write("shipped_two.rs", "pub fn two() {}\n");
+        fixture.commit_all("second unpushed");
+        fixture.write("todo.md", "- [ ] review\n");
+        let mut app = app_for(&fixture);
+        // pin "now" an hour past the newest commit so the ages render stably
+        app.now_unix = app
+            .status
+            .unpushed
+            .iter()
+            .chain(app.status.recent.iter())
             .map(|e| e.time_unix)
             .max()
             .unwrap_or(0)
