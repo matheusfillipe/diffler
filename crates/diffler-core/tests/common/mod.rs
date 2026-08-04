@@ -38,6 +38,13 @@ impl Fixture {
         diffler_core::test_git::commit_all(&self.repo, message, &sig);
     }
 
+    /// Commit with an explicit timestamp, for tests that assert on commit time.
+    pub(crate) fn commit_all_at(&self, message: &str, unix: i64) {
+        let time = git2::Time::new(unix, 0);
+        let sig = git2::Signature::new("test", "test@test", &time).expect("sig");
+        diffler_core::test_git::commit_all(&self.repo, message, &sig);
+    }
+
     pub(crate) fn stage(&self, rel: &str) {
         let mut index = self.repo.index().expect("index");
         index.add_path(Path::new(rel)).expect("add");
@@ -53,6 +60,10 @@ impl Fixture {
             .peel_to_commit()
             .expect("commit");
         self.repo.branch(name, &head, false).expect("branch");
+    }
+
+    pub(crate) fn track(&self, branch: &str, at: &str) {
+        diffler_core::test_git::track(&self.repo, branch, at);
     }
 
     pub(crate) fn checkout(&self, name: &str) {

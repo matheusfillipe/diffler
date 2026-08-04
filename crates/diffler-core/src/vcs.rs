@@ -54,6 +54,13 @@ pub struct LogEntry {
 pub struct BranchInfo {
     pub name: String,
     pub is_head: bool,
+    /// Tip commit's time as a Unix timestamp, so callers can sort branches
+    /// newest-first and render an age.
+    pub tip_unix: i64,
+    /// Commits on this branch its upstream lacks. Zero without an upstream.
+    pub ahead: usize,
+    /// Commits on the upstream this branch lacks. Zero without an upstream.
+    pub behind: usize,
 }
 
 /// A network operation the binary runs by shelling out to the backend's CLI,

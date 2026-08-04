@@ -321,9 +321,22 @@ impl Vcs for GitVcs {
             let Some(name) = branch.name()?.map(str::to_owned) else {
                 continue;
             };
+            let tip = branch.get().peel_to_commit().ok();
+            let tip_unix = tip.as_ref().map_or(0, |c| c.time().seconds());
+            let upstream_target = branch.upstream().ok().and_then(|u| u.get().target());
+            let (ahead, behind) = match (&tip, upstream_target) {
+                (Some(tip), Some(target)) => self
+                    .repo
+                    .graph_ahead_behind(tip.id(), target)
+                    .unwrap_or((0, 0)),
+                _ => (0, 0),
+            };
             out.push(BranchInfo {
                 name,
                 is_head: branch.is_head(),
+                tip_unix,
+                ahead,
+                behind,
             });
         }
         Ok(out)

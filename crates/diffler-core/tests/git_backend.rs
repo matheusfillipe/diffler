@@ -569,6 +569,88 @@ fn branches_lists_locals_with_head_marker() {
 }
 
 #[test]
+fn branch_reports_ahead_and_behind_relative_to_upstream() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\n");
+    fx.commit_all("base");
+    let v = vcs(&fx);
+    let branch_name = v.head().expect("head").branch.expect("on a branch");
+
+    // upstream gains a commit the local branch never gets
+    fx.branch("remote-work");
+    fx.checkout("remote-work");
+    fx.write("upstream.txt", "only on remote\n");
+    fx.commit_all("remote only");
+    let remote_oid = head_oid(&fx);
+    fx.checkout(&branch_name);
+    fx.track(&branch_name, &remote_oid);
+
+    // local branch gains two commits the upstream never gets
+    fx.write("a.txt", "two\n");
+    fx.commit_all("second");
+    fx.write("a.txt", "three\n");
+    fx.commit_all("third");
+
+    let branches = v.branches().expect("branches");
+    let current = branches
+        .iter()
+        .find(|b| b.name == branch_name)
+        .expect("current listed");
+    assert_eq!(current.ahead, 2);
+    assert_eq!(current.behind, 1);
+}
+
+#[test]
+fn branch_without_upstream_reports_zero_divergence_and_still_appears() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "x\n");
+    fx.commit_all("base");
+    fx.branch("solo");
+
+    let v = vcs(&fx);
+    let branches = v.branches().expect("branches");
+    let solo = branches
+        .iter()
+        .find(|b| b.name == "solo")
+        .expect("branch without an upstream is still listed");
+    assert_eq!(solo.ahead, 0);
+    assert_eq!(solo.behind, 0);
+}
+
+#[test]
+fn branch_tip_unix_matches_the_tip_commit_and_orders_newest_first() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\n");
+    fx.commit_all_at("base", 1_700_000_000);
+    let head_branch = vcs(&fx).head().expect("head").branch.expect("on a branch");
+
+    fx.branch("older");
+    fx.checkout("older");
+    fx.write("a.txt", "older tip\n");
+    fx.commit_all_at("older tip", 1_700_000_100);
+    fx.checkout(&head_branch);
+    fx.write("a.txt", "newer tip\n");
+    fx.commit_all_at("newer tip", 1_700_000_200);
+
+    let v = vcs(&fx);
+    let mut branches = v.branches().expect("branches");
+    let newer = branches
+        .iter()
+        .find(|b| b.name == head_branch)
+        .expect("head branch listed");
+    assert_eq!(newer.tip_unix, 1_700_000_200);
+    let older = branches
+        .iter()
+        .find(|b| b.name == "older")
+        .expect("older branch listed");
+    assert_eq!(older.tip_unix, 1_700_000_100);
+
+    branches.sort_by_key(|b| std::cmp::Reverse(b.tip_unix));
+    assert_eq!(branches[0].name, head_branch, "newest tip sorts first");
+    assert_eq!(branches[1].name, "older");
+}
+
+#[test]
 fn stage_moves_untracked_to_staged() {
     let fx = Fixture::new();
     fx.write("a.txt", "x\n");

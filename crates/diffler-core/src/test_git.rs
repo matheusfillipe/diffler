@@ -24,6 +24,23 @@ pub fn init_repo(root: &Path, initial_branch: Option<&str>) -> git2::Repository 
     repo
 }
 
+/// Give `branch` an upstream at revision `at`. The remote-tracking ref is
+/// written locally, which is all git needs to count divergence.
+pub fn track(repo: &git2::Repository, branch: &str, at: &str) {
+    // set_upstream resolves the ref back to a remote, so one has to exist
+    if repo.find_remote("origin").is_err() {
+        repo.remote("origin", "https://example.invalid/repo.git")
+            .expect("remote");
+    }
+    let oid = repo.revparse_single(at).expect("rev").id();
+    repo.reference(&format!("refs/remotes/origin/{branch}"), oid, true, "track")
+        .expect("remote ref");
+    repo.find_branch(branch, git2::BranchType::Local)
+        .expect("branch")
+        .set_upstream(Some(&format!("origin/{branch}")))
+        .expect("upstream");
+}
+
 pub fn commit_all(repo: &git2::Repository, message: &str, sig: &git2::Signature<'_>) {
     let mut index = repo.index().expect("index");
     index
