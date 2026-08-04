@@ -509,6 +509,13 @@ pub(super) fn relative_time(now: i64, then: i64) -> String {
     format!("{n}{unit}")
 }
 
+/// Padding to right-align `content_width` cells within `width`, given `used`
+/// cells already consumed. `None` when there is no room, so the left content
+/// is never pushed off-screen. Shared by every right-aligned row column.
+fn right_align_pad(used: usize, content_width: usize, width: usize) -> Option<usize> {
+    (used + content_width < width).then(|| width - used - content_width)
+}
+
 /// Right-aligned author + commit age for a commit row, given the width already
 /// used by the row's left content. Empty when there is no room, so the left
 /// content (oid, subject) is never pushed off-screen.
@@ -521,11 +528,10 @@ pub(super) fn commit_meta_spans(
     width: usize,
 ) -> Vec<Span<'static>> {
     let age = relative_time(now, time_unix);
-    let meta_width = author.chars().count() + 2 + age.chars().count() + 1;
-    if used + meta_width >= width {
+    let content_width = author.chars().count() + 2 + age.chars().count() + 1;
+    let Some(pad) = right_align_pad(used, content_width, width) else {
         return Vec::new();
-    }
-    let pad = width - used - meta_width;
+    };
     vec![
         Span::styled(" ".repeat(pad), Style::new().bg(theme.bg)),
         Span::styled(
@@ -533,6 +539,28 @@ pub(super) fn commit_meta_spans(
             Style::new().fg(theme.accent).bg(theme.bg),
         ),
         Span::styled("  ", Style::new().bg(theme.bg)),
+        Span::styled(age, theme.dim_style()),
+        Span::styled(" ", Style::new().bg(theme.bg)),
+    ]
+}
+
+/// Right-aligned age for a branch row, given the width already used by the
+/// row's left content: same padding arithmetic as [`commit_meta_spans`],
+/// without the author column a branch row has no use for.
+pub(super) fn age_spans(
+    theme: &Theme,
+    time_unix: i64,
+    now: i64,
+    used: usize,
+    width: usize,
+) -> Vec<Span<'static>> {
+    let age = relative_time(now, time_unix);
+    let content_width = age.chars().count() + 1;
+    let Some(pad) = right_align_pad(used, content_width, width) else {
+        return Vec::new();
+    };
+    vec![
+        Span::styled(" ".repeat(pad), Style::new().bg(theme.bg)),
         Span::styled(age, theme.dim_style()),
         Span::styled(" ", Style::new().bg(theme.bg)),
     ]

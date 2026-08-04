@@ -6,7 +6,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 use diffler_core::model::FileDiff;
-use diffler_core::vcs::{HeadInfo, LogEntry, NetworkOp, Vcs, VcsError};
+use diffler_core::vcs::{BranchInfo, HeadInfo, LogEntry, NetworkOp, Vcs, VcsError};
 
 use super::enrich::EnrichOutcome;
 use super::{App, BranchAction, FileHighlights, Modal, PendingOp};
@@ -25,9 +25,16 @@ pub(crate) const RECENT_TITLE: &str = "Recent commits";
 /// Heading for the trailing CI-runs section (when a provider is detected).
 pub(crate) const CI_TITLE: &str = "CI runs";
 
+/// Heading for the trailing Branches section.
+pub(crate) const BRANCHES_TITLE: &str = "Branches";
+
 /// How many recent runs the inline status section shows (the full list lives on
 /// the Runs screen).
 const CI_INLINE_LIMIT: usize = 5;
+
+/// How many local branches the inline status section shows (the full list is
+/// reachable through the branch picker).
+const BRANCHES_INLINE_LIMIT: usize = 10;
 
 /// Status screen sections, in display order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +116,19 @@ pub enum Row {
     },
     /// The branch's open pull request; Enter reviews it.
     Pr,
+    /// Divider between the branch band (this branch) and the repo band (this
+    /// repo). Furniture, not a cursor-addressable row: it never holds the
+    /// cursor, has no search label, and is skipped by every movement.
+    RepoDivider,
+    /// Header of the trailing Branches section.
+    BranchesHeader {
+        count: usize,
+    },
+    /// One local branch in the inline section; `index` into
+    /// `StatusView::branches`.
+    Branch {
+        index: usize,
+    },
     /// Header of the trailing CI-runs section.
     CiHeader {
         count: usize,
@@ -138,11 +158,14 @@ pub(super) enum CursorAnchor {
     Recent,
     Commit(usize),
     Pr,
+    Branches,
+    BranchRow(usize),
     Ci,
     CiRun(usize),
 }
 
 /// All state owned by the status screen.
+#[allow(clippy::struct_excessive_bools)] // independent per-section fold flags, not a state machine
 pub struct StatusView {
     pub cursor: usize,
     pub folded: [bool; 3],
@@ -154,6 +177,11 @@ pub struct StatusView {
     pub recent_folded: bool,
     /// Whether the trailing CI-runs section is collapsed.
     pub ci_folded: bool,
+    /// Local branches, newest tip first, capped to `BRANCHES_INLINE_LIMIT`.
+    pub branches: Vec<BranchInfo>,
+    /// Whether the trailing Branches section is collapsed; the whole repo
+    /// band starts folded, unlike the always-open branch band above it.
+    pub branches_folded: bool,
     /// Body height of the last render, so half-page motions step by a screenful.
     pub(crate) viewport: u16,
     /// Per-section set of file paths whose inline diff is expanded.
@@ -178,7 +206,11 @@ pub struct StatusView {
 }
 
 impl StatusView {
-    pub(super) fn new(unpushed: Vec<LogEntry>, recent: Vec<LogEntry>) -> Self {
+    pub(super) fn new(
+        unpushed: Vec<LogEntry>,
+        recent: Vec<LogEntry>,
+        branches: Vec<BranchInfo>,
+    ) -> Self {
         Self {
             cursor: 0,
             folded: [false; 3],
@@ -186,7 +218,9 @@ impl StatusView {
             unpushed_folded: false,
             recent,
             recent_folded: true,
-            ci_folded: false,
+            ci_folded: true,
+            branches,
+            branches_folded: true,
             viewport: 0,
             expanded: [const { BTreeSet::new() }; 3],
             folded_dirs: [const { BTreeSet::new() }; 3],
@@ -225,6 +259,17 @@ pub(super) fn load_commit_lists(
     recent.retain(|entry| !unpushed.iter().any(|ahead| ahead.oid == entry.oid));
     recent.truncate(limit);
     Ok((unpushed, recent))
+}
+
+/// Every local branch, the checked-out one first and the rest newest tip first.
+/// The inline section renders only the first `BRANCHES_INLINE_LIMIT`, so the
+/// header still counts the whole repo and a capped list reads as a cut rather
+/// than as the total. Head leads so sitting on an old branch while ten newer
+/// ones exist cannot cut your own branch out of the list.
+pub(super) fn load_branches(vcs: &dyn Vcs) -> Result<Vec<BranchInfo>, VcsError> {
+    let mut branches = vcs.branches()?;
+    branches.sort_by_key(|branch| (!branch.is_head, std::cmp::Reverse(branch.tip_unix)));
+    Ok(branches)
 }
 
 impl App {
@@ -338,12 +383,34 @@ impl App {
                 }
             }
         }
+        // this-branch band: unpushed commits, then the branch's own PR
         if !self.status.unpushed.is_empty() {
             rows.push(Row::UnpushedHeader {
                 count: self.status.unpushed.len(),
             });
             if !self.status.unpushed_folded {
                 rows.extend((0..self.status.unpushed.len()).map(|index| Row::Unpushed { index }));
+            }
+        }
+        // the branch's own PR belongs beside its commits, and lands from an async
+        // fetch, so whoever sets `pr` re-seats the cursor over the rows it displaces
+        if self.pr.is_some() {
+            rows.push(Row::Pr);
+        }
+        // this-repo band, folded by default: branches, recent commits, CI runs
+        let has_repo_band = !self.status.branches.is_empty()
+            || !self.status.recent.is_empty()
+            || !self.runs.is_empty();
+        if has_repo_band {
+            rows.push(Row::RepoDivider);
+        }
+        if !self.status.branches.is_empty() {
+            rows.push(Row::BranchesHeader {
+                count: self.status.branches.len(),
+            });
+            if !self.status.branches_folded {
+                let shown = self.status.branches.len().min(BRANCHES_INLINE_LIMIT);
+                rows.extend((0..shown).map(|index| Row::Branch { index }));
             }
         }
         if !self.status.recent.is_empty() {
@@ -353,11 +420,6 @@ impl App {
             if !self.status.recent_folded {
                 rows.extend((0..self.status.recent.len()).map(|index| Row::Commit { index }));
             }
-        }
-        // CI runs trail the view so the section appearing after its async fetch
-        // (or refreshing) never shifts the rows above it or moves the cursor
-        if self.pr.is_some() {
-            rows.push(Row::Pr);
         }
         if !self.runs.is_empty() {
             rows.push(Row::CiHeader {
@@ -393,13 +455,15 @@ impl App {
                 .status_file_name(self.section_files(*section).get(*index)?)
                 .to_owned(),
             Row::Commit { index } => self.status.recent.get(*index)?.subject.clone(),
+            Row::BranchesHeader { .. } => BRANCHES_TITLE.to_owned(),
+            Row::Branch { index } => self.status.branches.get(*index)?.name.clone(),
             Row::CiHeader { .. } => CI_TITLE.to_owned(),
             Row::Pr => {
                 let pr = self.pr.as_ref()?;
                 format!("PR #{} {}", pr.number, pr.title)
             }
             Row::CiRun { index } => self.runs.get(*index)?.name.clone(),
-            Row::HunkHeader { .. } | Row::DiffLine { .. } => return None,
+            Row::HunkHeader { .. } | Row::DiffLine { .. } | Row::RepoDivider => return None,
         })
     }
 
@@ -511,12 +575,13 @@ impl App {
     /// Move the cursor by half a screenful, clamped to the visible rows.
     fn status_page(&mut self, down: bool, full: bool) {
         let step = super::page_step(self.status.viewport, full);
-        if down {
-            let last = self.visible_rows().len().saturating_sub(1);
-            self.status.cursor = (self.status.cursor + step).min(last);
+        let rows = self.visible_rows();
+        let last = rows.len().saturating_sub(1);
+        self.status.cursor = if down {
+            nearest_selectable(&rows, (self.status.cursor + step).min(last), true)
         } else {
-            self.status.cursor = self.status.cursor.saturating_sub(step);
-        }
+            nearest_selectable(&rows, self.status.cursor.saturating_sub(step), false)
+        };
     }
 
     pub(super) fn status_mouse(&mut self, gesture: super::MouseGesture) {
@@ -524,8 +589,10 @@ impl App {
         match gesture {
             MouseGesture::Scroll { down, .. } => {
                 let delta = if down { 3 } else { -3 };
-                let last = self.visible_rows().len().saturating_sub(1);
-                self.status.cursor = self.status.cursor.saturating_add_signed(delta).min(last);
+                let rows = self.visible_rows();
+                let last = rows.len().saturating_sub(1);
+                let target = self.status.cursor.saturating_add_signed(delta).min(last);
+                self.status.cursor = nearest_selectable(&rows, target, down);
             }
             // single-click selects; double-click activates (open file/commit,
             // or fold the section/dir/recent header), like `<cr>`/`<tab>`
@@ -562,7 +629,11 @@ impl App {
     fn status_activate_cursor(&mut self) {
         match self.cursor_row() {
             Some(
-                Row::File { .. } | Row::Unpushed { .. } | Row::Commit { .. } | Row::CiRun { .. },
+                Row::File { .. }
+                | Row::Unpushed { .. }
+                | Row::Commit { .. }
+                | Row::Branch { .. }
+                | Row::CiRun { .. },
             ) => {
                 self.open_at_cursor();
             }
@@ -570,6 +641,7 @@ impl App {
                 Row::SectionHeader { .. }
                 | Row::Dir { .. }
                 | Row::UnpushedHeader { .. }
+                | Row::BranchesHeader { .. }
                 | Row::RecentHeader { .. }
                 | Row::CiHeader { .. },
             ) => {
@@ -582,17 +654,28 @@ impl App {
     pub(super) fn dispatch_status(&mut self, action: Action) {
         match action {
             Action::MoveDown => {
-                let last = self.visible_rows().len().saturating_sub(1);
-                self.status.cursor = (self.status.cursor + 1).min(last);
+                let rows = self.visible_rows();
+                let last = rows.len().saturating_sub(1);
+                self.status.cursor =
+                    nearest_selectable(&rows, (self.status.cursor + 1).min(last), true);
             }
-            Action::MoveUp => self.status.cursor = self.status.cursor.saturating_sub(1),
+            Action::MoveUp => {
+                let rows = self.visible_rows();
+                self.status.cursor =
+                    nearest_selectable(&rows, self.status.cursor.saturating_sub(1), false);
+            }
             Action::HalfPageDown => self.status_page(true, false),
             Action::HalfPageUp => self.status_page(false, false),
             Action::FullPageDown => self.status_page(true, true),
             Action::FullPageUp => self.status_page(false, true),
-            Action::GoTop => self.status.cursor = 0,
+            Action::GoTop => {
+                let rows = self.visible_rows();
+                self.status.cursor = nearest_selectable(&rows, 0, true);
+            }
             Action::GoBottom => {
-                self.status.cursor = self.visible_rows().len().saturating_sub(1);
+                let rows = self.visible_rows();
+                let last = rows.len().saturating_sub(1);
+                self.status.cursor = nearest_selectable(&rows, last, false);
             }
             Action::NextHunk => self.jump(true, is_hunk_header),
             Action::PrevHunk => self.jump(false, is_hunk_header),
@@ -740,9 +823,12 @@ impl App {
             | Row::SectionHeader { .. }
             | Row::UnpushedHeader { .. }
             | Row::Unpushed { .. }
+            | Row::Pr
+            | Row::RepoDivider
+            | Row::BranchesHeader { .. }
+            | Row::Branch { .. }
             | Row::RecentHeader { .. }
             | Row::Commit { .. }
-            | Row::Pr
             | Row::CiHeader { .. }
             | Row::CiRun { .. } => None,
         }
@@ -873,6 +959,14 @@ impl App {
                 self.open_commit_diff(&oid);
             }
             Row::Pr => self.open_pr_review(),
+            // a branch row checks it out directly; the header opens the full picker
+            Row::Branch { index } => {
+                let Some(name) = self.status.branches.get(*index).map(|b| b.name.clone()) else {
+                    return;
+                };
+                self.checkout_branch(&name);
+            }
+            Row::BranchesHeader { .. } => self.open_branch_list(BranchAction::Checkout),
             // a CI run opens its graph directly; the header opens the full Runs list
             Row::CiRun { index } => {
                 self.runs_cursor = *index;
@@ -994,7 +1088,11 @@ impl App {
                 self.status.recent_folded ^= true;
                 self.seat_cursor_on(|row| matches!(row, Row::RecentHeader { .. }));
             }
-            Row::Pr => {}
+            Row::Pr | Row::RepoDivider => {}
+            Row::BranchesHeader { .. } | Row::Branch { .. } => {
+                self.status.branches_folded ^= true;
+                self.seat_cursor_on(|row| matches!(row, Row::BranchesHeader { .. }));
+            }
             Row::CiHeader { .. } | Row::CiRun { .. } => {
                 self.status.ci_folded ^= true;
                 self.seat_cursor_on(|row| matches!(row, Row::CiHeader { .. }));
@@ -1051,6 +1149,10 @@ impl App {
             Row::RecentHeader { .. } => CursorAnchor::Recent,
             Row::Commit { index } => CursorAnchor::Commit(*index),
             Row::Pr => CursorAnchor::Pr,
+            // furniture: the cursor never actually rests here
+            Row::RepoDivider => return None,
+            Row::BranchesHeader { .. } => CursorAnchor::Branches,
+            Row::Branch { index } => CursorAnchor::BranchRow(*index),
             Row::CiHeader { .. } => CursorAnchor::Ci,
             Row::CiRun { index } => CursorAnchor::CiRun(*index),
             Row::File { .. } | Row::HunkHeader { .. } | Row::DiffLine { .. } => {
@@ -1066,6 +1168,7 @@ impl App {
 
     /// Re-seat the cursor after rows changed: exact hunk → same file in the
     /// same section → same path anywhere → the section header → clamp.
+    #[allow(clippy::too_many_lines)] // one match arm per anchor kind, flat by design
     pub(super) fn restore_status_cursor(&mut self, anchor: Option<CursorAnchor>) {
         let Some(anchor) = anchor else {
             self.clamp_cursor();
@@ -1097,6 +1200,16 @@ impl App {
                         .position(|r| matches!(r, Row::RecentHeader { .. }))
                 }),
             CursorAnchor::Pr => rows.iter().position(|r| matches!(r, Row::Pr)),
+            CursorAnchor::Branches => rows
+                .iter()
+                .position(|r| matches!(r, Row::BranchesHeader { .. })),
+            CursorAnchor::BranchRow(index) => rows
+                .iter()
+                .position(|r| matches!(r, Row::Branch { index: i } if i == index))
+                .or_else(|| {
+                    rows.iter()
+                        .position(|r| matches!(r, Row::BranchesHeader { .. }))
+                }),
             CursorAnchor::Ci => rows.iter().position(|r| matches!(r, Row::CiHeader { .. })),
             CursorAnchor::CiRun(index) => rows
                 .iter()
@@ -1164,10 +1277,9 @@ impl App {
     }
 
     pub(super) fn clamp_cursor(&mut self) {
-        self.status.cursor = self
-            .status
-            .cursor
-            .min(self.visible_rows().len().saturating_sub(1));
+        let rows = self.visible_rows();
+        let clamped = self.status.cursor.min(rows.len().saturating_sub(1));
+        self.status.cursor = nearest_selectable(&rows, clamped, true);
     }
 }
 
@@ -1180,9 +1292,48 @@ fn is_section_header(row: &Row) -> bool {
         row,
         Row::SectionHeader { .. }
             | Row::UnpushedHeader { .. }
+            | Row::BranchesHeader { .. }
             | Row::RecentHeader { .. }
             | Row::CiHeader { .. }
     )
+}
+
+/// Furniture rows the cursor must never land on.
+fn is_selectable(row: &Row) -> bool {
+    !matches!(row, Row::RepoDivider)
+}
+
+fn first_selectable_from(rows: &[Row], start: usize) -> Option<usize> {
+    rows.iter()
+        .enumerate()
+        .skip(start)
+        .find(|(_, row)| is_selectable(row))
+        .map(|(index, _)| index)
+}
+
+fn last_selectable_up_to(rows: &[Row], end: usize) -> Option<usize> {
+    rows.iter()
+        .enumerate()
+        .take(end + 1)
+        .rev()
+        .find(|(_, row)| is_selectable(row))
+        .map(|(index, _)| index)
+}
+
+/// The selectable row nearest `index`, preferring `forward`'s direction and
+/// falling back to the other one, so a divider (alone, doubled up, or at
+/// either end) can never trap the cursor.
+fn nearest_selectable(rows: &[Row], index: usize, forward: bool) -> usize {
+    if rows.is_empty() {
+        return 0;
+    }
+    let index = index.min(rows.len() - 1);
+    let found = if forward {
+        first_selectable_from(rows, index).or_else(|| last_selectable_up_to(rows, index))
+    } else {
+        last_selectable_up_to(rows, index).or_else(|| first_selectable_from(rows, index))
+    };
+    found.unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -1245,6 +1396,7 @@ mod tests {
             url: None,
             remote: None,
         }];
+        app.status.ci_folded = false;
         cursor_to(&mut app, |row| matches!(row, Row::CiRun { .. }));
         app.handle(AppEvent::Key(KeyEvent::new(
             KeyCode::Enter,
@@ -1286,14 +1438,15 @@ mod tests {
     fn cursor_moves_and_clamps() {
         let (_fixture, mut app) = app();
         // flat default: untracked (header + todo.md) + unstaged (header +
-        // lib.rs) + staged (header + ci.yml) + recent commits header: 7 rows
-        assert_eq!(app.visible_rows().len(), 7);
+        // lib.rs) + staged (header + ci.yml) + the repo-band divider +
+        // branches header + recent commits header: 9 rows
+        assert_eq!(app.visible_rows().len(), 9);
         app.handle(key('k'));
         assert_eq!(app.status.cursor, 0, "MoveUp clamps at the top");
         for _ in 0..20 {
             app.handle(key('j'));
         }
-        assert_eq!(app.status.cursor, 6, "MoveDown clamps at the last row");
+        assert_eq!(app.status.cursor, 8, "MoveDown clamps at the last row");
     }
 
     #[test]
@@ -1309,7 +1462,7 @@ mod tests {
     #[test]
     fn half_page_motions_step_by_the_viewport_and_clamp() {
         let (_fixture, mut app) = app();
-        assert_eq!(app.visible_rows().len(), 7);
+        assert_eq!(app.visible_rows().len(), 9);
         // a half-page of a 4-row body is 2 rows
         app.status.viewport = 4;
         app.handle(ctrl_key('d'));
@@ -1321,7 +1474,7 @@ mod tests {
         // a tall viewport clamps to the last row, never past it
         app.status.viewport = 40;
         app.handle(ctrl_key('d'));
-        assert_eq!(app.status.cursor, 6);
+        assert_eq!(app.status.cursor, 8);
         app.handle(ctrl_key('u'));
         assert_eq!(app.status.cursor, 0);
     }
@@ -1332,10 +1485,10 @@ mod tests {
         // the untracked section holds one root-level file (todo.md)
         app.handle(key('\t'));
         assert!(app.is_folded(Section::Untracked));
-        assert_eq!(app.visible_rows().len(), 6);
+        assert_eq!(app.visible_rows().len(), 8);
         app.handle(key('\t'));
         assert!(!app.is_folded(Section::Untracked));
-        assert_eq!(app.visible_rows().len(), 7);
+        assert_eq!(app.visible_rows().len(), 9);
     }
 
     #[test]
@@ -1389,7 +1542,11 @@ mod tests {
             .take_while(|r| {
                 !matches!(
                     r,
-                    Row::SectionHeader { .. } | Row::RecentHeader { .. } | Row::CiHeader { .. }
+                    Row::SectionHeader { .. }
+                        | Row::RepoDivider
+                        | Row::BranchesHeader { .. }
+                        | Row::RecentHeader { .. }
+                        | Row::CiHeader { .. }
                 )
             })
             .collect();
@@ -1466,7 +1623,11 @@ mod tests {
             .take_while(|r| {
                 !matches!(
                     r,
-                    Row::SectionHeader { .. } | Row::RecentHeader { .. } | Row::CiHeader { .. }
+                    Row::SectionHeader { .. }
+                        | Row::RepoDivider
+                        | Row::BranchesHeader { .. }
+                        | Row::RecentHeader { .. }
+                        | Row::CiHeader { .. }
                 )
             })
             .map(|r| match r {
@@ -1561,7 +1722,7 @@ mod tests {
         app.handle(ctrl_key('n'));
         assert!(matches!(
             app.visible_rows()[app.status.cursor],
-            Row::RecentHeader { .. }
+            Row::BranchesHeader { .. }
         ));
         app.handle(ctrl_key('p'));
         assert!(matches!(
@@ -2116,6 +2277,242 @@ mod tests {
             app.status.recent
         );
         assert_eq!(app.status.recent[0].subject, "initial commit");
+    }
+
+    #[test]
+    fn branches_are_sorted_newest_tip_first() {
+        let fixture = standard_fixture();
+        // the fixture's commits share one fixed time (for stable oids), so
+        // "old" is branched off before main is advanced with a later one
+        fixture.branch("old");
+        let sig = git2::Signature::new("test", "test@test", &git2::Time::new(1_700_000_100, 0))
+            .expect("sig");
+        diffler_core::test_git::commit_all(&fixture.repo, "advance main", &sig);
+        let app = App::new(fixture.review(), LoadedConfig::default());
+        let names: Vec<&str> = app
+            .status
+            .branches
+            .iter()
+            .map(|b| b.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["main", "old"], "newest tip first: {names:?}");
+    }
+
+    #[test]
+    fn the_checked_out_branch_leads_even_when_its_tip_is_older() {
+        let fixture = standard_fixture();
+        fixture.branch("newer");
+        fixture.checkout("newer");
+        let sig = git2::Signature::new("test", "test@test", &git2::Time::new(1_700_000_100, 0))
+            .expect("sig");
+        diffler_core::test_git::commit_all(&fixture.repo, "advance newer", &sig);
+        fixture.checkout("main");
+        let app = App::new(fixture.review(), LoadedConfig::default());
+        let names: Vec<&str> = app
+            .status
+            .branches
+            .iter()
+            .map(|b| b.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["main", "newer"],
+            "head leads so the cap cannot drop your own branch: {names:?}"
+        );
+    }
+
+    #[test]
+    fn branches_are_capped_at_the_inline_limit() {
+        let fixture = standard_fixture();
+        for n in 0..(super::BRANCHES_INLINE_LIMIT + 2) {
+            fixture.branch(&format!("b{n}"));
+        }
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let total = app.status.branches.len();
+        assert!(total > super::BRANCHES_INLINE_LIMIT);
+        app.status.branches_folded = false;
+        let rows = app.visible_rows();
+        assert!(
+            rows.iter()
+                .any(|row| matches!(row, Row::BranchesHeader { count } if *count == total)),
+            "the header counts every branch, so a cut list never reads as the total: {rows:?}"
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|row| matches!(row, Row::Branch { .. }))
+                .count(),
+            super::BRANCHES_INLINE_LIMIT,
+            "only the newest fit inline: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn branches_group_is_folded_by_default_and_tab_unfolds_it() {
+        let fixture = standard_fixture();
+        fixture.branch("feat/topic");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        assert!(app.status.branches_folded);
+        assert!(
+            !app.visible_rows()
+                .iter()
+                .any(|row| matches!(row, Row::Branch { .. }))
+        );
+        cursor_to(&mut app, |row| matches!(row, Row::BranchesHeader { .. }));
+        app.handle(key('\t'));
+        assert!(!app.status.branches_folded);
+        assert!(
+            app.visible_rows()
+                .iter()
+                .any(|row| matches!(row, Row::Branch { .. }))
+        );
+    }
+
+    #[test]
+    fn enter_on_a_branch_row_checks_it_out() {
+        let fixture = standard_fixture();
+        fixture.branch("feat/topic");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.status.branches_folded = false;
+        let target = app
+            .status
+            .branches
+            .iter()
+            .position(|b| b.name == "feat/topic")
+            .expect("the new branch is loaded");
+        cursor_to(
+            &mut app,
+            |row| matches!(row, Row::Branch { index } if *index == target),
+        );
+        app.handle(key('\n'));
+        assert_eq!(
+            app.review.vcs.head().expect("head").branch.as_deref(),
+            Some("feat/topic")
+        );
+    }
+
+    #[test]
+    fn checkout_on_the_current_branch_is_a_noop_info_message() {
+        let (_fixture, mut app) = app();
+        app.checkout_branch("main");
+        let message = app.message.clone().expect("message");
+        assert_eq!(message.severity, super::super::Severity::Info);
+        assert!(message.text.contains("already on main"), "{message:?}");
+    }
+
+    #[test]
+    fn j_and_k_skip_the_repo_divider() {
+        let (_fixture, mut app) = app();
+        let divider_at = app
+            .visible_rows()
+            .iter()
+            .position(|row| matches!(row, Row::RepoDivider))
+            .expect("the repo band is present with at least the current branch");
+        app.status.cursor = divider_at - 1;
+        app.handle(key('j'));
+        assert_ne!(
+            app.status.cursor, divider_at,
+            "j never lands on the divider"
+        );
+        assert!(app.status.cursor > divider_at - 1);
+
+        app.status.cursor = divider_at + 1;
+        app.handle(key('k'));
+        assert_ne!(
+            app.status.cursor, divider_at,
+            "k never lands on the divider"
+        );
+    }
+
+    #[test]
+    fn enter_on_the_branches_header_opens_the_full_picker() {
+        let (_fixture, mut app) = app();
+        cursor_to(&mut app, |row| matches!(row, Row::BranchesHeader { .. }));
+        app.handle(key('\n'));
+        assert!(matches!(app.modal, Some(Modal::BranchList { .. })));
+    }
+
+    #[test]
+    fn enter_on_the_recent_header_opens_the_log() {
+        let (_fixture, mut app) = app();
+        cursor_to(&mut app, |row| matches!(row, Row::RecentHeader { .. }));
+        app.handle(key('\n'));
+        assert_eq!(app.screen(), Screen::Log);
+    }
+
+    #[test]
+    fn enter_on_the_ci_header_opens_the_runs_screen() {
+        use crate::ci::{CiRun, JobStatus, RunId};
+        let (_fixture, mut app) = app();
+        app.ci_remotes = vec![crate::app::CiRemote {
+            name: "origin".to_owned(),
+            detected: crate::ci::Detected {
+                kind: crate::ci::ProviderKind::GitHub,
+                host: None,
+            },
+            url: None,
+        }];
+        app.runs = vec![CiRun {
+            id: RunId("1".into()),
+            name: "CI".into(),
+            title: String::new(),
+            branch: "main".into(),
+            commit: "abc".into(),
+            author: String::new(),
+            created: None,
+            status: JobStatus::Ok,
+            url: None,
+            remote: None,
+        }];
+        cursor_to(&mut app, |row| matches!(row, Row::CiHeader { .. }));
+        app.handle(key('\n'));
+        assert_eq!(app.screen(), Screen::Runs);
+    }
+
+    #[test]
+    fn pr_row_sits_in_the_branch_band_above_the_divider() {
+        let (_fixture, mut app) = app();
+        app.pr = Some(crate::ci::PullRequest {
+            number: 7,
+            title: "Add widgets".into(),
+            url: None,
+            head_ref: "feat/x".into(),
+            author: String::new(),
+            base_ref: "main".into(),
+            head_oid: "abc".into(),
+        });
+        let rows = app.visible_rows();
+        let pr_at = rows
+            .iter()
+            .position(|r| matches!(r, Row::Pr))
+            .expect("pr row");
+        let divider_at = rows
+            .iter()
+            .position(|r| matches!(r, Row::RepoDivider))
+            .expect("divider row");
+        assert!(
+            pr_at < divider_at,
+            "the PR row precedes the repo-band divider"
+        );
+    }
+
+    #[test]
+    fn a_pr_landing_late_leaves_the_cursor_on_the_same_row() {
+        let (_fixture, mut app) = app();
+        cursor_to(&mut app, |row| matches!(row, Row::RecentHeader { .. }));
+        app.handle(AppEvent::CiPr(Some(crate::ci::PullRequest {
+            number: 7,
+            title: "Add widgets".into(),
+            url: None,
+            head_ref: "feat/x".into(),
+            author: String::new(),
+            base_ref: "main".into(),
+            head_oid: "abc".into(),
+        })));
+        assert!(
+            matches!(app.cursor_row(), Some(Row::RecentHeader { .. })),
+            "the PR row inserts above the repo band without dragging the cursor: {:?}",
+            app.cursor_row()
+        );
     }
 
     fn type_query(app: &mut App, query: &str) {

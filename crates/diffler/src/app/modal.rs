@@ -646,18 +646,29 @@ impl App {
         self.modal = None;
         self.message = None;
         match action {
-            BranchAction::Checkout => {
-                self.vcs_op(|vcs| vcs.checkout(&name));
-                if self.message.is_none() {
-                    self.info(format!("checked out {name}"));
-                }
-            }
+            BranchAction::Checkout => self.checkout_branch(&name),
             BranchAction::Delete => {
                 self.modal = Some(Modal::Confirm {
                     message: format!("Delete branch {name}?"),
                     on_confirm: PendingOp::DeleteBranch(name),
                 });
             }
+        }
+    }
+
+    /// Check out `name`, shared by the branch picker and a `<cr>` on a branch
+    /// row in the status screen's Branches section. Checking out the branch
+    /// already active is a no-op info message, not a git error.
+    pub(super) fn checkout_branch(&mut self, name: &str) {
+        if self.head.branch.as_deref() == Some(name) {
+            self.info(format!("already on {name}"));
+            return;
+        }
+        self.message = None;
+        let owned = name.to_owned();
+        self.vcs_op(move |vcs| vcs.checkout(&owned));
+        if self.message.is_none() {
+            self.info(format!("checked out {name}"));
         }
     }
 }

@@ -32,7 +32,7 @@ pub use diff::{
     SplitSide, comment_display,
 };
 pub use log::LogView;
-pub(crate) use status::{CI_TITLE, RECENT_TITLE, UNPUSHED_TITLE};
+pub(crate) use status::{BRANCHES_TITLE, CI_TITLE, RECENT_TITLE, UNPUSHED_TITLE};
 pub use status::{Row, Section, StatusView};
 
 use crossterm::event::{KeyCode, KeyEvent};
@@ -640,10 +640,20 @@ impl App {
                     (Vec::new(), Vec::new())
                 }
             };
+        let branches = match status::load_branches(review.vcs.as_ref()) {
+            Ok(branches) => branches,
+            Err(err) => {
+                message = Some(StatusMessage {
+                    text: err.to_string(),
+                    severity: Severity::Error,
+                });
+                Vec::new()
+            }
+        };
 
         let ci_remotes = detect_ci_remotes(&review, &config.ci);
 
-        Self {
+        let mut app = Self {
             review,
             head,
             theme,
@@ -653,7 +663,7 @@ impl App {
             // a good-enough human label for feedback exports
             author: std::env::var("USER").unwrap_or_else(|_| "you".to_owned()),
             screens: vec![Screen::Status],
-            status: StatusView::new(unpushed, recent),
+            status: StatusView::new(unpushed, recent, branches),
             log: None,
             diff: None,
             graph: None,
@@ -709,7 +719,11 @@ impl App {
             tick_count: 0,
             last_click: None,
             now_unix: now_unix(),
-        }
+        };
+        // the default cursor (0) can start on the repo-band divider when the
+        // branch band above it is empty; settle it on real content
+        app.clamp_cursor();
+        app
     }
 
     /// The screen under the cursor; the stack is never empty because `Back`
@@ -1344,6 +1358,10 @@ impl App {
             }
             Err(err) => self.error(err.to_string()),
         }
+        match status::load_branches(self.review.vcs.as_ref()) {
+            Ok(branches) => self.status.branches = branches,
+            Err(err) => self.error(err.to_string()),
+        }
         self.restore_status_cursor(status_anchor);
         self.refresh_log();
         let swap = against.and_then(|(rev, result)| self.against_swap(&rev, result));
@@ -1413,8 +1431,10 @@ impl App {
     }
 
     fn on_pr_event(&mut self, pr: Option<crate::ci::PullRequest>) -> Flow {
+        let anchor = self.status_cursor_anchor();
         self.pr = pr;
         self.pr_checked = true;
+        self.restore_status_cursor(anchor);
         Flow::Continue
     }
 

@@ -11,7 +11,7 @@ use ratatui::widgets::Paragraph;
 
 use std::ops::Range;
 
-use crate::app::{App, CI_TITLE, RECENT_TITLE, Row, Section, UNPUSHED_TITLE};
+use crate::app::{App, BRANCHES_TITLE, CI_TITLE, RECENT_TITLE, Row, Section, UNPUSHED_TITLE};
 use crate::config::FileLayout;
 use crate::keymap::Action;
 use crate::theme::Theme;
@@ -19,8 +19,8 @@ use crate::transient::TransientKind;
 use crate::ui::Hint;
 use crate::ui::diff_render::{diff_line_height, hunk_gutter_width, render_hunk_lines};
 use crate::ui::{
-    commit_meta_spans, cursor_line, diffstat_spans, highlight_spans, proportion_bar, status_bar,
-    status_color,
+    age_spans, commit_meta_spans, cursor_line, diffstat_spans, highlight_spans, proportion_bar,
+    status_bar, status_color,
 };
 
 /// Prefix-only hint entries: top-level keys and the transient prefixes,
@@ -110,6 +110,8 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16, Vec<Option<usize>>) 
                         row,
                         Row::SectionHeader { .. }
                             | Row::UnpushedHeader { .. }
+                            | Row::RepoDivider
+                            | Row::BranchesHeader { .. }
                             | Row::RecentHeader { .. }
                             | Row::CiHeader { .. }
                     )
@@ -127,7 +129,8 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16, Vec<Option<usize>>) 
                     .map(|search| search.ranges_for(index))
                     .unwrap_or_default();
                 lines.push(row_line(app, row, on_cursor, area.width, &ranges));
-                line_rows.push(Some(index));
+                // furniture: never a mouse-click or search target
+                line_rows.push((!matches!(row, Row::RepoDivider)).then_some(index));
                 index += 1;
             }
         }
@@ -223,14 +226,17 @@ fn divergence_spans(theme: &Theme, ahead: usize, behind: usize) -> Vec<Span<'sta
     spans
 }
 
+/// Style a branch name carries wherever it appears: the head line and the
+/// Branches section rows.
+fn branch_name_style(theme: &Theme) -> Style {
+    Style::new().fg(theme.purple).bg(theme.bg)
+}
+
 fn head_line(app: &App) -> Line<'static> {
     let theme = &app.theme;
     let mut spans = vec![Span::styled(" Head:     ", theme.dim_style())];
     match &app.head.branch {
-        Some(branch) => spans.push(Span::styled(
-            branch.clone(),
-            Style::new().fg(theme.purple).bg(theme.bg),
-        )),
+        Some(branch) => spans.push(Span::styled(branch.clone(), branch_name_style(theme))),
         None => spans.push(Span::styled("(detached)", theme.dim_style())),
     }
     spans.extend(divergence_spans(theme, app.head.ahead, app.head.behind));
@@ -323,6 +329,15 @@ fn row_line(
             header_spans(theme, CI_TITLE, *count, app.status.ci_folded, search)
         }
         Row::Pr => pr_spans(app, theme, search),
+        Row::RepoDivider => repo_divider_spans(theme, width),
+        Row::BranchesHeader { count } => header_spans(
+            theme,
+            BRANCHES_TITLE,
+            *count,
+            app.status.branches_folded,
+            search,
+        ),
+        Row::Branch { index } => branch_spans(app, *index, theme, width, search),
         Row::CiRun { index } => ci_run_spans(app, *index, theme, width, search),
         // hunk rows are rendered as blocks in `body`, never through here
         Row::HunkHeader { .. } | Row::DiffLine { .. } => Vec::new(),
@@ -471,6 +486,51 @@ fn pr_spans(app: &App, theme: &Theme, search: &[(Range<usize>, bool)]) -> Vec<Sp
     spans
 }
 
+/// A local branch row: name, divergence from its upstream, age right-aligned
+/// at the pane edge.
+fn branch_spans(
+    app: &App,
+    index: usize,
+    theme: &Theme,
+    width: u16,
+    search: &[(Range<usize>, bool)],
+) -> Vec<Span<'static>> {
+    let Some(branch) = app.status.branches.get(index) else {
+        return Vec::new();
+    };
+    // the same head marker the branch picker uses, so the two lists agree
+    let marker = if branch.is_head { "* " } else { "  " };
+    let mut spans = vec![Span::styled(marker, theme.dim_style())];
+    spans.extend(highlight_spans(
+        &branch.name,
+        branch_name_style(theme),
+        search,
+        theme,
+    ));
+    spans.extend(divergence_spans(theme, branch.ahead, branch.behind));
+    let used: usize = spans.iter().map(Span::width).sum();
+    spans.extend(age_spans(
+        theme,
+        branch.tip_unix,
+        app.now_unix,
+        used,
+        width as usize,
+    ));
+    spans
+}
+
+/// The band divider between "this branch" and "this repo": the same label
+/// column the head lines use, then a rule filling the rest of the width.
+const REPO_DIVIDER_LABEL: &str = " Repo      ";
+
+fn repo_divider_spans(theme: &Theme, width: u16) -> Vec<Span<'static>> {
+    let rule_width = (width as usize).saturating_sub(REPO_DIVIDER_LABEL.chars().count());
+    vec![
+        Span::styled(REPO_DIVIDER_LABEL, theme.dim_style()),
+        Span::styled("─".repeat(rule_width), theme.dim_style()),
+    ]
+}
+
 fn ci_run_spans(
     app: &App,
     index: usize,
@@ -572,6 +632,7 @@ mod tests {
             run("CI", "main", "abc1234def", JobStatus::Failed),
             run("Release", "main", "9988776655", JobStatus::Ok),
         ];
+        app.status.ci_folded = false;
         insta::assert_snapshot!(render(&mut app).backend());
     }
 
@@ -596,6 +657,7 @@ mod tests {
             run("origin", JobStatus::Ok),
             run("codeberg", JobStatus::Running),
         ];
+        app.status.ci_folded = false;
         insta::assert_snapshot!(render(&mut app).backend());
     }
 
@@ -993,6 +1055,38 @@ mod tests {
             .iter()
             .chain(app.status.recent.iter())
             .map(|e| e.time_unix)
+            .max()
+            .unwrap_or(0)
+            + 3661;
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn repo_band_shows_the_divider_and_branches_header_folded() {
+        let fixture = standard_fixture();
+        let mut app = app_for(&fixture);
+        let terminal = render(&mut app);
+        let screen = terminal.backend().to_string();
+        assert!(screen.contains("Repo"), "{screen}");
+        assert!(screen.contains("Branches (1)"), "{screen}");
+        insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn branches_unfolded_show_divergence_and_age() {
+        let fixture = standard_fixture();
+        fixture.branch("feat/topic");
+        fixture.track("main", "HEAD");
+        fixture.write("shipped.rs", "pub fn shipped() {}\n");
+        fixture.commit_all("only here");
+        let mut app = app_for(&fixture);
+        app.status.branches_folded = false;
+        // pin "now" an hour past the newest branch tip so the ages render stably
+        app.now_unix = app
+            .status
+            .branches
+            .iter()
+            .map(|b| b.tip_unix)
             .max()
             .unwrap_or(0)
             + 3661;
