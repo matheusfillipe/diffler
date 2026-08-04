@@ -453,9 +453,6 @@ fn file_spans(
     spans
 }
 
-/// The rollup glyph slot rows share with `file_spans`' status glyph: the
-/// worst status among a row's matching CI runs, or two blank cells so a row
-/// with none stays aligned with one that has some.
 /// The leading three cells of a repo-band row: margin, rolled-up CI glyph,
 /// separator. Blank when no run matches, which keeps every row in a group
 /// aligned whether or not its CI has been seen.

@@ -539,7 +539,8 @@ impl App {
         if self.pr.is_some() {
             rows.push(Row::Pr);
         }
-        // this-repo band, folded by default: open PRs, branches, recent commits
+        // this-repo band, folded by default: open PRs, branches, recent
+        // commits, CI runs
         //
         // a forge is known before the PR list is ever fetched, so the group can
         // show (and be unfolded to trigger the fetch) before any count is known;
@@ -1819,6 +1820,7 @@ mod tests {
                         | Row::RepoDivider
                         | Row::BranchesHeader { .. }
                         | Row::RecentHeader { .. }
+                        | Row::CiHeader { .. }
                 )
             })
             .collect();
@@ -1899,6 +1901,7 @@ mod tests {
                         | Row::RepoDivider
                         | Row::BranchesHeader { .. }
                         | Row::RecentHeader { .. }
+                        | Row::CiHeader { .. }
                 )
             })
             .map(|r| match r {
