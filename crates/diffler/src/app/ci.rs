@@ -37,10 +37,13 @@ impl App {
     /// it is on screen, via the single `pending_ci` slot. A folded group costs
     /// nothing: the list is only worth re-fetching where someone can see it.
     pub(super) fn on_ci_runs(&mut self, runs: Vec<crate::ci::CiRun>) {
+        // runs nest under whatever commit, branch or PR they belong to, so a
+        // poll that changes their count moves every row below them: the cursor
+        // has to be re-seated by what it was on, never by its index
+        let anchor = self.status_cursor_anchor();
         self.runs = runs;
         self.runs_cursor = self.runs_cursor.min(self.runs.len().saturating_sub(1));
-        // the inline Status section grew/shrank; keep the row cursor valid
-        self.clamp_cursor();
+        self.restore_status_cursor(anchor);
         if !self.pr_checked {
             self.pending_ci = Some(CiRequest::Pr);
         } else if self.status.prs_loaded && !self.is_group_folded(super::status::Group::Prs) {

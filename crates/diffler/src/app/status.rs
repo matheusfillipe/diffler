@@ -86,9 +86,10 @@ pub enum Group {
     Prs,
     Branches,
     Recent,
-    /// The trailing CI-runs list: every run in `App::runs`, uncapped. The
-    /// only place a run with no visible commit, branch tip, or PR head shows
-    /// up (scheduled jobs, cron, runs on branches that fell off the list).
+    /// Every run in `App::runs`, whether or not it also nests under a row
+    /// above. Listing them all is what keeps a run reachable when it belongs
+    /// to nothing on screen: a scheduled job, a cron run, a run on a branch
+    /// that fell off the list.
     Ci,
 }
 
@@ -1459,9 +1460,11 @@ impl App {
                 |r| matches!(r, Row::BranchesHeader { .. }),
             ),
             CursorAnchor::Ci => header_pos(&rows, |r| matches!(r, Row::CiHeader { .. })),
-            CursorAnchor::CiRun(index) => rows
-                .iter()
-                .position(|r| matches!(r, Row::CiRun { index: i, .. } if i == index)),
+            CursorAnchor::CiRun(index) => indexed_or_header(
+                &rows,
+                |r| matches!(r, Row::CiRun { index: i, .. } if i == index),
+                |r| matches!(r, Row::CiHeader { .. }),
+            ),
             // a folded dir survives a refresh by its path; fall back to the
             // section header when the directory is gone
             CursorAnchor::Dir { section, path } => rows
@@ -2796,6 +2799,35 @@ mod tests {
 
     /// A scheduled/cron run matches no visible commit, branch tip, or PR
     /// head: the trailing CI group is the only place it can show up at all.
+    #[test]
+    fn a_ci_poll_keeps_the_cursor_on_the_row_it_was_on() {
+        use crate::ci::{CiRun, JobStatus, RunId};
+        let run = |id: &str| CiRun {
+            id: RunId(id.to_owned()),
+            name: id.to_owned(),
+            title: String::new(),
+            branch: "main".into(),
+            commit: "0".repeat(40),
+            author: String::new(),
+            created: None,
+            status: JobStatus::Ok,
+            url: None,
+            remote: None,
+        };
+        let (_fixture, mut app) = app();
+        app.runs = vec![run("first")];
+        app.status.unfolded_branches.insert("main".to_owned());
+        app.status.group_folded[Group::Branches.index()] = false;
+        cursor_to(&mut app, |row| matches!(row, Row::RecentHeader { .. }));
+        // a second run nests under the branch, pushing every row below it down
+        app.on_ci_runs(vec![run("first"), run("second")]);
+        assert!(
+            matches!(app.cursor_row(), Some(Row::RecentHeader { .. })),
+            "a poll that grows a nested list must not drag the cursor: {:?}",
+            app.cursor_row()
+        );
+    }
+
     #[test]
     fn a_run_matching_no_commit_branch_or_pr_still_appears_in_the_trailing_group() {
         use crate::ci::{CiRun, JobStatus, RunId};
