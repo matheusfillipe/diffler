@@ -328,13 +328,6 @@ fn row_line(
             let entry = app.status.recent.get(*index);
             commit_spans(app, entry, theme, width, search)
         }
-        Row::CiHeader { count } => header_spans(
-            theme,
-            CI_TITLE,
-            Some(*count),
-            app.is_group_folded(Group::Ci),
-            search,
-        ),
         Row::Pr => pr_spans(app, theme, search),
         Row::RepoDivider => repo_divider_spans(theme, width),
         Row::PrsHeader { count } => header_spans(
@@ -353,7 +346,14 @@ fn row_line(
             search,
         ),
         Row::Branch { index } => branch_spans(app, *index, theme, width, search),
-        Row::CiRun { index } => ci_run_spans(app, *index, theme, width, search),
+        Row::CiHeader { count } => header_spans(
+            theme,
+            CI_TITLE,
+            Some(*count),
+            app.is_group_folded(Group::Ci),
+            search,
+        ),
+        Row::CiRun { index, nested } => ci_run_spans(app, *index, *nested, theme, width, search),
         // hunk rows are rendered as blocks in `body`, never through here
         Row::HunkHeader { .. } | Row::DiffLine { .. } => Vec::new(),
     };
@@ -453,6 +453,24 @@ fn file_spans(
     spans
 }
 
+/// The rollup glyph slot rows share with `file_spans`' status glyph: the
+/// worst status among a row's matching CI runs, or two blank cells so a row
+/// with none stays aligned with one that has some.
+/// The leading three cells of a repo-band row: margin, rolled-up CI glyph,
+/// separator. Blank when no run matches, which keeps every row in a group
+/// aligned whether or not its CI has been seen.
+fn ci_glyph_spans(rollup: Option<crate::ci::JobStatus>, theme: &Theme) -> Vec<Span<'static>> {
+    match rollup {
+        Some(status) => vec![Span::styled(
+            format!(" {} ", status.glyph()),
+            Style::new()
+                .fg(super::ci_status_color(theme, status))
+                .bg(theme.bg),
+        )],
+        None => vec![Span::raw("   ")],
+    }
+}
+
 fn commit_spans(
     app: &App,
     entry: Option<&LogEntry>,
@@ -463,10 +481,11 @@ fn commit_spans(
     let Some(entry) = entry else {
         return Vec::new();
     };
-    let mut spans = vec![Span::styled(
-        format!("     {} ", entry.oid7),
+    let mut spans = ci_glyph_spans(app.ci_rollup(&app.runs_for_commit(&entry.oid)), theme);
+    spans.push(Span::styled(
+        format!("  {} ", entry.oid7),
         Style::new().fg(theme.warn_fg),
-    )];
+    ));
     spans.extend(highlight_spans(
         &entry.subject,
         Style::new().fg(theme.fg),
@@ -493,10 +512,7 @@ fn pr_row_spans(
     theme: &Theme,
     search: &[(Range<usize>, bool)],
 ) -> Vec<Span<'static>> {
-    let mut spans = vec![Span::styled(
-        "  ⇄ ".to_owned(),
-        Style::new().fg(theme.accent),
-    )];
+    let mut spans = vec![Span::styled("⇄ ".to_owned(), Style::new().fg(theme.accent))];
     spans.extend(highlight_spans(
         &format!("PR #{} {}", pr.number, pr.title),
         Style::new().fg(theme.fg),
@@ -511,9 +527,11 @@ fn pr_row_spans(
 }
 
 fn pr_spans(app: &App, theme: &Theme, search: &[(Range<usize>, bool)]) -> Vec<Span<'static>> {
-    app.pr
-        .as_ref()
-        .map_or_else(Vec::new, |pr| pr_row_spans(pr, theme, search))
+    app.pr.as_ref().map_or_else(Vec::new, |pr| {
+        let mut spans = vec![Span::raw("   ")];
+        spans.extend(pr_row_spans(pr, theme, search));
+        spans
+    })
 }
 
 fn open_pr_spans(
@@ -522,9 +540,13 @@ fn open_pr_spans(
     theme: &Theme,
     search: &[(Range<usize>, bool)],
 ) -> Vec<Span<'static>> {
-    app.other_prs()
-        .get(index)
-        .map_or_else(Vec::new, |pr| pr_row_spans(pr, theme, search))
+    let others = app.other_prs();
+    let Some(pr) = others.get(index) else {
+        return Vec::new();
+    };
+    let mut spans = ci_glyph_spans(app.ci_rollup(&app.runs_for_commit(&pr.head_oid)), theme);
+    spans.extend(pr_row_spans(pr, theme, search));
+    spans
 }
 
 /// A local branch row: name, divergence from its upstream, age right-aligned
@@ -539,9 +561,10 @@ fn branch_spans(
     let Some(branch) = app.status.branches.get(index) else {
         return Vec::new();
     };
+    let mut spans = ci_glyph_spans(app.ci_rollup(&app.runs_for_branch(&branch.name)), theme);
     // the same head marker the branch picker uses, so the two lists agree
     let marker = if branch.is_head { "* " } else { "  " };
-    let mut spans = vec![Span::styled(marker, theme.dim_style())];
+    spans.push(Span::styled(marker, theme.dim_style()));
     spans.extend(highlight_spans(
         &branch.name,
         branch_name_style(theme),
@@ -572,9 +595,12 @@ fn repo_divider_spans(theme: &Theme, width: u16) -> Vec<Span<'static>> {
     ]
 }
 
+/// `nested` runs sit under the commit/branch/PR row that triggered them (one
+/// tree level deeper); flat ones sit directly under the trailing CI header.
 fn ci_run_spans(
     app: &App,
     index: usize,
+    nested: bool,
     theme: &Theme,
     width: u16,
     search: &[(Range<usize>, bool)],
@@ -584,8 +610,9 @@ fn ci_run_spans(
     };
     let glyph = run.status.glyph();
     let color = super::ci_status_color(theme, run.status);
+    let indent = if nested { "       " } else { "     " };
     let mut spans = vec![Span::styled(
-        format!("     {glyph} "),
+        format!("{indent}{glyph} "),
         Style::new().fg(color),
     )];
     // tag the source remote when runs from several forges are aggregated
@@ -653,10 +680,11 @@ mod tests {
     };
 
     #[test]
-    fn status_shows_inline_ci_section() {
+    fn status_screen_shows_ci_rollup_glyphs_and_one_unfolded_row() {
         use crate::ci::{CiRun, JobStatus, RunId};
         let fixture = standard_fixture();
         let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let commit_oid = app.status.recent[0].oid.clone();
         let run = |name: &str, branch: &str, sha: &str, status| CiRun {
             id: RunId(name.to_owned()),
             name: name.to_owned(),
@@ -672,8 +700,22 @@ mod tests {
         app.runs = vec![
             run("CI", "main", "abc1234def", JobStatus::Failed),
             run("Release", "main", "9988776655", JobStatus::Ok),
+            run("CI", "other", &commit_oid, JobStatus::Ok),
         ];
-        app.status.group_folded[Group::Ci.index()] = false;
+        // the branch row is individually unfolded: its runs show as children
+        app.status.group_folded[Group::Branches.index()] = false;
+        app.status.unfolded_branches.insert("main".to_owned());
+        // the recent-commits row picks up a glyph too, but stays folded
+        app.status.group_folded[Group::Recent.index()] = false;
+        // pin "now" so the ages render stably
+        app.now_unix = app
+            .status
+            .recent
+            .iter()
+            .map(|e| e.time_unix)
+            .max()
+            .unwrap_or(0)
+            + 3661;
         insta::assert_snapshot!(render(&mut app).backend());
     }
 
@@ -698,7 +740,17 @@ mod tests {
             run("origin", JobStatus::Ok),
             run("codeberg", JobStatus::Running),
         ];
-        app.status.group_folded[Group::Ci.index()] = false;
+        app.status.group_folded[Group::Branches.index()] = false;
+        app.status.unfolded_branches.insert("main".to_owned());
+        // pin "now" an hour past the branch tip so the age renders stably
+        app.now_unix = app
+            .status
+            .branches
+            .iter()
+            .map(|b| b.tip_unix)
+            .max()
+            .unwrap_or(0)
+            + 3661;
         insta::assert_snapshot!(render(&mut app).backend());
     }
 
@@ -1529,6 +1581,34 @@ mod tests {
         assert!(
             spans.iter().all(|s| s.content != "lib.rs"),
             "basename alone not shown: {spans:?}"
+        );
+    }
+
+    #[test]
+    fn a_branch_row_without_matching_runs_renders_no_glyph_but_stays_aligned() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let no_run = super::branch_spans(&app, 0, &app.theme, 80, &[]);
+        assert_eq!(no_run[0].content, "   ");
+
+        app.runs = vec![crate::ci::CiRun {
+            id: crate::ci::RunId("1".into()),
+            name: "CI".into(),
+            title: String::new(),
+            branch: "main".into(),
+            commit: "abc".into(),
+            author: String::new(),
+            created: None,
+            status: crate::ci::JobStatus::Failed,
+            url: None,
+            remote: None,
+        }];
+        let with_run = super::branch_spans(&app, 0, &app.theme, 80, &[]);
+        assert_eq!(with_run[0].content, " × ");
+        assert_eq!(
+            with_run[0].content.chars().count(),
+            no_run[0].content.chars().count(),
+            "the glyph slot keeps the same width whether or not a run matched"
         );
     }
 }

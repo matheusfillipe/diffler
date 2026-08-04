@@ -32,10 +32,6 @@ pub(crate) const BRANCHES_TITLE: &str = "Branches";
 /// detected).
 pub(crate) const PRS_TITLE: &str = "Open pull requests";
 
-/// How many recent runs the inline status section shows (the full list lives on
-/// the Runs screen).
-const CI_INLINE_LIMIT: usize = 5;
-
 /// How many local branches the inline status section shows (the full list is
 /// reachable through the branch picker).
 const BRANCHES_INLINE_LIMIT: usize = 10;
@@ -43,6 +39,10 @@ const BRANCHES_INLINE_LIMIT: usize = 10;
 /// How many of the repo's other open PRs the inline status section shows (the
 /// full list is reachable through the Prs screen).
 const PRS_INLINE_LIMIT: usize = 5;
+
+/// How many runs the trailing CI section shows (the full list lives on the
+/// Runs screen).
+const CI_INLINE_LIMIT: usize = 5;
 
 /// Status screen sections, in display order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,10 +86,17 @@ pub enum Group {
     Prs,
     Branches,
     Recent,
+    /// The trailing CI-runs list: every run in `App::runs`, uncapped. The
+    /// only place a run with no visible commit, branch tip, or PR head shows
+    /// up (scheduled jobs, cron, runs on branches that fell off the list).
     Ci,
 }
 
 impl Group {
+    /// Variant count, so `group_folded`'s array length is derived from this
+    /// one spot instead of a literal that can drift as variants are added.
+    pub(crate) const COUNT: usize = 5;
+
     pub(crate) fn index(self) -> usize {
         match self {
             Self::Unpushed => 0,
@@ -102,8 +109,8 @@ impl Group {
 }
 
 /// Only Unpushed opens by default: the rest of the repo band starts folded.
-fn default_group_folded() -> [bool; 5] {
-    let mut folded = [true; 5];
+fn default_group_folded() -> [bool; Group::COUNT] {
+    let mut folded = [true; Group::COUNT];
     if let Some(slot) = folded.get_mut(Group::Unpushed.index()) {
         *slot = false;
     }
@@ -189,9 +196,12 @@ pub enum Row {
     CiHeader {
         count: usize,
     },
-    /// One CI run in the inline section; `index` into `App::runs`.
+    /// One CI run; `index` into `App::runs`. `nested` is `true` when it sits
+    /// under the commit, branch, or pull request row that triggered it
+    /// (deeper indent), `false` in the flat trailing CI section.
     CiRun {
         index: usize,
+        nested: bool,
     },
 }
 
@@ -235,7 +245,15 @@ pub struct StatusView {
     /// Fold state of the repo-band groups (and Unpushed above them), indexed
     /// by [`Group::index`]. The whole repo band starts folded, unlike the
     /// always-open branch band above it.
-    pub group_folded: [bool; 5],
+    pub group_folded: [bool; Group::COUNT],
+    /// Commits (Unpushed or Recent) whose matching CI runs are unfolded
+    /// inline, keyed by oid rather than row index so the set survives a
+    /// refresh that reorders or truncates the list.
+    pub(crate) unfolded_commits: BTreeSet<String>,
+    /// Branches whose matching CI runs are unfolded inline, keyed by name.
+    pub(crate) unfolded_branches: BTreeSet<String>,
+    /// Open PRs whose matching CI runs are unfolded inline, keyed by number.
+    pub(crate) unfolded_prs: BTreeSet<u64>,
     /// Body height of the last render, so half-page motions step by a screenful.
     pub(crate) viewport: u16,
     /// Per-section set of file paths whose inline diff is expanded.
@@ -280,6 +298,9 @@ impl StatusView {
             recent,
             branches,
             group_folded: default_group_folded(),
+            unfolded_commits: BTreeSet::new(),
+            unfolded_branches: BTreeSet::new(),
+            unfolded_prs: BTreeSet::new(),
             viewport: 0,
             expanded: [const { BTreeSet::new() }; 3],
             folded_dirs: [const { BTreeSet::new() }; 3],
@@ -358,6 +379,37 @@ impl App {
             .iter()
             .filter(|pr| Some(pr.number) != own)
             .collect()
+    }
+
+    /// Indices into `App::runs` whose triggering commit is `oid` (a commit's
+    /// own sha, or a PR's head sha).
+    pub(crate) fn runs_for_commit(&self, oid: &str) -> Vec<usize> {
+        self.runs
+            .iter()
+            .enumerate()
+            .filter(|(_, run)| run.commit == oid)
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    /// Indices into `App::runs` whose branch is `name`.
+    pub(crate) fn runs_for_branch(&self, name: &str) -> Vec<usize> {
+        self.runs
+            .iter()
+            .enumerate()
+            .filter(|(_, run)| run.branch == name)
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    /// The worst status among `indices`' runs, or `None` when none match: the
+    /// honest rendering for a row with nothing loaded for it yet.
+    pub(crate) fn ci_rollup(&self, indices: &[usize]) -> Option<crate::ci::JobStatus> {
+        indices
+            .iter()
+            .filter_map(|index| self.runs.get(*index))
+            .map(|run| run.status)
+            .reduce(crate::ci::JobStatus::worse)
     }
 
     pub fn is_expanded(&self, section: Section, path: &str) -> bool {
@@ -469,7 +521,17 @@ impl App {
                 count: self.status.unpushed.len(),
             });
             if !self.is_group_folded(Group::Unpushed) {
-                rows.extend((0..self.status.unpushed.len()).map(|index| Row::Unpushed { index }));
+                for (index, entry) in self.status.unpushed.iter().enumerate() {
+                    rows.push(Row::Unpushed { index });
+                    if self.status.unfolded_commits.contains(&entry.oid) {
+                        rows.extend(self.runs_for_commit(&entry.oid).into_iter().map(
+                            |run_index| Row::CiRun {
+                                index: run_index,
+                                nested: true,
+                            },
+                        ));
+                    }
+                }
             }
         }
         // the branch's own PR belongs beside its commits, and lands from an async
@@ -477,7 +539,7 @@ impl App {
         if self.pr.is_some() {
             rows.push(Row::Pr);
         }
-        // this-repo band, folded by default: open PRs, branches, recent commits, CI runs
+        // this-repo band, folded by default: open PRs, branches, recent commits
         //
         // a forge is known before the PR list is ever fetched, so the group can
         // show (and be unfolded to trigger the fetch) before any count is known;
@@ -492,12 +554,23 @@ impl App {
             rows.push(Row::RepoDivider);
         }
         if has_prs_group {
+            let others = self.other_prs();
             rows.push(Row::PrsHeader {
-                count: self.status.prs_loaded.then_some(self.other_prs().len()),
+                count: self.status.prs_loaded.then_some(others.len()),
             });
             if !self.is_group_folded(Group::Prs) {
-                let shown = self.other_prs().len().min(PRS_INLINE_LIMIT);
-                rows.extend((0..shown).map(|index| Row::OpenPr { index }));
+                let shown = others.len().min(PRS_INLINE_LIMIT);
+                for (index, pr) in others.iter().enumerate().take(shown) {
+                    rows.push(Row::OpenPr { index });
+                    if self.status.unfolded_prs.contains(&pr.number) {
+                        rows.extend(self.runs_for_commit(&pr.head_oid).into_iter().map(
+                            |run_index| Row::CiRun {
+                                index: run_index,
+                                nested: true,
+                            },
+                        ));
+                    }
+                }
             }
         }
         if !self.status.branches.is_empty() {
@@ -506,7 +579,17 @@ impl App {
             });
             if !self.is_group_folded(Group::Branches) {
                 let shown = self.status.branches.len().min(BRANCHES_INLINE_LIMIT);
-                rows.extend((0..shown).map(|index| Row::Branch { index }));
+                for (index, branch) in self.status.branches.iter().enumerate().take(shown) {
+                    rows.push(Row::Branch { index });
+                    if self.status.unfolded_branches.contains(&branch.name) {
+                        rows.extend(self.runs_for_branch(&branch.name).into_iter().map(
+                            |run_index| Row::CiRun {
+                                index: run_index,
+                                nested: true,
+                            },
+                        ));
+                    }
+                }
             }
         }
         if !self.status.recent.is_empty() {
@@ -514,7 +597,17 @@ impl App {
                 count: self.status.recent.len(),
             });
             if !self.is_group_folded(Group::Recent) {
-                rows.extend((0..self.status.recent.len()).map(|index| Row::Commit { index }));
+                for (index, entry) in self.status.recent.iter().enumerate() {
+                    rows.push(Row::Commit { index });
+                    if self.status.unfolded_commits.contains(&entry.oid) {
+                        rows.extend(self.runs_for_commit(&entry.oid).into_iter().map(
+                            |run_index| Row::CiRun {
+                                index: run_index,
+                                nested: true,
+                            },
+                        ));
+                    }
+                }
             }
         }
         if !self.runs.is_empty() {
@@ -523,7 +616,10 @@ impl App {
             });
             if !self.is_group_folded(Group::Ci) {
                 let shown = self.runs.len().min(CI_INLINE_LIMIT);
-                rows.extend((0..shown).map(|index| Row::CiRun { index }));
+                rows.extend((0..shown).map(|index| Row::CiRun {
+                    index,
+                    nested: false,
+                }));
             }
         }
         rows
@@ -553,7 +649,6 @@ impl App {
             Row::Commit { index } => self.status.recent.get(*index)?.subject.clone(),
             Row::BranchesHeader { .. } => BRANCHES_TITLE.to_owned(),
             Row::Branch { index } => self.status.branches.get(*index)?.name.clone(),
-            Row::CiHeader { .. } => CI_TITLE.to_owned(),
             Row::Pr => {
                 let pr = self.pr.as_ref()?;
                 format!("PR #{} {}", pr.number, pr.title)
@@ -564,7 +659,8 @@ impl App {
                 let pr = pr.get(*index)?;
                 format!("PR #{} {}", pr.number, pr.title)
             }
-            Row::CiRun { index } => self.runs.get(*index)?.name.clone(),
+            Row::CiHeader { .. } => CI_TITLE.to_owned(),
+            Row::CiRun { index, .. } => self.runs.get(*index)?.name.clone(),
             Row::HunkHeader { .. } | Row::DiffLine { .. } | Row::RepoDivider => return None,
         })
     }
@@ -1082,7 +1178,7 @@ impl App {
             }
             Row::BranchesHeader { .. } => self.open_branch_list(BranchAction::Checkout),
             // a CI run opens its graph directly; the header opens the full Runs list
-            Row::CiRun { index } => {
+            Row::CiRun { index, .. } => {
                 self.runs_cursor = *index;
                 self.open_selected_run();
             }
@@ -1194,12 +1290,17 @@ impl App {
                     |row| matches!(row, Row::File { section: s, index, .. } if *s == section && *index == file),
                 );
             }
-            Row::UnpushedHeader { .. } | Row::Unpushed { .. } => {
+            Row::UnpushedHeader { .. } => {
                 self.toggle_group(Group::Unpushed, |row| {
                     matches!(row, Row::UnpushedHeader { .. })
                 });
             }
-            Row::PrsHeader { .. } | Row::OpenPr { .. } => {
+            Row::Unpushed { index } => {
+                if let Some(oid) = self.status.unpushed.get(index).map(|e| e.oid.clone()) {
+                    toggle_membership(&mut self.status.unfolded_commits, oid);
+                }
+            }
+            Row::PrsHeader { .. } => {
                 self.toggle_group(Group::Prs, |row| matches!(row, Row::PrsHeader { .. }));
                 // the list is fetched once, the first time the group opens;
                 // a re-fold and re-unfold rides the regular CI poll instead
@@ -1211,18 +1312,33 @@ impl App {
                     self.pending_ci = Some(super::CiRequest::Prs);
                 }
             }
-            Row::RecentHeader { .. } | Row::Commit { .. } => {
+            Row::OpenPr { index } => {
+                if let Some(number) = self.other_prs().get(index).map(|pr| pr.number) {
+                    toggle_membership(&mut self.status.unfolded_prs, number);
+                }
+            }
+            Row::RecentHeader { .. } => {
                 self.toggle_group(Group::Recent, |row| matches!(row, Row::RecentHeader { .. }));
             }
-            Row::Pr | Row::RepoDivider => {}
-            Row::BranchesHeader { .. } | Row::Branch { .. } => {
+            Row::Commit { index } => {
+                if let Some(oid) = self.status.recent.get(index).map(|e| e.oid.clone()) {
+                    toggle_membership(&mut self.status.unfolded_commits, oid);
+                }
+            }
+            Row::BranchesHeader { .. } => {
                 self.toggle_group(Group::Branches, |row| {
                     matches!(row, Row::BranchesHeader { .. })
                 });
             }
-            Row::CiHeader { .. } | Row::CiRun { .. } => {
+            Row::Branch { index } => {
+                if let Some(name) = self.status.branches.get(index).map(|b| b.name.clone()) {
+                    toggle_membership(&mut self.status.unfolded_branches, name);
+                }
+            }
+            Row::CiHeader { .. } => {
                 self.toggle_group(Group::Ci, |row| matches!(row, Row::CiHeader { .. }));
             }
+            Row::Pr | Row::RepoDivider | Row::CiRun { .. } => {}
         }
         self.clamp_cursor();
     }
@@ -1292,7 +1408,7 @@ impl App {
             Row::BranchesHeader { .. } => CursorAnchor::Branches,
             Row::Branch { index } => CursorAnchor::BranchRow(*index),
             Row::CiHeader { .. } => CursorAnchor::Ci,
-            Row::CiRun { index } => CursorAnchor::CiRun(*index),
+            Row::CiRun { index, .. } => CursorAnchor::CiRun(*index),
             Row::File { .. } | Row::HunkHeader { .. } | Row::DiffLine { .. } => {
                 let (section, file, hunk) = self.row_file(&row)?;
                 CursorAnchor::File {
@@ -1342,11 +1458,9 @@ impl App {
                 |r| matches!(r, Row::BranchesHeader { .. }),
             ),
             CursorAnchor::Ci => header_pos(&rows, |r| matches!(r, Row::CiHeader { .. })),
-            CursorAnchor::CiRun(index) => indexed_or_header(
-                &rows,
-                |r| matches!(r, Row::CiRun { index: i } if i == index),
-                |r| matches!(r, Row::CiHeader { .. }),
-            ),
+            CursorAnchor::CiRun(index) => rows
+                .iter()
+                .position(|r| matches!(r, Row::CiRun { index: i, .. } if i == index)),
             // a folded dir survives a refresh by its path; fall back to the
             // section header when the directory is gone
             CursorAnchor::Dir { section, path } => rows
@@ -1448,6 +1562,14 @@ fn is_section_header(row: &Row) -> bool {
     )
 }
 
+/// Add `key` to `set` if absent, remove it otherwise: the in-place toggle
+/// every per-row CI-unfold set shares.
+fn toggle_membership<T: Ord>(set: &mut BTreeSet<T>, key: T) {
+    if !set.remove(&key) {
+        set.insert(key);
+    }
+}
+
 /// Furniture rows the cursor must never land on.
 fn is_selectable(row: &Row) -> bool {
     !matches!(row, Row::RepoDivider)
@@ -1531,7 +1653,7 @@ mod tests {
     }
 
     #[test]
-    fn enter_on_a_ci_run_opens_its_graph() {
+    fn enter_on_a_nested_ci_run_opens_its_graph() {
         use crate::ci::{CiRun, JobStatus, RunId};
         let (_fixture, mut app) = app();
         app.runs = vec![CiRun {
@@ -1546,7 +1668,8 @@ mod tests {
             url: None,
             remote: None,
         }];
-        app.status.group_folded[Group::Ci.index()] = false;
+        app.status.group_folded[Group::Branches.index()] = false;
+        app.status.unfolded_branches.insert("main".to_owned());
         cursor_to(&mut app, |row| matches!(row, Row::CiRun { .. }));
         app.handle(AppEvent::Key(KeyEvent::new(
             KeyCode::Enter,
@@ -1696,7 +1819,6 @@ mod tests {
                         | Row::RepoDivider
                         | Row::BranchesHeader { .. }
                         | Row::RecentHeader { .. }
-                        | Row::CiHeader { .. }
                 )
             })
             .collect();
@@ -1777,7 +1899,6 @@ mod tests {
                         | Row::RepoDivider
                         | Row::BranchesHeader { .. }
                         | Row::RecentHeader { .. }
-                        | Row::CiHeader { .. }
                 )
             })
             .map(|r| match r {
@@ -2323,6 +2444,56 @@ mod tests {
     }
 
     #[test]
+    fn tab_on_a_commit_row_unfolds_it_alone_and_leaves_the_section_open() {
+        let (_fixture, mut app) = app();
+        cursor_to(&mut app, |row| matches!(row, Row::RecentHeader { .. }));
+        app.handle(key('\t'));
+        assert!(!app.is_group_folded(Group::Recent));
+        let oid = app.status.recent[0].oid.clone();
+        cursor_to(&mut app, |row| matches!(row, Row::Commit { index: 0 }));
+        app.handle(key('\t'));
+        assert!(app.status.unfolded_commits.contains(&oid));
+        assert!(
+            !app.is_group_folded(Group::Recent),
+            "unfolding one commit leaves its section open"
+        );
+        // tab on the header still folds the whole section
+        cursor_to(&mut app, |row| matches!(row, Row::RecentHeader { .. }));
+        app.handle(key('\t'));
+        assert!(app.is_group_folded(Group::Recent));
+    }
+
+    #[test]
+    fn unfolded_commit_set_survives_a_refresh_that_reorders_the_list() {
+        let (fixture, mut app) = app();
+        cursor_to(&mut app, |row| matches!(row, Row::RecentHeader { .. }));
+        app.handle(key('\t'));
+        let oid = app.status.recent[0].oid.clone();
+        cursor_to(&mut app, |row| matches!(row, Row::Commit { index: 0 }));
+        app.handle(key('\t'));
+        assert!(app.status.unfolded_commits.contains(&oid));
+
+        fixture.write("more.rs", "pub fn more() {}\n");
+        fixture.commit_all("a newer commit");
+        app.handle(ctrl_key('r'));
+        app.settle_refresh();
+
+        assert_eq!(
+            app.status.recent.len(),
+            2,
+            "the new commit landed in recent"
+        );
+        assert_eq!(
+            app.status.recent[1].oid, oid,
+            "the unfolded commit is no longer at index 0"
+        );
+        assert!(
+            app.status.unfolded_commits.contains(&oid),
+            "the oid-keyed unfold survives the reorder"
+        );
+    }
+
+    #[test]
     fn refresh_updates_the_recent_commit_cache() {
         let (fixture, mut app) = app();
         fixture.write("notes.txt", "alpha\nbeta\n");
@@ -2618,6 +2789,51 @@ mod tests {
         cursor_to(&mut app, |row| matches!(row, Row::CiHeader { .. }));
         app.handle(key('\n'));
         assert_eq!(app.screen(), Screen::Runs);
+    }
+
+    /// A scheduled/cron run matches no visible commit, branch tip, or PR
+    /// head: the trailing CI group is the only place it can show up at all.
+    #[test]
+    fn a_run_matching_no_commit_branch_or_pr_still_appears_in_the_trailing_group() {
+        use crate::ci::{CiRun, JobStatus, RunId};
+        let (_fixture, mut app) = app();
+        app.runs = vec![CiRun {
+            id: RunId("nightly".into()),
+            name: "nightly".into(),
+            title: "scheduled build".into(),
+            branch: "cron/nightly".into(),
+            commit: "0000000000000000000000000000000000000000".into(),
+            author: String::new(),
+            created: None,
+            status: JobStatus::Ok,
+            url: None,
+            remote: None,
+        }];
+        assert!(
+            app.runs_for_commit(&app.runs[0].commit).contains(&0),
+            "sanity: the run exists in App::runs"
+        );
+        assert!(
+            app.status.branches.iter().all(|b| b.name != "cron/nightly"),
+            "the run's branch matches no local branch"
+        );
+        app.status.group_folded[Group::Ci.index()] = false;
+        let rows = app.visible_rows();
+        assert!(
+            rows.iter()
+                .any(|row| matches!(row, Row::CiHeader { count: 1 })),
+            "the header counts the run: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| matches!(
+                row,
+                Row::CiRun {
+                    index: 0,
+                    nested: false
+                }
+            )),
+            "the run itself renders in the flat trailing section: {rows:?}"
+        );
     }
 
     #[test]
@@ -3001,5 +3217,32 @@ mod tests {
             app.pending_enrich.is_empty(),
             "both sections stay settled once their outcomes land"
         );
+    }
+
+    #[test]
+    fn ci_rollup_picks_the_worst_status_for_a_shared_commit() {
+        use crate::ci::{CiRun, JobStatus, RunId};
+        let (_fixture, mut app) = app();
+        let run = |status| CiRun {
+            id: RunId("x".into()),
+            name: "CI".into(),
+            title: String::new(),
+            branch: "main".into(),
+            commit: "abc123".into(),
+            author: String::new(),
+            created: None,
+            status,
+            url: None,
+            remote: None,
+        };
+        app.runs = vec![run(JobStatus::Ok), run(JobStatus::Failed)];
+        let indices = app.runs_for_commit("abc123");
+        assert_eq!(app.ci_rollup(&indices), Some(JobStatus::Failed));
+    }
+
+    #[test]
+    fn ci_rollup_is_none_when_nothing_matches() {
+        let (_fixture, app) = app();
+        assert_eq!(app.ci_rollup(&app.runs_for_commit("missing")), None);
     }
 }
