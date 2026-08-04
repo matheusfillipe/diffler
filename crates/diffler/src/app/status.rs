@@ -1846,14 +1846,16 @@ mod tests {
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         cursor_to(&mut app, file_row_in(Section::Unstaged));
         app.handle(key('\t'));
-        app.handle(key(']'));
+        // the brackets step groups on this screen, leaving the hunk walk bound
+        // to nothing by default and reachable only through a config remap
+        app.dispatch_status(Action::NextHunk);
         let first = app.status.cursor;
         assert!(is_hunk_header(&app.visible_rows()[first]));
-        app.handle(key(']'));
+        app.dispatch_status(Action::NextHunk);
         let second = app.status.cursor;
         assert!(second > first, "second hunk header is further down");
         assert!(is_hunk_header(&app.visible_rows()[second]));
-        app.handle(key('['));
+        app.dispatch_status(Action::PrevHunk);
         assert_eq!(app.status.cursor, first);
     }
 
@@ -1954,7 +1956,7 @@ mod tests {
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         cursor_to(&mut app, file_row_in(Section::Unstaged));
         app.handle(key('\t'));
-        app.handle(key(']'));
+        app.dispatch_status(Action::NextHunk);
         assert!(is_hunk_header(&app.visible_rows()[app.status.cursor]));
         app.handle(key('s'));
         app.settle_refresh();
@@ -2747,6 +2749,35 @@ mod tests {
             1,
             "unfolding for the first time triggers exactly one fetch: {:?}",
             runner.calls()
+        );
+    }
+
+    #[test]
+    fn the_bracket_keys_step_group_headers() {
+        let (fixture, mut app) = app();
+        fixture.write("extra.rs", "pub fn extra() {}\n");
+        app.handle(ctrl_key('r'));
+        app.settle_refresh();
+        app.handle(key('g'));
+        app.handle(key('g'));
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            app.handle(key(']'));
+            if let Some(row) = app.cursor_row() {
+                seen.push(super::is_section_header(&row));
+            }
+        }
+        assert!(
+            seen.iter().all(|stop| *stop),
+            "every bracket stop is a group header: {seen:?}"
+        );
+        let forward = app.status.cursor;
+        app.handle(key('['));
+        assert!(
+            app.status.cursor < forward,
+            "the pair walks both ways: {} then {}",
+            forward,
+            app.status.cursor
         );
     }
 

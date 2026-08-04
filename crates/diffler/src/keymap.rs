@@ -431,8 +431,10 @@ const STATUS_DEFAULTS: &[(&str, Action)] = &[
     ("D", Action::OpenReviewDiff),
     ("T", Action::SwitchTheme),
     ("o", Action::OpenRuns),
-    ("[", Action::PrevHunk),
-    ("]", Action::NextHunk),
+    // this screen is mostly groups, so the bracket pair steps those; hunks stay
+    // on the brackets in the diff view, where hunks are what there is
+    ("[", Action::PrevSection),
+    ("]", Action::NextSection),
     ("e", Action::OpenEditor),
     ("Z", Action::SendFeedback),
     ("C", Action::CommentsOverview),

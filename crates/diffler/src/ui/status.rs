@@ -1025,7 +1025,8 @@ mod tests {
         let mut app = app_for(&fixture);
         cursor_to_file(&mut app, Section::Unstaged);
         app.handle(key('\t'));
-        app.handle(key(']'));
+        // expanding puts the hunk header directly under the file row
+        app.handle(key('j'));
         app.handle(key('j'));
         assert!(matches!(
             app.visible_rows()[app.status.cursor],
