@@ -670,11 +670,6 @@ pub fn spawn_mcp(
     Ok(McpHandle { port, handle })
 }
 
-/// The `claude mcp add` hint shown in the status bar at startup.
-pub fn connect_hint(port: u16) -> String {
-    format!("mcp :{port}, claude mcp add --transport http diffler http://127.0.0.1:{port}/mcp")
-}
-
 /// Repo-relative path of the endpoint discovery file an external proxy reads.
 const ENDPOINT_FILE: &str = "mcp.json";
 

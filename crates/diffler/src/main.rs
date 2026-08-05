@@ -245,11 +245,6 @@ fn start_mcp(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) -> Option<mcp:
         // this file; a write failure means it silently can't find diffler
         app.error(format!("failed to write mcp endpoint file: {err}"));
     }
-    // show the connect hint as the initial message only when no startup
-    // warning is already occupying the one-shot slot
-    if app.message.is_none() {
-        app.info(mcp::connect_hint(handle.port));
-    }
     Some(handle)
 }
 
