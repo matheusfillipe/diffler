@@ -543,19 +543,12 @@ impl App {
         // this-repo band, folded by default: open PRs, branches, recent
         // commits, CI runs
         //
-        // a forge is known before the PR list is ever fetched, so the group can
-        // show (and be unfolded to trigger the fetch) before any count is known;
-        // once fetched, an empty repo-wide result hides the group entirely
-        let has_prs_group =
-            !self.ci_remotes().is_empty() && (!self.status.prs_loaded || !self.prs.is_empty());
-        let has_repo_band = has_prs_group
-            || !self.status.branches.is_empty()
-            || !self.status.recent.is_empty()
-            || !self.runs.is_empty();
-        if has_repo_band {
-            rows.push(Row::RepoDivider);
-        }
-        if has_prs_group {
+        // a group is present when the repo can have the thing at all, never
+        // because it currently has one: a count of zero is an answer, and a row
+        // that deletes itself on unfold hides whether it was even asked
+        let has_forge = !self.ci_remotes().is_empty();
+        rows.push(Row::RepoDivider);
+        if has_forge {
             let others = self.other_prs();
             rows.push(Row::PrsHeader {
                 count: self.status.prs_loaded.then_some(others.len()),
@@ -575,7 +568,7 @@ impl App {
                 }
             }
         }
-        if !self.status.branches.is_empty() {
+        {
             rows.push(Row::BranchesHeader {
                 count: self.status.branches.len(),
             });
@@ -594,7 +587,7 @@ impl App {
                 }
             }
         }
-        if !self.status.recent.is_empty() {
+        {
             rows.push(Row::RecentHeader {
                 count: self.status.recent.len(),
             });
@@ -612,7 +605,7 @@ impl App {
                 }
             }
         }
-        if !self.runs.is_empty() {
+        if has_forge {
             rows.push(Row::CiHeader {
                 count: self.runs.len(),
             });
@@ -2800,6 +2793,37 @@ mod tests {
     /// A scheduled/cron run matches no visible commit, branch tip, or PR
     /// head: the trailing CI group is the only place it can show up at all.
     #[test]
+    fn a_forge_group_stays_and_says_zero_rather_than_vanishing() {
+        let (_fixture, mut app) = app();
+        app.ci_remotes = vec![github_remote()];
+        app.on_prs_event(Vec::new());
+        let rows = app.visible_rows();
+        assert!(
+            rows.iter()
+                .any(|row| matches!(row, Row::PrsHeader { count: Some(0) })),
+            "learning the answer is zero is an answer, not a reason to disappear: {rows:?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|row| matches!(row, Row::CiHeader { count: 0 })),
+            "same for runs: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn a_repo_with_no_forge_has_no_forge_groups() {
+        let (_fixture, app) = app();
+        assert!(app.ci_remotes().is_empty(), "the fixture has no forge");
+        let rows = app.visible_rows();
+        assert!(
+            !rows
+                .iter()
+                .any(|row| matches!(row, Row::PrsHeader { .. } | Row::CiHeader { .. })),
+            "a repo that cannot have PRs or runs shows neither: {rows:?}"
+        );
+    }
+
+    #[test]
     fn a_ci_poll_keeps_the_cursor_on_the_row_it_was_on() {
         use crate::ci::{CiRun, JobStatus, RunId};
         let run = |id: &str| CiRun {
@@ -2832,6 +2856,7 @@ mod tests {
     fn a_run_matching_no_commit_branch_or_pr_still_appears_in_the_trailing_group() {
         use crate::ci::{CiRun, JobStatus, RunId};
         let (_fixture, mut app) = app();
+        app.ci_remotes = vec![github_remote()];
         app.runs = vec![CiRun {
             id: RunId("nightly".into()),
             name: "nightly".into(),

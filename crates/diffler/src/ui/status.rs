@@ -681,6 +681,14 @@ mod tests {
         use crate::ci::{CiRun, JobStatus, RunId};
         let fixture = standard_fixture();
         let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.ci_remotes = vec![crate::app::CiRemote {
+            name: "origin".into(),
+            detected: crate::ci::Detected {
+                kind: crate::ci::ProviderKind::GitHub,
+                host: None,
+            },
+            url: None,
+        }];
         let commit_oid = app.status.recent[0].oid.clone();
         let run = |name: &str, branch: &str, sha: &str, status| CiRun {
             id: RunId(name.to_owned()),
@@ -721,6 +729,14 @@ mod tests {
         use crate::ci::{CiRun, JobStatus, RunId};
         let fixture = standard_fixture();
         let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.ci_remotes = vec![crate::app::CiRemote {
+            name: "origin".into(),
+            detected: crate::ci::Detected {
+                kind: crate::ci::ProviderKind::GitHub,
+                host: None,
+            },
+            url: None,
+        }];
         let run = |remote: &str, status| CiRun {
             id: RunId(format!("{remote}-CI")),
             name: "CI".to_owned(),
