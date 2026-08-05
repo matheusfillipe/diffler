@@ -580,16 +580,8 @@ fn branch_spans(
     spans
 }
 
-/// The band divider between "this branch" and "this repo": the same label
-/// column the head lines use, then a rule filling the rest of the width.
-const REPO_DIVIDER_LABEL: &str = " Repo      ";
-
 fn repo_divider_spans(theme: &Theme, width: u16) -> Vec<Span<'static>> {
-    let rule_width = (width as usize).saturating_sub(REPO_DIVIDER_LABEL.chars().count());
-    vec![
-        Span::styled(REPO_DIVIDER_LABEL, theme.dim_style()),
-        Span::styled("─".repeat(rule_width), theme.dim_style()),
-    ]
+    vec![Span::styled("─".repeat(width as usize), theme.dim_style())]
 }
 
 fn ci_run_spans(
@@ -1169,7 +1161,10 @@ mod tests {
         let mut app = app_for(&fixture);
         let terminal = render(&mut app);
         let screen = terminal.backend().to_string();
-        assert!(screen.contains("Repo"), "{screen}");
+        assert!(
+            screen.contains("──────────"),
+            "a bare rule splits the bands: {screen}"
+        );
         assert!(screen.contains("Branches (1)"), "{screen}");
         insta::assert_snapshot!(terminal.backend());
     }

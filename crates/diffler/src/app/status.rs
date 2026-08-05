@@ -525,13 +525,22 @@ impl App {
                 rows.extend((0..self.status.recent.len()).map(|index| Row::Commit { index }));
             }
         }
-        // this-repo band, folded by default: open PRs, branches, CI runs
+        // this-repo band, folded by default: branches, open PRs, CI runs
         //
         // a group is present when the repo can have the thing at all, never
         // because it currently has one: a count of zero is an answer, and a row
         // that deletes itself on unfold hides whether it was even asked
         let has_forge = !self.ci_remotes().is_empty();
         rows.push(Row::RepoDivider);
+        {
+            rows.push(Row::BranchesHeader {
+                count: self.status.branches.len(),
+            });
+            if !self.is_group_folded(Group::Branches) {
+                let shown = self.status.branches.len().min(BRANCHES_INLINE_LIMIT);
+                rows.extend((0..shown).map(|index| Row::Branch { index }));
+            }
+        }
         if has_forge {
             let others = self.other_prs();
             rows.push(Row::PrsHeader {
@@ -540,15 +549,6 @@ impl App {
             if !self.is_group_folded(Group::Prs) {
                 let shown = others.len().min(PRS_INLINE_LIMIT);
                 rows.extend((0..shown).map(|index| Row::OpenPr { index }));
-            }
-        }
-        {
-            rows.push(Row::BranchesHeader {
-                count: self.status.branches.len(),
-            });
-            if !self.is_group_folded(Group::Branches) {
-                let shown = self.status.branches.len().min(BRANCHES_INLINE_LIMIT);
-                rows.extend((0..shown).map(|index| Row::Branch { index }));
             }
         }
         if has_forge {

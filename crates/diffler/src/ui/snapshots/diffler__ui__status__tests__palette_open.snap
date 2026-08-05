@@ -17,7 +17,7 @@ expression: render(&mut app).backend()
 "                                fold / unfold                                    <tab>                                  "
 " ▸ Recent commits (1)           stage file or hunk                                   s                                  "
 "                                unstage file or hunk                                 u                                  "
-" Repo      ──────────────────── stage everything                                     S   ───────────────────────────────"
+"─────────────────────────────── stage everything                                     S   ───────────────────────────────"
 "                                unstage everything                                   U                                  "
 " ▸ Branches (1)                 discard changes                                      x                                  "
 "                                refresh                                          <c-r>                                  "
