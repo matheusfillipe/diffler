@@ -353,7 +353,7 @@ fn row_line(
             app.is_group_folded(Group::Ci),
             search,
         ),
-        Row::CiRun { index, nested } => ci_run_spans(app, *index, *nested, theme, width, search),
+        Row::CiRun { index } => ci_run_spans(app, *index, theme, width, search),
         // hunk rows are rendered as blocks in `body`, never through here
         Row::HunkHeader { .. } | Row::DiffLine { .. } => Vec::new(),
     };
@@ -592,12 +592,9 @@ fn repo_divider_spans(theme: &Theme, width: u16) -> Vec<Span<'static>> {
     ]
 }
 
-/// `nested` runs sit under the commit/branch/PR row that triggered them (one
-/// tree level deeper); flat ones sit directly under the trailing CI header.
 fn ci_run_spans(
     app: &App,
     index: usize,
-    nested: bool,
     theme: &Theme,
     width: u16,
     search: &[(Range<usize>, bool)],
@@ -607,9 +604,8 @@ fn ci_run_spans(
     };
     let glyph = run.status.glyph();
     let color = super::ci_status_color(theme, run.status);
-    let indent = if nested { "       " } else { "     " };
     let mut spans = vec![Span::styled(
-        format!("{indent}{glyph} "),
+        format!("     {glyph} "),
         Style::new().fg(color),
     )];
     // tag the source remote when runs from several forges are aggregated
@@ -677,7 +673,7 @@ mod tests {
     };
 
     #[test]
-    fn status_screen_shows_ci_rollup_glyphs_and_one_unfolded_row() {
+    fn status_screen_shows_ci_rollup_glyphs_on_commit_and_branch_rows() {
         use crate::ci::{CiRun, JobStatus, RunId};
         let fixture = standard_fixture();
         let mut app = App::new(fixture.review(), LoadedConfig::default());
@@ -709,7 +705,6 @@ mod tests {
         ];
         // the branch row is individually unfolded: its runs show as children
         app.status.group_folded[Group::Branches.index()] = false;
-        app.status.unfolded_branches.insert("main".to_owned());
         // the recent-commits row picks up a glyph too, but stays folded
         app.status.group_folded[Group::Recent.index()] = false;
         // pin "now" so the ages render stably
@@ -754,7 +749,6 @@ mod tests {
             run("codeberg", JobStatus::Running),
         ];
         app.status.group_folded[Group::Branches.index()] = false;
-        app.status.unfolded_branches.insert("main".to_owned());
         // pin "now" an hour past the branch tip so the age renders stably
         app.now_unix = app
             .status
