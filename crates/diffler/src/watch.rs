@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use notify::{EventKind, RecommendedWatcher, RecursiveMode};
-use notify_debouncer_full::{DebounceEventResult, Debouncer, RecommendedCache, new_debouncer};
+use notify_debouncer_full::{DebounceEventResult, Debouncer, NoCache, new_debouncer_opt};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::event::AppEvent;
@@ -20,7 +20,7 @@ const DEBOUNCE: Duration = Duration::from_millis(200);
 /// errors the app falls back to periodic polling.
 pub struct WatcherHandle {
     pub healthy: Arc<AtomicBool>,
-    _debouncer: Debouncer<RecommendedWatcher, RecommendedCache>,
+    _debouncer: Debouncer<RecommendedWatcher, NoCache>,
 }
 
 /// Watch the repository and send `RepoChanged` for relevant debounced
@@ -36,26 +36,31 @@ pub fn spawn_watcher(
     let flag = Arc::clone(&healthy);
     let root = repo_root.to_path_buf();
     let metadata_dir = git_dir.to_path_buf();
-    let mut debouncer =
-        new_debouncer(
-            DEBOUNCE,
-            None,
-            move |result: DebounceEventResult| match result {
-                Ok(events) => {
-                    let hit = events.iter().any(|event| {
-                        !matches!(event.kind, EventKind::Access(_))
-                            && event
-                                .paths
-                                .iter()
-                                .any(|path| relevant(path, &root, &metadata_dir))
-                    });
-                    if hit {
-                        let _ = tx.send(AppEvent::RepoChanged);
-                    }
-                }
-                Err(_) => flag.store(false, Ordering::Relaxed),
-            },
-        )?;
+    let handler = move |result: DebounceEventResult| match result {
+        Ok(events) => {
+            let hit = events.iter().any(|event| {
+                !matches!(event.kind, EventKind::Access(_))
+                    && event
+                        .paths
+                        .iter()
+                        .any(|path| relevant(path, &root, &metadata_dir))
+            });
+            if hit {
+                let _ = tx.send(AppEvent::RepoChanged);
+            }
+        }
+        Err(_) => flag.store(false, Ordering::Relaxed),
+    };
+    // the file-id cache walks the entire watched tree on registration, which
+    // costs seconds in a repo with node_modules; rename correlation is the only
+    // thing it buys and a coalesced "something changed" needs none of it
+    let mut debouncer = new_debouncer_opt::<_, RecommendedWatcher, NoCache>(
+        DEBOUNCE,
+        None,
+        handler,
+        NoCache::new(),
+        notify::Config::default(),
+    )?;
     debouncer.watch(repo_root, RecursiveMode::Recursive)?;
     for extra in ["HEAD", "refs", "index"] {
         let path = git_dir.join(extra);
