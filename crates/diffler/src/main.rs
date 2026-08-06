@@ -62,7 +62,11 @@ async fn main() -> color_eyre::Result<()> {
         )),
         None => {
             // fail before touching the terminal so the error stays readable
-            let review = Review::open_with_context(&repo?, loaded.config.ui.context_lines)?;
+            let root = match repo {
+                Ok(root) => root,
+                Err(err) => exit_without_repo(&err, &cli.path),
+            };
+            let review = Review::open_with_context(&root, loaded.config.ui.context_lines)?;
             let app = App::new(review, loaded);
             let terminal = ratatui::init();
             set_mouse_capture(true);
@@ -100,6 +104,28 @@ fn install_mouse_panic_hook() {
         set_mouse_capture(false);
         previous(info);
     }));
+}
+
+// a missing repository is user error, not a crash: a plain line and a hint beat
+// an eyre report with a source location pointing into our own main
+#[allow(clippy::print_stderr)]
+fn exit_without_repo(err: &diffler_core::repo::RepoError, path: &str) -> ! {
+    let shown = std::fs::canonicalize(path)
+        .map_or_else(|_| path.to_owned(), |full| full.display().to_string());
+    match err {
+        diffler_core::repo::RepoError::NotFound(_) => {
+            eprintln!("diffler: no git repository at {shown} or any parent");
+            eprintln!(
+                "start one with `git init`, or point diffler at a repository: diffler <path>"
+            );
+        }
+        diffler_core::repo::RepoError::Bare(_) => {
+            eprintln!("diffler: {shown} is a bare repository, which has nothing to review");
+            eprintln!("open a clone with a working tree instead");
+        }
+        git @ diffler_core::repo::RepoError::Git(_) => eprintln!("diffler: {git}"),
+    }
+    std::process::exit(1)
 }
 
 // stdout is correct for a non-TUI subcommand; the workspace print_stdout lint
