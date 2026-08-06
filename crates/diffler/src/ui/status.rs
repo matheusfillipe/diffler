@@ -367,7 +367,7 @@ fn row_line(
             app.is_group_folded(Group::Ci),
             search,
         ),
-        Row::CiRun { index } => ci_run_spans(app, *index, theme, width, search),
+        Row::CiRun { index, nested } => ci_run_spans(app, *index, *nested, theme, width, search),
         // hunk rows are rendered as blocks in `body`, never through here
         Row::HunkHeader { .. } | Row::DiffLine { .. } => Vec::new(),
     };
@@ -482,6 +482,17 @@ fn ci_glyph_spans(rollup: Option<crate::ci::JobStatus>, theme: &Theme) -> Vec<Sp
     }
 }
 
+/// The two cells between a row's CI glyph and its text: a fold arrow when the
+/// row has runs to show underneath, blank when it has none to open.
+fn run_fold_marker(theme: &Theme, has_runs: bool, unfolded: bool) -> Span<'static> {
+    let arrow = match (has_runs, unfolded) {
+        (false, _) => "  ",
+        (true, false) => "▸ ",
+        (true, true) => "▾ ",
+    };
+    Span::styled(arrow, theme.dim_style())
+}
+
 fn commit_spans(
     app: &App,
     entry: Option<&LogEntry>,
@@ -492,9 +503,15 @@ fn commit_spans(
     let Some(entry) = entry else {
         return Vec::new();
     };
-    let mut spans = ci_glyph_spans(app.ci_rollup(&app.runs_for_commit(&entry.oid)), theme);
+    let runs = app.runs_for_commit(&entry.oid);
+    let mut spans = ci_glyph_spans(app.ci_rollup(&runs), theme);
+    spans.push(run_fold_marker(
+        theme,
+        !runs.is_empty(),
+        app.status.unfolded_commits.contains(&entry.oid),
+    ));
     spans.push(Span::styled(
-        format!("  {} ", entry.oid7),
+        format!("{} ", entry.oid7),
         Style::new().fg(theme.warn_fg),
     ));
     spans.extend(highlight_spans(
@@ -598,9 +615,12 @@ fn repo_divider_spans(theme: &Theme, width: u16) -> Vec<Span<'static>> {
     vec![Span::styled("─".repeat(width as usize), theme.dim_style())]
 }
 
+/// `nested` runs sit under the commit row that triggered them (one tree level
+/// deeper); flat ones sit directly under the trailing CI header.
 fn ci_run_spans(
     app: &App,
     index: usize,
+    nested: bool,
     theme: &Theme,
     width: u16,
     search: &[(Range<usize>, bool)],
@@ -610,8 +630,9 @@ fn ci_run_spans(
     };
     let glyph = run.status.glyph();
     let color = super::ci_status_color(theme, run.status);
+    let indent = if nested { "       " } else { "     " };
     let mut spans = vec![Span::styled(
-        format!("     {glyph} "),
+        format!("{indent}{glyph} "),
         Style::new().fg(color),
     )];
     // tag the source remote when runs from several forges are aggregated
@@ -723,6 +744,39 @@ mod tests {
             .unwrap_or(0)
             + 3661;
         insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn a_commit_with_runs_offers_a_fold_arrow_and_nests_them_when_open() {
+        use crate::ci::{CiRun, JobStatus, RunId};
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let commit_oid = app.status.recent[0].oid.clone();
+        app.runs = vec![CiRun {
+            id: RunId("1".into()),
+            name: "build".into(),
+            title: "ci run".into(),
+            branch: "main".into(),
+            commit: commit_oid.clone(),
+            author: String::new(),
+            created: None,
+            status: JobStatus::Ok,
+            url: None,
+            remote: None,
+        }];
+        app.status.group_folded[Group::Recent.index()] = false;
+
+        let folded = render(&mut app).backend().to_string();
+        assert!(
+            folded.contains("▸ "),
+            "a foldable commit shows it: {folded}"
+        );
+        assert!(!folded.contains("build"), "the run stays hidden: {folded}");
+
+        app.status.unfolded_commits.insert(commit_oid);
+        let open = render(&mut app).backend().to_string();
+        assert!(open.contains("▾ "), "{open}");
+        assert!(open.contains("build"), "the run is nested under it: {open}");
     }
 
     #[test]

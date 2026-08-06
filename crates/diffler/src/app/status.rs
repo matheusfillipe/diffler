@@ -197,9 +197,12 @@ pub enum Row {
     CiHeader {
         count: usize,
     },
-    /// One CI run; `index` into `App::runs`.
+    /// One CI run; `index` into `App::runs`. `nested` is `true` under the
+    /// commit row that triggered it (deeper indent), `false` in the flat CI
+    /// section.
     CiRun {
         index: usize,
+        nested: bool,
     },
 }
 
@@ -248,6 +251,9 @@ pub struct StatusView {
     /// by [`Group::index`]. The whole repo band starts folded, unlike the
     /// always-open branch band above it.
     pub group_folded: [bool; Group::COUNT],
+    /// Commits whose CI runs are unfolded beneath them, keyed by oid rather
+    /// than row index so the set survives a refresh that reorders the list.
+    pub(crate) unfolded_commits: BTreeSet<String>,
     /// Body height of the last render, so half-page motions step by a screenful.
     pub(crate) viewport: u16,
     /// Per-section set of file paths whose inline diff is expanded.
@@ -293,6 +299,7 @@ impl StatusView {
             recent,
             branches,
             group_folded: default_group_folded(),
+            unfolded_commits: BTreeSet::new(),
             viewport: 0,
             expanded: [const { BTreeSet::new() }; 3],
             folded_dirs: [const { BTreeSet::new() }; 3],
@@ -392,6 +399,32 @@ impl App {
             .filter(|(_, run)| run.commit == oid)
             .map(|(index, _)| index)
             .collect()
+    }
+
+    /// Run rows to render under the commit `oid`, empty while it is folded or
+    /// has no runs of its own.
+    fn nested_runs(&self, oid: &str) -> Vec<Row> {
+        if !self.status.unfolded_commits.contains(oid) {
+            return Vec::new();
+        }
+        self.runs_for_commit(oid)
+            .into_iter()
+            .map(|index| Row::CiRun {
+                index,
+                nested: true,
+            })
+            .collect()
+    }
+
+    /// Show or hide a commit's runs. A commit with none stays as it is: the row
+    /// carries no fold marker, so a keypress there must do nothing visible.
+    fn toggle_commit_runs(&mut self, oid: String) {
+        if self.runs_for_commit(&oid).is_empty() {
+            return;
+        }
+        if !self.status.unfolded_commits.remove(&oid) {
+            self.status.unfolded_commits.insert(oid);
+        }
     }
 
     /// Indices into `App::runs` whose branch is `name`.
@@ -524,7 +557,10 @@ impl App {
                 count: self.status.unpushed.len(),
             });
             if !self.is_group_folded(Group::Unpushed) {
-                rows.extend((0..self.status.unpushed.len()).map(|index| Row::Unpushed { index }));
+                for (index, entry) in self.status.unpushed.iter().enumerate() {
+                    rows.push(Row::Unpushed { index });
+                    rows.extend(self.nested_runs(&entry.oid));
+                }
             }
         }
         // the branch's own PR belongs beside its commits, and lands from an async
@@ -537,7 +573,10 @@ impl App {
                 count: self.status.recent.len(),
             });
             if !self.is_group_folded(Group::Recent) {
-                rows.extend((0..self.status.recent.len()).map(|index| Row::Commit { index }));
+                for (index, entry) in self.status.recent.iter().enumerate() {
+                    rows.push(Row::Commit { index });
+                    rows.extend(self.nested_runs(&entry.oid));
+                }
             }
         }
         // this-repo band, folded by default: branches, open PRs, CI runs
@@ -572,7 +611,10 @@ impl App {
             });
             if !self.is_group_folded(Group::Ci) {
                 let shown = self.runs.len().min(CI_INLINE_LIMIT);
-                rows.extend((0..shown).map(|index| Row::CiRun { index }));
+                rows.extend((0..shown).map(|index| Row::CiRun {
+                    index,
+                    nested: false,
+                }));
             }
         }
         rows
@@ -1271,11 +1313,19 @@ impl App {
             Row::CiHeader { .. } => {
                 self.toggle_group(Group::Ci, |row| matches!(row, Row::CiHeader { .. }));
             }
+            Row::Unpushed { index } => {
+                if let Some(oid) = self.status.unpushed.get(index).map(|e| e.oid.clone()) {
+                    self.toggle_commit_runs(oid);
+                }
+            }
+            Row::Commit { index } => {
+                if let Some(oid) = self.status.recent.get(index).map(|e| e.oid.clone()) {
+                    self.toggle_commit_runs(oid);
+                }
+            }
             Row::Pr
             | Row::RepoDivider
             | Row::CiRun { .. }
-            | Row::Unpushed { .. }
-            | Row::Commit { .. }
             | Row::Branch { .. }
             | Row::OpenPr { .. } => {}
         }
@@ -2352,6 +2402,77 @@ mod tests {
         );
     }
 
+    /// One CI run against `oid`, the fixture every nesting test starts from.
+    fn run_on(oid: &str) -> crate::ci::CiRun {
+        use crate::ci::{CiRun, JobStatus, RunId};
+        CiRun {
+            id: RunId("1".into()),
+            name: "build".into(),
+            title: String::new(),
+            branch: "main".into(),
+            commit: oid.to_owned(),
+            author: String::new(),
+            created: None,
+            status: JobStatus::Ok,
+            url: None,
+            remote: None,
+        }
+    }
+
+    #[test]
+    fn tab_on_a_commit_unfolds_its_runs_and_leaves_the_section_open() {
+        let (_fixture, mut app) = app();
+        let oid = app.status.recent[0].oid.clone();
+        app.runs = vec![run_on(&oid)];
+        cursor_to(&mut app, |row| matches!(row, Row::RecentHeader { .. }));
+        app.handle(key('\t'));
+        cursor_to(&mut app, |row| matches!(row, Row::Commit { index: 0 }));
+        app.handle(key('\t'));
+
+        assert!(app.status.unfolded_commits.contains(&oid));
+        assert!(
+            !app.is_group_folded(Group::Recent),
+            "unfolding one commit leaves its section open"
+        );
+        assert!(
+            app.visible_rows()
+                .iter()
+                .any(|row| matches!(row, Row::CiRun { nested: true, .. })),
+            "the run shows under the commit"
+        );
+
+        app.handle(key('\t'));
+        assert!(!app.status.unfolded_commits.contains(&oid));
+    }
+
+    #[test]
+    fn tab_on_a_commit_without_runs_does_nothing() {
+        let (_fixture, mut app) = app();
+        cursor_to(&mut app, |row| matches!(row, Row::RecentHeader { .. }));
+        app.handle(key('\t'));
+        let before = app.visible_rows();
+        cursor_to(&mut app, |row| matches!(row, Row::Commit { index: 0 }));
+        app.handle(key('\t'));
+        assert!(app.status.unfolded_commits.is_empty());
+        assert_eq!(app.visible_rows(), before);
+    }
+
+    #[test]
+    fn enter_on_a_nested_run_opens_its_graph() {
+        let (_fixture, mut app) = app();
+        let oid = app.status.recent[0].oid.clone();
+        app.runs = vec![run_on(&oid)];
+        app.status.group_folded[Group::Recent.index()] = false;
+        app.status.unfolded_commits.insert(oid);
+        cursor_to(&mut app, |row| matches!(row, Row::CiRun { .. }));
+        app.handle(AppEvent::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(app.screen(), crate::app::Screen::Graph);
+        assert!(app.graph.is_some());
+    }
+
     #[test]
     fn refresh_updates_the_recent_commit_cache() {
         let (fixture, mut app) = app();
@@ -2743,7 +2864,7 @@ mod tests {
         app.ci_remotes = vec![github_remote()];
         app.runs = vec![run("first"), run("second")];
         app.status.group_folded[Group::Ci.index()] = false;
-        cursor_to(&mut app, |row| matches!(row, Row::CiRun { index: 1 }));
+        cursor_to(&mut app, |row| matches!(row, Row::CiRun { index: 1, .. }));
         // the run under the cursor is gone once the poll lands
         app.on_ci_runs(vec![run("first")]);
         assert!(
@@ -2787,7 +2908,7 @@ mod tests {
         );
         assert!(
             rows.iter()
-                .any(|row| matches!(row, Row::CiRun { index: 0 })),
+                .any(|row| matches!(row, Row::CiRun { index: 0, .. })),
             "the run itself renders in the flat trailing section: {rows:?}"
         );
     }
