@@ -59,6 +59,24 @@ impl GitVcs {
         diff_to_model(&self.repo, &mut diff)
     }
 
+    fn walk_entries(&self, walk: git2::Revwalk<'_>) -> Result<Vec<LogEntry>, VcsError> {
+        let mut entries = Vec::new();
+        for oid in walk {
+            let oid = oid?;
+            let commit = self.repo.find_commit(oid)?;
+            let full = oid.to_string();
+            entries.push(LogEntry {
+                oid7: short7(&full),
+                oid: full,
+                refs: Vec::new(),
+                subject: commit.summary()?.unwrap_or_default().to_owned(),
+                author: commit.author().name().unwrap_or_default().to_owned(),
+                time_unix: commit.time().seconds(),
+            });
+        }
+        Ok(entries)
+    }
+
     /// Whether any tracked file differs from HEAD or the index, i.e. there is
     /// something `git stash` would save. Untracked files don't count, matching
     /// stash's default.
@@ -297,21 +315,30 @@ impl Vcs for GitVcs {
         walk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)?;
         walk.push(head.id())?;
         walk.hide(base.id())?;
-        let mut entries = Vec::new();
-        for oid in walk {
-            let oid = oid?;
-            let commit = self.repo.find_commit(oid)?;
-            let full = oid.to_string();
-            entries.push(LogEntry {
-                oid7: short7(&full),
-                oid: full,
-                refs: Vec::new(),
-                subject: commit.summary()?.unwrap_or_default().to_owned(),
-                author: commit.author().name().unwrap_or_default().to_owned(),
-                time_unix: commit.time().seconds(),
-            });
+        self.walk_entries(walk)
+    }
+
+    fn unpushed(&self) -> Result<Option<Vec<LogEntry>>, VcsError> {
+        let Ok(head) = self.repo.head() else {
+            return Ok(None);
+        };
+        let mut walk = self.repo.revwalk()?;
+        walk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)?;
+        walk.push(head.peel_to_commit()?.id())?;
+        let mut remotes = 0;
+        for reference in self.repo.references()? {
+            let reference = reference?;
+            // a symbolic ref (origin/HEAD) has no target of its own and its
+            // destination is hidden anyway
+            if let (true, Some(oid)) = (reference.is_remote(), reference.target()) {
+                remotes += 1;
+                walk.hide(oid)?;
+            }
         }
-        Ok(entries)
+        if remotes == 0 {
+            return Ok(None);
+        }
+        self.walk_entries(walk).map(Some)
     }
 
     fn branches(&self) -> Result<Vec<BranchInfo>, VcsError> {

@@ -630,14 +630,14 @@ impl App {
             }
         };
         let (unpushed, recent) =
-            match status::load_commit_lists(review.vcs.as_ref(), &head, config.ui.recent_commits) {
+            match status::load_commit_lists(review.vcs.as_ref(), config.ui.recent_commits) {
                 Ok(lists) => lists,
                 Err(err) => {
                     message = Some(StatusMessage {
                         text: err.to_string(),
                         severity: Severity::Error,
                     });
-                    (Vec::new(), Vec::new())
+                    (None, Vec::new())
                 }
             };
         let branches = match status::load_branches(review.vcs.as_ref()) {
@@ -1347,15 +1347,8 @@ impl App {
             Ok(head) => self.head = head,
             Err(err) => self.error(err.to_string()),
         }
-        match status::load_commit_lists(
-            self.review.vcs.as_ref(),
-            &self.head,
-            self.config.ui.recent_commits,
-        ) {
-            Ok((unpushed, recent)) => {
-                self.status.unpushed = unpushed;
-                self.status.recent = recent;
-            }
+        match status::load_commit_lists(self.review.vcs.as_ref(), self.config.ui.recent_commits) {
+            Ok((unpushed, recent)) => self.status.set_commit_lists(unpushed, recent),
             Err(err) => self.error(err.to_string()),
         }
         match status::load_branches(self.review.vcs.as_ref()) {

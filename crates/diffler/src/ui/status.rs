@@ -235,6 +235,14 @@ fn branch_name_style(theme: &Theme) -> Style {
     Style::new().fg(theme.purple).bg(theme.bg)
 }
 
+/// The upstream when it is something other than this branch's namesake on a
+/// remote (`origin/main` for `main`), which is the case the head line spells out.
+fn unexpected_upstream(app: &App) -> Option<&str> {
+    let upstream = app.head.upstream.as_deref()?;
+    let branch = app.head.branch.as_deref()?;
+    (!upstream.ends_with(&format!("/{branch}"))).then_some(upstream)
+}
+
 fn head_line(app: &App) -> Line<'static> {
     let theme = &app.theme;
     let mut spans = vec![Span::styled(" Head:     ", theme.dim_style())];
@@ -243,6 +251,12 @@ fn head_line(app: &App) -> Line<'static> {
         None => spans.push(Span::styled("(detached)", theme.dim_style())),
     }
     spans.extend(divergence_spans(theme, app.head.ahead, app.head.behind));
+    // the arrows count against the upstream, which git lets be any ref: name it
+    // whenever it is not the same-named branch on a remote, or `↑28` reads as
+    // 28 unpushed commits when they are all on the remote already
+    if let Some(upstream) = unexpected_upstream(app) {
+        spans.push(Span::styled(format!(" ({upstream})"), theme.dim_style()));
+    }
     if app.head.oid7.is_empty() {
         spans.push(Span::styled(" (no commits)", theme.dim_style()));
     } else {
@@ -1153,6 +1167,36 @@ mod tests {
             .unwrap_or(0)
             + 3661;
         insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn the_head_line_names_an_upstream_that_is_not_the_branchs_namesake() {
+        let fixture = Fixture::new();
+        fixture.write("base.rs", "pub fn base() {}\n");
+        fixture.commit_all("initial commit");
+        fixture.branch("spec");
+        fixture.write("more.rs", "pub fn more() {}\n");
+        fixture.commit_all("later work");
+        fixture
+            .repo
+            .find_branch("main", git2::BranchType::Local)
+            .expect("main")
+            .set_upstream(Some("spec"))
+            .expect("local upstream");
+        let mut app = app_for(&fixture);
+        let screen = render(&mut app).backend().to_string();
+        assert!(screen.contains("↑1 (spec)"), "{screen}");
+    }
+
+    #[test]
+    fn the_head_line_leaves_the_namesake_upstream_unsaid() {
+        let fixture = standard_fixture();
+        fixture.track("main", "HEAD");
+        fixture.write("shipped.rs", "pub fn shipped() {}\n");
+        fixture.commit_all("only here");
+        let mut app = app_for(&fixture);
+        let screen = render(&mut app).backend().to_string();
+        assert!(!screen.contains("(origin/main)"), "{screen}");
     }
 
     #[test]

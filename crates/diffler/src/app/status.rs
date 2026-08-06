@@ -6,7 +6,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 use diffler_core::model::FileDiff;
-use diffler_core::vcs::{BranchInfo, HeadInfo, LogEntry, NetworkOp, Vcs, VcsError};
+use diffler_core::vcs::{BranchInfo, LogEntry, NetworkOp, Vcs, VcsError};
 
 use super::enrich::EnrichOutcome;
 use super::{App, BranchAction, FileHighlights, Modal, PendingOp};
@@ -234,9 +234,13 @@ pub(super) enum CursorAnchor {
 pub struct StatusView {
     pub cursor: usize,
     pub folded: [bool; 3],
-    /// Commits on HEAD its upstream lacks: local, free to act on, so shown
-    /// unfolded by default.
+    /// Commits no remote has yet: local, free to act on, so shown unfolded by
+    /// default.
     pub unpushed: Vec<LogEntry>,
+    /// Whether any remote-tracking branch exists. The Unpushed group is present
+    /// on that alone, so an all-pushed branch reads as `Unpushed (0)` rather
+    /// than as a section that quietly deleted itself.
+    pub has_remote: bool,
     pub recent: Vec<LogEntry>,
     /// Local branches, newest tip first, capped to `BRANCHES_INLINE_LIMIT`.
     pub branches: Vec<BranchInfo>,
@@ -277,14 +281,15 @@ pub struct StatusView {
 
 impl StatusView {
     pub(super) fn new(
-        unpushed: Vec<LogEntry>,
+        unpushed: Option<Vec<LogEntry>>,
         recent: Vec<LogEntry>,
         branches: Vec<BranchInfo>,
     ) -> Self {
         Self {
             cursor: 0,
             folded: [false; 3],
-            unpushed,
+            has_remote: unpushed.is_some(),
+            unpushed: unpushed.unwrap_or_default(),
             recent,
             branches,
             group_folded: default_group_folded(),
@@ -301,6 +306,18 @@ impl StatusView {
         }
     }
 
+    /// Install both commit lists, keeping the remote flag in step with the list
+    /// it was derived from.
+    pub(super) fn set_commit_lists(
+        &mut self,
+        unpushed: Option<Vec<LogEntry>>,
+        recent: Vec<LogEntry>,
+    ) {
+        self.has_remote = unpushed.is_some();
+        self.unpushed = unpushed.unwrap_or_default();
+        self.recent = recent;
+    }
+
     /// Forget which inline diffs have been enriched (after a refresh rebuilds
     /// the status sections unenriched).
     pub(super) fn clear_enriched(&mut self) {
@@ -310,22 +327,20 @@ impl StatusView {
     }
 }
 
-/// The Unpushed and Recent commit lists, as `(unpushed, recent)`. Loaded
-/// together and returned or discarded as a pair: recent is filtered against
-/// unpushed, so applying one without the other leaves a pushed commit missing
-/// from both sections. Recent is walked deep enough to still fill `limit`
-/// after the unpushed commits are taken out of it.
+/// The Unpushed and Recent commit lists, as `(unpushed, recent)`, with
+/// `unpushed` `None` in a repository that has no remote. Loaded together and
+/// returned or discarded as a pair: recent is filtered against unpushed, so
+/// applying one without the other leaves a pushed commit missing from both
+/// sections. Recent is walked deep enough to still fill `limit` after the
+/// unpushed commits are taken out of it.
 pub(super) fn load_commit_lists(
     vcs: &dyn Vcs,
-    head: &HeadInfo,
     limit: usize,
-) -> Result<(Vec<LogEntry>, Vec<LogEntry>), VcsError> {
-    let unpushed = match head.upstream.as_deref().filter(|_| head.ahead > 0) {
-        Some(upstream) => vcs.commits_between(upstream, "HEAD")?,
-        None => Vec::new(),
-    };
-    let mut recent = vcs.log(limit + unpushed.len())?;
-    recent.retain(|entry| !unpushed.iter().any(|ahead| ahead.oid == entry.oid));
+) -> Result<(Option<Vec<LogEntry>>, Vec<LogEntry>), VcsError> {
+    let unpushed = vcs.unpushed()?;
+    let ahead = unpushed.as_deref().unwrap_or_default();
+    let mut recent = vcs.log(limit + ahead.len())?;
+    recent.retain(|entry| !ahead.iter().any(|local| local.oid == entry.oid));
     recent.truncate(limit);
     Ok((unpushed, recent))
 }
@@ -504,7 +519,7 @@ impl App {
         }
         // this-branch band: HEAD's own history, which `Vcs::log` walks from
         // HEAD, so recent commits belong here and not under the repo divider
-        if !self.status.unpushed.is_empty() {
+        if self.status.has_remote {
             rows.push(Row::UnpushedHeader {
                 count: self.status.unpushed.len(),
             });
@@ -2373,7 +2388,7 @@ mod tests {
     }
 
     #[test]
-    fn unpushed_section_is_absent_with_nothing_ahead() {
+    fn unpushed_section_is_absent_without_a_remote() {
         let (_fixture, app) = app();
         assert!(app.status.unpushed.is_empty());
         assert!(
@@ -2381,6 +2396,47 @@ mod tests {
                 .iter()
                 .any(|row| matches!(row, Row::UnpushedHeader { .. }))
         );
+    }
+
+    #[test]
+    fn an_all_pushed_branch_still_shows_the_section_at_zero() {
+        let fixture = standard_fixture();
+        fixture.track("main", "HEAD");
+        let app = App::new(fixture.review(), LoadedConfig::default());
+        assert!(app.status.unpushed.is_empty());
+        assert!(
+            app.visible_rows()
+                .iter()
+                .any(|row| matches!(row, Row::UnpushedHeader { count: 0 }))
+        );
+    }
+
+    #[test]
+    fn commits_a_remote_already_has_are_not_unpushed_through_a_local_upstream() {
+        // tracking a local branch is legal git, and every commit past it is
+        // still pushed when a remote ref contains it
+        let fixture = standard_fixture();
+        fixture.branch("older");
+        fixture.write("shipped.rs", "pub fn shipped() {}\n");
+        fixture.commit_all("shipped work");
+        fixture.track("main", "HEAD");
+        fixture
+            .repo
+            .find_branch("main", git2::BranchType::Local)
+            .expect("main")
+            .set_upstream(Some("older"))
+            .expect("local upstream");
+        fixture.write("local.rs", "pub fn local() {}\n");
+        fixture.commit_all("only here");
+
+        let app = App::new(fixture.review(), LoadedConfig::default());
+        let subjects: Vec<_> = app
+            .status
+            .unpushed
+            .iter()
+            .map(|entry| entry.subject.as_str())
+            .collect();
+        assert_eq!(subjects, ["only here"]);
     }
 
     #[test]
