@@ -395,6 +395,24 @@ impl App {
         );
     }
 
+    /// The number the anchored row carries on the diff's other side, for a row
+    /// both sides have. A forge that refuses to place an unchanged line from
+    /// one side alone needs both.
+    fn counterpart_line(&self, anchor: &Anchor, line: u32) -> Option<u32> {
+        // the open diff is the PR's, which the working-tree model knows nothing of
+        let model = self
+            .diff
+            .as_ref()
+            .and_then(|diff| diff.commit_model.as_ref())
+            .unwrap_or_else(|| self.review.model());
+        let row = model.find_line(&anchor.file, line, anchor.on_old_side)?;
+        if anchor.on_old_side {
+            row.new_no
+        } else {
+            row.old_no
+        }
+    }
+
     /// Everything a submit would send. The confirmation and the posting read
     /// the same plan, so the dialog describes exactly what goes out.
     pub(crate) fn pr_pending(&self, number: u64) -> Option<PrPending> {
@@ -432,6 +450,7 @@ impl App {
                             line,
                             start_line,
                             new_side: !comment.anchor.on_old_side,
+                            counterpart: self.counterpart_line(&comment.anchor, line),
                             body: body.clone(),
                         });
                     }

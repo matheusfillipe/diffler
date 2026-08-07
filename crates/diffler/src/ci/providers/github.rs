@@ -590,7 +590,7 @@ impl ForgeProvider for GitHubProvider {
         self.runner.run("gh", &args).await.map(|_| ())
     }
 
-    async fn update_pr_comment(&self, remote_id: &str, body: &str) -> Result<()> {
+    async fn update_pr_comment(&self, _number: u64, remote_id: &str, body: &str) -> Result<()> {
         let args = [
             "api".to_owned(),
             "-X".to_owned(),
@@ -1821,6 +1821,7 @@ jobs:
                     line: 4,
                     start_line: None,
                     new_side: true,
+                    counterpart: None,
                     body: "single".into(),
                 },
                 crate::ci::NewPrComment {
@@ -1830,6 +1831,7 @@ jobs:
                     line: 12,
                     start_line: Some(10),
                     new_side: false,
+                    counterpart: None,
                     body: "range".into(),
                 },
             ],

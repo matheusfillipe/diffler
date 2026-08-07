@@ -303,7 +303,7 @@ impl ForgeProvider for ForgejoProvider {
         .map(|_| ())
     }
 
-    async fn update_pr_comment(&self, remote_id: &str, body: &str) -> Result<()> {
+    async fn update_pr_comment(&self, _number: u64, remote_id: &str, body: &str) -> Result<()> {
         self.send(
             "PATCH",
             &format!("issues/comments/{remote_id}"),
@@ -768,6 +768,7 @@ mod review_tests {
             line,
             start_line,
             new_side,
+            counterpart: None,
             body: "a note".to_owned(),
         }
     }
@@ -902,7 +903,9 @@ mod review_tests {
     #[tokio::test]
     async fn editing_patches_the_issue_comment() {
         let runner = Arc::new(RecordingRunner::new(&[("issues/comments", "{}")]));
-        let _ = provider(&runner).update_pr_comment("31", "new text").await;
+        let _ = provider(&runner)
+            .update_pr_comment(7, "31", "new text")
+            .await;
         let call = runner.calls().remove(0);
         assert!(call.contains("-X PATCH"), "{call}");
         assert!(call.contains("issues/comments/31"), "{call}");

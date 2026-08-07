@@ -118,6 +118,7 @@ pub fn build_provider(
         ProviderKind::GitLab => Box::new(GitLabProvider::new(
             Box::new(RealRunner),
             detected.host.clone(),
+            branch.map(str::to_owned),
         )),
         ProviderKind::Forgejo => Box::new(ForgejoProvider::new(
             Box::new(RealRunner),

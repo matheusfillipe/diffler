@@ -226,7 +226,8 @@ beautifully, and [lazygit](https://github.com/jesseduffield/lazygit) and
 [gitui](https://github.com/gitui-org/gitui) are great general git TUIs.
 diffler is review-first: comments live on diff lines, an agent reads and
 answers them over MCP while you watch, and the same threads work against real
-GitHub/Forgejo PRs, including PRs whose branch you never checked out.
+GitHub, GitLab and Forgejo pull requests, including ones whose branch you
+never checked out.
 
 You may also want to check [tuicr](https://github.com/agavra/tuicr), the
 closest alternative.

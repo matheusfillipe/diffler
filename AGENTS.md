@@ -158,11 +158,20 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   needs a checkout. The branch's PR is a status row; `b p` lists all open PRs
   (Enter reviews, `b` checks out). Forge review comments sync into the session
   (`remote_id` marks forge-owned rows); local comments and replies post back
-  through queued workers (GitHub via `gh`, Forgejo over its REST API; GitLab
-  declines politely). A Forgejo thread has no handle of its own, so it is the
+  through queued workers (GitHub via `gh`, GitLab via `glab api`, Forgejo over
+  its REST API). A Forgejo thread has no handle of its own, so it is the
   comments sharing a review, a path and a signed line, rooted at the lowest id;
   the forge exposes no resolution API, so `Capabilities::resolve_threads` is
   false there and a resolve stays in the local session.
+- **GitLab merge requests.** A thread is a discussion and a comment is one of
+  its notes, so a reply, an edit and a delete all route through the discussion
+  the note belongs to, which `discussion_of` looks up. An anchored note repeats
+  the merge request's `diff_refs` (base, start, head) plus the line, and a
+  multi-line one adds a `line_range`. Writes travel as multipart form fields:
+  GitLab's REST layer unflattens `position[new_line]` into nested parameters,
+  which a JSON body never gets. A submitted review is draft notes plus one
+  `bulk_publish`, so the author is notified once; the verdict maps onto
+  approve/unapprove, the only review state the REST API records.
 - **Non-goals.** Worktree/workspace management, agent orchestration,
   structural diff, task tracking.
 

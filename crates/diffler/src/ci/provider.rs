@@ -32,7 +32,7 @@ pub fn capabilities_for(kind: ProviderKind) -> Capabilities {
         ProviderKind::GitLab => Capabilities {
             dag: DagSource::RunApi,
             logs: LogMode::Poll,
-            resolve_threads: false,
+            resolve_threads: true,
         },
         ProviderKind::Forgejo => Capabilities {
             dag: DagSource::None,
@@ -117,8 +117,9 @@ pub trait ForgeProvider: Send + Sync {
         Err(CiError::Unsupported("resolving PR threads"))
     }
 
-    /// Rewrite the body of one of our own review comments. Default: unsupported.
-    async fn update_pr_comment(&self, _remote_id: &str, _body: &str) -> Result<()> {
+    /// Rewrite the body of one of our own review comments. `number` is carried
+    /// because a forge can scope the edit route to the PR. Default: unsupported.
+    async fn update_pr_comment(&self, _number: u64, _remote_id: &str, _body: &str) -> Result<()> {
         Err(CiError::Unsupported("editing PR comments"))
     }
 
@@ -184,5 +185,8 @@ pub struct NewPrComment {
     pub start_line: Option<u32>,
     /// Anchored to the new side (`RIGHT`) or the old side of the diff.
     pub new_side: bool,
+    /// The same row's number on the other side, set only for a line both sides
+    /// share. GitLab rejects an unchanged line named from one side alone.
+    pub counterpart: Option<u32>,
     pub body: String,
 }

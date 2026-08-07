@@ -76,7 +76,7 @@ fn failure_message(stdout: &[u8], stderr: &[u8]) -> String {
 pub(crate) mod test_support {
     use async_trait::async_trait;
 
-    use super::{CommandRunner, Result};
+    use super::{CiError, CommandRunner, Result};
 
     /// A `CommandRunner` that returns canned stdout for the first registered key
     /// that appears as a substring of the joined command (e.g. `"run list"`,
@@ -123,8 +123,16 @@ pub(crate) mod test_support {
                 .responses
                 .iter()
                 .find(|(key, _)| joined.contains(key))
-                .map(|(_, value)| value.clone());
-            Ok(hit.unwrap_or_default())
+                .map_or_else(String::new, |(_, value)| value.clone());
+            // a response written as `ERR:<reason>` fails the call, which is how
+            // a test reaches an adapter's error path
+            match hit.strip_prefix("ERR:") {
+                Some(reason) => Err(CiError::Exec {
+                    cmd: joined,
+                    message: reason.to_owned(),
+                }),
+                None => Ok(hit),
+            }
         }
     }
 }

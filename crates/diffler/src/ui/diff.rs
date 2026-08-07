@@ -1299,6 +1299,7 @@ mod tests {
             line: 2,
             start_line: None,
             new_side: true,
+            counterpart: None,
             body: "looks off".to_owned(),
         };
         let pending = crate::app::pr::PrPending {

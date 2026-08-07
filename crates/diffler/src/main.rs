@@ -363,9 +363,12 @@ fn dispatch_pr_posts(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
                     .await
                     .map(|()| None),
                 app::pr::PrPost::Edit {
-                    remote_id, body, ..
+                    number,
+                    remote_id,
+                    body,
+                    ..
                 } => provider
-                    .update_pr_comment(remote_id, body)
+                    .update_pr_comment(*number, remote_id, body)
                     .await
                     .map(|()| None),
                 app::pr::PrPost::Delete {
