@@ -300,15 +300,21 @@ fn row_line(
             spans.extend(diffstat_spans(theme, added, deleted, theme.bg));
             spans
         }
-        Row::UnpushedHeader { count } => header_spans(
-            theme,
-            UNPUSHED_TITLE,
-            Some(*count),
-            app.is_group_folded(Group::Unpushed),
-            search,
-        ),
+        Row::UnpushedHeader { count, capped } => {
+            let mut spans = header_spans(
+                theme,
+                UNPUSHED_TITLE,
+                None,
+                app.is_group_folded(Group::Unpushed),
+                search,
+            );
+            // a capped walk counted a floor, not a total
+            let more = if *capped { "+" } else { "" };
+            spans.push(Span::styled(format!(" ({count}{more})"), theme.dim_style()));
+            spans
+        }
         Row::Unpushed { index } => {
-            let entry = app.status.unpushed.get(*index);
+            let entry = app.status.unpushed_commits().get(*index);
             commit_spans(app, entry, theme, width, search)
         }
         Row::RecentHeader { count } => header_spans(
@@ -1213,7 +1219,7 @@ mod tests {
         // pin "now" an hour past the newest commit so the ages render stably
         app.now_unix = app
             .status
-            .unpushed
+            .unpushed_commits()
             .iter()
             .chain(app.status.recent.iter())
             .map(|e| e.time_unix)

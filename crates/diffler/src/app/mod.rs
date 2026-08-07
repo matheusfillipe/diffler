@@ -629,17 +629,20 @@ impl App {
                 empty_head()
             }
         };
-        let (unpushed, recent) =
-            match status::load_commit_lists(review.vcs.as_ref(), config.ui.recent_commits) {
-                Ok(lists) => lists,
-                Err(err) => {
-                    message = Some(StatusMessage {
-                        text: err.to_string(),
-                        severity: Severity::Error,
-                    });
-                    (None, Vec::new())
-                }
-            };
+        let (unpushed, recent) = match status::load_commit_lists(
+            review.vcs.as_ref(),
+            config.ui.recent_commits,
+            status::UNPUSHED_LIMIT,
+        ) {
+            Ok(lists) => lists,
+            Err(err) => {
+                message = Some(StatusMessage {
+                    text: err.to_string(),
+                    severity: Severity::Error,
+                });
+                (None, Vec::new())
+            }
+        };
         let branches = match status::load_branches(review.vcs.as_ref()) {
             Ok(branches) => branches,
             Err(err) => {
@@ -886,6 +889,7 @@ impl App {
                 Flow::Continue
             }
             AppEvent::CiError(message) => self.on_ci_error(message),
+            AppEvent::CiPrsError(message) => self.on_ci_prs_error(message),
             AppEvent::RepoChanged => {
                 self.queue_refresh();
                 self.refresh_flash = REFRESH_FLASH_TICKS;
@@ -1347,8 +1351,15 @@ impl App {
             Ok(head) => self.head = head,
             Err(err) => self.error(err.to_string()),
         }
-        match status::load_commit_lists(self.review.vcs.as_ref(), self.config.ui.recent_commits) {
-            Ok((unpushed, recent)) => self.status.set_commit_lists(unpushed, recent),
+        match status::load_commit_lists(
+            self.review.vcs.as_ref(),
+            self.config.ui.recent_commits,
+            status::UNPUSHED_LIMIT,
+        ) {
+            Ok((unpushed, recent)) => {
+                self.status.unpushed = unpushed;
+                self.status.recent = recent;
+            }
             Err(err) => self.error(err.to_string()),
         }
         match status::load_branches(self.review.vcs.as_ref()) {
@@ -1419,6 +1430,11 @@ impl App {
     }
 
     fn on_ci_error(&mut self, message: String) -> Flow {
+        self.error(message);
+        Flow::Continue
+    }
+
+    fn on_ci_prs_error(&mut self, message: String) -> Flow {
         // a failed fetch frees the slot, so a later unfold can try again
         self.status.prs_in_flight = false;
         self.error(message);

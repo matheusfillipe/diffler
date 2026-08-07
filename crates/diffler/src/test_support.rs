@@ -58,6 +58,13 @@ impl Fixture {
         diffler_core::test_git::commit_all(&self.repo, message, &sig);
     }
 
+    /// Commit with an explicit timestamp, for tests that assert on commit time.
+    pub(crate) fn commit_all_at(&self, message: &str, unix: i64) {
+        let time = git2::Time::new(unix, 0);
+        let sig = git2::Signature::new("test", "test@test", &time).expect("sig");
+        diffler_core::test_git::commit_all(&self.repo, message, &sig);
+    }
+
     pub(crate) fn remote(&self, name: &str, url: &str) {
         self.repo.remote(name, url).expect("remote");
     }

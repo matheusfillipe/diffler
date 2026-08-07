@@ -59,9 +59,13 @@ impl GitVcs {
         diff_to_model(&self.repo, &mut diff)
     }
 
-    fn walk_entries(&self, walk: git2::Revwalk<'_>) -> Result<Vec<LogEntry>, VcsError> {
+    fn walk_entries(
+        &self,
+        walk: git2::Revwalk<'_>,
+        limit: usize,
+    ) -> Result<Vec<LogEntry>, VcsError> {
         let mut entries = Vec::new();
-        for oid in walk {
+        for oid in walk.take(limit) {
             let oid = oid?;
             let commit = self.repo.find_commit(oid)?;
             let full = oid.to_string();
@@ -315,10 +319,10 @@ impl Vcs for GitVcs {
         walk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)?;
         walk.push(head.id())?;
         walk.hide(base.id())?;
-        self.walk_entries(walk)
+        self.walk_entries(walk, usize::MAX)
     }
 
-    fn unpushed(&self) -> Result<Option<Vec<LogEntry>>, VcsError> {
+    fn unpushed(&self, limit: usize) -> Result<Option<Vec<LogEntry>>, VcsError> {
         let Ok(head) = self.repo.head() else {
             return Ok(None);
         };
@@ -338,7 +342,7 @@ impl Vcs for GitVcs {
         if remotes == 0 {
             return Ok(None);
         }
-        self.walk_entries(walk).map(Some)
+        self.walk_entries(walk, limit).map(Some)
     }
 
     fn branches(&self) -> Result<Vec<BranchInfo>, VcsError> {

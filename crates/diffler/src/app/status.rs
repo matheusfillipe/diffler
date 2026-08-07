@@ -32,6 +32,11 @@ pub(crate) const BRANCHES_TITLE: &str = "Branches";
 /// detected).
 pub(crate) const PRS_TITLE: &str = "Open pull requests";
 
+/// How far the unpushed walk goes. Nothing prunes it in a repository whose
+/// remote refs sit off HEAD's history, where the honest answer is the whole
+/// log, so the ceiling keeps both the walk and the row list finite.
+pub(crate) const UNPUSHED_LIMIT: usize = 100;
+
 /// How many local branches the inline status section shows (the full list is
 /// reachable through the branch picker).
 const BRANCHES_INLINE_LIMIT: usize = 10;
@@ -153,10 +158,11 @@ pub enum Row {
         hunk: usize,
         line: usize,
     },
-    /// Header of the trailing Unpushed section: commits on HEAD its
-    /// upstream doesn't have yet.
+    /// Header of the Unpushed section: commits no remote has yet. `capped`
+    /// marks a count the walk stopped short of finishing.
     UnpushedHeader {
         count: usize,
+        capped: bool,
     },
     /// One such commit; `index` into `StatusView::unpushed`.
     Unpushed {
@@ -228,9 +234,17 @@ pub(super) enum CursorAnchor {
     Prs,
     PrsRow(usize),
     Branches,
-    BranchRow(usize),
+    BranchRow(String),
     Ci,
     CiRun(usize),
+}
+
+/// The unpushed commits and whether the walk that found them stopped at its
+/// ceiling, so a count rendered from this says `100+` instead of claiming an
+/// exact total it never reached.
+pub struct Unpushed {
+    pub commits: Vec<LogEntry>,
+    pub capped: bool,
 }
 
 /// All state owned by the status screen.
@@ -238,12 +252,9 @@ pub struct StatusView {
     pub cursor: usize,
     pub folded: [bool; 3],
     /// Commits no remote has yet: local, free to act on, so shown unfolded by
-    /// default.
-    pub unpushed: Vec<LogEntry>,
-    /// Whether any remote-tracking branch exists. The Unpushed group is present
-    /// on that alone, so an all-pushed branch reads as `Unpushed (0)` rather
-    /// than as a section that quietly deleted itself.
-    pub has_remote: bool,
+    /// default. `None` in a repository with no remote-tracking refs, the one
+    /// case where the section is absent instead of reading zero.
+    pub unpushed: Option<Unpushed>,
     pub recent: Vec<LogEntry>,
     /// Local branches, newest tip first, capped to `BRANCHES_INLINE_LIMIT`.
     pub branches: Vec<BranchInfo>,
@@ -287,15 +298,14 @@ pub struct StatusView {
 
 impl StatusView {
     pub(super) fn new(
-        unpushed: Option<Vec<LogEntry>>,
+        unpushed: Option<Unpushed>,
         recent: Vec<LogEntry>,
         branches: Vec<BranchInfo>,
     ) -> Self {
         Self {
             cursor: 0,
             folded: [false; 3],
-            has_remote: unpushed.is_some(),
-            unpushed: unpushed.unwrap_or_default(),
+            unpushed,
             recent,
             branches,
             group_folded: default_group_folded(),
@@ -313,16 +323,12 @@ impl StatusView {
         }
     }
 
-    /// Install both commit lists, keeping the remote flag in step with the list
-    /// it was derived from.
-    pub(super) fn set_commit_lists(
-        &mut self,
-        unpushed: Option<Vec<LogEntry>>,
-        recent: Vec<LogEntry>,
-    ) {
-        self.has_remote = unpushed.is_some();
-        self.unpushed = unpushed.unwrap_or_default();
-        self.recent = recent;
+    /// The unpushed commits, empty where the repository has no remote to
+    /// measure against.
+    pub(crate) fn unpushed_commits(&self) -> &[LogEntry] {
+        self.unpushed
+            .as_ref()
+            .map_or(&[], |unpushed| unpushed.commits.as_slice())
     }
 
     /// Forget which inline diffs have been enriched (after a refresh rebuilds
@@ -343,9 +349,15 @@ impl StatusView {
 pub(super) fn load_commit_lists(
     vcs: &dyn Vcs,
     limit: usize,
-) -> Result<(Option<Vec<LogEntry>>, Vec<LogEntry>), VcsError> {
-    let unpushed = vcs.unpushed()?;
-    let ahead = unpushed.as_deref().unwrap_or_default();
+    unpushed_limit: usize,
+) -> Result<(Option<Unpushed>, Vec<LogEntry>), VcsError> {
+    let unpushed = vcs.unpushed(unpushed_limit)?.map(|commits| Unpushed {
+        capped: commits.len() == unpushed_limit,
+        commits,
+    });
+    let ahead = unpushed
+        .as_ref()
+        .map_or(&[][..], |unpushed| unpushed.commits.as_slice());
     let mut recent = vcs.log(limit + ahead.len())?;
     recent.retain(|entry| !ahead.iter().any(|local| local.oid == entry.oid));
     recent.truncate(limit);
@@ -552,12 +564,13 @@ impl App {
         }
         // this-branch band: HEAD's own history, which `Vcs::log` walks from
         // HEAD, so recent commits belong here and not under the repo divider
-        if self.status.has_remote {
+        if let Some(unpushed) = &self.status.unpushed {
             rows.push(Row::UnpushedHeader {
-                count: self.status.unpushed.len(),
+                count: unpushed.commits.len(),
+                capped: unpushed.capped,
             });
             if !self.is_group_folded(Group::Unpushed) {
-                for (index, entry) in self.status.unpushed.iter().enumerate() {
+                for (index, entry) in unpushed.commits.iter().enumerate() {
                     rows.push(Row::Unpushed { index });
                     rows.extend(self.nested_runs(&entry.oid));
                 }
@@ -635,7 +648,7 @@ impl App {
         Some(match row {
             Row::SectionHeader { section, .. } => section.title().to_owned(),
             Row::UnpushedHeader { .. } => UNPUSHED_TITLE.to_owned(),
-            Row::Unpushed { index } => self.status.unpushed.get(*index)?.subject.clone(),
+            Row::Unpushed { index } => self.status.unpushed_commits().get(*index)?.subject.clone(),
             Row::RecentHeader { .. } => RECENT_TITLE.to_owned(),
             Row::Dir { name, .. } => name.clone(),
             Row::File { section, index, .. } => self
@@ -1144,7 +1157,12 @@ impl App {
         };
         match &row {
             Row::Unpushed { index } => {
-                let Some(oid) = self.status.unpushed.get(*index).map(|e| e.oid.clone()) else {
+                let Some(oid) = self
+                    .status
+                    .unpushed_commits()
+                    .get(*index)
+                    .map(|entry| entry.oid.clone())
+                else {
                     return;
                 };
                 self.open_commit_diff(&oid);
@@ -1314,7 +1332,12 @@ impl App {
                 self.toggle_group(Group::Ci, |row| matches!(row, Row::CiHeader { .. }));
             }
             Row::Unpushed { index } => {
-                if let Some(oid) = self.status.unpushed.get(index).map(|e| e.oid.clone()) {
+                if let Some(oid) = self
+                    .status
+                    .unpushed_commits()
+                    .get(index)
+                    .map(|entry| entry.oid.clone())
+                {
                     self.toggle_commit_runs(oid);
                 }
             }
@@ -1395,7 +1418,9 @@ impl App {
             Row::PrsHeader { .. } => CursorAnchor::Prs,
             Row::OpenPr { index } => CursorAnchor::PrsRow(*index),
             Row::BranchesHeader { .. } => CursorAnchor::Branches,
-            Row::Branch { index } => CursorAnchor::BranchRow(*index),
+            Row::Branch { index } => {
+                CursorAnchor::BranchRow(self.status.branches.get(*index)?.name.clone())
+            }
             Row::CiHeader { .. } => CursorAnchor::Ci,
             Row::CiRun { index, .. } => CursorAnchor::CiRun(*index),
             Row::File { .. } | Row::HunkHeader { .. } | Row::DiffLine { .. } => {
@@ -1441,9 +1466,13 @@ impl App {
                 |r| matches!(r, Row::PrsHeader { .. }),
             ),
             CursorAnchor::Branches => header_pos(&rows, |r| matches!(r, Row::BranchesHeader { .. })),
-            CursorAnchor::BranchRow(index) => indexed_or_header(
+            // by name: checking a branch out re-sorts the list under the cursor
+            CursorAnchor::BranchRow(name) => indexed_or_header(
                 &rows,
-                |r| matches!(r, Row::Branch { index: i } if i == index),
+                |r| {
+                    matches!(r, Row::Branch { index }
+                        if self.status.branches.get(*index).is_some_and(|b| b.name == *name))
+                },
                 |r| matches!(r, Row::BranchesHeader { .. }),
             ),
             CursorAnchor::Ci => header_pos(&rows, |r| matches!(r, Row::CiHeader { .. })),
@@ -2493,13 +2522,13 @@ mod tests {
         fixture.write("shipped_two.rs", "pub fn two() {}\n");
         fixture.commit_all("second unpushed");
         let app = App::new(fixture.review(), LoadedConfig::default());
-        assert_eq!(app.status.unpushed.len(), 2);
-        assert_eq!(app.status.unpushed[0].subject, "second unpushed");
+        assert_eq!(app.status.unpushed_commits().len(), 2);
+        assert_eq!(app.status.unpushed_commits()[0].subject, "second unpushed");
         assert!(!app.is_group_folded(Group::Unpushed));
         let rows = app.visible_rows();
         let unpushed_at = rows
             .iter()
-            .position(|r| matches!(r, Row::UnpushedHeader { count: 2 }))
+            .position(|r| matches!(r, Row::UnpushedHeader { count: 2, .. }))
             .expect("unpushed header with both commits");
         let recent_at = rows
             .iter()
@@ -2511,7 +2540,7 @@ mod tests {
     #[test]
     fn unpushed_section_is_absent_without_a_remote() {
         let (_fixture, app) = app();
-        assert!(app.status.unpushed.is_empty());
+        assert!(app.status.unpushed.is_none());
         assert!(
             !app.visible_rows()
                 .iter()
@@ -2524,11 +2553,11 @@ mod tests {
         let fixture = standard_fixture();
         fixture.track("main", "HEAD");
         let app = App::new(fixture.review(), LoadedConfig::default());
-        assert!(app.status.unpushed.is_empty());
+        assert!(app.status.unpushed_commits().is_empty());
         assert!(
             app.visible_rows()
                 .iter()
-                .any(|row| matches!(row, Row::UnpushedHeader { count: 0 }))
+                .any(|row| matches!(row, Row::UnpushedHeader { count: 0, .. }))
         );
     }
 
@@ -2553,7 +2582,7 @@ mod tests {
         let app = App::new(fixture.review(), LoadedConfig::default());
         let subjects: Vec<_> = app
             .status
-            .unpushed
+            .unpushed_commits()
             .iter()
             .map(|entry| entry.subject.as_str())
             .collect();
@@ -2567,8 +2596,8 @@ mod tests {
         fixture.write("shipped.rs", "pub fn shipped() {}\n");
         fixture.commit_all("only here");
         let app = App::new(fixture.review(), LoadedConfig::default());
-        assert_eq!(app.status.unpushed.len(), 1);
-        assert_eq!(app.status.unpushed[0].subject, "only here");
+        assert_eq!(app.status.unpushed_commits().len(), 1);
+        assert_eq!(app.status.unpushed_commits()[0].subject, "only here");
         assert!(
             app.status.recent.iter().all(|e| e.subject != "only here"),
             "recent excludes the unpushed commit: {:?}",
@@ -2590,11 +2619,11 @@ mod tests {
         fixture.write("shipped.rs", "pub fn shipped() {}\n");
         fixture.commit_all("only here");
         let mut app = App::new(fixture.review(), LoadedConfig::default());
-        assert_eq!(app.status.unpushed.len(), 1);
+        assert_eq!(app.status.unpushed_commits().len(), 1);
         fixture.track("main", "HEAD");
         app.handle(ctrl_key('r'));
         app.settle_refresh();
-        assert!(app.status.unpushed.is_empty());
+        assert!(app.status.unpushed_commits().is_empty());
         assert!(
             app.status.recent.iter().any(|e| e.subject == "only here"),
             "the pushed commit lands in recent rather than vanishing: {:?}",
@@ -2613,7 +2642,7 @@ mod tests {
             fixture.commit_all(&format!("unpushed {n}"));
         }
         let app = App::new(fixture.review(), config);
-        assert_eq!(app.status.unpushed.len(), 4);
+        assert_eq!(app.status.unpushed_commits().len(), 4);
         assert_eq!(
             app.status.recent.len(),
             1,
@@ -2629,9 +2658,7 @@ mod tests {
         // the fixture's commits share one fixed time (for stable oids), so
         // "old" is branched off before main is advanced with a later one
         fixture.branch("old");
-        let sig = git2::Signature::new("test", "test@test", &git2::Time::new(1_700_000_100, 0))
-            .expect("sig");
-        diffler_core::test_git::commit_all(&fixture.repo, "advance main", &sig);
+        fixture.commit_all_at("advance main", 1_700_000_100);
         let app = App::new(fixture.review(), LoadedConfig::default());
         let names: Vec<&str> = app
             .status
@@ -2647,9 +2674,7 @@ mod tests {
         let fixture = standard_fixture();
         fixture.branch("newer");
         fixture.checkout("newer");
-        let sig = git2::Signature::new("test", "test@test", &git2::Time::new(1_700_000_100, 0))
-            .expect("sig");
-        diffler_core::test_git::commit_all(&fixture.repo, "advance newer", &sig);
+        fixture.commit_all_at("advance newer", 1_700_000_100);
         fixture.checkout("main");
         let app = App::new(fixture.review(), LoadedConfig::default());
         let names: Vec<&str> = app
@@ -2730,6 +2755,17 @@ mod tests {
         app.handle(key('\n'));
         assert_eq!(
             app.review.vcs.head().expect("head").branch.as_deref(),
+            Some("feat/topic")
+        );
+
+        // checking out re-sorts the list (head leads), and the cursor rides the
+        // branch it was on rather than whatever now occupies that slot
+        app.settle_refresh();
+        let Some(Row::Branch { index }) = app.visible_rows().get(app.status.cursor).cloned() else {
+            panic!("the cursor stays on a branch row");
+        };
+        assert_eq!(
+            app.status.branches.get(index).map(|b| b.name.as_str()),
             Some("feat/topic")
         );
     }
@@ -3093,6 +3129,27 @@ mod tests {
         app.on_prs_event(Vec::new());
         assert!(app.status.prs_loaded);
         assert!(!app.status.prs_in_flight);
+    }
+
+    #[tokio::test]
+    async fn an_unrelated_ci_failure_leaves_the_pr_fetch_in_flight() {
+        let (_fixture, mut app) = app();
+        app.ci_remotes = vec![github_remote()];
+        cursor_to(&mut app, |row| matches!(row, Row::PrsHeader { .. }));
+        app.handle(key('\t'));
+        app.pending_ci = None;
+
+        app.handle(AppEvent::CiError("run list failed".into()));
+        assert!(
+            app.status.prs_in_flight,
+            "a failed runs poll says nothing about the PR fetch still on the wire"
+        );
+
+        app.handle(AppEvent::CiPrsError("pr list failed".into()));
+        assert!(
+            !app.status.prs_in_flight,
+            "its own failure frees the slot for a retry"
+        );
     }
 
     #[test]

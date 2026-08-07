@@ -69,6 +69,9 @@ pub enum AppEvent {
     },
     /// A CI provider call failed; surfaced as a status-bar message.
     CiError(String),
+    /// A failed PR-list fetch, told apart from every other CI failure so the
+    /// single-fetch-in-flight guard frees only its own slot.
+    CiPrsError(String),
     Quit,
 }
 

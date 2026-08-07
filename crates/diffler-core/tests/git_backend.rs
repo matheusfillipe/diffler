@@ -1218,6 +1218,35 @@ fn stash_push_ignores_untracked_files() {
 }
 
 #[test]
+fn unpushed_is_none_without_a_remote_tracking_ref() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\n");
+    fx.commit_all("init");
+    assert!(vcs(&fx).unpushed(10).expect("unpushed").is_none());
+}
+
+#[test]
+fn unpushed_stops_at_the_limit() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\n");
+    fx.commit_all("init");
+    fx.branch("elsewhere");
+    fx.track("elsewhere", "HEAD");
+    for n in 0..3 {
+        fx.write("a.txt", &format!("line {n}\n"));
+        fx.commit_all(&format!("commit {n}"));
+    }
+    let all = vcs(&fx)
+        .unpushed(10)
+        .expect("unpushed")
+        .expect("has remote");
+    assert_eq!(all.len(), 3, "everything past the remote ref: {all:?}");
+    let capped = vcs(&fx).unpushed(2).expect("unpushed").expect("has remote");
+    assert_eq!(capped.len(), 2);
+    assert_eq!(capped[0].subject, "commit 2", "newest first");
+}
+
+#[test]
 fn stash_pop_with_no_stash_is_rejected() {
     let fx = Fixture::new();
     fx.write("a.txt", "one\n");

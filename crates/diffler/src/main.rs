@@ -469,7 +469,7 @@ async fn run_ci_request(
         )),
         CiRequest::Prs => match provider.list_prs().await {
             Ok(prs) => AppEvent::CiPrs(prs),
-            Err(err) => AppEvent::CiError(err.to_string()),
+            Err(err) => AppEvent::CiPrsError(err.to_string()),
         },
         CiRequest::PrComments(number) => match provider.pr_comments(number).await {
             Ok(comments) => AppEvent::PrComments {

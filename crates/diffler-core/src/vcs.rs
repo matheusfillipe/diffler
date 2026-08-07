@@ -118,13 +118,14 @@ pub trait Vcs: Send {
     /// Commits reachable from `head` but not `base`, newest first: what a
     /// pull request from `head` would carry.
     fn commits_between(&self, base: &str, head: &str) -> Result<Vec<LogEntry>, VcsError>;
-    /// Commits on HEAD that no remote-tracking branch contains, newest first:
-    /// work that exists only on this machine. `None` when the repository has no
-    /// remote-tracking refs, where being pushed has no meaning yet. Asking the
-    /// remotes rather than the configured upstream is what makes the answer
-    /// true: an upstream may be another local branch, or a stale ref from
-    /// before the last fetch.
-    fn unpushed(&self) -> Result<Option<Vec<LogEntry>>, VcsError>;
+    /// Commits on HEAD that no remote-tracking branch contains, newest first,
+    /// at most `limit` of them: work that exists only on this machine. `None`
+    /// when the repository has no remote-tracking refs, where being pushed has
+    /// no meaning yet. Asking the remotes rather than the configured upstream
+    /// is what makes the answer true: an upstream may be another local branch,
+    /// or a stale ref from before the last fetch. `limit` bounds a walk that is
+    /// otherwise the whole history whenever no remote ref sits on it.
+    fn unpushed(&self, limit: usize) -> Result<Option<Vec<LogEntry>>, VcsError>;
     /// Local branches.
     fn branches(&self) -> Result<Vec<BranchInfo>, VcsError>;
     /// Local and remote-tracking branch names, for pickers that name a
