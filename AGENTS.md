@@ -118,7 +118,7 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   or the query silently matches almost nothing. `every_language_colours_a_sample`
   in `highlight.rs` is the guard.
 - **TUI.** neogit/doom keybindings, every binding configurable. Screens: Status
-  (Head + Untracked/Unstaged/Staged sections + recent commits; stage/unstage/
+  (the branch band, a rule, then the repo band; stage/unstage/
   discard/commit/branch), Log, Diff/review (file sidebar + pane, unified or
   `|`-toggled side-by-side; `c` comment, `V` visual select, `r` reply/resolve,
   `v` viewed, `y`/`Y` yank feedback as markdown, `e` `$EDITOR` jump). Comments,
@@ -132,6 +132,17 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   membership derived from the hash-keyed viewed marks so an edited file falls
   back into to-review). The status screen keeps the flat magit list. OSC52
   clipboard works over ssh/tmux.
+- **Status bands.** The branch band holds the working-tree sections, Unpushed
+  (commits no remote-tracking ref contains, walked to `UNPUSHED_LIMIT` and
+  counted `N+` at the ceiling), the branch's own PR, and Recent commits. A bare
+  rule then opens the repo band: Branches, Open pull requests (fetched the
+  first time the group unfolds), CI runs. A group is present when the repo can
+  have the thing at all, so zero is an answer and only a repo without remotes
+  loses its Unpushed section. `[`/`]` step group headers, `tab` folds one;
+  a commit carrying CI runs takes a `▸` between its glyph and sha and unfolds
+  them beneath it. Every async arrival (CI poll, PR fetch, watcher refresh)
+  re-seats the cursor through `status_cursor_anchor`, keyed by identity
+  (path, oid, branch name) rather than row index.
 - **Config.** TOML, XDG-layered (built-in defaults → `~/.config/diffler/config.toml`
   → `<repo>/.diffler/config.toml` → CLI flags; every flag has a config key).
   `diffler config --dump` prints the merged config with origins.
