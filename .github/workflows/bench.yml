@@ -17,6 +17,11 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # criterion prints a hard error per benchmark when a restored cache holds
+      # its directories without a `base` snapshot, and those lines land in the
+      # bencher output the next step parses. History lives in gh-pages, so the
+      # local comparison state is worth nothing here.
+      - run: rm -rf target/criterion
       - run: cargo bench -p diffler-core --bench pipeline -- --output-format bencher | tee bench.txt
       - uses: benchmark-action/github-action-benchmark@v1
         with:
