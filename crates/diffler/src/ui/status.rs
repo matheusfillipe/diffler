@@ -1230,7 +1230,7 @@ mod tests {
     }
 
     #[test]
-    fn the_head_line_names_an_upstream_that_is_not_the_branchs_namesake() {
+    fn the_head_line_names_an_upstream_other_than_the_branch_namesake() {
         let fixture = Fixture::new();
         fixture.write("base.rs", "pub fn base() {}\n");
         fixture.commit_all("initial commit");

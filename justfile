@@ -70,6 +70,8 @@ ci:
     cargo clippy --workspace --all-targets --all-features -- -D warnings
     cargo nextest run --workspace --all-features
     cargo test --doc --workspace
+    # CI fails the whole run on a typo; catch it here when the tool is around
+    command -v typos >/dev/null && typos || echo "typos not installed, skipping"
 
 # diff-pipeline benches (criterion)
 bench:

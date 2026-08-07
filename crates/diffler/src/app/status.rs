@@ -3153,7 +3153,7 @@ mod tests {
     }
 
     #[test]
-    fn the_current_branchs_own_pr_is_not_repeated_in_the_inline_list() {
+    fn the_current_branch_own_pr_is_not_repeated_in_the_inline_list() {
         let (_fixture, mut app) = app();
         app.ci_remotes = vec![github_remote()];
         app.pr = Some(pull_request(7));
