@@ -284,6 +284,22 @@ impl GitHubProvider {
         jobs
     }
 
+    /// Every name a job node answers to: its own id, plus the `name:` any
+    /// bundled workflow gives that id. Two workflows can share an id, and a
+    /// label from the wrong one simply matches nothing.
+    fn labels_of(&self, id: &str) -> Vec<String> {
+        let mut labels = vec![id.to_owned()];
+        labels.extend(
+            self.workflows
+                .iter()
+                .filter_map(|yaml| parse_workflow(yaml).ok())
+                .flatten()
+                .filter(|spec| spec.id == id && spec.label != id)
+                .map(|spec| spec.label),
+        );
+        labels
+    }
+
     async fn artifacts(&self, run: &RunId) -> Result<Vec<Artifact>> {
         let raw = self
             .api(&format!(
@@ -394,10 +410,17 @@ impl ForgeProvider for GitHubProvider {
             ))
             .await?;
         let view: JobList = parse_json("gh api jobs", &out)?;
+        // a node is keyed by its YAML id while the API names the job by its
+        // `name:`, so the run job answers to either
+        let labels = self.labels_of(&job.0);
         let job = view
             .jobs
             .iter()
-            .find(|j| j.name == job.0 || job_matches(&j.name, &job.0, &job.0))
+            .find(|j| {
+                labels
+                    .iter()
+                    .any(|label| j.name == *label || job_matches(&j.name, &job.0, label))
+            })
             .ok_or_else(|| CiError::NotFound(format!("job {} in run {}", job.0, run.0)))?;
         let steps = job.steps.iter().map(RunStep::to_meta).collect();
         // route through the same classifier `steps` was just built from
@@ -1693,6 +1716,19 @@ jobs:
         assert_eq!(chunk.steps.len(), 1);
         assert_eq!(chunk.steps[0].duration_secs, Some(3));
         assert_eq!(chunk.next_offset, chunk.text.len() as u64);
+    }
+
+    #[tokio::test]
+    async fn job_log_finds_a_job_the_workflow_renamed() {
+        // the node is keyed `publish`; the run job answers to `Publish`, the
+        // workflow's `name:` for it
+        let jobs = r#"{"jobs":[{"id":9,"name":"Publish","status":"completed","conclusion":"success",
+            "steps":[]}]}"#;
+        let chunk = provider(&[("runs/42/jobs", jobs), ("/logs", "shipped\n")])
+            .job_log(&RunId("42".into()), &JobId("publish".into()), 0)
+            .await
+            .expect("log");
+        assert!(chunk.text.contains("shipped"), "{chunk:?}");
     }
 
     #[tokio::test]
