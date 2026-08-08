@@ -222,6 +222,8 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use crossterm::event::KeyCode;
+
     use super::*;
 
     fn entry(subject: &str) -> LogEntry {
@@ -357,5 +359,151 @@ mod tests {
             "the form stays up so the title can be filled in"
         );
         assert!(app.pending_ci.is_none());
+    }
+
+    /// A draft parked on the base field, as the form hands it to the picker.
+    fn on_base(head: &str) -> PrDraft {
+        PrDraft {
+            base: "main".to_owned(),
+            head: head.to_owned(),
+            title: "a title".to_owned(),
+            body: String::new(),
+            draft: false,
+            commits: 1,
+            needs_push: false,
+            field: PrField::Base,
+        }
+    }
+
+    #[test]
+    fn the_base_field_picks_from_the_remotes_branches() {
+        let fixture = crate::test_support::standard_fixture();
+        fixture.remote("origin", "https://github.com/acme/widgets.git");
+        fixture.track("main", "HEAD");
+        fixture.branch("feat/x");
+        fixture.track("feat/x", "HEAD");
+        let mut app = App::new(fixture.review(), crate::config::LoadedConfig::default());
+
+        app.open_pr_base_list(Box::new(on_base("feat/x")));
+
+        let Some(super::super::Modal::PrBase { names, .. }) = &app.modal else {
+            panic!(
+                "the base field opens a picker, not a text field: {:?}",
+                app.modal
+            );
+        };
+        assert_eq!(names.first().map(String::as_str), Some("main"), "{names:?}");
+        assert!(
+            !names.iter().any(|name| name == "feat/x"),
+            "a branch cannot merge into itself: {names:?}"
+        );
+    }
+
+    #[test]
+    fn picking_a_base_returns_to_the_form_with_it() {
+        let fixture = crate::test_support::standard_fixture();
+        fixture.remote("origin", "https://github.com/acme/widgets.git");
+        fixture.track("main", "HEAD");
+        fixture.branch("release");
+        fixture.track("release", "HEAD");
+        let mut app = App::new(fixture.review(), crate::config::LoadedConfig::default());
+        app.open_pr_base_list(Box::new(on_base("feat/x")));
+
+        let Some(super::super::Modal::PrBase { names, list, .. }) = &mut app.modal else {
+            panic!("picker open");
+        };
+        let at = names
+            .iter()
+            .position(|name| name == "release")
+            .expect("the other branch is offered");
+        list.selected = list
+            .matches
+            .iter()
+            .position(|index| *index == at)
+            .expect("it is in the ranked matches");
+        app.handle_modal_key(&key(KeyCode::Enter));
+
+        let Some(super::super::Modal::CreatePr { draft }) = &app.modal else {
+            panic!("the form comes back: {:?}", app.modal);
+        };
+        assert_eq!(draft.base, "release");
+    }
+
+    #[test]
+    fn leaving_the_picker_keeps_the_form_and_its_base() {
+        let fixture = crate::test_support::standard_fixture();
+        fixture.remote("origin", "https://github.com/acme/widgets.git");
+        fixture.track("main", "HEAD");
+        let mut app = App::new(fixture.review(), crate::config::LoadedConfig::default());
+        app.open_pr_base_list(Box::new(on_base("feat/x")));
+        app.handle_modal_key(&key(KeyCode::Esc));
+
+        let Some(super::super::Modal::CreatePr { draft }) = &app.modal else {
+            panic!("the form comes back: {:?}", app.modal);
+        };
+        assert_eq!(draft.base, "main", "an abandoned pick changes nothing");
+    }
+
+    fn key(code: KeyCode) -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
+    }
+
+    fn click(row: u16) -> crossterm::event::MouseEvent {
+        crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: 4,
+            row,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn a_click_lands_on_the_row_under_the_pointer() {
+        let fixture = crate::test_support::standard_fixture();
+        fixture.remote("origin", "https://github.com/acme/widgets.git");
+        fixture.track("main", "HEAD");
+        fixture.branch("release");
+        fixture.track("release", "HEAD");
+        let mut app = App::new(fixture.review(), crate::config::LoadedConfig::default());
+        app.open_pr_base_list(Box::new(on_base("feat/x")));
+        // the renderer publishes where the rows went; stand in for a frame
+        app.modal_hits = Some(crate::ui::popup::ListHits {
+            first_row: 10,
+            rows: 4,
+            first_index: 0,
+        });
+
+        app.handle_modal_mouse(click(11));
+        let Some(super::super::Modal::PrBase { list, .. }) = &app.modal else {
+            panic!("picker open");
+        };
+        assert_eq!(list.selected, 1, "the second row is under row 11");
+
+        // clicking it again takes it, the way Enter would
+        app.handle_modal_mouse(click(11));
+        assert!(
+            matches!(app.modal, Some(super::super::Modal::CreatePr { .. })),
+            "a second click on the selected row activates: {:?}",
+            app.modal
+        );
+    }
+
+    #[test]
+    fn the_wheel_walks_the_create_form() {
+        let fixture = crate::test_support::standard_fixture();
+        let mut app = App::new(fixture.review(), crate::config::LoadedConfig::default());
+        app.modal = Some(super::super::Modal::CreatePr {
+            draft: Box::new(on_base("feat/x")),
+        });
+        app.handle_modal_mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::ScrollDown,
+            column: 4,
+            row: 12,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        });
+        let Some(super::super::Modal::CreatePr { draft }) = &app.modal else {
+            panic!("form open");
+        };
+        assert_eq!(draft.field, PrField::Title, "the wheel steps the field");
     }
 }

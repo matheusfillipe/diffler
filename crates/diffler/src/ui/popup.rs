@@ -304,7 +304,7 @@ pub struct CreatePrForm<'a> {
 const CREATE_PR_WIDTH: u16 = 76;
 
 impl CreatePrForm<'_> {
-    pub fn render(&self, frame: &mut Frame<'_>, theme: &Theme) {
+    pub fn render(&self, frame: &mut Frame<'_>, theme: &Theme) -> ListHits {
         use crate::app::pr_create::PrField;
         let draft = self.draft;
         let body_lines = draft.body.lines().count();
@@ -372,6 +372,12 @@ impl CreatePrForm<'_> {
                 .block(dialog_block(theme, " Create pull request ", Borders::TOP)),
             area,
         );
+        // the fields sit under the top rule, the head line and its blank
+        ListHits {
+            first_row: area.y + 3,
+            rows: PrField::ORDER.len() as u16,
+            first_index: 0,
+        }
     }
 }
 
@@ -533,8 +539,25 @@ pub(crate) struct FuzzyModal {
     pub footer: String,
 }
 
+/// Where a dialog put its rows this frame, so a click lands on the row under
+/// the pointer. `first_row` is the screen row of `first_index`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ListHits {
+    pub first_row: u16,
+    pub rows: u16,
+    pub first_index: usize,
+}
+
+impl ListHits {
+    /// The list index under `row`, or `None` off the rows.
+    pub fn index_at(&self, row: u16) -> Option<usize> {
+        let offset = row.checked_sub(self.first_row)?;
+        (offset < self.rows).then(|| self.first_index + offset as usize)
+    }
+}
+
 impl FuzzyModal {
-    pub(crate) fn render(&self, frame: &mut Frame<'_>, theme: &Theme) {
+    pub(crate) fn render(&self, frame: &mut Frame<'_>, theme: &Theme) -> ListHits {
         let width = self
             .items
             .iter()
@@ -611,6 +634,12 @@ impl FuzzyModal {
                 )),
             area,
         );
+        // the rows sit under the top rule and the query line
+        ListHits {
+            first_row: area.y + 2,
+            rows: visible as u16,
+            first_index: top,
+        }
     }
 }
 
@@ -939,7 +968,9 @@ mod create_pr_tests {
             needs_push: true,
             field: PrField::Title,
         };
-        let terminal = render(|frame, theme| CreatePrForm { draft: &draft }.render(frame, theme));
+        let terminal = render(|frame, theme| {
+            CreatePrForm { draft: &draft }.render(frame, theme);
+        });
         insta::assert_snapshot!(terminal.backend());
     }
 }

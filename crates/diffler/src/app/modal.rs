@@ -5,7 +5,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use std::path::Path;
 
 use super::fuzzy::{
-    FuzzyKey, FuzzyList, branch_haystack, comment_haystack, rev_haystack, selected,
+    FuzzyKey, FuzzyList, branch_haystack, comment_haystack, name_haystack, rev_haystack, selected,
 };
 use super::text_edit;
 use super::{App, BranchAction, Flow, InputOp, Modal, PendingOp, RevChoice};
@@ -39,6 +39,7 @@ impl App {
                 }
             }
             Some(Modal::BranchList { .. }) => self.handle_branch_list_key(key),
+            Some(Modal::PrBase { .. }) => self.handle_pr_base_key(key),
             Some(Modal::RevList { .. }) => self.handle_rev_list_key(key),
             Some(Modal::Comments { .. }) => self.handle_comments_key(key),
             Some(Modal::Palette { .. }) => return self.handle_palette_key(key),
@@ -100,6 +101,76 @@ impl App {
         }
     }
 
+    /// The pointer over an open dialog: the wheel walks the rows, a click puts
+    /// the selection under it, and a second click on the same row takes it.
+    pub(super) fn handle_modal_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
+        use crossterm::event::{MouseButton, MouseEventKind};
+        let row = mouse.row;
+        match mouse.kind {
+            MouseEventKind::ScrollDown => self.step_modal(true),
+            MouseEventKind::ScrollUp => self.step_modal(false),
+            MouseEventKind::Down(MouseButton::Left) => {
+                let Some(index) = self.modal_hits.and_then(|hits| hits.index_at(row)) else {
+                    return;
+                };
+                let repeat = self.register_click_is_double(mouse.column, row);
+                if self.point_modal_at(index) && repeat {
+                    self.activate_modal();
+                }
+            }
+            MouseEventKind::Down(MouseButton::Right) => self.cancel_modal(),
+            _ => {}
+        }
+    }
+
+    /// Move the selection one row. The create form steps its field; a list
+    /// walks its matches.
+    fn step_modal(&mut self, forward: bool) {
+        match self.modal.as_mut() {
+            Some(Modal::CreatePr { draft }) => draft.field = draft.field.step(forward),
+            other => {
+                let Some(list) = other.and_then(Modal::list_mut) else {
+                    return;
+                };
+                list.step_selection(forward);
+            }
+        }
+    }
+
+    /// Put the selection on `index`, reporting whether it was already there
+    /// (a click on the selected row is the one that activates).
+    fn point_modal_at(&mut self, index: usize) -> bool {
+        match self.modal.as_mut() {
+            Some(Modal::CreatePr { draft }) => {
+                let Some(field) = crate::app::pr_create::PrField::ORDER.get(index).copied() else {
+                    return false;
+                };
+                let same = draft.field == field;
+                draft.field = field;
+                same
+            }
+            other => {
+                let Some(list) = other.and_then(Modal::list_mut) else {
+                    return false;
+                };
+                let same = list.selected == index;
+                list.selected = index.min(list.matches.len().saturating_sub(1));
+                same
+            }
+        }
+    }
+
+    /// Take the selected row, as Enter would.
+    fn activate_modal(&mut self) {
+        let enter = KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::NONE);
+        self.handle_modal_key(&enter);
+    }
+
+    fn cancel_modal(&mut self) {
+        let esc = KeyEvent::new(KeyCode::Esc, crossterm::event::KeyModifiers::NONE);
+        self.handle_modal_key(&esc);
+    }
+
     pub(super) fn handle_create_pr_key(&mut self, key: &KeyEvent) -> Flow {
         let Some(Modal::CreatePr { draft }) = self.modal.as_mut() else {
             return Flow::Continue;
@@ -137,19 +208,24 @@ impl App {
             PrField::Body => {
                 let template = draft.body.clone();
                 let restore = draft.clone();
-                let queued = self.queue_message_editor("PR_EDITMSG", template, move |msg_path| {
-                    crate::editor::EditorPurpose::PrBody { msg_path, draft }
-                });
+                // a PR body is markdown on every forge, and the extension is
+                // what the editor reads the filetype from
+                let queued =
+                    self.queue_message_editor("PR_EDITMSG.md", template, move |msg_path| {
+                        crate::editor::EditorPurpose::PrBody { msg_path, draft }
+                    });
                 if !queued {
                     self.modal = Some(Modal::CreatePr { draft: restore });
                 }
             }
-            PrField::Base | PrField::Title => {
-                let (title, buffer) = match field {
-                    PrField::Base => ("Base branch".to_owned(), draft.base.clone()),
-                    _ => ("Title".to_owned(), draft.title.clone()),
-                };
-                self.open_input(title, buffer, InputOp::PrField { draft, field });
+            PrField::Base => self.open_pr_base_list(draft),
+            PrField::Title => {
+                let buffer = draft.title.clone();
+                self.open_input(
+                    "Title".to_owned(),
+                    buffer,
+                    InputOp::PrField { draft, field },
+                );
             }
         }
     }
@@ -277,6 +353,92 @@ impl App {
             entries,
             list,
         });
+    }
+
+    /// Pick the branch a pull request merges into. The remote's branches are
+    /// what a forge accepts, so those lead; a repo whose remote refs are not
+    /// fetched falls back to the local ones.
+    pub(super) fn open_pr_base_list(&mut self, draft: Box<crate::app::pr_create::PrDraft>) {
+        let names = self.base_candidates(&draft.head, &draft.base);
+        if names.is_empty() {
+            let buffer = draft.base.clone();
+            self.open_input(
+                "Base branch".to_owned(),
+                buffer,
+                InputOp::PrField {
+                    draft,
+                    field: crate::app::pr_create::PrField::Base,
+                },
+            );
+            return;
+        }
+        let mut list = FuzzyList::default();
+        list.rerank(&name_haystack(&names));
+        self.modal = Some(Modal::PrBase { names, list, draft });
+    }
+
+    /// Branch names a pull request can merge into, the current base first.
+    fn base_candidates(&self, head: &str, base: &str) -> Vec<String> {
+        let Ok(all) = self.review.vcs.all_branches() else {
+            return Vec::new();
+        };
+        let remotes = self.review.vcs.remotes().unwrap_or_default();
+        let mut names: Vec<String> = all
+            .iter()
+            .filter_map(|name| {
+                remotes
+                    .iter()
+                    .find_map(|remote| name.strip_prefix(&format!("{remote}/")))
+            })
+            .filter(|name| *name != head && *name != "HEAD")
+            .map(str::to_owned)
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        if let Some(at) = names.iter().position(|name| name == base) {
+            names.remove(at);
+        }
+        if !base.is_empty() {
+            names.insert(0, base.to_owned());
+        }
+        names
+    }
+
+    pub(super) fn handle_pr_base_key(&mut self, key: &KeyEvent) {
+        let Some(Modal::PrBase { names, list, .. }) = self.modal.as_mut() else {
+            return;
+        };
+        match list.feed(key) {
+            FuzzyKey::Submit => self.submit_pr_base(),
+            FuzzyKey::Cancel => self.close_pr_base(None),
+            FuzzyKey::Edited => {
+                let haystack = name_haystack(names);
+                list.rerank(&haystack);
+            }
+            _ => {}
+        }
+    }
+
+    fn submit_pr_base(&mut self) {
+        let Some(Modal::PrBase { names, list, .. }) = &self.modal else {
+            return;
+        };
+        // a query matching nothing keeps the dialog open, like fzf
+        let Some(name) = selected(list, names).cloned() else {
+            return;
+        };
+        self.close_pr_base(Some(name));
+    }
+
+    /// Back to the form, carrying the pick when there was one.
+    fn close_pr_base(&mut self, chosen: Option<String>) {
+        let Some(Modal::PrBase { mut draft, .. }) = self.modal.take() else {
+            return;
+        };
+        if let Some(name) = chosen {
+            draft.base = name;
+        }
+        self.modal = Some(Modal::CreatePr { draft });
     }
 
     pub(super) fn handle_rev_list_key(&mut self, key: &KeyEvent) {

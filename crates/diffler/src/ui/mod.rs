@@ -132,7 +132,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         Screen::Prs => prs::draw(frame, app),
         Screen::CiLog => ci_log::draw(frame, app),
     }
-    draw_modal(frame, app);
+    app.modal_hits = draw_modal(frame, app);
     // the which-key panel is a transient overlay, not a modal: it draws only
     // once the reveal timer has elapsed and never over a modal
     if app.modal.is_none()
@@ -142,13 +142,16 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     }
 }
 
-fn draw_modal(frame: &mut Frame<'_>, app: &App) {
+/// Draw the open modal, returning where it put its rows so the pointer can
+/// find them. `None` for a dialog with nothing to point at.
+fn draw_modal(frame: &mut Frame<'_>, app: &App) -> Option<popup::ListHits> {
     match &app.modal {
         Some(Modal::Confirm { message, .. }) => {
             popup::ConfirmDialog {
                 message: message.clone(),
             }
             .render(frame, &app.theme);
+            None
         }
         Some(Modal::Input {
             title,
@@ -162,6 +165,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) {
                 cursor: *cursor,
             }
             .render(frame, &app.theme);
+            None
         }
         Some(Modal::Help) => {
             let screen = match app.screen() {
@@ -179,19 +183,17 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) {
                 summary: Vec::new(),
             }
             .render(frame, &app.theme);
+            None
         }
         Some(
             Modal::BranchList { .. }
+            | Modal::PrBase { .. }
             | Modal::RevList { .. }
             | Modal::Comments { .. }
             | Modal::Palette { .. }
             | Modal::Themes { .. }
             | Modal::RemoteList { .. },
-        ) => {
-            if let Some(modal) = fuzzy_modal(app) {
-                modal.render(frame, &app.theme);
-            }
-        }
+        ) => fuzzy_modal(app).map(|modal| modal.render(frame, &app.theme)),
         Some(Modal::PullDiverged { upstream }) => {
             popup::Popup {
                 title: format!("Diverged from {upstream}"),
@@ -204,9 +206,10 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) {
                 summary: Vec::new(),
             }
             .render(frame, &app.theme);
+            None
         }
         Some(Modal::CreatePr { draft }) => {
-            popup::CreatePrForm { draft }.render(frame, &app.theme);
+            Some(popup::CreatePrForm { draft }.render(frame, &app.theme))
         }
         Some(Modal::ReviewVerdict { number, summary }) => {
             popup::Popup {
@@ -220,8 +223,9 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) {
                 summary: summary.clone(),
             }
             .render(frame, &app.theme);
+            None
         }
-        None => {}
+        None => None,
     }
 }
 
@@ -300,6 +304,12 @@ fn fuzzy_modal(app: &App) -> Option<popup::FuzzyModal> {
             let labels: Vec<String> = entries.iter().map(|c| c.label.clone()).collect();
             Some(plain_list((*title).to_owned(), list, &labels, " review"))
         }
+        Some(Modal::PrBase { names, list, .. }) => Some(plain_list(
+            "Base branch".to_owned(),
+            list,
+            names,
+            " set base",
+        )),
         Some(Modal::Comments { entries, list }) => Some(popup::FuzzyModal {
             title: format!("Comments: {}", app.active_review_source().label()),
             query: list.query.clone(),

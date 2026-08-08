@@ -213,8 +213,36 @@ pub enum Modal {
     CreatePr {
         draft: Box<crate::app::pr_create::PrDraft>,
     },
+    /// Base-branch picker for the create form. The draft rides along so the
+    /// form comes back either way, with the choice or without it.
+    PrBase {
+        names: Vec<String>,
+        list: fuzzy::FuzzyList,
+        draft: Box<crate::app::pr_create::PrDraft>,
+    },
     /// Keymap listing for the screen the popup opened over.
     Help,
+}
+
+impl Modal {
+    /// The fuzzy list a dialog drives, for the pointer to move.
+    pub(crate) fn list_mut(&mut self) -> Option<&mut fuzzy::FuzzyList> {
+        match self {
+            Self::BranchList { list, .. }
+            | Self::PrBase { list, .. }
+            | Self::RevList { list, .. }
+            | Self::Comments { list, .. }
+            | Self::Palette { list }
+            | Self::Themes { list }
+            | Self::RemoteList { list, .. } => Some(list),
+            Self::Confirm { .. }
+            | Self::Input { .. }
+            | Self::PullDiverged { .. }
+            | Self::ReviewVerdict { .. }
+            | Self::CreatePr { .. }
+            | Self::Help => None,
+        }
+    }
 }
 
 /// What choosing a remote in [`Modal::RemoteList`] does next.
@@ -540,6 +568,9 @@ pub struct App {
     /// A CI provider call the main loop should run off-thread (mirrors `pending_git`).
     pub pending_ci: Option<CiRequest>,
     pub modal: Option<Modal>,
+    /// Where the open modal drew its rows, so a click finds the one under the
+    /// pointer. Written by the renderer each frame.
+    pub modal_hits: Option<crate::ui::popup::ListHits>,
     /// Active `/` search over the focused pane, if any. `search.open` means the
     /// prompt is capturing input; otherwise highlights persist while `n`/`N`
     /// navigate.
@@ -703,6 +734,7 @@ impl App {
             ci_log: None,
             log_done: false,
             modal: None,
+            modal_hits: None,
             search: None,
             message,
             pending_clipboard: None,
@@ -914,11 +946,13 @@ impl App {
                 self.git_finished(&label, ok, &output);
                 Flow::Continue
             }
-            // mouse only drives the plain screens; a modal or transient owns
-            // input while open
-            AppEvent::Mouse(mouse)
-                if self.modal.is_none() && self.transient.is_none() && !self.composer_open() =>
-            {
+            // a dialog with rows takes the pointer for itself; a transient or
+            // the composer still owns input while open
+            AppEvent::Mouse(mouse) if self.modal.is_some() => {
+                self.handle_modal_mouse(mouse);
+                Flow::Continue
+            }
+            AppEvent::Mouse(mouse) if self.transient.is_none() && !self.composer_open() => {
                 self.handle_mouse(mouse);
                 Flow::Continue
             }

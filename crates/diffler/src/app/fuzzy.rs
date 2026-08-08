@@ -143,6 +143,11 @@ impl FuzzyList {
         }
     }
 
+    /// Move the selection one row, for a caller that is not a key press.
+    pub(crate) fn step_selection(&mut self, forward: bool) {
+        self.step(forward);
+    }
+
     fn step(&mut self, forward: bool) {
         let len = self.matches.len();
         if len == 0 {
@@ -194,6 +199,10 @@ pub(crate) fn selected<'a, T>(list: &FuzzyList, items: &'a [T]) -> Option<&'a T>
 
 pub(crate) fn branch_haystack(branches: &[diffler_core::vcs::BranchInfo]) -> Vec<String> {
     branches.iter().map(|b| b.name.clone()).collect()
+}
+
+pub(crate) fn name_haystack(names: &[String]) -> Vec<String> {
+    names.to_vec()
 }
 
 pub(crate) fn rev_haystack(entries: &[super::RevChoice]) -> Vec<String> {
