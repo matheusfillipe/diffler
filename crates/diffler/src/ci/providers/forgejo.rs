@@ -157,6 +157,8 @@ impl ForgeProvider for ForgejoProvider {
                 id: JobId(t.id.to_string()),
                 name: t.name.clone(),
                 status: map_status(&t.status, t.conclusion.as_deref()),
+                // Forgejo's task list carries no timings
+                duration_secs: None,
                 needs: Vec::new(),
             })
             .collect();

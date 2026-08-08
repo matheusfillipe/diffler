@@ -158,10 +158,10 @@ fn draw_sidebar(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &m
     // build only the visible slice: the tree can be far taller than the pane
     // and styling every row per frame is O(files)
     let height = inner.height.max(1) as usize;
-    let scroll = diff.tree_cursor.saturating_sub(height - 1);
+    let rows = diff.tree_rows(model, session);
+    let scroll = super::scroll_to_cursor(diff.tree_cursor, diff.sidebar_scroll, height, rows.len());
     diff.sidebar_scroll = scroll;
-    let lines: Vec<Line<'static>> = diff
-        .tree_rows(model, session)
+    let lines: Vec<Line<'static>> = rows
         .iter()
         .enumerate()
         .skip(scroll)
@@ -311,13 +311,7 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
         let base = diff.scroll_align.take().map_or(diff.split_scroll, |a| {
             align_scroll(a, sel_start, sel_height, height)
         });
-        let mut scroll = base.min(total.saturating_sub(1));
-        if sel_start < scroll {
-            scroll = sel_start;
-        }
-        if sel_start + sel_height > scroll + height {
-            scroll = (sel_start + sel_height).saturating_sub(height);
-        }
+        let scroll = super::scroll_to_span(sel_start, sel_height, base, height, total);
         diff.split_scroll = scroll;
         let mut lines: Vec<Line<'static>> = Vec::with_capacity(height);
         let mut top_row = None;
@@ -390,13 +384,7 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
     let base = diff.scroll_align.take().map_or(diff.scroll, |a| {
         align_scroll(a, cur_start, cur_height, height)
     });
-    let mut scroll = base.min(total.saturating_sub(1));
-    if cur_start < scroll {
-        scroll = cur_start;
-    }
-    if cur_start + cur_height > scroll + height {
-        scroll = (cur_start + cur_height).saturating_sub(height);
-    }
+    let scroll = super::scroll_to_span(cur_start, cur_height, base, height, total);
     diff.scroll = scroll;
 
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(height);
@@ -1510,13 +1498,15 @@ mod tests {
                 .position(|r| *r == Some(row))
         };
 
+        // the margin the view keeps applies to the align commands too, as it
+        // does in vim: `zt` stops `scrolloff` rows short of the top
         app.handle(key('z'));
         app.handle(key('t'));
         render(&mut app);
         assert_eq!(
             pane_row_of(&app, mid),
-            Some(0),
-            "zt puts the cursor at the top"
+            Some(crate::ui::SCROLLOFF),
+            "zt puts the cursor at the top, less the margin"
         );
 
         app.handle(key('z'));
@@ -1525,8 +1515,8 @@ mod tests {
         let viewport = app.diff.as_ref().unwrap().viewport as usize;
         assert_eq!(
             pane_row_of(&app, mid),
-            Some(viewport - 1),
-            "zb puts the cursor at the bottom"
+            Some(viewport - 1 - crate::ui::SCROLLOFF),
+            "zb puts the cursor at the bottom, less the margin"
         );
 
         app.handle(key('z'));

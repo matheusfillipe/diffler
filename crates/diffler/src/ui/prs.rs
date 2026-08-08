@@ -24,7 +24,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
     frame.render_widget(Paragraph::new(super::status_bar(app, bar.width)), bar);
 }
 
-fn draw_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
+fn draw_list(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     if app.prs.is_empty() {
         frame.render_widget(
             Paragraph::new(Line::styled(
@@ -36,7 +36,8 @@ fn draw_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
         return;
     }
     let height = area.height.max(1) as usize;
-    let scroll = app.prs_cursor.saturating_sub(height - 1);
+    let scroll = super::scroll_to_cursor(app.prs_cursor, app.prs_scroll, height, app.prs.len());
+    app.prs_scroll = scroll;
     let rows: Vec<Line<'static>> = app
         .prs
         .iter()

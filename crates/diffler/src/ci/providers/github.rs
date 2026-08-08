@@ -228,6 +228,7 @@ impl GitHubProvider {
         run_jobs: &[RunJob],
         head_sha: &str,
     ) -> Vec<CiJob> {
+        let now = time::OffsetDateTime::now_utc();
         // child node ids scope by the caller's label (the value here), not its
         // id: that's what GitHub prefixes run-job names with, so the ids stay
         // matchable for status and log lookup
@@ -263,6 +264,7 @@ impl GitHubProvider {
                         jobs.push(CiJob {
                             name: child_display(&id, &status_label, run_jobs),
                             status: aggregate_status(&id, &status_label, run_jobs),
+                            duration_secs: aggregate_duration(&id, &status_label, run_jobs, now),
                             id: JobId(id),
                             needs,
                         });
@@ -272,6 +274,7 @@ impl GitHubProvider {
                     id: JobId(spec.id.clone()),
                     name: spec.label.clone(),
                     status: aggregate_status(&spec.id, &spec.label, run_jobs),
+                    duration_secs: aggregate_duration(&spec.id, &spec.label, run_jobs, now),
                     needs: spec
                         .needs
                         .iter()
@@ -382,12 +385,14 @@ impl ForgeProvider for GitHubProvider {
             .unwrap_or_default();
         let jobs = if specs.is_empty() {
             // no workflow file: a flat, edgeless node per run job
+            let now = time::OffsetDateTime::now_utc();
             view.jobs
                 .iter()
                 .map(|j| CiJob {
                     id: JobId(j.name.clone()),
                     name: j.name.clone(),
                     status: map_status(&j.status, j.conclusion.as_deref()),
+                    duration_secs: j.duration_secs(now),
                     needs: Vec::new(),
                 })
                 .collect()
@@ -846,7 +851,20 @@ fn job_matches(run_job_name: &str, id: &str, label: &str) -> bool {
     name_matches(run_job_name, label) || name_matches(run_job_name, id)
 }
 
-/// Worst status across a job's matching run jobs, so one red leg shows red.
+/// The longest leg's time, so a matrix node reads as the wall clock its slowest
+/// member spent.
+fn aggregate_duration(
+    id: &str,
+    label: &str,
+    jobs: &[RunJob],
+    now: time::OffsetDateTime,
+) -> Option<i64> {
+    jobs.iter()
+        .filter(|j| job_matches(&j.name, id, label))
+        .filter_map(|j| j.duration_secs(now))
+        .max()
+}
+
 fn aggregate_status(id: &str, label: &str, jobs: &[RunJob]) -> JobStatus {
     jobs.iter()
         .filter(|j| job_matches(&j.name, id, label))
@@ -1002,8 +1020,29 @@ struct RunJob {
     name: String,
     status: String,
     conclusion: Option<String>,
+    #[serde(rename = "startedAt", alias = "started_at")]
+    started_at: Option<String>,
+    #[serde(rename = "completedAt", alias = "completed_at")]
+    completed_at: Option<String>,
     #[serde(default)]
     steps: Vec<RunStep>,
+}
+
+impl RunJob {
+    /// Time on the clock: finished jobs report their span, a running one
+    /// counts from its start.
+    fn duration_secs(&self, now: time::OffsetDateTime) -> Option<i64> {
+        // GitHub writes an unset time as its zero value (`0001-01-01…`), which
+        // parses, so both ends need the year to tell "not yet" from a real stamp
+        let real = |raw: &Option<String>| {
+            raw.as_deref()
+                .and_then(parse_created)
+                .filter(|at| at.year() >= 2000)
+        };
+        let started = real(&self.started_at)?;
+        let end = real(&self.completed_at).unwrap_or(now);
+        Some((end - started).whole_seconds().max(0))
+    }
 }
 
 #[derive(Deserialize)]
@@ -1452,6 +1491,38 @@ jobs:
         .expect("runs");
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].branch, "feat/x");
+    }
+
+    #[test]
+    fn a_running_job_counts_from_its_start() {
+        let now = parse_created("2026-06-20T00:05:00Z").expect("now");
+        let job = |started: &str, completed: &str| RunJob {
+            database_id: 1,
+            name: "lint".into(),
+            status: "in_progress".into(),
+            conclusion: None,
+            started_at: Some(started.to_owned()),
+            // an unfinished job carries GitHub's zero time, not a null
+            completed_at: Some(completed.to_owned()),
+            steps: Vec::new(),
+        };
+
+        let running = job("2026-06-20T00:00:00Z", "0001-01-01T00:00:00Z");
+        assert_eq!(
+            running.duration_secs(now),
+            Some(300),
+            "a job still going reads as the time it has taken so far"
+        );
+
+        let done = job("2026-06-20T00:00:00Z", "2026-06-20T00:00:42Z");
+        assert_eq!(done.duration_secs(now), Some(42));
+
+        let waiting = job("0001-01-01T00:00:00Z", "0001-01-01T00:00:00Z");
+        assert_eq!(
+            waiting.duration_secs(now),
+            None,
+            "a job that has not started has no time to show"
+        );
     }
 
     #[tokio::test]

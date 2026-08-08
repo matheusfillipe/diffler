@@ -351,6 +351,8 @@ const PENDING_TIMEOUT_TICKS: u8 = 4;
 const REFRESH_FLASH_TICKS: u8 = 4;
 /// Poll interval (in 250ms ticks) when the watcher is missing or broken.
 const FALLBACK_REFRESH_TICKS: u32 = 20;
+/// How often (in 250ms ticks) the wall clock behind every rendered age moves.
+const CLOCK_TICKS: u32 = 40;
 
 /// How much the CI poll slows while the terminal is unfocused. Focus regained
 /// polls at once, so the only cost of being wrong is a stale board nobody is
@@ -538,6 +540,10 @@ pub struct App {
     pub(crate) pending_pr_switch: Option<String>,
     pub prs: Vec<crate::ci::PullRequest>,
     pub prs_cursor: usize,
+    /// Scroll offsets of the two full-screen lists, kept so the view holds
+    /// still until the cursor reaches its margin.
+    pub(crate) prs_scroll: usize,
+    pub(crate) runs_scroll: usize,
     /// Outbound forge posts drained by the runtime each frame.
     pub pending_pr_posts: Vec<pr::PrPost>,
     pub(crate) pr_posts_inflight: std::collections::HashSet<String>,
@@ -724,6 +730,8 @@ impl App {
             pending_pr_posts: Vec::new(),
             pr_posts_inflight: std::collections::HashSet::new(),
             runs_cursor: 0,
+            prs_scroll: 0,
+            runs_scroll: 0,
             open_run: None,
             open_run_remote: None,
             extras: None,
@@ -1164,6 +1172,13 @@ impl App {
     /// One 250ms beat: age the timed UI state and re-poll what the screen is
     /// watching. `Idle` when the beat left the screen untouched, so the loop
     /// can skip a draw nobody would see.
+    /// Whether the open screen renders a time against `now_unix`. The diff,
+    /// graph, logs and PR list carry no ages, so the clock moving under them
+    /// changes nothing to look at.
+    fn screen_shows_ages(&self) -> bool {
+        matches!(self.screen(), Screen::Status | Screen::Log | Screen::Runs)
+    }
+
     fn on_tick(&mut self) -> Flow {
         let mut changed = self.expire_pending();
         changed |= self.refresh_flash > 0;
@@ -1175,6 +1190,15 @@ impl App {
         changed |= self.which_key_panel().is_some() != which_key;
         if self.tick_count.is_multiple_of(FALLBACK_REFRESH_TICKS) && self.watcher_unhealthy() {
             self.queue_refresh();
+        }
+        // every age on screen is measured against this clock, so a stopped one
+        // reads "0s" for as long as nothing else refreshes. A coarse step keeps
+        // them honest without repainting every second, and only a screen that
+        // shows an age is worth the repaint.
+        if self.tick_count.is_multiple_of(CLOCK_TICKS) {
+            let now = now_unix();
+            changed |= now != self.now_unix && self.screen_shows_ages();
+            self.now_unix = now;
         }
         // re-poll the active CI screen on a relaxed cadence (250ms ticks);
         // saturating + clamp so a pathological config can't zero or overflow it.
@@ -1754,6 +1778,7 @@ mod tests {
                 id: JobId("lint".into()),
                 name: "lint".into(),
                 status: JobStatus::Ok,
+                duration_secs: None,
                 needs: vec![],
             }],
         };
@@ -2736,6 +2761,29 @@ mod tests {
             assert!(ticks < 20, "the chord never expired");
         }
         assert!(app.pending.is_empty());
+    }
+
+    #[test]
+    fn the_clock_behind_every_age_keeps_moving() {
+        let (_fixture, mut app) = app();
+        // a clock stopped in the past is what makes a run read "0s" forever
+        app.now_unix = 0;
+        for _ in 0..CLOCK_TICKS {
+            app.handle(AppEvent::Tick);
+        }
+        assert!(
+            app.now_unix > 0,
+            "the tick moved the clock on: {}",
+            app.now_unix
+        );
+    }
+
+    #[test]
+    fn a_tick_between_clock_steps_paints_nothing() {
+        let (_fixture, mut app) = app();
+        app.now_unix = now_unix();
+        let quiet = (1..CLOCK_TICKS).all(|_| app.handle(AppEvent::Tick) == Flow::Idle);
+        assert!(quiet, "idle output stays at zero between clock steps");
     }
 
     #[test]

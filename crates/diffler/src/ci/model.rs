@@ -85,6 +85,20 @@ pub struct CiJob {
     pub name: String,
     pub status: JobStatus,
     pub needs: Vec<JobId>,
+    /// How long the job took, or has been running so far. `None` where the
+    /// forge reports no times, or before it starts.
+    pub duration_secs: Option<i64>,
+}
+
+/// A span of time as `13s` or `1m03s`: how a job or step reads wherever one is
+/// shown.
+pub fn fmt_duration(secs: i64) -> String {
+    let secs = secs.max(0);
+    if secs < 60 {
+        format!("{secs}s")
+    } else {
+        format!("{}m{:02}s", secs / 60, secs % 60)
+    }
 }
 
 /// A run plus its jobs: `jobs` + each job's `needs` is the dependency graph.

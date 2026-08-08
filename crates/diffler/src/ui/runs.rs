@@ -40,7 +40,7 @@ fn clip_ranges(
         .collect()
 }
 
-fn draw_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
+fn draw_list(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     if app.runs.is_empty() {
         frame.render_widget(
             Paragraph::new(Line::styled("  no runs yet…", app.theme.dim_style())),
@@ -49,7 +49,9 @@ fn draw_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
         return;
     }
     let height = area.height.max(1) as usize;
-    let scroll = app.runs_selected().saturating_sub(height - 1);
+    let scroll =
+        super::scroll_to_cursor(app.runs_selected(), app.runs_scroll, height, app.runs.len());
+    app.runs_scroll = scroll;
     let rows: Vec<Line<'static>> = app
         .runs
         .iter()

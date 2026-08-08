@@ -361,6 +361,7 @@ mod tests {
                 id: JobId("lint".into()),
                 name: "lint".into(),
                 status: JobStatus::Ok,
+                duration_secs: None,
                 needs: vec![],
             }],
         };
@@ -403,12 +404,14 @@ mod tests {
                     id: JobId("build".into()),
                     name: "build".into(),
                     status: JobStatus::Ok,
+                    duration_secs: None,
                     needs: vec![],
                 },
                 CiJob {
                     id: JobId("deploy".into()),
                     name: "deploy".into(),
                     status: JobStatus::Ok,
+                    duration_secs: None,
                     needs: vec![JobId("build".into())],
                 },
             ],

@@ -576,17 +576,39 @@ pub(super) fn age_spans(
     ]
 }
 
-/// Scroll offset that keeps `cursor` inside a `height`-row viewport: pull the
-/// top down to the cursor when it scrolls above, push it up when below. Shared
-/// by every row-list pane so scrolling behaves identically.
-pub(super) fn scroll_to_cursor(cursor: usize, scroll: usize, height: usize) -> usize {
-    if cursor < scroll {
-        cursor
-    } else if cursor >= scroll + height {
-        cursor + 1 - height
-    } else {
-        scroll
+/// Rows kept between the cursor and the edge of the viewport, vim's
+/// `scrolloff`: the view starts moving before the cursor reaches the last row,
+/// so there is always something to read ahead of it.
+pub(super) const SCROLLOFF: usize = 3;
+
+/// Scroll offset that keeps `cursor` inside a `height`-row viewport with
+/// [`SCROLLOFF`] rows to spare: the top follows the cursor down before it hits
+/// the bottom row and up before it hits the top one. The first and last rows of
+/// the content have no room for a margin, so the cursor reaches them. `total`
+/// is the row count; shared by every row-list pane so scrolling behaves
+/// identically.
+pub(super) fn scroll_to_cursor(cursor: usize, scroll: usize, height: usize, total: usize) -> usize {
+    scroll_to_span(cursor, 1, scroll, height, total)
+}
+
+/// [`scroll_to_cursor`] for a cursor that spans several lines, which a wrapped
+/// diff row does: `start` is its first line and `span` how many it occupies.
+pub(super) fn scroll_to_span(
+    start: usize,
+    span: usize,
+    scroll: usize,
+    height: usize,
+    total: usize,
+) -> usize {
+    if height == 0 {
+        return 0;
     }
+    // a viewport too short for two margins keeps the cursor centred instead
+    let gap = SCROLLOFF.min(height.saturating_sub(1) / 2);
+    let last = total.saturating_sub(height);
+    let highest = start.saturating_sub(gap);
+    let lowest = (start + span.max(1) + gap).saturating_sub(height);
+    scroll.min(highest).max(lowest).min(last)
 }
 
 /// Truncate to `max` graphemes with an ellipsis. Shared by the runs list and
@@ -746,7 +768,49 @@ pub(super) fn status_bar(app: &App, width: u16) -> Line<'static> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Line, Span, Theme, cursor_line, relative_time};
+    use super::{Line, SCROLLOFF, Span, Theme, cursor_line, relative_time, scroll_to_cursor};
+
+    #[test]
+    fn the_view_holds_still_until_the_cursor_reaches_its_margin() {
+        // 20 rows on screen, 100 in the list, parked at the top
+        let held = scroll_to_cursor(10, 0, 20, 100);
+        assert_eq!(held, 0, "a cursor in the middle moves nothing");
+
+        // walking down, the view starts moving SCROLLOFF rows short of the end
+        assert_eq!(scroll_to_cursor(16, 0, 20, 100), 0);
+        assert_eq!(scroll_to_cursor(17, 0, 20, 100), 1, "the margin is reached");
+        assert_eq!(
+            scroll_to_cursor(18, 1, 20, 100),
+            2,
+            "and keeps up from there"
+        );
+    }
+
+    #[test]
+    fn the_last_rows_are_reachable_without_a_margin() {
+        // there is nothing below the final row to keep in view
+        let scroll = scroll_to_cursor(99, 80, 20, 100);
+        assert_eq!(scroll, 80, "the last screenful is the end of the scroll");
+        assert_eq!(99 - scroll, 19, "the cursor still reaches the bottom row");
+    }
+
+    #[test]
+    fn the_first_rows_are_reachable_without_a_margin() {
+        assert_eq!(scroll_to_cursor(1, 5, 20, 100), 0, "the top pulls it home");
+        assert_eq!(scroll_to_cursor(0, 0, 20, 100), 0);
+    }
+
+    #[test]
+    fn a_short_viewport_keeps_the_cursor_centred() {
+        // fewer rows than two margins: the gap shrinks rather than fighting
+        for height in 1..=(SCROLLOFF * 2) {
+            let scroll = scroll_to_cursor(50, 0, height, 100);
+            assert!(
+                (scroll..scroll + height).contains(&50),
+                "the cursor stays on screen at height {height}"
+            );
+        }
+    }
 
     #[test]
     fn the_chip_names_the_pr_when_reviewing_one() {

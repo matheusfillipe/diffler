@@ -28,7 +28,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         log.viewport = body.height;
         log.body = body;
         let height = body.height.max(1) as usize;
-        log.scroll = super::scroll_to_cursor(log.cursor, log.scroll, height);
+        log.scroll = super::scroll_to_cursor(log.cursor, log.scroll, height, log.entries.len());
         let selection = log.selection();
         let selected =
             |index: usize| selection.is_some_and(|(start, end)| index >= start && index <= end);

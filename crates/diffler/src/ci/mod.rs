@@ -18,7 +18,7 @@ pub use exec::{CommandRunner, RealRunner};
 pub use model::{
     Annotation, AnnotationLevel, Artifact, Capabilities, CiJob, CiRun, DagSource, JobId, JobStatus,
     LogChunk, LogMode, LogStepMeta, PrComment, PullRequest, RunDetail, RunExtras, RunId,
-    ts_sort_key,
+    fmt_duration, ts_sort_key,
 };
 pub use provider::{
     ForgeProvider, NewPrComment, NewPrReview, NewPullRequest, ProviderKind, ReviewVerdict,
@@ -192,7 +192,10 @@ pub fn to_model(detail: &RunDetail) -> Model {
         .iter()
         .map(|job| Node {
             id: NodeId::new(job.id.0.clone()),
-            label: job.name.clone(),
+            label: match job.duration_secs {
+                Some(secs) => format!("{}  {}", job.name, fmt_duration(secs)),
+                None => job.name.clone(),
+            },
             status: node_status(job.status),
             group: None,
             foldable: None,
@@ -357,12 +360,14 @@ mod tests {
                     id: JobId("lint".into()),
                     name: "lint".into(),
                     status: JobStatus::Ok,
+                    duration_secs: None,
                     needs: vec![],
                 },
                 CiJob {
                     id: JobId("test".into()),
                     name: "test".into(),
                     status: JobStatus::Running,
+                    duration_secs: None,
                     needs: vec![JobId("lint".into())],
                 },
             ],
@@ -377,5 +382,34 @@ mod tests {
             .map(|e| (e.from.0.as_str(), e.to.0.as_str()))
             .collect();
         assert_eq!(edges, [("lint", "test")]);
+    }
+
+    #[test]
+    fn a_node_wears_the_time_its_job_spent() {
+        let detail = RunDetail {
+            run: run(),
+            jobs: vec![
+                CiJob {
+                    id: JobId("lint".into()),
+                    name: "lint".into(),
+                    status: JobStatus::Ok,
+                    duration_secs: Some(73),
+                    needs: vec![],
+                },
+                CiJob {
+                    id: JobId("queued".into()),
+                    name: "queued".into(),
+                    status: JobStatus::Queued,
+                    duration_secs: None,
+                    needs: vec![],
+                },
+            ],
+        };
+        let model = to_model(&detail);
+        assert_eq!(model.nodes[0].label, "lint  1m13s");
+        assert_eq!(
+            model.nodes[1].label, "queued",
+            "a job that has not started says nothing about time"
+        );
     }
 }

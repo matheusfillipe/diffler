@@ -10,6 +10,7 @@ use ratatui::widgets::Paragraph;
 
 use crate::app::App;
 use crate::app::ci_log::{CiLogRow, CiLogView};
+use crate::ci::fmt_duration;
 use crate::keymap::Action;
 use crate::theme::Theme;
 use crate::ui::{Hint, cursor_line, status_bar};
@@ -39,7 +40,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             view.body = body;
             let height = body.height.max(1) as usize;
             let rows = view.rows();
-            view.scroll = super::scroll_to_cursor(view.cursor, view.scroll, height);
+            view.scroll = super::scroll_to_cursor(view.cursor, view.scroll, height, rows.len());
             let selection = view.selection();
             let selected =
                 |i: usize| i == view.cursor || selection.is_some_and(|(lo, hi)| i >= lo && i <= hi);
@@ -124,16 +125,6 @@ fn row_line(
             spans.extend(super::highlight_spans(text, theme.base(), search, theme));
             Line::from(spans)
         }
-    }
-}
-
-/// A step's run time as `13s` or `1m03s`.
-fn fmt_duration(secs: i64) -> String {
-    let secs = secs.max(0);
-    if secs < 60 {
-        format!("{secs}s")
-    } else {
-        format!("{}m{:02}s", secs / 60, secs % 60)
     }
 }
 

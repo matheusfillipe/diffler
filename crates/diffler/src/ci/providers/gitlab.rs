@@ -581,6 +581,7 @@ fn jobs_with_stage_edges(raw: &[JobItem]) -> Vec<CiJob> {
                 id: JobId(job.id.to_string()),
                 name: job.name.clone(),
                 status: map_status(&job.status),
+                duration_secs: job.duration.map(|secs| secs.round() as i64),
                 needs,
             }
         })
@@ -637,6 +638,9 @@ struct JobItem {
     name: String,
     stage: String,
     status: String,
+    /// Seconds the job ran, as GitLab reports it; absent before it starts.
+    #[serde(default)]
+    duration: Option<f64>,
 }
 
 #[derive(Deserialize)]

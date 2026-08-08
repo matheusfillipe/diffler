@@ -78,6 +78,7 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16, Vec<Option<usize>>) 
     }
 
     let mut cursor_line_index = 0usize;
+    let mut cursor_span = 1usize;
     // the preamble lines (head, optional changes summary, blanks, empty-state)
     // belong to no row
     let mut line_rows: Vec<Option<usize>> = vec![None; lines.len()];
@@ -103,6 +104,7 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16, Vec<Option<usize>>) 
                     lines: &mut lines,
                     line_rows: &mut line_rows,
                     cursor_line_index: &mut cursor_line_index,
+                    cursor_span: &mut cursor_span,
                 };
                 index += hunk_block(app, file_diff, hunk, index, area.width, &mut accum);
             }
@@ -125,6 +127,7 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16, Vec<Option<usize>>) 
                 let on_cursor = index == app.status.cursor;
                 if on_cursor {
                     cursor_line_index = lines.len();
+                    cursor_span = 1;
                 }
                 let ranges = app
                     .search
@@ -140,8 +143,16 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16, Vec<Option<usize>>) 
     }
 
     let height = area.height.max(1) as usize;
-    let scroll = cursor_line_index.saturating_sub(height - 1) as u16;
-    (lines, scroll, line_rows)
+    // carry the previous offset in: the view holds still until the cursor
+    // reaches its margin, rather than re-deriving from the cursor every frame
+    let scroll = super::scroll_to_span(
+        cursor_line_index,
+        cursor_span,
+        app.status.scroll as usize,
+        height,
+        lines.len(),
+    );
+    (lines, scroll as u16, line_rows)
 }
 
 /// The body's growing output: rendered lines, their line->row table, and the
@@ -150,6 +161,9 @@ struct BodyAccum<'a> {
     lines: &'a mut Vec<Line<'static>>,
     line_rows: &'a mut Vec<Option<usize>>,
     cursor_line_index: &'a mut usize,
+    /// Terminal rows the cursor's own row occupies: a wrapped diff line is
+    /// taller than one, and the margin has to clear all of it.
+    cursor_span: &'a mut usize,
 }
 
 /// Append one expanded hunk (header + wrapped diff lines) with its
@@ -181,6 +195,7 @@ fn hunk_block(
     if let Some(offset) = selected {
         let above: usize = heights.iter().take(offset).sum();
         *accum.cursor_line_index = accum.lines.len() + above;
+        *accum.cursor_span = heights.get(offset).copied().unwrap_or(1);
     }
     // enrichment lands asynchronously: the hash in the key ties the spans
     // to the exact content they were computed from
