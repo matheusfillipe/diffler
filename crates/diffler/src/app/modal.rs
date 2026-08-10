@@ -43,6 +43,7 @@ impl App {
             Some(Modal::RevList { .. }) => self.handle_rev_list_key(key),
             Some(Modal::Comments { .. }) => self.handle_comments_key(key),
             Some(Modal::Palette { .. }) => return self.handle_palette_key(key),
+            Some(Modal::FilePicker { .. }) => return self.handle_file_picker_key(key),
             Some(Modal::Themes { .. }) => self.handle_theme_key(key),
             Some(Modal::RemoteList { .. }) => self.handle_remote_list_key(key),
             Some(Modal::PullDiverged { .. }) => self.handle_pull_diverged_key(key),

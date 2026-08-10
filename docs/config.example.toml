@@ -77,6 +77,8 @@
 # open_editor = "e"
 # send_feedback = "Z"
 # comments_overview = "C"
+# open_file_picker = "<c-t>"   # fuzzy over every tracked file
+# blame = "B"                  # blame the file under the cursor
 # refresh = "<c-r>"
 
 # Prefix keys on the status screen, named after the transient menu each opens.
@@ -125,13 +127,29 @@
 # toggle_fold = "za"
 # switch_theme = "T"
 # open_editor = "e"
+# open_file_picker = "<c-t>"
+# blame = "B"
 # open = "<cr>"
 # refresh = "<c-r>"
 
 [keys.log]
 # visual_select = "V"
 # open = "<cr>"
+# open_file_picker = "<c-t>"
 # refresh = "<c-r>"
+
+# The whole-file view, reached with the file picker or by blaming a file.
+[keys.file]
+# toggle_blame = "b"
+# next_section = "]"       # next commit block in the blame column
+# prev_section = "["
+# open = "<cr>"            # review the commit that wrote this line
+# open_editor = "e"
+# open_file_picker = "<c-t>"
+# center_cursor = "zz"
+# cursor_top = "zt"
+# cursor_bottom = "zb"
+# switch_theme = "T"
 
 [keys.ci_log]
 # toggle_fold = "<tab>"    # also <cr>

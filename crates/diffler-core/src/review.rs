@@ -22,6 +22,15 @@ pub enum ReviewError {
     Store(#[from] StoreError),
 }
 
+/// One file as the file view reads it: worktree text plus per-line blame.
+#[derive(Debug)]
+pub struct FileSnapshot {
+    pub path: String,
+    pub content: String,
+    /// Empty when git has nothing to attribute, e.g. an untracked file.
+    pub blame: Vec<crate::vcs::BlameSpan>,
+}
+
 /// One landed off-thread refresh.
 #[derive(Debug)]
 pub struct Refreshed {
@@ -118,6 +127,21 @@ impl Review {
             status,
             model,
             against,
+        })
+    }
+
+    /// One file's worktree text and blame, for the file view. Opens its own
+    /// backend so it runs on a worker thread like [`Review::compute_refresh`].
+    /// A file git cannot blame (untracked, or newly staged) still loads: it
+    /// comes back with text and no spans.
+    pub fn compute_file(repo_root: &Path, rel: &str) -> Result<FileSnapshot, ReviewError> {
+        let vcs = GitVcs::open(repo_root)?;
+        let path = Path::new(rel);
+        let content = std::fs::read_to_string(repo_root.join(path)).map_err(VcsError::from)?;
+        Ok(FileSnapshot {
+            path: rel.to_owned(),
+            blame: vcs.blame(path).unwrap_or_default(),
+            content,
         })
     }
 

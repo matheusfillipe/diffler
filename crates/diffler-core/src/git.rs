@@ -6,7 +6,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::model::{DiffLine, DiffModel, FileDiff, FileStatus, Hunk, HunkId, LineKind, hunk_id};
-use crate::vcs::{BranchInfo, HeadInfo, LogEntry, NetworkOp, StatusModel, Vcs, VcsError};
+use crate::vcs::{
+    BlameSpan, BranchInfo, HeadInfo, LogEntry, NetworkOp, StatusModel, Vcs, VcsError,
+};
 
 /// git's own default amount of context around hunks.
 pub const DEFAULT_CONTEXT_LINES: u32 = 3;
@@ -343,6 +345,60 @@ impl Vcs for GitVcs {
             return Ok(None);
         }
         self.walk_entries(walk, limit).map(Some)
+    }
+
+    fn blame(&self, rel: &Path) -> Result<Vec<BlameSpan>, VcsError> {
+        let mut options = git2::BlameOptions::new();
+        options.track_copies_same_file(true);
+        let blame = self.repo.blame_file(rel, Some(&mut options))?;
+        // blame_file only knows committed content, so an edited worktree would
+        // report the wrong line for everything below the edit; blame_buffer
+        // re-maps the spans onto what is actually on disk.
+        let workdir = self.workdir()?.join(rel);
+        let blame = match fs::read(&workdir) {
+            Ok(bytes) => blame.blame_buffer(&bytes)?,
+            Err(_) => blame,
+        };
+
+        let mut out = Vec::new();
+        for hunk in blame.iter() {
+            let oid = hunk.final_commit_id();
+            let commit = self.repo.find_commit(oid).ok();
+            let full = oid.to_string();
+            out.push(BlameSpan {
+                start_line: u32::try_from(hunk.final_start_line()).unwrap_or(u32::MAX),
+                line_count: u32::try_from(hunk.lines_in_hunk()).unwrap_or(u32::MAX),
+                oid7: short7(&full),
+                oid: full,
+                author: commit
+                    .as_ref()
+                    .map(|c| c.author().name().unwrap_or_default().to_owned())
+                    .unwrap_or_default(),
+                time_unix: commit.as_ref().map_or(0, |c| c.time().seconds()),
+                summary: commit
+                    .as_ref()
+                    .and_then(|c| c.summary().ok().flatten().map(str::to_owned))
+                    .unwrap_or_default(),
+                committed: !oid.is_zero(),
+            });
+        }
+        out.sort_by_key(|span| span.start_line);
+        Ok(out)
+    }
+
+    fn tracked_files(&self) -> Result<Vec<PathBuf>, VcsError> {
+        let index = self.repo.index()?;
+        let mut out: Vec<PathBuf> = index
+            .iter()
+            .filter_map(|entry| {
+                std::str::from_utf8(&entry.path)
+                    .ok()
+                    .map(|path| PathBuf::from(path.to_owned()))
+            })
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        Ok(out)
     }
 
     fn branches(&self) -> Result<Vec<BranchInfo>, VcsError> {

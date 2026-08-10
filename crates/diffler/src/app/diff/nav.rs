@@ -396,7 +396,16 @@ impl App {
     /// rows (new side, old side for deletions), at the anchor for comment
     /// rows, at the top otherwise (hunk header, or focus on the list).
     fn editor_at_diff_cursor(&mut self) {
-        let target = self.diff.as_ref().and_then(|diff| {
+        match self.diff_cursor_file_line() {
+            Some((path, line)) => self.request_editor(&path, line),
+            None => self.info("no file under the cursor"),
+        }
+    }
+
+    /// The file and line the diff cursor addresses, shared by the editor jump
+    /// and blame so both land on the same place.
+    pub(crate) fn diff_cursor_file_line(&self) -> Option<(String, Option<u32>)> {
+        self.diff.as_ref().and_then(|diff| {
             let model = diff.model(&self.review);
             let file = model.files.get(diff.selected)?;
             if diff.focus == Pane::List {
@@ -417,11 +426,7 @@ impl App {
                     .get(*comment)
                     .map(|c| (c.anchor.file.clone(), c.anchor.line_end.or(c.anchor.line))),
             }
-        });
-        match target {
-            Some((path, line)) => self.request_editor(&path, line),
-            None => self.info("no file under the cursor"),
-        }
+        })
     }
 
     fn diff_move(&mut self, delta: isize) {

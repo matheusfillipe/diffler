@@ -178,6 +178,8 @@ pub struct KeysConfig {
     pub ci_log: BTreeMap<String, String>,
     pub graph: BTreeMap<String, String>,
     pub prs: BTreeMap<String, String>,
+    /// The whole-file view with its blame column.
+    pub file: BTreeMap<String, String>,
     pub commit: BTreeMap<String, String>,
     pub branch: BTreeMap<String, String>,
     pub diff_menu: BTreeMap<String, String>,
@@ -545,6 +547,7 @@ fn apply_layer(
         (layer.keys.ci_log, &mut config.keys.ci_log, "ci_log"),
         (layer.keys.graph, &mut config.keys.graph, "graph"),
         (layer.keys.prs, &mut config.keys.prs, "prs"),
+        (layer.keys.file, &mut config.keys.file, "file"),
         (layer.keys.commit, &mut config.keys.commit, "commit"),
         (layer.keys.branch, &mut config.keys.branch, "branch"),
         (

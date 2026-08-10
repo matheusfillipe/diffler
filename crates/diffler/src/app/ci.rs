@@ -90,7 +90,7 @@ impl App {
                 }),
                 _ => None,
             },
-            Screen::Log | Screen::Prs => None,
+            Screen::Log | Screen::Prs | Screen::File => None,
         };
     }
 

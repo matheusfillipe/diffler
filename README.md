@@ -198,6 +198,8 @@ Vim-like: `j`/`k`/`gg`/`G` motions, `/` search, and
 | `b` `P` | open a pull request for the current branch |
 | `d` | review the working tree against something else: `d` base branch, `c` last commit, `b` a branch, `s` a commit, `w` HEAD |
 | `y` / `Y` | copy feedback as markdown (file / all) |
+| `<c-t>` | find any tracked file: Enter opens it, `b` blames it, `e` sends it to `$EDITOR` |
+| `B` | blame the file under the cursor, at that line (`b` toggles the column, `<cr>` reviews the commit) |
 | `e` | open the file in `$EDITOR` |
 | `?` | full keymap for the current screen |
 | `q` | back / quit |

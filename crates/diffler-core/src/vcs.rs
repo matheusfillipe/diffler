@@ -72,6 +72,21 @@ pub enum NetworkOp {
     FetchAll,
 }
 
+/// A run of consecutive lines a single commit last touched.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlameSpan {
+    /// 1-based first line of the run in the blamed content.
+    pub start_line: u32,
+    pub line_count: u32,
+    pub oid: String,
+    pub oid7: String,
+    pub author: String,
+    pub time_unix: i64,
+    pub summary: String,
+    /// False for lines that exist only in the worktree, which no commit owns.
+    pub committed: bool,
+}
+
 /// Per-area views of the working tree, neogit-style sections.
 #[derive(Debug, Clone, Default)]
 pub struct StatusModel {
@@ -126,6 +141,15 @@ pub trait Vcs: Send {
     /// or a stale ref from before the last fetch. `limit` bounds a walk that is
     /// otherwise the whole history whenever no remote ref sits on it.
     fn unpushed(&self, limit: usize) -> Result<Option<Vec<LogEntry>>, VcsError>;
+    /// Last commit to touch each line of `rel` as the worktree has it, in line
+    /// order. Lines the worktree added since the last commit come back as one
+    /// span of their own, owned by no commit.
+    fn blame(&self, rel: &Path) -> Result<Vec<BlameSpan>, VcsError>;
+
+    /// Every tracked file, repo-relative and sorted. This is the index, so a
+    /// staged new file is tracked and an untracked one is not.
+    fn tracked_files(&self) -> Result<Vec<PathBuf>, VcsError>;
+
     /// Local branches.
     fn branches(&self) -> Result<Vec<BranchInfo>, VcsError>;
     /// Local and remote-tracking branch names, for pickers that name a

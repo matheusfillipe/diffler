@@ -974,10 +974,16 @@ impl App {
     }
 
     fn editor_at_status_cursor(&mut self) {
-        let Some(row) = self.cursor_row() else {
-            self.info("no file under the cursor");
-            return;
-        };
+        match self.status_cursor_file_line() {
+            Some((path, line)) => self.request_editor(&path, line),
+            None => self.info("no file under the cursor"),
+        }
+    }
+
+    /// The file and line the status cursor addresses, shared by the editor
+    /// jump and blame.
+    pub(crate) fn status_cursor_file_line(&self) -> Option<(String, Option<u32>)> {
+        let row = self.cursor_row()?;
         // For an expanded inline diff line, pass the line number so the
         // editor opens at the right spot, same as the dedicated diff view.
         let line_no = if let Row::DiffLine {
@@ -995,11 +1001,8 @@ impl App {
         } else {
             None
         };
-        let Some(path) = self.row_file(&row).map(|(_, file, _)| file.path.clone()) else {
-            self.info("no file under the cursor");
-            return;
-        };
-        self.request_editor(&path, line_no);
+        let path = self.row_file(&row).map(|(_, file, _)| file.path.clone())?;
+        Some((path, line_no))
     }
 
     fn cursor_row(&self) -> Option<Row> {
