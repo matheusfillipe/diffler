@@ -88,6 +88,7 @@ pub enum Action {
     MarkViewed,
     CopyFileFeedback,
     CopyAllFeedback,
+    CopyUrl,
     Search,
     SearchNext,
     SearchPrev,
@@ -182,6 +183,7 @@ impl Action {
             Self::MarkViewed => "mark_viewed",
             Self::CopyFileFeedback => "copy_file_feedback",
             Self::CopyAllFeedback => "copy_all_feedback",
+            Self::CopyUrl => "copy_url",
             Self::Search => "search",
             Self::SearchNext => "search_next",
             Self::SearchPrev => "search_prev",
@@ -276,6 +278,7 @@ impl Action {
             Self::MarkViewed => "mark the file or folder viewed",
             Self::CopyFileFeedback => "copy this file's feedback as markdown",
             Self::CopyAllFeedback => "copy all feedback as markdown",
+            Self::CopyUrl => "copy the web URL",
             Self::Search => "search",
             Self::SearchNext => "next search match",
             Self::SearchPrev => "previous search match",
@@ -291,7 +294,7 @@ impl Action {
         }
     }
 
-    pub(crate) const ALL: [Self; 88] = [
+    pub(crate) const ALL: [Self; 89] = [
         Self::CenterCursor,
         Self::CursorTop,
         Self::CursorBottom,
@@ -368,6 +371,7 @@ impl Action {
         Self::MarkViewed,
         Self::CopyFileFeedback,
         Self::CopyAllFeedback,
+        Self::CopyUrl,
         Self::Search,
         Self::SearchNext,
         Self::SearchPrev,
@@ -452,6 +456,7 @@ const STATUS_DEFAULTS: &[(&str, Action)] = &[
     ("e", Action::OpenEditor),
     ("<c-t>", Action::OpenFilePicker),
     ("B", Action::Blame),
+    ("y", Action::CopyUrl),
     ("Z", Action::SendFeedback),
     ("C", Action::CommentsOverview),
     ("/", Action::Search),
@@ -622,6 +627,7 @@ const PRS_DEFAULTS: &[(&str, Action)] = &[
     ("<c-b>", Action::FullPageUp),
     ("<cr>", Action::Open),
     ("b", Action::BranchCheckout),
+    ("y", Action::CopyUrl),
     ("<c-r>", Action::Refresh),
     ("/", Action::Search),
     ("n", Action::SearchNext),

@@ -508,6 +508,12 @@ impl App {
     #[allow(clippy::too_many_lines)] // one flat block per band, straight-line by design
     pub fn visible_rows(&self) -> Vec<Row> {
         let mut rows = Vec::new();
+        // the branch's own PR leads the band: it is the thing the branch is
+        // for, and it lands from an async fetch, so whoever sets `pr`
+        // re-seats the cursor over the rows it displaces
+        if self.pr.is_some() {
+            rows.push(Row::Pr);
+        }
         for section in Section::ALL {
             let files = self.section_files(section);
             if files.is_empty() {
@@ -575,11 +581,6 @@ impl App {
                     rows.extend(self.nested_runs(&entry.oid));
                 }
             }
-        }
-        // the branch's own PR belongs beside its commits, and lands from an async
-        // fetch, so whoever sets `pr` re-seats the cursor over the rows it displaces
-        if self.pr.is_some() {
-            rows.push(Row::Pr);
         }
         {
             rows.push(Row::RecentHeader {
@@ -919,6 +920,7 @@ impl App {
             Action::StashPush => self.stash_push(),
             Action::StashPop => self.stash_pop(),
             Action::OpenEditor => self.editor_at_status_cursor(),
+            Action::CopyUrl => self.copy_at_status_cursor(),
             other => {
                 self.info(format!("{} is not implemented yet", other.name()));
             }
@@ -971,6 +973,37 @@ impl App {
             }
             Err(err) => self.error(err.to_string()),
         }
+    }
+
+    /// Copy whatever the cursor is on, in the form you would paste elsewhere:
+    /// a pull request as its forge URL, a commit as its full sha.
+    fn copy_at_status_cursor(&mut self) {
+        let copied = match self.cursor_row() {
+            Some(Row::Pr) => self
+                .pr
+                .as_ref()
+                .map(|pr| (pr.url.clone(), format!("#{}", pr.number))),
+            Some(Row::OpenPr { index }) => self
+                .other_prs()
+                .get(index)
+                .map(|pr| (pr.url.clone(), format!("#{}", pr.number))),
+            Some(Row::Commit { index }) => self
+                .status
+                .recent
+                .get(index)
+                .map(|entry| (Some(entry.oid.clone()), entry.oid7.clone())),
+            Some(Row::Unpushed { index }) => self
+                .status
+                .unpushed_commits()
+                .get(index)
+                .map(|entry| (Some(entry.oid.clone()), entry.oid7.clone())),
+            _ => None,
+        };
+        let Some((value, label)) = copied else {
+            self.info("nothing to copy here");
+            return;
+        };
+        self.copy_or_report(value, &label);
     }
 
     fn editor_at_status_cursor(&mut self) {
@@ -3153,6 +3186,75 @@ mod tests {
             !app.status.prs_in_flight,
             "its own failure frees the slot for a retry"
         );
+    }
+
+    #[test]
+    fn the_branch_pr_leads_the_status_rows() {
+        let (_fixture, mut app) = app();
+        app.ci_remotes = vec![github_remote()];
+        app.pr = Some(pull_request(7));
+        assert!(
+            matches!(app.visible_rows().first(), Some(Row::Pr)),
+            "the PR sits above the working-tree sections, not beside the commits"
+        );
+    }
+
+    #[test]
+    fn y_on_the_branch_pr_copies_its_url() {
+        let (_fixture, mut app) = app();
+        app.ci_remotes = vec![github_remote()];
+        let mut pr = pull_request(7);
+        pr.url = Some("https://example.invalid/acme/widgets/pull/7".to_owned());
+        app.pr = Some(pr);
+        cursor_to(&mut app, |row| matches!(row, Row::Pr));
+
+        app.dispatch_status(Action::CopyUrl);
+        assert_eq!(
+            app.pending_clipboard.as_deref(),
+            Some("https://example.invalid/acme/widgets/pull/7")
+        );
+    }
+
+    #[test]
+    fn y_on_a_commit_copies_its_full_sha() {
+        let (_fixture, mut app) = app();
+        app.status.group_folded[Group::Recent.index()] = false;
+        let row = cursor_to(&mut app, |row| matches!(row, Row::Commit { .. }));
+        let Row::Commit { index } = row else {
+            panic!("a commit row");
+        };
+        let expected = app.status.recent[index].oid.clone();
+
+        app.dispatch_status(Action::CopyUrl);
+        assert_eq!(app.pending_clipboard.as_deref(), Some(expected.as_str()));
+        assert_eq!(expected.len(), 40, "the full sha, not the abbreviation");
+    }
+
+    #[test]
+    fn y_on_a_pr_without_a_url_copies_nothing_and_says_so() {
+        let (_fixture, mut app) = app();
+        app.ci_remotes = vec![github_remote()];
+        app.pr = Some(pull_request(7));
+        cursor_to(&mut app, |row| matches!(row, Row::Pr));
+
+        app.dispatch_status(Action::CopyUrl);
+        assert!(app.pending_clipboard.is_none());
+        assert!(
+            app.message
+                .as_ref()
+                .is_some_and(|m| m.text.contains("no URL for #7")),
+            "{:?}",
+            app.message
+        );
+    }
+
+    #[test]
+    fn y_on_a_row_that_points_at_nothing_copies_nothing() {
+        let (_fixture, mut app) = app();
+        cursor_to(&mut app, |row| matches!(row, Row::RecentHeader { .. }));
+
+        app.dispatch_status(Action::CopyUrl);
+        assert!(app.pending_clipboard.is_none());
     }
 
     #[test]

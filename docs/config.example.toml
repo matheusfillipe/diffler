@@ -79,6 +79,7 @@
 # comments_overview = "C"
 # open_file_picker = "<c-t>"   # fuzzy over every tracked file
 # blame = "B"                  # blame the file under the cursor
+# copy_url = "y"               # a pull request as its URL, a commit as its sha
 # refresh = "<c-r>"
 
 # Prefix keys on the status screen, named after the transient menu each opens.
@@ -160,6 +161,7 @@
 [keys.prs]
 # open = "<cr>"
 # branch_checkout = "b"
+# copy_url = "y"          # the forge's web URL for the pull request
 # refresh = "<c-r>"
 
 [keys.graph]

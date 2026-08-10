@@ -14,6 +14,7 @@ use crate::ui::Hint;
 const HINTS: &[Hint] = &[
     Hint::Leaf(&[Action::Open], "review"),
     Hint::Leaf(&[Action::BranchCheckout], "checkout"),
+    Hint::Leaf(&[Action::CopyUrl], "yank url"),
     Hint::Leaf(&[Action::Search], "search"),
     Hint::Leaf(&[Action::Help], "help"),
 ];
@@ -95,10 +96,19 @@ mod tests {
         }
     }
 
+    /// The hint line reads the active screen's keymap, so a test that draws
+    /// this pane while the app still sits on the status screen renders the
+    /// wrong keys.
+    fn prs_app(fixture: &crate::test_support::Fixture) -> App {
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.push_screen(crate::app::Screen::Prs);
+        app
+    }
+
     #[test]
     fn renders_the_pr_list_with_a_selection() {
         let fixture = standard_fixture();
-        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let mut app = prs_app(&fixture);
         app.prs = vec![
             pr(12, "Add widgets", "alice", "feat/widgets", "main"),
             pr(9, "Fix flaky test", "bob", "fix/flaky", "main"),
@@ -113,7 +123,7 @@ mod tests {
     #[test]
     fn renders_no_open_pull_requests() {
         let fixture = standard_fixture();
-        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let mut app = prs_app(&fixture);
         let backend = TestBackend::new(80, 6);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal.draw(|f| draw(f, &mut app)).expect("draw");

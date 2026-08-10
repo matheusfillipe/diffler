@@ -1368,6 +1368,17 @@ impl App {
         });
     }
 
+    /// Put a resolved value on the clipboard, or name what had none. Only a
+    /// pull request can come back empty; a commit always has its sha.
+    pub(crate) fn copy_or_report(&mut self, value: Option<String>, missing: &str) {
+        let Some(value) = value else {
+            self.info(format!("no URL for {missing}"));
+            return;
+        };
+        self.info(format!("copied {value}"));
+        self.pending_clipboard = Some(value);
+    }
+
     pub fn error(&mut self, text: impl Into<String>) {
         self.message = Some(StatusMessage {
             text: text.into(),

@@ -180,8 +180,21 @@ impl App {
                 }
             }
             Action::BranchCheckout => self.checkout_selected_pr(),
+            Action::CopyUrl => self.copy_selected_pr_url(),
             _ => {}
         }
+    }
+
+    /// Put the forge's web URL for the selected pull request on the clipboard.
+    /// Every provider fills `url` from its own field (GitHub and Forgejo
+    /// `html_url`, GitLab `web_url`), so this works wherever the list does.
+    fn copy_selected_pr_url(&mut self) {
+        let Some(pr) = self.prs.get(self.prs_cursor) else {
+            self.info("no pull request under the cursor");
+            return;
+        };
+        let (number, url) = (pr.number, pr.url.clone());
+        self.copy_or_report(url, &format!("#{number}"));
     }
 
     /// Marks the git ops whose completion may consume the `pending_pr_*`
@@ -809,6 +822,58 @@ mod tests {
     use super::*;
     use crate::config::LoadedConfig;
     use crate::test_support::standard_fixture;
+
+    fn listed_pr(url: Option<&str>) -> crate::ci::PullRequest {
+        crate::ci::PullRequest {
+            number: 9,
+            title: "remote only".into(),
+            url: url.map(str::to_owned),
+            base_ref: "main".into(),
+            head_ref: "feat/remote".into(),
+            head_oid: "0000000000000000000000000000000000000abc".into(),
+            author: "reviewer".into(),
+        }
+    }
+
+    #[test]
+    fn y_copies_the_forge_url_of_the_selected_pull_request() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.prs = vec![listed_pr(Some(
+            "https://example.invalid/acme/widgets/pull/9",
+        ))];
+
+        app.dispatch_prs(crate::keymap::Action::CopyUrl);
+        assert_eq!(
+            app.pending_clipboard.as_deref(),
+            Some("https://example.invalid/acme/widgets/pull/9")
+        );
+    }
+
+    #[test]
+    fn copying_a_pull_request_with_no_url_says_so_and_copies_nothing() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.prs = vec![listed_pr(None)];
+
+        app.dispatch_prs(crate::keymap::Action::CopyUrl);
+        assert!(app.pending_clipboard.is_none());
+        assert!(
+            app.message
+                .as_ref()
+                .is_some_and(|m| m.text.contains("no URL for #9")),
+            "{:?}",
+            app.message
+        );
+    }
+
+    #[test]
+    fn copying_with_an_empty_pull_request_list_copies_nothing() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.dispatch_prs(crate::keymap::Action::CopyUrl);
+        assert!(app.pending_clipboard.is_none());
+    }
 
     #[test]
     fn reviewing_a_listed_pr_never_needs_a_checkout() {

@@ -145,15 +145,17 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   `Vcs::tracked_files`: the diff screens list only changed files, so the picker
   is the one way to a file the review does not touch, and it also sends one
   straight to `$EDITOR`.
-- **Status bands.** The branch band holds the working-tree sections, Unpushed
-  (commits no remote-tracking ref contains, walked to `UNPUSHED_LIMIT` and
-  counted `N+` at the ceiling), the branch's own PR, and Recent commits. A bare
+- **Status bands.** The branch band leads with the branch's own PR when it has
+  one, since that is what the branch is for, then the working-tree sections,
+  Unpushed (commits no remote-tracking ref contains, walked to `UNPUSHED_LIMIT`
+  and counted `N+` at the ceiling), and Recent commits. A bare
   rule then opens the repo band: Branches, Open pull requests (fetched the
   first time the group unfolds), CI runs. A group is present when the repo can
   have the thing at all, so zero is an answer and only a repo without remotes
   loses its Unpushed section. `[`/`]` step group headers, `tab` folds one;
   a commit carrying CI runs takes a `▸` between its glyph and sha and unfolds
-  them beneath it. Every async arrival (CI poll, PR fetch, watcher refresh)
+  them beneath it. `y` copies whatever the cursor addresses in the form you
+  would paste: a pull request as its forge URL, a commit as its full sha. Every async arrival (CI poll, PR fetch, watcher refresh)
   re-seats the cursor through `status_cursor_anchor`, keyed by identity
   (path, oid, branch name) rather than row index.
 - **Config.** TOML, XDG-layered (built-in defaults → `~/.config/diffler/config.toml`

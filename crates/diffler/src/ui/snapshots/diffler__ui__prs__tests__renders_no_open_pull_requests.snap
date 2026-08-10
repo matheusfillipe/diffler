@@ -2,9 +2,9 @@
 source: crates/diffler/src/ui/prs.rs
 expression: terminal.backend()
 ---
-" <cr> review · / search · ? help                                                "
+" <cr> review · b checkout · y yank url · / search · ? help                      "
 "  no open pull requests…                                                        "
 "                                                                                "
 "                                                                                "
 "                                                                                "
-" STATUS  fixture@main · mcp off · 3 files, 0 viewed                             "
+" PRS  fixture@main · mcp off · 3 files, 0 viewed                                "
