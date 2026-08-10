@@ -292,8 +292,39 @@ fn dispatch_refresh(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     });
 }
 
+/// Load a requested file's text and blame off the main task, highlighting it
+/// on the same worker so the screen opens fully rendered.
+fn dispatch_file(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
+    let Some(request) = app.pending_file.take() else {
+        return;
+    };
+    let tx = tx.clone();
+    let root = app.review.repo_root.clone();
+    let highlighter = std::sync::Arc::clone(&app.highlighter);
+    tokio::task::spawn_blocking(move || {
+        let result = diffler_core::review::Review::compute_file(&root, &request.path)
+            .map_err(|err| format!("{}: {err}", request.path))
+            .map(|snapshot| {
+                let highlights = highlighter.highlight(&snapshot.path, &snapshot.content);
+                app::file::FileView::new(
+                    snapshot.path,
+                    &snapshot.content,
+                    highlights,
+                    snapshot.blame,
+                    request.blame,
+                )
+            });
+        let _ = tx.send(AppEvent::FileLoaded {
+            result: Box::new(result),
+            line: request.line,
+            token: request.token,
+        });
+    });
+}
+
 fn dispatch_workers(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     dispatch_enrich(app, tx);
+    dispatch_file(app, tx);
     dispatch_pr_posts(app, tx);
     dispatch_refresh(app, tx);
 }

@@ -5,6 +5,7 @@
 pub mod ci_log;
 pub mod diff;
 pub mod diff_render;
+pub mod file;
 pub mod graph;
 pub mod log;
 pub mod popup;
@@ -131,6 +132,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         Screen::Runs => runs::draw(frame, app),
         Screen::Prs => prs::draw(frame, app),
         Screen::CiLog => ci_log::draw(frame, app),
+        Screen::File => file::draw(frame, app),
     }
     app.modal_hits = draw_modal(frame, app);
     // the which-key panel is a transient overlay, not a modal: it draws only
@@ -176,6 +178,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) -> Option<popup::ListHits> {
                 Screen::Runs => "runs",
                 Screen::Prs => "prs",
                 Screen::CiLog => "logs",
+                Screen::File => "file",
             };
             popup::Popup {
                 title: format!("Help: {screen} keys"),
@@ -192,6 +195,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) -> Option<popup::ListHits> {
             | Modal::Comments { .. }
             | Modal::Palette { .. }
             | Modal::Themes { .. }
+            | Modal::FilePicker { .. }
             | Modal::RemoteList { .. },
         ) => fuzzy_modal(app).map(|modal| modal.render(frame, &app.theme)),
         Some(Modal::PullDiverged { upstream }) => {
@@ -349,6 +353,16 @@ fn fuzzy_modal(app: &App) -> Option<popup::FuzzyModal> {
         )),
         Some(Modal::RemoteList { remotes, list, .. }) => {
             Some(plain_list("Remote".to_owned(), list, remotes, " select"))
+        }
+        Some(Modal::FilePicker { paths, list }) => {
+            let mut modal = plain_list(
+                format!("File · {} tracked", paths.len()),
+                list,
+                paths,
+                " open",
+            );
+            modal.footer = footer_for(list, " · b blame · e editor", " open");
+            Some(modal)
         }
         _ => None,
     }
@@ -703,6 +717,7 @@ pub(super) fn status_bar(app: &App, width: u16) -> Line<'static> {
         Screen::Runs => " RUNS ".to_owned(),
         Screen::Prs => " PRS ".to_owned(),
         Screen::CiLog => " LOGS ".to_owned(),
+        Screen::File => " FILE ".to_owned(),
     };
     let repo = app
         .review

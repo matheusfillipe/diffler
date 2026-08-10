@@ -12,6 +12,7 @@ pub mod composer;
 mod diff;
 pub mod enrich;
 mod expand;
+pub mod file;
 pub(crate) mod fuzzy;
 mod log;
 pub mod markdown;
@@ -75,6 +76,8 @@ pub enum Screen {
     Prs,
     /// A single job's log view.
     CiLog,
+    /// One whole file, with or without its blame column.
+    File,
 }
 
 impl Screen {
@@ -87,6 +90,7 @@ impl Screen {
             Self::Diff => Context::Diff,
             Self::Graph => Context::Graph,
             Self::Prs => Context::Prs,
+            Self::File => Context::File,
         }
     }
 }
@@ -220,6 +224,12 @@ pub enum Modal {
         list: fuzzy::FuzzyList,
         draft: Box<crate::app::pr_create::PrDraft>,
     },
+    /// Fuzzy picker over every tracked file: the one way to a file the review
+    /// does not touch.
+    FilePicker {
+        paths: Vec<String>,
+        list: fuzzy::FuzzyList,
+    },
     /// Keymap listing for the screen the popup opened over.
     Help,
 }
@@ -234,6 +244,7 @@ impl Modal {
             | Self::Comments { list, .. }
             | Self::Palette { list }
             | Self::Themes { list }
+            | Self::FilePicker { list, .. }
             | Self::RemoteList { list, .. } => Some(list),
             Self::Confirm { .. }
             | Self::Input { .. }
@@ -285,6 +296,7 @@ struct Keymaps {
     ci_log: Keymap,
     graph: Keymap,
     prs: Keymap,
+    file: Keymap,
 }
 
 impl Keymaps {
@@ -302,6 +314,7 @@ impl Keymaps {
             ci_log: build(Context::CiLog),
             graph: build(Context::Graph),
             prs: build(Context::Prs),
+            file: build(Context::File),
         }
     }
 }
@@ -573,6 +586,13 @@ pub struct App {
     log_done: bool,
     /// A CI provider call the main loop should run off-thread (mirrors `pending_git`).
     pub pending_ci: Option<CiRequest>,
+    /// The whole-file view, present while the `File` screen is up.
+    pub file: Option<file::FileView>,
+    /// A file whose content and blame the main loop should load off-thread.
+    pub pending_file: Option<file::FileOpen>,
+    /// Bumped per file request, so a load that outlives the user's interest is
+    /// recognised and dropped when it lands.
+    file_token: u64,
     pub modal: Option<Modal>,
     /// Where the open modal drew its rows, so a click finds the one under the
     /// pointer. Written by the renderer each frame.
@@ -745,6 +765,9 @@ impl App {
             modal_hits: None,
             search: None,
             message,
+            file: None,
+            pending_file: None,
+            file_token: 0,
             pending_clipboard: None,
             pending_editor: None,
             pending_pr_create: None,
@@ -828,6 +851,7 @@ impl App {
             Context::CiLog => &self.keymaps.ci_log,
             Context::Graph => &self.keymaps.graph,
             Context::Prs => &self.keymaps.prs,
+            Context::File => &self.keymaps.file,
         }
     }
 
@@ -898,6 +922,11 @@ impl App {
                 self.on_enriched(*outcome);
                 Flow::Continue
             }
+            AppEvent::FileLoaded {
+                result,
+                line,
+                token,
+            } => self.on_file_loaded(*result, line, token),
             AppEvent::CiRuns(runs) => {
                 self.on_ci_runs(runs);
                 Flow::Continue
@@ -1011,8 +1040,8 @@ impl App {
             Screen::Diff => self.diff_mouse(gesture),
             Screen::Log => self.log_mouse(gesture),
             Screen::CiLog => self.ci_log_mouse(gesture),
-            // the Runs/Graph screens are keyboard-driven
-            Screen::Graph | Screen::Runs | Screen::Prs => {}
+            // the Runs/Graph/File screens are keyboard-driven
+            Screen::Graph | Screen::Runs | Screen::Prs | Screen::File => {}
         }
     }
 
@@ -1048,7 +1077,7 @@ impl App {
                         view.visual_anchor = None;
                     }
                 }
-                Screen::Status | Screen::Graph | Screen::Runs | Screen::Prs => {}
+                Screen::Status | Screen::Graph | Screen::Runs | Screen::Prs | Screen::File => {}
             }
             self.pending.clear();
             return Flow::Continue;
@@ -1130,7 +1159,7 @@ impl App {
                 .ci_log
                 .as_ref()
                 .is_some_and(|v| v.visual_anchor.is_some()),
-            Screen::Status | Screen::Graph | Screen::Runs | Screen::Prs => false,
+            Screen::Status | Screen::Graph | Screen::Runs | Screen::Prs | Screen::File => false,
         }
     }
 
@@ -1257,6 +1286,8 @@ impl App {
             Action::CreatePr => self.create_pr_start(),
             Action::CommentsOverview => self.open_comments_overview(),
             Action::SwitchTheme => self.open_theme_picker(),
+            Action::OpenFilePicker => self.open_file_picker(),
+            Action::Blame => self.blame_focused(),
             action => match self.screen() {
                 Screen::Status => self.dispatch_status(action),
                 Screen::Log => self.dispatch_log(action),
@@ -1265,6 +1296,7 @@ impl App {
                 Screen::Runs => self.dispatch_runs(action),
                 Screen::Graph => self.dispatch_graph(action),
                 Screen::Prs => self.dispatch_prs(action),
+                Screen::File => self.dispatch_file(action),
             },
         }
         Flow::Continue
@@ -1283,9 +1315,13 @@ impl App {
             return Flow::Quit;
         }
         self.search = None;
+        // leaving a screen abandons the file it asked for, so a slow load
+        // cannot arrive later and push the file view over what replaced it
+        self.cancel_file_load();
         match self.screens.pop() {
             Some(Screen::Diff) => self.diff = None,
             Some(Screen::Log) => self.log = None,
+            Some(Screen::File) => self.file = None,
             Some(Screen::Graph) => {
                 self.graph = None;
                 self.open_run = None;

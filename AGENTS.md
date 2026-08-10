@@ -126,12 +126,25 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   finished card will, under the anchored line, at the top of the file for a
   whole-file comment, under the thread for a reply. Runs (the
   CI run list), Graph (CI run detail on the shared node-graph component), Prs
-  (open PRs of the repo's forge), and CiLog (a
-  job's log folded into its real steps). The diff sidebar has two layouts
+  (open PRs of the repo's forge), CiLog (a
+  job's log folded into its real steps), and File (below). The diff sidebar has two layouts
   (`t` cycles): tree, and review (to-review vs a folded viewed bucket,
   membership derived from the hash-keyed viewed marks so an edited file falls
   back into to-review). The status screen keeps the flat magit list. OSC52
   clipboard works over ssh/tmux.
+- **File view and blame.** `Vcs::blame` returns line runs, one per commit,
+  remapped onto the worktree buffer so an edited file attributes its committed
+  lines correctly and its new ones to nobody. `Review::compute_file` opens its
+  own backend like `compute_refresh`, so the read, the blame and the highlight
+  all run on the blocking pool and the screen opens rendered. One screen serves
+  both jobs: `Screen::File` is the file viewer, and `b` toggles its blame
+  column, because a viewer and a blame view differ by one column. `]`/`[` step
+  commit runs, `<cr>` reviews the commit that wrote the cursor line. The gutter
+  prints a commit only on the first line of its run. Reached with `B` on the
+  file under the cursor (status or diff), or `<c-t>`, the fuzzy picker over
+  `Vcs::tracked_files`: the diff screens list only changed files, so the picker
+  is the one way to a file the review does not touch, and it also sends one
+  straight to `$EDITOR`.
 - **Status bands.** The branch band holds the working-tree sections, Unpushed
   (commits no remote-tracking ref contains, walked to `UNPUSHED_LIMIT` and
   counted `N+` at the ceiling), the branch's own PR, and Recent commits. A bare

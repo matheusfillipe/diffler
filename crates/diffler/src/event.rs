@@ -24,6 +24,14 @@ pub enum AppEvent {
     RepoChanged,
     /// A background enrichment (emphasis/highlight/scope) finished.
     Enriched(Box<crate::app::enrich::EnrichOutcome>),
+    /// A file the view asked for came back loaded and blamed, or failed to.
+    FileLoaded {
+        result: Box<Result<crate::app::file::FileView, String>>,
+        /// Line the request wanted the cursor on, 1-based.
+        line: Option<u32>,
+        /// The request this answers; a stale one is dropped on arrival.
+        token: u64,
+    },
     /// An off-thread repo refresh finished (status + working diff, plus the
     /// open three-dot diff when one is up), or failed.
     RefreshDone(Box<Result<diffler_core::review::Refreshed, String>>),

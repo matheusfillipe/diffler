@@ -96,6 +96,7 @@ impl App {
                 Pane::Diff => d.cursor,
             }),
             Screen::CiLog => self.ci_log.as_ref().map_or(0, |v| v.cursor),
+            Screen::File => self.file.as_ref().map_or(0, |v| v.cursor),
             Screen::Runs => self.runs_cursor,
             Screen::Prs => self.prs_cursor,
             Screen::Graph => self.graph.as_ref().map_or(0, GraphView::selected_index),
@@ -131,6 +132,9 @@ impl App {
                     .enumerate()
                     .map(|(i, row)| (i, view.row_text(*row).to_owned()))
                     .collect()
+            }),
+            Screen::File => self.file.as_ref().map_or_else(Vec::new, |view| {
+                view.lines.iter().cloned().enumerate().collect()
             }),
             Screen::Graph => self
                 .graph
@@ -182,6 +186,11 @@ impl App {
             }
             Screen::CiLog => {
                 if let Some(v) = self.ci_log.as_mut() {
+                    v.cursor = row;
+                }
+            }
+            Screen::File => {
+                if let Some(v) = self.file.as_mut() {
                     v.cursor = row;
                 }
             }

@@ -1268,3 +1268,60 @@ fn stash_pop_that_conflicts_is_rejected() {
     let err = v.stash_pop().expect_err("conflicting pop");
     assert!(matches!(err, VcsError::Rejected(_)), "got {err:?}");
 }
+
+#[test]
+fn blame_attributes_each_line_to_the_commit_that_wrote_it() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\ntwo\n");
+    fx.commit_all_at("first", 1_000);
+    fx.write("a.txt", "one\ntwo\nthree\n");
+    fx.commit_all_at("second", 2_000);
+
+    let spans = vcs(&fx).blame(Path::new("a.txt")).expect("blame");
+    let by_line: Vec<(u32, &str, i64)> = spans
+        .iter()
+        .map(|s| (s.start_line, s.summary.as_str(), s.time_unix))
+        .collect();
+    assert_eq!(
+        by_line,
+        vec![(1, "first", 1_000), (3, "second", 2_000)],
+        "the untouched first two lines stay with the first commit"
+    );
+    assert!(spans.iter().all(|s| s.committed && s.oid7.len() == 7));
+}
+
+#[test]
+fn blame_maps_onto_the_worktree_so_uncommitted_lines_are_their_own_span() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\ntwo\n");
+    fx.commit_all("base");
+    fx.write("a.txt", "inserted\none\ntwo\n");
+
+    let spans = vcs(&fx).blame(Path::new("a.txt")).expect("blame");
+    let first = spans.first().expect("a span");
+    assert_eq!((first.start_line, first.line_count), (1, 1));
+    assert!(!first.committed, "the new top line belongs to no commit");
+    assert_eq!(
+        spans.get(1).map(|s| (s.start_line, s.committed)),
+        Some((2, true)),
+        "the committed lines shift down instead of staying at line 1"
+    );
+}
+
+#[test]
+fn tracked_files_lists_the_index_not_the_worktree() {
+    let fx = Fixture::new();
+    fx.write("src/a.txt", "x\n");
+    fx.write("b.txt", "y\n");
+    fx.commit_all("base");
+    fx.write("untracked.txt", "z\n");
+    fx.write("staged.txt", "w\n");
+    fx.stage("staged.txt");
+
+    let files = vcs(&fx).tracked_files().expect("tracked");
+    let names: Vec<String> = files
+        .iter()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .collect();
+    assert_eq!(names, vec!["b.txt", "src/a.txt", "staged.txt"]);
+}

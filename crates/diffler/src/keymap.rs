@@ -92,6 +92,9 @@ pub enum Action {
     SearchNext,
     SearchPrev,
     OpenEditor,
+    OpenFilePicker,
+    Blame,
+    ToggleBlame,
     SendFeedback,
     Help,
     Palette,
@@ -183,6 +186,9 @@ impl Action {
             Self::SearchNext => "search_next",
             Self::SearchPrev => "search_prev",
             Self::OpenEditor => "open_editor",
+            Self::OpenFilePicker => "open_file_picker",
+            Self::Blame => "blame",
+            Self::ToggleBlame => "toggle_blame",
             Self::SendFeedback => "send_feedback",
             Self::Help => "help",
             Self::Palette => "palette",
@@ -274,6 +280,9 @@ impl Action {
             Self::SearchNext => "next search match",
             Self::SearchPrev => "previous search match",
             Self::OpenEditor => "open in $EDITOR",
+            Self::OpenFilePicker => "find a file in the repository",
+            Self::Blame => "blame this file",
+            Self::ToggleBlame => "toggle the blame column",
             Self::SendFeedback => "send feedback to waiting agents",
             Self::Help => "help",
             Self::Palette => "command palette",
@@ -282,7 +291,7 @@ impl Action {
         }
     }
 
-    pub(crate) const ALL: [Self; 85] = [
+    pub(crate) const ALL: [Self; 88] = [
         Self::CenterCursor,
         Self::CursorTop,
         Self::CursorBottom,
@@ -363,6 +372,9 @@ impl Action {
         Self::SearchNext,
         Self::SearchPrev,
         Self::OpenEditor,
+        Self::OpenFilePicker,
+        Self::Blame,
+        Self::ToggleBlame,
         Self::SendFeedback,
         Self::Help,
         Self::Palette,
@@ -387,6 +399,8 @@ pub enum Context {
     Graph,
     /// The pull-request list.
     Prs,
+    /// The whole-file view, with or without its blame column.
+    File,
 }
 
 /// Outcome of feeding one key press into a keymap.
@@ -436,6 +450,8 @@ const STATUS_DEFAULTS: &[(&str, Action)] = &[
     ("[", Action::PrevSection),
     ("]", Action::NextSection),
     ("e", Action::OpenEditor),
+    ("<c-t>", Action::OpenFilePicker),
+    ("B", Action::Blame),
     ("Z", Action::SendFeedback),
     ("C", Action::CommentsOverview),
     ("/", Action::Search),
@@ -510,9 +526,40 @@ const DIFF_DEFAULTS: &[(&str, Action)] = &[
     ("y", Action::CopyFileFeedback),
     ("Y", Action::CopyAllFeedback),
     ("e", Action::OpenEditor),
+    ("<c-t>", Action::OpenFilePicker),
+    ("B", Action::Blame),
     ("Z", Action::SendFeedback),
     ("C", Action::CommentsOverview),
     ("S", Action::SubmitReview),
+    ("/", Action::Search),
+    ("n", Action::SearchNext),
+    ("N", Action::SearchPrev),
+    ("<c-k>", Action::Palette),
+    ("?", Action::Help),
+    ("q", Action::Back),
+];
+
+const FILE_DEFAULTS: &[(&str, Action)] = &[
+    ("j", Action::MoveDown),
+    ("k", Action::MoveUp),
+    ("gg", Action::GoTop),
+    ("G", Action::GoBottom),
+    ("<c-d>", Action::HalfPageDown),
+    ("<c-u>", Action::HalfPageUp),
+    ("<c-f>", Action::FullPageDown),
+    ("<c-b>", Action::FullPageUp),
+    ("zz", Action::CenterCursor),
+    ("zt", Action::CursorTop),
+    ("zb", Action::CursorBottom),
+    ("b", Action::ToggleBlame),
+    // the commit blocks of the blame column are this screen's sections, so
+    // they take the bracket pair that steps hunks in the diff
+    ("[", Action::PrevSection),
+    ("]", Action::NextSection),
+    ("<cr>", Action::Open),
+    ("e", Action::OpenEditor),
+    ("T", Action::SwitchTheme),
+    ("<c-t>", Action::OpenFilePicker),
     ("/", Action::Search),
     ("n", Action::SearchNext),
     ("N", Action::SearchPrev),
@@ -533,6 +580,7 @@ const LOG_DEFAULTS: &[(&str, Action)] = &[
     ("V", Action::VisualSelect),
     ("<cr>", Action::Open),
     ("<c-r>", Action::Refresh),
+    ("<c-t>", Action::OpenFilePicker),
     ("/", Action::Search),
     ("n", Action::SearchNext),
     ("N", Action::SearchPrev),
@@ -615,6 +663,7 @@ impl Keymap {
             Context::CiLog => (CI_LOG_DEFAULTS, NO_PREFIXES, &keys.ci_log, "ci_log"),
             Context::Graph => (GRAPH_DEFAULTS, NO_PREFIXES, &keys.graph, "graph"),
             Context::Prs => (PRS_DEFAULTS, NO_PREFIXES, &keys.prs, "prs"),
+            Context::File => (FILE_DEFAULTS, NO_PREFIXES, &keys.file, "file"),
         };
         let mut keymap = Self {
             // defaults are static strings validated by tests; a default that
@@ -999,6 +1048,7 @@ mod tests {
             (CI_LOG_DEFAULTS, Context::CiLog),
             (GRAPH_DEFAULTS, Context::Graph),
             (PRS_DEFAULTS, Context::Prs),
+            (FILE_DEFAULTS, Context::File),
         ] {
             let (keymap, _) = Keymap::for_context(context, &KeysConfig::default());
             assert_eq!(keymap.bindings.len(), defaults.len(), "{context:?}");
