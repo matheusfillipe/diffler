@@ -157,6 +157,14 @@ pub trait Vcs: Send {
     fn all_branches(&self) -> Result<Vec<String>, VcsError>;
     /// Stage a whole file (worktree deletions become staged deletions).
     fn stage(&self, rel: &Path) -> Result<(), VcsError>;
+
+    /// Stage every change in the worktree, deletions and untracked files
+    /// included. Resolved against the repository as it is now, so a file
+    /// edited since the caller last looked is still caught.
+    fn stage_everything(&self) -> Result<(), VcsError>;
+
+    /// Reset the whole index back to HEAD, keeping the worktree.
+    fn unstage_everything(&self) -> Result<(), VcsError>;
     /// Stage one hunk out of the unstaged (or untracked) changes of a file.
     fn stage_hunk(&self, rel: &Path, hunk: &HunkId) -> Result<(), VcsError>;
     /// Reset a file's index entry back to HEAD, keeping the worktree.

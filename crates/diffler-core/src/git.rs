@@ -467,6 +467,33 @@ impl Vcs for GitVcs {
         Ok(())
     }
 
+    fn stage_everything(&self) -> Result<(), VcsError> {
+        let mut index = self.repo.index()?;
+        // update_all catches deletions and edits to files already tracked;
+        // add_all then picks up whatever is untracked
+        index.update_all(["*"], None)?;
+        index.add_all(["*"], git2::IndexAddOption::DEFAULT, None)?;
+        index.write()?;
+        Ok(())
+    }
+
+    fn unstage_everything(&self) -> Result<(), VcsError> {
+        match self.repo.head() {
+            Ok(head) => {
+                let target = head.peel(git2::ObjectType::Commit)?;
+                self.repo.reset_default(Some(&target), ["*"])?;
+            }
+            // unborn branch: nothing in HEAD to restore, so empty the index
+            Err(err) if err.code() == git2::ErrorCode::UnbornBranch => {
+                let mut index = self.repo.index()?;
+                index.clear()?;
+                index.write()?;
+            }
+            Err(err) => return Err(err.into()),
+        }
+        Ok(())
+    }
+
     fn unstage(&self, rel: &Path) -> Result<(), VcsError> {
         match self.repo.head() {
             Ok(head) => {

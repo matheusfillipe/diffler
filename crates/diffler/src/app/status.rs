@@ -1126,35 +1126,26 @@ impl App {
         }
     }
 
+    /// Stage everything, resolved by the backend rather than from the section
+    /// model: that model is a snapshot, and a file edited on disk since the
+    /// last refresh is missing from it, which is what made this take two
+    /// presses.
     fn stage_all(&mut self) {
-        let paths: Vec<String> = self
-            .section_files(Section::Untracked)
-            .iter()
-            .chain(self.section_files(Section::Unstaged))
-            .map(|file| file.path.clone())
-            .collect();
-        if paths.is_empty() {
+        if self.section_files(Section::Untracked).is_empty()
+            && self.section_files(Section::Unstaged).is_empty()
+        {
             self.info("nothing to stage");
             return;
         }
-        self.vcs_op(move |vcs| paths.iter().try_for_each(|path| vcs.stage(Path::new(path))));
+        self.vcs_op(|vcs| vcs.stage_everything());
     }
 
     fn unstage_all(&mut self) {
-        let paths: Vec<String> = self
-            .section_files(Section::Staged)
-            .iter()
-            .map(|file| file.path.clone())
-            .collect();
-        if paths.is_empty() {
+        if self.section_files(Section::Staged).is_empty() {
             self.info("nothing staged");
             return;
         }
-        self.vcs_op(move |vcs| {
-            paths
-                .iter()
-                .try_for_each(|path| vcs.unstage(Path::new(path)))
-        });
+        self.vcs_op(|vcs| vcs.unstage_everything());
     }
 
     fn discard_at_cursor(&mut self) {
@@ -2112,6 +2103,45 @@ mod tests {
         };
         assert!(in_section(Section::Staged), "staged hunk lands in staged");
         assert!(in_section(Section::Unstaged), "other hunk stays unstaged");
+    }
+
+    /// The section model is a snapshot. A file edited on disk since the last
+    /// refresh is absent from it, and staging from that list quietly skipped
+    /// the edit, so the key had to be pressed twice.
+    #[test]
+    fn stage_all_catches_a_file_edited_since_the_last_refresh() {
+        let (fixture, mut app) = app();
+        fixture.write("ci.yml", "on: push\nedited: externally\n");
+
+        app.handle(key('S'));
+        app.settle_refresh();
+        assert_eq!(app.section_files(Section::Untracked).len(), 0);
+        assert_eq!(
+            app.section_files(Section::Unstaged).len(),
+            0,
+            "one press stages the external edit too"
+        );
+        assert_eq!(app.section_files(Section::Staged).len(), 3);
+    }
+
+    /// Unstaging resolves against the repository for the same reason staging
+    /// does, so it clears an entry that landed after the last refresh.
+    #[test]
+    fn unstage_all_clears_a_file_staged_since_the_last_refresh() {
+        let (fixture, mut app) = app();
+        app.handle(key('S'));
+        app.settle_refresh();
+        // something stages another file behind diffler's back
+        fixture.write("late.txt", "late\n");
+        fixture.stage("late.txt");
+
+        app.handle(key('U'));
+        app.settle_refresh();
+        assert_eq!(
+            app.section_files(Section::Staged).len(),
+            0,
+            "one press unstages what landed since the last refresh"
+        );
     }
 
     #[test]
