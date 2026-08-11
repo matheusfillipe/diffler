@@ -36,7 +36,7 @@ expression: terminal.backend()
 " B  blame this file                     p  Pull …                                                                       "
 " y  copy the web URL                      p  Pull                                                                       "
 " Z  send feedback to waiting agents     f  Fetch …                                                                      "
-" C  overview of every comment             f  Fetch                                                                      "
+" C  comments sidebar                      f  Fetch                                                                      "
 " /  search                                a  Fetch all remotes                                                          "
 " n  next search match                   z  Stash …                                                                      "
 " N  previous search match                 z  Stash changes                                                              "

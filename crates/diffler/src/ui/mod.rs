@@ -192,7 +192,6 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) -> Option<popup::ListHits> {
             Modal::BranchList { .. }
             | Modal::PrBase { .. }
             | Modal::RevList { .. }
-            | Modal::Comments { .. }
             | Modal::Palette { .. }
             | Modal::Themes { .. }
             | Modal::FilePicker { .. }
@@ -314,20 +313,6 @@ fn fuzzy_modal(app: &App) -> Option<popup::FuzzyModal> {
             names,
             " set base",
         )),
-        Some(Modal::Comments { entries, list }) => Some(popup::FuzzyModal {
-            title: format!("Comments: {}", app.active_review_source().label()),
-            query: list.query.clone(),
-            cursor: list.cursor,
-            typing: matches!(list.focus, fuzzy::FuzzyFocus::Input),
-            items: list
-                .matches
-                .iter()
-                .filter_map(|index| entries.get(*index))
-                .map(|e| (e.label.clone(), String::new()))
-                .collect(),
-            selected: list.selected,
-            footer: footer_for(list, " · d/D delete", " jump"),
-        }),
         Some(Modal::Palette { list }) => {
             let commands = app.command_index();
             Some(popup::FuzzyModal {

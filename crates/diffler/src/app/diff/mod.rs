@@ -3,6 +3,7 @@
 //! inline comments, flattened into a row list so the renderer only ever
 //! materializes the visible slice.
 
+mod comments;
 mod nav;
 mod open;
 mod review;
@@ -29,6 +30,8 @@ use crate::tree::{self, Bucket, TreeNode, TreeRow};
 pub enum Pane {
     List,
     Diff,
+    /// The comments sidebar on the right, open only while `comments_open`.
+    Comments,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +91,7 @@ pub struct FileScope {
     pub index: ScopeIndex,
 }
 
+#[allow(clippy::struct_excessive_bools)] // independent view toggles, not a state enum
 pub struct DiffView {
     pub source: ReviewSource,
     /// A commit's diff is immutable: fetched once at open and kept here.
@@ -126,6 +130,15 @@ pub struct DiffView {
     pub(crate) sidebar: ratatui::layout::Rect,
     pub(crate) sidebar_scroll: usize,
     pub(crate) pane: ratatui::layout::Rect,
+    /// The comments sidebar: open state, which comment is selected, and the
+    /// last render's rect and scroll for hit-testing, mirroring the file list.
+    pub(crate) comments_open: bool,
+    pub(crate) comments_cursor: usize,
+    pub(crate) comments_scroll: usize,
+    pub(crate) comments_rect: ratatui::layout::Rect,
+    /// Last render's comment-sidebar line -> comment index, so a click on any
+    /// wrapped body line selects the comment it belongs to.
+    pub(crate) comment_lines: Vec<Option<usize>>,
     /// Row where `V` started; `Some` means line selection is active.
     pub visual_anchor: Option<usize>,
     /// Body height of the last diff-pane render, drives half-page motions.
@@ -183,6 +196,11 @@ impl DiffView {
             sidebar: ratatui::layout::Rect::default(),
             sidebar_scroll: 0,
             pane: ratatui::layout::Rect::default(),
+            comments_open: false,
+            comments_cursor: 0,
+            comments_scroll: 0,
+            comments_rect: ratatui::layout::Rect::default(),
+            comment_lines: Vec::new(),
             visual_anchor: None,
             viewport: 0,
             rows: Vec::new(),

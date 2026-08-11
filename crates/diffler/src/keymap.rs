@@ -235,7 +235,7 @@ impl Action {
             Self::OpenRuns => "open CI runs",
             Self::OpenPrs => "list open pull requests",
             Self::CreatePr => "open a pull request for this branch",
-            Self::CommentsOverview => "overview of every comment",
+            Self::CommentsOverview => "comments sidebar",
             Self::SubmitReview => "submit stacked PR comments as one review",
             Self::CommitFlow => "commit",
             Self::CommitExtend => "extend HEAD with the staged index",

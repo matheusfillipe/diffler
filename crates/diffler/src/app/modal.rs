@@ -4,9 +4,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 
 use std::path::Path;
 
-use super::fuzzy::{
-    FuzzyKey, FuzzyList, branch_haystack, comment_haystack, name_haystack, rev_haystack, selected,
-};
+use super::fuzzy::{FuzzyKey, FuzzyList, branch_haystack, name_haystack, rev_haystack, selected};
 use super::text_edit;
 use super::{App, BranchAction, Flow, InputOp, Modal, PendingOp, RevChoice};
 
@@ -41,7 +39,6 @@ impl App {
             Some(Modal::BranchList { .. }) => self.handle_branch_list_key(key),
             Some(Modal::PrBase { .. }) => self.handle_pr_base_key(key),
             Some(Modal::RevList { .. }) => self.handle_rev_list_key(key),
-            Some(Modal::Comments { .. }) => self.handle_comments_key(key),
             Some(Modal::Palette { .. }) => return self.handle_palette_key(key),
             Some(Modal::FilePicker { .. }) => return self.handle_file_picker_key(key),
             Some(Modal::Themes { .. }) => self.handle_theme_key(key),
@@ -74,10 +71,6 @@ impl App {
             PendingOp::DeleteComment(id) => {
                 self.delete_comment_by_id(&id);
             }
-            PendingOp::DeleteOverviewComment { id, keep } => {
-                self.delete_overview_comment(&id, keep);
-            }
-            PendingOp::DeleteAllComments => self.delete_all_comments(),
             PendingOp::RunGit { label, argv } => self.queue_network(label, argv),
             PendingOp::ForcePull { .. } => self.queue_network(
                 "reset --hard",
@@ -469,120 +462,6 @@ impl App {
         self.open_against_diff(&rev);
     }
 
-    /// The comments overview: every comment of the active review, ordered by
-    /// file then line, Enter jumping to the comment in the diff pane.
-    pub(super) fn open_comments_overview(&mut self) {
-        let source = self.active_review_source();
-        let model = self.source_model(&source);
-        let session = self.review.session_for(&source);
-        let file_order = |path: &str| {
-            model
-                .files
-                .iter()
-                .position(|f| f.path == path)
-                .unwrap_or(usize::MAX)
-        };
-        let mut entries: Vec<super::CommentJump> = session
-            .comments
-            .iter()
-            .map(|comment| {
-                let line = comment
-                    .anchor
-                    .line
-                    .map_or(String::new(), |l| format!(":{l}"));
-                let status = match comment.status {
-                    diffler_core::session::CommentStatus::Open => "open",
-                    diffler_core::session::CommentStatus::Replied => "replied",
-                    diffler_core::session::CommentStatus::Resolved => "resolved",
-                };
-                let snippet = comment.body.lines().next().unwrap_or("").to_owned();
-                let replies = if comment.replies.is_empty() {
-                    String::new()
-                } else {
-                    format!(" +{}", comment.replies.len())
-                };
-                super::CommentJump {
-                    file: comment.anchor.file.clone(),
-                    comment_id: comment.id.clone(),
-                    label: format!(
-                        "{}{line} · {} · {status}{replies} · {snippet}",
-                        comment.anchor.file, comment.author
-                    ),
-                }
-            })
-            .collect();
-        entries.sort_by_key(|e| file_order(&e.file));
-        if entries.is_empty() {
-            self.info("no comments in this review yet");
-            return;
-        }
-        let mut list = FuzzyList::default();
-        list.rerank(&comment_haystack(&entries));
-        self.modal = Some(Modal::Comments { entries, list });
-    }
-
-    pub(super) fn handle_comments_key(&mut self, key: &KeyEvent) {
-        let Some(Modal::Comments { entries, list }) = self.modal.as_mut() else {
-            return;
-        };
-        match list.feed(key) {
-            FuzzyKey::Submit => self.jump_to_selected_comment(),
-            FuzzyKey::Cancel => self.modal = None,
-            FuzzyKey::Edited => {
-                let haystack = comment_haystack(entries);
-                list.rerank(&haystack);
-            }
-            // list-focus keys the dialog owns
-            FuzzyKey::Other => match key.code {
-                KeyCode::Char('d') => self.delete_selected_overview_comment(),
-                KeyCode::Char('D') => {
-                    let entries = entries.len();
-                    self.modal = Some(Modal::Confirm {
-                        message: format!("Delete all {entries} comments of this review?"),
-                        on_confirm: super::PendingOp::DeleteAllComments,
-                    });
-                }
-                _ => {}
-            },
-            FuzzyKey::Consumed => {}
-        }
-    }
-
-    /// Ask before deleting the highlighted overview entry; the confirm arm
-    /// rebuilds the list in place with the cursor kept nearby.
-    fn delete_selected_overview_comment(&mut self) {
-        let (entry, keep) = match &self.modal {
-            Some(Modal::Comments { entries, list }) => match selected(list, entries).cloned() {
-                Some(entry) => {
-                    let keep = FuzzyList {
-                        selected: list.selected.saturating_sub(1),
-                        ..list.clone()
-                    };
-                    (entry, keep)
-                }
-                None => return,
-            },
-            _ => return,
-        };
-        self.modal = Some(Modal::Confirm {
-            message: "Delete this comment?".to_owned(),
-            on_confirm: super::PendingOp::DeleteOverviewComment {
-                id: entry.comment_id,
-                keep,
-            },
-        });
-    }
-
-    pub(super) fn delete_overview_comment(&mut self, id: &str, keep: FuzzyList) {
-        if self.delete_comment_by_id(id) {
-            self.open_comments_overview();
-            if let Some(Modal::Comments { entries, list }) = self.modal.as_mut() {
-                *list = keep;
-                list.rerank(&comment_haystack(entries));
-            }
-        }
-    }
-
     /// Delete one comment outright. Forge-owned comments decline: the next
     /// sync would just re-import them.
     pub(super) fn delete_comment_by_id(&mut self, id: &str) -> bool {
@@ -609,68 +488,6 @@ impl App {
         }
         self.after_session_change();
         true
-    }
-
-    /// Start fresh: drop every local comment of the active review (forge-owned
-    /// ones stay; the forge is their home).
-    pub(super) fn delete_all_comments(&mut self) {
-        let source = self.active_review_source();
-        let session = self.review.session_for_mut(&source);
-        let before = session.comments.len();
-        session.comments.retain(|c| c.remote_id.is_some());
-        let removed = before - session.comments.len();
-        let kept = session.comments.len();
-        self.after_session_change();
-        if kept > 0 {
-            self.info(format!(
-                "deleted {removed} comments ({kept} forge-owned kept)"
-            ));
-        } else {
-            self.info(format!("deleted {removed} comments"));
-        }
-    }
-
-    fn jump_to_selected_comment(&mut self) {
-        // a query matching nothing keeps the dialog open, like fzf
-        let Some(Modal::Comments { entries, list }) = &self.modal else {
-            return;
-        };
-        let Some(entry) = selected(list, entries).cloned() else {
-            return;
-        };
-        self.modal = None;
-        if self.diff.is_none() {
-            self.open_working_tree_diff(None);
-        }
-        let Some(diff) = self.diff.as_mut() else {
-            return;
-        };
-        diff.ensure_rows(&self.review);
-        let model = diff
-            .commit_model
-            .clone()
-            .unwrap_or_else(|| self.review.model().clone());
-        let Some(file_index) = model.files.iter().position(|f| f.path == entry.file) else {
-            self.info("comment file is not in this diff");
-            return;
-        };
-        if diff.selected != file_index {
-            diff.selected = file_index;
-            diff.invalidate();
-            diff.ensure_rows(&self.review);
-        }
-        let session = self.review.session_for(&diff.source);
-        let target = diff.rows().iter().position(|row| {
-            matches!(row, super::diff::DiffRow::Comment { comment, line: 0, .. }
-                if session.comments.get(*comment).is_some_and(|c| c.id == entry.comment_id))
-        });
-        if let Some(row) = target {
-            diff.cursor = row;
-            diff.focus = super::Pane::Diff;
-        }
-        if self.screen() != super::Screen::Diff {
-            self.push_screen(super::Screen::Diff);
-        }
     }
 
     pub(super) fn handle_palette_key(&mut self, key: &KeyEvent) -> Flow {
@@ -992,69 +809,27 @@ mod tests {
         );
 
         press(&mut app, KeyCode::Char('C'));
-        let Some(Modal::Comments { entries, list }) = &app.modal else {
-            panic!("overview modal open, got {:?}", app.modal);
-        };
-        assert_eq!(list.selected, 0);
-        assert_eq!(entries.len(), 1);
-        assert!(
-            entries[0].label.contains("src/lib.rs:2"),
-            "{}",
-            entries[0].label
-        );
-        assert!(entries[0].label.contains("tighten this"));
-
-        press(&mut app, KeyCode::Enter);
-        assert!(app.modal.is_none());
+        assert!(app.modal.is_none(), "the sidebar replaces the old dialog");
         assert_eq!(app.screen(), Screen::Diff);
         let diff = app.diff.as_ref().expect("diff open");
-        assert_eq!(diff.focus, Pane::Diff);
+        assert!(diff.comments_open());
+        assert_eq!(diff.focus, Pane::Comments);
         assert!(
             matches!(
                 diff.rows().get(diff.cursor),
                 Some(super::super::diff::DiffRow::Comment { line: 0, .. })
             ),
-            "cursor sits on the comment header row"
+            "opening seats the diff cursor on the selected comment"
         );
-    }
 
-    #[test]
-    fn d_vanishes_a_local_comment_and_capital_d_wipes_the_review() {
-        let fixture = standard_fixture();
-        let mut app = App::new(fixture.review(), LoadedConfig::default());
-        for (line, body) in [(1, "first"), (2, "second"), (3, "third")] {
-            app.review.session.add_comment(
-                Anchor {
-                    file: "src/lib.rs".into(),
-                    line: Some(line),
-                    line_end: None,
-                    on_old_side: false,
-                    line_text: None,
-                },
-                "me",
-                body,
-            );
-        }
-        press(&mut app, KeyCode::Char('C'));
+        // the pane's own verbs reach the selected comment from the sidebar
         press(&mut app, KeyCode::Char('d'));
         assert!(
             matches!(app.modal, Some(Modal::Confirm { .. })),
-            "a single delete asks first"
+            "delete asks first, from the sidebar"
         );
         press(&mut app, KeyCode::Char('y'));
-        let Some(Modal::Comments { entries, .. }) = &app.modal else {
-            panic!("overview reopens after a confirmed delete");
-        };
-        assert_eq!(entries.len(), 2, "one comment vanished");
-        assert_eq!(app.review.session.comments.len(), 2);
-
-        press(&mut app, KeyCode::Char('D'));
-        assert!(
-            matches!(app.modal, Some(Modal::Confirm { .. })),
-            "delete-all asks first"
-        );
-        press(&mut app, KeyCode::Char('y'));
-        assert!(app.review.session.comments.is_empty(), "started fresh");
+        assert!(app.review.session.comments.is_empty());
     }
 
     #[test]
@@ -1139,16 +914,5 @@ mod tests {
         let id = app.review.session.comments[0].id.clone();
         assert!(!app.delete_comment_by_id(&id));
         assert_eq!(app.review.session.comments.len(), 1);
-        // delete-all keeps it too
-        app.delete_all_comments();
-        assert_eq!(app.review.session.comments.len(), 1);
-    }
-
-    #[test]
-    fn overview_without_comments_just_says_so() {
-        let fixture = standard_fixture();
-        let mut app = App::new(fixture.review(), LoadedConfig::default());
-        press(&mut app, KeyCode::Char('C'));
-        assert!(app.modal.is_none());
     }
 }

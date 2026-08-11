@@ -35,7 +35,7 @@ const HINTS: &[Hint] = &[
     Hint::Leaf(&[Action::Comment], "comment"),
     Hint::Leaf(&[Action::Reply], "reply"),
     Hint::Leaf(&[Action::MarkViewed], "viewed"),
-    Hint::Leaf(&[Action::CommentsOverview], "comments"),
+    Hint::Leaf(&[Action::CommentsOverview], "all comments"),
     Hint::Leaf(&[Action::Help], "help"),
 ];
 
@@ -127,14 +127,162 @@ fn draw_body(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
     // the sidebar takes one column beyond its content so the gap and the
     // pane's own left column both stay clear of it
     let width = (sidebar_width(area.width) + 1).min(area.width);
-    let [list_area, _gap, pane_area] = Layout::horizontal([
+    let comments = comments_width(area.width, diff.comments_open);
+    let [list_area, _gap, pane_area, _right_gap, comments_area] = Layout::horizontal([
         Constraint::Length(width),
         Constraint::Length(PANE_GAP),
         Constraint::Min(0),
+        Constraint::Length(if comments == 0 { 0 } else { PANE_GAP }),
+        Constraint::Length(comments),
     ])
     .areas(area);
     draw_sidebar(frame, list_area, ctx, diff);
     draw_pane(frame, pane_area, ctx, diff);
+    if comments > 0 {
+        draw_comments(frame, comments_area, ctx, diff);
+    }
+}
+
+/// The comments sidebar mirrors the file list's band, and yields the whole
+/// width back when closed.
+fn comments_width(total: u16, open: bool) -> u16 {
+    if !open {
+        return 0;
+    }
+    sidebar_width(total).min(total / 3)
+}
+
+/// Right pane: every comment of the review, each a header line (file, line,
+/// status) and its body wrapped to the column. The selection drives the diff
+/// cursor, so the highlighted card is always the one the pane's verbs act on.
+fn draw_comments(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut DiffView) {
+    let theme = ctx.theme;
+    let focused = diff.focus == Pane::Comments;
+    let surface = sidebar_bg(theme);
+    frame.render_widget(Block::new().style(Style::new().bg(surface)), area);
+    let [heading, inner] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
+    let ordered = ordered_comments(ctx, diff);
+    frame.render_widget(
+        Paragraph::new(pane_heading(
+            theme,
+            &format!("Comments ({})", ordered.len()),
+            focused,
+            surface,
+        )),
+        heading,
+    );
+    diff.comments_rect = inner;
+
+    // one entry per rendered line back to the comment it belongs to, so a
+    // click on a wrapped body line selects that comment
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut owners: Vec<Option<usize>> = Vec::new();
+    let budget = (inner.width as usize).saturating_sub(2).max(1);
+    let mut cursor_line = 0usize;
+    for (index, comment) in ordered.iter().enumerate() {
+        if index == diff.comments_cursor {
+            cursor_line = lines.len();
+        }
+        let selected = index == diff.comments_cursor;
+        let bg = if selected { theme.cursor_line } else { surface };
+        for line in comment_card(theme, comment, budget, bg, inner.width) {
+            lines.push(line);
+            owners.push(Some(index));
+        }
+        lines.push(Line::styled(
+            " ".repeat(inner.width as usize),
+            Style::new().bg(surface),
+        ));
+        owners.push(None);
+    }
+    diff.comment_lines = owners;
+
+    let height = inner.height.max(1) as usize;
+    diff.comments_scroll =
+        super::scroll_to_cursor(cursor_line, diff.comments_scroll, height, lines.len());
+    let shown: Vec<Line<'static>> = lines
+        .into_iter()
+        .skip(diff.comments_scroll)
+        .take(height)
+        .collect();
+    frame.render_widget(Paragraph::new(shown), inner);
+}
+
+/// The review's comments in sidebar order: by file as the diff lists them,
+/// then by line, matching `App::comment_order`.
+fn ordered_comments<'a>(
+    ctx: &'a RenderCtx<'_>,
+    diff: &DiffView,
+) -> Vec<&'a diffler_core::session::Comment> {
+    let rank = |path: &str| {
+        diff.commit_model
+            .as_ref()
+            .or(ctx.review_model)
+            .and_then(|model| model.files.iter().position(|file| file.path == path))
+            .unwrap_or(usize::MAX)
+    };
+    let mut ordered: Vec<&diffler_core::session::Comment> = ctx.session.comments.iter().collect();
+    ordered.sort_by_key(|comment| (rank(&comment.anchor.file), comment.anchor.line.unwrap_or(0)));
+    ordered
+}
+
+/// One comment as a header line plus its wrapped body.
+fn comment_card(
+    theme: &Theme,
+    comment: &diffler_core::session::Comment,
+    budget: usize,
+    bg: Color,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let pad = |mut spans: Vec<Span<'static>>| {
+        let used: usize = spans.iter().map(Span::width).sum();
+        if let Some(gap) = (width as usize).checked_sub(used) {
+            spans.push(Span::styled(" ".repeat(gap), Style::new().bg(bg)));
+        }
+        Line::from(spans)
+    };
+    let (status, colour) = match comment.status {
+        CommentStatus::Open => ("○", theme.warn_fg),
+        CommentStatus::Replied => ("◐", theme.accent),
+        CommentStatus::Resolved => ("✓", theme.added),
+    };
+    let file = comment
+        .anchor
+        .file
+        .rsplit('/')
+        .next()
+        .unwrap_or(&comment.anchor.file)
+        .to_owned();
+    let line_no = comment
+        .anchor
+        .line
+        .map_or(String::new(), |l| format!(":{l}"));
+    let mut out = vec![pad(vec![
+        Span::styled(format!(" {status} "), Style::new().fg(colour).bg(bg)),
+        Span::styled(
+            super::elide(&format!("{file}{line_no}"), budget.saturating_sub(2)),
+            Style::new().fg(theme.fg).bg(bg),
+        ),
+    ])];
+    for runs in crate::app::markdown::parse(&comment.body, None) {
+        for wrapped in crate::app::markdown::wrap(&runs, budget, budget) {
+            let mut spans = vec![Span::styled("  ".to_owned(), Style::new().bg(bg))];
+            spans.extend(
+                wrapped
+                    .iter()
+                    .map(|run| md_span(run, Style::new().fg(theme.dim).bg(bg), theme)),
+            );
+            out.push(pad(spans));
+        }
+    }
+    if !comment.replies.is_empty() {
+        out.push(pad(vec![Span::styled(
+            format!("  +{} replies", comment.replies.len()),
+            Style::new().fg(theme.purple).bg(bg),
+        )]));
+    }
+    out
 }
 
 /// Left pane: a heading row then one row per file in the diff, the selected
@@ -1170,6 +1318,22 @@ fn pad_line(mut spans: Vec<Span<'static>>, bg: Color, width: u16) -> Line<'stati
 #[cfg(test)]
 mod tests {
     use ratatui::Terminal;
+
+    #[test]
+    fn renders_the_comments_sidebar() {
+        let (_fixture, mut app) = diff_app();
+        app.handle(key('l'));
+        app.handle(key('j'));
+        app.handle(key('c'));
+        for c in "this line reads oddly and should wrap across the column".chars() {
+            app.handle(key(c));
+        }
+        app.handle(crate::test_support::code_key(
+            crossterm::event::KeyCode::Enter,
+        ));
+        app.handle(key('C'));
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
     use ratatui::backend::TestBackend;
 
     use ratatui::style::Style;

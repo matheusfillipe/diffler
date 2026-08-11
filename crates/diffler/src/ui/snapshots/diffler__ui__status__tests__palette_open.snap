@@ -32,7 +32,7 @@ expression: render(&mut app).backend()
 "                                blame this file                                      B                                  "
 "                                copy the web URL                                     y                                  "
 "                                send feedback to waiting agents                      Z                                  "
-"                                overview of every comment                            C                                  "
+"                                comments sidebar                                     C                                  "
 "                                search                                               /                                  "
 "                                next search match                                    n                                  "
 "                                previous search match                                N                                  "

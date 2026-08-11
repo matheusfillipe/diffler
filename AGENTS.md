@@ -121,7 +121,10 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   (the branch band, a rule, then the repo band; stage/unstage/
   discard/commit/branch), Log, Diff/review (file sidebar + pane, unified or
   `|`-toggled side-by-side; `c` comment, `V` visual select, `r` reply/resolve,
-  `v` viewed, `y`/`Y` yank feedback as markdown, `e` `$EDITOR` jump). Comments,
+  `v` viewed, `y`/`Y` yank feedback as markdown, `e` `$EDITOR` jump). `C` opens
+  the comments sidebar on the right, a third pane the motions walk: its
+  selection seats the diff cursor on that comment, so the pane's own verbs
+  (reply, resolve, delete) reach it with no handling of their own. Comments,
   replies and edits are written in place: the composer occupies the rows the
   finished card will, under the anchored line, at the top of the file for a
   whole-file comment, under the thread for a reply. Runs (the

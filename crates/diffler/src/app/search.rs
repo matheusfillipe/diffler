@@ -93,7 +93,7 @@ impl App {
             Screen::Log => self.log.as_ref().map_or(0, |l| l.cursor),
             Screen::Diff => self.diff.as_ref().map_or(0, |d| match d.focus {
                 Pane::List => d.tree_cursor,
-                Pane::Diff => d.cursor,
+                Pane::Diff | Pane::Comments => d.cursor,
             }),
             Screen::CiLog => self.ci_log.as_ref().map_or(0, |v| v.cursor),
             Screen::File => self.file.as_ref().map_or(0, |v| v.cursor),
@@ -155,7 +155,7 @@ impl App {
                 .enumerate()
                 .map(|(i, r)| (i, tree_row_label(&r.node)))
                 .collect(),
-            Pane::Diff => {
+            Pane::Diff | Pane::Comments => {
                 let file = model.files.get(diff.selected);
                 diff.rows()
                     .iter()
@@ -180,7 +180,7 @@ impl App {
                 if let Some(d) = self.diff.as_mut() {
                     match d.focus {
                         Pane::List => d.tree_cursor = row,
-                        Pane::Diff => d.cursor = row,
+                        Pane::Diff | Pane::Comments => d.cursor = row,
                     }
                 }
             }

@@ -209,13 +209,6 @@ pub(crate) fn rev_haystack(entries: &[super::RevChoice]) -> Vec<String> {
     entries.iter().map(|e| e.label.clone()).collect()
 }
 
-pub(crate) fn comment_haystack(entries: &[super::CommentJump]) -> Vec<String> {
-    entries
-        .iter()
-        .map(|e| format!("{} {}", e.label, e.file))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

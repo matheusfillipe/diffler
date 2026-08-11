@@ -118,14 +118,6 @@ pub enum PendingOp {
     DeleteBranch(String),
     /// Remove one comment (and its forge copy when synced) after confirm.
     DeleteComment(String),
-    /// Same, from the comments overview: rebuilds the list, keeping the
-    /// filter and a nearby selection.
-    DeleteOverviewComment {
-        id: String,
-        keep: fuzzy::FuzzyList,
-    },
-    /// Wipe every deletable comment of the active review.
-    DeleteAllComments,
     /// Run a queued git op after the user confirms (set-upstream, force-push).
     RunGit {
         label: String,
@@ -189,11 +181,6 @@ pub enum Modal {
         entries: Vec<RevChoice>,
         list: fuzzy::FuzzyList,
     },
-    /// Every comment of the active review; Enter jumps to it in the diff.
-    Comments {
-        entries: Vec<CommentJump>,
-        list: fuzzy::FuzzyList,
-    },
     /// Fuzzy command palette over everything executable on this screen.
     Palette { list: fuzzy::FuzzyList },
     /// Fuzzy picker over the built-in themes; applies the pick live.
@@ -241,7 +228,6 @@ impl Modal {
             Self::BranchList { list, .. }
             | Self::PrBase { list, .. }
             | Self::RevList { list, .. }
-            | Self::Comments { list, .. }
             | Self::Palette { list }
             | Self::Themes { list }
             | Self::FilePicker { list, .. }
@@ -267,14 +253,6 @@ pub enum RemotePurpose {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RevChoice {
     pub rev: String,
-    pub label: String,
-}
-
-/// One row of the comments overview: where it anchors and what to show.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CommentJump {
-    pub file: String,
-    pub comment_id: String,
     pub label: String,
 }
 
@@ -1284,7 +1262,7 @@ impl App {
             Action::OpenRuns => self.open_runs(),
             Action::OpenPrs => self.open_prs(),
             Action::CreatePr => self.create_pr_start(),
-            Action::CommentsOverview => self.open_comments_overview(),
+            Action::CommentsOverview => self.toggle_comments_sidebar(),
             Action::SwitchTheme => self.open_theme_picker(),
             Action::OpenFilePicker => self.open_file_picker(),
             Action::Blame => self.blame_focused(),

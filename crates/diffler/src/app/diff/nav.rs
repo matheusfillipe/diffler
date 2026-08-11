@@ -29,8 +29,8 @@ impl App {
             Action::PrevFile => return self.diff_step_file(false),
             Action::NextUnviewed => return self.diff_jump_unviewed(),
             Action::CycleSidebarMode => return self.diff_cycle_sidebar_mode(),
-            Action::MoveLeft => return self.diff_focus(Pane::List),
-            Action::MoveRight => return self.diff_focus(Pane::Diff),
+            Action::MoveLeft => return self.diff_focus(self.pane_left()),
+            Action::MoveRight => return self.diff_focus(self.pane_right()),
             Action::ToggleSideBySide => return self.toggle_side_by_side(),
             // comment walk works from either pane; land in the diff pane on the
             // comment so it can be read and replied to
@@ -48,7 +48,45 @@ impl App {
         match self.diff.as_ref().map(|d| d.focus) {
             Some(Pane::List) => self.dispatch_diff_list(action),
             Some(Pane::Diff) => self.dispatch_diff_pane(action),
+            Some(Pane::Comments) => self.dispatch_comments(action),
             None => {}
+        }
+    }
+
+    /// Panes left to right: files, diff, comments when it is open. `h` and
+    /// `l` walk that order and stop at the ends.
+    fn pane_left(&self) -> Pane {
+        match self.diff.as_ref().map(|diff| diff.focus) {
+            Some(Pane::Comments) => Pane::Diff,
+            _ => Pane::List,
+        }
+    }
+
+    fn pane_right(&self) -> Pane {
+        let Some(diff) = self.diff.as_ref() else {
+            return Pane::Diff;
+        };
+        match diff.focus {
+            Pane::Diff | Pane::Comments if diff.comments_open => Pane::Comments,
+            _ => Pane::Diff,
+        }
+    }
+
+    /// The comments sidebar. Its selection drives the diff cursor onto the
+    /// comment, so every comment verb (reply, resolve, delete, yank) is the
+    /// pane's own and works here untouched.
+    fn dispatch_comments(&mut self, action: Action) {
+        match action {
+            Action::MoveDown => self.comments_step(1),
+            Action::MoveUp => self.comments_step(-1),
+            Action::GoTop => self.comments_to(0),
+            Action::GoBottom => self.comments_to(usize::MAX),
+            Action::HalfPageDown | Action::FullPageDown => self.comments_step(5),
+            Action::HalfPageUp | Action::FullPageUp => self.comments_step(-5),
+            // the cursor already sits on the comment, so entering the diff
+            // is a focus move, and so is stepping out either side
+            Action::Open | Action::MoveRight | Action::MoveLeft => self.diff_focus(Pane::Diff),
+            other => self.dispatch_diff_pane(other),
         }
     }
 
@@ -162,7 +200,10 @@ impl App {
                 // the sidebar fills the left columns; scroll whichever pane the
                 // pointer sits over
                 let in_sidebar = self.diff.as_ref().is_some_and(|d| col < d.pane.x);
-                if in_sidebar {
+                let in_comments = self.comments_col(col);
+                if in_comments {
+                    self.comments_step(delta);
+                } else if in_sidebar {
                     self.diff_tree_step(delta);
                 } else {
                     self.diff_move(delta);
@@ -182,6 +223,11 @@ impl App {
     /// Single-click: select the sidebar file under the pointer, or move the
     /// pane cursor to the clicked line, dropping any selection.
     fn diff_press_at(&mut self, col: u16, row: u16) {
+        if let Some(index) = self.comments_row_at(col, row) {
+            self.diff_focus(Pane::Comments);
+            self.comments_to(index);
+            return;
+        }
         if let Some(index) = self.diff_sidebar_row_at(col, row) {
             self.diff_tree_to(index);
             return;
