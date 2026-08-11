@@ -2,9 +2,8 @@
 //! commit's run to a single row, so a block of untouched code reads as one
 //! attribution.
 
-use diffler_core::highlight::StyledRange;
 use ratatui::Frame;
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
@@ -52,23 +51,57 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     frame.render_widget(Paragraph::new(header_line(view, &theme)), header);
 
     let height = body.height.max(1) as usize;
-    view.scroll = super::scroll_to_cursor(view.cursor, view.scroll, height, view.lines.len());
     let gutter = view.lines.len().to_string().len().max(3);
-    let lines: Vec<Line<'static>> = (view.scroll..view.lines.len())
-        .take(height)
-        .map(|index| {
-            let ranges = search
-                .as_ref()
-                .and_then(|all| all.get(index).cloned())
-                .unwrap_or_default();
-            let line = row_line(&theme, view, index, gutter, body.width, &ranges, now);
-            if index == view.cursor {
-                cursor_line(line, &theme, body.width)
-            } else {
-                line
-            }
+    let blame_cols = if view.show_blame { BLAME_WIDTH } else { 0 };
+    let prefix_cols = 1 + blame_cols + gutter + 1;
+    // a wrapped line owns several terminal rows, so scrolling counts rows, not
+    // source lines; heights are counted by the same greedy walk that wraps
+    let row_height = |index: usize| {
+        view.lines.get(index).map_or(1, |text| {
+            super::diff_render::text_height(text, prefix_cols, body.width)
         })
-        .collect();
+    };
+    let cursor_row: usize = (0..view.cursor).map(row_height).sum();
+    let total: usize = (0..view.lines.len()).map(row_height).sum();
+    view.scroll = super::scroll_to_span(
+        cursor_row,
+        row_height(view.cursor),
+        view.scroll,
+        height,
+        total,
+    );
+
+    // walk source lines until the viewport is full, skipping the rows above it
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut row = 0usize;
+    for index in 0..view.lines.len() {
+        let span = row_height(index);
+        if row + span <= view.scroll {
+            row += span;
+            continue;
+        }
+        let ranges = search
+            .as_ref()
+            .and_then(|all| all.get(index).cloned())
+            .unwrap_or_default();
+        let mut rendered = row_line(&theme, view, index, gutter, body.width, &ranges, now);
+        if index == view.cursor {
+            rendered = rendered
+                .into_iter()
+                .map(|line| cursor_line(line, &theme, body.width))
+                .collect();
+        }
+        for (offset, line) in rendered.into_iter().enumerate() {
+            if row + offset >= view.scroll {
+                lines.push(line);
+            }
+        }
+        row += span;
+        if lines.len() >= height {
+            break;
+        }
+    }
+    lines.truncate(height);
     frame.render_widget(Paragraph::new(lines), body);
 
     frame.render_widget(
@@ -103,25 +136,38 @@ fn row_line(
     width: u16,
     search: &[(std::ops::Range<usize>, bool)],
     now: i64,
-) -> Line<'static> {
-    // the cursor rail overwrites the first cell, so every row opens with one
-    // the content can afford to lose
-    let mut spans = vec![Span::raw(" ")];
-    if view.show_blame {
-        spans.push(blame_span(theme, view, index, now));
-    }
-    spans.push(Span::styled(
-        format!("{:>gutter$} ", index + 1),
-        theme.dim_style(),
-    ));
+) -> Vec<Line<'static>> {
     let text = view.lines.get(index).cloned().unwrap_or_default();
     let syntax = view.highlights.get(index).map(Vec::as_slice);
-    spans.extend(text_spans(theme, &text, syntax, search));
-    let used: usize = spans.iter().map(Span::width).sum();
-    if let Some(pad) = (width as usize).checked_sub(used) {
-        spans.push(Span::raw(" ".repeat(pad)));
-    }
-    Line::from(spans)
+    let bg = theme.bg;
+    // the same compositing the diff pane uses, so syntax and search hits look
+    // identical in both, and the same wrapper, so long lines wrap the same way
+    let content =
+        crate::ui::diff_render::composite_spans(theme, &text, &[], syntax, bg, bg, search);
+    let blame_cols = if view.show_blame { BLAME_WIDTH } else { 0 };
+    // the cursor rail overwrites the first cell, so every row opens with one
+    // the content can afford to lose
+    let prefix_cols = 1 + blame_cols + gutter + 1;
+    let prefix = |first: bool| {
+        let mut spans = vec![Span::raw(" ")];
+        if view.show_blame {
+            spans.push(if first {
+                blame_span(theme, view, index, now)
+            } else {
+                Span::raw(" ".repeat(BLAME_WIDTH))
+            });
+        }
+        spans.push(Span::styled(
+            if first {
+                format!("{:>gutter$} ", index + 1)
+            } else {
+                " ".repeat(gutter + 1)
+            },
+            theme.dim_style(),
+        ));
+        spans
+    };
+    crate::ui::diff_render::wrapped_rows(content, prefix, prefix_cols, width, bg)
 }
 
 /// One blame cell. Only the first line of a commit's run prints it; the rest
@@ -147,65 +193,6 @@ fn blame_span(theme: &Theme, view: &FileView, index: usize, now: i64) -> Span<'s
         super::relative_time(now, span.time_unix)
     );
     Span::styled(format!("{text:<BLAME_WIDTH$}"), Style::new().fg(theme.dim))
-}
-
-/// Syntax foregrounds over the line, with search hits taking a highlight bg.
-fn text_spans(
-    theme: &Theme,
-    text: &str,
-    syntax: Option<&[StyledRange]>,
-    search: &[(std::ops::Range<usize>, bool)],
-) -> Vec<Span<'static>> {
-    let bg_at = |byte: usize| {
-        search
-            .iter()
-            .find(|(range, _)| range.contains(&byte))
-            .map(|(_, current)| {
-                if *current {
-                    theme.search_current
-                } else {
-                    theme.search
-                }
-            })
-    };
-    let fg_at = |byte: usize| {
-        syntax
-            .unwrap_or_default()
-            .iter()
-            .find(|styled| styled.range.contains(&byte))
-    };
-
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    let mut current: Option<(Style, String)> = None;
-    for (byte, ch) in text.char_indices() {
-        let styled = fg_at(byte);
-        let mut style = Style::new().fg(styled.map_or(theme.fg, |s| {
-            let (r, g, b) = s.fg;
-            Color::Rgb(r, g, b)
-        }));
-        if styled.is_some_and(|s| s.bold) {
-            style = style.add_modifier(ratatui::style::Modifier::BOLD);
-        }
-        if styled.is_some_and(|s| s.italic) {
-            style = style.add_modifier(ratatui::style::Modifier::ITALIC);
-        }
-        if let Some(bg) = bg_at(byte) {
-            style = style.bg(bg);
-        }
-        match current.as_mut() {
-            Some((open, buffer)) if *open == style => buffer.push(ch),
-            _ => {
-                if let Some((open, buffer)) = current.take() {
-                    spans.push(Span::styled(buffer, open));
-                }
-                current = Some((style, ch.to_string()));
-            }
-        }
-    }
-    if let Some((open, buffer)) = current {
-        spans.push(Span::styled(buffer, open));
-    }
-    spans
 }
 
 #[cfg(test)]
@@ -252,6 +239,26 @@ mod tests {
     #[test]
     fn renders_the_file_with_its_blame_column() {
         let mut app = app_with_file(true);
+        let backend = TestBackend::new(72, 9);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|f| draw(f, &mut app)).expect("draw");
+        insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn a_long_line_wraps_under_a_blank_gutter() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.now_unix = 86_400 * 30;
+        let long = "let total = ".to_owned() + &"x".repeat(90) + ";";
+        let view = FileView::new(
+            "src/lib.rs".to_owned(),
+            &format!("fn main() {{\n    {long}\n}}\n"),
+            Vec::new(),
+            vec![span(1, 3, "aaaaaaa", "reviewer", "first")],
+            true,
+        );
+        app.install_file(view, None);
         let backend = TestBackend::new(72, 9);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal.draw(|f| draw(f, &mut app)).expect("draw");

@@ -192,8 +192,15 @@ fn char_widths(text: &str) -> impl Iterator<Item = usize> + '_ {
 /// Terminal rows a diff line needs at `width`: 1 plus one per wrapped
 /// continuation. Agrees with [`render_diff_line`]'s wrapping by construction.
 pub fn diff_line_height(line: &DiffLine, gutter: usize, width: u16) -> usize {
-    let budget = (width as usize).saturating_sub(prefix_width(gutter)).max(1);
-    greedy_rows(char_widths(&line.text), budget)
+    text_height(&line.text, prefix_width(gutter), width)
+}
+
+/// Terminal rows `text` needs beside a prefix of `prefix_cols`. Agrees with
+/// [`wrapped_rows`] by construction, so a caller can predict heights without
+/// building the rows.
+pub(super) fn text_height(text: &str, prefix_cols: usize, width: u16) -> usize {
+    let budget = (width as usize).saturating_sub(prefix_cols).max(1);
+    greedy_rows(char_widths(text), budget)
 }
 
 /// A diff line's selection/annotation state, orthogonal to its content.
@@ -245,8 +252,30 @@ pub fn render_diff_line(
             ),
         ]
     };
-    let content = composite_spans(theme, line, syntax, base_bg, emph_bg, search);
-    let budget = (width as usize).saturating_sub(prefix_width(gutter)).max(1);
+    let content = composite_spans(
+        theme,
+        &line.text,
+        &line.emphasis,
+        syntax,
+        base_bg,
+        emph_bg,
+        search,
+    );
+    wrapped_rows(content, prefix, prefix_width(gutter), width, base_bg)
+}
+
+/// Lay one logical line out as rows: the content wrapped to whatever the
+/// prefix leaves, each row carrying the prefix (blank on continuations) and
+/// padded to the full width so the row background runs to the edge. The diff
+/// pane and the file view differ only in what their prefix is.
+pub(super) fn wrapped_rows(
+    content: Vec<Span<'static>>,
+    prefix: impl Fn(bool) -> Vec<Span<'static>>,
+    prefix_cols: usize,
+    width: u16,
+    bg: Color,
+) -> Vec<Line<'static>> {
+    let budget = (width as usize).saturating_sub(prefix_cols).max(1);
     wrap_spans(content, budget)
         .into_iter()
         .enumerate()
@@ -256,7 +285,7 @@ pub fn render_diff_line(
             let used: usize = spans.iter().map(Span::width).sum();
             let pad = (width as usize).saturating_sub(used);
             if pad > 0 {
-                spans.push(Span::styled(" ".repeat(pad), Style::new().bg(base_bg)));
+                spans.push(Span::styled(" ".repeat(pad), Style::new().bg(bg)));
             }
             Line::from(spans)
         })
@@ -497,7 +526,15 @@ fn side_rows(
             ),
         ]
     };
-    let content = composite_spans(theme, line, syntax, base_bg, emph_bg, &[]);
+    let content = composite_spans(
+        theme,
+        &line.text,
+        &line.emphasis,
+        syntax,
+        base_bg,
+        emph_bg,
+        &[],
+    );
     let budget = col_width.saturating_sub(split_prefix_width(gutter)).max(1);
     wrap_spans(content, budget)
         .into_iter()
@@ -551,19 +588,22 @@ fn clip_pad(spans: Vec<Span<'static>>, width: usize, bg: Color) -> Vec<Span<'sta
 /// whether an emphasis range covers it. Byte offsets are snapped to char
 /// boundaries defensively so a malformed range can never split a
 /// multi-byte character.
-fn composite_spans(
+/// Composite one line of text: syntax foregrounds over the row background,
+/// with intraline emphasis and search hits taking their own background. The
+/// diff pane and the file view both render through this.
+pub(super) fn composite_spans(
     theme: &Theme,
-    line: &DiffLine,
+    text: &str,
+    emphasis: &[Range<usize>],
     syntax: Option<&[StyledRange]>,
     base_bg: Color,
     emph_bg: Color,
     search: &[(Range<usize>, bool)],
 ) -> Vec<Span<'static>> {
-    let text = line.text.as_str();
     let snap = |index: usize| snap_to_boundary(text, index.min(text.len()));
 
     let mut bounds = vec![0, text.len()];
-    for range in &line.emphasis {
+    for range in emphasis {
         bounds.push(snap(range.start));
         bounds.push(snap(range.end));
     }
@@ -586,7 +626,7 @@ fn composite_spans(
             .map(|(_, current)| *current)
     };
     let emphasized = |at: usize| {
-        line.emphasis
+        emphasis
             .iter()
             .any(|range| snap(range.start) <= at && at < snap(range.end))
     };

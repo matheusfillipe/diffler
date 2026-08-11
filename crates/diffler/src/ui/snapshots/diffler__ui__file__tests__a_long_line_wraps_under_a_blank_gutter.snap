@@ -1,0 +1,13 @@
+---
+source: crates/diffler/src/ui/file.rs
+expression: terminal.backend()
+---
+" b blame · <cr> commit · e editor · ? help                              "
+"  src/lib.rs  3 lines  ▸ aaaaaaa first                                  "
+"▌aaaaaaa reviewer      1mo    1 fn main() {                             "
+"                              2     let total = xxxxxxxxxxxxxxxxxxxxxxxx"
+"                                xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+"                                xxxxxxxxxxxxxxxxxxxxxxxxxx;             "
+"                              3 }                                       "
+"                                                                        "
+" FILE  fixture@main · mcp off · 3 files, 0 viewed                       "
