@@ -130,6 +130,25 @@ impl Review {
         })
     }
 
+    /// What the repo's git attributes declare about each of `paths`, for the
+    /// kinds sidebar. One attribute lookup walks the directory chain and the
+    /// global attribute files, so this is real IO per path and belongs on a
+    /// worker; paths the repo says nothing about are left out.
+    pub fn compute_declared(
+        repo_root: &Path,
+        paths: &[String],
+    ) -> Result<HashMap<String, crate::classify::Kind>, ReviewError> {
+        let vcs = GitVcs::open(repo_root)?;
+        Ok(paths
+            .iter()
+            .filter_map(|path| {
+                let rel = Path::new(path);
+                let kind = crate::classify::declared(|name| vcs.attr(rel, name))?;
+                Some((path.clone(), kind))
+            })
+            .collect())
+    }
+
     /// One file's worktree text and blame, for the file view. Opens its own
     /// backend so it runs on a worker thread like [`Review::compute_refresh`].
     /// A file git cannot blame (untracked, or newly staged) still loads: it

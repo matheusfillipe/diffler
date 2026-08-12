@@ -8,6 +8,8 @@ extend-ignore-re = [
 
 [default.extend-words]
 ratatui = "ratatui"
+# Stylus names its files .styl
+styl = "styl"
 
 [files]
 extend-exclude = ["demos/*/uv.lock", "demos/*/bun.lock", "Cargo.lock", "Formula/*", "bucket/*", "packaging/*", "flake.nix"]

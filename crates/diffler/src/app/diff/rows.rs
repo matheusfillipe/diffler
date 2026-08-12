@@ -64,7 +64,7 @@ pub fn comment_display(
 ) -> Vec<CommentLine> {
     let budget = card_budget(row_width);
     let mut lines = vec![CommentLine::Header];
-    for logical in markdown::parse(&comment.body, highlighter) {
+    for logical in markdown::parse(&comment.body, highlighter, budget) {
         lines.extend(
             markdown::wrap(&logical, budget, budget)
                 .into_iter()
@@ -76,7 +76,10 @@ pub fn comment_display(
         // the renderer's two-space indent
         let label = format!("└ {}: ", reply.author).width();
         let mut first = true;
-        for logical in markdown::parse(&reply.body, highlighter) {
+        // a table lays out at parse time and `wrap` then leaves it alone, so
+        // it has to fit the narrowest line of the reply: the labelled one
+        let laid_out = budget.saturating_sub(label.max(2)).max(8);
+        for logical in markdown::parse(&reply.body, highlighter, laid_out) {
             let head = budget.saturating_sub(if first { label } else { 2 }).max(8);
             for spans in markdown::wrap(&logical, head, budget.saturating_sub(2).max(8)) {
                 lines.push(CommentLine::Reply {

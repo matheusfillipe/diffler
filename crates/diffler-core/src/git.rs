@@ -401,6 +401,18 @@ impl Vcs for GitVcs {
         Ok(out)
     }
 
+    fn attr(&self, rel: &Path, name: &str) -> bool {
+        let Ok(value) = self.repo.get_attr(rel, name, git2::AttrCheckFlags::empty()) else {
+            return false;
+        };
+        // both spellings are in the wild: a bare `linguist-generated` sets
+        // git's boolean, while the `=true` GitHub documents is a string value
+        matches!(
+            git2::AttrValue::from_string(value),
+            git2::AttrValue::True | git2::AttrValue::String("true")
+        )
+    }
+
     fn branches(&self) -> Result<Vec<BranchInfo>, VcsError> {
         let mut out = Vec::new();
         for entry in self.repo.branches(Some(git2::BranchType::Local))? {

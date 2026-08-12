@@ -10,12 +10,13 @@
 
 use std::collections::BTreeSet;
 
-/// The review-mode bucket a section header stands for: files still needing
-/// review, or files already marked viewed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What a section header stands for: review progress (still to review, already
+/// viewed) in the review layout, or what the files are in the kinds layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Bucket {
     ToReview,
     Viewed,
+    Kind(diffler_core::classify::Kind),
 }
 
 impl Bucket {
@@ -23,6 +24,7 @@ impl Bucket {
         match self {
             Self::ToReview => "To review",
             Self::Viewed => "Viewed",
+            Self::Kind(kind) => kind.label(),
         }
     }
 }

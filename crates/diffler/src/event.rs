@@ -32,6 +32,13 @@ pub enum AppEvent {
         /// The request this answers; a stale one is dropped on arrival.
         token: u64,
     },
+    /// The kinds sidebar's git-attribute lookup came back. Absent paths are
+    /// the ones the repo says nothing about.
+    DeclaredKinds {
+        kinds: std::collections::HashMap<String, diffler_core::classify::Kind>,
+        /// The request this answers; a stale one is dropped on arrival.
+        token: u64,
+    },
     /// An off-thread repo refresh finished (status + working diff, plus the
     /// open three-dot diff when one is up), or failed.
     RefreshDone(Box<Result<diffler_core::review::Refreshed, String>>),

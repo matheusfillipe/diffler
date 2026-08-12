@@ -130,11 +130,27 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   whole-file comment, under the thread for a reply. Runs (the
   CI run list), Graph (CI run detail on the shared node-graph component), Prs
   (open PRs of the repo's forge), CiLog (a
-  job's log folded into its real steps), and File (below). The diff sidebar has two layouts
-  (`t` cycles): tree, and review (to-review vs a folded viewed bucket,
+  job's log folded into its real steps), and File (below). The diff sidebar has three
+  layouts (`t` cycles): tree, review (to-review vs a folded viewed bucket,
   membership derived from the hash-keyed viewed marks so an edited file falls
-  back into to-review). The status screen keeps the flat magit list. OSC52
-  clipboard works over ssh/tmux.
+  back into to-review), and kinds (below). The status screen keeps the flat magit
+  list. OSC52 clipboard works over ssh/tmux.
+- **Kinds sidebar.** `classify::Rules` buckets a path into one fixed set,
+  Source / Tests / Docs / Config / Build & CI / Generated / Assets / Other:
+  the reader's `[classify]` globs, then what the repo declares, then the
+  built-in table. The table's order is the design, Generated ahead of Tests so
+  a generated fixture reads as noise, and every rule reads the path alone, so
+  a row build costs no IO. Buckets with nothing in them contribute no header,
+  Generated and Assets start folded, and both grouped layouts share one
+  `BTreeSet<Bucket>` of folds and one `section_rows` emitter (depth 0 header,
+  depth 1 file, which the renderer's indent reads). What the repo declares is
+  `linguist-generated`/`-vendored`/`-documentation`, read through
+  `Vcs::attr` with the mapping in `classify::declared`, so the backend stays
+  free of sidebar policy. That lookup walks the attribute files per path
+  (~75µs each, measured), so it is a worker like any other read: `queue_declared`
+  on open, on `t`, and after a refresh that moved the file list, answering as
+  `AppEvent::DeclaredKinds` with a token that drops an answer for a list the
+  view has replaced. Until it lands the sidebar groups by the table alone.
 - **File view and blame.** `Vcs::blame` returns line runs, one per commit,
   remapped onto the worktree buffer so an edited file attributes its committed
   lines correctly and its new ones to nobody. `Review::compute_file` opens its
@@ -169,7 +185,10 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   `mark_viewed`, `wait_for_feedback`. Comments are tagged with their source.
   Agent triggering is the `wait_for_feedback` long-poll (MCP can't initiate agent
   turns); the human's "send" key unblocks it. `propose_resolve` only marks a
-  comment Replied. Only the human resolves it, in the TUI.
+  comment Replied, and writes nothing into the thread: the prompt has agents
+  reply then flag, so a note there would restate the answer. Its note is used
+  only when the flag arrives on an empty thread. Only the human resolves it,
+  in the TUI.
 - **PR review.** `ReviewSource::Pr{number}` keys review state on the PR number
   (survives pushes); the diff is `merge-base..head` via `Vcs::tree_diff`,
   fetching `refs/pull/<n>/head` when the head isn't local: reviewing never

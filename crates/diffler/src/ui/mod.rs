@@ -36,7 +36,21 @@ pub(super) fn highlight_spans(
     ranges: &[(std::ops::Range<usize>, bool)],
     theme: &Theme,
 ) -> Vec<Span<'static>> {
-    if ranges.is_empty() {
+    highlight_spans_split(text, 0, base, base, ranges, theme)
+}
+
+/// [`highlight_spans`] with the leading `split` bytes in `lead` instead of
+/// `base`: a path recedes into its parent directories while its basename keeps
+/// the foreground, and a search hit stays lit across the boundary.
+pub(super) fn highlight_spans_split(
+    text: &str,
+    split: usize,
+    lead: Style,
+    base: Style,
+    ranges: &[(std::ops::Range<usize>, bool)],
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    if ranges.is_empty() && split == 0 {
         return vec![Span::styled(text.to_owned(), base)];
     }
     let snap = |i: usize| {
@@ -46,7 +60,8 @@ pub(super) fn highlight_spans(
         }
         i
     };
-    let mut bounds = vec![0, text.len()];
+    let split = snap(split);
+    let mut bounds = vec![0, split, text.len()];
     for (range, _) in ranges {
         bounds.push(snap(range.start));
         bounds.push(snap(range.end));
@@ -74,6 +89,7 @@ pub(super) fn highlight_spans(
         if segment.is_empty() {
             continue;
         }
+        let base = if start < split { lead } else { base };
         let style = bg_at(start).map_or(base, |bg| base.bg(bg));
         spans.push(Span::styled(segment.to_owned(), style));
     }
@@ -768,7 +784,50 @@ pub(super) fn status_bar(app: &App, width: u16) -> Line<'static> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Line, SCROLLOFF, Span, Theme, cursor_line, relative_time, scroll_to_cursor};
+    use super::{
+        Line, SCROLLOFF, Span, Theme, cursor_line, highlight_spans_split, relative_time,
+        scroll_to_cursor,
+    };
+    use ratatui::style::{Color, Style};
+
+    /// Snapshots carry text only, so the styles a sidebar path row is made of
+    /// are asserted here or nowhere.
+    #[test]
+    fn a_paths_parents_recede_behind_its_basename() {
+        let theme = Theme::github_dark();
+        let (dim, bright) = (
+            Style::new().fg(theme.dim),
+            Style::new().fg(Color::Rgb(1, 2, 3)),
+        );
+        let name = "app/diff/mod.rs";
+        let split = name.rfind('/').map_or(0, |at| at + 1);
+
+        let spans = highlight_spans_split(name, split, dim, bright, &[], &theme);
+
+        let painted: Vec<(&str, Style)> = spans
+            .iter()
+            .map(|span| (span.content.as_ref(), span.style))
+            .collect();
+        assert_eq!(painted, vec![("app/diff/", dim), ("mod.rs", bright)]);
+    }
+
+    #[test]
+    fn a_search_hit_stays_lit_across_the_parent_boundary() {
+        let theme = Theme::github_dark();
+        let (dim, bright) = (
+            Style::new().fg(theme.dim),
+            Style::new().fg(Color::Rgb(1, 2, 3)),
+        );
+        // "f/m" spans the last slash, so the match covers both styles
+        let spans = highlight_spans_split("diff/mod.rs", 5, dim, bright, &[(3..6, true)], &theme);
+
+        let lit: Vec<&str> = spans
+            .iter()
+            .filter(|span| span.style.bg == Some(theme.search_current))
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(lit, vec!["f/", "m"], "both halves of the match are lit");
+    }
 
     #[test]
     fn the_view_holds_still_until_the_cursor_reaches_its_margin() {

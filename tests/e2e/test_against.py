@@ -26,7 +26,7 @@ def test_d_reviews_the_branch_against_its_base(spawn, repo):
     tui.wait_for("app.txt")
     # the pane opens on the first file; walk to each and read its content
     tui.wait_for("beta2")  # app.txt, edited but never committed
-    tui.send("\t")
+    tui.send("J")
     tui.wait_for("shipped")  # feature.txt, landed in the branch commit
     tui.send("q")  # the diff screen pops back to status first
     tui.wait_for(" STATUS ")

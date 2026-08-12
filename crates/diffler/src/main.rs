@@ -322,9 +322,29 @@ fn dispatch_file(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     });
 }
 
+/// Read the git attributes of the kinds sidebar's files off the main task: one
+/// lookup walks the attribute files, so a whole diff's worth would stall the
+/// loop.
+fn dispatch_declared(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
+    let Some(request) = app.pending_declared.take() else {
+        return;
+    };
+    let tx = tx.clone();
+    let root = app.review.repo_root.clone();
+    tokio::task::spawn_blocking(move || {
+        let kinds = diffler_core::review::Review::compute_declared(&root, &request.paths)
+            .unwrap_or_default();
+        let _ = tx.send(AppEvent::DeclaredKinds {
+            kinds,
+            token: request.token,
+        });
+    });
+}
+
 fn dispatch_workers(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     dispatch_enrich(app, tx);
     dispatch_file(app, tx);
+    dispatch_declared(app, tx);
     dispatch_pr_posts(app, tx);
     dispatch_refresh(app, tx);
 }

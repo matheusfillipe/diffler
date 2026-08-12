@@ -6,6 +6,20 @@ use crate::app::{App, MouseGesture, hit_index, page_step};
 use crate::keymap::Action;
 use crate::tree::{TreeNode, TreeRow};
 
+/// The row `<tab>` folds when the cursor sits on `at`: that row when it is a
+/// header, otherwise the header it sits under. Most rows are files, and
+/// collapsing the group you are inside is what the key is for.
+fn foldable_at(rows: &[TreeRow], at: usize) -> Option<usize> {
+    let row = rows.get(at)?;
+    let header = |node: &TreeNode| matches!(node, TreeNode::Dir { .. } | TreeNode::Section { .. });
+    if header(&row.node) {
+        return Some(at);
+    }
+    rows.get(..at)?
+        .iter()
+        .rposition(|above| above.depth < row.depth && header(&above.node))
+}
+
 impl App {
     pub(crate) fn dispatch_diff(&mut self, action: Action) {
         // a file or focus change moves search onto different rows, so drop it
@@ -74,7 +88,9 @@ impl App {
 
     /// The comments sidebar. Its selection drives the diff cursor onto the
     /// comment, so every comment verb (reply, resolve, delete, yank) is the
-    /// pane's own and works here untouched.
+    /// pane's own and works here untouched. An orphan seats no cursor and no
+    /// file: delete addresses the selection by id, and everything else
+    /// declines.
     fn dispatch_comments(&mut self, action: Action) {
         match action {
             Action::MoveDown => self.comments_step(1),
@@ -86,6 +102,20 @@ impl App {
             // the cursor already sits on the comment, so entering the diff
             // is a focus move, and so is stepping out either side
             Action::Open | Action::MoveRight | Action::MoveLeft => self.diff_focus(Pane::Diff),
+            Action::DeleteComment => self.delete_selected_comment(),
+            // these read the diff cursor or the selected file, and an orphan
+            // seats neither. The review-wide verbs need no row and stay live
+            Action::Reply
+            | Action::Resolve
+            | Action::Comment
+            | Action::VisualSelect
+            | Action::MarkViewed
+            | Action::CopyFileFeedback
+            | Action::OpenEditor
+                if self.selected_comment_is_orphan() =>
+            {
+                self.info("that comment's file is not in this diff");
+            }
             other => self.dispatch_diff_pane(other),
         }
     }
@@ -321,7 +351,9 @@ impl App {
 
     /// Place the tree cursor at `target` (clamped), updating the pane's file
     /// when the row is a file. A dir row leaves the pane on its last file.
-    fn diff_tree_to(&mut self, target: usize) {
+    /// Every way of reaching a row goes through here, motion and search alike,
+    /// so landing on a file always opens it.
+    pub(crate) fn diff_tree_to(&mut self, target: usize) {
         let review = &self.review;
         let Some(diff) = self.diff.as_mut() else {
             return;
@@ -360,15 +392,20 @@ impl App {
         }
     }
 
-    /// `za`: toggle the fold of the directory or review bucket under the tree
-    /// cursor. A no-op on a file row.
+    /// `za`/`<tab>`: toggle the fold of the group the tree cursor sits in.
     fn diff_toggle_dir_fold(&mut self) {
         let review = &self.review;
         let Some(diff) = self.diff.as_mut() else {
             return;
         };
         let rows = sidebar_rows(diff, review);
-        match rows.get(diff.tree_cursor).map(|r| &r.node) {
+        let Some(target) = foldable_at(&rows, diff.tree_cursor) else {
+            // a file at the repo root sits in no folder, and a key that does
+            // nothing has to say so
+            self.info("nothing to fold here");
+            return;
+        };
+        match rows.get(target).map(|row| &row.node) {
             Some(TreeNode::Dir { path, .. }) => {
                 let path = path.clone();
                 if !diff.folded_dirs.remove(&path) {
@@ -378,9 +415,10 @@ impl App {
             Some(TreeNode::Section { bucket, .. }) => diff.bucket_folds.toggle_fold(*bucket),
             _ => return,
         }
-        // folding past the cursor shrinks the tree; keep the cursor in range
+        // the row that folded is the one to stand on, and folding past the
+        // cursor shrinks the tree
         let rows = sidebar_rows(diff, review);
-        diff.tree_cursor = diff.tree_cursor.min(rows.len().saturating_sub(1));
+        diff.tree_cursor = target.min(rows.len().saturating_sub(1));
     }
 
     /// `<c-n>`/`<c-p>`: jump the tree cursor to the next/prev file row (skipping
@@ -437,6 +475,7 @@ impl App {
         diff.reseat_tree_cursor(&rows);
         // a committed search indexes the old layout's rows
         self.search = None;
+        self.queue_declared();
         self.info(format!("sidebar: {layout}"));
     }
 

@@ -29,8 +29,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub use diff::{
-    CommentLine, DiffRow, DiffView, FileHighlights, FileScope, Pane, ScrollAlign, SplitRow,
-    SplitSide, comment_display,
+    CommentLine, DeclaredRequest, DiffRow, DiffView, FileHighlights, FileScope, Pane, ScrollAlign,
+    SplitRow, SplitSide, comment_display,
 };
 pub use log::LogView;
 pub(crate) use status::{BRANCHES_TITLE, CI_TITLE, PRS_TITLE, RECENT_TITLE, UNPUSHED_TITLE};
@@ -573,6 +573,12 @@ pub struct App {
     /// Bumped per file request, so a load that outlives the user's interest is
     /// recognised and dropped when it lands.
     file_token: u64,
+    /// Paths the main loop should ask git's attributes about, off-thread, for
+    /// the kinds sidebar.
+    pub pending_declared: Option<DeclaredRequest>,
+    /// Bumped per declared-kinds request, so an answer for a file list the
+    /// view has since replaced is dropped.
+    declared_token: u64,
     pub modal: Option<Modal>,
     /// Where the open modal drew its rows, so a click finds the one under the
     /// pointer. Written by the renderer each frame.
@@ -747,6 +753,8 @@ impl App {
             message,
             file: None,
             pending_file: None,
+            pending_declared: None,
+            declared_token: 0,
             file_token: 0,
             pending_clipboard: None,
             pending_editor: None,
@@ -865,6 +873,7 @@ impl App {
         (total, viewed)
     }
 
+    #[allow(clippy::too_many_lines)] // one arm per event; a flat match reads best
     pub fn handle(&mut self, event: AppEvent) -> Flow {
         match event {
             AppEvent::Quit => Flow::Quit,
@@ -907,6 +916,7 @@ impl App {
                 line,
                 token,
             } => self.on_file_loaded(*result, line, token),
+            AppEvent::DeclaredKinds { kinds, token } => self.on_declared_kinds(kinds, token),
             AppEvent::CiRuns(runs) => {
                 self.on_ci_runs(runs);
                 Flow::Continue
@@ -1454,8 +1464,9 @@ impl App {
         self.restore_status_cursor(status_anchor);
         self.refresh_log();
         let swap = against.and_then(|(rev, result)| self.against_swap(&rev, result));
+        let mut moved = false;
         if let Some(diff) = self.diff.as_mut() {
-            let moved = !unchanged || swap.is_some();
+            moved = !unchanged || swap.is_some();
             if let Some(model) = swap {
                 diff.commit_model = Some(model);
             }
@@ -1466,6 +1477,12 @@ impl App {
                 diff.invalidate();
             }
             diff.ensure_rows(&self.review);
+        }
+        // a file that joined the diff has no attributes read yet, and the
+        // kinds sidebar would keep guessing at it for as long as the view
+        // stays open
+        if moved {
+            self.queue_declared();
         }
         self.restore_diff_cursor(diff_anchor_path);
     }

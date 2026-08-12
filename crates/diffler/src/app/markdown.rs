@@ -21,6 +21,9 @@ pub struct MdSpan {
     pub strike: bool,
     pub link: bool,
     pub muted: bool,
+    /// Laid out already (a table row): [`wrap`] leaves the line alone, since
+    /// re-splitting on spaces would collapse the columns.
+    pub pre: bool,
     pub fg: Option<(u8, u8, u8)>,
 }
 
@@ -46,14 +49,32 @@ struct Flags {
     heading: bool,
 }
 
+/// A table under construction: cells collect as runs and lay out once the
+/// whole table is known, since a column is only as wide as its widest cell.
+#[derive(Default)]
+struct Table {
+    head: Vec<Vec<MdSpan>>,
+    rows: Vec<Vec<Vec<MdSpan>>>,
+    cell: Vec<MdSpan>,
+    in_head: bool,
+    row: Vec<Vec<MdSpan>>,
+}
+
+/// Columns narrower than this hold nothing readable, so the table is listed
+/// row by row instead.
+const MIN_COLUMN: usize = 8;
+/// Blank columns between cells.
+const COLUMN_GAP: usize = 2;
+
 /// Parse markdown into logical lines of styled runs (unwrapped). Line breaks,
 /// block boundaries, list items, and code-block lines each start a new logical
 /// line; a comment's own newlines are kept (GitHub renders them).
 #[allow(clippy::too_many_lines)] // one arm per markdown event; a flat match reads best
-pub fn parse(src: &str, highlighter: Option<&Highlighter>) -> Vec<Vec<MdSpan>> {
+pub fn parse(src: &str, highlighter: Option<&Highlighter>, width: usize) -> Vec<Vec<MdSpan>> {
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_STRIKETHROUGH);
     opts.insert(Options::ENABLE_TASKLISTS);
+    opts.insert(Options::ENABLE_TABLES);
     let mut lines: Vec<Vec<MdSpan>> = Vec::new();
     let mut line: Vec<MdSpan> = Vec::new();
     let mut flags = Flags::default();
@@ -63,10 +84,14 @@ pub fn parse(src: &str, highlighter: Option<&Highlighter>) -> Vec<Vec<MdSpan>> {
     let mut link_url: Option<String> = None;
     // a list item's own paragraph must not flush the bullet onto its own line
     let mut item_paragraph = false;
+    let mut table: Option<Table> = None;
+    // the next number each open ordered list will stamp on its item
+    let mut ordered: Vec<Option<u64>> = Vec::new();
+    let mut quote_depth: usize = 0;
 
-    let flush = |line: &mut Vec<MdSpan>, lines: &mut Vec<Vec<MdSpan>>| {
+    let flush = |line: &mut Vec<MdSpan>, lines: &mut Vec<Vec<MdSpan>>, depth: usize| {
         if !line.is_empty() {
-            lines.push(std::mem::take(line));
+            lines.push(quoted(std::mem::take(line), depth));
         }
     };
 
@@ -79,38 +104,111 @@ pub fn parse(src: &str, highlighter: Option<&Highlighter>) -> Vec<Vec<MdSpan>> {
             Event::Start(Tag::Strikethrough) => flags.strike += 1,
             Event::End(TagEnd::Strikethrough) => flags.strike = flags.strike.saturating_sub(1),
             Event::Start(Tag::Heading { .. }) => {
-                flush(&mut line, &mut lines);
+                flush(&mut line, &mut lines, quote_depth);
                 flags.heading = true;
             }
             Event::End(TagEnd::Heading(_)) => {
-                flush(&mut line, &mut lines);
+                flush(&mut line, &mut lines, quote_depth);
                 flags.heading = false;
             }
-            Event::Start(Tag::List(_)) => list_depth += 1,
-            Event::End(TagEnd::List(_)) => list_depth = list_depth.saturating_sub(1),
+            Event::Start(Tag::List(start)) => {
+                list_depth += 1;
+                ordered.push(start);
+            }
+            Event::End(TagEnd::List(_)) => {
+                list_depth = list_depth.saturating_sub(1);
+                ordered.pop();
+            }
             Event::Start(Tag::Item) => {
-                flush(&mut line, &mut lines);
+                flush(&mut line, &mut lines, quote_depth);
                 let indent = "  ".repeat(list_depth.saturating_sub(1));
+                let marker = match ordered.last_mut().and_then(Option::as_mut) {
+                    Some(next) => {
+                        let marker = format!("{next}. ");
+                        *next += 1;
+                        marker
+                    }
+                    None => "• ".to_owned(),
+                };
                 line.push(MdSpan {
-                    text: format!("{indent}• "),
+                    text: format!("{indent}{marker}"),
                     muted: true,
                     ..MdSpan::default()
                 });
                 item_paragraph = true;
             }
+            Event::Start(Tag::BlockQuote(_)) => {
+                flush(&mut line, &mut lines, quote_depth);
+                quote_depth += 1;
+            }
+            Event::End(TagEnd::BlockQuote(_)) => {
+                flush(&mut line, &mut lines, quote_depth);
+                quote_depth = quote_depth.saturating_sub(1);
+            }
+            Event::Rule => {
+                flush(&mut line, &mut lines, quote_depth);
+                let across = width.saturating_sub(rail_width(quote_depth)).max(1);
+                lines.push(quoted(
+                    vec![MdSpan {
+                        text: "─".repeat(across),
+                        muted: true,
+                        ..MdSpan::default()
+                    }],
+                    quote_depth,
+                ));
+            }
+            Event::Start(Tag::Table(_)) => {
+                flush(&mut line, &mut lines, quote_depth);
+                table = Some(Table::default());
+            }
+            Event::Start(Tag::TableHead) => {
+                if let Some(table) = table.as_mut() {
+                    table.in_head = true;
+                }
+            }
+            Event::End(TagEnd::TableHead | TagEnd::TableRow) => {
+                if let Some(table) = table.as_mut() {
+                    let row = std::mem::take(&mut table.row);
+                    if table.in_head {
+                        table.head = row;
+                        table.in_head = false;
+                    } else {
+                        table.rows.push(row);
+                    }
+                }
+            }
+            Event::End(TagEnd::TableCell) => {
+                if let Some(table) = table.as_mut() {
+                    let mut cell = std::mem::take(&mut table.cell);
+                    if table.in_head {
+                        for span in &mut cell {
+                            span.bold = true;
+                        }
+                    }
+                    table.row.push(cell);
+                }
+            }
+            Event::End(TagEnd::Table) => {
+                if let Some(table) = table.take() {
+                    let across = width.saturating_sub(rail_width(quote_depth));
+                    for row in table_lines(&table.head, &table.rows, across) {
+                        lines.push(quoted(row, quote_depth));
+                    }
+                }
+            }
             Event::End(TagEnd::Item) => {
                 item_paragraph = false;
-                flush(&mut line, &mut lines);
+                flush(&mut line, &mut lines, quote_depth);
             }
             Event::Start(Tag::Paragraph) => {
                 if item_paragraph {
                     item_paragraph = false;
                 } else {
-                    flush(&mut line, &mut lines);
+                    flush(&mut line, &mut lines, quote_depth);
                 }
             }
             Event::Start(Tag::CodeBlock(kind)) => {
-                flush(&mut line, &mut lines);
+                flush(&mut line, &mut lines, quote_depth);
                 code_block = Some(String::new());
                 code_lang = match kind {
                     CodeBlockKind::Fenced(lang) if !lang.is_empty() => Some(lang.into_string()),
@@ -129,7 +227,7 @@ pub fn parse(src: &str, highlighter: Option<&Highlighter>) -> Vec<Vec<MdSpan>> {
                             .as_ref()
                             .and_then(|per_line| per_line.get(i))
                             .map_or(&[][..], Vec::as_slice);
-                        lines.push(code_line_spans(text, ranges));
+                        lines.push(quoted(code_line_spans(text, ranges), quote_depth));
                     }
                 }
             }
@@ -154,24 +252,28 @@ pub fn parse(src: &str, highlighter: Option<&Highlighter>) -> Vec<Vec<MdSpan>> {
                 if let Some(buf) = code_block.as_mut() {
                     buf.push_str(&text);
                 } else {
-                    line.push(MdSpan {
+                    let span = MdSpan {
                         text: text.into_string(),
                         bold: flags.bold > 0 || flags.heading,
                         italic: flags.italic > 0,
                         strike: flags.strike > 0,
                         link: flags.link,
                         ..MdSpan::default()
-                    });
+                    };
+                    push_span(span, table.as_mut(), &mut line);
                 }
             }
-            Event::Code(text) => line.push(MdSpan {
-                text: text.into_string(),
-                code: true,
-                bold: flags.bold > 0 || flags.heading,
-                italic: flags.italic > 0,
-                link: flags.link,
-                ..MdSpan::default()
-            }),
+            Event::Code(text) => {
+                let span = MdSpan {
+                    text: text.into_string(),
+                    code: true,
+                    bold: flags.bold > 0 || flags.heading,
+                    italic: flags.italic > 0,
+                    link: flags.link,
+                    ..MdSpan::default()
+                };
+                push_span(span, table.as_mut(), &mut line);
+            }
             Event::TaskListMarker(checked) => line.push(MdSpan {
                 text: if checked { "[x] " } else { "[ ] " }.to_owned(),
                 muted: true,
@@ -180,13 +282,176 @@ pub fn parse(src: &str, highlighter: Option<&Highlighter>) -> Vec<Vec<MdSpan>> {
             // a review comment's own line breaks are meaningful (GitHub renders
             // them), so a soft break starts a new line rather than a space
             Event::End(TagEnd::Paragraph) | Event::SoftBreak | Event::HardBreak => {
-                flush(&mut line, &mut lines);
+                flush(&mut line, &mut lines, quote_depth);
             }
             _ => {}
         }
     }
-    flush(&mut line, &mut lines);
+    flush(&mut line, &mut lines, quote_depth);
     lines
+}
+
+/// Route a run to the cell it belongs to, or to the line being built.
+fn push_span(span: MdSpan, table: Option<&mut Table>, line: &mut Vec<MdSpan>) {
+    match table {
+        Some(table) => table.cell.push(span),
+        None => line.push(span),
+    }
+}
+
+/// Open a line with the rail of the quote it sits in. Every completed line
+/// passes through here, so the rail reaches the ones nobody types by hand:
+/// list items, code, tables, rules. The rail inherits the line's `pre` flag,
+/// so a laid-out table row stays laid out with one in front.
+fn quoted(mut spans: Vec<MdSpan>, depth: usize) -> Vec<MdSpan> {
+    if depth == 0 {
+        return spans;
+    }
+    let pre = spans.first().is_some_and(|span| span.pre);
+    spans.insert(
+        0,
+        MdSpan {
+            text: "│ ".repeat(depth),
+            muted: true,
+            pre,
+            ..MdSpan::default()
+        },
+    );
+    spans
+}
+
+/// Columns a quote's rail takes from the line, so what it wraps still fits.
+fn rail_width(depth: usize) -> usize {
+    depth * 2
+}
+
+/// Lay a table out in columns: each is as wide as its widest cell, capped at
+/// the widest level that fits `width`, with cell text wrapping inside its own
+/// column. A table that cannot hold readable columns is listed row by row,
+/// which stays legible at any width.
+fn table_lines(head: &[Vec<MdSpan>], rows: &[Vec<Vec<MdSpan>>], width: usize) -> Vec<Vec<MdSpan>> {
+    let columns = head.len().max(rows.iter().map(Vec::len).max().unwrap_or(0));
+    if columns == 0 {
+        return Vec::new();
+    }
+    let cell_width = |cell: Option<&Vec<MdSpan>>| {
+        cell.map_or(0, |runs| runs.iter().map(MdSpan::width).sum::<usize>())
+    };
+    let mut widths: Vec<usize> = (0..columns)
+        .map(|column| {
+            std::iter::once(head)
+                .chain(rows.iter().map(Vec::as_slice))
+                .map(|row| cell_width(row.get(column)))
+                .max()
+                .unwrap_or(0)
+                .max(1)
+        })
+        .collect();
+    let gaps = COLUMN_GAP * (columns - 1);
+    let budget = width.saturating_sub(gaps);
+    if widths.iter().sum::<usize>() > budget {
+        // bisected, since one cell can be arbitrarily wide
+        let fits = |cap: usize| widths.iter().map(|w| (*w).min(cap)).sum::<usize>() <= budget;
+        if !fits(MIN_COLUMN) {
+            return list_lines(head, rows);
+        }
+        let (mut low, mut high) = (
+            MIN_COLUMN,
+            widths.iter().copied().max().unwrap_or(0).max(MIN_COLUMN),
+        );
+        while low < high {
+            let mid = low + (high - low).div_ceil(2);
+            if fits(mid) {
+                low = mid;
+            } else {
+                high = mid - 1;
+            }
+        }
+        for w in &mut widths {
+            *w = (*w).min(low);
+        }
+    }
+    let mut out = Vec::new();
+    if !head.is_empty() {
+        out.extend(table_row(head, &widths));
+        out.push(vec![MdSpan {
+            text: widths
+                .iter()
+                .map(|w| "─".repeat(*w))
+                .collect::<Vec<_>>()
+                .join(&" ".repeat(COLUMN_GAP)),
+            muted: true,
+            pre: true,
+            ..MdSpan::default()
+        }]);
+    }
+    for row in rows {
+        out.extend(table_row(row, &widths));
+    }
+    out
+}
+
+/// One table row: every cell wrapped to its column, then read across so a
+/// cell that took three lines leaves its neighbours padded beside it.
+fn table_row(row: &[Vec<MdSpan>], widths: &[usize]) -> Vec<Vec<MdSpan>> {
+    let wrapped: Vec<Vec<Vec<MdSpan>>> = widths
+        .iter()
+        .enumerate()
+        .map(|(column, w)| match row.get(column) {
+            Some(cell) => wrap(cell, *w, *w),
+            None => vec![Vec::new()],
+        })
+        .collect();
+    let height = wrapped.iter().map(Vec::len).max().unwrap_or(0);
+    (0..height)
+        .map(|index| {
+            let mut line: Vec<MdSpan> = Vec::new();
+            for (column, cell) in wrapped.iter().enumerate() {
+                let runs = cell.get(index).map_or(&[][..], Vec::as_slice);
+                let used: usize = runs.iter().map(MdSpan::width).sum();
+                if column > 0 {
+                    line.push(MdSpan::plain(" ".repeat(COLUMN_GAP)));
+                }
+                line.extend(runs.iter().cloned());
+                let pad = widths
+                    .get(column)
+                    .copied()
+                    .unwrap_or(0)
+                    .saturating_sub(used);
+                if pad > 0 && column + 1 < widths.len() {
+                    line.push(MdSpan::plain(" ".repeat(pad)));
+                }
+            }
+            for run in &mut line {
+                run.pre = true;
+            }
+            line
+        })
+        .collect()
+}
+
+/// The narrow fallback: one `header: value` line per cell, a blank line
+/// between rows.
+fn list_lines(head: &[Vec<MdSpan>], rows: &[Vec<Vec<MdSpan>>]) -> Vec<Vec<MdSpan>> {
+    let mut out = Vec::new();
+    for row in rows {
+        for (column, cell) in row.iter().enumerate() {
+            let mut line = Vec::new();
+            if let Some(label) = head.get(column) {
+                line.extend(label.iter().cloned());
+                line.push(MdSpan {
+                    text: ": ".to_owned(),
+                    muted: true,
+                    ..MdSpan::default()
+                });
+            }
+            line.extend(cell.iter().cloned());
+            out.push(line);
+        }
+        out.push(Vec::new());
+    }
+    out.pop();
+    out
 }
 
 /// Word-wrap the runs of one logical line to `first`/`rest` column budgets,
@@ -194,6 +459,9 @@ pub fn parse(src: &str, highlighter: Option<&Highlighter>) -> Vec<Vec<MdSpan>> {
 /// budget is hard-split at character boundaries. Always yields at least one
 /// (possibly empty) line.
 pub fn wrap(runs: &[MdSpan], first: usize, rest: usize) -> Vec<Vec<MdSpan>> {
+    if runs.first().is_some_and(|run| run.pre) {
+        return vec![runs.to_vec()];
+    }
     let words = split_words(runs);
     let mut out: Vec<Vec<MdSpan>> = Vec::new();
     let mut line: Vec<MdSpan> = Vec::new();
@@ -371,8 +639,12 @@ fn code_span(text: &str, fg: Option<(u8, u8, u8)>) -> MdSpan {
 mod tests {
     use super::*;
 
+    /// The pane's usual comment column, wide enough that only a test about
+    /// narrow layout has to say otherwise.
+    const WIDTH: usize = 72;
+
     fn parse(src: &str) -> Vec<Vec<MdSpan>> {
-        super::parse(src, None)
+        super::parse(src, None, WIDTH)
     }
 
     fn text(lines: &[Vec<MdSpan>]) -> String {
@@ -415,7 +687,7 @@ mod tests {
     #[test]
     fn fenced_code_block_gets_syntax_colors() {
         let hl = Highlighter::default();
-        let lines = super::parse("```rust\nfn f() {}\n```", Some(&hl));
+        let lines = super::parse("```rust\nfn f() {}\n```", Some(&hl), WIDTH);
         assert_eq!(text(&lines), "fn f() {}");
         assert!(lines[0].iter().all(|s| s.code), "still code runs");
         let colors: std::collections::HashSet<_> = lines[0].iter().filter_map(|s| s.fg).collect();
@@ -436,7 +708,7 @@ mod tests {
 
     #[test]
     fn code_block_without_highlighter_stays_plain() {
-        let lines = super::parse("```rust\nfn f() {}\n```", None);
+        let lines = super::parse("```rust\nfn f() {}\n```", None, WIDTH);
         assert!(lines[0].iter().all(|s| s.code && s.fg.is_none()));
     }
 
@@ -445,6 +717,79 @@ mod tests {
         let lines = parse("- one\n- two");
         assert_eq!(text(&lines), "• one\n• two");
         assert!(lines[0][0].muted);
+    }
+
+    #[test]
+    fn an_ordered_list_counts_its_items() {
+        assert_eq!(
+            text(&parse("1. one\n1. two\n1. three")),
+            "1. one\n2. two\n3. three"
+        );
+        assert_eq!(text(&parse("7. seven\n8. eight")), "7. seven\n8. eight");
+    }
+
+    #[test]
+    fn a_quote_carries_a_rail_on_every_line() {
+        assert_eq!(text(&parse("> first\n> second")), "│ first\n│ second");
+        assert!(parse("> quoted")[0][0].muted);
+    }
+
+    /// A quoted list is what an agent produces when it quotes the human back,
+    /// and the lines nobody types by hand (items, code, tables, rules) reach
+    /// the output by their own paths.
+    #[test]
+    fn a_quote_keeps_its_rail_around_every_kind_of_line() {
+        assert_eq!(text(&parse("> - a\n> - b")), "│ • a\n│ • b");
+        assert_eq!(text(&parse("> 1. a\n> 2. b")), "│ 1. a\n│ 2. b");
+        assert_eq!(text(&parse("> - [ ] todo")), "│ • [ ] todo");
+        assert_eq!(text(&parse("> ```\n> code\n> ```")), "│ code");
+        assert_eq!(text(&parse("> | A |\n> |---|\n> | x |")), "│ A\n│ ─\n│ x");
+        assert_eq!(text(&super::parse("> ---", None, 6)), "│ ────");
+    }
+
+    #[test]
+    fn a_table_lays_out_in_columns_under_a_rule() {
+        let lines =
+            parse("| Lane | Ordering |\n|---|---|\n| Postgres | first |\n| Sinks | after |");
+        assert_eq!(
+            text(&lines),
+            "Lane      Ordering\n────────  ────────\nPostgres  first\nSinks     after"
+        );
+        assert!(lines[0][0].bold, "the header reads as a header");
+        assert!(lines[1][0].muted, "the rule is a rule");
+    }
+
+    #[test]
+    fn a_table_cell_wraps_inside_its_own_column() {
+        let lines = super::parse(
+            "| Lane | What a failure costs |\n|---|---|\n| Postgres | a failed write means no sink hears anything |",
+            None,
+            34,
+        );
+        assert_eq!(
+            text(&lines),
+            [
+                "Lane      What a failure costs",
+                "────────  ────────────────────────",
+                "Postgres  a failed write means no",
+                "          sink hears anything",
+            ]
+            .join("\n"),
+            "the neighbour stays padded beside the wrapped cell"
+        );
+    }
+
+    #[test]
+    fn a_table_too_narrow_for_columns_is_listed_row_by_row() {
+        let lines = super::parse(
+            "| Lane | Ordering |\n|---|---|\n| Postgres | first |\n| Sinks | after |",
+            None,
+            16,
+        );
+        assert_eq!(
+            text(&lines),
+            "Lane: Postgres\nOrdering: first\n\nLane: Sinks\nOrdering: after"
+        );
     }
 
     #[test]

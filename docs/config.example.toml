@@ -17,9 +17,10 @@
 # The status screen lists files as "list" (flat magit-style, one row per file
 # with its full path) or "tree" (collapsible directories).
 # status_file_layout = "list"
-# The diff sidebar lists them as "tree" or "review": split into "To review" and
-# a folded "Viewed" bucket, where an edited file falls back into "To review".
-# `t` cycles the two live.
+# The diff sidebar lists them as "tree", "review" (split into "To review" and a
+# folded "Viewed" bucket, where an edited file falls back into "To review"), or
+# "kinds" (grouped by what each file is: source, tests, docs, and so on).
+# `t` cycles the three live.
 # diff_file_layout = "tree"
 # Open the diff pane side-by-side (old left, new right); `|` toggles it live.
 # side_by_side = false
@@ -49,6 +50,16 @@
 # Self-hosted instance; a forced forgejo provider targets codeberg.org without
 # this.
 # host = "codeberg.org"
+
+[classify]
+# Globs that pin a path into one of the "kinds" sidebar buckets, consulted
+# before the built-in rules and before the repo's own linguist-* gitattributes.
+# One key per bucket: source, tests, docs, config, build, generated, assets,
+# other. Gitignore-flavoured: `*` and `?` stay inside a path segment, `**`
+# spans segments, and a pattern with no `/` matches the basename at any depth.
+# tests = ["e2e/**", "*_fixture.rs"]
+# generated = ["schema/*.json"]
+# docs = ["notes/**"]
 
 # Key remaps per screen: action name -> chord. Chords are single keys ("q",
 # "V"), ctrl combos ("<c-r>"), specials ("<cr>", "<tab>"), or two-key
@@ -96,8 +107,8 @@
 [keys.diff]
 # move_left = "h"
 # move_right = "l"
-# next_file = "<c-n>"      # also J, K, <tab>, <s-tab>
-# prev_file = "<c-p>"
+# next_file = "<c-n>"      # also J
+# prev_file = "<c-p>"      # also K
 # next_unviewed = "u"
 # mark_viewed = "v"
 # unview_all = "U"
@@ -126,7 +137,7 @@
 # center_cursor = "zz"
 # cursor_top = "zt"
 # cursor_bottom = "zb"
-# toggle_fold = "za"
+# toggle_fold = "za"       # also <tab>: folds the folder or section the cursor sits in
 # switch_theme = "T"
 # open_editor = "e"
 # open_file_picker = "<c-t>"

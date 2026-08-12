@@ -11,6 +11,7 @@ mod rows;
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
+use diffler_core::classify::{Kind, Rules};
 use diffler_core::highlight::StyledRange;
 use diffler_core::model::DiffModel;
 use diffler_core::review::Review;
@@ -19,6 +20,7 @@ use diffler_core::source::ReviewSource;
 use diffler_core::syntax::ScopeIndex;
 
 use super::composer::{Composer, ComposerKind};
+use super::{App, Flow};
 pub use rows::{CommentLine, DiffRow, SplitRow, SplitSide, comment_display};
 use rows::{build_rows, build_split_rows};
 
@@ -41,35 +43,39 @@ pub enum ScrollAlign {
     Bottom,
 }
 
-/// Fold state of the review layout's two buckets.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct BucketFolds {
-    to_review: bool,
-    viewed: bool,
-}
+/// Which section headers are collapsed, across both layouts that have them.
+/// What the reader did not come to read starts folded: the viewed pile, and
+/// the two kinds nobody reviews by hand.
+#[derive(Debug, Clone)]
+pub(crate) struct BucketFolds(BTreeSet<Bucket>);
 
 impl Default for BucketFolds {
     fn default() -> Self {
-        Self {
-            to_review: false,
-            viewed: true,
-        }
+        Self(
+            [
+                Bucket::Viewed,
+                Bucket::Kind(Kind::Generated),
+                Bucket::Kind(Kind::Assets),
+            ]
+            .into(),
+        )
     }
 }
 
 impl BucketFolds {
-    fn is_folded(self, bucket: Bucket) -> bool {
-        match bucket {
-            Bucket::ToReview => self.to_review,
-            Bucket::Viewed => self.viewed,
-        }
+    fn is_folded(&self, bucket: Bucket) -> bool {
+        self.0.contains(&bucket)
     }
 
     fn toggle_fold(&mut self, bucket: Bucket) {
-        match bucket {
-            Bucket::ToReview => self.to_review = !self.to_review,
-            Bucket::Viewed => self.viewed = !self.viewed,
+        if !self.0.remove(&bucket) {
+            self.0.insert(bucket);
         }
+    }
+
+    /// Open a section, reporting whether it had been folded.
+    fn unfold(&mut self, bucket: Bucket) -> bool {
+        self.0.remove(&bucket)
     }
 }
 
@@ -107,9 +113,15 @@ pub struct DiffView {
     /// Folded directory paths in the sidebar tree; persists across refresh.
     /// Unused in the flat list (it has no directories).
     pub(crate) folded_dirs: BTreeSet<String>,
-    /// Review-layout bucket folds. The viewed pile starts collapsed so file
-    /// navigation walks only what still needs review.
+    /// Section-header folds, shared by the review and kinds layouts.
     pub(crate) bucket_folds: BucketFolds,
+    /// How the kinds layout buckets a path: the built-in table under the
+    /// reader's `[classify]` globs. Pinned at open.
+    pub(crate) rules: Rules,
+    /// What the repo's own git attributes declare, for the files of the diff
+    /// the kinds layout is showing. Filled from the backend when that layout
+    /// is on, so the per-frame row build stays a pure path lookup.
+    pub(crate) declared: HashMap<String, Kind>,
     /// Cursor into the current visible sidebar tree rows (dirs and files).
     pub(crate) tree_cursor: usize,
     /// Row within the selected file's rows.
@@ -176,6 +188,7 @@ impl DiffView {
         commit_model: Option<DiffModel>,
         review: &Review,
         layout: FileLayout,
+        rules: Rules,
         side_by_side: bool,
     ) -> Self {
         let mut view = Self {
@@ -187,6 +200,8 @@ impl DiffView {
             selected: 0,
             folded_dirs: BTreeSet::new(),
             bucket_folds: BucketFolds::default(),
+            rules,
+            declared: HashMap::new(),
             tree_cursor: 0,
             cursor: 0,
             scroll: 0,
@@ -376,8 +391,8 @@ impl DiffView {
     }
 
     /// Open whatever hides the selected file in the sidebar: its ancestor
-    /// directories in the tree layout, its bucket in the review one. Only the
-    /// layout on screen is touched, so the other one keeps its folds.
+    /// directories in the tree layout, its section in the ones with headers.
+    /// Only the layout on screen is touched, so the others keep their folds.
     pub(crate) fn reveal_selected(&mut self, review: &Review) {
         let model = self.model(review);
         let Some(file) = model.files.get(self.selected) else {
@@ -394,11 +409,11 @@ impl DiffView {
                 } else {
                     Bucket::ToReview
                 };
-                let folded = self.bucket_folds.is_folded(bucket);
-                if folded {
-                    self.bucket_folds.toggle_fold(bucket);
-                }
-                folded
+                self.bucket_folds.unfold(bucket)
+            }
+            FileLayout::Kinds => {
+                let bucket = Bucket::Kind(self.kind_of(&path));
+                self.bucket_folds.unfold(bucket)
             }
             FileLayout::Tree | FileLayout::List => {
                 let hidden_by = |dir: &String| path.starts_with(&format!("{dir}/"));
@@ -444,10 +459,12 @@ impl DiffView {
     /// set). The review layout splits files into a to-review and a viewed
     /// bucket under foldable Section rows; bucket membership reads the
     /// hash-keyed viewed marks, so an edited file falls back into to-review by
-    /// itself. Files keep their model index.
+    /// itself. The kinds layout groups them by what they are. Files keep their
+    /// model index.
     pub(crate) fn tree_rows(&self, model: &DiffModel, session: &Session) -> Vec<TreeRow> {
         match self.layout {
             FileLayout::Review => self.review_rows(model, session),
+            FileLayout::Kinds => self.kind_rows(model),
             // list belongs to the status screen (config rejects it here); a
             // stray value degrades to the tree
             FileLayout::Tree | FileLayout::List => {
@@ -457,17 +474,16 @@ impl DiffView {
         }
     }
 
-    fn review_rows(&self, model: &DiffModel, session: &Session) -> Vec<TreeRow> {
-        let (mut fresh, mut viewed) = (Vec::new(), Vec::new());
-        for (index, file) in model.files.iter().enumerate() {
-            if session.is_viewed(&file.path, &file.content_hash()) {
-                viewed.push(index);
-            } else {
-                fresh.push(index);
-            }
-        }
+    /// A header row per group, its files beneath it unless it is folded. The
+    /// renderer reads the depths to draw the indent, so both grouped layouts
+    /// emit them from here.
+    fn section_rows(
+        &self,
+        model: &DiffModel,
+        groups: impl IntoIterator<Item = (Bucket, Vec<usize>)>,
+    ) -> Vec<TreeRow> {
         let mut rows = Vec::new();
-        for (bucket, indices) in [(Bucket::ToReview, fresh), (Bucket::Viewed, viewed)] {
+        for (bucket, indices) in groups {
             let folded = self.bucket_folds.is_folded(bucket);
             rows.push(TreeRow {
                 depth: 0,
@@ -494,10 +510,57 @@ impl DiffView {
         rows
     }
 
-    /// Advance the sidebar layout: tree → review → tree.
+    fn review_rows(&self, model: &DiffModel, session: &Session) -> Vec<TreeRow> {
+        let (mut fresh, mut viewed) = (Vec::new(), Vec::new());
+        for (index, file) in model.files.iter().enumerate() {
+            if session.is_viewed(&file.path, &file.content_hash()) {
+                viewed.push(index);
+            } else {
+                fresh.push(index);
+            }
+        }
+        self.section_rows(model, [(Bucket::ToReview, fresh), (Bucket::Viewed, viewed)])
+    }
+
+    /// One section per kind that the diff has files for, in [`Kind::ALL`]
+    /// order. Files keep their model index and their order within the diff.
+    fn kind_rows(&self, model: &DiffModel) -> Vec<TreeRow> {
+        // `Kind::ALL` below is the display order
+        let mut grouped: HashMap<Kind, Vec<usize>> = HashMap::new();
+        for (index, file) in model.files.iter().enumerate() {
+            grouped
+                .entry(self.kind_of(&file.path))
+                .or_default()
+                .push(index);
+        }
+        let groups = Kind::ALL
+            .into_iter()
+            .filter_map(|kind| Some((Bucket::Kind(kind), grouped.remove(&kind)?)));
+        self.section_rows(model, groups)
+    }
+
+    pub(crate) fn kind_of(&self, path: &str) -> Kind {
+        self.rules.kind(path, self.declared.get(path).copied())
+    }
+
+    /// The paths a declared-kinds worker should ask git about, empty unless
+    /// the kinds layout is the one on screen.
+    fn declared_targets(&self, review: &Review) -> Vec<String> {
+        if self.layout != FileLayout::Kinds {
+            return Vec::new();
+        }
+        self.model(review)
+            .files
+            .iter()
+            .map(|file| file.path.clone())
+            .collect()
+    }
+
+    /// Advance the sidebar layout: tree → review → kinds → tree.
     pub(crate) fn cycle_layout(&mut self) -> FileLayout {
         self.layout = match self.layout {
-            FileLayout::Review => FileLayout::Tree,
+            FileLayout::Review => FileLayout::Kinds,
+            FileLayout::Kinds => FileLayout::Tree,
             _ => FileLayout::Review,
         };
         self.layout
@@ -532,6 +595,44 @@ fn next_unviewed_index(diff: &DiffView, review: &Review, wrap: bool) -> Option<u
 fn tree_position_of_file(rows: &[TreeRow], file_index: usize) -> Option<usize> {
     rows.iter()
         .position(|row| matches!(&row.node, TreeNode::File { index, .. } if *index == file_index))
+}
+
+/// Paths whose git attributes a worker should read, for the kinds sidebar.
+#[derive(Debug, Clone)]
+pub struct DeclaredRequest {
+    pub paths: Vec<String>,
+    /// The request this answers; an answer for a file list the view has since
+    /// replaced is dropped.
+    pub token: u64,
+}
+
+impl App {
+    /// Ask git what the repo declares about the kinds sidebar's files. The
+    /// lookup walks the attribute files per path, so it runs on a worker and
+    /// the sidebar groups by the built-in table until the answer lands.
+    pub(crate) fn queue_declared(&mut self) {
+        let paths = self
+            .diff
+            .as_ref()
+            .map(|diff| diff.declared_targets(&self.review))
+            .unwrap_or_default();
+        self.declared_token += 1;
+        let token = self.declared_token;
+        self.pending_declared = (!paths.is_empty()).then_some(DeclaredRequest { paths, token });
+    }
+
+    pub(crate) fn on_declared_kinds(&mut self, kinds: HashMap<String, Kind>, token: u64) -> Flow {
+        let Some(diff) = self.diff.as_mut().filter(|_| token == self.declared_token) else {
+            return Flow::Idle;
+        };
+        if diff.declared == kinds {
+            return Flow::Idle;
+        }
+        diff.declared = kinds;
+        diff.invalidate();
+        diff.ensure_rows(&self.review);
+        Flow::Continue
+    }
 }
 
 #[cfg(test)]
@@ -843,17 +944,44 @@ mod tests {
     }
 
     #[test]
-    fn tab_and_backtab_step_through_files_keeping_focus() {
-        use crossterm::event::KeyCode;
+    fn tab_on_a_file_at_the_repo_root_says_there_is_nothing_to_fold() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
-        let first = selected_path(&app);
+        // the tree opens on ci.yml, which sits in no folder
+        let before = tree_kinds(&app);
+
         app.handle(key('\t'));
-        let second = selected_path(&app);
-        assert_ne!(first, second, "tab advances to the next file");
-        assert_eq!(focus(&app), Pane::List, "stepping files keeps focus");
-        app.handle(code_key(KeyCode::BackTab));
-        assert_eq!(selected_path(&app), first, "shift-tab steps back");
+
+        assert_eq!(tree_kinds(&app), before, "nothing folded");
+        assert!(
+            app.message
+                .as_ref()
+                .is_some_and(|m| m.text.contains("nothing to fold")),
+            "{:?}",
+            app.message
+        );
+    }
+
+    #[test]
+    fn tab_folds_the_directory_the_sidebar_cursor_sits_in() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        // onto src/lib.rs, a file inside the only folder
+        app.handle(key('k'));
+        let file = selected_path(&app);
+        assert!(tree_kinds(&app).contains(&"file:lib.rs".to_owned()));
+
+        app.handle(key('\t'));
+
+        assert!(
+            !tree_kinds(&app).contains(&"file:lib.rs".to_owned()),
+            "tab folds the folder away: {:?}",
+            tree_kinds(&app)
+        );
+        assert_eq!(selected_path(&app), file, "and steps to no other file");
+        // the cursor rode up to the folder row, so the same key opens it again
+        app.handle(key('\t'));
+        assert!(tree_kinds(&app).contains(&"file:lib.rs".to_owned()));
     }
 
     #[test]
@@ -1746,16 +1874,88 @@ mod tests {
     }
 
     #[test]
-    fn t_cycles_the_sidebar_between_the_tree_and_the_review_buckets() {
+    fn t_cycles_the_sidebar_through_the_tree_the_review_buckets_and_the_kinds() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
         assert!(tree_kinds(&app).contains(&"dir".to_owned()));
         app.handle(key('t'));
         assert_eq!(tree_kinds(&app)[0], "section:To review:3");
         app.handle(key('t'));
+        assert_eq!(tree_kinds(&app)[0], "section:Source:1");
+        app.handle(key('t'));
         assert!(
             tree_kinds(&app).contains(&"dir".to_owned()),
             "wraps back to the tree"
+        );
+    }
+
+    #[test]
+    fn the_kinds_layout_groups_by_what_a_file_is_and_hides_the_empty_buckets() {
+        let fixture = standard_fixture();
+        let app = diff_app_with_layout(&fixture, crate::config::FileLayout::Kinds);
+        assert_eq!(
+            tree_kinds(&app),
+            vec![
+                "section:Source:1",
+                "file:src/lib.rs",
+                "section:Docs:1",
+                "file:todo.md",
+                "section:Config:1",
+                "file:ci.yml",
+            ],
+            "one header per kind the diff has, none for the kinds it does not"
+        );
+    }
+
+    #[test]
+    fn the_repos_declared_kinds_land_from_the_worker_and_regroup_the_sidebar() {
+        let fixture = standard_fixture();
+        let app = &mut diff_app_with_layout(&fixture, crate::config::FileLayout::Kinds);
+        assert!(tree_kinds(app).contains(&"section:Source:1".to_owned()));
+        let request = app.pending_declared.take().expect("a queued lookup");
+        assert!(request.paths.contains(&"src/lib.rs".to_owned()));
+
+        let kinds = HashMap::from([("src/lib.rs".to_owned(), Kind::Generated)]);
+        app.handle(AppEvent::DeclaredKinds {
+            kinds,
+            token: request.token,
+        });
+
+        assert!(
+            tree_kinds(app).contains(&"section:Generated:1".to_owned()),
+            "{:?}",
+            tree_kinds(app)
+        );
+    }
+
+    #[test]
+    fn an_answer_for_a_replaced_file_list_is_dropped() {
+        let fixture = standard_fixture();
+        let app = &mut diff_app_with_layout(&fixture, crate::config::FileLayout::Kinds);
+        let stale = app.pending_declared.take().expect("a queued lookup").token;
+        // the view moves on, so the answer in flight is about the old list
+        app.queue_declared();
+
+        app.handle(AppEvent::DeclaredKinds {
+            kinds: HashMap::from([("src/lib.rs".to_owned(), Kind::Generated)]),
+            token: stale,
+        });
+
+        assert!(tree_kinds(app).contains(&"section:Source:1".to_owned()));
+    }
+
+    #[test]
+    fn a_reader_glob_moves_a_file_between_kind_buckets() {
+        let fixture = standard_fixture();
+        let mut loaded = LoadedConfig::default();
+        loaded.config.ui.diff_file_layout = crate::config::FileLayout::Kinds;
+        loaded.config.classify.tests = vec!["src/**".to_owned()];
+        let mut app = App::new(fixture.review(), loaded);
+        app.open_working_tree_diff(None);
+        assert!(
+            tree_kinds(&app).contains(&"section:Tests:1".to_owned()),
+            "{:?}",
+            tree_kinds(&app)
         );
     }
 

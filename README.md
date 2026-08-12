@@ -191,7 +191,7 @@ Vim-like: `j`/`k`/`gg`/`G` motions, `/` search, and
 | `v` / `u` / `U` | in the diff view: mark the file viewed (a folder row marks everything under it) / jump to the next unviewed / clear every mark |
 | `+` / `-` / `=` | widen / narrow the context around a hunk, or open the whole file |
 | `\|` | side-by-side diff |
-| `t` | cycle the sidebar: file tree, review buckets (viewed files fold away, come back if they change) |
+| `t` | cycle the sidebar: file tree, review buckets (viewed files fold away, come back if they change), kinds (source, tests, docs, config, build, generated, assets) |
 | `Z` | send feedback to the agent |
 | `C` | comments sidebar: walk every comment, Enter jumps to it in the pane |
 | `d` / `D` | delete the comment under the cursor / every local comment of the review |
@@ -212,7 +212,8 @@ Every binding is remappable, see
 The diff view is two panes: a file sidebar and the selected file's diff. `h`
 and `l` (or the left/right arrows) focus the sidebar and the diff; `j`/`k`
 change the selected file from the sidebar or scroll the diff when focused there;
-`<tab>`/`<s-tab>`, `J`/`K`, or `<c-n>`/`<c-p>` step through files from either.
+`J`/`K` or `<c-n>`/`<c-p>` step through files from either; `<tab>` (or `za`)
+folds the folder or section under the sidebar cursor.
 
 Diffs are compared on the syntax tree, so a reindented or rewrapped block
 highlights only the tokens that actually differ.

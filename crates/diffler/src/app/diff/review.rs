@@ -125,10 +125,24 @@ impl App {
             self.info("move onto a comment to delete it");
             return;
         };
-        let (id, author) = (comment.id.clone(), comment.author.clone());
+        let id = comment.id.clone();
+        self.confirm_delete_comment(&id);
+    }
+
+    /// Ask before deleting the comment with `id`, whatever pointed at it.
+    pub(crate) fn confirm_delete_comment(&mut self, id: &str) {
+        let source = self.active_review_source();
+        let Some(author) = self
+            .review
+            .session_for(&source)
+            .comment(id)
+            .map(|comment| comment.author.clone())
+        else {
+            return;
+        };
         self.modal = Some(Modal::Confirm {
             message: format!("Delete {author}'s comment?"),
-            on_confirm: crate::app::PendingOp::DeleteComment(id),
+            on_confirm: crate::app::PendingOp::DeleteComment(id.to_owned()),
         });
     }
 

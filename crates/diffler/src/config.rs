@@ -12,6 +12,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use crossterm::event::KeyCode;
+use diffler_core::classify::{Kind, Rules};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -24,18 +25,62 @@ pub struct Config {
     pub mcp: McpConfig,
     pub editor: EditorConfig,
     pub ci: CiConfig,
+    pub classify: ClassifyConfig,
     pub keys: KeysConfig,
 }
 
+/// Globs that pin a path into a sidebar bucket, consulted before the built-in
+/// table and before the repo's own `linguist-*` attributes. Gitignore-flavoured:
+/// `*` and `?` stay inside a path segment, `**` spans segments, and a pattern
+/// with no `/` matches the basename at any depth.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ClassifyConfig {
+    pub source: Vec<String>,
+    pub tests: Vec<String>,
+    pub docs: Vec<String>,
+    pub config: Vec<String>,
+    pub build: Vec<String>,
+    pub generated: Vec<String>,
+    pub assets: Vec<String>,
+    pub other: Vec<String>,
+}
+
+impl ClassifyConfig {
+    /// The classifier these globs describe, buckets in sidebar order so two
+    /// patterns claiming one path resolve the same way every time.
+    pub fn rules(&self) -> Rules {
+        let patterns = |kind: Kind| match kind {
+            Kind::Source => &self.source,
+            Kind::Tests => &self.tests,
+            Kind::Docs => &self.docs,
+            Kind::Config => &self.config,
+            Kind::Build => &self.build,
+            Kind::Generated => &self.generated,
+            Kind::Assets => &self.assets,
+            Kind::Other => &self.other,
+        };
+        Rules::new(
+            Kind::ALL
+                .into_iter()
+                .filter(|kind| !patterns(*kind).is_empty())
+                .map(|kind| (kind, patterns(kind).clone()))
+                .collect(),
+        )
+    }
+}
+
 /// How a view lists files: a flat magit-style list (one row per file, full
-/// repo-relative path), a collapsible directory tree, or the review mode that
-/// splits files into to-review and viewed buckets (diff sidebar only).
+/// repo-relative path), a collapsible directory tree, the review mode that
+/// splits files into to-review and viewed buckets, or the kinds mode that
+/// groups them by what they are (diff sidebar only for the last two).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FileLayout {
     List,
     Tree,
     Review,
+    Kinds,
 }
 
 impl FileLayout {
@@ -47,6 +92,7 @@ impl FileLayout {
             "list" => (Self::List, None),
             "tree" => (Self::Tree, None),
             "review" => (Self::Review, None),
+            "kinds" => (Self::Kinds, None),
             other => (
                 default,
                 Some(format!("unknown {key} \"{other}\", using \"{default}\"")),
@@ -61,6 +107,7 @@ impl fmt::Display for FileLayout {
             Self::List => "list",
             Self::Tree => "tree",
             Self::Review => "review",
+            Self::Kinds => "kinds",
         })
     }
 }
@@ -323,6 +370,7 @@ struct PartialConfig {
     mcp: PartialMcp,
     editor: PartialEditor,
     ci: PartialCi,
+    classify: ClassifyConfig,
     keys: KeysConfig,
 }
 
@@ -480,7 +528,7 @@ fn apply_layer(
         layer.ui.diff_file_layout,
         &mut config.ui.diff_file_layout,
         "ui.diff_file_layout",
-        &[FileLayout::Tree, FileLayout::Review],
+        &[FileLayout::Tree, FileLayout::Review, FileLayout::Kinds],
         origin,
         origins,
         warnings,
@@ -538,6 +586,30 @@ fn apply_layer(
     if let Some(host) = layer.ci.forgejo.host {
         config.ci.forgejo.host = Some(host);
         origins.insert("ci.forgejo.host".to_owned(), origin.clone());
+    }
+
+    // a bucket a layer lists replaces the one below it: half-overriding a
+    // bucket's globs by appending would make the effective set unreadable
+    let classify_buckets = [
+        (layer.classify.source, &mut config.classify.source, "source"),
+        (layer.classify.tests, &mut config.classify.tests, "tests"),
+        (layer.classify.docs, &mut config.classify.docs, "docs"),
+        (layer.classify.config, &mut config.classify.config, "config"),
+        (layer.classify.build, &mut config.classify.build, "build"),
+        (
+            layer.classify.generated,
+            &mut config.classify.generated,
+            "generated",
+        ),
+        (layer.classify.assets, &mut config.classify.assets, "assets"),
+        (layer.classify.other, &mut config.classify.other, "other"),
+    ];
+    for (globs, target, bucket) in classify_buckets {
+        if globs.is_empty() {
+            continue;
+        }
+        origins.insert(format!("classify.{bucket}"), origin.clone());
+        *target = globs;
     }
 
     let key_sections = [
@@ -902,6 +974,33 @@ mod tests {
             loaded.origins["keys.status.refresh"],
             Origin::Project(project)
         );
+    }
+
+    #[test]
+    fn classify_globs_replace_per_bucket_and_drive_the_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let project = dir.path().join("project.toml");
+        fs::write(
+            &global,
+            "[classify]\ntests = [\"harness/**\"]\ndocs = [\"notes/**\"]\n",
+        )
+        .unwrap();
+        fs::write(&project, "[classify]\ntests = [\"e2e/**\"]\n").unwrap();
+
+        let loaded = load_layers(Some(&global), Some(&project), &CliOverrides::default()).unwrap();
+        assert_eq!(loaded.config.classify.tests, vec!["e2e/**".to_owned()]);
+        assert_eq!(
+            loaded.config.classify.docs,
+            vec!["notes/**".to_owned()],
+            "a bucket the project leaves alone keeps the global globs"
+        );
+        assert_eq!(loaded.origins["classify.tests"], Origin::Project(project));
+
+        let rules = loaded.config.classify.rules();
+        assert_eq!(rules.kind("e2e/login.rs", None), Kind::Tests);
+        assert_eq!(rules.kind("harness/login.rs", None), Kind::Source);
+        assert_eq!(rules.kind("notes/plan.rs", None), Kind::Docs);
     }
 
     #[test]

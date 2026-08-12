@@ -17,25 +17,30 @@ impl super::DiffView {
 }
 
 impl App {
+    /// Where a comment's file sits in the diff, `usize::MAX` when the diff no
+    /// longer carries it. Sorting the sidebar and asking whether a comment is
+    /// orphaned are the same question.
+    fn file_rank(&self, path: &str) -> usize {
+        self.diff.as_ref().map_or(usize::MAX, |diff| {
+            diff.model(&self.review)
+                .files
+                .iter()
+                .position(|file| file.path == path)
+                .unwrap_or(usize::MAX)
+        })
+    }
+
     /// Comment ids of the active review, in the order the sidebar lists them:
     /// by file as the diff orders them, then by line.
     pub(crate) fn comment_order(&self) -> Vec<String> {
         let Some(diff) = self.diff.as_ref() else {
             return Vec::new();
         };
-        let model = diff.model(&self.review);
-        let file_rank = |path: &str| {
-            model
-                .files
-                .iter()
-                .position(|file| file.path == path)
-                .unwrap_or(usize::MAX)
-        };
         let session = self.review.session_for(&diff.source);
         let mut ordered: Vec<&diffler_core::session::Comment> = session.comments.iter().collect();
         ordered.sort_by_key(|comment| {
             (
-                file_rank(&comment.anchor.file),
+                self.file_rank(&comment.anchor.file),
                 comment.anchor.line.unwrap_or(0),
             )
         });
@@ -105,6 +110,42 @@ impl App {
             return;
         }
         self.comments_to(diff.comments_cursor);
+    }
+
+    /// The comment the sidebar has selected.
+    pub(crate) fn selected_comment_id(&self) -> Option<String> {
+        let index = self.diff.as_ref()?.comments_cursor;
+        self.comment_order().get(index).cloned()
+    }
+
+    /// Whether the selected comment is anchored to a file this diff no longer
+    /// carries, so it has no row in the pane.
+    pub(crate) fn selected_comment_is_orphan(&self) -> bool {
+        self.selected_comment_id()
+            .is_some_and(|id| self.comment_is_orphan(&id))
+    }
+
+    /// Whether `id` is anchored to a file outside this diff. The comment
+    /// survives, since the file can come back on the next edit.
+    pub(crate) fn comment_is_orphan(&self, id: &str) -> bool {
+        let Some(diff) = self.diff.as_ref() else {
+            return false;
+        };
+        self.review
+            .session_for(&diff.source)
+            .comment(id)
+            .is_some_and(|comment| self.file_rank(&comment.anchor.file) == usize::MAX)
+    }
+
+    /// Delete the comment the sidebar has selected, by id: an orphan has no
+    /// row for the cursor, and the cursor-driven delete would take whichever
+    /// comment it was last left on.
+    pub(crate) fn delete_selected_comment(&mut self) {
+        let Some(id) = self.selected_comment_id() else {
+            self.info("no comment selected");
+            return;
+        };
+        self.confirm_delete_comment(&id);
     }
 
     /// Whether a column falls in the open comments sidebar.
@@ -282,6 +323,88 @@ mod tests {
         assert!(
             diff.bucket_folds.is_folded(crate::tree::Bucket::Viewed),
             "the review layout keeps its collapsed viewed pile"
+        );
+    }
+
+    /// A file can leave the diff under an open review (the agent reverts it),
+    /// stranding its comments with no row in the pane.
+    #[test]
+    fn deleting_an_orphaned_comment_takes_that_one_and_no_other() {
+        let (_fixture, mut app) = app_with_comments();
+        app.review
+            .session
+            .add_comment(anchor("gone.rs", 1), "reviewer", "orphan");
+        app.handle(key('C'));
+        app.handle(key('G'));
+        assert!(app.selected_comment_is_orphan(), "the orphan sorts last");
+
+        app.handle(key('d'));
+        app.handle(key('y'));
+
+        let left: Vec<&str> = app
+            .review
+            .session
+            .comments
+            .iter()
+            .map(|comment| comment.body.as_str())
+            .collect();
+        assert_eq!(left, vec!["why 42?", "stale note"], "only the orphan went");
+    }
+
+    /// A verb that reads the diff cursor or the selected file finds neither on
+    /// an orphan: `v` would mark a file the reader never opened as viewed, and
+    /// `y`/`e` would take a third, unrelated file.
+    #[test]
+    fn an_orphaned_comment_declines_the_verbs_that_need_a_row() {
+        for verb in ['r', 'R', 'c', 'V', 'v', 'y', 'e'] {
+            let (_fixture, mut app) = app_with_comments();
+            app.review
+                .session
+                .add_comment(anchor("gone.rs", 1), "reviewer", "orphan");
+            app.handle(key('C'));
+            app.handle(key('G'));
+            assert!(app.selected_comment_is_orphan());
+
+            app.handle(key(verb));
+
+            assert!(!app.composer_open(), "{verb}: no composer opened");
+            assert!(
+                app.review.session.viewed.is_empty(),
+                "{verb}: nothing was marked viewed"
+            );
+            assert!(
+                app.pending_clipboard.is_none(),
+                "{verb}: nothing was yanked"
+            );
+            assert!(app.pending_editor.is_none(), "{verb}: no editor was opened");
+            assert!(
+                app.message
+                    .as_ref()
+                    .is_some_and(|m| m.text.contains("not in this diff")),
+                "{verb}: {:?}",
+                app.message
+            );
+        }
+    }
+
+    /// The review-wide verbs address the whole review, so an orphan sitting
+    /// under the cursor is no reason to refuse them.
+    #[test]
+    fn an_orphaned_selection_still_allows_the_verbs_that_need_no_row() {
+        let (_fixture, mut app) = app_with_comments();
+        app.review
+            .session
+            .add_comment(anchor("gone.rs", 1), "reviewer", "orphan");
+        app.handle(key('C'));
+        app.handle(key('G'));
+        assert!(app.selected_comment_is_orphan());
+
+        app.handle(key('D'));
+
+        assert!(
+            matches!(app.modal, Some(crate::app::Modal::Confirm { .. })),
+            "D starts the review wipe: {:?}",
+            app.message
         );
     }
 

@@ -64,6 +64,7 @@ impl App {
             model,
             &self.review,
             self.config.ui.diff_file_layout,
+            self.config.classify.rules(),
             self.config.ui.side_by_side,
         );
         match draft {
@@ -88,6 +89,7 @@ impl App {
             _ => {}
         }
         self.diff = Some(view);
+        self.queue_declared();
         self.push_screen(Screen::Diff);
     }
 
@@ -109,6 +111,7 @@ impl App {
                     diff.commit_model = Some(model);
                     diff.invalidate();
                     diff.ensure_rows(&self.review);
+                    self.queue_declared();
                 } else {
                     self.install_diff_view(source, Some(model));
                 }
@@ -224,6 +227,7 @@ impl App {
                     diff.commit_model = Some(model);
                     diff.invalidate();
                     diff.ensure_rows(&self.review);
+                    self.queue_declared();
                 } else {
                     self.install_diff_view(source, Some(model));
                 }

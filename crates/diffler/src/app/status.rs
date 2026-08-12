@@ -488,9 +488,9 @@ impl App {
     /// layouts. The tree honors the section's folded directories.
     fn section_layout_rows(&self, section: Section, files: &[FileDiff]) -> Vec<TreeRow> {
         match self.config.ui.status_file_layout {
-            // review is diff-sidebar-only (config rejects it here); a stray
-            // value degrades to the flat list
-            FileLayout::List | FileLayout::Review => {
+            // review and kinds are diff-sidebar-only (config rejects them
+            // here); a stray value degrades to the flat list
+            FileLayout::List | FileLayout::Review | FileLayout::Kinds => {
                 let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
                 tree::flat_rows(&paths)
             }

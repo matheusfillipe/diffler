@@ -93,7 +93,8 @@ impl App {
             Screen::Log => self.log.as_ref().map_or(0, |l| l.cursor),
             Screen::Diff => self.diff.as_ref().map_or(0, |d| match d.focus {
                 Pane::List => d.tree_cursor,
-                Pane::Diff | Pane::Comments => d.cursor,
+                Pane::Comments => d.comments_cursor(),
+                Pane::Diff => d.cursor,
             }),
             Screen::CiLog => self.ci_log.as_ref().map_or(0, |v| v.cursor),
             Screen::File => self.file.as_ref().map_or(0, |v| v.cursor),
@@ -155,7 +156,26 @@ impl App {
                 .enumerate()
                 .map(|(i, r)| (i, tree_row_label(&r.node)))
                 .collect(),
-            Pane::Diff | Pane::Comments => {
+            // the comments sidebar lists comments, so that is what it searches
+            Pane::Comments => {
+                let session = self.review.session_for(&diff.source);
+                self.comment_order()
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, id)| {
+                        let comment = session.comments.iter().find(|c| &c.id == id)?;
+                        let line = comment
+                            .anchor
+                            .line
+                            .map_or(String::new(), |line| format!(":{line}"));
+                        Some((
+                            index,
+                            format!("{}{line} {}", comment.anchor.file, comment.body),
+                        ))
+                    })
+                    .collect()
+            }
+            Pane::Diff => {
                 let file = model.files.get(diff.selected);
                 diff.rows()
                     .iter()
@@ -176,14 +196,18 @@ impl App {
                     l.cursor = row;
                 }
             }
-            Screen::Diff => {
-                if let Some(d) = self.diff.as_mut() {
-                    match d.focus {
-                        Pane::List => d.tree_cursor = row,
-                        Pane::Diff | Pane::Comments => d.cursor = row,
+            // the sidebars select as they move, so a search jump lands through
+            // the same call a motion key makes
+            Screen::Diff => match self.diff.as_ref().map(|d| d.focus) {
+                Some(Pane::List) => self.diff_tree_to(row),
+                Some(Pane::Comments) => self.comments_to(row),
+                Some(Pane::Diff) => {
+                    if let Some(d) = self.diff.as_mut() {
+                        d.cursor = row;
                     }
                 }
-            }
+                None => {}
+            },
             Screen::CiLog => {
                 if let Some(v) = self.ci_log.as_mut() {
                     v.cursor = row;
@@ -280,6 +304,49 @@ mod tests {
             app.handle(key(c));
         }
         assert_eq!(app.diff.as_ref().unwrap().tree_cursor, target);
+        assert_eq!(
+            app.diff.as_ref().and_then(|d| d.selected_path(&app.review)),
+            Some("src/lib.rs".to_owned()),
+            "landing on a file row opens it, as moving onto it would"
+        );
+    }
+
+    /// The comments sidebar lists comments, so it searches comments and its
+    /// jump seats the diff cursor on the one it finds.
+    #[test]
+    fn search_in_the_comments_sidebar_walks_comments_and_selects_them() {
+        let (_fixture, mut app) = app();
+        app.open_working_tree_diff(None);
+        for (line, body) in [(1, "first note"), (2, "the widget leaks")] {
+            app.review.session.add_comment(
+                diffler_core::session::Anchor {
+                    file: "src/lib.rs".to_owned(),
+                    line: Some(line),
+                    line_end: None,
+                    on_old_side: false,
+                    line_text: None,
+                },
+                "reviewer",
+                body,
+            );
+        }
+        app.handle(key('C'));
+        assert_eq!(app.diff.as_ref().unwrap().focus, Pane::Comments);
+
+        app.handle(key('/'));
+        for c in "widget".chars() {
+            app.handle(key(c));
+        }
+
+        let diff = app.diff.as_ref().expect("diff");
+        assert_eq!(diff.comments_cursor(), 1, "the matching comment is current");
+        assert!(
+            matches!(
+                diff.rows().get(diff.cursor),
+                Some(crate::app::DiffRow::Comment { line: 0, .. })
+            ),
+            "and the diff cursor sits on it, so the pane verbs reach it"
+        );
     }
 
     #[test]

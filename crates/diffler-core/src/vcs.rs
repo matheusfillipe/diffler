@@ -150,6 +150,11 @@ pub trait Vcs: Send {
     /// staged new file is tracked and an untracked one is not.
     fn tracked_files(&self) -> Result<Vec<PathBuf>, VcsError>;
 
+    /// Whether the repo's git attributes set `name` to true for `rel`.
+    /// Unreadable attribute files read as unset: the caller is refining a
+    /// guess, so there is nothing to report and nothing to recover.
+    fn attr(&self, rel: &Path, name: &str) -> bool;
+
     /// Local branches.
     fn branches(&self) -> Result<Vec<BranchInfo>, VcsError>;
     /// Local and remote-tracking branch names, for pickers that name a

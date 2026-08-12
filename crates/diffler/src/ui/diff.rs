@@ -152,11 +152,32 @@ fn comments_width(total: u16, open: bool) -> u16 {
     sidebar_width(total).min(total / 3)
 }
 
+/// What a card needs to light its search matches: the live query, and whether
+/// this card holds the active match so its hits take the stronger colour.
+#[derive(Clone, Copy)]
+struct CardSearch<'a> {
+    query: &'a str,
+    current: bool,
+}
+
+/// A comment card's shared rendering inputs, the sidebar's counterpart to
+/// [`TreeRowCtx`].
+#[derive(Clone, Copy)]
+struct CardCtx<'a> {
+    theme: &'a Theme,
+    budget: usize,
+    bg: Color,
+    width: u16,
+    on_cursor: bool,
+    orphan: bool,
+    search: Option<CardSearch<'a>>,
+}
+
 /// Right pane: every comment of the review, each a header line (file, line,
 /// status) and its body wrapped to the column. The selection drives the diff
 /// cursor, so the highlighted card is always the one the pane's verbs act on.
 fn draw_comments(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut DiffView) {
-    let theme = ctx.theme;
+    let (theme, search) = (ctx.theme, ctx.search);
     let focused = diff.focus == Pane::Comments;
     let surface = sidebar_bg(theme);
     frame.render_widget(Block::new().style(Style::new().bg(surface)), area);
@@ -180,13 +201,24 @@ fn draw_comments(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &
     let mut owners: Vec<Option<usize>> = Vec::new();
     let budget = (inner.width as usize).saturating_sub(2).max(1);
     let mut cursor_line = 0usize;
-    for (index, comment) in ordered.iter().enumerate() {
-        if index == diff.comments_cursor {
+    for (index, (comment, orphan)) in ordered.iter().enumerate() {
+        let on_cursor = index == diff.comments_cursor;
+        if on_cursor {
             cursor_line = lines.len();
         }
-        let selected = index == diff.comments_cursor;
-        let bg = if selected { theme.cursor_line } else { surface };
-        for line in comment_card(theme, comment, budget, bg, inner.width) {
+        let card = CardCtx {
+            theme,
+            budget,
+            bg: sidebar_row_bg(theme, on_cursor, focused),
+            width: inner.width,
+            on_cursor,
+            orphan: *orphan,
+            search: search.filter(|_| focused).map(|search| CardSearch {
+                query: search.query(),
+                current: search.current_row() == Some(index),
+            }),
+        };
+        for line in comment_card(&card, comment) {
             lines.push(line);
             owners.push(Some(index));
         }
@@ -215,11 +247,13 @@ fn draw_comments(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &
 }
 
 /// The review's comments in sidebar order: by file as the diff lists them,
-/// then by line, matching `App::comment_order`.
+/// then by line, matching `App::comment_order`. A file the diff no longer
+/// carries ranks last, which is the same thing as being orphaned, so each
+/// comment comes back paired with that answer.
 fn ordered_comments<'a>(
     ctx: &'a RenderCtx<'_>,
     diff: &DiffView,
-) -> Vec<&'a diffler_core::session::Comment> {
+) -> Vec<(&'a diffler_core::session::Comment, bool)> {
     let rank = |path: &str| {
         diff.commit_model
             .as_ref()
@@ -227,27 +261,49 @@ fn ordered_comments<'a>(
             .and_then(|model| model.files.iter().position(|file| file.path == path))
             .unwrap_or(usize::MAX)
     };
-    let mut ordered: Vec<&diffler_core::session::Comment> = ctx.session.comments.iter().collect();
-    ordered.sort_by_key(|comment| (rank(&comment.anchor.file), comment.anchor.line.unwrap_or(0)));
+    let mut ordered: Vec<(&diffler_core::session::Comment, usize)> = ctx
+        .session
+        .comments
+        .iter()
+        .map(|comment| (comment, rank(&comment.anchor.file)))
+        .collect();
+    ordered.sort_by_key(|(comment, rank)| (*rank, comment.anchor.line.unwrap_or(0)));
     ordered
+        .into_iter()
+        .map(|(comment, rank)| (comment, rank == usize::MAX))
+        .collect()
 }
 
 /// One comment as a header line plus its wrapped body.
-fn comment_card(
-    theme: &Theme,
-    comment: &diffler_core::session::Comment,
-    budget: usize,
-    bg: Color,
-    width: u16,
-) -> Vec<Line<'static>> {
-    let pad = |mut spans: Vec<Span<'static>>| {
-        let used: usize = spans.iter().map(Span::width).sum();
-        if let Some(gap) = (width as usize).checked_sub(used) {
-            spans.push(Span::styled(" ".repeat(gap), Style::new().bg(bg)));
-        }
-        Line::from(spans)
+fn comment_card(cc: &CardCtx<'_>, comment: &diffler_core::session::Comment) -> Vec<Line<'static>> {
+    let &CardCtx {
+        theme,
+        budget,
+        bg,
+        width,
+        on_cursor,
+        orphan,
+        search,
+    } = cc;
+    // one line's matches, in the shape `highlight_spans` paints everywhere
+    let ranges = |text: &str| {
+        search
+            .map(|search| {
+                crate::search::find_matches(&[(0, text.to_owned())], search.query)
+                    .into_iter()
+                    .map(|found| (found.range, search.current))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
     };
+    // the tree's own lead cell, so the `▌` rail runs down the selected card
+    // exactly as it marks the selected file row
+    let lead = || tree_lead(theme, 0, bg, on_cursor);
+    let pad = |spans: Vec<Span<'static>>| pad_line(spans, bg, width);
+    // an orphan outranks its status: the file it points at is gone, which is
+    // the only thing worth saying about it
     let (status, colour) = match comment.status {
+        _ if orphan => ("⚠", theme.error_fg),
         CommentStatus::Open => ("○", theme.warn_fg),
         CommentStatus::Replied => ("◐", theme.accent),
         CommentStatus::Resolved => ("✓", theme.added),
@@ -263,29 +319,56 @@ fn comment_card(
         .anchor
         .line
         .map_or(String::new(), |l| format!(":{l}"));
-    let mut out = vec![pad(vec![
-        Span::styled(format!(" {status} "), Style::new().fg(colour).bg(bg)),
-        Span::styled(
-            super::elide(&format!("{file}{line_no}"), budget.saturating_sub(2)),
-            Style::new().fg(theme.fg).bg(bg),
-        ),
-    ])];
-    for runs in crate::app::markdown::parse(&comment.body, None) {
+    let anchor = super::elide(&format!("{file}{line_no}"), budget.saturating_sub(2));
+    let mut header = vec![
+        lead(),
+        Span::styled(format!("{status} "), Style::new().fg(colour).bg(bg)),
+    ];
+    header.extend(super::highlight_spans(
+        &anchor,
+        Style::new().fg(theme.fg).bg(bg),
+        &ranges(&anchor),
+        theme,
+    ));
+    let mut out = vec![pad(header)];
+    for runs in crate::app::markdown::parse(&comment.body, None, budget) {
         for wrapped in crate::app::markdown::wrap(&runs, budget, budget) {
-            let mut spans = vec![Span::styled("  ".to_owned(), Style::new().bg(bg))];
-            spans.extend(
-                wrapped
+            let mut spans = vec![lead(), Span::styled(" ".to_owned(), Style::new().bg(bg))];
+            let text: String = wrapped.iter().map(|run| run.text.as_str()).collect();
+            let line_ranges = ranges(&text);
+            let mut offset = 0usize;
+            for run in &wrapped {
+                let span = md_span(run, Style::new().fg(theme.dim).bg(bg), theme);
+                let len = span.content.len();
+                let local: Vec<_> = line_ranges
                     .iter()
-                    .map(|run| md_span(run, Style::new().fg(theme.dim).bg(bg), theme)),
-            );
+                    .filter(|(range, _)| range.start < offset + len && range.end > offset)
+                    .map(|(range, current)| {
+                        (
+                            range.start.saturating_sub(offset)..(range.end - offset).min(len),
+                            *current,
+                        )
+                    })
+                    .collect();
+                spans.extend(super::highlight_spans(
+                    &span.content,
+                    span.style,
+                    &local,
+                    theme,
+                ));
+                offset += len;
+            }
             out.push(pad(spans));
         }
     }
     if !comment.replies.is_empty() {
-        out.push(pad(vec![Span::styled(
-            format!("  +{} replies", comment.replies.len()),
-            Style::new().fg(theme.purple).bg(bg),
-        )]));
+        out.push(pad(vec![
+            lead(),
+            Span::styled(
+                format!(" +{} replies", comment.replies.len()),
+                Style::new().fg(theme.purple).bg(bg),
+            ),
+        ]));
     }
     out
 }
@@ -847,9 +930,11 @@ fn sidebar_file_line(
         .fg(if on_cursor { theme.accent } else { theme.fg })
         .bg(bg);
     // highlight the whole name, then clip the spans so a match stays lit on the
-    // visible part; a flat-list path (with a `/`) front-elides so its tail
-    // (the basename, the file's identity) stays in view
-    let highlighted = super::highlight_spans(name, name_style, search, theme);
+    // visible part; a path row (with a `/`) dims its parents and front-elides,
+    // so its tail (the basename, the file's identity) stays in view and reads
+    // as the name it is
+    let parent = name.rfind('/').map_or(0, |at| at + 1);
+    let highlighted = super::highlight_spans_split(name, parent, dim, name_style, search, theme);
     spans.extend(clip_spans(
         highlighted,
         room,
@@ -1442,6 +1527,95 @@ mod tests {
         app.open_working_tree_diff(None);
         // one viewed file in the folded bucket, two left to review
         app.handle(key('v'));
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    /// The selected card has to dim when the pane loses focus, exactly as a
+    /// selected file row does, or there is no telling which pane the keys go to.
+    #[test]
+    fn the_comments_cursor_band_follows_focus_like_the_file_rows() {
+        let (_fixture, mut app) = diff_app();
+        app.handle(key('l'));
+        app.handle(key('j'));
+        app.handle(key('c'));
+        for c in "a note".chars() {
+            app.handle(key(c));
+        }
+        app.handle(crate::test_support::code_key(
+            crossterm::event::KeyCode::Enter,
+        ));
+        app.handle(key('C'));
+
+        let band_of = |app: &mut App| {
+            let terminal = render(app);
+            let buffer = terminal.backend().buffer();
+            let rect = app.diff.as_ref().expect("diff").comments_rect;
+            buffer[(rect.x, rect.y)].style().bg
+        };
+        let focused = band_of(&mut app);
+        // h leaves the comments pane for the diff, keeping the same selection
+        app.handle(key('h'));
+        let unfocused = band_of(&mut app);
+
+        let theme = &app.theme;
+        assert_eq!(focused, Some(super::sidebar_row_bg(theme, true, true)));
+        assert_eq!(unfocused, Some(super::sidebar_row_bg(theme, true, false)));
+        assert_ne!(focused, unfocused, "the band weakens with focus lost");
+    }
+
+    /// The sidebar lights matches with the same two search colours every other
+    /// pane uses: the active card's stronger, the rest plain.
+    #[test]
+    fn searching_the_comments_sidebar_lights_the_matches() {
+        let (_fixture, mut app) = diff_app();
+        for body in ["the widget leaks", "another widget here"] {
+            app.review.session.add_comment(
+                diffler_core::session::Anchor {
+                    file: "src/lib.rs".to_owned(),
+                    line: Some(2),
+                    line_end: None,
+                    on_old_side: false,
+                    line_text: None,
+                },
+                "reviewer",
+                body,
+            );
+        }
+        app.handle(key('C'));
+        app.handle(key('/'));
+        for c in "widget".chars() {
+            app.handle(key(c));
+        }
+
+        let terminal = render(&mut app);
+        let buffer = terminal.backend().buffer();
+        let rect = app.diff.as_ref().expect("diff").comments_rect;
+        let painted = |bg| {
+            (rect.y..rect.y + rect.height)
+                .flat_map(|y| (rect.x..rect.x + rect.width).map(move |x| (x, y)))
+                .filter(|at| buffer[*at].style().bg == Some(bg))
+                .count()
+        };
+        assert_eq!(
+            painted(app.theme.search_current),
+            "widget".len(),
+            "the active match is lit stronger"
+        );
+        assert_eq!(
+            painted(app.theme.search),
+            "widget".len(),
+            "and the other match is lit too"
+        );
+    }
+
+    #[test]
+    fn kinds_layout_sidebar_groups_files_by_what_they_are() {
+        let fixture = standard_fixture();
+        let mut loaded = LoadedConfig::default();
+        loaded.config.ui.diff_file_layout = crate::config::FileLayout::Kinds;
+        let mut app = App::new(fixture.review(), loaded);
+        app.author = "reviewer".to_owned();
+        app.open_working_tree_diff(None);
         insta::assert_snapshot!(render(&mut app).backend());
     }
 
@@ -2049,6 +2223,28 @@ mod tests {
         app.review
             .session
             .reply(&answered, "agent", "kept for api compat");
+        app.diff.as_mut().unwrap().invalidate();
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn a_markdown_table_in_a_comment_renders_as_columns() {
+        let (_fixture, mut app) = diff_app();
+        open_lib_diff(&mut app);
+        app.review.session.add_comment(
+            diffler_core::session::Anchor {
+                file: "src/lib.rs".to_owned(),
+                line: Some(2),
+                line_end: None,
+                on_old_side: false,
+                line_text: Some("    42".to_owned()),
+            },
+            "reviewer",
+            "| Between | Ordering | What a failure costs |\n\
+             |---|---|---|\n\
+             | Two customers | Parallel | Nothing, one lane throwing leaves the others |\n\
+             | Postgres, then the sinks | Strictly ordered | No sink hears anything this run |",
+        );
         app.diff.as_mut().unwrap().invalidate();
         insta::assert_snapshot!(render(&mut app).backend());
     }

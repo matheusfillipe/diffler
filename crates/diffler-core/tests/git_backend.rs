@@ -4,6 +4,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use common::Fixture;
+use diffler_core::classify::Kind;
 use diffler_core::git::GitVcs;
 use diffler_core::model::{FileStatus, LineKind};
 use diffler_core::vcs::{NetworkOp, Vcs, VcsError};
@@ -1305,6 +1306,34 @@ fn blame_maps_onto_the_worktree_so_uncommitted_lines_are_their_own_span() {
         spans.get(1).map(|s| (s.start_line, s.committed)),
         Some((2, true)),
         "the committed lines shift down instead of staying at line 1"
+    );
+}
+
+#[test]
+fn gitattributes_declare_a_files_bucket() {
+    let fx = Fixture::new();
+    fx.write(
+        ".gitattributes",
+        "src/schema.rs linguist-generated=true\nnotes/** linguist-documentation\nlib/** linguist-vendored=true\n",
+    );
+    fx.write("src/schema.rs", "x\n");
+    fx.write("src/lib.rs", "y\n");
+    fx.write("lib/dep.rs", "z\n");
+    fx.write("notes/plan.rs", "w\n");
+    fx.commit_all("base");
+
+    let vcs = vcs(&fx);
+    let declared = |path: &str| {
+        let rel = Path::new(path).to_path_buf();
+        diffler_core::classify::declared(|name| vcs.attr(&rel, name))
+    };
+    assert_eq!(declared("src/schema.rs"), Some(Kind::Generated));
+    assert_eq!(declared("lib/dep.rs"), Some(Kind::Generated));
+    assert_eq!(declared("notes/plan.rs"), Some(Kind::Docs));
+    assert_eq!(
+        declared("src/lib.rs"),
+        None,
+        "a file the repo says nothing about is left to the table"
     );
 }
 
