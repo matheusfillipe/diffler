@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786551397974,
+  "lastUpdate": 1786551616478,
   "repoUrl": "https://github.com/matheusfillipe/diffler",
   "entries": {
     "Benchmark": [
@@ -12095,6 +12095,102 @@ window.BENCHMARK_DATA = {
             "name": "scope_index/20000",
             "value": 94169694,
             "range": "± 856585",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "committer": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "distinct": true,
+          "id": "baca429b01534ff55cde2a1d813f56dde6b32283",
+          "message": "fix: assert the kinds fold arrow instead of a filename the pane may show",
+          "timestamp": "2026-08-12T18:14:07+02:00",
+          "tree_id": "2fe2d97a3f88da81c903601a5d4589733dfff830",
+          "url": "https://github.com/matheusfillipe/diffler/commit/baca429b01534ff55cde2a1d813f56dde6b32283"
+        },
+        "date": 1786551615402,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "syndiff_emphasis/1000",
+            "value": 8317685,
+            "range": "± 137437",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/1000",
+            "value": 19256,
+            "range": "± 2475",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/1000",
+            "value": 6039517,
+            "range": "± 202238",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/1000",
+            "value": 4602575,
+            "range": "± 26940",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/5000",
+            "value": 44110920,
+            "range": "± 1207779",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/5000",
+            "value": 98498,
+            "range": "± 1182",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/5000",
+            "value": 30593874,
+            "range": "± 1271965",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/5000",
+            "value": 22795736,
+            "range": "± 172117",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/20000",
+            "value": 176771306,
+            "range": "± 984968",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/20000",
+            "value": 393506,
+            "range": "± 1573",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/20000",
+            "value": 122948483,
+            "range": "± 2614435",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/20000",
+            "value": 91414162,
+            "range": "± 3123929",
             "unit": "ns/iter"
           }
         ]
