@@ -259,7 +259,7 @@ diffler config --dump
 Switchable live with `T`, or set `ui.theme`. The
 [gallery](showcase/THEMES.md) shows each one.
 
-![the diff view in catppuccin-mocha: a review comment with the agent's reply threaded under it](showcase/img/catppuccin-mocha.png)
+![the review screen in catppuccin-mocha: the file tree, a diff carrying a comment thread with the agent's reply, and the comments sidebar](showcase/img/catppuccin-mocha.png)
 
 ## Development
 

@@ -42,9 +42,11 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
 - `just e2e`: PTY end-to-end suite (needs `uv`; CI runs it in a separate job)
 - `just ci`: fmt+clippy+tests gate, must pass before any commit (CI additionally runs msrv, deny, typos, dupes, machete, coverage)
 - `showcase/record.sh`: regenerate `showcase/img/*.png`, one screenshot per theme
-  (needs `vhs`). It seeds a throwaway repo with a review and shoots the diff
-  screen, so rerun it after anything that changes how that screen looks. The
-  README's hero `assets/demo.gif` is hand-recorded and has no script.
+  (needs `vhs`). It seeds a throwaway repo with a three-file review and shoots
+  the review screen with all three panes up, the comments sidebar included, so
+  rerun it after anything that changes how that screen looks. `record.sh --seed`
+  prints the seeded repo and records nothing, for checking the frame first.
+  The README's hero `assets/demo.gif` is hand-recorded and has no script.
 
 ## Rules
 
