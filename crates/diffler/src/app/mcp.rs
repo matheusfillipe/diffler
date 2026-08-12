@@ -181,8 +181,9 @@ impl App {
         self.comment_status_response(&source, id)
     }
 
-    /// The agent can only propose: the comment moves to replied with a
-    /// flagged note, and the human resolves it in the TUI (`R`).
+    /// The agent can only propose: the comment moves to replied and the human
+    /// resolves it in the TUI (`R`). The note lands as the reply when the
+    /// thread is empty, so a flag on an answered comment adds nothing.
     fn agent_propose_resolve(&mut self, id: &str, note: Option<&str>) -> McpResponse {
         let Some(source) = self.source_of_comment(id) else {
             return McpResponse::Error(format!("unknown comment id: {id}"));
@@ -190,14 +191,20 @@ impl App {
         if let Err(err) = self.review.ensure_source(&source) {
             return McpResponse::Error(err.to_string());
         }
-        let note = note
-            .map(str::trim)
-            .filter(|n| !n.is_empty())
-            .unwrap_or("marked resolved");
-        let body = format!("[agent] {note}");
-        self.review
-            .session_for_mut(&source)
-            .reply(id, AGENT_AUTHOR, &body);
+        let session = self.review.session_for_mut(&source);
+        let answered = session
+            .comment(id)
+            .is_some_and(|comment| !comment.replies.is_empty());
+        // the note speaks only when the thread is otherwise empty: an agent
+        // that replied and then proposed would say the same thing twice
+        match note.map(str::trim).filter(|note| !note.is_empty()) {
+            Some(note) if !answered => {
+                session.reply(id, AGENT_AUTHOR, note);
+            }
+            _ => {
+                session.mark_replied(id);
+            }
+        }
         self.persist_review_change(&source);
         self.info("agent proposed resolving a comment (confirm with R)");
         self.comment_status_response(&source, id)
@@ -468,10 +475,10 @@ mod tests {
     }
 
     #[test]
-    fn propose_resolve_appends_flagged_note_and_stays_replied() {
+    fn propose_resolve_on_an_empty_thread_leaves_the_note_and_stays_replied() {
         let (_fixture, mut app, id) = app_with_comment();
         let response = app.handle_mcp(McpRequestKind::ProposeResolve {
-            id: id.clone(),
+            id,
             note: Some("fixed in abc123".to_owned()),
         });
         assert_eq!(
@@ -482,12 +489,44 @@ mod tests {
         );
         let comment = &app.review.session.comments[0];
         assert_eq!(comment.status, CommentStatus::Replied, "not resolved");
-        assert_eq!(comment.replies[0].body, "[agent] fixed in abc123");
+        assert_eq!(
+            comment
+                .replies
+                .iter()
+                .map(|r| r.body.as_str())
+                .collect::<Vec<_>>(),
+            vec!["fixed in abc123"],
+            "a bare flag still leaves its reasoning"
+        );
+    }
 
-        let response = app.handle_mcp(McpRequestKind::ProposeResolve { id, note: None });
-        assert!(matches!(response, McpResponse::Replied { .. }));
+    /// The agent answers, then flags. The flag is a status change, so the card
+    /// carries one reply rather than the answer plus a summary of it.
+    #[test]
+    fn propose_resolve_after_a_reply_writes_nothing() {
+        let (_fixture, mut app, id) = app_with_comment();
+        app.handle_mcp(McpRequestKind::ReplyComment {
+            id: id.clone(),
+            body: "checked the job: the host is right".to_owned(),
+        });
+
+        app.handle_mcp(McpRequestKind::ProposeResolve {
+            id: id.clone(),
+            note: Some("host and idProperty confirmed".to_owned()),
+        });
+        app.handle_mcp(McpRequestKind::ProposeResolve { id, note: None });
+
         let comment = &app.review.session.comments[0];
-        assert_eq!(comment.replies[1].body, "[agent] marked resolved");
+        assert_eq!(
+            comment
+                .replies
+                .iter()
+                .map(|r| r.body.as_str())
+                .collect::<Vec<_>>(),
+            vec!["checked the job: the host is right"],
+            "the answer is the only thing in the thread"
+        );
+        assert_eq!(comment.status, CommentStatus::Replied);
     }
 
     #[test]

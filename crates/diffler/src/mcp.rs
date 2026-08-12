@@ -500,7 +500,7 @@ impl DifflerMcp {
     }
 
     #[tool(
-        description = "Propose a comment as resolved: marks it replied with an agent note. Only the human can resolve it, in the TUI."
+        description = "Flag a comment as addressed: marks it replied. Writes nothing into the thread, so call it after reply_comment rather than repeating the answer. The optional note is used only when you did not reply. Only the human can resolve it, in the TUI."
     )]
     async fn propose_resolve(
         &self,
@@ -594,7 +594,9 @@ impl DifflerMcp {
              2. Call get_comments with status \"open\" and read each comment in place.\n\
              3. Address every comment in the code it anchors to.\n\
              4. Answer each with reply_comment (what you changed and why), then \
-             propose_resolve; only the human can resolve for real, in the TUI.\n\
+             propose_resolve to flag it addressed. That flag adds no text: do \
+             not summarise the answer you just gave. Only the human resolves \
+             for real, in the TUI.\n\
              5. Call wait_for_feedback with the latest epoch and start over when it \
              returns: the human just sent new feedback. It answers within a minute; \
              a timed_out result means they are still reviewing, so call it again. \
@@ -616,8 +618,9 @@ impl ServerHandler for DifflerMcp {
         )
         .with_instructions(
             "diffler code review: get_comments reads the human's diff comments, \
-             reply_comment answers them in place, propose_resolve flags them as \
-             addressed, and wait_for_feedback long-polls until the human sends \
+             reply_comment answers them in place, propose_resolve flags an \
+             answered one as addressed without adding text, and \
+             wait_for_feedback long-polls until the human sends \
              new feedback. The review prompt packages that loop as a command.",
         )
     }

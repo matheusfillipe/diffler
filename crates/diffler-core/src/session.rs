@@ -137,6 +137,20 @@ impl Session {
             body: body.to_owned(),
             at: now_unix(),
         });
+        self.mark_replied(comment_id)
+    }
+
+    pub fn comment(&self, id: &str) -> Option<&Comment> {
+        self.comments.iter().find(|comment| comment.id == id)
+    }
+
+    /// Flag a comment as addressed without writing anything into the thread.
+    /// An agent that already answered has said its piece; a second summary of
+    /// it is noise in the card.
+    pub fn mark_replied(&mut self, comment_id: &str) -> bool {
+        let Some(comment) = self.comment_mut(comment_id) else {
+            return false;
+        };
         if comment.status == CommentStatus::Open {
             comment.status = CommentStatus::Replied;
         }

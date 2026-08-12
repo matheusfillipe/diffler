@@ -207,7 +207,7 @@ async fn comment_lifecycle_reply_resolve_and_viewed() {
     assert_eq!(structured(&result)["ok"], true);
     assert_eq!(structured(&result)["status"], "replied");
 
-    // propose_resolve appends a flagged agent note, stays replied
+    // propose_resolve flags an answered comment without adding to the thread
     let result = call(
         &harness.client,
         "propose_resolve",
@@ -224,7 +224,11 @@ async fn comment_lifecycle_reply_resolve_and_viewed() {
     let comments = &structured(&result)["comments"];
     assert_eq!(comments[0]["replies"][0]["author"], "agent");
     assert_eq!(comments[0]["replies"][0]["body"], "it is the answer");
-    assert_eq!(comments[0]["replies"][1]["body"], "[agent] fixed upstream");
+    assert_eq!(
+        comments[0]["replies"][1],
+        serde_json::Value::Null,
+        "the answer stands alone, with no summary of itself under it"
+    );
 
     // mark_viewed is reflected in review_status
     let result = call(
