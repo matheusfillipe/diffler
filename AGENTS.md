@@ -186,9 +186,9 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   Agent triggering is the `wait_for_feedback` long-poll (MCP can't initiate agent
   turns); the human's "send" key unblocks it. `propose_resolve` only marks a
   comment Replied, and writes nothing into the thread: the prompt has agents
-  reply then flag, so a note there would restate the answer. Its note is used
-  only when the flag arrives on an empty thread. Only the human resolves it,
-  in the TUI.
+  reply then flag, so a note there would restate the answer. Its note lands
+  only when the agent has not replied to that comment. Only the human resolves
+  it, in the TUI.
 - **PR review.** `ReviewSource::Pr{number}` keys review state on the PR number
   (survives pushes); the diff is `merge-base..head` via `Vcs::tree_diff`,
   fetching `refs/pull/<n>/head` when the head isn't local: reviewing never

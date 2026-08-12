@@ -138,7 +138,11 @@ pub fn parse(src: &str, highlighter: Option<&Highlighter>, width: usize) -> Vec<
                 item_paragraph = true;
             }
             Event::Start(Tag::BlockQuote(_)) => {
-                flush(&mut line, &mut lines, quote_depth);
+                // a quote opening a list item keeps the marker it just pushed;
+                // the paragraph inside the quote is the one that consumes it
+                if !item_paragraph {
+                    flush(&mut line, &mut lines, quote_depth);
+                }
                 quote_depth += 1;
             }
             Event::End(TagEnd::BlockQuote(_)) => {
@@ -238,13 +242,22 @@ pub fn parse(src: &str, highlighter: Option<&Highlighter>, width: usize) -> Vec<
             Event::End(TagEnd::Link) => {
                 flags.link = false;
                 if let Some(url) = link_url.take() {
-                    let shown: String = line.iter().map(|s| s.text.as_str()).collect();
+                    // the suffix belongs beside the link text, which inside a
+                    // table is the cell rather than the line being built
+                    let shown: String = match table.as_ref() {
+                        Some(table) => table.cell.iter().map(|s| s.text.as_str()).collect(),
+                        None => line.iter().map(|s| s.text.as_str()).collect(),
+                    };
                     if !url.is_empty() && !shown.contains(&url) {
-                        line.push(MdSpan {
-                            text: format!(" ({url})"),
-                            muted: true,
-                            ..MdSpan::default()
-                        });
+                        push_span(
+                            MdSpan {
+                                text: format!(" ({url})"),
+                                muted: true,
+                                ..MdSpan::default()
+                            },
+                            table.as_mut(),
+                            &mut line,
+                        );
                     }
                 }
             }
@@ -777,6 +790,30 @@ mod tests {
             .join("\n"),
             "the neighbour stays padded beside the wrapped cell"
         );
+    }
+
+    /// The URL suffix belongs in the cell that carries the link, and a stray
+    /// one lands as its own line under the table.
+    #[test]
+    fn a_link_inside_a_table_keeps_its_url_in_the_cell() {
+        let lines =
+            parse("| Doc | Link |\n|---|---|\n| spec | [rfc](https://x.dev/rfc) |\n\nafter");
+        assert_eq!(
+            text(&lines),
+            [
+                "Doc   Link",
+                "────  ───────────────────────",
+                "spec  rfc (https://x.dev/rfc)",
+                "after",
+            ]
+            .join("\n")
+        );
+    }
+
+    #[test]
+    fn a_quote_opening_a_list_item_keeps_the_marker_on_its_line() {
+        assert_eq!(text(&parse("- > quoted")), "│ • quoted");
+        assert_eq!(text(&parse("1. > quoted")), "│ 1. quoted");
     }
 
     #[test]

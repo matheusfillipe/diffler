@@ -192,9 +192,14 @@ impl App {
             return McpResponse::Error(err.to_string());
         }
         let session = self.review.session_for_mut(&source);
-        let answered = session
-            .comment(id)
-            .is_some_and(|comment| !comment.replies.is_empty());
+        // the agent's own answer is what a note would restate; a reply from
+        // the human or another reviewer says nothing about this flag
+        let answered = session.comment(id).is_some_and(|comment| {
+            comment
+                .replies
+                .iter()
+                .any(|reply| reply.author == AGENT_AUTHOR)
+        });
         // the note speaks only when the thread is otherwise empty: an agent
         // that replied and then proposed would say the same thing twice
         match note.map(str::trim).filter(|note| !note.is_empty()) {
