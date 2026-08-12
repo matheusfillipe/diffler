@@ -375,6 +375,43 @@ impl DiffView {
         }
     }
 
+    /// Open whatever hides the selected file in the sidebar: its ancestor
+    /// directories in the tree layout, its bucket in the review one. Only the
+    /// layout on screen is touched, so the other one keeps its folds.
+    pub(crate) fn reveal_selected(&mut self, review: &Review) {
+        let model = self.model(review);
+        let Some(file) = model.files.get(self.selected) else {
+            return;
+        };
+        let path = file.path.clone();
+        let viewed = review
+            .session_for(&self.source)
+            .is_viewed(&path, &file.content_hash());
+        let revealed = match self.layout {
+            FileLayout::Review => {
+                let bucket = if viewed {
+                    Bucket::Viewed
+                } else {
+                    Bucket::ToReview
+                };
+                let folded = self.bucket_folds.is_folded(bucket);
+                if folded {
+                    self.bucket_folds.toggle_fold(bucket);
+                }
+                folded
+            }
+            FileLayout::Tree | FileLayout::List => {
+                let hidden_by = |dir: &String| path.starts_with(&format!("{dir}/"));
+                let hidden = self.folded_dirs.iter().any(hidden_by);
+                if hidden {
+                    self.folded_dirs.retain(|dir| !hidden_by(dir));
+                }
+                hidden
+            }
+        };
+        self.rows_dirty |= revealed;
+    }
+
     /// Seat the tree cursor on the selected file's row, or clamp it into
     /// range when that row is hidden (folded away, moved between buckets).
     pub(crate) fn reseat_tree_cursor(&mut self, rows: &[TreeRow]) {

@@ -57,11 +57,8 @@ impl App {
             return;
         }
         let count = self.comment_order().len();
+        // an empty sidebar is an answer, so it opens with nothing to focus
         if count == 0 {
-            self.info("no comments in this review");
-            if let Some(diff) = self.diff.as_mut() {
-                diff.comments_open = false;
-            }
             return;
         }
         if let Some(diff) = self.diff.as_mut() {
@@ -96,6 +93,18 @@ impl App {
         }
         diff.comments_cursor = index.min(count - 1);
         self.seat_cursor_on_selected_comment();
+    }
+
+    /// Pull the sidebar selection back into range after the comment list
+    /// shrank under it, and re-seat the diff cursor the verbs read.
+    pub(crate) fn resettle_comments_cursor(&mut self) {
+        let Some(diff) = self.diff.as_ref() else {
+            return;
+        };
+        if !diff.comments_open {
+            return;
+        }
+        self.comments_to(diff.comments_cursor);
     }
 
     /// Whether a column falls in the open comments sidebar.
@@ -162,6 +171,7 @@ impl App {
         let Some(diff) = self.diff.as_mut() else {
             return false;
         };
+        diff.reveal_selected(&self.review);
         diff.ensure_rows(&self.review);
         let Some(diff) = self.diff.as_ref() else {
             return false;
@@ -213,6 +223,101 @@ mod tests {
             .add_comment(anchor("todo.md", 1), "reviewer", "stale note");
         app.open_working_tree_diff(None);
         (fixture, app)
+    }
+
+    fn tree_cursor_on_selected(app: &App) -> bool {
+        let diff = app.diff.as_ref().expect("diff");
+        let rows = super::super::sidebar_rows(diff, &app.review);
+        matches!(
+            rows.get(diff.tree_cursor).map(|row| &row.node),
+            Some(crate::tree::TreeNode::File { index, .. }) if *index == diff.selected
+        )
+    }
+
+    #[test]
+    fn jumping_unfolds_the_directory_holding_the_comment() {
+        let (_fixture, mut app) = app_with_comments();
+        app.diff
+            .as_mut()
+            .expect("diff")
+            .folded_dirs
+            .insert("src".to_owned());
+
+        app.handle(key('C'));
+
+        let diff = app.diff.as_ref().expect("diff");
+        assert!(!diff.folded_dirs.contains("src"), "the folder opened");
+        assert!(tree_cursor_on_selected(&app));
+    }
+
+    #[test]
+    fn jumping_unfolds_the_review_bucket_holding_the_comment() {
+        let (_fixture, mut app) = app_with_comments();
+        let diff = app.diff.as_mut().expect("diff");
+        diff.layout = crate::config::FileLayout::Review;
+        diff.bucket_folds.toggle_fold(crate::tree::Bucket::ToReview);
+
+        app.handle(key('C'));
+
+        assert!(
+            !app.diff
+                .as_ref()
+                .expect("diff")
+                .bucket_folds
+                .is_folded(crate::tree::Bucket::ToReview),
+            "the bucket opened"
+        );
+        assert!(tree_cursor_on_selected(&app));
+    }
+
+    #[test]
+    fn jumping_leaves_the_other_layout_folds_alone() {
+        let (_fixture, mut app) = app_with_comments();
+        let diff = app.diff.as_mut().expect("diff");
+        diff.folded_dirs.insert("src".to_owned());
+
+        app.handle(key('C'));
+
+        let diff = app.diff.as_ref().expect("diff");
+        assert!(
+            diff.bucket_folds.is_folded(crate::tree::Bucket::Viewed),
+            "the review layout keeps its collapsed viewed pile"
+        );
+    }
+
+    #[test]
+    fn wiping_the_review_pulls_the_sidebar_selection_back_into_range() {
+        let (_fixture, mut app) = app_with_comments();
+        app.review
+            .session
+            .add_comment(anchor("todo.md", 2), "reviewer", "from the forge");
+        let last = app.review.session.comments.len() - 1;
+        app.review.session.comments[last].remote_id = Some("9".into());
+        app.handle(key('C'));
+        app.handle(key('j'));
+        app.handle(key('j'));
+
+        app.handle(key('D'));
+        app.handle(key('y'));
+
+        let diff = app.diff.as_ref().expect("diff");
+        assert_eq!(app.review.session.comments.len(), 1, "the forge one stays");
+        assert_eq!(diff.comments_cursor(), 0, "the selection follows it");
+    }
+
+    #[test]
+    fn shift_d_from_the_sidebar_clears_the_whole_review_after_a_confirm() {
+        let (_fixture, mut app) = app_with_comments();
+        app.handle(key('C'));
+
+        app.handle(key('D'));
+        assert!(
+            matches!(app.modal, Some(crate::app::Modal::Confirm { .. })),
+            "delete-all asks first"
+        );
+        app.handle(key('y'));
+
+        assert!(app.review.session.comments.is_empty());
     }
 
     #[test]
@@ -292,18 +397,16 @@ mod tests {
     }
 
     #[test]
-    fn opening_with_no_comments_says_so_and_stays_closed() {
+    fn opening_with_no_comments_shows_the_empty_sidebar() {
         let fixture = standard_fixture();
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         app.open_working_tree_diff(None);
+        let before = app.diff.as_ref().expect("diff").focus;
+
         app.handle(key('C'));
-        assert!(!app.diff.as_ref().expect("diff").comments_open());
-        assert!(
-            app.message
-                .as_ref()
-                .is_some_and(|m| m.text.contains("no comments")),
-            "{:?}",
-            app.message
-        );
+
+        let diff = app.diff.as_ref().expect("diff");
+        assert!(diff.comments_open(), "the empty sidebar still opens");
+        assert_eq!(diff.focus, before, "nothing to select, so focus holds");
     }
 }

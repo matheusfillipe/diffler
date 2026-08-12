@@ -197,6 +197,11 @@ fn draw_comments(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &
         owners.push(None);
     }
     diff.comment_lines = owners;
+    if lines.is_empty() {
+        let dim = Style::new().fg(theme.dim).bg(surface);
+        lines.push(Line::styled(" no comments yet", dim));
+        lines.push(Line::styled(" c writes the first", dim));
+    }
 
     let height = inner.height.max(1) as usize;
     diff.comments_scroll =
@@ -1331,6 +1336,13 @@ mod tests {
         app.handle(crate::test_support::code_key(
             crossterm::event::KeyCode::Enter,
         ));
+        app.handle(key('C'));
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn the_comments_sidebar_opens_empty_on_a_review_without_comments() {
+        let (_fixture, mut app) = diff_app();
         app.handle(key('C'));
         insta::assert_snapshot!(render(&mut app).backend());
     }

@@ -132,6 +132,26 @@ impl App {
         });
     }
 
+    /// Forge comments survive the wipe, so the question counts the local ones.
+    pub(super) fn delete_all_comments_start(&mut self) {
+        let source = self.active_review_source();
+        let local = self
+            .review
+            .session_for(&source)
+            .comments
+            .iter()
+            .filter(|comment| comment.remote_id.is_none())
+            .count();
+        if local == 0 {
+            self.info("no comments to delete");
+            return;
+        }
+        self.modal = Some(Modal::Confirm {
+            message: format!("Delete all {local} comments of this review?"),
+            on_confirm: crate::app::PendingOp::DeleteAllComments,
+        });
+    }
+
     pub(super) fn reply_at_cursor(&mut self) {
         let Some(comment) = self.comment_at_cursor_row() else {
             self.info("move onto a comment to reply");

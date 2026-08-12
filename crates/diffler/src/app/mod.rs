@@ -118,6 +118,8 @@ pub enum PendingOp {
     DeleteBranch(String),
     /// Remove one comment (and its forge copy when synced) after confirm.
     DeleteComment(String),
+    /// Wipe every local comment of the active review.
+    DeleteAllComments,
     /// Run a queued git op after the user confirms (set-upstream, force-push).
     RunGit {
         label: String,

@@ -194,6 +194,7 @@ Vim-like: `j`/`k`/`gg`/`G` motions, `/` search, and
 | `t` | cycle the sidebar: file tree, review buckets (viewed files fold away, come back if they change) |
 | `Z` | send feedback to the agent |
 | `C` | comments sidebar: walk every comment, Enter jumps to it in the pane |
+| `d` / `D` | delete the comment under the cursor / every local comment of the review |
 | `S` | submit stacked PR comments as one review |
 | `b` `P` | open a pull request for the current branch |
 | `d` | review the working tree against something else: `d` base branch, `c` last commit, `b` a branch, `s` a commit, `w` HEAD |

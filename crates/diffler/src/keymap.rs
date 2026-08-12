@@ -68,6 +68,7 @@ pub enum Action {
     NextFunction,
     PrevFunction,
     DeleteComment,
+    DeleteAllComments,
     NextComment,
     PrevComment,
     HalfPageDown,
@@ -162,6 +163,7 @@ impl Action {
             Self::NextFunction => "next_function",
             Self::PrevFunction => "prev_function",
             Self::DeleteComment => "delete_comment",
+            Self::DeleteAllComments => "delete_all_comments",
             Self::PrevHunk => "prev_hunk",
             Self::NextComment => "next_comment",
             Self::PrevComment => "prev_comment",
@@ -258,6 +260,7 @@ impl Action {
             Self::NextFunction => "next function",
             Self::PrevFunction => "previous function",
             Self::DeleteComment => "delete the comment under the cursor",
+            Self::DeleteAllComments => "delete every local comment of this review",
             Self::NextComment => "next comment",
             Self::PrevComment => "previous comment",
             Self::HalfPageDown => "half page down",
@@ -294,7 +297,7 @@ impl Action {
         }
     }
 
-    pub(crate) const ALL: [Self; 89] = [
+    pub(crate) const ALL: [Self; 90] = [
         Self::CenterCursor,
         Self::CursorTop,
         Self::CursorBottom,
@@ -305,6 +308,7 @@ impl Action {
         Self::NextFunction,
         Self::PrevFunction,
         Self::DeleteComment,
+        Self::DeleteAllComments,
         Self::OpenPrs,
         Self::CreatePr,
         Self::CommentsOverview,
@@ -527,6 +531,7 @@ const DIFF_DEFAULTS: &[(&str, Action)] = &[
     ("r", Action::Reply),
     ("R", Action::Resolve),
     ("d", Action::DeleteComment),
+    ("D", Action::DeleteAllComments),
     ("v", Action::MarkViewed),
     ("y", Action::CopyFileFeedback),
     ("Y", Action::CopyAllFeedback),

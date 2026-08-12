@@ -111,6 +111,7 @@
 # reply = "r"
 # resolve = "R"
 # delete_comment = "d"
+# delete_all_comments = "D"
 # comments_overview = "C"
 # submit_review = "S"
 # send_feedback = "Z"

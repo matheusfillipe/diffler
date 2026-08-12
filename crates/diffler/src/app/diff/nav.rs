@@ -108,9 +108,10 @@ impl App {
             Action::MarkViewed => self.diff_toggle_viewed(),
             Action::UnviewAll => self.diff_unview_all(),
             Action::OpenEditor => self.editor_at_diff_cursor(),
-            // copy is file/all scoped, not line scoped: works from the list
+            // copy and delete-all are file/review scoped, so the list serves them
             Action::CopyFileFeedback => self.copy_file_or_selection(),
             Action::CopyAllFeedback => self.copy_feedback(false),
+            Action::DeleteAllComments => self.delete_all_comments_start(),
             // a file in the sidebar takes a whole-file comment; the line-scoped
             // actions still need the diff pane
             Action::Comment => self.comment_on_selected_file(),
@@ -154,6 +155,7 @@ impl App {
             Action::Reply => self.reply_at_cursor(),
             Action::Resolve => self.resolve_at_cursor(),
             Action::DeleteComment => self.delete_comment_at_cursor(),
+            Action::DeleteAllComments => self.delete_all_comments_start(),
             Action::MarkViewed => self.diff_toggle_viewed(),
             Action::UnviewAll => self.diff_unview_all(),
             Action::CopyFileFeedback => self.copy_file_or_selection(),

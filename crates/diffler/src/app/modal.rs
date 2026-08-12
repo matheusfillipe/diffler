@@ -71,6 +71,7 @@ impl App {
             PendingOp::DeleteComment(id) => {
                 self.delete_comment_by_id(&id);
             }
+            PendingOp::DeleteAllComments => self.delete_all_comments(),
             PendingOp::RunGit { label, argv } => self.queue_network(label, argv),
             PendingOp::ForcePull { .. } => self.queue_network(
                 "reset --hard",
@@ -487,7 +488,26 @@ impl App {
             return false;
         }
         self.after_session_change();
+        self.resettle_comments_cursor();
         true
+    }
+
+    pub(super) fn delete_all_comments(&mut self) {
+        let source = self.active_review_source();
+        let session = self.review.session_for_mut(&source);
+        let before = session.comments.len();
+        session.comments.retain(|c| c.remote_id.is_some());
+        let removed = before - session.comments.len();
+        let kept = session.comments.len();
+        self.after_session_change();
+        self.resettle_comments_cursor();
+        if kept > 0 {
+            self.info(format!(
+                "deleted {removed} comments ({kept} forge-owned kept)"
+            ));
+        } else {
+            self.info(format!("deleted {removed} comments"));
+        }
     }
 
     pub(super) fn handle_palette_key(&mut self, key: &KeyEvent) -> Flow {
