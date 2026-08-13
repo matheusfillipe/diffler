@@ -4,7 +4,7 @@ expression: render(&mut app).backend()
 ---
 " c comment · r reply · v viewed · C all comments · ? help                                                               "
 " Files                           Diff                                                                                   "
-" ▾ src                           modified  src/lib.rs                                                        +1 -1 █████"
+" ▾ src                    +1 -1  modified  src/lib.rs                                                        +1 -1 █████"
 "▌  ● lib.rs               +1 -1  answer                                                                                 "
 " + ci.yml                 +1 -0   ▌ comment on src/lib.rs                                                               "
 " ○ todo.md                +1 -0   ▌ applies to the whole file                                                           "

@@ -4,7 +4,7 @@ expression: render(&mut app).backend()
 ---
 " c comment · r reply · v viewed · C all comments · ? help                                                               "
 " Files                           Diff                                                      Comments (0)                 "
-" ▾ src                           new file  ci.yml                             +1 -0 █████  no comments yet              "
+" ▾ src                    +1 -1  new file  ci.yml                             +1 -0 █████  no comments yet              "
 "   ● lib.rs               +1 -1  @@ -0,0 +1,1 @@                                           c writes the first           "
 "▌+ ci.yml                 +1 -0 ▌        1 on: push                                                                     "
 " ○ todo.md                +1 -0                                                                                         "

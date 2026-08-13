@@ -106,7 +106,7 @@ pub struct DiffView {
     pub focus: Pane,
     /// File-list layout for the sidebar: a flat list or a collapsible tree.
     /// Pinned at open from `ui.diff_file_layout`.
-    layout: FileLayout,
+    pub(crate) layout: FileLayout,
     /// Index into `model.files`: the file shown in the diff pane. Derived from
     /// the file under `tree_cursor` whenever that lands on a File row.
     pub selected: usize,

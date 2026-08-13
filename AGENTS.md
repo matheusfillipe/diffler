@@ -135,8 +135,12 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   job's log folded into its real steps), and File (below). The diff sidebar has three
   layouts (`t` cycles): tree, review (to-review vs a folded viewed bucket,
   membership derived from the hash-keyed viewed marks so an edited file falls
-  back into to-review), and kinds (below). The status screen keeps the flat magit
-  list. OSC52 clipboard works over ssh/tmux.
+  back into to-review), and kinds (below). Every group header carries the
+  `+A -B` of what it holds, the file row's own diffstat summed over its files
+  and right-aligned in the same column, so a folded group still says how big it
+  is; a header knows its name and not its members, so the sums come from one
+  pass per frame over the layout on screen. The status screen keeps the flat
+  magit list. OSC52 clipboard works over ssh/tmux.
 - **Kinds sidebar.** `classify::Rules` buckets a path into one fixed set,
   Source / Tests / Docs / Config / Build & CI / Generated / Assets / Other:
   the reader's `[classify]` globs, then what the repo declares, then the

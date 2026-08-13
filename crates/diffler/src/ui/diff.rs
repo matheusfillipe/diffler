@@ -3,6 +3,8 @@
 //! renders the visible slice of the selected file's hunks, lines, and inline
 //! comment blocks, keeping the cursor in view.
 
+use std::collections::HashMap;
+
 use diffler_core::highlight::StyledRange;
 use diffler_core::model::{DiffLine, DiffModel, FileDiff};
 use diffler_core::session::{Comment, CommentStatus, Session};
@@ -19,6 +21,7 @@ use crate::app::{
     App, CommentLine, DiffRow, DiffView, FileHighlights, FileScope, Pane, SplitRow, SplitSide,
     comment_display,
 };
+use crate::config::FileLayout;
 use crate::keymap::Action;
 use crate::search::Search;
 use crate::theme::Theme;
@@ -395,6 +398,7 @@ fn draw_sidebar(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &m
     // and styling every row per frame is O(files)
     let height = inner.height.max(1) as usize;
     let rows = diff.tree_rows(model, session);
+    let stat = GroupStat::collect(diff, model, session);
     let scroll = super::scroll_to_cursor(diff.tree_cursor, diff.sidebar_scroll, height, rows.len());
     diff.sidebar_scroll = scroll;
     let lines: Vec<Line<'static>> = rows
@@ -419,21 +423,22 @@ fn draw_sidebar(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &m
                 search: &ranges,
             };
             match &row.node {
-                TreeNode::Dir { name, path } => {
-                    sidebar_dir_line(&row_ctx, name, diff.folded_dirs.contains(path))
-                }
+                TreeNode::Dir { name, path } => sidebar_dir_line(
+                    &row_ctx,
+                    name,
+                    diff.folded_dirs.contains(path),
+                    stat.dirs.get(path).copied().unwrap_or_default(),
+                ),
                 TreeNode::Section {
                     bucket,
                     count,
                     folded,
                 } => sidebar_section_line(
-                    theme,
+                    &row_ctx,
                     *bucket,
                     *count,
+                    stat.sections.get(bucket).copied().unwrap_or_default(),
                     *folded,
-                    inner.width,
-                    on_cursor,
-                    focused,
                 ),
                 TreeNode::File { index, name } => {
                     let Some(file) = model.files.get(*index) else {
@@ -819,6 +824,68 @@ fn open_comment_count(session: &Session, path: &str) -> usize {
         .count()
 }
 
+/// The `(added, deleted)` line counts each sidebar group covers, built once per
+/// frame from one pass over the model: a header row knows its own name, not its
+/// members. A directory covers every file beneath it at any depth; a section
+/// covers the files its bucket holds. Only the layout on screen is walked.
+#[derive(Default)]
+struct GroupStat {
+    dirs: HashMap<String, (usize, usize)>,
+    sections: HashMap<Bucket, (usize, usize)>,
+}
+
+impl GroupStat {
+    fn collect(diff: &DiffView, model: &DiffModel, session: &Session) -> Self {
+        let mut stat = Self::default();
+        for file in &model.files {
+            let (added, deleted) = file.diffstat();
+            let tally = |slot: &mut (usize, usize)| {
+                slot.0 += added;
+                slot.1 += deleted;
+            };
+            match diff.layout {
+                FileLayout::Kinds => tally(
+                    stat.sections
+                        .entry(Bucket::Kind(diff.kind_of(&file.path)))
+                        .or_default(),
+                ),
+                FileLayout::Review => {
+                    let bucket = if session.is_viewed(&file.path, &file.content_hash()) {
+                        Bucket::Viewed
+                    } else {
+                        Bucket::ToReview
+                    };
+                    tally(stat.sections.entry(bucket).or_default());
+                }
+                FileLayout::Tree | FileLayout::List => {
+                    for (at, _) in file.path.match_indices('/') {
+                        tally(stat.dirs.entry(file.path[..at].to_owned()).or_default());
+                    }
+                }
+            }
+        }
+        stat
+    }
+}
+
+/// Push `tail` against the row's right edge, gap-padded, when what is already
+/// in `spans` leaves room for it. A row too narrow keeps its name and marks and
+/// loses the tail, which is the part a reader can do without.
+fn push_right(spans: &mut Vec<Span<'static>>, tail: Vec<Span<'static>>, width: u16, bg: Color) {
+    if tail.is_empty() {
+        return;
+    }
+    let tail_width: usize = tail.iter().map(Span::width).sum();
+    let used: usize = spans.iter().map(Span::width).sum();
+    let Some(pad) = super::right_align_pad(used, tail_width, width as usize) else {
+        return;
+    };
+    if pad > 0 {
+        spans.push(Span::styled(" ".repeat(pad), Style::new().bg(bg)));
+    }
+    spans.extend(tail);
+}
+
 /// A sidebar row's background: the list surface, or the cursor band over it for
 /// the row under the cursor.
 fn sidebar_row_bg(theme: &Theme, on_cursor: bool, focused: bool) -> Color {
@@ -840,8 +907,14 @@ fn tree_lead(theme: &Theme, depth: usize, bg: Color, on_cursor: bool) -> Span<'s
     )
 }
 
-/// A directory row: indent, fold arrow, and the dim directory name.
-fn sidebar_dir_line(rc: &TreeRowCtx<'_>, name: &str, folded: bool) -> Line<'static> {
+/// A directory row: indent, fold arrow, the dim directory name, and the
+/// diffstat of everything beneath it.
+fn sidebar_dir_line(
+    rc: &TreeRowCtx<'_>,
+    name: &str,
+    folded: bool,
+    stat: (usize, usize),
+) -> Line<'static> {
     let &TreeRowCtx {
         theme,
         depth,
@@ -861,30 +934,41 @@ fn sidebar_dir_line(rc: &TreeRowCtx<'_>, name: &str, folded: bool) -> Line<'stat
     ];
     // dir names are never clipped, so the highlight maps straight onto them
     spans.extend(super::highlight_spans(name, name_style, search, theme));
+    let tail = diffstat_spans(theme, stat.0, stat.1, bg);
+    push_right(&mut spans, tail, width, bg);
     pad_line(spans, bg, width)
 }
 
-/// A review-bucket header row: fold arrow, bold label, and file count.
+/// A section header row: fold arrow, bold label, the count of files it holds,
+/// and the diffstat they add up to.
 fn sidebar_section_line(
-    theme: &Theme,
+    rc: &TreeRowCtx<'_>,
     bucket: Bucket,
     count: usize,
+    stat: (usize, usize),
     folded: bool,
-    width: u16,
-    on_cursor: bool,
-    focused: bool,
 ) -> Line<'static> {
+    let &TreeRowCtx {
+        theme,
+        width,
+        on_cursor,
+        focused,
+        ..
+    } = rc;
     let bg = sidebar_row_bg(theme, on_cursor, focused);
     let arrow = if folded { "▸ " } else { "▾ " };
     let label_style = Style::new()
         .fg(if on_cursor { theme.accent } else { theme.fg })
         .bg(bg);
-    let spans = vec![
+    let dim = Style::new().fg(theme.dim).bg(bg);
+    let mut spans = vec![
         tree_lead(theme, 0, bg, on_cursor),
-        Span::styled(arrow.to_owned(), Style::new().fg(theme.dim).bg(bg)),
+        Span::styled(arrow.to_owned(), dim),
         Span::styled(bucket.label().to_owned(), label_style),
-        Span::styled(format!(" ({count})"), Style::new().fg(theme.dim).bg(bg)),
+        Span::styled(format!(" ({count})"), dim),
     ];
+    let tail = diffstat_spans(theme, stat.0, stat.1, bg);
+    push_right(&mut spans, tail, width, bg);
     pad_line(spans, bg, width)
 }
 
@@ -950,16 +1034,12 @@ fn sidebar_file_line(
     // GitHub-PR style: the file's `+A -B` hugs the right edge, but only if it
     // fits after the name and marks: name + marks stay legible first
     let (added, deleted) = file.diffstat();
-    let stat = diffstat_spans(theme, added, deleted, bg);
-    let stat_width: usize = stat.iter().map(Span::width).sum();
-    let used: usize = spans.iter().map(Span::width).sum();
-    if stat_width > 0 && used + stat_width < width as usize {
-        let gap = (width as usize).saturating_sub(used + stat_width);
-        if gap > 0 {
-            spans.push(Span::styled(" ".repeat(gap), Style::new().bg(bg)));
-        }
-        spans.extend(stat);
-    }
+    push_right(
+        &mut spans,
+        diffstat_spans(theme, added, deleted, bg),
+        width,
+        bg,
+    );
     pad_line(spans, bg, width)
 }
 
@@ -2122,6 +2202,113 @@ mod tests {
             highlighted,
             vec!["lib"],
             "only the matched word lights up, not the whole row: {spans:?}"
+        );
+    }
+
+    /// A group's diffstat is the diff it holds, so a header says how big the
+    /// directory or kind is without unfolding it.
+    #[test]
+    fn a_directory_header_sums_the_diffstat_of_every_file_below_it() {
+        let fixture = crate::test_support::Fixture::new();
+        fixture.write("src/a.rs", "one\n");
+        fixture.write("src/nested/b.rs", "one\n");
+        fixture.write("top.txt", "one\n");
+        fixture.commit_all("base");
+        // 2 added 1 deleted under src/, split across two depths
+        fixture.write("src/a.rs", "two\n");
+        fixture.write("src/nested/b.rs", "one\nthree\n");
+        fixture.write("top.txt", "one\nfour\n");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_working_tree_diff(None);
+
+        let diff = app.diff.as_ref().expect("diff view");
+        let session = app.review.session_for(&diff.source);
+        let stat = super::GroupStat::collect(diff, diff.model(&app.review), session);
+        assert_eq!(stat.dirs.get("src"), Some(&(2, 1)));
+        assert_eq!(stat.dirs.get("src/nested"), Some(&(1, 0)));
+        assert_eq!(stat.dirs.get("top.txt"), None, "a file is not a group");
+
+        let text = render(&mut app).backend().to_string();
+        assert!(text.contains("+2 -1"), "src/ shows its diffstat: {text}");
+    }
+
+    #[test]
+    fn a_kind_header_sums_the_diffstat_of_its_bucket() {
+        let fixture = crate::test_support::Fixture::new();
+        fixture.write("src/a.rs", "one\n");
+        fixture.write("src/b.rs", "one\n");
+        fixture.write("README.md", "docs\n");
+        fixture.commit_all("base");
+        fixture.write("src/a.rs", "one\ntwo\n");
+        fixture.write("src/b.rs", "one\nthree\n");
+        fixture.write("README.md", "more docs\n");
+        let mut loaded = LoadedConfig::default();
+        loaded.config.ui.diff_file_layout = crate::config::FileLayout::Kinds;
+        let mut app = App::new(fixture.review(), loaded);
+        app.open_working_tree_diff(None);
+        let text = render(&mut app).backend().to_string();
+        assert!(
+            text.contains("Source (2)") && text.contains("+2 -0"),
+            "Source keeps its count and adds up its files: {text}"
+        );
+        assert!(text.contains("Docs (1)"), "the count stays: {text}");
+    }
+
+    /// The review layout groups by viewed state, so its headers say how much
+    /// diff is still to read.
+    #[test]
+    fn the_review_buckets_split_the_diffstat_by_what_is_left() {
+        let fixture = crate::test_support::Fixture::new();
+        fixture.write("a.rs", "one\n");
+        fixture.write("b.rs", "one\n");
+        fixture.commit_all("base");
+        fixture.write("a.rs", "one\ntwo\n");
+        fixture.write("b.rs", "one\nthree\nfour\n");
+        let mut loaded = LoadedConfig::default();
+        loaded.config.ui.diff_file_layout = crate::config::FileLayout::Review;
+        let mut app = App::new(fixture.review(), loaded);
+        app.open_working_tree_diff(None);
+        let hash = app
+            .review
+            .model()
+            .files
+            .iter()
+            .find(|file| file.path == "a.rs")
+            .expect("a.rs in the diff")
+            .content_hash();
+        app.review
+            .session_for_mut(&super::ReviewSource::WorkingTree)
+            .mark_viewed("a.rs", &hash);
+
+        let diff = app.diff.as_ref().expect("diff view");
+        let session = app.review.session_for(&diff.source);
+        let stat = super::GroupStat::collect(diff, diff.model(&app.review), session);
+        assert_eq!(stat.sections.get(&super::Bucket::Viewed), Some(&(1, 0)));
+        assert_eq!(stat.sections.get(&super::Bucket::ToReview), Some(&(2, 0)));
+    }
+
+    #[test]
+    fn a_group_header_carries_the_same_diffstat_colors_as_a_file_row() {
+        let theme = Theme::github_dark();
+        let rc = super::TreeRowCtx {
+            theme: &theme,
+            depth: 0,
+            width: 40,
+            on_cursor: false,
+            focused: true,
+            search: &[],
+        };
+        let spans = super::sidebar_dir_line(&rc, "src", false, (3, 1));
+        let painted: Vec<(&str, Option<super::Color>)> = spans
+            .spans
+            .iter()
+            .filter(|span| span.content.contains('+') || span.content.contains('-'))
+            .map(|span| (span.content.as_ref(), span.style.fg))
+            .collect();
+        assert_eq!(
+            painted,
+            vec![(" +3", Some(theme.added)), (" -1", Some(theme.error_fg))],
+            "the header reuses the file row's diffstat, no bar: {spans:?}"
         );
     }
 

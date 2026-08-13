@@ -4,7 +4,7 @@ expression: render(&mut app).backend()
 ---
 " c comment · r reply · v viewed · C all comments · ? help                                                               "
 " Files                           Diff                                                                                   "
-" ▾ src                           new file  notes.txt                                                         +1 -0 █████"
+" ▾ src                    +3 -0  new file  notes.txt                                                         +1 -0 █████"
 "   + lib.rs               +3 -0  @@ -0,0 +1,1 @@                                                                        "
 "▌+ notes.txt              +1 -0 ▌        1 alpha                                                                        "
 "                                                                                                                        "
