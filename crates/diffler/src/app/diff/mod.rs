@@ -461,17 +461,60 @@ impl DiffView {
     /// hash-keyed viewed marks, so an edited file falls back into to-review by
     /// itself. The kinds layout groups them by what they are. Files keep their
     /// model index.
+    ///
+    /// Inside a group, whether a directory or a section, the files already
+    /// viewed come first: every layout sorts the same way the review layout's
+    /// buckets do, so what is left to read is one run at the bottom of each
+    /// group and marking a file moves it out of that run.
     pub(crate) fn tree_rows(&self, model: &DiffModel, session: &Session) -> Vec<TreeRow> {
         match self.layout {
-            FileLayout::Review => self.review_rows(model, session),
-            FileLayout::Kinds => self.kind_rows(model),
+            FileLayout::Review => self.section_rows(model, Self::review_groups(model, session)),
+            FileLayout::Kinds => self.section_rows(model, self.kind_groups(model, session)),
             // list belongs to the status screen (config rejects it here); a
             // stray value degrades to the tree
             FileLayout::Tree | FileLayout::List => {
-                let paths: Vec<&str> = model.files.iter().map(|f| f.path.as_str()).collect();
-                tree::visible_rows(&paths, &self.folded_dirs)
+                tree::visible_rows_promoting(&Self::paths(model), &self.folded_dirs, &|index| {
+                    Self::is_viewed(model, session, index)
+                })
             }
         }
+    }
+
+    /// Every file the sidebar lists, in the order it lists them, as if nothing
+    /// were folded. A reader walks the order on screen, so the commands that
+    /// step files read it from here.
+    pub(crate) fn display_order(&self, model: &DiffModel, session: &Session) -> Vec<usize> {
+        match self.layout {
+            FileLayout::Review => Self::review_groups(model, session),
+            FileLayout::Kinds => self.kind_groups(model, session),
+            FileLayout::Tree | FileLayout::List => {
+                let rows =
+                    tree::visible_rows_promoting(&Self::paths(model), &BTreeSet::new(), &|index| {
+                        Self::is_viewed(model, session, index)
+                    });
+                return rows.iter().filter_map(row_file_index).collect();
+            }
+        }
+        .into_iter()
+        .flat_map(|(_, indices)| indices)
+        .collect()
+    }
+
+    fn paths(model: &DiffModel) -> Vec<&str> {
+        model.files.iter().map(|file| file.path.as_str()).collect()
+    }
+
+    fn is_viewed(model: &DiffModel, session: &Session, index: usize) -> bool {
+        model
+            .files
+            .get(index)
+            .is_some_and(|file| session.is_viewed(&file.path, &file.content_hash()))
+    }
+
+    /// Order a group's files for display: viewed first, each run keeping the
+    /// order the diff gave it.
+    fn viewed_first(model: &DiffModel, session: &Session, indices: &mut [usize]) {
+        indices.sort_by_key(|&index| !Self::is_viewed(model, session, index));
     }
 
     /// A header row per group, its files beneath it unless it is folded. The
@@ -510,21 +553,22 @@ impl DiffView {
         rows
     }
 
-    fn review_rows(&self, model: &DiffModel, session: &Session) -> Vec<TreeRow> {
+    fn review_groups(model: &DiffModel, session: &Session) -> Vec<(Bucket, Vec<usize>)> {
         let (mut fresh, mut viewed) = (Vec::new(), Vec::new());
-        for (index, file) in model.files.iter().enumerate() {
-            if session.is_viewed(&file.path, &file.content_hash()) {
+        for index in 0..model.files.len() {
+            if Self::is_viewed(model, session, index) {
                 viewed.push(index);
             } else {
                 fresh.push(index);
             }
         }
-        self.section_rows(model, [(Bucket::ToReview, fresh), (Bucket::Viewed, viewed)])
+        vec![(Bucket::ToReview, fresh), (Bucket::Viewed, viewed)]
     }
 
-    /// One section per kind that the diff has files for, in [`Kind::ALL`]
-    /// order. Files keep their model index and their order within the diff.
-    fn kind_rows(&self, model: &DiffModel) -> Vec<TreeRow> {
+    /// One group per kind that the diff has files for, in [`Kind::ALL`] order.
+    /// Files keep their model index, and their order within the diff behind
+    /// the ones already viewed.
+    fn kind_groups(&self, model: &DiffModel, session: &Session) -> Vec<(Bucket, Vec<usize>)> {
         // `Kind::ALL` below is the display order
         let mut grouped: HashMap<Kind, Vec<usize>> = HashMap::new();
         for (index, file) in model.files.iter().enumerate() {
@@ -533,10 +577,14 @@ impl DiffView {
                 .or_default()
                 .push(index);
         }
-        let groups = Kind::ALL
+        Kind::ALL
             .into_iter()
-            .filter_map(|kind| Some((Bucket::Kind(kind), grouped.remove(&kind)?)));
-        self.section_rows(model, groups)
+            .filter_map(|kind| {
+                let mut indices = grouped.remove(&kind)?;
+                Self::viewed_first(model, session, &mut indices);
+                Some((Bucket::Kind(kind), indices))
+            })
+            .collect()
     }
 
     pub(crate) fn kind_of(&self, path: &str) -> Kind {
@@ -578,23 +626,45 @@ fn sidebar_rows(diff: &DiffView, review: &Review) -> Vec<TreeRow> {
 fn next_unviewed_index(diff: &DiffView, review: &Review, wrap: bool) -> Option<usize> {
     let model = diff.model(review);
     let session = review.session_for(&diff.source);
-    let count = model.files.len();
+    // the order on screen: a jump has to land where the reader can see it came
+    // from
+    let order = diff.display_order(model, session);
+    let count = order.len();
+    let at = order.iter().position(|&index| index == diff.selected)?;
     (1..=count)
-        .map(|step| diff.selected + step)
-        .take_while(|&index| wrap || index < count)
-        .map(|index| index % count)
-        .find(|&index| {
-            model
-                .files
-                .get(index)
-                .is_some_and(|file| !session.is_viewed(&file.path, &file.content_hash()))
-        })
+        .map(|step| at + step)
+        .take_while(|&position| wrap || position < count)
+        .filter_map(|position| order.get(position % count).copied())
+        .find(|&index| !DiffView::is_viewed(model, session, index))
+}
+
+/// The model file a row addresses, for the walks that step files past the
+/// directory and section headers between them.
+fn row_file_index(row: &TreeRow) -> Option<usize> {
+    match row.node {
+        TreeNode::File { index, .. } => Some(index),
+        TreeNode::Dir { .. } | TreeNode::Section { .. } => None,
+    }
 }
 
 /// Visible-row index of the File row addressing `file_index`, if shown.
 fn tree_position_of_file(rows: &[TreeRow], file_index: usize) -> Option<usize> {
     rows.iter()
-        .position(|row| matches!(&row.node, TreeNode::File { index, .. } if *index == file_index))
+        .position(|row| row_file_index(row) == Some(file_index))
+}
+
+/// Row position of the File row next to `at`, `forward` down the list or back
+/// up it, skipping the headers in between.
+fn step_file_row(rows: &[TreeRow], at: usize, forward: bool) -> Option<usize> {
+    let rows = rows.iter().enumerate();
+    if forward {
+        rows.skip(at + 1)
+            .find(|(_, row)| row_file_index(row).is_some())
+    } else {
+        rows.take(at)
+            .rfind(|(_, row)| row_file_index(row).is_some())
+    }
+    .map(|(position, _)| position)
 }
 
 /// Paths whose git attributes a worker should read, for the kinds sidebar.
@@ -1741,34 +1811,142 @@ mod tests {
         assert!(message.text.contains("move into the diff"));
     }
 
+    /// The walk follows the sidebar order: the row under the one just marked
+    /// is where the reader was heading.
     #[test]
-    fn marking_viewed_advances_selection_to_the_next_unviewed_file() {
+    fn marking_viewed_steps_to_the_file_listed_under_it() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
-        let paths: Vec<String> = app
-            .review
-            .model()
-            .files
-            .iter()
-            .map(|f| f.path.clone())
-            .collect();
-        assert_eq!(paths.len(), 3, "walk needs several files: {paths:?}");
+        assert_eq!(
+            tree_kinds(&app),
+            vec!["dir", "file:lib.rs", "file:ci.yml", "file:todo.md"],
+            "directories first, so the sidebar order is not the model order"
+        );
+        assert_eq!(selected_path(&app), "ci.yml");
 
-        // v on the first file marks it and lands on the second
         app.handle(key('v'));
-        assert!(app.is_path_viewed(&paths[0]));
-        assert_eq!(selected_path(&app), paths[1]);
-
-        // v-v walks the rest; the last v has nothing below and stays put
-        app.handle(key('v'));
-        assert_eq!(selected_path(&app), paths[2]);
-        app.handle(key('v'));
-        assert!(paths.iter().all(|p| app.is_path_viewed(p)));
+        assert!(app.is_path_viewed("ci.yml"));
         assert_eq!(
             selected_path(&app),
-            paths[2],
-            "no unviewed file below: selection stays"
+            "todo.md",
+            "the row under ci.yml, not the next file in the diff"
         );
+
+        app.handle(key('v'));
+        assert!(app.is_path_viewed("todo.md"));
+        assert_eq!(
+            selected_path(&app),
+            "todo.md",
+            "nothing below: the selection stays"
+        );
+    }
+
+    /// Three files in one directory, so a group has an order to sort.
+    fn grouped_fixture() -> Fixture {
+        let fixture = Fixture::new();
+        for name in ["a.rs", "b.rs", "c.rs"] {
+            fixture.write(&format!("src/{name}"), "fn one() {}\n");
+        }
+        fixture.commit_all("base");
+        for name in ["a.rs", "b.rs", "c.rs"] {
+            fixture.write(&format!("src/{name}"), "fn one() -> u8 {\n    1\n}\n");
+        }
+        fixture
+    }
+
+    /// What is done piles at the top of a directory, so the run still to read
+    /// is the bottom of the group and never moves out from under the cursor.
+    #[test]
+    fn a_viewed_file_sorts_to_the_top_of_its_directory() {
+        let fixture = grouped_fixture();
+        let mut app = diff_app(&fixture);
+        assert_eq!(
+            tree_kinds(&app),
+            vec!["dir", "file:a.rs", "file:b.rs", "file:c.rs"]
+        );
+
+        select_file(&mut app, "src/b.rs");
+        app.handle(key('v'));
+        assert_eq!(
+            tree_kinds(&app),
+            vec!["dir", "file:b.rs", "file:a.rs", "file:c.rs"],
+            "b.rs sorts above what is left to read"
+        );
+        assert_eq!(
+            selected_path(&app),
+            "src/c.rs",
+            "the row that was under b.rs"
+        );
+
+        app.handle(key('v'));
+        assert_eq!(
+            tree_kinds(&app),
+            vec!["dir", "file:b.rs", "file:c.rs", "file:a.rs"],
+            "the viewed run keeps the order the diff gave it"
+        );
+    }
+
+    /// Folding a group is the reader saying "not this one", so the walk stops
+    /// at what is on screen and reports what it left behind. `u` is the key
+    /// that goes hunting.
+    #[test]
+    fn the_walk_stops_at_a_folded_group_and_says_what_is_left() {
+        let fixture = Fixture::new();
+        fixture.write("ci.yml", "on: push\n");
+        fixture.write("Cargo.lock", "# generated\n");
+        fixture.commit_all("base");
+        fixture.write("ci.yml", "on: [push]\n");
+        fixture.write("Cargo.lock", "# generated, again\n");
+        let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Kinds);
+        // Generated starts folded, so Cargo.lock has no row of its own
+        assert_eq!(
+            tree_kinds(&app),
+            vec!["section:Config:1", "file:ci.yml", "section:Generated:1"]
+        );
+
+        select_file(&mut app, "ci.yml");
+        app.handle(key('v'));
+        assert_eq!(
+            selected_path(&app),
+            "ci.yml",
+            "the folded section is not walked into"
+        );
+        assert_eq!(
+            app.message.as_ref().map(|m| m.text.as_str()),
+            Some("end of the list, 1 still unviewed")
+        );
+
+        // u reaches it, folded or not
+        app.handle(key('u'));
+        assert_eq!(selected_path(&app), "Cargo.lock");
+    }
+
+    #[test]
+    fn a_viewed_file_sorts_to_the_top_of_its_kind_section() {
+        let fixture = grouped_fixture();
+        let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Kinds);
+        assert_eq!(
+            tree_kinds(&app),
+            vec![
+                "section:Source:3",
+                "file:src/a.rs",
+                "file:src/b.rs",
+                "file:src/c.rs"
+            ]
+        );
+
+        select_file(&mut app, "src/b.rs");
+        app.handle(key('v'));
+        assert_eq!(
+            tree_kinds(&app),
+            vec![
+                "section:Source:3",
+                "file:src/b.rs",
+                "file:src/a.rs",
+                "file:src/c.rs"
+            ]
+        );
+        assert_eq!(selected_path(&app), "src/c.rs");
     }
 
     #[test]
@@ -1782,7 +1960,8 @@ mod tests {
             .iter()
             .map(|f| f.path.clone())
             .collect();
-        for _ in &paths {
+        for path in &paths {
+            select_file(&mut app, path);
             app.handle(key('v'));
         }
         assert!(
@@ -1801,14 +1980,10 @@ mod tests {
     fn unmarking_viewed_does_not_move_the_selection() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
-        // ci.yml is shown at open; v marks it and advances to src/lib.rs
         let first = selected_path(&app);
         assert_eq!(first, "ci.yml");
         app.handle(key('v'));
-        assert_eq!(selected_path(&app), "src/lib.rs");
-        // ci.yml's file row sits below lib.rs in the tree; step down onto it
-        app.handle(key('j'));
-        assert_eq!(selected_path(&app), first);
+        select_file(&mut app, &first);
         app.handle(key('v'));
         assert!(!app.is_path_viewed(&first));
         assert_eq!(
@@ -2052,7 +2227,7 @@ mod tests {
     fn u_jumps_to_the_next_unviewed_file_wrapping_past_viewed_ones() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
-        app.handle(key('v')); // ci.yml viewed, selection lands on src/lib.rs
+        app.handle(key('v')); // ci.yml viewed, selection lands on todo.md
         select_file(&mut app, "todo.md");
         app.handle(key('u'));
         assert_eq!(
@@ -2066,9 +2241,10 @@ mod tests {
     fn u_with_everything_viewed_says_so() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
-        app.handle(key('v'));
-        app.handle(key('v'));
-        app.handle(key('v'));
+        for path in ["ci.yml", "src/lib.rs", "todo.md"] {
+            select_file(&mut app, path);
+            app.handle(key('v'));
+        }
         let before = selected_path(&app);
         app.handle(key('u'));
         assert_eq!(selected_path(&app), before);

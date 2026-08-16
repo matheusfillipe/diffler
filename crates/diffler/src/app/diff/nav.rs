@@ -428,21 +428,7 @@ impl App {
             return;
         };
         let rows = sidebar_rows(diff, &self.review);
-        let is_file = |row: &TreeRow| matches!(row.node, TreeNode::File { .. });
-        let target = if forward {
-            rows.iter()
-                .enumerate()
-                .skip(diff.tree_cursor + 1)
-                .find(|(_, row)| is_file(row))
-                .map(|(index, _)| index)
-        } else {
-            rows.iter()
-                .enumerate()
-                .take(diff.tree_cursor)
-                .rfind(|(_, row)| is_file(row))
-                .map(|(index, _)| index)
-        };
-        if let Some(target) = target {
+        if let Some(target) = super::step_file_row(&rows, diff.tree_cursor, forward) {
             self.diff_tree_to(target);
         }
     }

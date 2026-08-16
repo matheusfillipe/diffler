@@ -139,8 +139,16 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   `+A -B` of what it holds, the file row's own diffstat summed over its files
   and right-aligned in the same column, so a folded group still says how big it
   is; a header knows its name and not its members, so the sums come from one
-  pass per frame over the layout on screen. The status screen keeps the flat
-  magit list. OSC52 clipboard works over ssh/tmux.
+  pass per frame over the layout on screen. Inside a group, a directory or a
+  section alike, the files already viewed sort to the top, so what is left to
+  read is one run at the bottom the way the review layout's buckets do it.
+  `v` marks the file and moves to the row listed under it, walking what the
+  sidebar shows: a folded group stays folded, and reaching the end of the list
+  with files left says so. `u` hunts the next unviewed anywhere, reading
+  `DiffView::display_order`, the same order with nothing folded. Both read the
+  sidebar's order, since the diff's file order is a different order on screen.
+  The status screen keeps the flat magit list. OSC52 clipboard works over
+  ssh/tmux.
 - **Kinds sidebar.** `classify::Rules` buckets a path into one fixed set,
   Source / Tests / Docs / Config / Build & CI / Generated / Assets / Other:
   the reader's `[classify]` globs, then what the repo declares, then the

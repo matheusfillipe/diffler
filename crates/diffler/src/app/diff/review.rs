@@ -7,7 +7,7 @@ use diffler_core::feedback::{self, FeedbackOptions};
 use diffler_core::model::{FileDiff, LineKind};
 use diffler_core::source::ReviewSource;
 
-use super::{ComposerKind, DiffRow, Pane, next_unviewed_index, sidebar_rows};
+use super::{ComposerKind, DiffRow, Pane, sidebar_rows};
 use crate::app::{App, Modal};
 use crate::tree::TreeNode;
 
@@ -227,8 +227,16 @@ impl App {
             self.info(format!("{path} is not part of the review diff"));
             return;
         };
+        let viewed = self.review.session_for(&source).is_viewed(&path, &hash);
+        // marking walks the review file by file, so the cursor lands on the row
+        // listed under this one. Read before the toggle: marking sorts the file
+        // up into its group's viewed run, moving the rows underneath it
+        let next = if viewed {
+            None
+        } else {
+            self.sidebar_file_below()
+        };
         let session = self.review.session_for_mut(&source);
-        let viewed = session.is_viewed(&path, &hash);
         if viewed {
             session.unmark_viewed(&path);
         } else {
@@ -237,10 +245,18 @@ impl App {
         if let Err(err) = self.review.save_for(&source) {
             self.error(err.to_string());
         }
-        // pressing v repeatedly walks the review: after marking, advance the
-        // sidebar to the next file still waiting to be looked at
-        if !viewed {
-            self.diff_advance_to_unviewed();
+        match next {
+            Some(index) => self.diff_select_file_index(index),
+            // the walk covers what the sidebar shows, so a folded group is left
+            // where the reader put it: say what is still out there, since the
+            // cursor standing still is otherwise the only sign
+            None if !viewed => {
+                let (total, seen) = self.viewed_counts();
+                if total > seen {
+                    self.info(format!("end of the list, {} still unviewed", total - seen));
+                }
+            }
+            None => {}
         }
         // the toggle can reshuffle the review layout's buckets without the
         // advance re-seating anything (unmark, or nothing left to advance to)
@@ -331,16 +347,15 @@ impl App {
         self.info("cleared all viewed marks");
     }
 
-    /// Move the sidebar selection to the next not-viewed file below it, if
-    /// any; otherwise stay put.
-    fn diff_advance_to_unviewed(&mut self) {
-        let next = self
-            .diff
-            .as_ref()
-            .and_then(|diff| next_unviewed_index(diff, &self.review, false));
-        if let Some(index) = next {
-            self.diff_select_file_index(index);
-        }
+    /// The file the sidebar lists under the selected one, skipping headers and
+    /// whatever a folded group hides. `None` at the end of the list, where the
+    /// selection stays put.
+    fn sidebar_file_below(&self) -> Option<usize> {
+        let diff = self.diff.as_ref()?;
+        let rows = sidebar_rows(diff, &self.review);
+        let at = super::tree_position_of_file(&rows, diff.selected)?;
+        let below = super::step_file_row(&rows, at, true)?;
+        super::row_file_index(rows.get(below)?)
     }
 
     /// Land the pane on the model file at `index` and seat the tree cursor on

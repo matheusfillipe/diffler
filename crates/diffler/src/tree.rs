@@ -150,7 +150,13 @@ fn collapse_chain(dir: &Node) -> (String, &Node) {
     (name, node)
 }
 
-fn flatten(node: &Node, depth: usize, folded: &BTreeSet<String>, rows: &mut Vec<TreeRow>) {
+fn flatten(
+    node: &Node,
+    depth: usize,
+    folded: &BTreeSet<String>,
+    promote: &dyn Fn(usize) -> bool,
+    rows: &mut Vec<TreeRow>,
+) {
     for child in &node.children {
         if let Entry::Dir(dir) = child {
             let (name, deepest) = collapse_chain(dir);
@@ -162,21 +168,28 @@ fn flatten(node: &Node, depth: usize, folded: &BTreeSet<String>, rows: &mut Vec<
                 },
             });
             if !folded.contains(&deepest.path) {
-                flatten(deepest, depth + 1, folded, rows);
+                flatten(deepest, depth + 1, folded, promote, rows);
             }
         }
     }
-    for child in &node.children {
-        if let Entry::File { index, name } = child {
-            rows.push(TreeRow {
-                depth,
-                node: TreeNode::File {
-                    index: *index,
-                    name: name.clone(),
-                },
-            });
-        }
-    }
+    let mut files: Vec<(usize, &String)> = node
+        .children
+        .iter()
+        .filter_map(|child| match child {
+            Entry::File { index, name } => Some((*index, name)),
+            Entry::Dir(_) => None,
+        })
+        .collect();
+    // stable, so promoted files keep their order among themselves and the rest
+    // keep theirs: the list a reader learns stays learnable
+    files.sort_by_key(|&(index, _)| !promote(index));
+    rows.extend(files.into_iter().map(|(index, name)| TreeRow {
+        depth,
+        node: TreeNode::File {
+            index,
+            name: name.clone(),
+        },
+    }));
 }
 
 /// Build the flattened, fold-respecting visible rows for `paths` (each a
@@ -184,12 +197,24 @@ fn flatten(node: &Node, depth: usize, folded: &BTreeSet<String>, rows: &mut Vec<
 /// paths. Directories are sorted before files at each level; entries keep input
 /// order within a kind. A directory not in `folded` is expanded.
 pub fn visible_rows(paths: &[&str], folded: &BTreeSet<String>) -> Vec<TreeRow> {
+    visible_rows_promoting(paths, folded, &|_| false)
+}
+
+/// [`visible_rows`], with the files `promote` accepts (by their index into
+/// `paths`) listed first inside each directory. The diff sidebar promotes the
+/// files already viewed, so a directory reads as what is done over what is
+/// left.
+pub fn visible_rows_promoting(
+    paths: &[&str],
+    folded: &BTreeSet<String>,
+    promote: &dyn Fn(usize) -> bool,
+) -> Vec<TreeRow> {
     let mut root = Node::root();
     for (index, path) in paths.iter().enumerate() {
         insert(&mut root, path, index);
     }
     let mut rows = Vec::new();
-    flatten(&root, 0, folded, &mut rows);
+    flatten(&root, 0, folded, promote, &mut rows);
     rows
 }
 
@@ -315,6 +340,40 @@ mod tests {
                 (0, "file", "z_root.rs".to_owned()),
                 (0, "file", "a_root.rs".to_owned()),
             ]
+        );
+    }
+
+    #[test]
+    fn promoted_files_lead_each_directory_without_disturbing_the_rest() {
+        let paths = ["src/a.rs", "src/b.rs", "src/c.rs", "top.rs", "other.rs"];
+        // b.rs and other.rs are promoted, in different directories
+        let rows = visible_rows_promoting(&paths, &no_folds(), &|index| index == 1 || index == 4);
+        assert_eq!(
+            shapes(&rows),
+            vec![
+                (0, "dir", "src".to_owned()),
+                (1, "file", "b.rs".to_owned()),
+                (1, "file", "a.rs".to_owned()),
+                (1, "file", "c.rs".to_owned()),
+                (0, "file", "other.rs".to_owned()),
+                (0, "file", "top.rs".to_owned()),
+            ],
+            "each directory promotes its own, and the others keep input order"
+        );
+    }
+
+    #[test]
+    fn promotion_leaves_directories_ahead_of_files() {
+        let paths = ["top.rs", "src/a.rs"];
+        let rows = visible_rows_promoting(&paths, &no_folds(), &|_| true);
+        assert_eq!(
+            shapes(&rows),
+            vec![
+                (0, "dir", "src".to_owned()),
+                (1, "file", "a.rs".to_owned()),
+                (0, "file", "top.rs".to_owned()),
+            ],
+            "promotion sorts files among themselves, not past a directory"
         );
     }
 
