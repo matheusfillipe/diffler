@@ -828,6 +828,7 @@ mod tests {
             "tighten this",
         );
 
+        press(&mut app, KeyCode::Char('D'));
         press(&mut app, KeyCode::Char('C'));
         assert!(app.modal.is_none(), "the sidebar replaces the old dialog");
         assert_eq!(app.screen(), Screen::Diff);

@@ -462,7 +462,6 @@ const STATUS_DEFAULTS: &[(&str, Action)] = &[
     ("B", Action::Blame),
     ("y", Action::CopyUrl),
     ("Z", Action::SendFeedback),
-    ("C", Action::CommentsOverview),
     ("/", Action::Search),
     ("n", Action::SearchNext),
     ("N", Action::SearchPrev),

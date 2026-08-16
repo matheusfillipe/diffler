@@ -47,10 +47,9 @@ impl App {
         ordered.iter().map(|comment| comment.id.clone()).collect()
     }
 
+    /// The sidebar is a pane of the diff screen, so it opens over a review
+    /// that is already on screen.
     pub(crate) fn toggle_comments_sidebar(&mut self) {
-        if self.diff.is_none() {
-            self.open_working_tree_diff(None);
-        }
         let Some(diff) = self.diff.as_mut() else {
             return;
         };
@@ -441,6 +440,17 @@ mod tests {
         app.handle(key('y'));
 
         assert!(app.review.session.comments.is_empty());
+    }
+
+    #[test]
+    fn c_on_the_status_screen_opens_no_review() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.handle(key('C'));
+        assert!(
+            app.diff.is_none(),
+            "the comments sidebar is a pane of a review, not a way into one"
+        );
     }
 
     #[test]
