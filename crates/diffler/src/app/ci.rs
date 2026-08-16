@@ -331,6 +331,10 @@ mod tests {
         app.queue_ci_poll();
         assert!(matches!(app.pending_ci, Some(CiRequest::PrComments(3))));
 
+        // the commit above left the tree clean, and a clean tree has no review
+        // to open
+        fixture.write("src/lib.rs", "pub fn answer() -> u32 {\n    44\n}\n");
+        app.review.refresh().expect("refresh");
         app.open_working_tree_diff(None);
         app.pending_ci = None;
         app.queue_ci_poll();

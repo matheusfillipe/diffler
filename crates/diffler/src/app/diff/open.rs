@@ -46,6 +46,21 @@ impl App {
     /// the error is reported and nothing changes (`self.diff` stays `None` or
     /// keeps the previous view).
     fn install_diff_view(&mut self, source: ReviewSource, model: Option<DiffModel>) {
+        // a source with no files has nothing to read and no line to comment on,
+        // so entering it strands the reader on an empty screen: say why instead.
+        // A review already open stays open when its diff empties out.
+        let files = model.as_ref().map_or_else(
+            || self.review.model().files.len(),
+            |model| model.files.len(),
+        );
+        if files == 0 {
+            self.info(if source == ReviewSource::WorkingTree {
+                "nothing to review: working tree clean".to_owned()
+            } else {
+                format!("nothing to review in {}", source.label())
+            });
+            return;
+        }
         if let Err(err) = self.review.ensure_source(&source) {
             self.error(err.to_string());
             return;

@@ -1534,9 +1534,13 @@ mod tests {
     #[test]
     fn sync_maps_threads_and_posting_stamps_remote_ids() {
         let fixture = standard_fixture();
+        // a second commit so the PR range carries files: an empty one opens no
+        // review to post from
+        fixture.commit_all("pr head");
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         let head = app.review.vcs.resolve("HEAD").expect("head oid");
-        app.pr_ranges.insert(7, (head.clone(), head.clone()));
+        let base = app.review.vcs.resolve("HEAD~1").expect("base oid");
+        app.pr_ranges.insert(7, (base.clone(), head.clone()));
 
         app.sync_pr_comments(
             7,
@@ -1592,7 +1596,7 @@ mod tests {
             .add_comment(anchor, "me", "needs work")
             .id
             .clone();
-        app.open_pr_diff(7, &head, &head);
+        app.open_pr_diff(7, &base, &head);
         assert!(app.diff.is_some(), "the PR diff view opened");
         app.queue_pr_review(7, ReviewVerdict::Comment, "");
         assert_eq!(app.pending_pr_posts.len(), 1);

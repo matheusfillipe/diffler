@@ -765,6 +765,35 @@ mod tests {
         }
     }
 
+    /// A review of nothing is a screen with no rows to read or comment on, so
+    /// the opener declines and the reader stays where the answer is.
+    #[test]
+    fn opening_a_review_with_no_files_says_so_and_opens_nothing() {
+        let fixture = Fixture::new();
+        fixture.write("a.rs", "fn a() {}\n");
+        fixture.commit_all("base");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+
+        app.handle(key('D'));
+        assert!(app.diff.is_none(), "no review opened over a clean tree");
+        assert_eq!(app.screen(), Screen::Status);
+        assert_eq!(
+            app.message.as_ref().map(|m| m.text.as_str()),
+            Some("nothing to review: working tree clean")
+        );
+
+        // an empty commit reaches the same guard, named by its own source
+        fixture.commit_all("nothing");
+        let head = app.review.vcs.resolve("HEAD").expect("head oid");
+        app.open_commit_diff(&head);
+        assert!(app.diff.is_none(), "no review opened over an empty commit");
+        let message = app.message.as_ref().expect("message").text.clone();
+        assert!(
+            message.starts_with("nothing to review in commit"),
+            "the source names itself: {message}"
+        );
+    }
+
     #[test]
     fn rows_flatten_the_selected_files_hunks_and_lines_in_order() {
         let fixture = two_hunk_fixture();
