@@ -22,6 +22,7 @@ mod network;
 pub mod pr;
 pub mod pr_create;
 mod search;
+pub mod stats;
 mod status;
 pub mod text_edit;
 
@@ -78,6 +79,8 @@ pub enum Screen {
     CiLog,
     /// One whole file, with or without its blame column.
     File,
+    /// The repo's language breakdown.
+    Stats,
 }
 
 impl Screen {
@@ -91,6 +94,7 @@ impl Screen {
             Self::Graph => Context::Graph,
             Self::Prs => Context::Prs,
             Self::File => Context::File,
+            Self::Stats => Context::Stats,
         }
     }
 }
@@ -277,6 +281,7 @@ struct Keymaps {
     graph: Keymap,
     prs: Keymap,
     file: Keymap,
+    stats: Keymap,
 }
 
 impl Keymaps {
@@ -295,6 +300,7 @@ impl Keymaps {
             graph: build(Context::Graph),
             prs: build(Context::Prs),
             file: build(Context::File),
+            stats: build(Context::Stats),
         }
     }
 }
@@ -579,6 +585,12 @@ pub struct App {
     /// Bumped per declared-kinds request, so an answer for a file list the
     /// view has since replaced is dropped.
     declared_token: u64,
+    /// The language breakdown screen, present only while it is open.
+    pub stats: Option<stats::StatsView>,
+    /// A repo scan the main loop should run off-thread.
+    pub pending_stats: Option<stats::StatsRequest>,
+    /// Bumped per scan, so an answer for a screen since closed is dropped.
+    stats_token: u64,
     pub modal: Option<Modal>,
     /// Where the open modal drew its rows, so a click finds the one under the
     /// pointer. Written by the renderer each frame.
@@ -754,6 +766,9 @@ impl App {
             file: None,
             pending_file: None,
             pending_declared: None,
+            stats: None,
+            pending_stats: None,
+            stats_token: 0,
             declared_token: 0,
             file_token: 0,
             pending_clipboard: None,
@@ -840,6 +855,7 @@ impl App {
             Context::Graph => &self.keymaps.graph,
             Context::Prs => &self.keymaps.prs,
             Context::File => &self.keymaps.file,
+            Context::Stats => &self.keymaps.stats,
         }
     }
 
@@ -917,6 +933,7 @@ impl App {
                 token,
             } => self.on_file_loaded(*result, line, token),
             AppEvent::DeclaredKinds { kinds, token } => self.on_declared_kinds(kinds, token),
+            AppEvent::RepoStats { stats, token } => self.on_repo_stats(*stats, token),
             AppEvent::CiRuns(runs) => {
                 self.on_ci_runs(runs);
                 Flow::Continue
@@ -1030,8 +1047,8 @@ impl App {
             Screen::Diff => self.diff_mouse(gesture),
             Screen::Log => self.log_mouse(gesture),
             Screen::CiLog => self.ci_log_mouse(gesture),
-            // the Runs/Graph/File screens are keyboard-driven
-            Screen::Graph | Screen::Runs | Screen::Prs | Screen::File => {}
+            // the Runs/Graph/File/Stats screens are keyboard-driven
+            Screen::Graph | Screen::Runs | Screen::Prs | Screen::File | Screen::Stats => {}
         }
     }
 
@@ -1067,7 +1084,12 @@ impl App {
                         view.visual_anchor = None;
                     }
                 }
-                Screen::Status | Screen::Graph | Screen::Runs | Screen::Prs | Screen::File => {}
+                Screen::Status
+                | Screen::Graph
+                | Screen::Runs
+                | Screen::Prs
+                | Screen::File
+                | Screen::Stats => {}
             }
             self.pending.clear();
             return Flow::Continue;
@@ -1149,7 +1171,12 @@ impl App {
                 .ci_log
                 .as_ref()
                 .is_some_and(|v| v.visual_anchor.is_some()),
-            Screen::Status | Screen::Graph | Screen::Runs | Screen::Prs | Screen::File => false,
+            Screen::Status
+            | Screen::Graph
+            | Screen::Runs
+            | Screen::Prs
+            | Screen::File
+            | Screen::Stats => false,
         }
     }
 
@@ -1256,6 +1283,8 @@ impl App {
         match action {
             Action::Quit => return Flow::Quit,
             Action::Back => return self.pop_screen(),
+            // the breakdown's own count is what a refresh means there
+            Action::Refresh if self.screen() == Screen::Stats => self.rescan_stats(),
             Action::Refresh => self.queue_refresh(),
             Action::Help => self.modal = Some(Modal::Help),
             Action::Palette => {
@@ -1278,6 +1307,7 @@ impl App {
             Action::SwitchTheme => self.open_theme_picker(),
             Action::OpenFilePicker => self.open_file_picker(),
             Action::Blame => self.blame_focused(),
+            Action::OpenStats => self.open_stats(),
             action => match self.screen() {
                 Screen::Status => self.dispatch_status(action),
                 Screen::Log => self.dispatch_log(action),
@@ -1287,6 +1317,7 @@ impl App {
                 Screen::Graph => self.dispatch_graph(action),
                 Screen::Prs => self.dispatch_prs(action),
                 Screen::File => self.dispatch_file(action),
+                Screen::Stats => self.dispatch_stats(action),
             },
         }
         Flow::Continue
@@ -1325,6 +1356,7 @@ impl App {
             }
             Some(Screen::Runs) => self.runs_cursor = 0,
             Some(Screen::Prs) => self.prs_cursor = 0,
+            Some(Screen::Stats) => self.stats = None,
             Some(Screen::Status) | None => {}
         }
         Flow::Continue

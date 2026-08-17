@@ -2,6 +2,7 @@
 //! diff expansion, recent commits, and the status bar.
 
 use diffler_core::model::FileDiff;
+use diffler_core::stats::LanguageChurn;
 use diffler_core::vcs::LogEntry;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -62,6 +63,13 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16, Vec<Option<usize>>) 
     // omit the summary entirely when there is nothing to review
     if added != 0 || deleted != 0 {
         lines.push(changes_line(&app.theme, added, deleted));
+        // borrowed, since this runs on every draw of the status screen
+        let mix = diffler_core::stats::review_mix(
+            Section::ALL
+                .into_iter()
+                .flat_map(|section| app.section_files(section)),
+        );
+        lines.extend(mix_line(&app.theme, &mix, area.width));
     }
     lines.push(Line::default());
     let rows = app.visible_rows();
@@ -292,6 +300,46 @@ fn changes_line(theme: &Theme, added: usize, deleted: usize) -> Line<'static> {
     spans.push(Span::styled("  ", theme.base()));
     spans.extend(proportion_bar(theme, added, deleted, theme.bg));
     Line::from(spans)
+}
+
+/// The review's own language mix, under the diffstat it breaks down: a stacked
+/// bar in Linguist's colours, then as many names as the row has room for. One
+/// language is no mix, so the line only appears from two.
+fn mix_line(theme: &Theme, mix: &[LanguageChurn], width: u16) -> Option<Line<'static>> {
+    const BAR_CELLS: usize = 16;
+    if mix.len() < 2 {
+        return None;
+    }
+    let total: usize = mix.iter().map(LanguageChurn::churn).sum();
+    let churn: Vec<usize> = mix.iter().map(LanguageChurn::churn).collect();
+    let cells = super::stats::allocate(&churn, BAR_CELLS);
+    let hue = |color| {
+        Style::new()
+            .fg(super::stats::language_color(theme, color))
+            .bg(theme.bg)
+    };
+    let mut spans = vec![Span::styled(" Languages ", theme.dim_style())];
+    for (entry, cell) in mix.iter().zip(&cells) {
+        if *cell > 0 {
+            spans.push(Span::styled("█".repeat(*cell), hue(entry.color)));
+        }
+    }
+    // the names are what the bar means, so they get whatever width is left
+    let mut used: usize = spans.iter().map(Span::width).sum();
+    for (index, entry) in mix.iter().enumerate() {
+        let share = entry.churn() * 100 / total.max(1);
+        let text = format!(
+            "{}{} {share}%",
+            if index == 0 { "  " } else { " · " },
+            entry.name
+        );
+        if used + text.chars().count() > width as usize {
+            break;
+        }
+        used += text.chars().count();
+        spans.push(Span::styled(text, hue(entry.color)));
+    }
+    Some(Line::from(spans))
 }
 
 fn row_line(
@@ -719,6 +767,77 @@ mod tests {
     use crate::test_support::{
         Fixture, key, mouse_click, mouse_scroll, render, standard_fixture, two_hunk_fixture,
     };
+
+    /// One language is not a mix, and the line would be furniture on every
+    /// single-language review, which is most of them.
+    #[test]
+    fn the_language_line_appears_only_once_a_review_spans_two() {
+        let theme = crate::theme::Theme::github_dark();
+        let churn = |name, color, added| diffler_core::stats::LanguageChurn {
+            name,
+            color,
+            files: 1,
+            added,
+            deleted: 0,
+        };
+        assert!(super::mix_line(&theme, &[], 120).is_none());
+        assert!(
+            super::mix_line(&theme, &[churn("Rust", (0xde, 0xa5, 0x84), 10)], 120).is_none(),
+            "one language is not a mix"
+        );
+
+        let mix = [
+            churn("Rust", (0xde, 0xa5, 0x84), 30),
+            churn("YAML", (0xcb, 0x17, 0x1e), 10),
+        ];
+        let line = super::mix_line(&theme, &mix, 120).expect("two languages make a line");
+        let text: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(
+            text.starts_with(" Languages "),
+            "aligned under Changes: {text}"
+        );
+        assert!(
+            text.contains("Rust 75%") && text.contains("YAML 25%"),
+            "{text}"
+        );
+        // the bar fills its own width, in the order the legend names
+        let bar: String = line
+            .spans
+            .iter()
+            .filter(|span| span.content.starts_with('█'))
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(bar.chars().count(), 16);
+    }
+
+    #[test]
+    fn a_narrow_status_screen_keeps_the_bar_and_drops_the_names() {
+        let theme = crate::theme::Theme::github_dark();
+        let churn = |name, added| diffler_core::stats::LanguageChurn {
+            name,
+            color: (0x80, 0x80, 0x80),
+            files: 1,
+            added,
+            deleted: 0,
+        };
+        let mix = [
+            churn("Rust", 30),
+            churn("TypeScript", 20),
+            churn("YAML", 10),
+        ];
+        let line = super::mix_line(&theme, &mix, 30).expect("a line");
+        let text: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(text.chars().count() <= 30, "stays inside the row: {text:?}");
+        assert!(text.contains('█'), "the bar survives: {text:?}");
+    }
 
     #[test]
     fn status_screen_shows_ci_rollup_glyphs_on_commit_and_branch_rows() {

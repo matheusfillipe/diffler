@@ -227,6 +227,8 @@ pub struct KeysConfig {
     pub prs: BTreeMap<String, String>,
     /// The whole-file view with its blame column.
     pub file: BTreeMap<String, String>,
+    /// The language breakdown screen.
+    pub stats: BTreeMap<String, String>,
     pub commit: BTreeMap<String, String>,
     pub branch: BTreeMap<String, String>,
     pub diff_menu: BTreeMap<String, String>,
@@ -620,6 +622,7 @@ fn apply_layer(
         (layer.keys.graph, &mut config.keys.graph, "graph"),
         (layer.keys.prs, &mut config.keys.prs, "prs"),
         (layer.keys.file, &mut config.keys.file, "file"),
+        (layer.keys.stats, &mut config.keys.stats, "stats"),
         (layer.keys.commit, &mut config.keys.commit, "commit"),
         (layer.keys.branch, &mut config.keys.branch, "branch"),
         (

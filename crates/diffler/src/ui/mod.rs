@@ -11,6 +11,7 @@ pub mod log;
 pub mod popup;
 mod prs;
 mod runs;
+mod stats;
 pub mod status;
 
 use diffler_core::model::FileStatus;
@@ -149,6 +150,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         Screen::Prs => prs::draw(frame, app),
         Screen::CiLog => ci_log::draw(frame, app),
         Screen::File => file::draw(frame, app),
+        Screen::Stats => stats::draw(frame, app),
     }
     app.modal_hits = draw_modal(frame, app);
     // the which-key panel is a transient overlay, not a modal: it draws only
@@ -195,6 +197,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) -> Option<popup::ListHits> {
                 Screen::Prs => "prs",
                 Screen::CiLog => "logs",
                 Screen::File => "file",
+                Screen::Stats => "stats",
             };
             popup::Popup {
                 title: format!("Help: {screen} keys"),
@@ -719,6 +722,7 @@ pub(super) fn status_bar(app: &App, width: u16) -> Line<'static> {
         Screen::Prs => " PRS ".to_owned(),
         Screen::CiLog => " LOGS ".to_owned(),
         Screen::File => " FILE ".to_owned(),
+        Screen::Stats => " STATS ".to_owned(),
     };
     let repo = app
         .review

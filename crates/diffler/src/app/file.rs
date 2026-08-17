@@ -160,7 +160,12 @@ impl App {
                 .file
                 .as_ref()
                 .map(|view| (view.path.clone(), Some(view.cursor as u32 + 1))),
-            Screen::Log | Screen::Runs | Screen::Graph | Screen::Prs | Screen::CiLog => None,
+            Screen::Log
+            | Screen::Runs
+            | Screen::Graph
+            | Screen::Prs
+            | Screen::CiLog
+            | Screen::Stats => None,
         };
         let Some((path, line)) = target else {
             self.info("no file under the cursor");

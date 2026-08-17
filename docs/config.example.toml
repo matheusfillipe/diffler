@@ -89,6 +89,7 @@
 # send_feedback = "Z"
 # open_file_picker = "<c-t>"   # fuzzy over every tracked file
 # blame = "B"                  # blame the file under the cursor
+# open_stats = "L"             # the repo's language breakdown
 # copy_url = "y"               # a pull request as its URL, a commit as its sha
 # refresh = "<c-r>"
 
@@ -161,6 +162,12 @@
 # center_cursor = "zz"
 # cursor_top = "zt"
 # cursor_bottom = "zb"
+# switch_theme = "T"
+
+[keys.stats]
+# sort by another column: code, files, lines, name
+# cycle_sort = "s"
+# refresh = "<c-r>"        # rescan the checkout
 # switch_theme = "T"
 
 [keys.ci_log]

@@ -191,6 +191,23 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   would paste: a pull request as its forge URL, a commit as its full sha. Every async arrival (CI poll, PR fetch, watcher refresh)
   re-seats the cursor through `status_cursor_anchor`, keyed by identity
   (path, oid, branch name) rather than row index.
+- **Language breakdown.** `language::of_path` names a path's language, reusing
+  the highlighter's extension table (`syntax::registry`) so the languages
+  diffler can parse are mapped in one place, with a small table beside it for
+  the ones it counts without highlighting. Colours are Linguist's own hexes,
+  the ones a repository page uses, lifted by `readable_on` until they clear a
+  3:1 contrast with the theme's background: `#292929` JSON is invisible on a
+  dark terminal and Linguist tuned that palette for a white page. Two surfaces
+  read it. The status head band's `Languages` line breaks the working tree's
+  churn down per language, from the diffstats the screen already sums, and
+  stays hidden below two languages. `L` opens the Stats screen, a table of
+  files/lines/code/comments/blanks per language that `stats::scan` fills from
+  a read per tracked-or-untracked file on the blocking pool, token-guarded like
+  every other worker; `s` cycles the sort, `<c-r>` counts again. The scan
+  leaves out what `classify` calls Generated, lockfiles included, the way a
+  repository page does and `scc` does by default, and says at the bottom what
+  it left out. Comment counting is a per-language token table, not a parse: a
+  line opening with a comment token is a comment, a shebang is code.
 - **Config.** TOML, XDG-layered (built-in defaults → `~/.config/diffler/config.toml`
   → `<repo>/.diffler/config.toml` → CLI flags; every flag has a config key).
   `diffler config --dump` prints the merged config with origins.

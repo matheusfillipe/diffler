@@ -341,10 +341,39 @@ fn dispatch_declared(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     });
 }
 
+/// Count the checkout off the main task: the scan reads every tracked file,
+/// which is milliseconds on a small repo and seconds on a large one.
+fn dispatch_stats(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
+    let Some(request) = app.pending_stats.take() else {
+        return;
+    };
+    let tx = tx.clone();
+    let root = app.review.repo_root.clone();
+    // what git tracks plus what the status screen shows as untracked, so a file
+    // written a minute ago counts like the rest of the checkout
+    let untracked: Vec<String> = app
+        .review
+        .status
+        .untracked
+        .files
+        .iter()
+        .map(|file| file.path.clone())
+        .collect();
+    let rules = app.config.classify.rules();
+    tokio::task::spawn_blocking(move || {
+        let stats = diffler_core::stats::scan_repo(&root, &untracked, &rules).unwrap_or_default();
+        let _ = tx.send(AppEvent::RepoStats {
+            stats: Box::new(stats),
+            token: request.token,
+        });
+    });
+}
+
 fn dispatch_workers(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     dispatch_enrich(app, tx);
     dispatch_file(app, tx);
     dispatch_declared(app, tx);
+    dispatch_stats(app, tx);
     dispatch_pr_posts(app, tx);
     dispatch_refresh(app, tx);
 }

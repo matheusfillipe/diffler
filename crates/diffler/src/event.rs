@@ -39,6 +39,12 @@ pub enum AppEvent {
         /// The request this answers; a stale one is dropped on arrival.
         token: u64,
     },
+    /// The language breakdown's repo scan came back.
+    RepoStats {
+        stats: Box<diffler_core::stats::RepoStats>,
+        /// The request this answers; a stale one is dropped on arrival.
+        token: u64,
+    },
     /// An off-thread repo refresh finished (status + working diff, plus the
     /// open three-dot diff when one is up), or failed.
     RefreshDone(Box<Result<diffler_core::review::Refreshed, String>>),

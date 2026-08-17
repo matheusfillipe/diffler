@@ -46,6 +46,10 @@ pub enum Action {
     OpenPrs,
     CreatePr,
     CommentsOverview,
+    /// Open the repo's language breakdown.
+    OpenStats,
+    /// Cycle the breakdown's sort column.
+    CycleSort,
     SubmitReview,
     CommitFlow,
     CommitExtend,
@@ -142,6 +146,8 @@ impl Action {
             Self::OpenPrs => "open_prs",
             Self::CreatePr => "create_pr",
             Self::CommentsOverview => "comments_overview",
+            Self::OpenStats => "open_stats",
+            Self::CycleSort => "cycle_sort",
             Self::SubmitReview => "submit_review",
             Self::CommitFlow => "commit_flow",
             Self::CommitExtend => "commit_extend",
@@ -238,6 +244,8 @@ impl Action {
             Self::OpenPrs => "list open pull requests",
             Self::CreatePr => "open a pull request for this branch",
             Self::CommentsOverview => "comments sidebar",
+            Self::OpenStats => "language breakdown",
+            Self::CycleSort => "sort by another column",
             Self::SubmitReview => "submit stacked PR comments as one review",
             Self::CommitFlow => "commit",
             Self::CommitExtend => "extend HEAD with the staged index",
@@ -297,7 +305,7 @@ impl Action {
         }
     }
 
-    pub(crate) const ALL: [Self; 90] = [
+    pub(crate) const ALL: [Self; 92] = [
         Self::CenterCursor,
         Self::CursorTop,
         Self::CursorBottom,
@@ -312,6 +320,8 @@ impl Action {
         Self::OpenPrs,
         Self::CreatePr,
         Self::CommentsOverview,
+        Self::OpenStats,
+        Self::CycleSort,
         Self::SubmitReview,
         Self::MoveDown,
         Self::MoveUp,
@@ -409,6 +419,8 @@ pub enum Context {
     Prs,
     /// The whole-file view, with or without its blame column.
     File,
+    /// The language breakdown.
+    Stats,
 }
 
 /// Outcome of feeding one key press into a keymap.
@@ -460,6 +472,7 @@ const STATUS_DEFAULTS: &[(&str, Action)] = &[
     ("e", Action::OpenEditor),
     ("<c-t>", Action::OpenFilePicker),
     ("B", Action::Blame),
+    ("L", Action::OpenStats),
     ("y", Action::CopyUrl),
     ("Z", Action::SendFeedback),
     ("/", Action::Search),
@@ -640,6 +653,21 @@ const PRS_DEFAULTS: &[(&str, Action)] = &[
     ("q", Action::Back),
 ];
 
+const STATS_DEFAULTS: &[(&str, Action)] = &[
+    ("j", Action::MoveDown),
+    ("k", Action::MoveUp),
+    ("gg", Action::GoTop),
+    ("G", Action::GoBottom),
+    ("<c-d>", Action::HalfPageDown),
+    ("<c-u>", Action::HalfPageUp),
+    ("s", Action::CycleSort),
+    ("<c-r>", Action::Refresh),
+    ("T", Action::SwitchTheme),
+    ("<c-k>", Action::Palette),
+    ("?", Action::Help),
+    ("q", Action::Back),
+];
+
 const GRAPH_DEFAULTS: &[(&str, Action)] = &[
     ("j", Action::MoveDown),
     ("k", Action::MoveUp),
@@ -673,6 +701,7 @@ impl Keymap {
             Context::Graph => (GRAPH_DEFAULTS, NO_PREFIXES, &keys.graph, "graph"),
             Context::Prs => (PRS_DEFAULTS, NO_PREFIXES, &keys.prs, "prs"),
             Context::File => (FILE_DEFAULTS, NO_PREFIXES, &keys.file, "file"),
+            Context::Stats => (STATS_DEFAULTS, NO_PREFIXES, &keys.stats, "stats"),
         };
         let mut keymap = Self {
             // defaults are static strings validated by tests; a default that
@@ -1058,6 +1087,7 @@ mod tests {
             (GRAPH_DEFAULTS, Context::Graph),
             (PRS_DEFAULTS, Context::Prs),
             (FILE_DEFAULTS, Context::File),
+            (STATS_DEFAULTS, Context::Stats),
         ] {
             let (keymap, _) = Keymap::for_context(context, &KeysConfig::default());
             assert_eq!(keymap.bindings.len(), defaults.len(), "{context:?}");

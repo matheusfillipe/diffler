@@ -101,6 +101,7 @@ impl App {
             Screen::Runs => self.runs_cursor,
             Screen::Prs => self.prs_cursor,
             Screen::Graph => self.graph.as_ref().map_or(0, GraphView::selected_index),
+            Screen::Stats => self.stats.as_ref().map_or(0, |view| view.cursor),
         }
     }
 
@@ -141,6 +142,8 @@ impl App {
                 .graph
                 .as_ref()
                 .map_or_else(Vec::new, GraphView::search_rows),
+            // the breakdown is a dozen rows the reader can already see
+            Screen::Stats => Vec::new(),
         }
     }
 
@@ -221,6 +224,11 @@ impl App {
             Screen::Graph => {
                 if let Some(g) = self.graph.as_mut() {
                     g.select_nth(row);
+                }
+            }
+            Screen::Stats => {
+                if let Some(v) = self.stats.as_mut() {
+                    v.cursor = row;
                 }
             }
         }

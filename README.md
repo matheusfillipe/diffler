@@ -202,6 +202,7 @@ Vim-like: `j`/`k`/`gg`/`G` motions, `/` search, and
 | `y` | on a status or PR-list row, copy what it points at: a pull request as its URL, a commit as its sha |
 | `<c-t>` | find any tracked file: Enter opens it, `b` blames it, `e` sends it to `$EDITOR` |
 | `B` | blame the file under the cursor, at that line (`b` toggles the column, `<cr>` reviews the commit) |
+| `L` | language breakdown of the repo: files, lines, code, comments per language (`s` sorts) |
 | `e` | open the file in `$EDITOR` |
 | `?` | full keymap for the current screen |
 | `q` | back / quit |
