@@ -8,12 +8,14 @@ pub mod diff;
 pub mod feedback;
 pub mod git;
 pub mod highlight;
+pub mod language;
 pub mod model;
 pub mod pairing;
 pub mod repo;
 pub mod review;
 pub mod session;
 pub mod source;
+pub mod stats;
 pub mod store;
 pub mod syntax;
 #[cfg(feature = "test-support")]
