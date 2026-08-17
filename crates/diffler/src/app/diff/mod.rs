@@ -2396,26 +2396,77 @@ mod tests {
         assert_eq!(app.diff.as_ref().unwrap().cursor, 0);
     }
 
+    /// A paging key belongs to the pane holding the keyboard, so on the
+    /// sidebar it walks the file list and leaves the diff where it was.
     #[test]
-    fn list_focus_half_page_scrolls_the_diff_pane_keeping_the_selection() {
-        let fixture = two_hunk_fixture();
+    fn list_focus_half_page_walks_the_file_list() {
+        let fixture = Fixture::new();
+        for index in 0..30 {
+            fixture.write(&format!("f{index:02}.txt"), "one\n");
+        }
+        fixture.commit_all("base");
+        for index in 0..30 {
+            fixture.write(&format!("f{index:02}.txt"), "one\ntwo\n");
+        }
         let mut app = diff_app(&fixture);
-        // stay on the sidebar (List focus is where open lands)
         assert_eq!(focus(&app), Pane::List);
-        let selected_before = selected_path(&app);
-        let tree_before = tree_cursor(&app);
+        app.diff.as_mut().unwrap().sidebar.height = 10;
         app.diff.as_mut().unwrap().viewport = 10;
-        assert_eq!(app.diff.as_ref().unwrap().cursor, 0);
+
         app.handle(ctrl_key('d'));
-        // the diff-pane cursor advanced by half a page
-        assert_eq!(app.diff.as_ref().unwrap().cursor, 5);
-        // but the sidebar selection and cursor did not move
-        assert_eq!(selected_path(&app), selected_before);
-        assert_eq!(tree_cursor(&app), tree_before);
-        assert_eq!(focus(&app), Pane::List, "focus stays on the sidebar");
+        assert_eq!(tree_cursor(&app), 5, "half the sidebar's rows");
+        assert_eq!(
+            app.diff.as_ref().unwrap().cursor,
+            0,
+            "the diff pane stays where it was"
+        );
+        assert_eq!(focus(&app), Pane::List);
+
         app.handle(ctrl_key('u'));
-        assert_eq!(app.diff.as_ref().unwrap().cursor, 0);
-        assert_eq!(selected_path(&app), selected_before);
+        assert_eq!(tree_cursor(&app), 0);
+        // and the whole-page keys cover the whole pane
+        app.handle(ctrl_key('f'));
+        assert_eq!(tree_cursor(&app), 9);
+    }
+
+    #[test]
+    fn comments_focus_half_page_walks_the_cards() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        for line in 1..=6 {
+            app.review.session.add_comment(
+                Anchor {
+                    file: "src/lib.rs".to_owned(),
+                    line: Some(line),
+                    line_end: None,
+                    on_old_side: false,
+                    line_text: None,
+                },
+                "reviewer",
+                "look here",
+            );
+        }
+        app.handle(key('C'));
+        assert_eq!(focus(&app), Pane::Comments);
+        // one render measures the pane and the rows each card takes
+        crate::test_support::render(&mut app);
+
+        let cursor = |app: &App| app.diff.as_ref().expect("diff").comments_cursor();
+        assert_eq!(cursor(&app), 0);
+        app.handle(ctrl_key('d'));
+        let tall = cursor(&app);
+        assert!(tall > 1, "a page covers several cards, moved {tall}");
+        app.handle(ctrl_key('u'));
+        assert_eq!(cursor(&app), 0, "and comes back by the same step");
+
+        // the step is what the pane can show, so a short pane covers fewer
+        app.diff.as_mut().expect("diff").comments_rect.height = 6;
+        app.handle(ctrl_key('d'));
+        let short = cursor(&app);
+        assert!(
+            short < tall,
+            "a 6-row pane pages {short} cards, a full-height one {tall}"
+        );
     }
 
     #[test]

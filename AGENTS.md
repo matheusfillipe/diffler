@@ -123,7 +123,10 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   (the branch band, a rule, then the repo band; stage/unstage/
   discard/commit/branch), Log, Diff/review (file sidebar + pane, unified or
   `|`-toggled side-by-side; `c` comment, `V` visual select, `r` reply/resolve,
-  `v` viewed, `y`/`Y` yank feedback as markdown, `e` `$EDITOR` jump). `C` opens
+  `v` viewed, `y`/`Y` yank feedback as markdown, `e` `$EDITOR` jump). Every motion, the
+  paging keys included, moves the pane holding the keyboard: `<c-d>` walks the
+  file list from the sidebar, the cards from the comments pane (counted in
+  cards, since they are multi-line), and the rows from the diff. `C` opens
   the comments sidebar on the right, a third pane the motions walk: its
   selection seats the diff cursor on that comment, so the pane's own verbs
   (reply, resolve, delete) reach it with no handling of their own. Comments,

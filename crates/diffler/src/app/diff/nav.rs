@@ -97,8 +97,10 @@ impl App {
             Action::MoveUp => self.comments_step(-1),
             Action::GoTop => self.comments_to(0),
             Action::GoBottom => self.comments_to(usize::MAX),
-            Action::HalfPageDown | Action::FullPageDown => self.comments_step(5),
-            Action::HalfPageUp | Action::FullPageUp => self.comments_step(-5),
+            Action::HalfPageDown => self.comments_step(self.comments_page(false)),
+            Action::HalfPageUp => self.comments_step(-self.comments_page(false)),
+            Action::FullPageDown => self.comments_step(self.comments_page(true)),
+            Action::FullPageUp => self.comments_step(-self.comments_page(true)),
             // the cursor already sits on the comment, so entering the diff
             // is a focus move, and so is stepping out either side
             Action::Open | Action::MoveRight | Action::MoveLeft => self.diff_focus(Pane::Diff),
@@ -126,12 +128,12 @@ impl App {
             Action::MoveUp => self.diff_tree_step(-1),
             Action::GoTop => self.diff_tree_to(0),
             Action::GoBottom => self.diff_tree_to(usize::MAX),
-            // half-page keys preview the selected file's diff without leaving
-            // the sidebar: they scroll the diff pane, not the file selection
-            Action::HalfPageDown => self.diff_move(self.diff_page(false)),
-            Action::HalfPageUp => self.diff_move(-self.diff_page(false)),
-            Action::FullPageDown => self.diff_move(self.diff_page(true)),
-            Action::FullPageUp => self.diff_move(-self.diff_page(true)),
+            // the paging keys move the pane that has the keyboard, so here they
+            // walk the file list by a screenful
+            Action::HalfPageDown => self.diff_tree_step(self.tree_page(false)),
+            Action::HalfPageUp => self.diff_tree_step(-self.tree_page(false)),
+            Action::FullPageDown => self.diff_tree_step(self.tree_page(true)),
+            Action::FullPageUp => self.diff_tree_step(-self.tree_page(true)),
             // <cr> focuses the pane on a file row, folds/unfolds a dir row
             Action::Open => self.diff_tree_activate(),
             Action::ToggleFold => self.diff_toggle_dir_fold(),
@@ -513,6 +515,33 @@ impl App {
     fn diff_page(&self, full: bool) -> isize {
         let step = page_step(self.diff.as_ref().map_or(0, |d| d.viewport), full);
         isize::try_from(step).unwrap_or(20)
+    }
+
+    /// Rows of the file sidebar a paging key covers: its rows are one line
+    /// each, so a page of the list is a page of the pane.
+    fn tree_page(&self, full: bool) -> isize {
+        let height = self.diff.as_ref().map_or(0, |diff| diff.sidebar.height);
+        isize::try_from(page_step(height, full)).unwrap_or(20)
+    }
+
+    /// Comments a paging key covers. A card is several rows tall and they
+    /// differ, so the step is how many the pane's rows hold on average, which
+    /// keeps paging up and down symmetric.
+    fn comments_page(&self, full: bool) -> isize {
+        /// Before the first render there is no pane to measure.
+        const UNMEASURED: usize = 5;
+        let Some(diff) = self.diff.as_ref() else {
+            return 1;
+        };
+        let rows = page_step(diff.comments_rect.height, full);
+        let lines = diff.comment_lines.len();
+        let cards = self.comment_order().len();
+        let step = if lines == 0 || cards == 0 {
+            UNMEASURED
+        } else {
+            (rows * cards / lines).max(1)
+        };
+        isize::try_from(step).unwrap_or(1)
     }
 
     /// Jump the pane cursor to the next/previous comment block, landing on its

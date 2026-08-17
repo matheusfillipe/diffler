@@ -46,6 +46,8 @@ pub struct StatsView {
     pub stats: Option<RepoStats>,
     pub cursor: usize,
     pub scroll: usize,
+    /// Language rows the last render fitted, so a paging key covers a page.
+    pub viewport: u16,
     pub sort: StatsSort,
 }
 
@@ -117,13 +119,14 @@ impl App {
         let Some(view) = self.stats.as_mut() else {
             return;
         };
+        let page = crate::app::page_step(view.viewport, false);
         match action {
             Action::MoveDown => view.cursor = (view.cursor + 1).min(last),
             Action::MoveUp => view.cursor = view.cursor.saturating_sub(1),
             Action::GoTop => view.cursor = 0,
             Action::GoBottom => view.cursor = last,
-            Action::HalfPageDown => view.cursor = (view.cursor + 10).min(last),
-            Action::HalfPageUp => view.cursor = view.cursor.saturating_sub(10),
+            Action::HalfPageDown => view.cursor = (view.cursor + page).min(last),
+            Action::HalfPageUp => view.cursor = view.cursor.saturating_sub(page),
             Action::CycleSort => {
                 view.sort = view.sort.next();
                 view.cursor = 0;

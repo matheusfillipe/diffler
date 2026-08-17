@@ -212,7 +212,8 @@ Every binding is remappable, see
 
 The diff view is two panes: a file sidebar and the selected file's diff. `h`
 and `l` (or the left/right arrows) focus the sidebar and the diff; `j`/`k`
-change the selected file from the sidebar or scroll the diff when focused there;
+change the selected file from the sidebar or scroll the diff when focused there,
+and `<c-d>`/`<c-u>` page whichever pane has the keyboard;
 `J`/`K` or `<c-n>`/`<c-p>` step through files from either; `<tab>` (or `za`)
 folds the folder or section under the sidebar cursor.
 

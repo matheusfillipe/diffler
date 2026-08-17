@@ -79,6 +79,7 @@ fn draw_table(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     frame.render_widget(Paragraph::new(lines), area);
     if let Some(view) = app.stats.as_mut() {
         view.scroll = scroll;
+        view.viewport = u16::try_from(window).unwrap_or(u16::MAX);
     }
 }
 
