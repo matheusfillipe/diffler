@@ -598,6 +598,8 @@ fn run_git(label: &str, argv: &[String], repo_root: &Path) -> AppEvent {
     match std::process::Command::new(program)
         .args(rest)
         .current_dir(repo_root)
+        .stdin(std::process::Stdio::null())
+        .envs(diffler::proc::NO_PROMPT)
         .output()
     {
         Ok(out) => {
@@ -614,5 +616,26 @@ fn run_git(label: &str, argv: &[String], repo_root: &Path) -> AppEvent {
             ok: false,
             output: format!("cannot run {program}: {err}"),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_git_child_cannot_ask_the_user_anything() {
+        let argv = [
+            "sh",
+            "-c",
+            "printf %s \"$GIT_TERMINAL_PROMPT$GH_PROMPT_DISABLED\"",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        let AppEvent::GitDone { ok, output, .. } = run_git("probe", &argv, Path::new(".")) else {
+            panic!("a git op answers with GitDone");
+        };
+        assert!(ok, "{output}");
+        assert_eq!(output, "01");
     }
 }

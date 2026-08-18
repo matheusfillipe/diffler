@@ -11,6 +11,7 @@ pub mod event;
 pub mod graph;
 pub mod keymap;
 pub mod mcp;
+pub mod proc;
 pub mod search;
 #[cfg(test)]
 mod test_support;

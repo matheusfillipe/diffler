@@ -31,6 +31,8 @@ impl CommandRunner for RealRunner {
     async fn run(&self, program: &'static str, args: &[String]) -> Result<String> {
         let output = Command::new(program)
             .args(args)
+            .stdin(std::process::Stdio::null())
+            .envs(crate::proc::NO_PROMPT)
             .output()
             .await
             .map_err(|_| CiError::CliMissing(program))?;
@@ -49,6 +51,8 @@ impl CommandRunner for RealRunner {
     async fn run_ignoring_status(&self, program: &'static str, args: &[String]) -> Result<String> {
         let output = Command::new(program)
             .args(args)
+            .stdin(std::process::Stdio::null())
+            .envs(crate::proc::NO_PROMPT)
             .output()
             .await
             .map_err(|_| CiError::CliMissing(program))?;
