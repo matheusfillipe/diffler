@@ -225,6 +225,10 @@ pub(super) enum CursorAnchor {
         section: Section,
         path: String,
         hunk: Option<usize>,
+        /// The diff line the cursor sat on, by the number the file gives it:
+        /// a poll that re-reads the working tree rebuilds every hunk, and the
+        /// reader is still on the same line.
+        line: Option<LineAnchor>,
     },
     Unpushed,
     UnpushedCommit(usize),
@@ -237,6 +241,14 @@ pub(super) enum CursorAnchor {
     BranchRow(String),
     Ci,
     CiRun(usize),
+}
+
+/// One diff line by the numbers it carries: an addition and a context line
+/// have a new-side number, a deletion only an old-side one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct LineAnchor {
+    old_no: Option<u32>,
+    new_no: Option<u32>,
 }
 
 /// The unpushed commits and whether the walk that found them stopped at its
@@ -1452,10 +1464,30 @@ impl App {
             Row::CiRun { index, .. } => CursorAnchor::CiRun(*index),
             Row::File { .. } | Row::HunkHeader { .. } | Row::DiffLine { .. } => {
                 let (section, file, hunk) = self.row_file(&row)?;
+                let line = match row {
+                    Row::DiffLine {
+                        section,
+                        file,
+                        hunk,
+                        line,
+                    } => self
+                        .section_files(section)
+                        .get(file)?
+                        .hunks
+                        .get(hunk)?
+                        .lines
+                        .get(line)
+                        .map(|line| LineAnchor {
+                            old_no: line.old_no,
+                            new_no: line.new_no,
+                        }),
+                    _ => None,
+                };
                 CursorAnchor::File {
                     section,
                     path: file.path.clone(),
                     hunk,
+                    line,
                 }
             }
         })
@@ -1524,49 +1556,83 @@ impl App {
                 section,
                 path,
                 hunk,
-            } => {
-                let file_at = |row: &Row| -> Option<(Section, usize)> {
-                    match row {
-                        Row::File { section, index, .. } => Some((*section, *index)),
-                        _ => None,
-                    }
-                };
-                let path_matches = |s: Section, index: usize| {
-                    self.section_files(s)
-                        .get(index)
-                        .is_some_and(|f| f.path == *path)
-                };
-                let hunk_position = hunk.and_then(|h| {
-                    rows.iter().position(|r| {
-                        matches!(
-                            r,
-                            Row::HunkHeader { section: s, file, hunk } if s == section && *hunk == h && path_matches(*s, *file)
-                        )
-                    })
-                });
-                hunk_position
-                    .or_else(|| {
-                        rows.iter().position(|r| {
-                            file_at(r)
-                                .is_some_and(|(s, index)| s == *section && path_matches(s, index))
-                        })
-                    })
-                    .or_else(|| {
-                        rows.iter().position(|r| {
-                            file_at(r).is_some_and(|(s, index)| path_matches(s, index))
-                        })
-                    })
-                    .or_else(|| {
-                        rows.iter().position(
-                            |r| matches!(r, Row::SectionHeader { section: s, .. } if s == section),
-                        )
-                    })
-            }
+                line,
+            } => self.file_anchor_position(&rows, *section, path, *hunk, *line),
         };
         match position {
             Some(position) => self.status.cursor = position,
             None => self.clamp_cursor(),
         }
+    }
+
+    /// Where a file's cursor lands after the rows changed, narrowest first:
+    /// the line it was reading, that line's hunk, the file in its own section,
+    /// the file wherever it moved to, then the section header.
+    fn file_anchor_position(
+        &self,
+        rows: &[Row],
+        section: Section,
+        path: &str,
+        hunk: Option<usize>,
+        line: Option<LineAnchor>,
+    ) -> Option<usize> {
+        let file_at = |row: &Row| -> Option<(Section, usize)> {
+            match row {
+                Row::File { section, index, .. } => Some((*section, *index)),
+                _ => None,
+            }
+        };
+        let path_matches = |s: Section, index: usize| {
+            self.section_files(s)
+                .get(index)
+                .is_some_and(|f| f.path == *path)
+        };
+        let line_position = line.and_then(|wanted| {
+            rows.iter().position(|r| {
+                let Row::DiffLine {
+                    section: s,
+                    file,
+                    hunk,
+                    line,
+                } = r
+                else {
+                    return false;
+                };
+                *s == section
+                    && path_matches(*s, *file)
+                    && self
+                        .section_files(*s)
+                        .get(*file)
+                        .and_then(|f| f.hunks.get(*hunk)?.lines.get(*line))
+                        .is_some_and(|found| {
+                            found.old_no == wanted.old_no && found.new_no == wanted.new_no
+                        })
+            })
+        });
+        let hunk_position = hunk.and_then(|h| {
+            rows.iter().position(|r| {
+                matches!(
+                    r,
+                    Row::HunkHeader { section: s, file, hunk } if *s == section && *hunk == h && path_matches(*s, *file)
+                )
+            })
+        });
+        line_position
+            .or(hunk_position)
+            .or_else(|| {
+                rows.iter().position(|r| {
+                    file_at(r).is_some_and(|(s, index)| s == section && path_matches(s, index))
+                })
+            })
+            .or_else(|| {
+                rows.iter()
+                    .position(|r| file_at(r).is_some_and(|(s, index)| path_matches(s, index)))
+            })
+            .or_else(|| {
+                rows.iter().position(
+                    |r| matches!(r, Row::SectionHeader { section: s, .. } if *s == section),
+                )
+            })
     }
 
     pub(super) fn clamp_cursor(&mut self) {
@@ -1663,6 +1729,76 @@ mod tests {
         let fixture = standard_fixture();
         let app = App::new(fixture.review(), LoadedConfig::default());
         (fixture, app)
+    }
+
+    /// The status screen with `data.txt`'s diff unfolded and the cursor on a
+    /// line inside it, which is where a reader sits while a poll lands.
+    fn app_reading_a_hunk() -> (Fixture, App) {
+        let fixture = two_hunk_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        // onto the file row, unfold it, then down into the hunk's lines
+        app.handle(key('j'));
+        app.handle(key('\t'));
+        for _ in 0..4 {
+            app.handle(key('j'));
+        }
+        assert!(
+            matches!(app.cursor_row(), Some(Row::DiffLine { .. })),
+            "the cursor is inside the diff: {:?}",
+            app.cursor_row()
+        );
+        (fixture, app)
+    }
+
+    /// The line under the cursor, by the numbers the file gives it.
+    fn cursor_line_numbers(app: &App) -> (Option<u32>, Option<u32>) {
+        let Some(Row::DiffLine {
+            section,
+            file,
+            hunk,
+            line,
+        }) = app.cursor_row()
+        else {
+            panic!("cursor is not on a diff line: {:?}", app.cursor_row());
+        };
+        let line = app.section_files(section)[file].hunks[hunk].lines[line].clone();
+        (line.old_no, line.new_no)
+    }
+
+    /// A CI poll or a watcher echo rebuilds the status without changing a
+    /// byte, and the reader keeps their place in the hunk they were reading.
+    #[test]
+    fn a_refresh_keeps_the_cursor_on_the_diff_line_it_was_on() {
+        let (_fixture, mut app) = app_reading_a_hunk();
+        let before = app.status.cursor;
+        let numbers = cursor_line_numbers(&app);
+
+        app.queue_refresh();
+        app.settle_refresh();
+
+        assert_eq!(app.status.cursor, before, "the row did not move");
+        assert_eq!(cursor_line_numbers(&app), numbers);
+    }
+
+    /// An edit below the cursor rebuilds the hunks, and the cursor follows its
+    /// own line.
+    #[test]
+    fn an_edit_elsewhere_leaves_the_cursor_on_its_own_line() {
+        let (fixture, mut app) = app_reading_a_hunk();
+        let numbers = cursor_line_numbers(&app);
+
+        // the fixture edits both ends of data.txt; touch the far end again
+        let text = std::fs::read_to_string(fixture.root.join("data.txt")).expect("read");
+        fixture.write("data.txt", &text.replace("line twenty", "line twenty-one"));
+        app.queue_refresh();
+        app.settle_refresh();
+
+        assert!(
+            matches!(app.cursor_row(), Some(Row::DiffLine { .. })),
+            "still on a diff line, not bumped to the header: {:?}",
+            app.cursor_row()
+        );
+        assert_eq!(cursor_line_numbers(&app), numbers);
     }
 
     /// An app whose status file layout is forced to `layout`, overriding the
