@@ -191,7 +191,9 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   loses its Unpushed section. `[`/`]` step group headers, `tab` folds one;
   a commit carrying CI runs takes a `▸` between its glyph and sha and unfolds
   them beneath it. `y` copies whatever the cursor addresses in the form you
-  would paste: a pull request as its forge URL, a commit as its full sha. Every async arrival (CI poll, PR fetch, watcher refresh)
+  would paste: a pull request as its forge URL, a commit as its full sha, and
+  the branch-checkout key on a listed pull request checks that one out. Every
+  async arrival (CI poll, PR fetch, watcher refresh)
   re-seats the cursor through `status_cursor_anchor`, keyed by identity
   (path, oid, branch name) rather than row index.
 - **Language breakdown.** `language::of_path` names a path's language, reusing
@@ -211,6 +213,12 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   repository page does and `scc` does by default, and says at the bottom what
   it left out. Comment counting is a per-language token table, not a parse: a
   line opening with a comment token is a comment, a shebang is code.
+- **Which remote's CI.** A fork has two remotes for one repo, so the order
+  `detect_ci_remotes` builds decides whose runs show: `ci.remote` when set,
+  else the remote the branch pushes to (`head.upstream`'s first segment), else
+  `origin`. The GitHub provider then names that repo on every call, `-R` for
+  the `gh` subcommands and an expanded `{owner}/{repo}` for `gh api`, because
+  `gh` resolves a fork to its parent when nobody tells it otherwise.
 - **Config.** TOML, XDG-layered (built-in defaults → `~/.config/diffler/config.toml`
   → `<repo>/.diffler/config.toml` → CLI flags; every flag has a config key).
   `diffler config --dump` prints the merged config with origins.
