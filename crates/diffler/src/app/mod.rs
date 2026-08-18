@@ -445,11 +445,20 @@ pub struct CiRemote {
 }
 
 /// Detect a CI provider for every git remote (via the `Vcs` trait, not a
-/// subprocess), `origin` first, deduped so two remotes on the same forge yield
-/// one section. A forge whose CLI isn't installed degrades to no CI.
-fn detect_ci_remotes(review: &Review, ci: &crate::config::CiConfig) -> Vec<CiRemote> {
+/// subprocess), deduped so two remotes on the same forge yield one section. A
+/// forge whose CLI isn't installed degrades to no CI.
+///
+/// Order decides which remote the runs come from, and a fork has more than one
+/// answer: `ci.remote` when the reader named one, else the remote the branch
+/// pushes to, else `origin`. Pushing to your own fork of someone else's repo
+/// is the case that makes the tracking ref the better guess than the name.
+fn detect_ci_remotes(
+    review: &Review,
+    ci: &crate::config::CiConfig,
+    pushes_to: Option<&str>,
+) -> Vec<CiRemote> {
     let mut names = review.vcs.remotes().unwrap_or_default();
-    names.sort_by_key(|name| (name != "origin", name.clone()));
+    preferred_first(&mut names, ci.remote.as_deref().or(pushes_to));
     let mut remotes: Vec<CiRemote> = Vec::new();
     for name in names {
         let url = review.vcs.remote_url(&name).ok().flatten();
@@ -468,6 +477,18 @@ fn detect_ci_remotes(review: &Review, ci: &crate::config::CiConfig) -> Vec<CiRem
         });
     }
     remotes
+}
+
+/// Order remote names so the one whose CI the reader means comes first:
+/// `preferred` when it exists, then `origin`, then the rest by name.
+fn preferred_first(names: &mut [String], preferred: Option<&str>) {
+    names.sort_by_key(|name| {
+        (
+            Some(name.as_str()) != preferred,
+            name != "origin",
+            name.clone(),
+        )
+    });
 }
 
 /// Cursor step for half/full page motions. Before the first render the
@@ -709,7 +730,13 @@ impl App {
             }
         };
 
-        let ci_remotes = detect_ci_remotes(&review, &config.ci);
+        // `origin/main` names the remote in front of the slash
+        let pushes_to = head
+            .upstream
+            .as_deref()
+            .and_then(|upstream| upstream.split_once('/'))
+            .map(|(remote, _)| remote.to_owned());
+        let ci_remotes = detect_ci_remotes(&review, &config.ci, pushes_to.as_deref());
 
         let mut app = Self {
             review,
@@ -1729,6 +1756,38 @@ mod tests {
         let fixture = standard_fixture();
         let app = App::new(fixture.review(), LoadedConfig::default());
         (fixture, app)
+    }
+
+    /// A fork has `origin` (yours) and `upstream` (theirs), and the runs worth
+    /// watching are the ones for what you pushed.
+    #[test]
+    fn the_remote_the_branch_pushes_to_leads_the_others() {
+        let order = |preferred: Option<&str>| {
+            let mut names = [
+                "upstream".to_owned(),
+                "origin".to_owned(),
+                "fork".to_owned(),
+            ];
+            super::preferred_first(&mut names, preferred);
+            names
+        };
+        assert_eq!(
+            order(None),
+            ["origin", "fork", "upstream"],
+            "origin leads when nothing else says otherwise"
+        );
+        assert_eq!(
+            order(Some("upstream")),
+            ["upstream", "origin", "fork"],
+            "the branch's push target leads"
+        );
+        assert_eq!(
+            order(Some("fork")),
+            ["fork", "origin", "upstream"],
+            "and so does a remote named in the config"
+        );
+        // a preference naming nothing present changes nothing
+        assert_eq!(order(Some("nowhere")), ["origin", "fork", "upstream"]);
     }
 
     #[test]

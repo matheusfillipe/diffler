@@ -114,6 +114,7 @@ pub fn build_provider(
             branch.map(str::to_owned),
             yaml_cache,
             etags,
+            remote_url.and_then(parse_owner_repo),
         )),
         ProviderKind::GitLab => Box::new(GitLabProvider::new(
             Box::new(RealRunner),

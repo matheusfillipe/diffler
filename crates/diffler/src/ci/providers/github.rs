@@ -49,6 +49,10 @@ pub struct GitHubProvider {
     workflows: Vec<String>,
     /// The checked-out branch, scoping the runs list; `None` on detached HEAD.
     branch: Option<String>,
+    /// `owner/name` of the remote diffler picked, from its URL. `gh` resolves
+    /// a fork to its parent when nobody says otherwise, so every call names
+    /// the repo explicitly.
+    slug: Option<String>,
 }
 
 impl GitHubProvider {
@@ -58,6 +62,7 @@ impl GitHubProvider {
         branch: Option<String>,
         yaml_cache: YamlCache,
         etags: EtagCache,
+        slug: Option<String>,
     ) -> Self {
         Self {
             runner,
@@ -65,7 +70,28 @@ impl GitHubProvider {
             yaml_cache,
             workflows,
             branch,
+            slug,
         }
+    }
+
+    /// `path` with `{owner}`/`{repo}` filled in from the remote diffler picked.
+    /// Left to `gh` when the remote named no repo it could parse.
+    fn scoped(&self, path: &str) -> String {
+        let Some((owner, name)) = self.slug.as_deref().and_then(|s| s.split_once('/')) else {
+            return path.to_owned();
+        };
+        path.replace("{owner}", owner).replace("{repo}", name)
+    }
+
+    /// `gh <args>` against the picked repo: the subcommands take `-R`, unlike
+    /// `gh api`, whose paths go through [`Self::scoped`] instead.
+    async fn gh(&self, args: &[String]) -> Result<String> {
+        let mut args = args.to_vec();
+        if let Some(slug) = self.slug.clone() {
+            args.push("-R".to_owned());
+            args.push(slug);
+        }
+        self.runner.run("gh", &args).await
     }
 
     /// `gh api <path>` asking GitHub to answer only if the resource changed.
@@ -78,7 +104,7 @@ impl GitHubProvider {
             .lock()
             .ok()
             .and_then(|cache| cache.get(path).cloned());
-        let mut args = vec!["api".to_owned(), "-i".to_owned(), path.to_owned()];
+        let mut args = vec!["api".to_owned(), "-i".to_owned(), self.scoped(path)];
         if let Some(cached) = &known {
             args.push("-H".to_owned());
             args.push(format!("If-None-Match: {}", cached.etag));
@@ -114,7 +140,7 @@ impl GitHubProvider {
     /// `gh api <path>`; `{owner}`/`{repo}` in `path` resolve to the current repo.
     async fn api(&self, path: &str) -> Result<String> {
         self.runner
-            .run("gh", &["api".to_owned(), path.to_owned()])
+            .run("gh", &["api".to_owned(), self.scoped(path)])
             .await
     }
 
@@ -165,6 +191,9 @@ impl GitHubProvider {
     /// The current repo's `owner`/`name`, for GraphQL calls where `gh` does
     /// not expand `{owner}`/`{repo}` placeholders.
     async fn repo_slug(&self) -> Result<(String, String)> {
+        if let Some((owner, name)) = self.slug.as_deref().and_then(|s| s.split_once('/')) {
+            return Ok((owner.to_owned(), name.to_owned()));
+        }
         let raw = self
             .runner
             .run(
@@ -190,7 +219,7 @@ impl GitHubProvider {
                     "api".to_owned(),
                     "-H".to_owned(),
                     "Accept: application/vnd.github.raw".to_owned(),
-                    path.to_owned(),
+                    self.scoped(path),
                 ],
             )
             .await
@@ -372,7 +401,7 @@ impl ForgeProvider for GitHubProvider {
             "jobs,displayTitle,headBranch,headSha,status,conclusion,workflowName,createdAt,url",
         ]
         .map(str::to_owned);
-        let out = self.runner.run("gh", &args).await?;
+        let out = self.gh(&args).await?;
         let view: RunView = parse_json("gh run view", &out)?;
 
         // build the DAG from the run's own workflow, matched by the YAML `name:`
@@ -488,7 +517,7 @@ impl ForgeProvider for GitHubProvider {
             "number,title,url,baseRefName,headRefName,headRefOid,author",
         ]
         .map(str::to_owned);
-        let raw = self.runner.run("gh", &args).await?;
+        let raw = self.gh(&args).await?;
         let items: Vec<PrListItem> = parse_json("pr list", &raw)?;
         Ok(items.into_iter().map(PrListItem::into_pr).collect())
     }
@@ -497,7 +526,7 @@ impl ForgeProvider for GitHubProvider {
         let args = [
             "api".to_owned(),
             "--paginate".to_owned(),
-            format!("repos/{{owner}}/{{repo}}/pulls/{number}/comments"),
+            self.scoped(&format!("repos/{{owner}}/{{repo}}/pulls/{number}/comments")),
         ];
         let raw = self.runner.run("gh", &args).await?;
         // `--paginate` concatenates one JSON array per page; stream-parse the
@@ -535,7 +564,10 @@ impl ForgeProvider for GitHubProvider {
             "api".to_owned(),
             "-X".to_owned(),
             "POST".to_owned(),
-            format!("repos/{{owner}}/{{repo}}/pulls/{}/comments", new.number),
+            self.scoped(&format!(
+                "repos/{{owner}}/{{repo}}/pulls/{}/comments",
+                new.number
+            )),
             "-f".to_owned(),
             format!("body={}", new.body),
             "-f".to_owned(),
@@ -570,7 +602,9 @@ impl ForgeProvider for GitHubProvider {
             "api".to_owned(),
             "-X".to_owned(),
             "POST".to_owned(),
-            format!("repos/{{owner}}/{{repo}}/pulls/{number}/comments/{remote_id}/replies"),
+            self.scoped(&format!(
+                "repos/{{owner}}/{{repo}}/pulls/{number}/comments/{remote_id}/replies"
+            )),
             "-f".to_owned(),
             format!("body={body}"),
         ];
@@ -591,7 +625,10 @@ impl ForgeProvider for GitHubProvider {
             "api".to_owned(),
             "-X".to_owned(),
             "POST".to_owned(),
-            format!("repos/{{owner}}/{{repo}}/pulls/{}/reviews", review.number),
+            self.scoped(&format!(
+                "repos/{{owner}}/{{repo}}/pulls/{}/reviews",
+                review.number
+            )),
             "--input".to_owned(),
             input.to_string_lossy().into_owned(),
         ];
@@ -623,7 +660,9 @@ impl ForgeProvider for GitHubProvider {
             "api".to_owned(),
             "-X".to_owned(),
             "PATCH".to_owned(),
-            format!("repos/{{owner}}/{{repo}}/pulls/comments/{remote_id}"),
+            self.scoped(&format!(
+                "repos/{{owner}}/{{repo}}/pulls/comments/{remote_id}"
+            )),
             "-f".to_owned(),
             format!("body={body}"),
         ];
@@ -635,7 +674,9 @@ impl ForgeProvider for GitHubProvider {
             "api".to_owned(),
             "-X".to_owned(),
             "DELETE".to_owned(),
-            format!("repos/{{owner}}/{{repo}}/pulls/comments/{remote_id}"),
+            self.scoped(&format!(
+                "repos/{{owner}}/{{repo}}/pulls/comments/{remote_id}"
+            )),
         ];
         self.runner.run("gh", &args).await.map(|_| ())
     }
@@ -648,7 +689,7 @@ impl ForgeProvider for GitHubProvider {
             "--json".to_owned(),
             "number,title,url,baseRefName,headRefName,headRefOid,author".to_owned(),
         ];
-        let raw = self.runner.run("gh", &args).await?;
+        let raw = self.gh(&args).await?;
         let pr: PrListItem = parse_json("pr", &raw)?;
         Ok(pr.into_pr())
     }
@@ -669,7 +710,7 @@ impl ForgeProvider for GitHubProvider {
         if new.draft {
             args.push("--draft".to_owned());
         }
-        let raw = self.runner.run("gh", &args).await?;
+        let raw = self.gh(&args).await?;
         // the command answers with the new PR's url and nothing machine-readable
         let number = pr_number_from_url(&raw).ok_or_else(|| CiError::Parse {
             what: "pr create".to_owned(),
@@ -692,7 +733,7 @@ impl ForgeProvider for GitHubProvider {
             "number,title,url,baseRefName,headRefOid",
         ]
         .map(str::to_owned);
-        let Ok(raw) = self.runner.run("gh", &args).await else {
+        let Ok(raw) = self.gh(&args).await else {
             return Ok(None);
         };
         // a malformed response must propagate, same as `pr`/`list_prs`:
@@ -1470,6 +1511,7 @@ jobs:
             None,
             YamlCache::default(),
             EtagCache::default(),
+            None,
         )
     }
 
@@ -1485,12 +1527,111 @@ jobs:
             Some("feat/x".to_owned()),
             YamlCache::default(),
             EtagCache::default(),
+            None,
         )
         .list_runs(10)
         .await
         .expect("runs");
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].branch, "feat/x");
+    }
+
+    /// `gh` resolves a fork to the repo it was forked from, so a checkout with
+    /// `origin` and `upstream` would report the parent's runs. Every call names
+    /// the repo diffler picked instead.
+    #[tokio::test]
+    async fn every_call_names_the_repo_the_remote_points_at() {
+        let runner = std::sync::Arc::new(RecordingRunner::new(&[
+            (
+                "repos/mine/widgets/actions/runs",
+                &ok_response(&runs_body("main"), "W/\"a\""),
+            ),
+            (
+                "run view",
+                r#"{"displayTitle":"cut","headBranch":"main","headSha":"abc",
+                   "status":"completed","conclusion":"success","workflowName":"CI",
+                   "createdAt":"2026-06-18T10:00:00Z","url":"https://gh/run/1","jobs":[]}"#,
+            ),
+            ("pr list", "[]"),
+            (
+                "pr view",
+                r#"{"number":7,"title":"t","url":"https://gh/pr/7","baseRefName":"main",
+                   "headRefName":"feat","headRefOid":"abc","author":{"login":"reviewer"}}"#,
+            ),
+            ("pr create", "https://gh/mine/widgets/pull/8"),
+        ]));
+        let provider = |branch: Option<&str>| {
+            GitHubProvider::new(
+                Box::new(runner.clone()),
+                vec![WORKFLOW.to_owned()],
+                branch.map(str::to_owned),
+                YamlCache::default(),
+                EtagCache::default(),
+                Some("mine/widgets".to_owned()),
+            )
+        };
+        provider(None).list_runs(10).await.expect("runs");
+        provider(None)
+            .run_detail(&RunId("1".to_owned()))
+            .await
+            .expect("detail");
+        provider(None).list_prs().await.expect("prs");
+        provider(None).pr(7).await.expect("pr");
+        provider(Some("feat")).current_pr().await.expect("current");
+        provider(None)
+            .create_pr(&crate::ci::NewPullRequest {
+                base: "main".to_owned(),
+                head: "feat".to_owned(),
+                title: "t".to_owned(),
+                body: String::new(),
+                draft: false,
+            })
+            .await
+            .expect("create");
+
+        let calls = runner.calls();
+        let api = calls
+            .iter()
+            .find(|c| c.contains("actions/runs"))
+            .expect("api");
+        assert!(
+            api.contains("repos/mine/widgets/") && !api.contains("{owner}"),
+            "the api path names the repo: {api}"
+        );
+        // every subcommand, not a sample of them: an unscoped one resolves to
+        // the fork's parent and answers about the wrong repository
+        let subcommands: Vec<&String> = calls.iter().filter(|c| !c.starts_with("api")).collect();
+        assert_eq!(subcommands.len(), 6, "{subcommands:?}");
+        for call in subcommands {
+            assert!(
+                call.contains("-R mine/widgets"),
+                "the call names the repo: {call}"
+            );
+        }
+    }
+
+    /// Without a parsable remote the calls go out as they always did, and `gh`
+    /// resolves the repo from the checkout.
+    #[tokio::test]
+    async fn an_unknown_remote_leaves_the_repo_to_gh() {
+        let runner = std::sync::Arc::new(RecordingRunner::new(&[(
+            "repos/{owner}/{repo}/actions/runs",
+            &ok_response(&runs_body("main"), "W/\"a\""),
+        )]));
+        GitHubProvider::new(
+            Box::new(runner.clone()),
+            vec![WORKFLOW.to_owned()],
+            None,
+            YamlCache::default(),
+            EtagCache::default(),
+            None,
+        )
+        .list_runs(10)
+        .await
+        .expect("runs");
+        let call = runner.calls().first().cloned().unwrap_or_default();
+        assert!(call.contains("{owner}"), "left for gh to expand: {call}");
+        assert!(!call.contains("-R"), "{call}");
     }
 
     #[test]
@@ -1541,6 +1682,7 @@ jobs:
             None,
             YamlCache::default(),
             EtagCache::default(),
+            None,
         )
         .run_detail(&RunId("9".into()))
         .await
@@ -1566,6 +1708,7 @@ jobs:
                 None,
                 YamlCache::default(),
                 etags.clone(),
+                None,
             )
         };
         // first poll stores the etag, second is answered 304 from the cache
@@ -1666,6 +1809,7 @@ jobs:
             None,
             YamlCache::default(),
             EtagCache::default(),
+            None,
         )
         .run_detail(&RunId("9".into()))
         .await
@@ -1741,6 +1885,7 @@ jobs:
                 None,
                 cache.clone(),
                 EtagCache::default(),
+                None,
             )
             .run_detail(&RunId("9".into()))
             .await
@@ -1876,6 +2021,7 @@ jobs:
             Some("feat/x".to_owned()),
             YamlCache::default(),
             EtagCache::default(),
+            None,
         )
         .current_pr()
         .await
@@ -1893,6 +2039,7 @@ jobs:
             Some("feat/x".to_owned()),
             YamlCache::default(),
             EtagCache::default(),
+            None,
         )
         .current_pr()
         .await
@@ -1973,6 +2120,7 @@ jobs:
             None,
             YamlCache::default(),
             EtagCache::default(),
+            None,
         );
         provider
             .resolve_pr_thread(9, "T_1", true)
@@ -2047,6 +2195,7 @@ mod create_pr_tests {
             Some("feat/x".to_owned()),
             YamlCache::default(),
             EtagCache::default(),
+            None,
         );
         let pr = provider
             .create_pr(&NewPullRequest {

@@ -3126,6 +3126,7 @@ mod tests {
             None,
             crate::ci::YamlCache::default(),
             crate::ci::EtagCache::default(),
+            None,
         );
 
         dispatch_if_queued(&app, &provider).await;

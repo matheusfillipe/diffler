@@ -40,6 +40,10 @@
 # Which forge serves runs and pull requests. "auto" detects it from the
 # remote; force it with "github", "gitlab", or "forgejo".
 # provider = "auto"
+# Which remote's CI to follow, for a checkout with more than one (a fork has
+# your origin and their upstream). Unset follows the remote the branch pushes
+# to, then origin.
+# remote = "origin"
 # poll_seconds = 5
 
 [ci.gitlab]

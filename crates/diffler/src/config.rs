@@ -176,6 +176,9 @@ pub struct EditorConfig {
 #[serde(default)]
 pub struct CiConfig {
     pub provider: String,
+    /// Which git remote's CI to follow. Unset picks the one the branch pushes
+    /// to, then `origin`.
+    pub remote: Option<String>,
     pub poll_seconds: u64,
     pub gitlab: CiGitLabConfig,
     pub forgejo: CiForgejoConfig,
@@ -185,6 +188,7 @@ impl Default for CiConfig {
     fn default() -> Self {
         Self {
             provider: "auto".to_owned(),
+            remote: None,
             poll_seconds: 5,
             gitlab: CiGitLabConfig::default(),
             forgejo: CiForgejoConfig::default(),
@@ -407,6 +411,7 @@ struct PartialEditor {
 #[serde(default)]
 struct PartialCi {
     provider: Option<String>,
+    remote: Option<String>,
     poll_seconds: Option<u64>,
     gitlab: PartialCiGitLab,
     forgejo: PartialCiForgejo,
@@ -574,6 +579,10 @@ fn apply_layer(
         origin,
         origins,
     );
+    if let Some(remote) = layer.ci.remote {
+        config.ci.remote = Some(remote);
+        origins.insert("ci.remote".to_owned(), origin.clone());
+    }
     set(
         layer.ci.poll_seconds,
         &mut config.ci.poll_seconds,
@@ -666,7 +675,7 @@ fn apply_cli(cli: &CliOverrides, config: &mut Config, origins: &mut BTreeMap<Str
 
 /// Scalar keys always listed in the `--dump` origins block; `keys.*` entries
 /// are appended dynamically since their names come from the user.
-const SCALAR_KEYS: [&str; 14] = [
+const SCALAR_KEYS: [&str; 15] = [
     "ui.theme",
     "ui.context_lines",
     "ui.recent_commits",
@@ -678,6 +687,7 @@ const SCALAR_KEYS: [&str; 14] = [
     "mcp.port",
     "editor.command",
     "ci.provider",
+    "ci.remote",
     "ci.poll_seconds",
     "ci.gitlab.host",
     "ci.forgejo.host",
