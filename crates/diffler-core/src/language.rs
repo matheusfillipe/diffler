@@ -114,10 +114,15 @@ pub fn of_path(path: &str) -> Option<Language> {
     {
         return by_key(key);
     }
-    let key = EXTRA_PREFIXES
+    // consulted after the extensions so `LICENSE.md` stays Markdown: a repo
+    // ships `LICENSE-APACHE` beside `LICENSE-MIT`, and both are prose
+    if crate::classify::DOC_NAMES
         .iter()
-        .find_map(|(prefix, key)| name.starts_with(prefix).then_some(key))?;
-    by_key(key)
+        .any(|stem| name.starts_with(stem))
+    {
+        return by_key("text");
+    }
+    None
 }
 
 fn by_key(key: &str) -> Option<Language> {
@@ -403,16 +408,6 @@ const EXTRA_FILENAMES: &[(&str, &str)] = &[
     (".gitignore", "ini"),
     (".gitattributes", "ini"),
     (".editorconfig", "ini"),
-];
-
-/// Filenames that carry their language in a prefix, consulted after the
-/// extensions so `LICENSE.md` stays Markdown: a repo ships `LICENSE-APACHE`
-/// beside `LICENSE-MIT`, and both are prose.
-const EXTRA_PREFIXES: &[(&str, &str)] = &[
-    ("license", "text"),
-    ("licence", "text"),
-    ("copying", "text"),
-    ("notice", "text"),
 ];
 
 const fn lang(

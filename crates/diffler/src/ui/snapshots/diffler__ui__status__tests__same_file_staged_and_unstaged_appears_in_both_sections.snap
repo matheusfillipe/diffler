@@ -5,7 +5,7 @@ expression: render(&mut app).backend()
 " c commit · b branch · s stage · x discard · ? help                                                                     "
 " Head:     main c1ac28f initial commit                                                                                  "
 " Changes   +4 -2  █████                                                                                                 "
-" Languages ████████████████  Rust 66% · Markdown 16% · YAML 16%                                                         "
+" Languages ████████████████  Rust 66% · Markdown 17% · YAML 17%                                                         "
 "                                                                                                                        "
 "▌▾ Untracked (1) +1 -0                                                                                                  "
 " ○ todo.md +1 -0                                                                                                        "

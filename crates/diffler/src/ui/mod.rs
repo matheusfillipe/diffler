@@ -14,6 +14,7 @@ mod runs;
 mod stats;
 pub mod status;
 
+use diffler_core::language;
 use diffler_core::model::FileStatus;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -436,6 +437,67 @@ pub(super) fn diffstat_spans(
         Span::styled(format!(" +{added}"), side(added, theme.added)),
         Span::styled(format!(" -{deleted}"), side(deleted, theme.error_fg)),
     ]
+}
+
+/// Linguist's hue, lifted until it reads on this theme's background.
+pub(super) fn language_color(theme: &Theme, color: language::Rgb) -> Color {
+    let (r, g, b) = language::readable_on(color, rgb_of(theme.bg));
+    Color::Rgb(r, g, b)
+}
+
+pub(super) fn rgb_of(color: Color) -> language::Rgb {
+    match color {
+        Color::Rgb(r, g, b) => (r, g, b),
+        // every bundled theme is truecolor; a terminal-palette colour has no
+        // channels to compare, so treat it as the dark end
+        _ => (0, 0, 0),
+    }
+}
+
+/// Split `cells` between `shares` in proportion, by largest remainder, so the
+/// pieces add up to exactly `cells` and no non-zero share rounds away to
+/// nothing. A stacked bar is only honest if it fills its own width.
+pub(super) fn allocate(shares: &[usize], cells: usize) -> Vec<usize> {
+    let total: usize = shares.iter().sum();
+    let counted = shares.iter().filter(|share| **share > 0).count();
+    if total == 0 || cells == 0 || counted == 0 {
+        return vec![0; shares.len()];
+    }
+    // every language that changed anything keeps a cell, so the rest of the
+    // bar is what is left to share out
+    if counted >= cells {
+        return shares
+            .iter()
+            .scan(cells, |left, share| {
+                let take = usize::from(*share > 0 && *left > 0);
+                *left -= take;
+                Some(take)
+            })
+            .collect();
+    }
+    let spare = cells - counted;
+    let mut out: Vec<usize> = shares
+        .iter()
+        .map(|share| usize::from(*share > 0) + share * spare / total)
+        .collect();
+    let mut remainders: Vec<(usize, usize)> = shares
+        .iter()
+        .enumerate()
+        .filter(|(_, share)| **share > 0)
+        .map(|(index, share)| (index, share * spare % total))
+        .collect();
+    remainders.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    let mut short = cells - out.iter().sum::<usize>();
+    for (index, _) in remainders {
+        if short == 0 {
+            break;
+        }
+        if let Some(cell) = out.get_mut(index) {
+            *cell += 1;
+            short -= 1;
+        }
+    }
+    out
 }
 
 /// A ~5-cell bar split green:red by the added:deleted ratio over `bg`; at least

@@ -1,11 +1,10 @@
 //! The language breakdown: one row per language, GitHub's colours, ordered by
 //! the column the reader picked.
 
-use diffler_core::language;
 use diffler_core::stats::{LanguageCount, RepoStats};
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
@@ -121,7 +120,7 @@ fn language_line(
     };
     let dim = Style::new().fg(theme.dim).bg(bg);
     let plain = Style::new().fg(theme.fg).bg(bg);
-    let hue = language_color(theme, row.color);
+    let hue = super::language_color(theme, row.color);
     // the bar is relative to the biggest language, and the smallest one keeps
     // a cell of its own
     let filled = (row.code * BAR_CELLS).div_ceil(widest).clamp(1, BAR_CELLS);
@@ -202,67 +201,6 @@ fn left_out_line(theme: &Theme, stats: &RepoStats) -> Option<Line<'static>> {
         format!("  left out: {}", parts.join(" · ")),
         theme.dim_style(),
     ))
-}
-
-/// Linguist's hue, lifted until it reads on this theme's background.
-pub(super) fn language_color(theme: &Theme, color: language::Rgb) -> Color {
-    let (r, g, b) = language::readable_on(color, rgb_of(theme.bg));
-    Color::Rgb(r, g, b)
-}
-
-pub(super) fn rgb_of(color: Color) -> language::Rgb {
-    match color {
-        Color::Rgb(r, g, b) => (r, g, b),
-        // every bundled theme is truecolor; a terminal-palette colour has no
-        // channels to compare, so treat it as the dark end
-        _ => (0, 0, 0),
-    }
-}
-
-/// Split `cells` between `shares` in proportion, by largest remainder, so the
-/// pieces add up to exactly `cells` and no non-zero share rounds away to
-/// nothing. A stacked bar is only honest if it fills its own width.
-pub(super) fn allocate(shares: &[usize], cells: usize) -> Vec<usize> {
-    let total: usize = shares.iter().sum();
-    let counted = shares.iter().filter(|share| **share > 0).count();
-    if total == 0 || cells == 0 || counted == 0 {
-        return vec![0; shares.len()];
-    }
-    // every language that changed anything keeps a cell, so the rest of the
-    // bar is what is left to share out
-    if counted >= cells {
-        return shares
-            .iter()
-            .scan(cells, |left, share| {
-                let take = usize::from(*share > 0 && *left > 0);
-                *left -= take;
-                Some(take)
-            })
-            .collect();
-    }
-    let spare = cells - counted;
-    let mut out: Vec<usize> = shares
-        .iter()
-        .map(|share| usize::from(*share > 0) + share * spare / total)
-        .collect();
-    let mut remainders: Vec<(usize, usize)> = shares
-        .iter()
-        .enumerate()
-        .filter(|(_, share)| **share > 0)
-        .map(|(index, share)| (index, share * spare % total))
-        .collect();
-    remainders.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-    let mut short = cells - out.iter().sum::<usize>();
-    for (index, _) in remainders {
-        if short == 0 {
-            break;
-        }
-        if let Some(cell) = out.get_mut(index) {
-            *cell += 1;
-            short -= 1;
-        }
-    }
-    out
 }
 
 /// `49314` reads as `49,314`: the columns are for comparing magnitudes.
@@ -425,7 +363,7 @@ mod tests {
             vec![1, 1, 1, 1, 1, 1, 1],
             vec![100],
         ] {
-            let cells = super::allocate(&shares, 16);
+            let cells = super::super::allocate(&shares, 16);
             assert_eq!(cells.iter().sum::<usize>(), 16, "{shares:?} -> {cells:?}");
             for (share, cell) in shares.iter().zip(&cells) {
                 assert!(
@@ -440,21 +378,21 @@ mod tests {
     #[test]
     fn allocate_keeps_the_smallest_language_visible() {
         // 1% of the churn still owns a cell, and the rest divide what is left
-        assert_eq!(super::allocate(&[980, 10, 10], 10), vec![8, 1, 1]);
+        assert_eq!(super::super::allocate(&[980, 10, 10], 10), vec![8, 1, 1]);
     }
 
     #[test]
     fn allocate_degrades_when_there_are_more_languages_than_cells() {
-        let cells = super::allocate(&[5, 4, 3, 2, 1], 3);
+        let cells = super::super::allocate(&[5, 4, 3, 2, 1], 3);
         assert_eq!(cells, vec![1, 1, 1, 0, 0], "the busiest three take the bar");
         assert_eq!(cells.iter().sum::<usize>(), 3);
     }
 
     #[test]
     fn allocate_of_nothing_is_nothing() {
-        assert_eq!(super::allocate(&[], 8), Vec::<usize>::new());
-        assert_eq!(super::allocate(&[0, 0], 8), vec![0, 0]);
-        assert_eq!(super::allocate(&[1, 1], 0), vec![0, 0]);
+        assert_eq!(super::super::allocate(&[], 8), Vec::<usize>::new());
+        assert_eq!(super::super::allocate(&[0, 0], 8), vec![0, 0]);
+        assert_eq!(super::super::allocate(&[1, 1], 0), vec![0, 0]);
     }
 
     #[test]

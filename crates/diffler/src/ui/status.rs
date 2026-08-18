@@ -310,12 +310,13 @@ fn mix_line(theme: &Theme, mix: &[LanguageChurn], width: u16) -> Option<Line<'st
     if mix.len() < 2 {
         return None;
     }
-    let total: usize = mix.iter().map(LanguageChurn::churn).sum();
     let churn: Vec<usize> = mix.iter().map(LanguageChurn::churn).collect();
-    let cells = super::stats::allocate(&churn, BAR_CELLS);
+    let cells = super::allocate(&churn, BAR_CELLS);
+    // shared out the same way the bar is, so the labels add up to 100
+    let shares = super::allocate(&churn, 100);
     let hue = |color| {
         Style::new()
-            .fg(super::stats::language_color(theme, color))
+            .fg(super::language_color(theme, color))
             .bg(theme.bg)
     };
     let mut spans = vec![Span::styled(" Languages ", theme.dim_style())];
@@ -327,7 +328,7 @@ fn mix_line(theme: &Theme, mix: &[LanguageChurn], width: u16) -> Option<Line<'st
     // the names are what the bar means, so they get whatever width is left
     let mut used: usize = spans.iter().map(Span::width).sum();
     for (index, entry) in mix.iter().enumerate() {
-        let share = entry.churn() * 100 / total.max(1);
+        let share = shares.get(index).copied().unwrap_or(0);
         let text = format!(
             "{}{} {share}%",
             if index == 0 { "  " } else { " · " },

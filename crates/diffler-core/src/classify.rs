@@ -296,7 +296,7 @@ const DOC_EXTENSIONS: &[&str] = &["md", "mdx", "rst", "adoc", "org", "txt", "1"]
 /// The files a repo keeps at its root with no extension at all. They are
 /// matched only when the extension is empty: `src/security.rs` and
 /// `models/license.rb` are code that happens to share the word.
-const DOC_NAMES: &[&str] = &[
+pub(crate) const DOC_NAMES: &[&str] = &[
     "readme",
     "license",
     "licence",
