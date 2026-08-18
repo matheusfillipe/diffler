@@ -920,7 +920,7 @@ impl App {
             Action::CommitExtend => self.commit_extend(),
             Action::CommitAmend => self.commit_amend(),
             Action::CommitReword => self.commit_reword(),
-            Action::BranchCheckout => self.open_branch_list(BranchAction::Checkout),
+            Action::BranchCheckout => self.checkout_at_status_cursor(),
             Action::BranchCreateCheckout => self.branch_name_input(true),
             Action::BranchCreate => self.branch_name_input(false),
             Action::BranchDelete => self.open_branch_list(BranchAction::Delete),
@@ -984,6 +984,20 @@ impl App {
                 self.open_rev_list("Diff against commit", entries);
             }
             Err(err) => self.error(err.to_string()),
+        }
+    }
+
+    /// A pull-request row checks that request out; anywhere else the key keeps
+    /// its usual job and opens the branch picker. The branch's own PR is left
+    /// out: its head is the branch already under you.
+    fn checkout_at_status_cursor(&mut self) {
+        let pr = match self.cursor_row() {
+            Some(Row::OpenPr { index }) => self.other_prs().get(index).map(|pr| (*pr).clone()),
+            _ => None,
+        };
+        match pr {
+            Some(pr) => self.checkout_pr(&pr),
+            None => self.open_branch_list(BranchAction::Checkout),
         }
     }
 
@@ -3529,6 +3543,32 @@ mod tests {
             git.argv
         );
         assert_eq!(app.pending_pr_open.as_ref().map(|p| p.number), Some(9));
+    }
+
+    #[test]
+    fn checkout_on_an_open_pr_row_checks_that_pr_out() {
+        let (_fixture, mut app) = app();
+        app.ci_remotes = vec![github_remote()];
+        app.prs = vec![pull_request(9)];
+        app.status.prs_loaded = true;
+        app.status.group_folded[Group::Prs.index()] = false;
+        cursor_to(&mut app, |row| matches!(row, Row::OpenPr { .. }));
+        app.dispatch_status(Action::BranchCheckout);
+        let git = app.pending_git.take().expect("checkout queued");
+        assert_eq!(git.argv, ["gh", "pr", "checkout", "9"], "{:?}", git.argv);
+        assert!(app.modal.is_none(), "no branch picker over the checkout");
+    }
+
+    #[test]
+    fn checkout_off_a_pr_row_still_opens_the_branch_picker() {
+        let (_fixture, mut app) = app();
+        app.dispatch_status(Action::BranchCheckout);
+        assert!(app.pending_git.is_none(), "no checkout queued");
+        assert!(
+            matches!(app.modal, Some(crate::app::Modal::BranchList { .. })),
+            "{:?}",
+            app.modal
+        );
     }
 
     #[test]

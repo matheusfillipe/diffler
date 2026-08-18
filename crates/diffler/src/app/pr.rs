@@ -213,6 +213,10 @@ impl App {
         let Some(pr) = self.prs.get(self.prs_cursor).cloned() else {
             return;
         };
+        self.checkout_pr(&pr);
+    }
+
+    pub(crate) fn checkout_pr(&mut self, pr: &crate::ci::PullRequest) {
         let github = self
             .ci_remotes()
             .first()
