@@ -2,7 +2,7 @@
 source: crates/diffler/src/ui/diff.rs
 expression: render(&mut app).backend()
 ---
-" c comment · r reply · v viewed · C all comments · ? help                                                               "
+" c comment · r reply · m viewed · C all comments · ? help                                                               "
 " Files                           Diff                                                      Comments (1)                 "
 " ▾ src                    +1 -1  new file  ci.yml · 1 comment                 +1 -0 █████ ▌○ ci.yml:1                   "
 "   ● lib.rs               +1 -1  @@ -0,0 +1,1 @@                                          ▌ this line reads oddly and   "

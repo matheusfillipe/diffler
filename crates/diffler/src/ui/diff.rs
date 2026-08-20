@@ -1606,7 +1606,7 @@ mod tests {
         app.author = "reviewer".to_owned();
         app.open_working_tree_diff(None);
         // one viewed file in the folded bucket, two left to review
-        app.handle(key('v'));
+        app.handle(key('m'));
         insta::assert_snapshot!(render(&mut app).backend());
     }
 
@@ -2557,7 +2557,7 @@ mod tests {
         let (_fixture, mut app) = diff_app();
         let content = render(&mut app).backend().to_string();
         assert!(content.contains("viewed 0/3 files"), "{content}");
-        app.handle(key('v'));
+        app.handle(key('m'));
         let content = render(&mut app).backend().to_string();
         assert!(content.contains("viewed 1/3 files"), "{content}");
     }
@@ -2565,8 +2565,8 @@ mod tests {
     #[test]
     fn viewed_walk_advances_the_selection() {
         let (_fixture, mut app) = diff_app();
-        app.handle(key('v'));
-        app.handle(key('v'));
+        app.handle(key('m'));
+        app.handle(key('m'));
         // two files viewed; the sidebar cursor sits on the last unviewed
         // file, progress reads 2/3
         insta::assert_snapshot!(render(&mut app).backend());

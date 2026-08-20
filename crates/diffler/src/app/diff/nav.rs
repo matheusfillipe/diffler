@@ -128,6 +128,8 @@ impl App {
             Action::MoveUp => self.diff_tree_step(-1),
             Action::GoTop => self.diff_tree_to(0),
             Action::GoBottom => self.diff_tree_to(usize::MAX),
+            Action::NextHunk => self.diff_tree_jump(true),
+            Action::PrevHunk => self.diff_tree_jump(false),
             // the paging keys move the pane that has the keyboard, so here they
             // walk the file list by a screenful
             Action::HalfPageDown => self.diff_tree_step(self.tree_page(false)),
@@ -604,24 +606,30 @@ impl App {
         let Some(diff) = self.diff.as_mut() else {
             return;
         };
-        let position = if forward {
-            diff.rows
-                .iter()
-                .enumerate()
-                .skip(diff.cursor + 1)
-                .find(|(_, row)| target(row))
-                .map(|(index, _)| index)
-        } else {
-            diff.rows
-                .iter()
-                .enumerate()
-                .take(diff.cursor)
-                .rfind(|(_, row)| target(row))
-                .map(|(index, _)| index)
-        };
-        if let Some(position) = position {
+        if let Some(position) = crate::app::step_to(&diff.rows, diff.cursor, forward, target) {
             diff.cursor = position;
         }
+    }
+
+    /// `[`/`]` in the file sidebar: the previous/next group header, whichever
+    /// the layout draws, so a long tree steps folder by folder the way the
+    /// status screen steps its sections.
+    fn diff_tree_jump(&mut self, forward: bool) {
+        let review = &self.review;
+        let Some(diff) = self.diff.as_ref() else {
+            return;
+        };
+        let rows = sidebar_rows(diff, review);
+        let header = |row: &crate::tree::TreeRow| {
+            matches!(
+                row.node,
+                crate::tree::TreeNode::Dir { .. } | crate::tree::TreeNode::Section { .. }
+            )
+        };
+        let Some(position) = crate::app::step_to(&rows, diff.tree_cursor, forward, header) else {
+            return;
+        };
+        self.diff_tree_to(position);
     }
 
     /// Path of the selected file in the diff view.

@@ -1310,7 +1310,7 @@ mod tests {
         let mut app = app_for(&fixture);
         cursor_to_file(&mut app, Section::Unstaged);
         app.handle(key('\t'));
-        app.handle(key('v'));
+        app.handle(key('m'));
         insta::assert_snapshot!(render(&mut app).backend());
     }
 

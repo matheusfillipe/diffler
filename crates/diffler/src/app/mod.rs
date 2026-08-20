@@ -491,6 +491,25 @@ fn preferred_first(names: &mut [String], preferred: Option<&str>) {
     });
 }
 
+/// The next row `target` accepts, scanning out from `at` in one direction.
+/// `None` when there is none, which leaves the cursor where it is. Shared by
+/// every bracket-pair motion: the status sections, the diff hunks, and the
+/// file sidebar's groups all step the same way over different rows.
+pub(crate) fn step_to<T>(
+    rows: &[T],
+    at: usize,
+    forward: bool,
+    target: impl Fn(&T) -> bool,
+) -> Option<usize> {
+    let scan = rows.iter().enumerate();
+    if forward {
+        scan.skip(at + 1).find(|(_, row)| target(row))
+    } else {
+        scan.take(at).rfind(|(_, row)| target(row))
+    }
+    .map(|(index, _)| index)
+}
+
 /// Cursor step for half/full page motions. Before the first render the
 /// viewport is unknown; a typical terminal height is a fine guess.
 pub(crate) fn page_step(viewport: u16, full: bool) -> usize {

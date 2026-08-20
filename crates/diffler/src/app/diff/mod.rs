@@ -675,15 +675,7 @@ fn tree_position_of_file(rows: &[TreeRow], file_index: usize) -> Option<usize> {
 /// Row position of the File row next to `at`, `forward` down the list or back
 /// up it, skipping the headers in between.
 fn step_file_row(rows: &[TreeRow], at: usize, forward: bool) -> Option<usize> {
-    let rows = rows.iter().enumerate();
-    if forward {
-        rows.skip(at + 1)
-            .find(|(_, row)| row_file_index(row).is_some())
-    } else {
-        rows.take(at)
-            .rfind(|(_, row)| row_file_index(row).is_some())
-    }
-    .map(|(position, _)| position)
+    crate::app::step_to(rows, at, forward, |row| row_file_index(row).is_some())
 }
 
 /// Paths whose git attributes a worker should read, for the kinds sidebar.
@@ -1567,7 +1559,7 @@ mod tests {
         let fixture = nested_fixture();
         let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Tree);
         cursor_to_dir(&mut app, "src");
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert_eq!(
             viewed_paths(&app),
             ["src/deep/inner.rs", "src/lib.rs", "src/main.rs"],
@@ -1580,7 +1572,7 @@ mod tests {
         let fixture = nested_fixture();
         let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Tree);
         cursor_to_dir(&mut app, "src/deep");
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert_eq!(viewed_paths(&app), ["src/deep/inner.rs"]);
     }
 
@@ -1589,10 +1581,10 @@ mod tests {
         let fixture = standard_fixture();
         let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Tree);
         cursor_to_dir(&mut app, "src");
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert!(!viewed_paths(&app).is_empty());
         cursor_to_dir(&mut app, "src");
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert!(
             viewed_paths(&app).is_empty(),
             "a second press unmarks the subtree"
@@ -1644,7 +1636,7 @@ mod tests {
             "Generated opens folded, so the mark cannot read the rows: {rows:?}"
         );
         cursor_to_section(&mut app, "Generated");
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert_eq!(
             viewed_paths(&app),
             ["package-lock.json", "tests/snapshots/render.snap"],
@@ -1657,10 +1649,10 @@ mod tests {
         let fixture = kinds_fixture();
         let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Kinds);
         cursor_to_section(&mut app, "Generated");
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert!(!viewed_paths(&app).is_empty());
         cursor_to_section(&mut app, "Generated");
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert!(viewed_paths(&app).is_empty(), "a second press unmarks it");
     }
 
@@ -1669,7 +1661,7 @@ mod tests {
         let fixture = kinds_fixture();
         let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Review);
         cursor_to_section(&mut app, "To review");
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert_eq!(
             viewed_paths(&app),
             [
@@ -1687,8 +1679,151 @@ mod tests {
         let fixture = kinds_fixture();
         let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Kinds);
         cursor_to_section(&mut app, "Source");
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert_eq!(viewed_paths(&app), ["src/lib.rs"]);
+    }
+
+    fn tree_cursor_row(app: &App) -> String {
+        let diff = app.diff.as_ref().expect("diff view");
+        let rows = super::sidebar_rows(diff, &app.review);
+        match &rows[diff.tree_cursor].node {
+            crate::tree::TreeNode::Dir { path, .. } => format!("dir {path}"),
+            crate::tree::TreeNode::Section { bucket, .. } => format!("section {}", bucket.label()),
+            crate::tree::TreeNode::File { name, .. } => format!("file {name}"),
+        }
+    }
+
+    /// `]` walks folder to folder in the tree layout, the way it walks
+    /// sections on the status screen.
+    /// Four files in one group, so marking has somewhere to sort them to.
+    fn flat_fixture() -> Fixture {
+        let fixture = Fixture::new();
+        for name in ["a.rs", "b.rs", "c.rs", "d.rs"] {
+            fixture.write(name, "fn x() {}\n");
+        }
+        fixture.commit_all("base");
+        for name in ["a.rs", "b.rs", "c.rs", "d.rs"] {
+            fixture.write(name, "fn x() -> u32 {\n    1\n}\n");
+        }
+        fixture
+    }
+
+    /// Marking the last file in a group sorts it to the top of that group. The
+    /// reader must not be dragged up there with it: they stay on the row they
+    /// were reading, which is now the file that was above.
+    #[test]
+    fn marking_the_bottom_file_keeps_the_reader_at_the_bottom() {
+        for layout in [
+            crate::config::FileLayout::Tree,
+            crate::config::FileLayout::Kinds,
+        ] {
+            let fixture = flat_fixture();
+            let mut app = diff_app_with_layout(&fixture, layout);
+            app.handle(key('G'));
+            assert_eq!(selected_path(&app), "d.rs", "{layout:?}");
+            let row = app.diff.as_ref().expect("diff").tree_cursor;
+
+            app.handle(key('m'));
+            assert_eq!(
+                selected_path(&app),
+                "c.rs",
+                "{layout:?}: the next one to read, not the file that moved"
+            );
+            assert_eq!(
+                app.diff.as_ref().expect("diff").tree_cursor,
+                row,
+                "{layout:?}: and the cursor holds its row"
+            );
+        }
+    }
+
+    /// Marking up the list from the bottom keeps walking the unviewed files
+    /// rather than bouncing off the top of the group each time.
+    #[test]
+    fn marking_from_the_bottom_walks_up_through_what_is_left() {
+        let fixture = flat_fixture();
+        let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Kinds);
+        app.handle(key('G'));
+        let mut walked = vec![selected_path(&app)];
+        for _ in 0..3 {
+            app.handle(key('m'));
+            walked.push(selected_path(&app));
+        }
+        assert_eq!(walked, ["d.rs", "c.rs", "b.rs", "a.rs"]);
+    }
+
+    /// With a file below, the walk still goes down: the hold only applies when
+    /// there is nothing under the one just marked.
+    #[test]
+    fn marking_with_a_file_below_still_steps_down() {
+        let fixture = flat_fixture();
+        let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Kinds);
+        assert_eq!(selected_path(&app), "a.rs");
+        app.handle(key('m'));
+        assert_eq!(selected_path(&app), "b.rs");
+    }
+
+    #[test]
+    fn brackets_step_the_sidebar_folder_by_folder() {
+        let fixture = nested_fixture();
+        let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Tree);
+        // the tree opens with the cursor on the selected file, inside a folder
+        assert_eq!(tree_cursor_row(&app), "file readme.md");
+        app.handle(key('['));
+        assert_eq!(
+            tree_cursor_row(&app),
+            "dir docs",
+            "back to the folder holding it"
+        );
+        app.handle(key(']'));
+        assert_eq!(tree_cursor_row(&app), "dir src");
+        app.handle(key(']'));
+        assert_eq!(
+            tree_cursor_row(&app),
+            "dir src/deep",
+            "a nested folder counts"
+        );
+        app.handle(key('['));
+        assert_eq!(tree_cursor_row(&app), "dir src", "and back up");
+    }
+
+    #[test]
+    fn brackets_step_the_sidebar_section_by_section() {
+        let fixture = kinds_fixture();
+        let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Kinds);
+        app.handle(key(']'));
+        assert_eq!(tree_cursor_row(&app), "section Generated");
+        app.handle(key('['));
+        assert_eq!(tree_cursor_row(&app), "section Source");
+    }
+
+    /// The last group has nothing after it, so the cursor stays put instead of
+    /// wrapping to the top.
+    #[test]
+    fn stepping_past_the_last_group_stands_still() {
+        let fixture = nested_fixture();
+        let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Tree);
+        app.handle(key('G'));
+        let last = tree_cursor_row(&app);
+        app.handle(key(']'));
+        assert_eq!(tree_cursor_row(&app), last);
+    }
+
+    /// The diff pane keeps the brackets for hunks: the motion moves the pane
+    /// holding the keyboard.
+    #[test]
+    fn brackets_in_the_diff_pane_still_step_hunks() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        app.handle(key('\n'));
+        assert_eq!(focus(&app), Pane::Diff);
+        let before = app.diff.as_ref().expect("diff").cursor;
+        app.handle(key(']'));
+        let diff = app.diff.as_ref().expect("diff");
+        assert!(
+            matches!(diff.rows.get(diff.cursor), Some(DiffRow::Hunk { .. }))
+                || diff.cursor == before
+        );
     }
 
     #[test]
@@ -1696,7 +1831,7 @@ mod tests {
         let fixture = standard_fixture();
         let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Tree);
         select_file(&mut app, "src/lib.rs");
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert_eq!(viewed_paths(&app), ["src/lib.rs"]);
     }
 
@@ -1935,7 +2070,7 @@ mod tests {
         );
         assert_eq!(selected_path(&app), "ci.yml");
 
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert!(app.is_path_viewed("ci.yml"));
         assert_eq!(
             selected_path(&app),
@@ -1943,7 +2078,7 @@ mod tests {
             "the row under ci.yml, not the next file in the diff"
         );
 
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert!(app.is_path_viewed("todo.md"));
         assert_eq!(
             selected_path(&app),
@@ -1977,7 +2112,7 @@ mod tests {
         );
 
         select_file(&mut app, "src/b.rs");
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert_eq!(
             tree_kinds(&app),
             vec!["dir", "file:b.rs", "file:a.rs", "file:c.rs"],
@@ -1989,7 +2124,7 @@ mod tests {
             "the row that was under b.rs"
         );
 
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert_eq!(
             tree_kinds(&app),
             vec!["dir", "file:b.rs", "file:c.rs", "file:a.rs"],
@@ -2016,7 +2151,7 @@ mod tests {
         );
 
         select_file(&mut app, "ci.yml");
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert_eq!(
             selected_path(&app),
             "ci.yml",
@@ -2047,7 +2182,7 @@ mod tests {
         );
 
         select_file(&mut app, "src/b.rs");
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert_eq!(
             tree_kinds(&app),
             vec![
@@ -2073,7 +2208,7 @@ mod tests {
             .collect();
         for path in &paths {
             select_file(&mut app, path);
-            app.handle(key('v'));
+            app.handle(key('m'));
         }
         assert!(
             paths.iter().all(|p| app.is_path_viewed(p)),
@@ -2093,9 +2228,9 @@ mod tests {
         let mut app = diff_app(&fixture);
         let first = selected_path(&app);
         assert_eq!(first, "ci.yml");
-        app.handle(key('v'));
+        app.handle(key('m'));
         select_file(&mut app, &first);
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert!(!app.is_path_viewed(&first));
         assert_eq!(
             selected_path(&app),
@@ -2110,7 +2245,7 @@ mod tests {
         let mut app = diff_app(&fixture);
         let first = selected_path(&app);
         enter_diff_pane(&mut app);
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert!(app.is_path_viewed(&first));
         // marking advanced the selection past the viewed file
         assert_ne!(selected_path(&app), first);
@@ -2131,7 +2266,7 @@ mod tests {
             ]
         );
         // v moves the file into the folded viewed bucket and advances
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert_eq!(
             tree_kinds(&app),
             [
@@ -2148,7 +2283,7 @@ mod tests {
     fn toggling_the_viewed_bucket_reveals_and_hides_its_files() {
         let fixture = standard_fixture();
         let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Review);
-        app.handle(key('v'));
+        app.handle(key('m'));
         // the folded viewed header is the last row; za on it unfolds
         app.handle(key('G'));
         app.handle(key('z'));
@@ -2175,7 +2310,7 @@ mod tests {
     fn editing_a_viewed_file_returns_it_to_the_to_review_bucket() {
         let fixture = standard_fixture();
         let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Review);
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert_eq!(tree_kinds(&app)[0], "section:To review:2");
         // the file changes on disk: its hash no longer matches the mark
         fixture.write("ci.yml", "on: push\njobs: {}\n");
@@ -2279,16 +2414,16 @@ mod tests {
         let fixture = standard_fixture();
         let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Review);
         // view everything, then unfold the viewed bucket and step onto a file
-        app.handle(key('v'));
-        app.handle(key('v'));
-        app.handle(key('v'));
+        app.handle(key('m'));
+        app.handle(key('m'));
+        app.handle(key('m'));
         app.handle(key('G'));
         app.handle(key('z'));
         app.handle(key('a'));
         app.handle(key('j'));
         assert_eq!(selected_path(&app), "ci.yml");
         // unmark: ci.yml jumps up into to-review; the cursor must follow it
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert_eq!(
             tree_kinds(&app),
             [
@@ -2316,7 +2451,7 @@ mod tests {
             .files
             .len()
         {
-            app.handle(key('v'));
+            app.handle(key('m'));
         }
         let rows = tree_row_count(&app);
         assert_eq!(rows, 2, "both buckets, all files folded away");
@@ -2345,7 +2480,7 @@ mod tests {
     fn u_jumps_to_the_next_unviewed_file_wrapping_past_viewed_ones() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
-        app.handle(key('v')); // ci.yml viewed, selection lands on todo.md
+        app.handle(key('m')); // ci.yml viewed, selection lands on todo.md
         select_file(&mut app, "todo.md");
         app.handle(key('u'));
         assert_eq!(
@@ -2361,7 +2496,7 @@ mod tests {
         let mut app = diff_app(&fixture);
         for path in ["ci.yml", "src/lib.rs", "todo.md"] {
             select_file(&mut app, path);
-            app.handle(key('v'));
+            app.handle(key('m'));
         }
         let before = selected_path(&app);
         app.handle(key('u'));
@@ -2677,7 +2812,7 @@ mod tests {
 
         // a commit-diff file lives in the pinned commit model, so viewed must
         // resolve against it, not the working-tree model
-        app.handle(key('v'));
+        app.handle(key('m'));
 
         let source = ReviewSource::commit(&oid);
         assert!(

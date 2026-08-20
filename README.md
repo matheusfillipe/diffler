@@ -188,7 +188,7 @@ Vim-like: `j`/`k`/`gg`/`G` motions, `/` search, and
 | `s` / `u` | stage / unstage |
 | `cc` | commit |
 | `c` | comment the diff line (`V` selects a range first) |
-| `v` / `u` / `U` | in the diff view: mark the file viewed and step to the row under it, sorting it to the top of its group (a folder row marks everything under it) / jump to the next unviewed / clear every mark |
+| `m` / `u` / `U` | in the diff view: mark the file viewed and step to the row under it, sorting it to the top of its group (a folder row marks everything under it) / jump to the next unviewed / clear every mark |
 | `+` / `-` / `=` | widen / narrow the context around a hunk, or open the whole file |
 | `\|` | side-by-side diff |
 | `t` | cycle the sidebar: file tree, review buckets (viewed files fold away, come back if they change), kinds (source, tests, docs, config, build, generated, assets) |

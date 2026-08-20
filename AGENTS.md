@@ -123,7 +123,7 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   (the branch band, a rule, then the repo band; stage/unstage/
   discard/commit/branch), Log, Diff/review (file sidebar + pane, unified or
   `|`-toggled side-by-side; `c` comment, `V` visual select, `r` reply/resolve,
-  `v` viewed, `y`/`Y` yank feedback as markdown, `e` `$EDITOR` jump). Every motion, the
+  `m` viewed, `y`/`Y` yank feedback as markdown, `e` `$EDITOR` jump). Every motion, the
   paging keys included, moves the pane holding the keyboard: `<c-d>` walks the
   file list from the sidebar, the cards from the comments pane (counted in
   cards, since they are multi-line), and the rows from the diff. `C` opens
@@ -145,9 +145,14 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   pass per frame over the layout on screen. Inside a group, a directory or a
   section alike, the files already viewed sort to the top, so what is left to
   read is one run at the bottom the way the review layout's buckets do it.
-  `v` marks the file and moves to the row listed under it, walking what the
+  `m` marks the file and moves to the row listed under it, walking what the
   sidebar shows: a folded group stays folded, and reaching the end of the list
-  with files left says so. On a header, `v` covers everything the header stands
+  with files left says so. With nothing below it the cursor holds its row
+  rather than following the file, which has just sorted to the top of its
+  group, so marking upward from the bottom keeps the reader where they were.
+  `[`/`]` step the sidebar's headers, folder to folder or section to section,
+  the way they step the status screen's groups; every bracket motion, there and
+  in the diff, walks rows through one `step_to`. On a header, `m` covers everything the header stands
   for, a directory's whole subtree or a kind's whole bucket, and a second press
   puts it all back. The members come from the grouping, never from the rows, so
   a folded Generated marks the files it hides. `u` hunts the next unviewed anywhere, reading

@@ -2,7 +2,7 @@
 source: crates/diffler/src/ui/diff.rs
 expression: render(&mut app).backend()
 ---
-" c comment · r reply · v viewed · C all comments · ? help                                                               "
+" c comment · r reply · m viewed · C all comments · ? help                                                               "
 " Files                           Diff vs main                                                                           "
 "▌○ dirty.rs               +1 -0  untracked dirty.rs                                                          +1 -0 █████"
 " + landed.rs              +3 -0  dirty                                                                                  "

@@ -1435,20 +1435,7 @@ impl App {
     /// Move the cursor to the next/previous row matching `target`.
     fn jump(&mut self, forward: bool, target: impl Fn(&Row) -> bool) {
         let rows = self.visible_rows();
-        let position = if forward {
-            rows.iter()
-                .enumerate()
-                .skip(self.status.cursor + 1)
-                .find(|(_, row)| target(row))
-                .map(|(index, _)| index)
-        } else {
-            rows.iter()
-                .enumerate()
-                .take(self.status.cursor)
-                .rfind(|(_, row)| target(row))
-                .map(|(index, _)| index)
-        };
-        if let Some(position) = position {
+        if let Some(position) = super::step_to(&rows, self.status.cursor, forward, target) {
             self.status.cursor = position;
         }
     }
@@ -2463,7 +2450,7 @@ mod tests {
         cursor_to(&mut app, file_row_in(Section::Unstaged));
         app.handle(key('\t'));
         assert!(app.is_expanded(Section::Unstaged, "src/lib.rs"));
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert!(app.is_path_viewed("src/lib.rs"));
         assert!(
             !app.is_expanded(Section::Unstaged, "src/lib.rs"),
@@ -2472,7 +2459,7 @@ mod tests {
         let reloaded = diffler_core::store::load(&fixture.root).unwrap();
         assert!(reloaded.viewed.contains_key("src/lib.rs"));
 
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert!(!app.is_path_viewed("src/lib.rs"));
         let reloaded = diffler_core::store::load(&fixture.root).unwrap();
         assert!(!reloaded.viewed.contains_key("src/lib.rs"));
@@ -2483,7 +2470,7 @@ mod tests {
         let (_fixture, mut app) = app();
         assert_eq!(app.viewed_counts(), (3, 0));
         cursor_to(&mut app, file_row_in(Section::Unstaged));
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert_eq!(app.viewed_counts(), (3, 1));
     }
 
@@ -2500,7 +2487,7 @@ mod tests {
             .files
             .len();
         assert_eq!(app.viewed_counts(), (total, 0));
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert_eq!(
             app.viewed_counts(),
             (total, 1),

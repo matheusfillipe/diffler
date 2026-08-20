@@ -236,6 +236,7 @@ impl App {
         } else {
             self.sidebar_file_below()
         };
+        let anchor_row = self.diff.as_ref().map_or(0, |diff| diff.tree_cursor);
         let session = self.review.session_for_mut(&source);
         if viewed {
             session.unmark_viewed(&path);
@@ -247,10 +248,11 @@ impl App {
         }
         match next {
             Some(index) => self.diff_select_file_index(index),
-            // the walk covers what the sidebar shows, so a folded group is left
-            // where the reader put it: say what is still out there, since the
-            // cursor standing still is otherwise the only sign
+            // nothing below to walk to. The file just sorted into its group's
+            // viewed run, so following it would throw the reader to wherever it
+            // landed; hold the row they were reading at instead
             None if !viewed => {
+                self.diff_tree_to(anchor_row);
                 let (total, seen) = self.viewed_counts();
                 if total > seen {
                     self.info(format!("end of the list, {} still unviewed", total - seen));

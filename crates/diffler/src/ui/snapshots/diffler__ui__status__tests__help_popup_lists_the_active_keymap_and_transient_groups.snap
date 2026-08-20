@@ -15,7 +15,7 @@ expression: terminal.backend()
 " G  go to bottom                          e  Extend                                                                     "
 " <c-d>  half page down                    a  Amend                                                                      "
 " <c-u>  half page up                      w  Reword                                                                     "
-" v  mark the file or folder viewed      b  Branch …                                                                     "
+" m  mark the file or folder viewed      b  Branch …                                                                     "
 " <c-n>  next section                      b  Checkout branch                                                            "
 " <c-p>  previous section                  c  Create and checkout                                                        "
 " <tab>  fold / unfold                     n  Create                                                                     "

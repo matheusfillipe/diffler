@@ -66,7 +66,7 @@ def test_viewed_mark_shows_a_check(spawn):
     tui.wait_for("Unstaged changes (1)")
     assert "✓" not in tui.text()
     tui.send("jjj")
-    tui.send("v")
+    tui.send("m")
     tui.wait_for("✓")
 
 
