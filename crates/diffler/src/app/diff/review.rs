@@ -209,7 +209,7 @@ impl App {
     }
 
     pub(super) fn diff_toggle_viewed(&mut self) {
-        if self.diff_toggle_dir_viewed() {
+        if self.diff_toggle_group_viewed() {
             return;
         }
         let Some(path) = self.diff_cursor_path() else {
@@ -267,11 +267,11 @@ impl App {
         }
     }
 
-    /// `v` on a sidebar directory row marks every file under it, so a whole
-    /// subtree clears in one keystroke. Reports whether it handled the key.
-    /// Already-viewed throughout means the press unmarks instead, matching how
-    /// a single file toggles.
-    fn diff_toggle_dir_viewed(&mut self) -> bool {
+    /// `v` on any sidebar header marks everything it holds, so a whole subtree
+    /// or a whole kind clears in one keystroke. Reports whether it handled the
+    /// key. Already-viewed throughout means the press unmarks instead, matching
+    /// how a single file toggles.
+    fn diff_toggle_group_viewed(&mut self) -> bool {
         let review = &self.review;
         let Some(diff) = self.diff.as_ref() else {
             return false;
@@ -280,18 +280,28 @@ impl App {
             return false;
         }
         let rows = sidebar_rows(diff, review);
-        let Some(TreeNode::Dir { path, .. }) = rows.get(diff.tree_cursor).map(|row| &row.node)
-        else {
-            return false;
+        let model = diff.model(review);
+        let session = review.session_for(&diff.source);
+        let files: Vec<(String, String)> = match rows.get(diff.tree_cursor).map(|row| &row.node) {
+            Some(TreeNode::Dir { path, .. }) => {
+                let prefix = format!("{path}/");
+                model
+                    .files
+                    .iter()
+                    .filter(|file| file.path.starts_with(&prefix))
+                    .map(|file| (file.path.clone(), file.content_hash()))
+                    .collect()
+            }
+            // read from the bucket, not the rows: a folded header lists none of
+            // its files and still stands for all of them
+            Some(TreeNode::Section { bucket, .. }) => diff
+                .bucket_files(model, session, *bucket)
+                .into_iter()
+                .filter_map(|index| model.files.get(index))
+                .map(|file| (file.path.clone(), file.content_hash()))
+                .collect(),
+            Some(TreeNode::File { .. }) | None => return false,
         };
-        let prefix = format!("{path}/");
-        let files: Vec<(String, String)> = diff
-            .model(review)
-            .files
-            .iter()
-            .filter(|file| file.path.starts_with(&prefix))
-            .map(|file| (file.path.clone(), file.content_hash()))
-            .collect();
         if files.is_empty() {
             return false;
         }

@@ -587,6 +587,25 @@ impl DiffView {
             .collect()
     }
 
+    /// Model indices a sidebar bucket holds, folded or not. Derived from the
+    /// same grouping the rows come from, so a group verb covers exactly what
+    /// its header stands for.
+    pub(crate) fn bucket_files(
+        &self,
+        model: &DiffModel,
+        session: &Session,
+        bucket: Bucket,
+    ) -> Vec<usize> {
+        let groups = match bucket {
+            Bucket::Kind(_) => self.kind_groups(model, session),
+            Bucket::ToReview | Bucket::Viewed => Self::review_groups(model, session),
+        };
+        groups
+            .into_iter()
+            .find(|(known, _)| *known == bucket)
+            .map_or_else(Vec::new, |(_, indices)| indices)
+    }
+
     pub(crate) fn kind_of(&self, path: &str) -> Kind {
         self.rules.kind(path, self.declared.get(path).copied())
     }
@@ -1580,6 +1599,98 @@ mod tests {
         );
     }
 
+    /// Put the sidebar cursor on the section header for `label`.
+    fn cursor_to_section(app: &mut App, label: &str) {
+        let review = &app.review;
+        let diff = app.diff.as_ref().expect("diff view");
+        let rows = super::sidebar_rows(diff, review);
+        let at = rows
+            .iter()
+            .position(|row| {
+                matches!(&row.node, crate::tree::TreeNode::Section { bucket, .. }
+                    if bucket.label() == label)
+            })
+            .unwrap_or_else(|| panic!("a section row for {label}: {rows:?}"));
+        let diff = app.diff.as_mut().expect("diff view");
+        diff.focus = Pane::List;
+        diff.tree_cursor = at;
+    }
+
+    /// One source file and two the built-in rules call Generated (a lockfile
+    /// and a snapshot), so a kind header stands for more than one file.
+    fn kinds_fixture() -> Fixture {
+        let fixture = Fixture::new();
+        fixture.write("src/lib.rs", "pub fn a() {}\n");
+        fixture.write("tests/snapshots/render.snap", "old frame\n");
+        fixture.write("package-lock.json", "{\n  \"lockfileVersion\": 3\n}\n");
+        fixture.commit_all("initial");
+        fixture.write("src/lib.rs", "pub fn a() -> u32 {\n    1\n}\n");
+        fixture.write("tests/snapshots/render.snap", "new frame\n");
+        fixture.write("package-lock.json", "{\n  \"lockfileVersion\": 4\n}\n");
+        fixture
+    }
+
+    /// A kind header stands for every file in its bucket, and Generated opens
+    /// folded, so the mark cannot come from the rows on screen.
+    #[test]
+    fn viewing_a_kind_section_marks_every_file_it_holds() {
+        let fixture = kinds_fixture();
+        let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Kinds);
+        let rows = super::sidebar_rows(app.diff.as_ref().expect("diff"), &app.review);
+        assert!(
+            rows.iter().any(|row| matches!(&row.node,
+                crate::tree::TreeNode::Section { bucket, folded, .. }
+                    if bucket.label() == "Generated" && *folded)),
+            "Generated opens folded, so the mark cannot read the rows: {rows:?}"
+        );
+        cursor_to_section(&mut app, "Generated");
+        app.handle(key('v'));
+        assert_eq!(
+            viewed_paths(&app),
+            ["package-lock.json", "tests/snapshots/render.snap"],
+            "the whole bucket, folded though it is"
+        );
+    }
+
+    #[test]
+    fn viewing_a_kind_section_again_puts_it_back() {
+        let fixture = kinds_fixture();
+        let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Kinds);
+        cursor_to_section(&mut app, "Generated");
+        app.handle(key('v'));
+        assert!(!viewed_paths(&app).is_empty());
+        cursor_to_section(&mut app, "Generated");
+        app.handle(key('v'));
+        assert!(viewed_paths(&app).is_empty(), "a second press unmarks it");
+    }
+
+    #[test]
+    fn viewing_the_to_review_section_clears_the_whole_review() {
+        let fixture = kinds_fixture();
+        let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Review);
+        cursor_to_section(&mut app, "To review");
+        app.handle(key('v'));
+        assert_eq!(
+            viewed_paths(&app),
+            [
+                "package-lock.json",
+                "src/lib.rs",
+                "tests/snapshots/render.snap"
+            ]
+        );
+    }
+
+    /// The bucket a header stands for is read from the grouping, so a kind the
+    /// diff has nothing for cannot be reached and its neighbours are untouched.
+    #[test]
+    fn viewing_one_kind_leaves_the_others_alone() {
+        let fixture = kinds_fixture();
+        let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Kinds);
+        cursor_to_section(&mut app, "Source");
+        app.handle(key('v'));
+        assert_eq!(viewed_paths(&app), ["src/lib.rs"]);
+    }
+
     #[test]
     fn viewing_a_file_row_still_marks_only_that_file() {
         let fixture = standard_fixture();
@@ -2195,11 +2306,18 @@ mod tests {
     fn marking_the_last_unviewed_file_keeps_the_cursor_in_range() {
         let fixture = standard_fixture();
         let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Review);
-        app.handle(key('v'));
-        app.handle(key('v'));
-        // one file left; park the cursor on the trailing viewed header
-        app.handle(key('G'));
-        app.handle(key('v'));
+        // walk the files, marking each: the last one empties the to-review
+        // bucket under the cursor
+        for _ in 0..app
+            .diff
+            .as_ref()
+            .expect("diff")
+            .model(&app.review)
+            .files
+            .len()
+        {
+            app.handle(key('v'));
+        }
         let rows = tree_row_count(&app);
         assert_eq!(rows, 2, "both buckets, all files folded away");
         assert!(

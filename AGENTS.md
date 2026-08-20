@@ -147,7 +147,10 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   read is one run at the bottom the way the review layout's buckets do it.
   `v` marks the file and moves to the row listed under it, walking what the
   sidebar shows: a folded group stays folded, and reaching the end of the list
-  with files left says so. `u` hunts the next unviewed anywhere, reading
+  with files left says so. On a header, `v` covers everything the header stands
+  for, a directory's whole subtree or a kind's whole bucket, and a second press
+  puts it all back. The members come from the grouping, never from the rows, so
+  a folded Generated marks the files it hides. `u` hunts the next unviewed anywhere, reading
   `DiffView::display_order`, the same order with nothing folded. Both read the
   sidebar's order, since the diff's file order is a different order on screen.
   The status screen keeps the flat magit list. OSC52 clipboard works over
