@@ -175,6 +175,12 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => draft.field = draft.field.step(false),
             KeyCode::Char('d') => draft.draft = !draft.draft,
             KeyCode::Char('c') => self.create_pr_submit(),
+            KeyCode::Char('e') => {
+                let Some(Modal::CreatePr { draft }) = self.modal.take() else {
+                    return Flow::Continue;
+                };
+                self.edit_pr_field_externally(draft);
+            }
             KeyCode::Esc | KeyCode::Char('q') => self.modal = None,
             KeyCode::Enter => {
                 let field = draft.field;
@@ -200,28 +206,50 @@ impl App {
                 draft.draft = !draft.draft;
                 self.modal = Some(Modal::CreatePr { draft });
             }
-            PrField::Body => {
-                let template = draft.body.clone();
-                let restore = draft.clone();
-                // a PR body is markdown on every forge, and the extension is
-                // what the editor reads the filetype from
-                let queued =
-                    self.queue_message_editor("PR_EDITMSG.md", template, move |msg_path| {
-                        crate::editor::EditorPurpose::PrBody { msg_path, draft }
-                    });
-                if !queued {
-                    self.modal = Some(Modal::CreatePr { draft: restore });
-                }
+            PrField::Create => {
+                self.modal = Some(Modal::CreatePr { draft });
+                self.create_pr_submit();
             }
+            PrField::Cancel => self.modal = None,
             PrField::Base => self.open_pr_base_list(draft),
-            PrField::Title => {
-                let buffer = draft.title.clone();
-                self.open_input(
-                    "Title".to_owned(),
-                    buffer,
-                    InputOp::PrField { draft, field },
-                );
+            // title and body edit the same way; the body just wraps. `e` is
+            // what reaches for $EDITOR, as it does everywhere else
+            PrField::Title | PrField::Body => {
+                let buffer = if field == PrField::Body {
+                    draft.body.clone()
+                } else {
+                    draft.title.clone()
+                };
+                let name = if field == PrField::Body {
+                    "Body"
+                } else {
+                    "Title"
+                };
+                self.open_input(name.to_owned(), buffer, InputOp::PrField { draft, field });
             }
+        }
+    }
+
+    /// `e` on the form: hand the focused text field to `$EDITOR`. The base and
+    /// the draft flag are not text, so they decline.
+    fn edit_pr_field_externally(&mut self, draft: Box<crate::app::pr_create::PrDraft>) {
+        use crate::app::pr_create::PrField;
+        let field = draft.field;
+        let (file, template) = match field {
+            PrField::Body => ("PR_EDITMSG.md", draft.body.clone()),
+            PrField::Title => ("PR_EDITTITLE.md", draft.title.clone()),
+            PrField::Base | PrField::Draft | PrField::Create | PrField::Cancel => {
+                self.modal = Some(Modal::CreatePr { draft });
+                self.info("only the title and body open in the editor");
+                return;
+            }
+        };
+        let restore = draft.clone();
+        let queued = self.queue_message_editor(file, template, move |msg_path| {
+            crate::editor::EditorPurpose::PrBody { msg_path, draft }
+        });
+        if !queued {
+            self.modal = Some(Modal::CreatePr { draft: restore });
         }
     }
 
@@ -270,11 +298,17 @@ impl App {
         match on_submit {
             InputOp::PrField { mut draft, field } => {
                 use crate::app::pr_create::PrField;
-                if !body.is_empty() {
-                    match field {
-                        PrField::Base => body.clone_into(&mut draft.base),
-                        _ => body.clone_into(&mut draft.title),
-                    }
+                match field {
+                    // a base is chosen from a list, so an empty answer is a
+                    // cancel; a body may legitimately be cleared
+                    PrField::Base if !body.is_empty() => body.clone_into(&mut draft.base),
+                    PrField::Body => body.clone_into(&mut draft.body),
+                    PrField::Title if !body.is_empty() => body.clone_into(&mut draft.title),
+                    PrField::Base
+                    | PrField::Title
+                    | PrField::Draft
+                    | PrField::Create
+                    | PrField::Cancel => {}
                 }
                 self.modal = Some(Modal::CreatePr { draft });
             }

@@ -1621,6 +1621,15 @@ impl App {
         Flow::Continue
     }
 
+    /// Show `pr` as the branch's own, re-seating the cursor the way an arriving
+    /// poll does. What a PR opened from inside the session goes through.
+    pub(crate) fn seat_branch_pr(&mut self, pr: crate::ci::PullRequest) {
+        let anchor = self.status_cursor_anchor();
+        self.pr = Some(pr);
+        self.pr_checked = true;
+        self.restore_status_cursor(anchor);
+    }
+
     fn on_pr_event(&mut self, pr: Option<crate::ci::PullRequest>) -> Flow {
         let anchor = self.status_cursor_anchor();
         self.pr = pr;

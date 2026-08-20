@@ -227,6 +227,15 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   `origin`. The GitHub provider then names that repo on every call, `-R` for
   the `gh` subcommands and an expanded `{owner}/{repo}` for `gh api`, because
   `gh` resolves a fork to its parent when nobody tells it otherwise.
+- **Create-pull-request form.** One list of rows: base, title, body, draft, then
+  a `[ Create ]` and a `[ Cancel ]` button, so `j`/`k` and the pointer reach the
+  buttons the way they reach a field (a blank line between them would break the
+  row mapping `ListHits` does, hence none). Title and body both edit inline
+  through the input modal, which is already multiline, and `e` hands either to
+  `$EDITOR`; the base opens a branch list and draft is a toggle, so both decline
+  the editor. A created PR is seated into the branch band by `seat_branch_pr`,
+  since the band resolves its PR once per branch and would otherwise stay empty
+  until a checkout re-armed the poll.
 - **Config.** TOML, XDG-layered (built-in defaults → `~/.config/diffler/config.toml`
   → `<repo>/.diffler/config.toml` → CLI flags; every flag has a config key).
   `diffler config --dump` prints the merged config with origins.
