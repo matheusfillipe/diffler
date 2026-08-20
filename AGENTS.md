@@ -185,7 +185,7 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   column, because a viewer and a blame view differ by one column. `]`/`[` step
   commit runs, `<cr>` reviews the commit that wrote the cursor line. The gutter
   prints a commit only on the first line of its run. Reached with `B` on the
-  file under the cursor (status or diff), or `<c-t>`, the fuzzy picker over
+  file under the cursor (status or diff), or `gf`, the fuzzy picker over
   `Vcs::tracked_files`: the diff screens list only changed files, so the picker
   is the one way to a file the review does not touch, and it also sends one
   straight to `$EDITOR`.

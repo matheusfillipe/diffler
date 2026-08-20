@@ -91,7 +91,7 @@
 # switch_theme = "T"
 # open_editor = "e"
 # send_feedback = "Z"
-# open_file_picker = "<c-t>"   # fuzzy over every tracked file
+# open_file_picker = "gf"      # fuzzy over every tracked file
 # blame = "B"                  # blame the file under the cursor
 # open_stats = "L"             # the repo's language breakdown
 # copy_url = "y"               # a pull request as its URL, a commit as its sha
@@ -144,7 +144,7 @@
 # toggle_fold = "za"       # also <tab>: folds the folder or section the cursor sits in
 # switch_theme = "T"
 # open_editor = "e"
-# open_file_picker = "<c-t>"
+# open_file_picker = "gf"
 # blame = "B"
 # open = "<cr>"
 # refresh = "<c-r>"
@@ -152,7 +152,7 @@
 [keys.log]
 # visual_select = "V"
 # open = "<cr>"
-# open_file_picker = "<c-t>"
+# open_file_picker = "gf"
 # refresh = "<c-r>"
 
 # The whole-file view, reached with the file picker or by blaming a file.
@@ -162,7 +162,7 @@
 # prev_section = "["
 # open = "<cr>"            # review the commit that wrote this line
 # open_editor = "e"
-# open_file_picker = "<c-t>"
+# open_file_picker = "gf"
 # center_cursor = "zz"
 # cursor_top = "zt"
 # cursor_bottom = "zb"

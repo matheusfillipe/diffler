@@ -28,7 +28,7 @@ expression: render(&mut app).backend()
 "                                previous section                                     [                                  "
 "                                next section                                         ]                                  "
 "                                open in $EDITOR                                      e                                  "
-"                                find a file in the repository                    <c-t>                                  "
+"                                find a file in the repository                       gf                                  "
 "                                blame this file                                      B                                  "
 "                                language breakdown                                   L                                  "
 "                                copy the web URL                                     y                                  "

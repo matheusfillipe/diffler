@@ -470,7 +470,7 @@ const STATUS_DEFAULTS: &[(&str, Action)] = &[
     ("[", Action::PrevSection),
     ("]", Action::NextSection),
     ("e", Action::OpenEditor),
-    ("<c-t>", Action::OpenFilePicker),
+    ("gf", Action::OpenFilePicker),
     ("B", Action::Blame),
     ("L", Action::OpenStats),
     ("y", Action::CopyUrl),
@@ -547,7 +547,7 @@ const DIFF_DEFAULTS: &[(&str, Action)] = &[
     ("y", Action::CopyFileFeedback),
     ("Y", Action::CopyAllFeedback),
     ("e", Action::OpenEditor),
-    ("<c-t>", Action::OpenFilePicker),
+    ("gf", Action::OpenFilePicker),
     ("B", Action::Blame),
     ("Z", Action::SendFeedback),
     ("C", Action::CommentsOverview),
@@ -580,7 +580,7 @@ const FILE_DEFAULTS: &[(&str, Action)] = &[
     ("<cr>", Action::Open),
     ("e", Action::OpenEditor),
     ("T", Action::SwitchTheme),
-    ("<c-t>", Action::OpenFilePicker),
+    ("gf", Action::OpenFilePicker),
     ("/", Action::Search),
     ("n", Action::SearchNext),
     ("N", Action::SearchPrev),
@@ -601,7 +601,7 @@ const LOG_DEFAULTS: &[(&str, Action)] = &[
     ("V", Action::VisualSelect),
     ("<cr>", Action::Open),
     ("<c-r>", Action::Refresh),
-    ("<c-t>", Action::OpenFilePicker),
+    ("gf", Action::OpenFilePicker),
     ("/", Action::Search),
     ("n", Action::SearchNext),
     ("N", Action::SearchPrev),
@@ -1293,12 +1293,24 @@ mod tests {
         // `g` becomes a strict prefix of the default `gg` go-top chord
         keys.status.insert("stage".to_owned(), "g".to_owned());
         let (keymap, warnings) = Keymap::for_context(Context::Status, &keys);
-        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        // every chord it shadows is named, not just the first
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
         assert!(
-            warnings[0].contains("binding g for stage shadows chord gg (go_top)"),
+            warnings
+                .iter()
+                .any(|w| w.contains("binding g for stage shadows chord gg (go_top)")),
             "{warnings:?}"
         );
-        assert!(warnings[0].contains("[keys.status]"), "{warnings:?}");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("shadows chord gf (open_file_picker)")),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings.iter().all(|w| w.contains("[keys.status]")),
+            "{warnings:?}"
+        );
         // behavior is unchanged: the short binding still fires
         let mut pending = Vec::new();
         assert_eq!(

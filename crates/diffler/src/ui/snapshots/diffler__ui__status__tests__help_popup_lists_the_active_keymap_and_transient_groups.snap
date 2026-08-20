@@ -32,7 +32,7 @@ expression: terminal.backend()
 " [  previous section                      l  Current branch                                                             "
 " ]  next section                        P  Push …                                                                       "
 " e  open in $EDITOR                       p  Push                                                                       "
-" <c-t>  find a file in the repository     u  Push and set upstream                                                      "
+" gf  find a file in the repository        u  Push and set upstream                                                      "
 " B  blame this file                     p  Pull …                                                                       "
 " L  language breakdown                    p  Pull                                                                       "
 " y  copy the web URL                    f  Fetch …                                                                      "

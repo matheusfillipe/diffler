@@ -324,7 +324,7 @@ mod tests {
 
     use super::*;
     use crate::config::LoadedConfig;
-    use crate::test_support::{Fixture, ctrl_key, key, standard_fixture};
+    use crate::test_support::{Fixture, key, standard_fixture};
 
     /// The fixture rides along: dropping it deletes the repo the app reads
     /// lazily, and the diff model would come back empty.
@@ -354,7 +354,8 @@ mod tests {
     #[test]
     fn the_picker_lists_tracked_files_and_enter_opens_the_one_selected() {
         let (_fixture, mut app) = app();
-        app.handle(ctrl_key('t'));
+        app.handle(key('g'));
+        app.handle(key('f'));
         assert_eq!(
             app.picker_paths(),
             vec!["ci.yml", "notes.txt", "src/lib.rs"],
@@ -369,7 +370,8 @@ mod tests {
     #[test]
     fn the_picker_filters_on_typing_and_b_opens_the_match_with_blame() {
         let (_fixture, mut app) = app();
-        app.handle(ctrl_key('t'));
+        app.handle(key('g'));
+        app.handle(key('f'));
         for c in "lib".chars() {
             app.handle(key(c));
         }
@@ -384,7 +386,8 @@ mod tests {
     #[test]
     fn the_picker_sends_a_file_to_the_editor_without_opening_the_view() {
         let (_fixture, mut app) = app();
-        app.handle(ctrl_key('t'));
+        app.handle(key('g'));
+        app.handle(key('f'));
         app.handle(key('\t'));
         app.handle(key('e'));
         assert!(
