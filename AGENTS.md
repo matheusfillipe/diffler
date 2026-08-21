@@ -199,8 +199,10 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   loses its Unpushed section. `[`/`]` step group headers, `tab` folds one;
   a commit carrying CI runs takes a `▸` between its glyph and sha and unfolds
   them beneath it. `y` copies whatever the cursor addresses in the form you
-  would paste: a pull request as its forge URL, a commit as its full sha, and
-  the branch-checkout key on a listed pull request checks that one out. Every
+  would paste: a pull request as its forge URL, a commit as its full sha, a file
+  or a folder as its repo-relative path (a hunk header and a line inside an
+  expanded diff both address their file, the way the editor jump reads them),
+  and the branch-checkout key on a listed pull request checks that one out. Every
   async arrival (CI poll, PR fetch, watcher refresh)
   re-seats the cursor through `status_cursor_anchor`, keyed by identity
   (path, oid, branch name) rather than row index.

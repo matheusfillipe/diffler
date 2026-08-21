@@ -1002,9 +1002,11 @@ impl App {
     }
 
     /// Copy whatever the cursor is on, in the form you would paste elsewhere:
-    /// a pull request as its forge URL, a commit as its full sha.
+    /// a pull request as its forge URL, a commit as its full sha, a file or a
+    /// folder as its repo-relative path.
     fn copy_at_status_cursor(&mut self) {
         let copied = match self.cursor_row() {
+            Some(Row::Dir { path, .. }) => Some((Some(path.clone()), path)),
             Some(Row::Pr) => self
                 .pr
                 .as_ref()
@@ -1023,7 +1025,14 @@ impl App {
                 .unpushed_commits()
                 .get(index)
                 .map(|entry| (Some(entry.oid.clone()), entry.oid7.clone())),
-            _ => None,
+            // a file row, a hunk header, or a line inside an expanded diff:
+            // all of them address one file, the way the editor jump reads them
+            // a file row, a hunk header, or a line inside an expanded diff:
+            // all of them address one file, the way the editor jump reads them
+            other => other
+                .as_ref()
+                .and_then(|row| self.row_file(row))
+                .map(|(_, file, _)| (Some(file.path.clone()), file.path.clone())),
         };
         let Some((value, label)) = copied else {
             self.info("nothing to copy here");
@@ -3423,6 +3432,46 @@ mod tests {
 
         app.dispatch_status(Action::CopyUrl);
         assert!(app.pending_clipboard.is_none());
+    }
+
+    #[test]
+    fn y_on_a_file_copies_its_repo_relative_path() {
+        let (_fixture, mut app) = app();
+        cursor_to(&mut app, |row| matches!(row, Row::File { .. }));
+        app.dispatch_status(Action::CopyUrl);
+        assert_eq!(app.pending_clipboard.as_deref(), Some("todo.md"));
+    }
+
+    /// A line inside an expanded file still addresses that file, the way the
+    /// editor jump reads it.
+    #[test]
+    fn y_on_a_line_inside_an_expanded_file_copies_the_file() {
+        let (_fixture, mut app) = app();
+        cursor_to(&mut app, |row| matches!(row, Row::File { .. }));
+        app.handle(key('\t'));
+        cursor_to(&mut app, |row| matches!(row, Row::DiffLine { .. }));
+        app.dispatch_status(Action::CopyUrl);
+        assert_eq!(app.pending_clipboard.as_deref(), Some("todo.md"));
+    }
+
+    #[test]
+    fn y_on_a_folder_copies_the_folder() {
+        let fixture = crate::test_support::Fixture::new();
+        fixture.write("src/deep/inner.rs", "pub fn b() {}\n");
+        fixture.commit_all("base");
+        fixture.write("src/deep/inner.rs", "pub fn b() -> u32 {\n    2\n}\n");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.config.ui.status_file_layout = crate::config::FileLayout::Tree;
+        app.handle(AppEvent::Tick);
+        cursor_to(&mut app, |row| matches!(row, Row::Dir { .. }));
+        app.dispatch_status(Action::CopyUrl);
+        assert!(
+            app.pending_clipboard
+                .as_deref()
+                .is_some_and(|path| path.starts_with("src")),
+            "{:?}",
+            app.pending_clipboard
+        );
     }
 
     #[test]
