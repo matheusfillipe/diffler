@@ -91,7 +91,7 @@ tempfile = "3"
 unsafe_code = "deny"
 # the clippy allow below names a lint that only exists from rust 1.98, and the
 # msrv build is older
-unknown_lints = { level = "allow", priority = -1 }
+unknown_lints = { level = "allow", priority = -2 }
 rust_2018_idioms = { level = "warn", priority = -1 }
 # a pub item a private module keeps unreachable evades dead_code analysis
 unreachable_pub = "warn"
