@@ -3,10 +3,6 @@
 //! review directly: every call is sent through the app event channel as an
 //! [`McpRequest`] and answered by `App::handle_mcp` on the main loop, so the
 //! app stays the single owner of all state (no locks).
-//!
-//! `rmcp`'s handler macros expand into `async fn`s that never await, and an
-//! allow on the impl block does not survive the expansion, so it sits here.
-#![allow(clippy::unused_async)]
 
 use std::fmt;
 use std::io::ErrorKind;
