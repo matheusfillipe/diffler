@@ -69,7 +69,7 @@ ci:
     cargo fmt --all -- --check
     # the trailing allow repeats Cargo.toml's: `-D warnings` is a group flag and
     # lands after cargo's own lint flags, so it re-enables what they allowed
-    cargo clippy --workspace --all-targets --all-features -- -D warnings -A clippy::unused_async
+    cargo clippy --workspace --all-targets --all-features -- -D warnings -A unknown_lints -A clippy::unused_async_trait_impl
     cargo nextest run --workspace --all-features
     cargo test --doc --workspace
     # CI fails the whole run on a typo; catch it here when the tool is around
