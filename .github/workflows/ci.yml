@@ -46,7 +46,9 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      # the trailing allow repeats Cargo.toml's: `-D warnings` is a group flag
+      # and lands after cargo's own lint flags, re-enabling what they allowed
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings -A clippy::unused_async
 
   e2e:
     runs-on: ubuntu-latest
