@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787562573759,
+  "lastUpdate": 1787562797532,
   "repoUrl": "https://github.com/matheusfillipe/diffler",
   "entries": {
     "Benchmark": [
@@ -13631,6 +13631,102 @@ window.BENCHMARK_DATA = {
             "name": "scope_index/20000",
             "value": 86338445,
             "range": "± 1410541",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "committer": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "distinct": true,
+          "id": "7f111e9d37dc6e635a2aaafd1672ed2fc8a606c6",
+          "message": "fix: give unknown_lints its own priority so the lint table builds",
+          "timestamp": "2026-08-24T11:07:01+02:00",
+          "tree_id": "5e3e636ce24b0ef144014792f908164ec20feabf",
+          "url": "https://github.com/matheusfillipe/diffler/commit/7f111e9d37dc6e635a2aaafd1672ed2fc8a606c6"
+        },
+        "date": 1787562796315,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "syndiff_emphasis/1000",
+            "value": 8015215,
+            "range": "± 268010",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/1000",
+            "value": 20131,
+            "range": "± 3232",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/1000",
+            "value": 5888431,
+            "range": "± 384282",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/1000",
+            "value": 4532493,
+            "range": "± 22538",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/5000",
+            "value": 42515946,
+            "range": "± 352981",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/5000",
+            "value": 99933,
+            "range": "± 519",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/5000",
+            "value": 29623290,
+            "range": "± 722383",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/5000",
+            "value": 22781483,
+            "range": "± 184069",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/20000",
+            "value": 170726625,
+            "range": "± 3599785",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/20000",
+            "value": 402584,
+            "range": "± 1308",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/20000",
+            "value": 121972503,
+            "range": "± 2528861",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/20000",
+            "value": 91896667,
+            "range": "± 712829",
             "unit": "ns/iter"
           }
         ]
