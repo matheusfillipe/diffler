@@ -606,6 +606,9 @@ impl DifflerMcp {
     }
 }
 
+// both handlers are generated as `async fn` bodies that never await, and the
+// macro owns that shape
+#[allow(clippy::unused_async)]
 #[tool_handler(router = self.tool_router)]
 #[prompt_handler(router = self.prompt_router)]
 impl ServerHandler for DifflerMcp {

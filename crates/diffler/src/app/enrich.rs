@@ -195,7 +195,7 @@ impl App {
     /// Test pump: run queued enrichment inline, as the main loop's workers
     /// would, so snapshots capture the enriched frame.
     pub fn enrich_now(&mut self) {
-        let jobs: Vec<EnrichJob> = self.pending_enrich.drain(..).collect();
+        let jobs = std::mem::take(&mut self.pending_enrich);
         for job in jobs {
             let outcome = run_enrich(&self.highlighter, job);
             self.on_enriched(outcome);
