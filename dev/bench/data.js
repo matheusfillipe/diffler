@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787559813407,
+  "lastUpdate": 1787560713377,
   "repoUrl": "https://github.com/matheusfillipe/diffler",
   "entries": {
     "Benchmark": [
@@ -13055,6 +13055,102 @@ window.BENCHMARK_DATA = {
             "name": "scope_index/20000",
             "value": 94022577,
             "range": "± 1423758",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "committer": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "distinct": true,
+          "id": "9828bf9f1ddadd6fd4f3bc41ffbf1ad908229951",
+          "message": "fix: clear the clippy lints rust 1.98 added",
+          "timestamp": "2026-08-24T10:34:50+02:00",
+          "tree_id": "0b24a4e26773292160faaa34aea773680335ad3a",
+          "url": "https://github.com/matheusfillipe/diffler/commit/9828bf9f1ddadd6fd4f3bc41ffbf1ad908229951"
+        },
+        "date": 1787560712178,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "syndiff_emphasis/1000",
+            "value": 8246914,
+            "range": "± 337410",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/1000",
+            "value": 18682,
+            "range": "± 2427",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/1000",
+            "value": 6011677,
+            "range": "± 116629",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/1000",
+            "value": 4608533,
+            "range": "± 25519",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/5000",
+            "value": 42538839,
+            "range": "± 967310",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/5000",
+            "value": 97583,
+            "range": "± 1132",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/5000",
+            "value": 30301960,
+            "range": "± 137841",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/5000",
+            "value": 22782267,
+            "range": "± 135258",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/20000",
+            "value": 176481784,
+            "range": "± 948316",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/20000",
+            "value": 390377,
+            "range": "± 1262",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/20000",
+            "value": 120945862,
+            "range": "± 1183428",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/20000",
+            "value": 90819623,
+            "range": "± 516097",
             "unit": "ns/iter"
           }
         ]
