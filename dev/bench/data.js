@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787561581188,
+  "lastUpdate": 1787561873768,
   "repoUrl": "https://github.com/matheusfillipe/diffler",
   "entries": {
     "Benchmark": [
@@ -13343,6 +13343,102 @@ window.BENCHMARK_DATA = {
             "name": "scope_index/20000",
             "value": 91588032,
             "range": "± 1246893",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "committer": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "distinct": true,
+          "id": "3e661b28f50e187ab9565acb8e8f87b7121e6835",
+          "message": "fix: allow unused_async, which rmcp's handler macros trip on rust 1.98",
+          "timestamp": "2026-08-24T10:54:35+02:00",
+          "tree_id": "b258fbbcc78164bf91ac2e09a94e4868f935c30f",
+          "url": "https://github.com/matheusfillipe/diffler/commit/3e661b28f50e187ab9565acb8e8f87b7121e6835"
+        },
+        "date": 1787561872567,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "syndiff_emphasis/1000",
+            "value": 6274942,
+            "range": "± 69372",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/1000",
+            "value": 15580,
+            "range": "± 2292",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/1000",
+            "value": 4597191,
+            "range": "± 67571",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/1000",
+            "value": 3569895,
+            "range": "± 34312",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/5000",
+            "value": 32978669,
+            "range": "± 141883",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/5000",
+            "value": 77136,
+            "range": "± 110",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/5000",
+            "value": 23167216,
+            "range": "± 48396",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/5000",
+            "value": 17823362,
+            "range": "± 58183",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/20000",
+            "value": 136092800,
+            "range": "± 905771",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/20000",
+            "value": 310853,
+            "range": "± 572",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/20000",
+            "value": 94794902,
+            "range": "± 546959",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/20000",
+            "value": 72051975,
+            "range": "± 251300",
             "unit": "ns/iter"
           }
         ]
