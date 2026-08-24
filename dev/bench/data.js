@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787562208423,
+  "lastUpdate": 1787562573759,
   "repoUrl": "https://github.com/matheusfillipe/diffler",
   "entries": {
     "Benchmark": [
@@ -13535,6 +13535,102 @@ window.BENCHMARK_DATA = {
             "name": "scope_index/20000",
             "value": 96639480,
             "range": "± 856078",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "committer": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "distinct": true,
+          "id": "a21760c1e47728226c443a42f3e35e409439afa0",
+          "message": "fix: allow unused_async_trait_impl, the lint rust 1.98 trips rmcp on",
+          "timestamp": "2026-08-24T11:05:59+02:00",
+          "tree_id": "5d1f95f80633aef805c861a85dd929f800e08e16",
+          "url": "https://github.com/matheusfillipe/diffler/commit/a21760c1e47728226c443a42f3e35e409439afa0"
+        },
+        "date": 1787562572560,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "syndiff_emphasis/1000",
+            "value": 7397339,
+            "range": "± 163908",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/1000",
+            "value": 20513,
+            "range": "± 294",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/1000",
+            "value": 5318672,
+            "range": "± 66521",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/1000",
+            "value": 4181493,
+            "range": "± 28176",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/5000",
+            "value": 40093383,
+            "range": "± 350365",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/5000",
+            "value": 99006,
+            "range": "± 3150",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/5000",
+            "value": 27229513,
+            "range": "± 224978",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/5000",
+            "value": 21388758,
+            "range": "± 86952",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/20000",
+            "value": 174913990,
+            "range": "± 4872747",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/20000",
+            "value": 421506,
+            "range": "± 12801",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/20000",
+            "value": 112676671,
+            "range": "± 1900321",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/20000",
+            "value": 86338445,
+            "range": "± 1410541",
             "unit": "ns/iter"
           }
         ]
