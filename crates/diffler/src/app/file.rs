@@ -6,6 +6,7 @@ use diffler_core::highlight::StyledRange;
 use diffler_core::vcs::BlameSpan;
 
 use super::fuzzy::{FuzzyKey, FuzzyList, name_haystack, selected};
+use super::rowsel::{RowSelect, RowText};
 use super::{App, Flow, Modal, Screen};
 use crate::keymap::Action;
 
@@ -41,6 +42,8 @@ pub struct FileView {
     span_of_line: Vec<Option<usize>>,
     pub cursor: usize,
     pub scroll: usize,
+    /// Line where `V` started; `Some` means range selection is active.
+    pub visual_anchor: Option<usize>,
     pub show_blame: bool,
     /// Body height of the last draw, so paging steps a real screenful.
     pub viewport: u16,
@@ -64,6 +67,7 @@ impl FileView {
             span_of_line,
             cursor: 0,
             scroll: 0,
+            visual_anchor: None,
             show_blame,
             viewport: 0,
         }
@@ -113,6 +117,30 @@ impl FileView {
                 return;
             }
         }
+    }
+}
+
+impl RowSelect for FileView {
+    fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    fn anchor(&self) -> Option<usize> {
+        self.visual_anchor
+    }
+
+    fn set_anchor(&mut self, anchor: Option<usize>) {
+        self.visual_anchor = anchor;
+    }
+}
+
+impl RowText for FileView {
+    fn row_count(&self) -> usize {
+        self.lines.len()
+    }
+
+    fn row_text(&self, row: usize) -> String {
+        self.lines.get(row).cloned().unwrap_or_default()
     }
 }
 
@@ -226,6 +254,10 @@ impl App {
             Action::NextSection => view.step_span(true),
             Action::PrevSection => view.step_span(false),
             Action::ToggleBlame => view.show_blame = !view.show_blame,
+            Action::VisualSelect => view.toggle_visual(),
+            Action::CopyFileFeedback | Action::CopyAllFeedback => {
+                self.yank_rows("yanked lines");
+            }
             Action::Open => self.open_cursor_commit(),
             Action::OpenEditor => {
                 let (path, line) = (view.path.clone(), view.cursor as u32 + 1);
@@ -395,6 +427,43 @@ mod tests {
             "the editor never loads the view"
         );
         assert!(app.pending_editor.is_some());
+    }
+
+    #[test]
+    fn visual_select_yanks_the_lines_it_covers() {
+        let (_fixture, mut app) = app();
+        app.install_file(view("one\ntwo\nthree\nfour\n", Vec::new()), None);
+        app.handle(key('V'));
+        app.handle(key('j'));
+        assert_eq!(
+            app.file.as_ref().and_then(FileView::selection),
+            Some((0, 1))
+        );
+        app.handle(key('y'));
+        assert_eq!(app.pending_clipboard.as_deref(), Some("one\ntwo"));
+        assert!(
+            app.file.as_ref().is_some_and(|v| v.anchor().is_none()),
+            "the yank drops the anchor"
+        );
+    }
+
+    #[test]
+    fn yank_without_a_selection_copies_the_cursor_line() {
+        let (_fixture, mut app) = app();
+        app.install_file(view("one\ntwo\nthree\n", Vec::new()), None);
+        app.handle(key('j'));
+        app.handle(key('y'));
+        assert_eq!(app.pending_clipboard.as_deref(), Some("two"));
+    }
+
+    #[test]
+    fn escape_drops_the_file_selection() {
+        let (_fixture, mut app) = app();
+        app.install_file(view("one\ntwo\n", Vec::new()), None);
+        app.handle(key('V'));
+        assert!(app.visual_active());
+        app.handle(crate::test_support::esc_key());
+        assert!(!app.visual_active());
     }
 
     /// Step `j` until `ready` holds, bounded so a regression fails instead of

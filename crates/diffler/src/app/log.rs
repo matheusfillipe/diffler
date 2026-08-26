@@ -4,6 +4,7 @@
 use diffler_core::vcs::LogEntry;
 
 use super::App;
+use super::rowsel::{RowSelect, RowText};
 use crate::keymap::Action;
 
 /// How much history one log screen loads (neogit's default max-count).
@@ -22,11 +23,30 @@ pub struct LogView {
     pub(crate) body: ratatui::layout::Rect,
 }
 
-impl LogView {
-    /// Inclusive row span the visual selection covers, when active.
-    pub fn selection(&self) -> Option<(usize, usize)> {
-        let anchor = self.visual_anchor?;
-        Some((anchor.min(self.cursor), anchor.max(self.cursor)))
+impl RowSelect for LogView {
+    fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    fn anchor(&self) -> Option<usize> {
+        self.visual_anchor
+    }
+
+    fn set_anchor(&mut self, anchor: Option<usize>) {
+        self.visual_anchor = anchor;
+    }
+}
+
+impl RowText for LogView {
+    fn row_count(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn row_text(&self, row: usize) -> String {
+        self.entries
+            .get(row)
+            .map(|entry| format!("{} {}", entry.oid7, entry.subject))
+            .unwrap_or_default()
     }
 }
 
@@ -88,10 +108,9 @@ impl App {
             Action::FullPageDown => log.cursor = (log.cursor + full).min(last),
             Action::FullPageUp => log.cursor = log.cursor.saturating_sub(full),
             // V toggles a range selection anchored at the cursor commit
-            Action::VisualSelect => {
-                if log.visual_anchor.take().is_none() {
-                    log.visual_anchor = Some(log.cursor);
-                }
+            Action::VisualSelect => log.toggle_visual(),
+            Action::CopyFileFeedback | Action::CopyAllFeedback => {
+                self.yank_rows("yanked commits");
             }
             other => {
                 self.info(format!("{} is not implemented yet", other.name()));
@@ -181,6 +200,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use crate::app::rowsel::RowSelect;
     use diffler_core::source::ReviewSource;
 
     use super::super::Screen;

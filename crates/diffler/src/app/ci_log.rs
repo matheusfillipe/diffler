@@ -8,6 +8,7 @@
 
 use ratatui::layout::Rect;
 
+use super::rowsel::{RowSelect, RowText};
 use super::{App, CiRequest, MouseGesture, Screen, hit_index, page_step};
 use crate::ci::{JobStatus, LogStepMeta, ts_sort_key};
 use crate::keymap::Action;
@@ -97,7 +98,7 @@ impl CiLogView {
     }
 
     /// Display text of a row (the step name, or a log line), for search/render.
-    pub fn row_text(&self, row: CiLogRow) -> &str {
+    pub fn line_text(&self, row: CiLogRow) -> &str {
         match row {
             CiLogRow::Step(s) => self.steps.get(s).map_or("", |st| st.name.as_str()),
             CiLogRow::Line { step, line } => self
@@ -126,28 +127,34 @@ impl CiLogView {
         }
         // a collapse can drop rows out from under an anchor set in the now-folded
         // step; keep the selection inside the new row range
-        self.visual_anchor = self.visual_anchor.map(|a| a.min(last));
+        self.clamp_anchor(last);
+    }
+}
+
+impl RowSelect for CiLogView {
+    fn cursor(&self) -> usize {
+        self.cursor
     }
 
-    /// The inclusive visual selection `(lo, hi)` over rows, if anchored.
-    pub fn selection(&self) -> Option<(usize, usize)> {
+    fn anchor(&self) -> Option<usize> {
         self.visual_anchor
-            .map(|a| (a.min(self.cursor), a.max(self.cursor)))
     }
 
-    /// The selected line range as plain text, for yank.
-    pub fn selection_text(&self) -> String {
-        let rows = self.rows();
-        let (lo, hi) = match self.visual_anchor {
-            Some(a) => (a.min(self.cursor), a.max(self.cursor)),
-            None => (self.cursor, self.cursor),
-        };
-        rows.iter()
-            .skip(lo)
-            .take(hi - lo + 1)
-            .map(|row| self.row_text(*row))
-            .collect::<Vec<_>>()
-            .join("\n")
+    fn set_anchor(&mut self, anchor: Option<usize>) {
+        self.visual_anchor = anchor;
+    }
+}
+
+impl RowText for CiLogView {
+    fn row_count(&self) -> usize {
+        self.rows().len()
+    }
+
+    fn row_text(&self, row: usize) -> String {
+        self.rows()
+            .get(row)
+            .map(|row| self.line_text(*row).to_owned())
+            .unwrap_or_default()
     }
 }
 
@@ -257,19 +264,9 @@ impl App {
             Action::FullPageDown => self.ci_log_page(false, true),
             Action::FullPageUp => self.ci_log_page(true, true),
             Action::ToggleFold => view.toggle_fold_at_cursor(),
-            Action::VisualSelect => {
-                view.visual_anchor = match view.visual_anchor {
-                    Some(_) => None,
-                    None => Some(view.cursor),
-                };
-            }
+            Action::VisualSelect => view.toggle_visual(),
             Action::CopyFileFeedback | Action::CopyAllFeedback => {
-                self.pending_clipboard = Some(view.selection_text());
-                let view = self.ci_log.as_mut();
-                if let Some(view) = view {
-                    view.visual_anchor = None;
-                }
-                self.info("yanked log selection");
+                self.yank_rows("yanked log selection");
             }
             _ => {}
         }

@@ -20,6 +20,7 @@ use diffler_core::source::ReviewSource;
 use diffler_core::syntax::ScopeIndex;
 
 use super::composer::{Composer, ComposerKind};
+use super::rowsel::RowSelect;
 use super::{App, Flow};
 pub use rows::{CommentLine, DiffRow, SplitRow, SplitSide, comment_display};
 use rows::{build_rows, build_split_rows};
@@ -434,12 +435,6 @@ impl DiffView {
             .unwrap_or_else(|| self.tree_cursor.min(rows.len().saturating_sub(1)));
     }
 
-    /// Inclusive row span the visual selection covers, when active.
-    pub fn selection(&self) -> Option<(usize, usize)> {
-        let anchor = self.visual_anchor?;
-        Some((anchor.min(self.cursor), anchor.max(self.cursor)))
-    }
-
     /// Move the sidebar cursor to `selected`, rebuilding the diff rows and
     /// resetting the diff cursor to the top of the new file.
     fn select(&mut self, selected: usize, review: &Review) {
@@ -676,6 +671,20 @@ fn tree_position_of_file(rows: &[TreeRow], file_index: usize) -> Option<usize> {
 /// up it, skipping the headers in between.
 fn step_file_row(rows: &[TreeRow], at: usize, forward: bool) -> Option<usize> {
     crate::app::step_to(rows, at, forward, |row| row_file_index(row).is_some())
+}
+
+impl RowSelect for DiffView {
+    fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    fn anchor(&self) -> Option<usize> {
+        self.visual_anchor
+    }
+
+    fn set_anchor(&mut self, anchor: Option<usize>) {
+        self.visual_anchor = anchor;
+    }
 }
 
 /// Paths whose git attributes a worker should read, for the kinds sidebar.

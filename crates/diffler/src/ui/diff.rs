@@ -17,6 +17,7 @@ use ratatui::widgets::{Block, Paragraph};
 
 use crate::app::composer::{Composer, ComposerKind, ComposerLine};
 use crate::app::markdown::MdSpan;
+use crate::app::rowsel::RowSelect;
 use crate::app::{
     App, CommentLine, DiffRow, DiffView, FileHighlights, FileScope, Pane, SplitRow, SplitSide,
     comment_display,
@@ -1487,6 +1488,7 @@ fn pad_line(mut spans: Vec<Span<'static>>, bg: Color, width: u16) -> Line<'stati
 
 #[cfg(test)]
 mod tests {
+    use crate::app::rowsel::RowSelect;
     use ratatui::Terminal;
 
     #[test]

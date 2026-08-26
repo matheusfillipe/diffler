@@ -10,6 +10,7 @@ use ratatui::widgets::Paragraph;
 
 use crate::app::App;
 use crate::app::ci_log::{CiLogRow, CiLogView};
+use crate::app::rowsel::RowSelect;
 use crate::ci::fmt_duration;
 use crate::keymap::Action;
 use crate::theme::Theme;
@@ -41,9 +42,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             let height = body.height.max(1) as usize;
             let rows = view.rows();
             view.scroll = super::scroll_to_cursor(view.cursor, view.scroll, height, rows.len());
-            let selection = view.selection();
-            let selected =
-                |i: usize| i == view.cursor || selection.is_some_and(|(lo, hi)| i >= lo && i <= hi);
+            let selected = |i: usize| view.row_selected(i);
             let lines: Vec<Line<'static>> = rows
                 .iter()
                 .enumerate()
@@ -120,7 +119,7 @@ fn row_line(
             Line::from(spans)
         }
         CiLogRow::Line { .. } => {
-            let text = view.row_text(row);
+            let text = view.line_text(row);
             let mut spans = vec![Span::styled("    ", theme.base())];
             spans.extend(super::highlight_spans(text, theme.base(), search, theme));
             Line::from(spans)

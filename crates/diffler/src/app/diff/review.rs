@@ -8,6 +8,7 @@ use diffler_core::model::{FileDiff, LineKind};
 use diffler_core::source::ReviewSource;
 
 use super::{ComposerKind, DiffRow, Pane, sidebar_rows};
+use crate::app::rowsel::RowSelect;
 use crate::app::{App, Modal};
 use crate::tree::TreeNode;
 

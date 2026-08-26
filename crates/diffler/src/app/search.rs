@@ -132,7 +132,7 @@ impl App {
                 view.rows()
                     .iter()
                     .enumerate()
-                    .map(|(i, row)| (i, view.row_text(*row).to_owned()))
+                    .map(|(i, row)| (i, view.line_text(*row).to_owned()))
                     .collect()
             }),
             Screen::File => self.file.as_ref().map_or_else(Vec::new, |view| {

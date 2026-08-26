@@ -21,6 +21,7 @@ mod modal;
 mod network;
 pub mod pr;
 pub mod pr_create;
+pub mod rowsel;
 mod search;
 pub mod stats;
 mod status;
@@ -1114,28 +1115,8 @@ impl App {
         // Esc leaves visual selection; it stays out of the keymap because it
         // also drains pending chords and cancels modals everywhere else
         if key.code == KeyCode::Esc && self.visual_active() {
-            match self.screen() {
-                Screen::Diff => {
-                    if let Some(diff) = self.diff.as_mut() {
-                        diff.visual_anchor = None;
-                    }
-                }
-                Screen::Log => {
-                    if let Some(log) = self.log.as_mut() {
-                        log.visual_anchor = None;
-                    }
-                }
-                Screen::CiLog => {
-                    if let Some(view) = self.ci_log.as_mut() {
-                        view.visual_anchor = None;
-                    }
-                }
-                Screen::Status
-                | Screen::Graph
-                | Screen::Runs
-                | Screen::Prs
-                | Screen::File
-                | Screen::Stats => {}
+            if let Some(view) = self.row_select_mut() {
+                view.set_anchor(None);
             }
             self.pending.clear();
             return Flow::Continue;
@@ -1203,26 +1184,6 @@ impl App {
             Some(self.transients.get(open.kind))
         } else {
             None
-        }
-    }
-
-    fn visual_active(&self) -> bool {
-        match self.screen() {
-            Screen::Diff => self
-                .diff
-                .as_ref()
-                .is_some_and(|d| d.visual_anchor.is_some()),
-            Screen::Log => self.log.as_ref().is_some_and(|l| l.visual_anchor.is_some()),
-            Screen::CiLog => self
-                .ci_log
-                .as_ref()
-                .is_some_and(|v| v.visual_anchor.is_some()),
-            Screen::Status
-            | Screen::Graph
-            | Screen::Runs
-            | Screen::Prs
-            | Screen::File
-            | Screen::Stats => false,
         }
     }
 
