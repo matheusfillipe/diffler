@@ -2596,6 +2596,8 @@ mod tests {
     fn y_with_no_comments_hints_instead_of_copying() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
+        // feedback copy lives in the diff pane; the sidebar yanks paths
+        app.diff.as_mut().unwrap().focus = Pane::Diff;
         app.handle(key('y'));
         assert_eq!(app.pending_clipboard, None);
         let message = app.message.expect("message");
@@ -3088,6 +3090,29 @@ mod tests {
         assert!(app.diff.as_ref().unwrap().side_by_side);
         app.handle(key('|'));
         assert!(!app.diff.as_ref().unwrap().side_by_side);
+    }
+
+    #[test]
+    fn yank_in_the_sidebar_copies_the_path_the_row_names() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        app.diff.as_mut().unwrap().focus = Pane::List;
+        app.handle(key('y'));
+        let path = app
+            .diff
+            .as_ref()
+            .and_then(|diff| {
+                let model = diff.model(&app.review);
+                model.files.get(diff.selected).map(|file| file.path.clone())
+            })
+            .expect("a file under the cursor");
+        assert_eq!(app.pending_clipboard.as_deref(), Some(path.as_str()));
+        assert!(
+            app.message
+                .as_ref()
+                .is_some_and(|m| !m.text.contains("no comments")),
+            "the sidebar never reaches the feedback copy"
+        );
     }
 
     #[test]

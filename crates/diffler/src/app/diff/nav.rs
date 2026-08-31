@@ -142,8 +142,9 @@ impl App {
             Action::MarkViewed => self.diff_toggle_viewed(),
             Action::UnviewAll => self.diff_unview_all(),
             Action::OpenEditor => self.editor_at_diff_cursor(),
-            // copy and delete-all are file/review scoped, so the list serves them
-            Action::CopyFileFeedback => self.copy_file_or_selection(),
+            // the sidebar addresses paths, not lines, so it yanks what the row
+            // names the way the status screen's list does
+            Action::CopyFileFeedback => self.copy_at_diff_tree_cursor(),
             Action::CopyAllFeedback => self.copy_feedback(false),
             Action::DeleteAllComments => self.delete_all_comments_start(),
             // a file in the sidebar takes a whole-file comment; the line-scoped
@@ -472,6 +473,32 @@ impl App {
     /// `e`: open the selected file in the editor: at the line for diff line
     /// rows (new side, old side for deletions), at the anchor for comment
     /// rows, at the top otherwise (hunk header, or focus on the list).
+    /// `y` in the file sidebar: the repo-relative path the row names, a file's
+    /// or a folder's. A section header groups files without naming a path.
+    fn copy_at_diff_tree_cursor(&mut self) {
+        let review = &self.review;
+        let Some(diff) = self.diff.as_mut() else {
+            return;
+        };
+        let rows = sidebar_rows(diff, review);
+        let path = match rows.get(diff.tree_cursor).map(|row| &row.node) {
+            Some(TreeNode::Dir { path, .. }) => Some(path.clone()),
+            Some(TreeNode::File { index, .. }) => diff
+                .model(review)
+                .files
+                .get(*index)
+                .map(|file| file.path.clone()),
+            Some(TreeNode::Section { .. }) | None => None,
+        };
+        match path {
+            Some(path) => {
+                self.info(format!("copied {path}"));
+                self.pending_clipboard = Some(path);
+            }
+            None => self.info("nothing to copy here"),
+        }
+    }
+
     fn editor_at_diff_cursor(&mut self) {
         match self.diff_cursor_file_line() {
             Some((path, line)) => self.request_editor(&path, line),
