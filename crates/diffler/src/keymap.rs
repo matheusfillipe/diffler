@@ -725,6 +725,27 @@ impl Keymap {
         (keymap, warnings)
     }
 
+    /// The motion an arrow stands for in this context, when nothing is bound
+    /// to the arrow itself. Resolved at lookup rather than added to the
+    /// bindings, so an arrow cannot double every motion row in the help popup
+    /// and cannot drift from the letter it mirrors.
+    fn arrow_motion(&self, press: &KeyPress) -> Option<Action> {
+        if press.ctrl || press.alt || press.shift {
+            return None;
+        }
+        let action = match press.code {
+            KeyCode::Up => Action::MoveUp,
+            KeyCode::Down => Action::MoveDown,
+            KeyCode::Left => Action::MoveLeft,
+            KeyCode::Right => Action::MoveRight,
+            _ => return None,
+        };
+        self.bindings
+            .iter()
+            .any(|(_, bound)| *bound == action)
+            .then_some(action)
+    }
+
     fn apply_overrides(
         &mut self,
         overrides: &BTreeMap<String, String>,
@@ -962,14 +983,19 @@ impl Keymap {
                         pending.push(press);
                         Resolved::Pending
                     }
-                    Lookup::None => Resolved::Unbound,
+                    Lookup::None => self.arrow_or_unbound(&press),
                 }
             }
             Lookup::None => {
                 pending.clear();
-                Resolved::Unbound
+                self.arrow_or_unbound(&press)
             }
         }
+    }
+
+    fn arrow_or_unbound(&self, press: &KeyPress) -> Resolved {
+        self.arrow_motion(press)
+            .map_or(Resolved::Unbound, Resolved::Action)
     }
 
     /// All `(chord, action)` pairs in binding order, defaults first then
@@ -1080,6 +1106,15 @@ mod tests {
         presses.remove(0)
     }
 
+    fn action_of(keymap: &Keymap, chord: &str) -> Option<Action> {
+        let wanted = parse_chord(chord).expect("valid chord");
+        keymap
+            .bindings
+            .iter()
+            .find(|(bound, _)| *bound == wanted)
+            .map(|(_, action)| *action)
+    }
+
     #[test]
     fn all_defaults_parse() {
         for (defaults, context) in [
@@ -1093,7 +1128,13 @@ mod tests {
             (STATS_DEFAULTS, Context::Stats),
         ] {
             let (keymap, _) = Keymap::for_context(context, &KeysConfig::default());
-            assert_eq!(keymap.bindings.len(), defaults.len(), "{context:?}");
+            for (chord, action) in defaults {
+                assert_eq!(
+                    action_of(&keymap, chord),
+                    Some(*action),
+                    "{context:?} lost {chord}"
+                );
+            }
         }
     }
 
@@ -1456,6 +1497,79 @@ mod tests {
             keymap.resolve(&mut pending, press("c")),
             Resolved::Transient(TransientKind::Commit)
         );
+    }
+
+    fn resolved(keymap: &Keymap, chord: &str) -> Resolved {
+        let mut pending = Vec::new();
+        keymap.resolve(&mut pending, press(chord))
+    }
+
+    /// Arrows are the motion everyone reaches for first: wherever a screen
+    /// binds `hjkl`, the matching arrow must reach the same action.
+    #[test]
+    fn every_context_answers_arrows_wherever_it_answers_hjkl() {
+        for context in [
+            Context::Status,
+            Context::Diff,
+            Context::Log,
+            Context::CiLog,
+            Context::Graph,
+            Context::Prs,
+            Context::File,
+            Context::Stats,
+        ] {
+            let keymap = keymap(context);
+            for (letter, arrow) in [
+                ("j", "<down>"),
+                ("k", "<up>"),
+                ("h", "<left>"),
+                ("l", "<right>"),
+            ] {
+                let Some(action) = action_of(&keymap, letter) else {
+                    continue;
+                };
+                assert_eq!(
+                    resolved(&keymap, arrow),
+                    Resolved::Action(action),
+                    "{context:?} binds {letter} but not {arrow}"
+                );
+            }
+        }
+    }
+
+    /// The alias is derived from the action, so a remapped motion carries its
+    /// arrow with it.
+    #[test]
+    fn an_arrow_follows_a_remapped_motion() {
+        let mut keys = KeysConfig::default();
+        keys.log.insert("move_down".to_owned(), "n".to_owned());
+        let (keymap, warnings) = Keymap::for_context(Context::Log, &keys);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(resolved(&keymap, "n"), Resolved::Action(Action::MoveDown));
+        assert_eq!(
+            resolved(&keymap, "<down>"),
+            Resolved::Action(Action::MoveDown)
+        );
+    }
+
+    /// An explicit arrow binding is the reader's, not ours to shadow.
+    #[test]
+    fn an_explicit_arrow_binding_wins_over_the_alias() {
+        let mut keys = KeysConfig::default();
+        keys.log.insert("go_bottom".to_owned(), "<down>".to_owned());
+        let (keymap, _) = Keymap::for_context(Context::Log, &keys);
+        assert_eq!(
+            resolved(&keymap, "<down>"),
+            Resolved::Action(Action::GoBottom)
+        );
+    }
+
+    /// The help popup and the palette list the letter once; the arrow is a
+    /// lookup fallback, not a second row.
+    #[test]
+    fn an_arrow_alias_is_not_listed_as_its_own_binding() {
+        let keymap = keymap(Context::Log);
+        assert_eq!(action_of(&keymap, "<down>"), None);
     }
 
     #[test]

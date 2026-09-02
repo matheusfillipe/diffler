@@ -39,6 +39,24 @@ def test_cursor_moves_and_tab_expands_inline_hunks(spawn):
     tui.wait_for("notes.txt")
 
 
+def test_arrow_keys_move_the_cursor_like_jk(spawn):
+    """Arrows arrive as escape sequences, which synthesized key events never
+    exercise; the same walk as j/k has to land on the same rows."""
+    tui = spawn("--no-mcp")
+    tui.wait_for("Untracked (1)")
+    down, up = "\x1b[B", "\x1b[A"
+    tui.send(down * 3)
+    tui.send("\t")
+    tui.wait_for("beta2")
+    tui.send("\t")
+    tui.wait_gone("beta2")
+    tui.send(up * 3)
+    tui.send("\t")
+    tui.wait_gone("notes.txt")
+    tui.send("\t")
+    tui.wait_for("notes.txt")
+
+
 def test_stage_moves_untracked_file_to_staged(spawn):
     tui = spawn("--no-mcp")
     tui.wait_for("Untracked (1)")
