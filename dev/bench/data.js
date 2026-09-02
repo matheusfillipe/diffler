@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787827902308,
+  "lastUpdate": 1788376752762,
   "repoUrl": "https://github.com/matheusfillipe/diffler",
   "entries": {
     "Benchmark": [
@@ -13919,6 +13919,102 @@ window.BENCHMARK_DATA = {
             "name": "scope_index/20000",
             "value": 93719147,
             "range": "± 1493382",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "committer": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "distinct": true,
+          "id": "5da4b93868a5560438d87cc1b769d2e450eb8238",
+          "message": "fix: make arrow keys move wherever hjkl moves",
+          "timestamp": "2026-09-02T21:15:00+02:00",
+          "tree_id": "11d14a13e47cb1e983df6c4152a41c778a94e6e6",
+          "url": "https://github.com/matheusfillipe/diffler/commit/5da4b93868a5560438d87cc1b769d2e450eb8238"
+        },
+        "date": 1788376751509,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "syndiff_emphasis/1000",
+            "value": 9126086,
+            "range": "± 229992",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/1000",
+            "value": 18756,
+            "range": "± 3588",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/1000",
+            "value": 6057741,
+            "range": "± 620726",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/1000",
+            "value": 4606284,
+            "range": "± 27064",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/5000",
+            "value": 49228193,
+            "range": "± 488594",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/5000",
+            "value": 97797,
+            "range": "± 836",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/5000",
+            "value": 32750284,
+            "range": "± 612124",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/5000",
+            "value": 22749857,
+            "range": "± 791165",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/20000",
+            "value": 178867014,
+            "range": "± 3398797",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/20000",
+            "value": 392788,
+            "range": "± 3875",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/20000",
+            "value": 122627863,
+            "range": "± 2189378",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/20000",
+            "value": 90943598,
+            "range": "± 1024423",
             "unit": "ns/iter"
           }
         ]
