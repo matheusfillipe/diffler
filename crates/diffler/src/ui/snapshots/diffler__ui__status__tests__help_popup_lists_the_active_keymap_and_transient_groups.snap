@@ -9,6 +9,7 @@ expression: terminal.backend()
 "                                                                                                                        "
 " Help: status keys ─────────────────────────────────────────────────────────────────────────────────────────────────────"
 "Actions                                                                                                                 "
+" V  select a range of rows              ?  help                                                                         "
 " j  move down                           q  back                                                                         "
 " k  move up                             c  Commit …                                                                     "
 " gg  go to top                            c  Commit                                                                     "
@@ -41,4 +42,3 @@ expression: terminal.backend()
 " n  next search match                   z  Stash …                                                                      "
 " N  previous search match                 z  Stash changes                                                              "
 " <c-k>  command palette                   p  Pop latest stash                                                           "
-" ?  help                                                                                                                "

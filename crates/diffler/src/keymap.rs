@@ -283,7 +283,7 @@ impl Action {
             Self::ExpandWholeFile => "expand to the whole file",
             Self::SwitchTheme => "switch theme",
             Self::Comment => "comment the diff line",
-            Self::VisualSelect => "select a line range",
+            Self::VisualSelect => "select a range of rows",
             Self::Reply => "reply to the comment",
             Self::Resolve => "resolve the comment",
             Self::MarkViewed => "mark the file or folder viewed",
@@ -445,6 +445,7 @@ pub struct Keymap {
 }
 
 const STATUS_DEFAULTS: &[(&str, Action)] = &[
+    ("V", Action::VisualSelect),
     ("j", Action::MoveDown),
     ("k", Action::MoveUp),
     ("gg", Action::GoTop),

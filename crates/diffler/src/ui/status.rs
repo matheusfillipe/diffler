@@ -1,6 +1,7 @@
 //! Status screen: hint line, head line, neogit-style sections with inline
 //! diff expansion, recent commits, and the status bar.
 
+use crate::app::rowsel::RowSelect;
 use diffler_core::model::FileDiff;
 use diffler_core::stats::LanguageChurn;
 use diffler_core::vcs::LogEntry;
@@ -132,8 +133,10 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16, Vec<Option<usize>>) 
                     lines.push(Line::default());
                     line_rows.push(None);
                 }
-                let on_cursor = index == app.status.cursor;
-                if on_cursor {
+                // a selected run tints like the cursor row, so the reader sees
+                // what `<cr>` is about to review
+                let selected = app.status.row_selected(index);
+                if index == app.status.cursor {
                     cursor_line_index = lines.len();
                     cursor_span = 1;
                 }
@@ -142,7 +145,7 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16, Vec<Option<usize>>) 
                     .as_ref()
                     .map(|search| search.ranges_for(index))
                     .unwrap_or_default();
-                lines.push(row_line(app, row, on_cursor, area.width, &ranges));
+                lines.push(row_line(app, row, selected, area.width, &ranges));
                 // furniture: never a mouse-click or search target
                 line_rows.push((!matches!(row, Row::RepoDivider)).then_some(index));
                 index += 1;

@@ -9,6 +9,7 @@ use diffler_core::model::FileDiff;
 use diffler_core::vcs::{BranchInfo, LogEntry, NetworkOp, Vcs, VcsError};
 
 use super::enrich::EnrichOutcome;
+use super::rowsel::RowSelect;
 use super::{App, BranchAction, FileHighlights, Modal, PendingOp};
 use crate::config::FileLayout;
 use crate::keymap::Action;
@@ -262,6 +263,9 @@ pub struct Unpushed {
 /// All state owned by the status screen.
 pub struct StatusView {
     pub cursor: usize,
+    /// Where a `V` selection started, so a run of commits can be reviewed as
+    /// one range.
+    pub anchor: Option<usize>,
     pub folded: [bool; 3],
     /// Commits no remote has yet: local, free to act on, so shown unfolded by
     /// default. `None` in a repository with no remote-tracking refs, the one
@@ -308,6 +312,20 @@ pub struct StatusView {
     pub(crate) line_rows: Vec<Option<usize>>,
 }
 
+impl RowSelect for StatusView {
+    fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    fn anchor(&self) -> Option<usize> {
+        self.anchor
+    }
+
+    fn set_anchor(&mut self, anchor: Option<usize>) {
+        self.anchor = anchor;
+    }
+}
+
 impl StatusView {
     pub(super) fn new(
         unpushed: Option<Unpushed>,
@@ -316,6 +334,7 @@ impl StatusView {
     ) -> Self {
         Self {
             cursor: 0,
+            anchor: None,
             folded: [false; 3],
             unpushed,
             recent,
@@ -874,6 +893,7 @@ impl App {
 
     pub(super) fn dispatch_status(&mut self, action: Action) {
         match action {
+            Action::VisualSelect => self.status.toggle_visual(),
             Action::MoveDown => {
                 let rows = self.visible_rows();
                 let last = rows.len().saturating_sub(1);
@@ -1213,7 +1233,48 @@ impl App {
         }
     }
 
+    /// The oids of the commits a `V` selection covers, newest first. Rows that
+    /// are not commits sit between the sections and are simply passed over.
+    fn selected_commit_oids(&self) -> Vec<String> {
+        let Some((top, bottom)) = self.status.selection() else {
+            return Vec::new();
+        };
+        let rows = self.visible_rows();
+        let unpushed = self.status.unpushed_commits();
+        rows.get(top..=bottom)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|row| match *row {
+                Row::Unpushed { index } => unpushed.get(index).map(|entry| entry.oid.clone()),
+                Row::Commit { index } => {
+                    self.status.recent.get(index).map(|entry| entry.oid.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// `<cr>` with a selection: the selected commits read as one review, since
+    /// a run of commits is usually one piece of work. The list is newest first,
+    /// so the last of it is the range's oldest end.
+    fn open_selected_commits(&mut self) -> bool {
+        let oids = self.selected_commit_oids();
+        let (Some(newest), Some(oldest)) = (oids.first(), oids.last()) else {
+            return false;
+        };
+        if oids.len() < 2 {
+            return false;
+        }
+        let (oldest, newest) = (oldest.clone(), newest.clone());
+        self.status.set_anchor(None);
+        self.open_range_diff(&oldest, &newest);
+        true
+    }
+
     fn open_at_cursor(&mut self) {
+        if self.open_selected_commits() {
+            return;
+        }
         let Some(row) = self.cursor_row() else {
             return;
         };
@@ -1311,6 +1372,7 @@ impl App {
         if let Err(err) = self.review.save() {
             self.error(err.to_string());
         }
+        self.clamp_cursor();
     }
 
     fn toggle_fold(&mut self) {
@@ -1430,6 +1492,7 @@ impl App {
     /// Move the cursor onto the first visible row matching `pred`, if any.
     /// Every fold toggle needs this re-seat once the row set it sits in shifts.
     fn seat_cursor_on(&mut self, pred: impl Fn(&Row) -> bool) {
+        self.status.set_anchor(None);
         if let Some(position) = self.visible_rows().iter().position(pred) {
             self.status.cursor = position;
         }
@@ -1506,6 +1569,7 @@ impl App {
     /// Re-seat the cursor after rows changed: exact hunk → same file in the
     /// same section → same path anywhere → the section header → clamp.
     pub(super) fn restore_status_cursor(&mut self, anchor: Option<CursorAnchor>) {
+        self.status.set_anchor(None);
         let Some(anchor) = anchor else {
             self.clamp_cursor();
             return;
@@ -1646,6 +1710,9 @@ impl App {
     }
 
     pub(super) fn clamp_cursor(&mut self) {
+        // a selection names rows by position, so it cannot outlive a rebuild of
+        // the row list: the rows it covered are no longer the rows it covered
+        self.status.set_anchor(None);
         let rows = self.visible_rows();
         let clamped = self.status.cursor.min(rows.len().saturating_sub(1));
         self.status.cursor = nearest_selectable(&rows, clamped, true);
@@ -1822,6 +1889,141 @@ mod tests {
     }
 
     /// Move the cursor onto the first row matching `pred`.
+    /// Three commits on the status screen, so a run of them can be selected.
+    fn app_with_commits() -> (Fixture, App) {
+        let fixture = standard_fixture();
+        fixture.write("notes.txt", "alpha\nbeta\n");
+        fixture.commit_all("add beta note");
+        fixture.write(
+            "src/util.rs",
+            "pub fn twice(x: u32) -> u32 {\n    x * 2\n}\n",
+        );
+        fixture.commit_all("add util module");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        cursor_to(&mut app, |row| matches!(row, Row::RecentHeader { .. }));
+        app.handle(key('\t'));
+        (fixture, app)
+    }
+
+    /// `V` over a run of commits and `<cr>`: the whole run reads as one range,
+    /// which is what a stack of commits usually is.
+    #[test]
+    fn enter_on_a_selected_run_of_commits_opens_their_combined_range() {
+        let (_fixture, mut app) = app_with_commits();
+        cursor_to(&mut app, |row| matches!(row, Row::Commit { index: 0 }));
+        let newest = app.status.recent[0].oid.clone();
+        let oldest = app.status.recent[1].oid.clone();
+
+        app.handle(key('V'));
+        app.handle(key('j'));
+        app.handle(key('\n'));
+
+        let diff = app.diff.as_ref().expect("diff view");
+        let diffler_core::source::ReviewSource::Range {
+            oldest: from,
+            newest: to,
+        } = &diff.source
+        else {
+            panic!("expected a range, got {:?}", diff.source);
+        };
+        assert_eq!(
+            (from.as_str(), to.as_str()),
+            (oldest.as_str(), newest.as_str())
+        );
+        assert!(app.status.anchor.is_none(), "opening ends the selection");
+    }
+
+    /// One commit selected is one commit: the range only earns itself with a
+    /// second, so `<cr>` opens the single review it always did.
+    #[test]
+    fn enter_on_a_single_selected_commit_opens_that_commit() {
+        let (_fixture, mut app) = app_with_commits();
+        cursor_to(&mut app, |row| matches!(row, Row::Commit { index: 0 }));
+        let newest = app.status.recent[0].oid.clone();
+
+        app.handle(key('V'));
+        app.handle(key('\n'));
+
+        let diff = app.diff.as_ref().expect("diff view");
+        assert_eq!(
+            diff.source,
+            diffler_core::source::ReviewSource::commit(&newest)
+        );
+    }
+
+    /// A selection dragged up over the section header covers rows that are not
+    /// commits; they carry no oid, so the range is still the commits in it.
+    #[test]
+    fn a_selection_reaching_past_the_header_ranges_only_the_commits() {
+        let (_fixture, mut app) = app_with_commits();
+        cursor_to(&mut app, |row| matches!(row, Row::Commit { index: 1 }));
+        let oldest = app.status.recent[1].oid.clone();
+        let newest = app.status.recent[0].oid.clone();
+
+        app.handle(key('V'));
+        app.handle(key('k'));
+        app.handle(key('k'));
+        assert!(
+            matches!(app.cursor_row(), Some(Row::RecentHeader { .. })),
+            "the selection reaches the header"
+        );
+        app.handle(key('\n'));
+
+        let diff = app.diff.as_ref().expect("diff view");
+        let diffler_core::source::ReviewSource::Range {
+            oldest: from,
+            newest: to,
+        } = &diff.source
+        else {
+            panic!("expected a range, got {:?}", diff.source);
+        };
+        assert_eq!(
+            (from.as_str(), to.as_str()),
+            (oldest.as_str(), newest.as_str())
+        );
+    }
+
+    /// Expanding a file's diff inserts rows above the selected commits, so the
+    /// rows the selection named are no longer those rows. It ends there rather
+    /// than reviewing whatever moved under it.
+    #[test]
+    fn expanding_a_file_above_the_selection_ends_it() {
+        let fixture = standard_fixture();
+        fixture.commit_all("second commit");
+        fixture.write("notes.txt", "alpha\nbeta\ngamma\n");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        cursor_to(&mut app, |row| matches!(row, Row::RecentHeader { .. }));
+        app.handle(key('\t'));
+        cursor_to(&mut app, |row| matches!(row, Row::Commit { index: 0 }));
+        app.handle(key('V'));
+        app.handle(key('j'));
+        assert!(app.status.anchor.is_some(), "a run of commits is selected");
+
+        cursor_to(&mut app, |row| matches!(row, Row::File { .. }));
+        app.handle(key('\t'));
+
+        assert!(app.status.anchor.is_none(), "the rows it named have moved");
+        app.handle(key('\n'));
+        assert!(
+            !matches!(
+                app.diff.as_ref().map(|diff| &diff.source),
+                Some(diffler_core::source::ReviewSource::Range { .. })
+            ),
+            "no range is built from rows nobody selected"
+        );
+    }
+
+    /// Esc drops a status selection, the way it drops one anywhere else.
+    #[test]
+    fn escape_cancels_the_status_selection() {
+        let (_fixture, mut app) = app_with_commits();
+        cursor_to(&mut app, |row| matches!(row, Row::Commit { index: 0 }));
+        app.handle(key('V'));
+        assert!(app.status.anchor.is_some());
+        app.handle(crate::test_support::esc_key());
+        assert!(app.status.anchor.is_none());
+    }
+
     fn cursor_to(app: &mut App, pred: impl Fn(&Row) -> bool) -> Row {
         let rows = app.visible_rows();
         let position = rows.iter().position(pred).expect("row present");

@@ -76,6 +76,7 @@
 
 [keys.status]
 # palette = "<c-k>"   # fuzzy command palette, bound on every screen
+# visual_select = "V" # select a run of commits, <cr> reviews them as one range
 # stage = "s"
 # unstage = "u"
 # stage_all = "S"
