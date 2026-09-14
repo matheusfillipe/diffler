@@ -842,8 +842,10 @@ impl App {
                     self.status_activate_cursor();
                 }
             }
-            // the status screen has no line selection to drag or cancel
-            MouseGesture::Drag { .. } | MouseGesture::Cancel => {}
+            // a right-click cancels what is in progress, which here is a run of
+            // rows the reader was selecting
+            MouseGesture::Cancel => self.status.set_anchor(None),
+            MouseGesture::Drag { .. } => {}
         }
     }
 
@@ -860,6 +862,9 @@ impl App {
         if index >= self.visible_rows().len() {
             return false;
         }
+        // a click names where the reader wants to be, so it starts over rather
+        // than stretching the selection it landed from
+        self.status.set_anchor(None);
         self.status.cursor = index;
         true
     }

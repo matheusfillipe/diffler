@@ -1021,6 +1021,28 @@ mod tests {
         assert!(app.status.cursor < after, "wheel up moved it back");
     }
 
+    /// A click while a run of commits is selected starts over, so `<cr>` after
+    /// it reviews the row clicked and never a range nobody chose.
+    #[test]
+    fn clicking_a_row_ends_a_selection() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        render(&mut app);
+        let rows = app.visible_rows();
+        let target = rows
+            .iter()
+            .position(|r| matches!(r, Row::File { .. }))
+            .expect("a file row");
+        app.handle(key('V'));
+        assert!(app.status.anchor.is_some(), "a run is selected");
+
+        let (x, y) = screen_pos(&app, target);
+        app.handle(mouse_click(x, y));
+
+        assert!(app.status.anchor.is_none(), "the click starts over");
+        assert_eq!(app.status.cursor, target);
+    }
+
     #[test]
     fn clicking_a_file_row_selects_it() {
         let fixture = standard_fixture();
