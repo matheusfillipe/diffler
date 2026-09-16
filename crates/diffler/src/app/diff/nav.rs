@@ -62,7 +62,20 @@ impl App {
                 }
                 return self.diff_jump_unviewed();
             }
-            Action::CycleSidebarMode => return self.diff_cycle_sidebar_mode(),
+            // the comments pane cycles its own grouping; every other pane
+            // keeps cycling the file sidebar's layout
+            Action::CycleSidebarMode => {
+                if self
+                    .diff
+                    .as_ref()
+                    .is_some_and(|d| d.focus == Pane::Comments)
+                {
+                    self.cycle_comment_grouping();
+                } else {
+                    self.diff_cycle_sidebar_mode();
+                }
+                return;
+            }
             Action::MoveLeft => return self.diff_focus(self.pane_left()),
             Action::MoveRight => return self.diff_focus(self.pane_right()),
             Action::ToggleSideBySide => return self.toggle_side_by_side(),
@@ -108,10 +121,19 @@ impl App {
 
     /// The comments sidebar. Its selection drives the diff cursor onto the
     /// comment, so every comment verb (reply, resolve, delete, claim, yank)
-    /// is the pane's own and works here untouched. An orphan seats no cursor
-    /// and no file: delete and claim address the selection by id, and
-    /// everything else declines.
+    /// is the pane's own and works here untouched. A header selects no
+    /// comment, and an orphan seats no cursor and no file: delete and claim
+    /// address the selection by id, and everything else declines.
     fn dispatch_comments(&mut self, action: Action) {
+        if Self::needs_a_selected_comment(action) {
+            match self.selected_comment_id() {
+                None => return self.info("no comment selected"),
+                Some(_) if self.selected_comment_is_orphan() => {
+                    return self.info("that comment's file is not in this diff");
+                }
+                Some(_) => {}
+            }
+        }
         match action {
             Action::MoveDown => self.comments_step(1),
             Action::MoveUp => self.comments_step(-1),
@@ -121,26 +143,35 @@ impl App {
             Action::HalfPageUp => self.comments_step(-self.comments_page(false)),
             Action::FullPageDown => self.comments_step(self.comments_page(true)),
             Action::FullPageUp => self.comments_step(-self.comments_page(true)),
+            // `[`/`]` step group headers; `tab`/`za` fold the one the cursor
+            // sits in. A flat list has neither, so both are no-ops there.
+            Action::NextHunk => self.comments_jump_header(true),
+            Action::PrevHunk => self.comments_jump_header(false),
+            Action::ToggleFold => self.comments_toggle_fold(),
             // the cursor already sits on the comment, so entering the diff
             // is a focus move, and so is stepping out either side
             Action::Open | Action::MoveRight | Action::MoveLeft => self.diff_focus(Pane::Diff),
             Action::DeleteComment => self.delete_selected_comment(),
             Action::ClaimComment => self.claim_selected_comment(),
-            // these read the diff cursor or the selected file, and an orphan
-            // seats neither. The review-wide verbs need no row and stay live
-            Action::Reply
-            | Action::Resolve
-            | Action::Comment
-            | Action::VisualSelect
-            | Action::MarkViewed
-            | Action::CopyFileFeedback
-            | Action::OpenEditor
-                if self.selected_comment_is_orphan() =>
-            {
-                self.info("that comment's file is not in this diff");
-            }
             other => self.dispatch_diff_pane(other),
         }
+    }
+
+    /// Verbs that read the diff cursor or the selected file: a header or an
+    /// orphan seats neither, so these decline instead of reaching whatever
+    /// the diff cursor was last left on. The review-wide verbs need no row
+    /// and are not in this list.
+    fn needs_a_selected_comment(action: Action) -> bool {
+        matches!(
+            action,
+            Action::Reply
+                | Action::Resolve
+                | Action::Comment
+                | Action::VisualSelect
+                | Action::MarkViewed
+                | Action::CopyFileFeedback
+                | Action::OpenEditor
+        )
     }
 
     fn dispatch_diff_list(&mut self, action: Action) {
@@ -755,7 +786,7 @@ impl App {
         };
         let rows = page_step(diff.comments_rect.height, full);
         let lines = diff.comment_lines.len();
-        let cards = self.comment_order().len();
+        let cards = self.comment_rows().len();
         let step = if lines == 0 || cards == 0 {
             UNMEASURED
         } else {

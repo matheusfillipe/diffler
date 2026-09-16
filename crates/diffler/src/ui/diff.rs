@@ -20,8 +20,8 @@ use crate::app::markdown::MdSpan;
 use crate::app::rowsel::RowSelect;
 use crate::app::walkthrough::{Block as WalkthroughBlock, stop_title, summary_figure_key};
 use crate::app::{
-    App, CommentLine, DiffRow, DiffView, FileHighlights, FileScope, Pane, RowCopy, SplitRow,
-    SplitSide, comment_display, summary_display,
+    App, CommentFacts, CommentLine, CommentPaneRow, DiffRow, DiffView, FileHighlights, FileScope,
+    Pane, RowCopy, SplitRow, SplitSide, comment_display, group_comment_rows, summary_display,
 };
 use crate::config::FileLayout;
 use crate::keymap::Action;
@@ -279,9 +279,56 @@ struct CardCtx<'a> {
     search: Option<CardSearch<'a>>,
 }
 
-/// Right pane: every comment of the review, each a header line (file, line,
-/// status) and its body wrapped to the column. The selection drives the diff
-/// cursor, so the highlighted card is always the one the pane's verbs act on.
+/// The pane's rows under its current grouping, built from the same ordering
+/// (`ordered_comments`) `App::comment_rows` sorts before it groups, so the
+/// two never disagree on which row a click or a keystroke lands on.
+fn comment_pane_rows(
+    ordered: &[(&diffler_core::session::Comment, bool)],
+    diff: &DiffView,
+) -> Vec<CommentPaneRow> {
+    let facts: Vec<CommentFacts> = ordered
+        .iter()
+        .map(|(comment, orphan)| CommentFacts {
+            id: comment.id.clone(),
+            file: comment.anchor.file.clone(),
+            author: comment.author.clone(),
+            status: comment.status,
+            orphan: *orphan,
+        })
+        .collect();
+    group_comment_rows(&facts, diff.comment_grouping, &diff.comment_folds)
+}
+
+/// A comments-pane group header: fold arrow, name, and how many comments it
+/// holds, the file sidebar's own section header (`sidebar_section_line`)
+/// with no diffstat, since a comment carries none.
+fn comment_group_header_line(
+    theme: &Theme,
+    bg: Color,
+    width: u16,
+    on_cursor: bool,
+    label: &str,
+    count: usize,
+    folded: bool,
+) -> Line<'static> {
+    let arrow = if folded { "▸ " } else { "▾ " };
+    let label_style = Style::new()
+        .fg(if on_cursor { theme.accent } else { theme.fg })
+        .bg(bg);
+    let dim = Style::new().fg(theme.dim).bg(bg);
+    let spans = vec![
+        tree_lead(theme, 0, bg, on_cursor),
+        Span::styled(arrow.to_owned(), dim),
+        Span::styled(label.to_owned(), label_style),
+        Span::styled(format!(" ({count})"), dim),
+    ];
+    pad_line(spans, bg, width)
+}
+
+/// Right pane: the review's comments under the pane's own grouping, each a
+/// header line (file, line, status) and its body wrapped to the column. The
+/// selection drives the diff cursor, so the highlighted card is always the
+/// one the pane's verbs act on.
 fn draw_comments(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut DiffView) {
     let (theme, search) = (ctx.theme, ctx.search);
     let focused = diff.focus == Pane::Comments;
@@ -290,10 +337,15 @@ fn draw_comments(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &
     let [heading, inner] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
     let ordered = ordered_comments(ctx, diff);
+    let rows = comment_pane_rows(&ordered, diff);
     frame.render_widget(
         Paragraph::new(pane_heading(
             theme,
-            &format!("Comments ({})", ordered.len()),
+            &format!(
+                "Comments ({}) · {}",
+                ordered.len(),
+                diff.comment_grouping.label()
+            ),
             focused,
             surface,
         )),
@@ -301,41 +353,66 @@ fn draw_comments(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &
     );
     diff.comments_rect = inner;
 
-    // one entry per rendered line back to the comment it belongs to, so a
-    // click on a wrapped body line selects that comment
+    // one entry per rendered line back to the row it belongs to, so a click
+    // on any wrapped body line selects the header or comment it belongs to
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut owners: Vec<Option<usize>> = Vec::new();
     let budget = (inner.width as usize).saturating_sub(2).max(1);
     let mut cursor_line = 0usize;
-    for (index, (comment, orphan)) in ordered.iter().enumerate() {
-        let on_cursor = index == diff.comments_cursor;
+    for (row_index, row) in rows.iter().enumerate() {
+        let on_cursor = row_index == diff.comments_cursor;
         if on_cursor {
             cursor_line = lines.len();
         }
         let bg = sidebar_row_bg(theme, on_cursor, focused);
-        let card = CardCtx {
-            theme,
-            budget,
-            bg,
-            width: inner.width,
-            on_cursor,
-            orphan: *orphan,
-            author_color: author_color(theme, bg, ctx.human_author, &comment.author),
-            search: search.filter(|_| focused).map(|search| CardSearch {
-                query: search.query(),
-                current: search.current_row() == Some(index),
-            }),
-        };
-        // the cursor opens its own card; every other comment collapses to one
-        // line so a review with many comments reads as a list, not a wall
-        let card_lines = if on_cursor {
-            comment_card(&card, comment)
-        } else {
-            vec![comment_summary_line(&card, comment)]
-        };
-        for line in card_lines {
-            lines.push(line);
-            owners.push(Some(index));
+        match row {
+            CommentPaneRow::Header {
+                label,
+                count,
+                folded,
+                ..
+            } => {
+                lines.push(comment_group_header_line(
+                    theme,
+                    bg,
+                    inner.width,
+                    on_cursor,
+                    label,
+                    *count,
+                    *folded,
+                ));
+                owners.push(Some(row_index));
+            }
+            CommentPaneRow::Item { id, orphan } => {
+                let Some(comment) = ctx.session.comment(id) else {
+                    continue;
+                };
+                let card = CardCtx {
+                    theme,
+                    budget,
+                    bg,
+                    width: inner.width,
+                    on_cursor,
+                    orphan: *orphan,
+                    author_color: author_color(theme, bg, ctx.human_author, &comment.author),
+                    search: search.filter(|_| focused).map(|search| CardSearch {
+                        query: search.query(),
+                        current: search.current_row() == Some(row_index),
+                    }),
+                };
+                // the cursor opens its own card; every other comment
+                // collapses to one line so a review with many comments reads
+                // as a list, not a wall
+                let card_lines = if on_cursor {
+                    comment_card(&card, comment)
+                } else {
+                    vec![comment_summary_line(&card, comment)]
+                };
+                for line in card_lines {
+                    lines.push(line);
+                    owners.push(Some(row_index));
+                }
+            }
         }
         lines.push(Line::styled(
             " ".repeat(inner.width as usize),
@@ -2076,6 +2153,87 @@ mod tests {
     fn the_comments_sidebar_opens_empty_on_a_review_without_comments() {
         let (_fixture, mut app) = diff_app();
         app.handle(key('C'));
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    /// Two files, two authors (one the reviewer), one resolved thread: enough
+    /// to give every grouping something real to show.
+    fn app_with_grouped_comments() -> (crate::test_support::Fixture, App) {
+        let (fixture, mut app) = diff_app();
+        let source = app.active_review_source();
+        app.review.session_for_mut(&source).add_comment(
+            diffler_core::session::Anchor {
+                file: "src/lib.rs".to_owned(),
+                line: Some(2),
+                line_end: None,
+                on_old_side: false,
+                line_text: None,
+            },
+            "reviewer",
+            "why 42?",
+        );
+        app.review.session_for_mut(&source).add_comment(
+            diffler_core::session::Anchor {
+                file: "todo.md".to_owned(),
+                line: Some(1),
+                line_end: None,
+                on_old_side: false,
+                line_text: None,
+            },
+            "alice",
+            "needs a date",
+        );
+        let resolved = app
+            .review
+            .session_for_mut(&source)
+            .add_comment(
+                diffler_core::session::Anchor {
+                    file: "todo.md".to_owned(),
+                    line: Some(2),
+                    line_end: None,
+                    on_old_side: false,
+                    line_text: None,
+                },
+                "alice",
+                "already fixed",
+            )
+            .id
+            .clone();
+        app.review.session_for_mut(&source).resolve(&resolved);
+        (fixture, app)
+    }
+
+    #[test]
+    fn comments_pane_flat_lists_every_comment_with_no_headers() {
+        let (_fixture, mut app) = app_with_grouped_comments();
+        app.handle(key('C'));
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn comments_pane_grouped_by_file_renders_a_header_per_file() {
+        let (_fixture, mut app) = app_with_grouped_comments();
+        app.handle(key('C'));
+        app.handle(key('t')); // flat -> file
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn comments_pane_grouped_by_author_renders_a_header_per_author() {
+        let (_fixture, mut app) = app_with_grouped_comments();
+        app.handle(key('C'));
+        app.handle(key('t')); // file
+        app.handle(key('t')); // author
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn comments_pane_grouped_by_status_starts_resolved_folded() {
+        let (_fixture, mut app) = app_with_grouped_comments();
+        app.handle(key('C'));
+        app.handle(key('t')); // file
+        app.handle(key('t')); // author
+        app.handle(key('t')); // status
         insta::assert_snapshot!(render(&mut app).backend());
     }
     use ratatui::backend::TestBackend;

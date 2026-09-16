@@ -34,8 +34,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(test)]
 pub(crate) use diff::merge_count;
 pub use diff::{
-    CommentLine, DeclaredRequest, DiffRow, DiffView, FileHighlights, FileScope, Pane, RowCopy,
-    ScrollAlign, SplitRow, SplitSide, blocks_of, comment_display, summary_display,
+    CommentFacts, CommentGrouping, CommentLine, CommentPaneRow, DeclaredRequest, DiffRow, DiffView,
+    FileHighlights, FileScope, Pane, RowCopy, ScrollAlign, SplitRow, SplitSide, blocks_of,
+    comment_display, group_comment_rows, summary_display,
 };
 pub use log::LogView;
 pub(crate) use status::{

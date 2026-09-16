@@ -3,8 +3,210 @@
 //! own verbs (reply, resolve, delete, yank) act on the right one with no
 //! separate handling.
 
+use std::collections::{BTreeSet, HashMap};
+
+use diffler_core::session::CommentStatus;
+
 use super::{DiffRow, Pane};
 use crate::app::App;
+
+/// The comments pane's four groupings, cycled by `t` while it holds focus.
+/// The file sidebar's own layout (`crate::config::FileLayout`) is untouched:
+/// this is a second, independent axis over the same review.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommentGrouping {
+    File,
+    Author,
+    Status,
+    Flat,
+}
+
+impl CommentGrouping {
+    pub(crate) fn cycle(self) -> Self {
+        match self {
+            Self::File => Self::Author,
+            Self::Author => Self::Status,
+            Self::Status => Self::Flat,
+            Self::Flat => Self::File,
+        }
+    }
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::File => "by file",
+            Self::Author => "by author",
+            Self::Status => "by status",
+            Self::Flat => "flat list",
+        }
+    }
+}
+
+/// The group key `status` grouping folds by default, the way the review
+/// layout's viewed bucket starts folded: a finished thread is what the
+/// reader did not come to read.
+pub(crate) const RESOLVED_FOLD_KEY: &str = "status:resolved";
+
+/// One comment's grouping-relevant facts, independent of the session so
+/// rendering and cursor stepping bucket the same review the same way from
+/// either side (`crate::ui::diff` builds these from its own render context;
+/// `App::comment_rows` builds them from the session directly).
+#[derive(Debug, Clone)]
+pub struct CommentFacts {
+    pub id: String,
+    pub file: String,
+    pub author: String,
+    pub status: CommentStatus,
+    pub orphan: bool,
+}
+
+/// One row of the comments pane under a grouping: a header naming its group
+/// and how many comments it holds, or one comment. Mirrors the file
+/// sidebar's own header/file row split (`crate::tree::TreeNode`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommentPaneRow {
+    Header {
+        key: String,
+        label: String,
+        count: usize,
+        folded: bool,
+    },
+    Item {
+        id: String,
+        orphan: bool,
+    },
+}
+
+fn status_key(status: CommentStatus) -> &'static str {
+    match status {
+        CommentStatus::Open => "status:open",
+        CommentStatus::Replied => "status:replied",
+        CommentStatus::Resolved => RESOLVED_FOLD_KEY,
+    }
+}
+
+fn status_label(status: CommentStatus) -> &'static str {
+    match status {
+        CommentStatus::Open => "Open",
+        CommentStatus::Replied => "Replied",
+        CommentStatus::Resolved => "Resolved",
+    }
+}
+
+/// Bucket `items` under a header per distinct key, in the order each key
+/// first appears. `items` already carries the pane's base order (by file,
+/// then line), so grouping by file reads in diff order and grouping by
+/// author reads in the order each author's first comment appears; a group
+/// with nothing in it never gets a header.
+fn group_by(
+    items: &[CommentFacts],
+    folds: &BTreeSet<String>,
+    keyer: impl Fn(&CommentFacts) -> (String, String),
+) -> Vec<CommentPaneRow> {
+    let mut order: Vec<String> = Vec::new();
+    let mut buckets: HashMap<String, (String, Vec<&CommentFacts>)> = HashMap::new();
+    for item in items {
+        let (key, label) = keyer(item);
+        buckets
+            .entry(key.clone())
+            .or_insert_with(|| {
+                order.push(key.clone());
+                (label, Vec::new())
+            })
+            .1
+            .push(item);
+    }
+    let mut rows = Vec::new();
+    for key in order {
+        let Some((label, bucket)) = buckets.remove(&key) else {
+            continue;
+        };
+        let folded = folds.contains(&key);
+        rows.push(CommentPaneRow::Header {
+            key: key.clone(),
+            label,
+            count: bucket.len(),
+            folded,
+        });
+        if !folded {
+            rows.extend(bucket.into_iter().map(|item| CommentPaneRow::Item {
+                id: item.id.clone(),
+                orphan: item.orphan,
+            }));
+        }
+    }
+    rows
+}
+
+/// Status groups in a fixed order (open, replied, resolved) rather than
+/// first appearance, so the pane reads the same way every time it groups by
+/// status.
+fn group_by_status(items: &[CommentFacts], folds: &BTreeSet<String>) -> Vec<CommentPaneRow> {
+    let mut rows = Vec::new();
+    for status in [
+        CommentStatus::Open,
+        CommentStatus::Replied,
+        CommentStatus::Resolved,
+    ] {
+        let bucket: Vec<&CommentFacts> =
+            items.iter().filter(|item| item.status == status).collect();
+        if bucket.is_empty() {
+            continue;
+        }
+        let key = status_key(status).to_owned();
+        let folded = folds.contains(&key);
+        rows.push(CommentPaneRow::Header {
+            key: key.clone(),
+            label: status_label(status).to_owned(),
+            count: bucket.len(),
+            folded,
+        });
+        if !folded {
+            rows.extend(bucket.into_iter().map(|item| CommentPaneRow::Item {
+                id: item.id.clone(),
+                orphan: item.orphan,
+            }));
+        }
+    }
+    rows
+}
+
+/// The comments pane's rows under `grouping`: a flat list yields every
+/// comment with no header at all, the other three group it the way the file
+/// sidebar's review and kinds layouts group files (`DiffView::section_rows`).
+pub fn group_comment_rows(
+    items: &[CommentFacts],
+    grouping: CommentGrouping,
+    folds: &BTreeSet<String>,
+) -> Vec<CommentPaneRow> {
+    match grouping {
+        CommentGrouping::Flat => items
+            .iter()
+            .map(|item| CommentPaneRow::Item {
+                id: item.id.clone(),
+                orphan: item.orphan,
+            })
+            .collect(),
+        CommentGrouping::File => group_by(items, folds, |item| {
+            (format!("file:{}", item.file), item.file.clone())
+        }),
+        CommentGrouping::Author => group_by(items, folds, |item| {
+            (format!("author:{}", item.author), item.author.clone())
+        }),
+        CommentGrouping::Status => group_by_status(items, folds),
+    }
+}
+
+/// The row `<tab>`/`za` folds when the comments cursor sits at `at`: that
+/// row's index when it is a header, otherwise the index of the header above
+/// it. Mirrors `nav::foldable_at`, one level deep since a comment row nests
+/// under exactly one header.
+fn comment_foldable_at(rows: &[CommentPaneRow], at: usize) -> Option<usize> {
+    let header = |row: &CommentPaneRow| matches!(row, CommentPaneRow::Header { .. });
+    if header(rows.get(at)?) {
+        return Some(at);
+    }
+    rows.get(..at)?.iter().rposition(header)
+}
 
 impl super::DiffView {
     pub fn comments_open(&self) -> bool {
@@ -47,6 +249,31 @@ impl App {
         ordered.iter().map(|comment| comment.id.clone()).collect()
     }
 
+    /// The pane's rows under its current grouping: headers and comments,
+    /// folded groups' items left out. `comments_cursor` indexes into this,
+    /// the way `tree_cursor` indexes into the file sidebar's own rows.
+    pub(crate) fn comment_rows(&self) -> Vec<CommentPaneRow> {
+        let Some(diff) = self.diff.as_ref() else {
+            return Vec::new();
+        };
+        let session = self.review.session_for(&diff.source);
+        let facts: Vec<CommentFacts> = self
+            .comment_order()
+            .into_iter()
+            .filter_map(|id| {
+                let comment = session.comment(&id)?;
+                Some(CommentFacts {
+                    orphan: self.file_rank(&comment.anchor.file) == usize::MAX,
+                    id,
+                    file: comment.anchor.file.clone(),
+                    author: comment.author.clone(),
+                    status: comment.status,
+                })
+            })
+            .collect();
+        group_comment_rows(&facts, diff.comment_grouping, &diff.comment_folds)
+    }
+
     /// The sidebar is a pane of the diff screen, so it opens over a review
     /// that is already on screen.
     pub(crate) fn toggle_comments_sidebar(&mut self) {
@@ -60,7 +287,7 @@ impl App {
             }
             return;
         }
-        let count = self.comment_order().len();
+        let count = self.comment_rows().len();
         // an empty sidebar is an answer, so it opens with nothing to focus
         if count == 0 {
             return;
@@ -73,7 +300,7 @@ impl App {
     }
 
     pub(crate) fn comments_step(&mut self, delta: isize) {
-        let count = self.comment_order().len();
+        let count = self.comment_rows().len();
         let Some(diff) = self.diff.as_mut() else {
             return;
         };
@@ -88,7 +315,7 @@ impl App {
     }
 
     pub(crate) fn comments_to(&mut self, index: usize) {
-        let count = self.comment_order().len();
+        let count = self.comment_rows().len();
         let Some(diff) = self.diff.as_mut() else {
             return;
         };
@@ -96,6 +323,82 @@ impl App {
             return;
         }
         diff.comments_cursor = index.min(count - 1);
+        self.seat_cursor_on_selected_comment();
+    }
+
+    /// `[`/`]` in the comments pane: the previous/next group header, the way
+    /// `]`/`[` step the file sidebar's own headers.
+    pub(crate) fn comments_jump_header(&mut self, forward: bool) {
+        let rows = self.comment_rows();
+        let Some(diff) = self.diff.as_ref() else {
+            return;
+        };
+        let is_header = |row: &CommentPaneRow| matches!(row, CommentPaneRow::Header { .. });
+        let Some(position) = crate::app::step_to(&rows, diff.comments_cursor, forward, is_header)
+        else {
+            return;
+        };
+        self.comments_to(position);
+    }
+
+    /// `tab`/`za` in the comments pane: fold the group the cursor sits in.
+    pub(crate) fn comments_toggle_fold(&mut self) {
+        let rows = self.comment_rows();
+        let Some(diff) = self.diff.as_ref() else {
+            return;
+        };
+        let Some(target) = comment_foldable_at(&rows, diff.comments_cursor) else {
+            self.info("nothing to fold here");
+            return;
+        };
+        let Some(CommentPaneRow::Header { key, .. }) = rows.get(target) else {
+            return;
+        };
+        let key = key.clone();
+        let Some(diff) = self.diff.as_mut() else {
+            return;
+        };
+        if !diff.comment_folds.remove(&key) {
+            diff.comment_folds.insert(key);
+        }
+        // the header that folded is the one to stand on, mirroring the file
+        // sidebar's own za/<tab>; folding never removes a header's own row,
+        // only what sits under it, so `target` always stays valid
+        let rows = self.comment_rows();
+        if let Some(diff) = self.diff.as_mut() {
+            diff.comments_cursor = target.min(rows.len().saturating_sub(1));
+        }
+        self.seat_cursor_on_selected_comment();
+    }
+
+    /// `t` while the comments pane holds focus: cycle its grouping, keeping
+    /// the selected comment selected where the new grouping still shows it.
+    pub(crate) fn cycle_comment_grouping(&mut self) {
+        let previous = self.selected_comment_id();
+        let Some(diff) = self.diff.as_mut() else {
+            return;
+        };
+        diff.comment_grouping = diff.comment_grouping.cycle();
+        let label = diff.comment_grouping.label();
+        self.reseat_comments_cursor(previous);
+        self.info(format!("comments: {label}"));
+    }
+
+    /// Land the comments cursor back on `previous` under the pane's current
+    /// rows, or the top when it is hidden behind a group that grouping just
+    /// folded (`status` starts with its resolved bucket closed).
+    fn reseat_comments_cursor(&mut self, previous: Option<String>) {
+        let rows = self.comment_rows();
+        let target = previous
+            .and_then(|id| {
+                rows.iter()
+                    .position(|row| matches!(row, CommentPaneRow::Item { id: at, .. } if *at == id))
+            })
+            .unwrap_or(0);
+        let Some(diff) = self.diff.as_mut() else {
+            return;
+        };
+        diff.comments_cursor = target.min(rows.len().saturating_sub(1));
         self.seat_cursor_on_selected_comment();
     }
 
@@ -111,10 +414,15 @@ impl App {
         self.comments_to(diff.comments_cursor);
     }
 
-    /// The comment the sidebar has selected.
+    /// The comment the sidebar has selected; `None` when it sits on a group
+    /// header instead, the same as the file sidebar's cursor landing on a
+    /// directory or section row.
     pub(crate) fn selected_comment_id(&self) -> Option<String> {
-        let index = self.diff.as_ref()?.comments_cursor;
-        self.comment_order().get(index).cloned()
+        let diff = self.diff.as_ref()?;
+        match self.comment_rows().get(diff.comments_cursor)? {
+            CommentPaneRow::Item { id, .. } => Some(id.clone()),
+            CommentPaneRow::Header { .. } => None,
+        }
     }
 
     /// Whether the selected comment is anchored to a file this diff no longer
@@ -180,13 +488,11 @@ impl App {
     }
 
     /// Move the diff cursor onto the selected comment, switching files when it
-    /// lives in another one. This is what makes the pane's verbs apply.
+    /// lives in another one. This is what makes the pane's verbs apply. A
+    /// header under the cursor selects no comment, so it seats nothing and
+    /// leaves the diff cursor exactly where it was.
     pub(crate) fn seat_cursor_on_selected_comment(&mut self) {
-        let order = self.comment_order();
-        let Some(diff) = self.diff.as_ref() else {
-            return;
-        };
-        let Some(id) = order.get(diff.comments_cursor).cloned() else {
+        let Some(id) = self.selected_comment_id() else {
             return;
         };
         self.focus_comment(&id);
@@ -595,5 +901,242 @@ mod tests {
         let diff = app.diff.as_ref().expect("diff");
         assert!(diff.comments_open(), "the empty sidebar still opens");
         assert_eq!(diff.focus, before, "nothing to select, so focus holds");
+    }
+
+    /// Three comments across two files, two authors, and one resolved, for
+    /// exercising the pane's groupings: file, author, and status all differ.
+    /// Returns the resolved comment's id alongside the fixture.
+    fn app_with_grouped_comments() -> (Fixture, App, String) {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.author = "reviewer".to_owned();
+        app.review
+            .session
+            .add_comment(anchor("src/lib.rs", 2), "reviewer", "why 42?");
+        app.review
+            .session
+            .add_comment(anchor("todo.md", 1), "alice", "needs a date");
+        let resolved = app
+            .review
+            .session
+            .add_comment(anchor("todo.md", 3), "alice", "already fixed")
+            .id
+            .clone();
+        app.review.session.resolve(&resolved);
+        app.open_working_tree_diff(None);
+        (fixture, app, resolved)
+    }
+
+    fn header_rows(app: &App) -> Vec<(String, usize, bool)> {
+        app.comment_rows()
+            .into_iter()
+            .filter_map(|row| match row {
+                CommentPaneRow::Header {
+                    label,
+                    count,
+                    folded,
+                    ..
+                } => Some((label, count, folded)),
+                CommentPaneRow::Item { .. } => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_comments_pane_opens_flat_with_no_headers() {
+        let (_fixture, mut app, _resolved) = app_with_grouped_comments();
+        app.handle(key('C'));
+        assert_eq!(
+            app.diff.as_ref().expect("diff").comment_grouping,
+            CommentGrouping::Flat
+        );
+        assert!(
+            header_rows(&app).is_empty(),
+            "a flat list has no group headers"
+        );
+    }
+
+    #[test]
+    fn t_cycles_the_comments_pane_through_its_four_groupings_and_back() {
+        let (_fixture, mut app, _resolved) = app_with_grouped_comments();
+        app.handle(key('C'));
+        let grouping = |app: &App| app.diff.as_ref().expect("diff").comment_grouping;
+        for expected in [
+            CommentGrouping::File,
+            CommentGrouping::Author,
+            CommentGrouping::Status,
+            CommentGrouping::Flat,
+        ] {
+            app.dispatch(Action::CycleSidebarMode);
+            assert_eq!(grouping(&app), expected);
+        }
+    }
+
+    #[test]
+    fn t_elsewhere_still_cycles_the_file_sidebars_own_layout() {
+        let (_fixture, mut app, _resolved) = app_with_grouped_comments();
+        app.handle(key('C'));
+        app.handle(key('h')); // Comments -> Diff
+        app.handle(key('h')); // Diff -> the file list
+        assert_eq!(app.diff.as_ref().expect("diff").focus, Pane::List);
+
+        app.dispatch(Action::CycleSidebarMode);
+
+        assert_eq!(
+            app.diff.as_ref().expect("diff").layout,
+            crate::config::FileLayout::Review,
+            "t in the file sidebar keeps cycling tree/review/kinds"
+        );
+        assert_eq!(
+            app.diff.as_ref().expect("diff").comment_grouping,
+            CommentGrouping::Flat,
+            "the comments pane's own grouping never moved"
+        );
+    }
+
+    #[test]
+    fn grouping_by_file_headers_each_file_once_in_diff_order_with_its_count() {
+        let (_fixture, mut app, _resolved) = app_with_grouped_comments();
+        app.handle(key('C'));
+        app.dispatch(Action::CycleSidebarMode); // -> File
+
+        let model_order: Vec<String> = app
+            .diff
+            .as_ref()
+            .expect("diff")
+            .model(&app.review)
+            .files
+            .iter()
+            .map(|f| f.path.clone())
+            .filter(|p| p == "src/lib.rs" || p == "todo.md")
+            .collect();
+        let counts: HashMap<&str, usize> = [("src/lib.rs", 1), ("todo.md", 2)].into();
+        let expected: Vec<(String, usize, bool)> = model_order
+            .iter()
+            .map(|path| (path.clone(), counts[path.as_str()], false))
+            .collect();
+        assert_eq!(
+            header_rows(&app),
+            expected,
+            "one header per file, in the order the diff lists them"
+        );
+    }
+
+    #[test]
+    fn grouping_by_author_headers_each_author_once_with_its_count() {
+        let (_fixture, mut app, _resolved) = app_with_grouped_comments();
+        app.handle(key('C'));
+        app.dispatch(Action::CycleSidebarMode); // File
+        app.dispatch(Action::CycleSidebarMode); // Author
+
+        assert_eq!(
+            header_rows(&app),
+            vec![
+                ("reviewer".to_owned(), 1, false),
+                ("alice".to_owned(), 2, false),
+            ],
+            "reviewer's own comment sorts first, then alice's two"
+        );
+    }
+
+    #[test]
+    fn grouping_by_status_orders_open_replied_resolved_and_starts_resolved_folded() {
+        let (_fixture, mut app, resolved) = app_with_grouped_comments();
+        app.handle(key('C'));
+        app.dispatch(Action::CycleSidebarMode); // File
+        app.dispatch(Action::CycleSidebarMode); // Author
+        app.dispatch(Action::CycleSidebarMode); // Status
+
+        assert_eq!(
+            header_rows(&app),
+            vec![
+                ("Open".to_owned(), 2, false),
+                ("Resolved".to_owned(), 1, true),
+            ],
+            "open leads, resolved trails and starts folded"
+        );
+        assert!(
+            !app.comment_rows()
+                .iter()
+                .any(|row| matches!(row, CommentPaneRow::Item { id, .. } if *id == resolved)),
+            "the resolved comment's own row is hidden behind its folded header"
+        );
+    }
+
+    #[test]
+    fn tab_folds_the_header_the_cursor_sits_under_and_lands_on_it() {
+        let (_fixture, mut app, _resolved) = app_with_grouped_comments();
+        app.handle(key('C'));
+        app.dispatch(Action::CycleSidebarMode); // -> File
+        let before = app.comment_rows().len();
+        // stand on the single-comment file's own item row
+        let item_row = app
+            .comment_rows()
+            .iter()
+            .position(|row| matches!(row, CommentPaneRow::Item { .. }))
+            .expect("a comment row exists");
+        app.diff.as_mut().expect("diff").comments_cursor = item_row;
+
+        app.dispatch(Action::ToggleFold);
+
+        let rows = app.comment_rows();
+        assert!(rows.len() < before, "folding hides the header's items");
+        let cursor = app.diff.as_ref().expect("diff").comments_cursor();
+        assert!(
+            matches!(
+                rows.get(cursor),
+                Some(CommentPaneRow::Header { folded: true, .. })
+            ),
+            "the header the item sat under is now folded, and the cursor stands on it: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn bracket_keys_step_group_headers_in_the_comments_pane() {
+        let (_fixture, mut app, _resolved) = app_with_grouped_comments();
+        app.handle(key('C'));
+        app.dispatch(Action::CycleSidebarMode); // -> File
+        app.diff.as_mut().expect("diff").comments_cursor = 0;
+
+        app.dispatch(Action::NextHunk);
+        let rows = app.comment_rows();
+        let cursor = app.diff.as_ref().expect("diff").comments_cursor();
+        assert!(
+            matches!(rows.get(cursor), Some(CommentPaneRow::Header { .. })),
+            "] lands on the next header"
+        );
+        assert!(cursor > 0, "and it is not the one the cursor started on");
+
+        app.dispatch(Action::PrevHunk);
+        assert_eq!(
+            app.diff.as_ref().expect("diff").comments_cursor(),
+            0,
+            "[ steps back to the first header"
+        );
+    }
+
+    #[test]
+    fn a_header_under_the_cursor_selects_no_comment_and_declines_its_verbs() {
+        let (_fixture, mut app, _resolved) = app_with_grouped_comments();
+        app.handle(key('C'));
+        app.dispatch(Action::CycleSidebarMode); // -> File
+        app.diff.as_mut().expect("diff").comments_cursor = 0;
+        assert!(
+            matches!(
+                app.comment_rows().first(),
+                Some(CommentPaneRow::Header { .. })
+            ),
+            "row 0 is a header under the file grouping"
+        );
+
+        assert_eq!(app.selected_comment_id(), None);
+
+        app.handle(key('c'));
+
+        assert!(!app.composer_open(), "a header opens no composer");
+        assert_eq!(
+            app.message.as_ref().map(|m| m.text.as_str()),
+            Some("no comment selected")
+        );
     }
 }

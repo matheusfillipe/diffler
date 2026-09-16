@@ -26,6 +26,7 @@ use diffler_core::walkthrough::Located;
 use super::composer::{Composer, ComposerKind};
 use super::rowsel::{RowSelect, RowText};
 use super::{App, Flow};
+pub use comments::{CommentFacts, CommentGrouping, CommentPaneRow, group_comment_rows};
 pub use rows::{
     CommentLine, DiffRow, RowCopy, SplitRow, SplitSide, blocks_of, comment_display, summary_display,
 };
@@ -183,9 +184,17 @@ pub struct DiffView {
     pub(crate) comments_cursor: usize,
     pub(crate) comments_scroll: usize,
     pub(crate) comments_rect: ratatui::layout::Rect,
-    /// Last render's comment-sidebar line -> comment index, so a click on any
-    /// wrapped body line selects the comment it belongs to.
+    /// Last render's comment-sidebar line -> row index (into
+    /// `App::comment_rows`), so a click on any wrapped body line selects the
+    /// row it belongs to, header or comment alike.
     pub(crate) comment_lines: Vec<Option<usize>>,
+    /// Comments-pane grouping cycled by `t` while it holds focus, independent
+    /// of the file sidebar's own layout.
+    pub(crate) comment_grouping: CommentGrouping,
+    /// Folded comments-pane group keys, namespaced per grouping (`file:`,
+    /// `author:`, `status:`) so switching grouping with `t` never confuses one
+    /// group's fold state for another's.
+    pub(crate) comment_folds: BTreeSet<String>,
     /// Row where `V` started; `Some` means line selection is active.
     pub visual_anchor: Option<usize>,
     /// Body height of the last diff-pane render, drives half-page motions.
@@ -275,6 +284,8 @@ impl DiffView {
             comments_scroll: 0,
             comments_rect: ratatui::layout::Rect::default(),
             comment_lines: Vec::new(),
+            comment_grouping: CommentGrouping::Flat,
+            comment_folds: BTreeSet::from([comments::RESOLVED_FOLD_KEY.to_owned()]),
             visual_anchor: None,
             viewport: 0,
             rows: Vec::new(),
