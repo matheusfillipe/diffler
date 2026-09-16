@@ -20,8 +20,9 @@ use crate::app::markdown::MdSpan;
 use crate::app::rowsel::RowSelect;
 use crate::app::walkthrough::{Block as WalkthroughBlock, stop_title, summary_figure_key};
 use crate::app::{
-    App, CommentFacts, CommentLine, CommentPaneRow, DiffRow, DiffView, FileHighlights, FileScope,
-    Pane, RowCopy, SplitRow, SplitSide, comment_display, group_comment_rows, summary_display,
+    App, CommentFacts, CommentGrouping, CommentLine, CommentPaneRow, DiffRow, DiffView,
+    FileHighlights, FileScope, Pane, RowCopy, SplitRow, SplitSide, comment_display,
+    group_comment_rows, summary_display,
 };
 use crate::config::FileLayout;
 use crate::keymap::Action;
@@ -270,6 +271,9 @@ struct CardCtx<'a> {
     budget: usize,
     bg: Color,
     width: u16,
+    /// Indent under the group header the way a file indents under its
+    /// directory; 0 for a flat list, which has no header to nest under.
+    depth: usize,
     on_cursor: bool,
     orphan: bool,
     /// The author's own colour: stable across sessions for anyone but the
@@ -299,9 +303,48 @@ fn comment_pane_rows(
     group_comment_rows(&facts, diff.comment_grouping, &diff.comment_folds)
 }
 
-/// A comments-pane group header: fold arrow, name, and how many comments it
-/// holds, the file sidebar's own section header (`sidebar_section_line`)
-/// with no diffstat, since a comment carries none.
+/// A group header row's shared rendering inputs, trimmed down to what
+/// `group_header_line` needs beyond label/count/fold/tail.
+#[derive(Clone, Copy)]
+struct HeaderCtx<'a> {
+    theme: &'a Theme,
+    bg: Color,
+    width: u16,
+    on_cursor: bool,
+}
+
+/// A group header row: fold arrow, bold label, its count, and an optional
+/// right-aligned tail. Shared by the file sidebar's own sections (a diffstat
+/// tail) and the comments pane's (none, since a comment carries none).
+fn group_header_line(
+    hc: HeaderCtx<'_>,
+    label: &str,
+    count: usize,
+    folded: bool,
+    tail: Vec<Span<'static>>,
+) -> Line<'static> {
+    let HeaderCtx {
+        theme,
+        bg,
+        width,
+        on_cursor,
+    } = hc;
+    let arrow = if folded { "▸ " } else { "▾ " };
+    let label_style = Style::new()
+        .fg(if on_cursor { theme.accent } else { theme.fg })
+        .bg(bg);
+    let dim = Style::new().fg(theme.dim).bg(bg);
+    let mut spans = vec![
+        tree_lead(theme, 0, bg, on_cursor),
+        Span::styled(arrow.to_owned(), dim),
+        Span::styled(label.to_owned(), label_style),
+        Span::styled(format!(" ({count})"), dim),
+    ];
+    push_right(&mut spans, tail, width, bg);
+    pad_line(spans, bg, width)
+}
+
+/// A comments-pane group header: `group_header_line` with no tail.
 fn comment_group_header_line(
     theme: &Theme,
     bg: Color,
@@ -311,18 +354,18 @@ fn comment_group_header_line(
     count: usize,
     folded: bool,
 ) -> Line<'static> {
-    let arrow = if folded { "▸ " } else { "▾ " };
-    let label_style = Style::new()
-        .fg(if on_cursor { theme.accent } else { theme.fg })
-        .bg(bg);
-    let dim = Style::new().fg(theme.dim).bg(bg);
-    let spans = vec![
-        tree_lead(theme, 0, bg, on_cursor),
-        Span::styled(arrow.to_owned(), dim),
-        Span::styled(label.to_owned(), label_style),
-        Span::styled(format!(" ({count})"), dim),
-    ];
-    pad_line(spans, bg, width)
+    group_header_line(
+        HeaderCtx {
+            theme,
+            bg,
+            width,
+            on_cursor,
+        },
+        label,
+        count,
+        folded,
+        Vec::new(),
+    )
 }
 
 /// Right pane: the review's comments under the pane's own grouping, each a
@@ -330,7 +373,7 @@ fn comment_group_header_line(
 /// selection drives the diff cursor, so the highlighted card is always the
 /// one the pane's verbs act on.
 fn draw_comments(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut DiffView) {
-    let (theme, search) = (ctx.theme, ctx.search);
+    let theme = ctx.theme;
     let focused = diff.focus == Pane::Comments;
     let surface = sidebar_bg(theme);
     frame.render_widget(Block::new().style(Style::new().bg(surface)), area);
@@ -353,11 +396,45 @@ fn draw_comments(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &
     );
     diff.comments_rect = inner;
 
-    // one entry per rendered line back to the row it belongs to, so a click
-    // on any wrapped body line selects the header or comment it belongs to
+    let (mut lines, owners, cursor_line) = comment_pane_lines(ctx, diff, &rows, inner, focused);
+    diff.comment_lines = owners;
+    if lines.is_empty() {
+        let dim = Style::new().fg(theme.dim).bg(surface);
+        lines.push(Line::styled(" no comments yet", dim));
+        lines.push(Line::styled(" c to add one", dim));
+    }
+
+    let height = inner.height.max(1) as usize;
+    diff.comments_scroll =
+        super::scroll_to_cursor(cursor_line, diff.comments_scroll, height, lines.len());
+    let shown: Vec<Line<'static>> = lines
+        .into_iter()
+        .skip(diff.comments_scroll)
+        .take(height)
+        .collect();
+    frame.render_widget(Paragraph::new(shown), inner);
+}
+
+/// Every row of the comments pane flattened to rendered lines: one entry per
+/// line back to the row it belongs to, so a click on any wrapped body line
+/// selects the header or comment it came from, plus where the cursor's own
+/// line landed so the pane can scroll to it.
+fn comment_pane_lines(
+    ctx: &RenderCtx<'_>,
+    diff: &DiffView,
+    rows: &[CommentPaneRow],
+    inner: Rect,
+    focused: bool,
+) -> (Vec<Line<'static>>, Vec<Option<usize>>, usize) {
+    let theme = ctx.theme;
+    let search = ctx.search;
+    let surface = sidebar_bg(theme);
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut owners: Vec<Option<usize>> = Vec::new();
     let budget = (inner.width as usize).saturating_sub(2).max(1);
+    // a flat list has no header to nest items under; every other grouping
+    // indents its items one level, the way a file indents under its directory
+    let item_depth = usize::from(diff.comment_grouping != CommentGrouping::Flat);
     let mut cursor_line = 0usize;
     for (row_index, row) in rows.iter().enumerate() {
         let on_cursor = row_index == diff.comments_cursor;
@@ -392,6 +469,7 @@ fn draw_comments(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &
                     budget,
                     bg,
                     width: inner.width,
+                    depth: item_depth,
                     on_cursor,
                     orphan: *orphan,
                     author_color: author_color(theme, bg, ctx.human_author, &comment.author),
@@ -412,30 +490,23 @@ fn draw_comments(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &
                     lines.push(line);
                     owners.push(Some(row_index));
                 }
+                // a spacer trails an open card or a group's last item, so a
+                // busy pane of collapsed rows reads dense and not as a wall
+                // of gaps; a header carries no spacer of its own, the same
+                // density the file sidebar's own sections keep
+                let last_in_group =
+                    !matches!(rows.get(row_index + 1), Some(CommentPaneRow::Item { .. }));
+                if on_cursor || last_in_group {
+                    lines.push(Line::styled(
+                        " ".repeat(inner.width as usize),
+                        Style::new().bg(surface),
+                    ));
+                    owners.push(None);
+                }
             }
         }
-        lines.push(Line::styled(
-            " ".repeat(inner.width as usize),
-            Style::new().bg(surface),
-        ));
-        owners.push(None);
     }
-    diff.comment_lines = owners;
-    if lines.is_empty() {
-        let dim = Style::new().fg(theme.dim).bg(surface);
-        lines.push(Line::styled(" no comments yet", dim));
-        lines.push(Line::styled(" c to add one", dim));
-    }
-
-    let height = inner.height.max(1) as usize;
-    diff.comments_scroll =
-        super::scroll_to_cursor(cursor_line, diff.comments_scroll, height, lines.len());
-    let shown: Vec<Line<'static>> = lines
-        .into_iter()
-        .skip(diff.comments_scroll)
-        .take(height)
-        .collect();
-    frame.render_widget(Paragraph::new(shown), inner);
+    (lines, owners, cursor_line)
 }
 
 /// The review's comments in sidebar order: by file as the diff lists them,
@@ -488,7 +559,7 @@ fn search_ranges(
 fn title_line(cc: &CardCtx<'_>, title: &str) -> Line<'static> {
     let title = super::elide(title, cc.budget.saturating_sub(2));
     let mut spans = vec![
-        tree_lead(cc.theme, 0, cc.bg, cc.on_cursor),
+        tree_lead(cc.theme, cc.depth, cc.bg, cc.on_cursor),
         Span::styled(" ".to_owned(), Style::new().bg(cc.bg)),
     ];
     spans.extend(super::highlight_spans(
@@ -576,6 +647,7 @@ fn comment_header_spans(
         theme,
         budget,
         bg,
+        depth,
         on_cursor,
         orphan,
         author_color,
@@ -590,7 +662,7 @@ fn comment_header_spans(
         CommentStatus::Resolved => ("✓", theme.added),
     };
     let spans = vec![
-        tree_lead(theme, 0, bg, on_cursor),
+        tree_lead(theme, depth, bg, on_cursor),
         Span::styled(format!("{status} "), Style::new().fg(colour).bg(bg)),
         Span::styled(
             format!("{} ", comment.author),
@@ -627,6 +699,7 @@ fn comment_card(cc: &CardCtx<'_>, comment: &diffler_core::session::Comment) -> V
         budget,
         bg,
         width,
+        depth,
         on_cursor,
         search,
         ..
@@ -634,7 +707,7 @@ fn comment_card(cc: &CardCtx<'_>, comment: &diffler_core::session::Comment) -> V
     let ranges = |text: &str| search_ranges(search, text);
     // the tree's own lead cell, so the `▌` rail runs down the selected card
     // exactly as it marks the selected file row
-    let lead = || tree_lead(theme, 0, bg, on_cursor);
+    let lead = || tree_lead(theme, depth, bg, on_cursor);
     let pad = |spans: Vec<Span<'static>>| pad_line(spans, bg, width);
     let file = comment
         .anchor
@@ -1391,8 +1464,8 @@ fn sidebar_dir_line(
     pad_line(spans, bg, width)
 }
 
-/// A section header row: fold arrow, bold label, the count of files it holds,
-/// and the diffstat they add up to.
+/// A section header row: `group_header_line` with the bucket's own diffstat
+/// as its tail.
 fn sidebar_section_line(
     rc: &TreeRowCtx<'_>,
     bucket: Bucket,
@@ -1408,20 +1481,19 @@ fn sidebar_section_line(
         ..
     } = rc;
     let bg = sidebar_row_bg(theme, on_cursor, focused);
-    let arrow = if folded { "▸ " } else { "▾ " };
-    let label_style = Style::new()
-        .fg(if on_cursor { theme.accent } else { theme.fg })
-        .bg(bg);
-    let dim = Style::new().fg(theme.dim).bg(bg);
-    let mut spans = vec![
-        tree_lead(theme, 0, bg, on_cursor),
-        Span::styled(arrow.to_owned(), dim),
-        Span::styled(bucket.label().to_owned(), label_style),
-        Span::styled(format!(" ({count})"), dim),
-    ];
     let tail = diffstat_spans(theme, stat.0, stat.1, bg);
-    push_right(&mut spans, tail, width, bg);
-    pad_line(spans, bg, width)
+    group_header_line(
+        HeaderCtx {
+            theme,
+            bg,
+            width,
+            on_cursor,
+        },
+        bucket.label(),
+        count,
+        folded,
+        tail,
+    )
 }
 
 /// A file row: indent, status glyph (colored), basename, then the viewed and
@@ -2234,6 +2306,74 @@ mod tests {
         app.handle(key('t')); // file
         app.handle(key('t')); // author
         app.handle(key('t')); // status
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    fn busy_anchor(file: &str, line: u32) -> diffler_core::session::Anchor {
+        diffler_core::session::Anchor {
+            file: file.to_owned(),
+            line: Some(line),
+            line_end: None,
+            on_old_side: false,
+            line_text: None,
+        }
+    }
+
+    /// A pane busy enough to prove the redesign holds up: three files, six
+    /// authors including one long handle, a body too long for its collapsed
+    /// row, and two folded groups on screen at once, none of which the
+    /// shorter fixtures above ever show together.
+    #[test]
+    fn a_busy_comments_pane_stays_dense_with_a_long_name_an_elided_body_and_two_folds() {
+        let (_fixture, mut app) = diff_app();
+        let source = app.active_review_source();
+        let reviewer_id = app
+            .review
+            .session_for_mut(&source)
+            .add_comment(busy_anchor("src/lib.rs", 1), "reviewer", "why 42?")
+            .id
+            .clone();
+        app.review.session_for_mut(&source).add_comment(
+            busy_anchor("src/lib.rs", 2),
+            "alexandra-the-longform-reviewer",
+            "looks fine",
+        );
+        app.review.session_for_mut(&source).add_comment(
+            busy_anchor("src/lib.rs", 3),
+            "dave",
+            "This preview has to run long enough that the collapsed row has \
+             no choice but to elide it with an ellipsis at the end.",
+        );
+        app.review.session_for_mut(&source).add_comment(
+            busy_anchor("ci.yml", 1),
+            "bob",
+            "looks fine",
+        );
+        app.review.session_for_mut(&source).add_comment(
+            busy_anchor("ci.yml", 1),
+            "carol",
+            "ship it",
+        );
+        app.review.session_for_mut(&source).add_comment(
+            busy_anchor("todo.md", 1),
+            "agent",
+            "flagged for follow-up",
+        );
+        app.handle(key('C'));
+        app.handle(key('t')); // flat -> file
+        let diff = app.diff.as_mut().expect("diff");
+        diff.comment_folds.insert("file:ci.yml".to_owned());
+        diff.comment_folds.insert("file:todo.md".to_owned());
+        // land the cursor on the reviewer's own comment so its card opens,
+        // leaving its long-named neighbour to show collapsed, elided, dense
+        let open_row = app
+            .comment_rows()
+            .iter()
+            .position(
+                |row| matches!(row, super::CommentPaneRow::Item { id, .. } if *id == reviewer_id),
+            )
+            .expect("the reviewer's comment has a row under src/lib.rs");
+        app.comments_to(open_row);
         insta::assert_snapshot!(render(&mut app).backend());
     }
     use ratatui::backend::TestBackend;
