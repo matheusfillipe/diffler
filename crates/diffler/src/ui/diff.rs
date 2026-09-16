@@ -1924,7 +1924,7 @@ mod tests {
     use crate::config::LoadedConfig;
     use crate::test_support::{
         Fixture, key, mouse_click, mouse_drag, mouse_right_click, mouse_scroll, render,
-        standard_fixture,
+        settle_submit, standard_fixture,
     };
     use crate::theme::Theme;
 
@@ -3600,9 +3600,7 @@ flowchart LR
             app.handle(key(c));
         }
         app.handle(key('\n'));
-        // settle the submit before reading positions off the fresh rows, the
-        // way a render between keystrokes would
-        app.diff.as_mut().unwrap().ensure_rows(&app.review);
+        settle_submit(&mut app);
         let comment_row = app
             .diff
             .as_ref()

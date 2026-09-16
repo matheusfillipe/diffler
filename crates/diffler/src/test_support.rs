@@ -371,3 +371,9 @@ pub(crate) fn mouse_right_click(col: u16, row: u16) -> AppEvent {
         modifiers: KeyModifiers::NONE,
     })
 }
+
+/// Settle a composer submit before reading positions off the fresh rows, the
+/// way a render between keystrokes would.
+pub(crate) fn settle_submit(app: &mut App) {
+    app.diff.as_mut().unwrap().ensure_rows(&app.review);
+}

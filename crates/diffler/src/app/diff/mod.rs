@@ -993,8 +993,8 @@ mod tests {
     use crate::config::LoadedConfig;
     use crate::event::AppEvent;
     use crate::test_support::{
-        Fixture, big_file_fixture, code_key, ctrl_key, huge_span_fixture, key, standard_fixture,
-        two_hunk_fixture,
+        Fixture, big_file_fixture, code_key, ctrl_key, huge_span_fixture, key, settle_submit,
+        standard_fixture, two_hunk_fixture,
     };
 
     fn diff_app(fixture: &Fixture) -> App {
@@ -2495,10 +2495,8 @@ mod tests {
         type_text(&mut app, "question");
         app.handle(key('\n'));
 
-        // settle the submit before reading positions off the fresh rows, the
-        // way a render between keystrokes would; the comment header row
-        // sits right under the anchored line
-        app.diff.as_mut().unwrap().ensure_rows(&app.review);
+        // the comment header row sits right under the anchored line
+        settle_submit(&mut app);
         let position = added_line_position(&app);
         app.diff.as_mut().unwrap().cursor = position + 1;
         app.handle(key('r'));
@@ -2511,7 +2509,7 @@ mod tests {
         assert_eq!(comment.replies[0].body, "answer");
 
         // the block grew by the reply line; resolve from the same header
-        app.diff.as_mut().unwrap().ensure_rows(&app.review);
+        settle_submit(&mut app);
         let position = added_line_position(&app);
         app.diff.as_mut().unwrap().cursor = position + 1;
         app.handle(key('R'));
@@ -2967,9 +2965,7 @@ mod tests {
         app.handle(key('c'));
         type_text(&mut app, "question");
         app.handle(key('\n'));
-        // settle the submit before reading positions off the fresh rows, the
-        // way a render between keystrokes would
-        app.diff.as_mut().unwrap().ensure_rows(&app.review);
+        settle_submit(&mut app);
         app.diff.as_mut().unwrap().cursor = added_line_position(&app) + 1;
         app.handle(key('r'));
         let last_comment = app
@@ -2998,9 +2994,7 @@ mod tests {
         app.handle(key('c'));
         type_text(&mut app, "note");
         app.handle(key('\n'));
-        // settle the submit before reading positions off the fresh rows, the
-        // way a render between keystrokes would
-        app.diff.as_mut().unwrap().ensure_rows(&app.review);
+        settle_submit(&mut app);
         app.diff.as_mut().unwrap().cursor = added_line_position(&app) + 1;
         app.handle(key('c'));
         assert_eq!(composer_rows(&app).first().copied(), Some(line + 1));
@@ -3112,10 +3106,8 @@ mod tests {
         type_text(&mut app, "old note");
         app.handle(key('\n'));
 
-        // settle the submit before reading positions off the fresh rows, the
-        // way a render between keystrokes would; then move onto the comment
-        // row: `c` edits, prefilled with the body
-        app.diff.as_mut().unwrap().ensure_rows(&app.review);
+        // then move onto the comment row: `c` edits, prefilled with the body
+        settle_submit(&mut app);
         app.diff.as_mut().unwrap().cursor = added_line_position(&app) + 1;
         app.handle(key('c'));
         let composer = app
