@@ -276,9 +276,9 @@ struct CardCtx<'a> {
     depth: usize,
     on_cursor: bool,
     orphan: bool,
-    /// The author's own colour: stable across sessions for anyone but the
-    /// human and the agent, who each take a fixed one so the reader's eye
-    /// finds them without reading.
+    /// The author's own colour: stepped from where the author first appears
+    /// in the pane, fixed instead for the human and the agent, so the
+    /// reader's eye finds those two without reading.
     author_color: Color,
     search: Option<CardSearch<'a>>,
 }
@@ -396,7 +396,8 @@ fn draw_comments(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &
     );
     diff.comments_rect = inner;
 
-    let (mut lines, owners, cursor_line) = comment_pane_lines(ctx, diff, &rows, inner, focused);
+    let (mut lines, owners, cursor_line) =
+        comment_pane_lines(ctx, diff, &rows, &ordered, inner, focused);
     diff.comment_lines = owners;
     if lines.is_empty() {
         let dim = Style::new().fg(theme.dim).bg(surface);
@@ -423,6 +424,7 @@ fn comment_pane_lines(
     ctx: &RenderCtx<'_>,
     diff: &DiffView,
     rows: &[CommentPaneRow],
+    ordered: &[(&diffler_core::session::Comment, bool)],
     inner: Rect,
     focused: bool,
 ) -> (Vec<Line<'static>>, Vec<Option<usize>>, usize) {
@@ -435,6 +437,10 @@ fn comment_pane_lines(
     // a flat list has no header to nest items under; every other grouping
     // indents its items one level, the way a file indents under its directory
     let item_depth = usize::from(diff.comment_grouping != CommentGrouping::Flat);
+    let orders = author_orders(
+        ordered.iter().map(|(comment, _)| comment.author.as_str()),
+        ctx.human_author,
+    );
     let mut cursor_line = 0usize;
     for (row_index, row) in rows.iter().enumerate() {
         let on_cursor = row_index == diff.comments_cursor;
@@ -464,6 +470,7 @@ fn comment_pane_lines(
                 let Some(comment) = ctx.session.comment(id) else {
                     continue;
                 };
+                let order = orders.get(comment.author.as_str()).copied().unwrap_or(0);
                 let card = CardCtx {
                     theme,
                     budget,
@@ -472,7 +479,7 @@ fn comment_pane_lines(
                     depth: item_depth,
                     on_cursor,
                     orphan: *orphan,
-                    author_color: author_color(theme, bg, ctx.human_author, &comment.author),
+                    author_color: author_color(theme, bg, ctx.human_author, &comment.author, order),
                     search: search.filter(|_| focused).map(|search| CardSearch {
                         query: search.query(),
                         current: search.current_row() == Some(row_index),
@@ -571,9 +578,9 @@ fn title_line(cc: &CardCtx<'_>, title: &str) -> Line<'static> {
     pad_line(spans, cc.bg, cc.width)
 }
 
-/// A hue turned into a saturated colour by `author_color`'s hash, lifted
-/// through [`readable_on`](diffler_core::language::readable_on) the same way
-/// `crate::ui::language_color` lifts Linguist's palette.
+/// A hue turned into a saturated colour by `author_color`'s golden-angle
+/// step, lifted through [`readable_on`](diffler_core::language::readable_on)
+/// the same way `crate::ui::language_color` lifts Linguist's palette.
 fn hsl_to_rgb(hue: f32, saturation: f32, lightness: f32) -> (u8, u8, u8) {
     let c = (1.0 - (2.0 * lightness - 1.0).abs()) * saturation;
     let h = hue.rem_euclid(360.0) / 60.0;
@@ -599,23 +606,44 @@ fn hsl_to_rgb(hue: f32, saturation: f32, lightness: f32) -> (u8, u8, u8) {
     (channel(r1), channel(g1), channel(b1))
 }
 
+/// The golden angle (~137.5°): stepping a hue by it spaces each new one as far
+/// as possible from every hue before it, the same trick sunflower seeds use to
+/// pack without two ever landing too close.
+const HUE_STEP: f32 = 137.507_76;
+
+/// Each author's position in the pane's own order, first appearance first,
+/// skipping the human and the agent: they take a fixed colour, so they never
+/// consume a step and never collide with one either.
+fn author_orders<'a>(
+    authors: impl Iterator<Item = &'a str>,
+    human_author: &str,
+) -> HashMap<&'a str, usize> {
+    let mut orders = HashMap::new();
+    for author in authors {
+        if author == human_author || author == crate::mcp::AGENT_AUTHOR {
+            continue;
+        }
+        let next = orders.len();
+        orders.entry(author).or_insert(next);
+    }
+    orders
+}
+
 /// An author's colour: fixed for the two names that never move (the human
 /// reviewing, the agent replying) since the reader looks for those first,
-/// derived from a stable hash of the name for anyone else so the same author
-/// always reads the same colour across sessions. Lifted for contrast against
-/// `bg`, the row's own background, so it stays legible on any theme and
-/// under the cursor's own band.
-fn author_color(theme: &Theme, bg: Color, human_author: &str, author: &str) -> Color {
+/// stepped by the golden angle from `order` for anyone else so a handful of
+/// reviewers read as visibly distinct hues rather than colliding on a hash.
+/// Lifted for contrast against `bg`, the row's own background, so it stays
+/// legible on any theme and under the cursor's own band.
+fn author_color(theme: &Theme, bg: Color, human_author: &str, author: &str, order: usize) -> Color {
     if !human_author.is_empty() && author == human_author {
         return theme.accent;
     }
     if author == crate::mcp::AGENT_AUTHOR {
         return theme.purple;
     }
-    let hash = diffler_core::model::stable_hash(author.as_bytes());
-    let value = u64::from_str_radix(&hash, 16).unwrap_or(0);
     #[allow(clippy::cast_precision_loss)] // a hue only needs to look distinct, not be exact
-    let hue = (value % 360) as f32;
+    let hue = (order as f32 * HUE_STEP).rem_euclid(360.0);
     let (r, g, b) = hsl_to_rgb(hue, 0.55, 0.6);
     let (r, g, b) = diffler_core::language::readable_on((r, g, b), super::rgb_of(bg));
     Color::Rgb(r, g, b)
@@ -2123,38 +2151,65 @@ mod tests {
     }
 
     /// The human and the agent never move, so the reader looks for those two
-    /// colours first; anyone else hashes to a colour that stays put across
-    /// sessions and tells two authors apart.
+    /// colours first; the golden-angle step never lands on either for anyone
+    /// else, and the same order always reads the same colour.
     #[test]
-    fn author_color_is_fixed_for_human_and_agent_and_stable_for_everyone_else() {
+    fn author_color_is_fixed_for_human_and_agent_regardless_of_order() {
         let theme = Theme::github_dark();
         let bg = theme.bg;
         assert_eq!(
-            super::author_color(&theme, bg, "reviewer", "reviewer"),
+            super::author_color(&theme, bg, "reviewer", "reviewer", 3),
             theme.accent,
             "the reviewer's own comments take the fixed accent colour"
         );
         assert_eq!(
-            super::author_color(&theme, bg, "reviewer", crate::mcp::AGENT_AUTHOR),
+            super::author_color(&theme, bg, "reviewer", crate::mcp::AGENT_AUTHOR, 7),
             theme.purple,
             "the agent's comments take the fixed purple colour"
         );
-        let alice = super::author_color(&theme, bg, "reviewer", "alice");
         assert_eq!(
-            alice,
-            super::author_color(&theme, bg, "reviewer", "alice"),
-            "the same author hashes to the same colour every time"
+            super::author_color(&theme, bg, "reviewer", "alice", 0),
+            super::author_color(&theme, bg, "reviewer", "alice", 0),
+            "the same order always reads the same colour"
         );
-        let bob = super::author_color(&theme, bg, "reviewer", "bob");
-        assert_ne!(alice, bob, "different authors read as different colours");
-        assert_ne!(
-            alice, theme.accent,
-            "no third author borrows the human's colour"
-        );
-        assert_ne!(
-            alice, theme.purple,
-            "no third author borrows the agent's colour"
-        );
+    }
+
+    /// Several reviewers stepping the golden angle from their first
+    /// appearance read as visibly distinct hues, the separation a hash could
+    /// only promise by chance, and none of them ever lands on the accent or
+    /// purple the human and the agent keep.
+    #[test]
+    fn several_authors_get_distinct_hues_and_never_the_fixed_two() {
+        let theme = Theme::github_dark();
+        let bg = theme.bg;
+        let authors = ["alice", "bob", "carol", "dave", "erin", "frank"];
+        let orders = super::author_orders(authors.into_iter(), "reviewer");
+        let colours: Vec<ratatui::style::Color> = authors
+            .iter()
+            .map(|author| {
+                let order = *orders.get(author).expect("every author was seeded");
+                super::author_color(&theme, bg, "reviewer", author, order)
+            })
+            .collect();
+        for (i, colour) in colours.iter().enumerate() {
+            assert_ne!(
+                *colour, theme.accent,
+                "{}: never the human's colour",
+                authors[i]
+            );
+            assert_ne!(
+                *colour, theme.purple,
+                "{}: never the agent's colour",
+                authors[i]
+            );
+            for (j, other) in colours.iter().enumerate().skip(i + 1) {
+                assert_ne!(
+                    colour, other,
+                    "{} and {} collide: {colours:?}",
+                    authors[i], authors[j]
+                );
+            }
+        }
     }
 
     /// A titled comment is a walkthrough stop. In the list the title is the

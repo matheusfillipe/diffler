@@ -150,10 +150,11 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   body's first line elided; the cursor's own opens the full card, and only
   that open card or a group's last item trails a blank spacer, so a busy pane
   reads as a dense list rather than a wall of gaps. The author leads each row
-  in a colour hashed from the name (`stable_hash`, lifted through
-  `readable_on`), stable across sessions; the human's own author name and the
-  agent's take the theme's fixed accent and purple, since a reader looks for
-  those two first. `t` in that pane cycles its own grouping,
+  in a colour stepped by the golden angle from where that author first
+  appears in the pane's own order, lifted through `readable_on` for contrast;
+  the human's own author name and the agent's take the theme's fixed accent
+  and purple, since a reader looks for those two first and neither hue is
+  ever handed to anyone else. `t` in that pane cycles its own grouping,
   independent of the file sidebar's own layout: by file (diff order), by
   author (first-appearance order), by status (open, replied, resolved, the
   last folded by default), or a flat list with no headers at all. A

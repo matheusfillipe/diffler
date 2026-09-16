@@ -5,10 +5,8 @@ use std::ops::Range;
 use serde::{Deserialize, Serialize};
 
 /// FNV-1a 64 as lowercase hex. Content hashes key persisted viewed marks and
-/// derived caches, so the algorithm is pinned forever (tested below); also the
-/// one source of a stable per-string value the UI hashes things like an
-/// author's name against, so two callers never drift onto different hashes.
-pub fn stable_hash(bytes: &[u8]) -> String {
+/// derived caches, so the algorithm is pinned forever (tested below).
+fn stable_hash(bytes: &[u8]) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in bytes {
         hash ^= u64::from(*byte);
