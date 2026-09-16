@@ -161,9 +161,16 @@ impl App {
     /// Flip one comment between the agent's authorship and the human's: an
     /// agent comment becomes the human's own, so it goes out with the next
     /// submitted review, and a second press hands it back. Any other author
-    /// (a synced forge comment, say) is left alone.
+    /// (a synced forge comment, say) is left alone. A walkthrough's own
+    /// comments are never posted anywhere, and claiming one would make it
+    /// invisible to the revision that is meant to prune it, so a walkthrough
+    /// source refuses the whole verb.
     pub(crate) fn claim_comment(&mut self, id: &str) {
         let source = self.active_review_source();
+        if matches!(source, ReviewSource::Walkthrough { .. }) {
+            self.info("a walkthrough's own comment isn't claimable");
+            return;
+        }
         let author = self.author.clone();
         let session = self.review.session_for_mut(&source);
         let Some(comment) = session.comments.iter_mut().find(|c| c.id == id) else {
@@ -193,9 +200,14 @@ impl App {
     }
 
     /// `A`: ask before claiming every agent comment of the active review as
-    /// the human's own, the way it goes out with a submitted review.
+    /// the human's own, the way it goes out with a submitted review. A
+    /// walkthrough source refuses the same way `claim_comment` does.
     pub(super) fn claim_all_comments_start(&mut self) {
         let source = self.active_review_source();
+        if matches!(source, ReviewSource::Walkthrough { .. }) {
+            self.info("a walkthrough's own comments aren't claimable");
+            return;
+        }
         let count = self
             .review
             .session_for(&source)

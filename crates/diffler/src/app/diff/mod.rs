@@ -4656,6 +4656,59 @@ mod tests {
         );
     }
 
+    /// A stop is never posted anywhere, and claiming it would hide it from
+    /// the revision logic that prunes superseded stops by their agent
+    /// authorship, so a walkthrough source refuses the verb outright.
+    #[test]
+    fn claiming_a_stop_on_a_walkthrough_is_refused() {
+        let fixture = standard_fixture();
+        let mut app = walkthrough_app(&fixture);
+        app.handle(key('j'));
+        app.handle(key('j'));
+        enter_diff_pane(&mut app);
+        let card = rows(&app)
+            .iter()
+            .position(|row| matches!(row, DiffRow::Comment { line: 0, .. }))
+            .expect("a stop card");
+        app.diff.as_mut().expect("diff view").cursor = card;
+
+        app.claim_comment_at_cursor();
+
+        let message = app.message.clone().expect("info message");
+        assert!(message.text.contains("claimable"), "{message:?}");
+        let source = app.active_review_source();
+        assert_eq!(
+            app.review
+                .session_for(&source)
+                .comment("stop-2")
+                .unwrap()
+                .author,
+            crate::mcp::AGENT_AUTHOR,
+            "the stop stays the agent's"
+        );
+    }
+
+    #[test]
+    fn claiming_all_comments_on_a_walkthrough_is_refused_without_a_prompt() {
+        let fixture = standard_fixture();
+        let mut app = walkthrough_app(&fixture);
+
+        app.claim_all_comments_start();
+
+        assert!(app.modal.is_none(), "no confirm prompt for a walkthrough");
+        let message = app.message.clone().expect("info message");
+        assert!(message.text.contains("claimable"), "{message:?}");
+        let source = app.active_review_source();
+        assert!(
+            app.review
+                .session_for(&source)
+                .comments
+                .iter()
+                .all(|c| c.author == crate::mcp::AGENT_AUTHOR),
+            "every stop stays the agent's"
+        );
+    }
+
     #[test]
     fn build_split_rows_aligns_old_and_new_sides() {
         let fixture = standard_fixture();
