@@ -1510,6 +1510,16 @@ impl App {
         self.now_unix = now_unix();
         let status_anchor = self.status_cursor_anchor();
         let diff_anchor_path = self.diff_cursor_path();
+        // the model below is about to move out from under any open diff's
+        // rows: name what the cursor, the visual anchor and the banded span
+        // sit on now, while rows and model still agree, so `restore_positions`
+        // can find them again once `ensure_rows` has rebuilt against the new
+        // one. Capturing after the swap would read stale row indices
+        // against a model that already moved on, naming the wrong thing.
+        let diff_positions = self
+            .diff
+            .as_ref()
+            .map(|diff| diff.capture_positions(&self.review));
         // a no-op refresh (poll tick, watcher echo) keeps the old model: the
         // rebuild carries no emphasis, so swapping it in would force the whole
         // enrichment pipeline to re-run for nothing
@@ -1549,8 +1559,7 @@ impl App {
             if let Some(model) = swap {
                 diff.commit_model = Some(model);
             }
-            // invalidating drops the visual selection, so a no-op refresh
-            // must leave rows, emphasis, and memos alone
+            // a no-op refresh must leave rows, emphasis, and memos alone
             if moved {
                 diff.clear_enriched();
                 diff.invalidate();
@@ -1564,6 +1573,9 @@ impl App {
             self.queue_declared();
         }
         self.restore_diff_cursor(diff_anchor_path);
+        if let (Some(diff), Some(positions)) = (self.diff.as_mut(), diff_positions) {
+            diff.restore_positions(&self.review, positions);
+        }
     }
 
     /// The recomputed three-dot diff to swap into the open view. `None` when

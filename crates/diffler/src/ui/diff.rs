@@ -3600,8 +3600,18 @@ flowchart LR
             app.handle(key(c));
         }
         app.handle(key('\n'));
-        let line = app.diff.as_ref().unwrap().cursor;
-        app.diff.as_mut().unwrap().cursor = line;
+        // settle the submit before reading positions off the fresh rows, the
+        // way a render between keystrokes would
+        app.diff.as_mut().unwrap().ensure_rows(&app.review);
+        let comment_row = app
+            .diff
+            .as_ref()
+            .unwrap()
+            .rows()
+            .iter()
+            .position(|row| matches!(row, crate::app::DiffRow::Comment { line: 0, .. }))
+            .expect("the comment header");
+        app.diff.as_mut().unwrap().cursor = comment_row;
         app.handle(key('r'));
         for c in "because".chars() {
             app.handle(key(c));

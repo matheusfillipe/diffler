@@ -7,6 +7,7 @@ mod comments;
 mod nav;
 mod open;
 mod review;
+mod rowref;
 mod rows;
 mod slide;
 
@@ -426,11 +427,12 @@ impl DiffView {
             .map(|f| f.path.clone())
     }
 
-    /// Mark the row list stale, dropping any visual anchor (a row index that
-    /// would dangle across a rebuild). Enrichment caches survive.
+    /// Mark the row list stale. `ensure_rows` resolves the cursor, the visual
+    /// anchor and the banded span through the rebuild itself, so marking
+    /// dirty no longer has to guess and drop them upfront. Enrichment caches
+    /// survive.
     pub(crate) fn mark_rows_dirty(&mut self) {
         self.rows_dirty = true;
-        self.visual_anchor = None;
     }
 
     /// Mark rows stale and forget enrichment, so a rebuilt model re-enriches.
@@ -467,6 +469,10 @@ impl DiffView {
         let model: &DiffModel = &model_cow;
         self.selected = self.selected.min(model.files.len().saturating_sub(1));
         let composer = self.composer.as_ref();
+        // name what the cursor, the visual anchor and the banded span sit on
+        // now, while `self.rows` still holds the list they were seated
+        // against, so they can be found again once it is rebuilt
+        let positions = self.capture_positions(review);
         let (rows, copy) = build_rows(
             model,
             session,
@@ -492,13 +498,12 @@ impl DiffView {
             &self.figures,
             &self.unresolved_anchors,
         );
-        self.cursor = self.cursor.min(self.rows.len().saturating_sub(1));
-        self.scroll = self.scroll.min(self.rows.len().saturating_sub(1));
         // the file list may have shifted (refresh) or folds may hide the old
         // cursor row: keep the tree cursor on the pane's file. A pure wrap
         // re-flow changes neither, and must not move a browsing cursor. Read
         // ahead of `merged_model` below: it is `model`'s last use, and that
-        // borrow has to end before `reseat_tree_cursor` can take `&mut self`.
+        // borrow has to end before `restore_positions`/`reseat_tree_cursor`
+        // can take `&mut self`.
         let tree_rows = self.rows_dirty.then(|| self.tree_rows(model, session));
         // stash what was just merged so the render path reads it instead of
         // rebuilding it every frame
@@ -506,6 +511,7 @@ impl DiffView {
             Cow::Borrowed(_) => None,
             Cow::Owned(model) => Some(model),
         };
+        self.restore_positions(review, positions);
         if let Some(tree_rows) = tree_rows {
             self.reseat_tree_cursor(&tree_rows);
         }
@@ -2489,7 +2495,10 @@ mod tests {
         type_text(&mut app, "question");
         app.handle(key('\n'));
 
-        // the comment header row sits right under the anchored line
+        // settle the submit before reading positions off the fresh rows, the
+        // way a render between keystrokes would; the comment header row
+        // sits right under the anchored line
+        app.diff.as_mut().unwrap().ensure_rows(&app.review);
         let position = added_line_position(&app);
         app.diff.as_mut().unwrap().cursor = position + 1;
         app.handle(key('r'));
@@ -2502,6 +2511,7 @@ mod tests {
         assert_eq!(comment.replies[0].body, "answer");
 
         // the block grew by the reply line; resolve from the same header
+        app.diff.as_mut().unwrap().ensure_rows(&app.review);
         let position = added_line_position(&app);
         app.diff.as_mut().unwrap().cursor = position + 1;
         app.handle(key('R'));
@@ -2957,6 +2967,9 @@ mod tests {
         app.handle(key('c'));
         type_text(&mut app, "question");
         app.handle(key('\n'));
+        // settle the submit before reading positions off the fresh rows, the
+        // way a render between keystrokes would
+        app.diff.as_mut().unwrap().ensure_rows(&app.review);
         app.diff.as_mut().unwrap().cursor = added_line_position(&app) + 1;
         app.handle(key('r'));
         let last_comment = app
@@ -2985,6 +2998,9 @@ mod tests {
         app.handle(key('c'));
         type_text(&mut app, "note");
         app.handle(key('\n'));
+        // settle the submit before reading positions off the fresh rows, the
+        // way a render between keystrokes would
+        app.diff.as_mut().unwrap().ensure_rows(&app.review);
         app.diff.as_mut().unwrap().cursor = added_line_position(&app) + 1;
         app.handle(key('c'));
         assert_eq!(composer_rows(&app).first().copied(), Some(line + 1));
@@ -3096,7 +3112,10 @@ mod tests {
         type_text(&mut app, "old note");
         app.handle(key('\n'));
 
-        // move onto the comment row; `c` edits, prefilled with the body
+        // settle the submit before reading positions off the fresh rows, the
+        // way a render between keystrokes would; then move onto the comment
+        // row: `c` edits, prefilled with the body
+        app.diff.as_mut().unwrap().ensure_rows(&app.review);
         app.diff.as_mut().unwrap().cursor = added_line_position(&app) + 1;
         app.handle(key('c'));
         let composer = app
@@ -4012,19 +4031,219 @@ mod tests {
         );
     }
 
+    /// The `new_no` the cursor's own row carries, read fresh each time since
+    /// a rebuild can move it to a different row index.
+    fn cursor_line_no(app: &App) -> u32 {
+        let diff = app.diff.as_ref().unwrap();
+        let model = diff.model(&app.review);
+        let DiffRow::Line { hunk, line, .. } = diff.rows()[diff.cursor] else {
+            panic!("cursor sits on a line")
+        };
+        model.files[0].hunks[hunk].lines[line].new_no.unwrap()
+    }
+
     #[test]
-    fn real_change_refresh_clears_the_visual_selection() {
+    fn the_cursor_stays_on_the_same_line_after_a_comment_lands_above_it() {
+        let fixture = two_hunk_fixture();
+        let mut app = diff_app(&fixture);
+        app.author = "reviewer".to_owned();
+        enter_diff_pane(&mut app);
+        cursor_to_line(&mut app, |r| {
+            matches!(
+                r,
+                DiffRow::Line {
+                    hunk: 1,
+                    line: 2,
+                    ..
+                }
+            )
+        });
+        let before_row = app.diff.as_ref().unwrap().cursor;
+        let before_line = cursor_line_no(&app);
+
+        // an unanchored comment lands at the very top of the file, above
+        // every hunk the cursor could be on
+        app.review.session.add_comment(
+            Anchor {
+                file: "data.txt".to_owned(),
+                line: None,
+                line_end: None,
+                on_old_side: false,
+                line_text: None,
+            },
+            "reviewer",
+            "look here first",
+        );
+        let diff = app.diff.as_mut().unwrap();
+        diff.mark_rows_dirty();
+        diff.ensure_rows(&app.review);
+
+        assert_ne!(
+            app.diff.as_ref().unwrap().cursor,
+            before_row,
+            "the new comment pushed the row down"
+        );
+        assert_eq!(
+            cursor_line_no(&app),
+            before_line,
+            "and the cursor followed it"
+        );
+    }
+
+    #[test]
+    fn the_cursor_stays_on_the_same_line_after_a_refresh_rebuilds_every_hunk() {
+        let fixture = two_hunk_fixture();
+        let mut app = diff_app(&fixture);
+        enter_diff_pane(&mut app);
+        cursor_to_line(&mut app, |r| {
+            matches!(
+                r,
+                DiffRow::Line {
+                    hunk: 1,
+                    line: 2,
+                    ..
+                }
+            )
+        });
+        let before = cursor_line_no(&app);
+
+        // a third, unrelated edit in the middle of the file inserts a new
+        // hunk before the one the cursor sits in, shifting every later
+        // hunk's index
+        let lines: Vec<String> = (1..=20).map(|i| format!("line {i}")).collect();
+        let mut edited = lines;
+        edited[0] = "line one".to_owned();
+        edited[9] = "line ten edited".to_owned();
+        edited[19] = "line twenty".to_owned();
+        fixture.write("data.txt", &(edited.join("\n") + "\n"));
+        app.handle(AppEvent::RepoChanged);
+        app.settle_refresh();
+
+        let diff = app.diff.as_ref().unwrap();
+        assert_eq!(
+            diff.rows()
+                .iter()
+                .filter(|r| matches!(r, DiffRow::Hunk { .. }))
+                .count(),
+            3,
+            "the new edit split off a third hunk, shifting the one the cursor was in"
+        );
+        assert_eq!(
+            cursor_line_no(&app),
+            before,
+            "the cursor followed the same line even though its hunk index moved"
+        );
+    }
+
+    #[test]
+    fn a_refresh_elsewhere_in_the_repo_keeps_the_visual_selection() {
         let fixture = two_hunk_fixture();
         let mut app = diff_app(&fixture);
         enter_diff_pane(&mut app);
         cursor_to_line(&mut app, |r| matches!(r, DiffRow::Line { .. }));
         app.handle(key('V'));
+        // a new, unrelated file changes the model's fingerprint, but the
+        // selected file's own lines never moved
         fixture.write("zzz.md", "new\n");
         app.handle(AppEvent::RepoChanged);
         app.settle_refresh();
         assert!(
+            app.diff.as_ref().unwrap().visual_anchor.is_some(),
+            "the selected rows are still there, so the selection survives"
+        );
+    }
+
+    #[test]
+    fn a_selection_whose_rows_are_gone_ends_rather_than_covering_something_else() {
+        let fixture = two_hunk_fixture();
+        let mut app = diff_app(&fixture);
+        enter_diff_pane(&mut app);
+        cursor_to_line(&mut app, |r| matches!(r, DiffRow::Line { hunk: 0, .. }));
+        app.handle(key('V'));
+        app.handle(key('j'));
+        assert!(app.diff.as_ref().unwrap().visual_anchor.is_some());
+        // revert the first hunk's edit: those rows leave the diff entirely
+        let lines: Vec<String> = (1..=20).map(|i| format!("line {i}")).collect();
+        let mut edited = lines;
+        edited[19] = "line twenty".to_owned();
+        fixture.write("data.txt", &(edited.join("\n") + "\n"));
+        app.handle(AppEvent::RepoChanged);
+        app.settle_refresh();
+        assert!(
             app.diff.as_ref().unwrap().visual_anchor.is_none(),
-            "rows shifted: a stale anchor would dangle"
+            "the selected rows are gone, so the selection ends rather than \
+             latching onto whatever now sits at the old index"
+        );
+    }
+
+    #[test]
+    fn a_banded_span_still_covers_the_same_lines_after_a_card_lands_inside_it() {
+        let fixture = two_hunk_fixture();
+        let mut app = diff_app(&fixture);
+        app.author = "reviewer".to_owned();
+        let id = app
+            .review
+            .session
+            .add_comment(
+                Anchor {
+                    file: "data.txt".to_owned(),
+                    line: Some(2),
+                    line_end: Some(4),
+                    on_old_side: false,
+                    line_text: None,
+                },
+                "reviewer",
+                "range comment",
+            )
+            .id
+            .clone();
+        app.diff.as_mut().unwrap().mark_rows_dirty();
+        assert!(app.focus_comment(&id));
+        let line_no = |app: &App, row: usize| -> u32 {
+            let diff = app.diff.as_ref().unwrap();
+            let model = diff.model(&app.review);
+            let DiffRow::Line { hunk, line, .. } = diff.rows()[row] else {
+                panic!("band row is a line")
+            };
+            model.files[0].hunks[hunk].lines[line].new_no.unwrap()
+        };
+        let (start, end) = app
+            .diff
+            .as_ref()
+            .unwrap()
+            .referenced
+            .expect("a banded span");
+        assert_eq!(line_no(&app, start), 2);
+        assert_eq!(line_no(&app, end), 4);
+
+        // a second comment anchored on line 3 lands its card between the
+        // span's own endpoints
+        app.review.session.add_comment(
+            Anchor {
+                file: "data.txt".to_owned(),
+                line: Some(3),
+                line_end: None,
+                on_old_side: false,
+                line_text: None,
+            },
+            "reviewer",
+            "in between",
+        );
+        let diff = app.diff.as_mut().unwrap();
+        diff.mark_rows_dirty();
+        diff.ensure_rows(&app.review);
+
+        let (start, end) = app
+            .diff
+            .as_ref()
+            .unwrap()
+            .referenced
+            .expect("the band survives a card landing inside it");
+        assert_eq!(line_no(&app, start), 2, "band still opens on line 2");
+        assert_eq!(line_no(&app, end), 4, "band still closes on line 4");
+        assert!(
+            end - start > 2,
+            "the new card's rows now sit inside the band"
         );
     }
 
