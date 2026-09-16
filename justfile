@@ -17,6 +17,7 @@ check:
 test:
     cargo nextest run --workspace --all-features
     cargo test --doc --workspace
+    bash scripts/check-package-includes.sh
 
 # auto-fix what's mechanical
 fix:
@@ -76,13 +77,12 @@ ci:
     # CI fails the whole run on a typo; catch it here when the tool is around
     command -v typos >/dev/null && typos || echo "typos not installed, skipping"
 
-# what crates.io will build: a crate packages only its own directory, so a
-# file it reaches outside one passes `just ci` and fails the publish. It
-# verifies the tree as it stands, version bump included, so it allows a
-# dirty one: the release script runs it between the bump and the commit
+# what crates.io will build. The binary crate cannot be packaged here, since
+# the release bumps it and its library together and the new library version is
+# not on the index yet, so its rule is checked directly instead.
 package-check:
     cargo package -p diffler-core --locked --allow-dirty
-    cargo package -p diffler --locked --allow-dirty
+    bash scripts/check-package-includes.sh
 
 # diff-pipeline benches (criterion)
 bench:
