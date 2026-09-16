@@ -1335,6 +1335,65 @@ mod tests {
         assert!(app.pending_git.is_none(), "fetch already in flight");
     }
 
+    /// `on_pr_head_seen` re-opens the PR on its own when a force-push moves
+    /// the head, with nobody at the keyboard to notice a wrong jump: the row
+    /// the reader was on must be found again by what it is, not by whatever
+    /// now sits at its old row index.
+    #[test]
+    fn reopening_a_pr_after_a_force_push_keeps_the_cursor_on_its_own_row() {
+        use std::fmt::Write as _;
+
+        let fixture = crate::test_support::Fixture::new();
+        let mut base = String::new();
+        for i in 1..=30 {
+            writeln!(base, "line {i}").expect("write");
+        }
+        fixture.write("a.py", &base);
+        fixture.stage("a.py");
+        fixture.commit_all("base");
+        // two edits far enough apart to land in separate hunks
+        let head1 = base
+            .replace("line 5\n", "five\n")
+            .replace("line 25\n", "twentyfive\n");
+        fixture.write("a.py", &head1);
+        fixture.stage("a.py");
+        fixture.commit_all("head1");
+
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let head1_oid = app.review.vcs.resolve("HEAD").expect("head1 oid");
+        let base_oid = app.review.vcs.resolve("HEAD~1").expect("base oid");
+        app.open_pr_diff(1, &base_oid, &head1_oid);
+
+        let target_row = |app: &App| {
+            let diff = app.diff.as_ref().unwrap();
+            let model = diff.model(&app.review);
+            diff.rows().iter().position(|r| {
+                let crate::app::DiffRow::Line { file, hunk, line } = r else {
+                    return false;
+                };
+                model.files[*file].hunks[*hunk].lines[*line].text == "line 22"
+            })
+        };
+        let row = target_row(&app).expect("a context row of the second hunk");
+        app.diff.as_mut().unwrap().cursor = row;
+
+        // a force-push: the first edit is reverted, so the second (the one
+        // the cursor sits in) becomes the file's only hunk
+        let head2 = base.replace("line 25\n", "twentyfive\n");
+        fixture.write("a.py", &head2);
+        fixture.stage("a.py");
+        fixture.commit_all("head2");
+        let head2_oid = app.review.vcs.resolve("HEAD").expect("head2 oid");
+        app.open_pr_diff(1, &base_oid, &head2_oid);
+
+        assert_eq!(
+            Some(app.diff.as_ref().unwrap().cursor),
+            target_row(&app),
+            "the cursor followed its own row to the hunk's new index, not \
+             whatever now sits at the old one"
+        );
+    }
+
     /// The full submit→ack→resync event chain, as the live app sees it.
     #[test]
     fn submit_ack_and_resync_round_trip() {

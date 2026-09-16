@@ -140,9 +140,13 @@ impl App {
             Ok(model) => {
                 let source = ReviewSource::against(rev);
                 if let Some(diff) = self.diff.as_mut().filter(|d| d.source == source) {
+                    // capture before the model swap, or the position named
+                    // would already read against the row it is moving to
+                    let positions = diff.capture_positions(&self.review);
                     diff.commit_model = Some(model);
                     diff.invalidate();
                     diff.ensure_rows(&self.review);
+                    diff.restore_positions(&self.review, positions);
                     self.queue_declared();
                 } else {
                     self.install_diff_view(source, Some(model), false);
@@ -258,9 +262,13 @@ impl App {
                 // place: the reviewer keeps their cursor, folds, and screen
                 // stack instead of landing on a fresh view
                 if let Some(diff) = self.diff.as_mut().filter(|d| d.source == source) {
+                    // capture before the model swap, or the position named
+                    // would already read against the row it is moving to
+                    let positions = diff.capture_positions(&self.review);
                     diff.commit_model = Some(model);
                     diff.invalidate();
                     diff.ensure_rows(&self.review);
+                    diff.restore_positions(&self.review, positions);
                     self.queue_declared();
                 } else {
                     self.install_diff_view(source, Some(model), false);
