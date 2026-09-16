@@ -32,9 +32,9 @@ pub(crate) enum RowRef {
     Summary,
 }
 
-/// The cursor, the visual selection anchor, and the banded span, named by
-/// [`RowRef`] instead of row index. [`DiffView::capture_positions`] takes
-/// this before something rebuilds the rows out from under them;
+/// The cursor, the visual selection anchor, and the banded span, each named
+/// by the [`RowRef`] it currently sits on. [`DiffView::capture_positions`]
+/// takes this before something rebuilds the rows out from under them;
 /// [`DiffView::restore_positions`] resolves it back afterward.
 #[derive(Debug)]
 pub(crate) struct RowPositions {
@@ -328,8 +328,8 @@ mod tests {
         }
     }
 
-    /// The case that broke: a raw row index survives an unrelated comment
-    /// landing above it, but a `RowRef` still finds the row it named.
+    /// A `RowRef` still finds the row it named after an unrelated comment
+    /// lands above it and pushes every row below down.
     #[test]
     fn round_trip_still_finds_the_row_after_a_comment_lands_above_it() {
         let fixture = two_hunk_fixture();

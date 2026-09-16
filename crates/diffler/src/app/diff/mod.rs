@@ -427,10 +427,10 @@ impl DiffView {
             .map(|f| f.path.clone())
     }
 
-    /// Mark the row list stale. `ensure_rows` resolves the cursor, the visual
-    /// anchor and the banded span through the rebuild itself, so marking
-    /// dirty no longer has to guess and drop them upfront. Enrichment caches
-    /// survive.
+    /// Mark the row list stale so the next `ensure_rows` rebuilds it. The
+    /// cursor, the visual anchor and the banded span are each named by what
+    /// they sit on, so that rebuild finds every one of them again on its
+    /// own. Enrichment caches survive.
     pub(crate) fn mark_rows_dirty(&mut self) {
         self.rows_dirty = true;
     }
