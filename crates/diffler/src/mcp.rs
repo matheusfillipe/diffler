@@ -784,11 +784,17 @@ impl DifflerMcp {
 /// and `walkthrough` prompts below reuse `skills/df/SKILL.md` and
 /// `skills/dfa/SKILL.md` verbatim through this, so the prompt and the skill
 /// cannot drift apart.
-fn skill_body(doc: &str) -> &str {
-    doc.strip_prefix("---\n")
+/// A skill file's prose, its YAML frontmatter dropped. A Windows checkout
+/// carries CRLF, so the newlines are normalised first: matching on `\n` alone
+/// finds no frontmatter there and ships the whole file, YAML header included,
+/// to the agent.
+fn skill_body(doc: &str) -> String {
+    let doc = doc.replace("\r\n", "\n");
+    let body = doc
+        .strip_prefix("---\n")
         .and_then(|rest| rest.split_once("\n---\n"))
-        .map_or(doc, |(_, body)| body)
-        .trim()
+        .map_or(doc.as_str(), |(_, body)| body);
+    body.trim().to_owned()
 }
 
 const DF_SKILL: &str = include_str!(concat!(
@@ -1409,14 +1415,23 @@ mod tests {
             write_endpoint(dir.path(), 8417).expect("write");
             let entry_path = state.path().join("diffler/instances/8417.json");
             let body = std::fs::read_to_string(&entry_path).expect("registry entry written");
+            // the entry is JSON, and a Windows path's separators are escaped in
+            // it, so the fields are read rather than matched as substrings
+            let entry: serde_json::Value =
+                serde_json::from_str(&body).expect("registry entry is json");
             let repo = dir.path().canonicalize().expect("canonicalize");
-            assert!(body.contains(repo.to_str().expect("utf8 path")), "{body}");
-            assert!(body.contains("\"port\": 8417"), "{body}");
-            assert!(
-                body.contains(&format!("\"pid\": {}", std::process::id())),
+            assert_eq!(entry["repo"].as_str(), repo.to_str(), "{body}");
+            assert_eq!(entry["port"].as_u64(), Some(8417), "{body}");
+            assert_eq!(
+                entry["pid"].as_u64(),
+                Some(u64::from(std::process::id())),
                 "{body}"
             );
-            assert!(body.contains("http://127.0.0.1:8417/mcp"), "{body}");
+            assert_eq!(
+                entry["url"].as_str(),
+                Some("http://127.0.0.1:8417/mcp"),
+                "{body}"
+            );
         });
     }
 
@@ -1499,6 +1514,20 @@ mod agent_command_sync {
             .and_then(|rest| rest.split_once("\n---\n"))
             .map_or(doc.as_str(), |(_, body)| body);
         after_frontmatter.trim().to_owned()
+    }
+
+    /// A Windows checkout carries CRLF, where matching the frontmatter on `\n`
+    /// alone finds none and ships the YAML header to the agent as prose.
+    #[test]
+    fn a_skill_loses_its_frontmatter_whatever_its_line_endings() {
+        assert_eq!(
+            super::skill_body("---\r\nname: df\r\n---\r\n\r\nthe body\r\n"),
+            "the body"
+        );
+        assert_eq!(
+            super::skill_body("---\nname: df\n---\n\nthe body\n"),
+            "the body"
+        );
     }
 
     /// Every agent command ships twice, as a Claude Code skill and an `OpenCode`
