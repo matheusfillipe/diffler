@@ -530,12 +530,34 @@ impl App {
         {
             return McpResponse::Error(format!("line_end {end} is before line {line}"));
         }
+        // the same emptiness rule the human's own composer applies: a
+        // comment has to say something to be worth keeping
+        let body = body.trim();
+        if body.is_empty() {
+            return McpResponse::Error("comment body is empty".to_owned());
+        }
+        if body.len() > BODY_MAX_BYTES {
+            return McpResponse::Error(format!(
+                "comment body: {} bytes, {BODY_MAX_BYTES} at most",
+                body.len()
+            ));
+        }
         let source = self.active_review_source();
         let model = self.source_model(&source);
         let anchor_line = line_end.unwrap_or(line);
-        let Some((on_old_side, line_text)) = locate_anchor_line(&model, file, anchor_line) else {
+        let Some((on_old_side, hunk, line_text)) = locate_anchor_line(&model, file, anchor_line)
+        else {
             return McpResponse::Error(format!("{file}:{anchor_line} is not part of the diff"));
         };
+        // a range's start has to land in the same hunk as its end, or the
+        // band it draws and the range a forge later expects would both cover
+        // a stretch of the file the diff never touched
+        if line != anchor_line
+            && find_line_in_hunk(&model, file, line, on_old_side).map(|(index, _)| index)
+                != Some(hunk)
+        {
+            return McpResponse::Error(format!("{file}:{line} is not part of the diff"));
+        }
         let anchor = Anchor {
             file: file.to_owned(),
             line: Some(line),
@@ -569,15 +591,34 @@ impl App {
     }
 }
 
-/// The side and text of the line `line` names in `file`, tried on the new
-/// side first, then the old (a deleted line only exists there).
-fn locate_anchor_line(model: &DiffModel, file: &str, line: u32) -> Option<(bool, String)> {
-    if let Some(found) = model.find_line(file, line, false) {
-        return Some((false, found.text.clone()));
+/// The side, hunk index and text of the line `line` names in `file`, tried
+/// on the new side first, then the old (a deleted line only exists there).
+/// The hunk index lets a range's other end be checked against the same one.
+fn locate_anchor_line(model: &DiffModel, file: &str, line: u32) -> Option<(bool, usize, String)> {
+    if let Some((hunk, found)) = find_line_in_hunk(model, file, line, false) {
+        return Some((false, hunk, found.text.clone()));
     }
-    model
-        .find_line(file, line, true)
-        .map(|found| (true, found.text.clone()))
+    find_line_in_hunk(model, file, line, true).map(|(hunk, found)| (true, hunk, found.text.clone()))
+}
+
+/// The index into `file`'s hunks holding the line `line` names on
+/// `on_old_side`, and the line itself.
+fn find_line_in_hunk<'a>(
+    model: &'a DiffModel,
+    file: &str,
+    line: u32,
+    on_old_side: bool,
+) -> Option<(usize, &'a diffler_core::model::DiffLine)> {
+    let file = model.files.iter().find(|f| f.path == file)?;
+    file.hunks.iter().enumerate().find_map(|(index, hunk)| {
+        hunk.lines
+            .iter()
+            .find(|l| {
+                let no = if on_old_side { l.old_no } else { l.new_no };
+                no == Some(line)
+            })
+            .map(|found| (index, found))
+    })
 }
 
 /// The file an anchor names, falling back to the file a walkthrough hangs its
@@ -804,7 +845,7 @@ mod tests {
 
     use super::*;
     use crate::config::LoadedConfig;
-    use crate::test_support::standard_fixture;
+    use crate::test_support::{standard_fixture, two_hunk_fixture};
 
     fn app_with_comment() -> (crate::test_support::Fixture, App, String) {
         let fixture = standard_fixture();
@@ -1170,6 +1211,81 @@ mod tests {
             as_human: false,
         });
         assert!(matches!(response, McpResponse::Error(message) if message.contains("999")));
+    }
+
+    /// A range's start has to be in the diff too, not only its end: line 10
+    /// sits in the gap between `two_hunk_fixture`'s two hunks (1-4, 17-20).
+    #[test]
+    fn add_comment_range_with_a_start_outside_the_diff_errors() {
+        let fixture = two_hunk_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let response = app.handle_mcp(McpRequestKind::AddComment {
+            file: "data.txt".to_owned(),
+            line: 10,
+            line_end: Some(18),
+            body: "x".to_owned(),
+            as_human: false,
+        });
+        assert!(matches!(response, McpResponse::Error(message) if message.contains("data.txt:10")));
+    }
+
+    /// Line 2 and line 18 are each real diff lines, but in different hunks
+    /// (1-4 and 17-20): a range may not cross the gap between them.
+    #[test]
+    fn add_comment_range_spanning_two_hunks_errors() {
+        let fixture = two_hunk_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let response = app.handle_mcp(McpRequestKind::AddComment {
+            file: "data.txt".to_owned(),
+            line: 2,
+            line_end: Some(18),
+            body: "x".to_owned(),
+            as_human: false,
+        });
+        assert!(matches!(response, McpResponse::Error(message) if message.contains("data.txt:2")));
+    }
+
+    /// The same emptiness rule the human's own composer applies: a comment
+    /// has to say something to be worth keeping.
+    #[test]
+    fn add_comment_with_an_empty_body_errors() {
+        let (_fixture, mut app, _id) = app_with_comment();
+        let response = app.handle_mcp(McpRequestKind::AddComment {
+            file: "src/lib.rs".to_owned(),
+            line: 2,
+            line_end: None,
+            body: String::new(),
+            as_human: false,
+        });
+        assert!(matches!(response, McpResponse::Error(_)));
+    }
+
+    #[test]
+    fn add_comment_with_a_whitespace_only_body_errors() {
+        let (_fixture, mut app, _id) = app_with_comment();
+        let response = app.handle_mcp(McpRequestKind::AddComment {
+            file: "src/lib.rs".to_owned(),
+            line: 2,
+            line_end: None,
+            body: "   \n\t  ".to_owned(),
+            as_human: false,
+        });
+        assert!(matches!(response, McpResponse::Error(_)));
+    }
+
+    /// The same cap `publish_walkthrough` enforces, since both write from an
+    /// agent into text that parses and renders on the thread serving the TUI.
+    #[test]
+    fn add_comment_over_the_body_cap_errors() {
+        let (_fixture, mut app, _id) = app_with_comment();
+        let response = app.handle_mcp(McpRequestKind::AddComment {
+            file: "src/lib.rs".to_owned(),
+            line: 2,
+            line_end: None,
+            body: "x".repeat(BODY_MAX_BYTES + 1),
+            as_human: false,
+        });
+        assert!(matches!(response, McpResponse::Error(message) if message.contains("at most")));
     }
 
     /// `as_human` decides the author: off is the agent's own comment, the

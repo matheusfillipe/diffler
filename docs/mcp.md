@@ -17,7 +17,9 @@ while diffler is open.
 
 - **add_comment**: write a new comment on a line or an inclusive line range
   of a file, in the review you're currently looking at. Anchored exactly the
-  way a human's own comment is, so a rewrite marks it outdated the same way.
+  way a human's own comment is, so a rewrite marks it outdated the same way;
+  a range's start and end both have to land in the diff, and in the same
+  hunk. The body is trimmed and has to say something, capped like a stop's.
   Authored as the agent by default, so the human answers it in the thread;
   pass `as_human` to author it as the human's own instead, so it goes out
   untouched with their next submitted review.
