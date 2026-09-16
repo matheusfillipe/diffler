@@ -146,6 +146,7 @@
 # switch_theme = "T"
 # open_editor = "e"
 # open_file_picker = "gf"
+# open_figure_graph = "o"  # open the figure under the cursor as a graph
 # blame = "B"
 # open = "<cr>"
 # refresh = "<c-r>"

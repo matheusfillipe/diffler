@@ -11,7 +11,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthChar;
 
+use crate::app::walkthrough::{FIGURE_MAX_ROWS, FigureBlock};
 use crate::app::{ScrollAlign, SplitSide};
+use crate::graph::Fit;
 use crate::theme::Theme;
 
 pub(super) fn align_scroll(
@@ -118,6 +120,25 @@ const UNFOCUSED_BAND: u16 = 35;
 /// The cursor band over `surface`, quieted while its pane is out of focus.
 pub(super) fn cursor_band(theme: &Theme, surface: Color, focused: bool) -> Color {
     crate::theme::blend(surface, theme.cursor_line, band_strength(100, focused))
+}
+
+/// The background and left bar every card in the diff pane draws first: a
+/// comment, a walkthrough stop, the open composer. Banded when the row is
+/// selected, the plain surface otherwise, with a solid `accent` bar turning
+/// the row into a card against the diff lines around it.
+pub(super) fn card_frame(
+    theme: &Theme,
+    selected: bool,
+    focused: bool,
+    accent: Color,
+) -> (Color, Span<'static>) {
+    let bg = if selected {
+        cursor_band(theme, theme.bg, focused)
+    } else {
+        theme.bg
+    };
+    let bar = Span::styled("  ▌ ".to_owned(), Style::new().fg(accent).bg(bg));
+    (bg, bar)
 }
 
 /// A band's blend strength, scaled down when its pane is out of focus.
@@ -674,6 +695,96 @@ fn snap_to_boundary(text: &str, mut index: usize) -> usize {
     index
 }
 
+/// A figure rasterised into an offscreen buffer, then copied out row by row.
+/// That is what lets a graph be half on screen: a widget drawn straight into
+/// the frame can only start at a row that exists.
+pub(super) fn figure_lines(
+    figure: &mut FigureBlock,
+    ordinal: usize,
+    width: u16,
+    theme: &Theme,
+    bg: Color,
+    open_hint: Option<&str>,
+) -> Vec<Line<'static>> {
+    let mut rows = vec![figure_header(figure, ordinal, theme, bg)];
+    let height = figure.view.height().clamp(1, FIGURE_MAX_ROWS);
+    let area = ratatui::layout::Rect::new(0, 0, width.saturating_sub(2).max(1), height);
+    let mut buffer = ratatui::buffer::Buffer::empty(area);
+    figure
+        .view
+        .render(area, &mut buffer, &crate::graph::graph_theme(theme));
+    // the cache always renders unselected; the caller re-tints it with
+    // `fill_row` when the row it lands on is the one under the cursor
+    let (_, bar) = card_frame(theme, false, false, theme.accent);
+    for y in 0..area.height {
+        let mut spans = vec![bar.clone()];
+        for x in 0..area.width {
+            let cell = &buffer[(x, y)];
+            spans.push(Span::styled(
+                cell.symbol().to_owned(),
+                Style::new()
+                    .fg(cell.fg)
+                    .bg(opaque(cell.bg, bg))
+                    .add_modifier(cell.modifier),
+            ));
+        }
+        rows.push(Line::from(spans));
+    }
+    if figure.fit != Fit::AsDrawn {
+        rows.push(fit_notice(figure.fit, open_hint, theme, bg));
+    }
+    rows
+}
+
+/// A buffer cell the graph never painted carries [`Color::Reset`], which a
+/// terminal with a transparent background shows the desktop through. A card is
+/// a surface, so every cell it prints owns its background.
+fn opaque(color: Color, bg: Color) -> Color {
+    if color == Color::Reset { bg } else { color }
+}
+
+/// The dim line under a figure the card had to help fit: redrawn top-down,
+/// or (rarer) still cropped even so. Names the key that opens it full-screen,
+/// when one is bound, so the reader knows what to do about it.
+fn fit_notice(fit: Fit, open_hint: Option<&str>, theme: &Theme, bg: Color) -> Line<'static> {
+    let (_, bar) = card_frame(theme, false, false, theme.accent);
+    let mut text = match fit {
+        Fit::AsDrawn => String::new(),
+        Fit::Redrawn => "too wide side to side; drawn top to bottom instead".to_owned(),
+        Fit::Cropped => {
+            "too wide for this card even top to bottom; some of it is cropped".to_owned()
+        }
+    };
+    if let Some(key) = open_hint {
+        use std::fmt::Write as _;
+        let _ = write!(text, ", {key} open full graph");
+    }
+    Line::from(vec![
+        bar,
+        Span::styled(text, Style::new().fg(theme.dim).bg(bg)),
+    ])
+}
+
+fn figure_header(figure: &FigureBlock, ordinal: usize, theme: &Theme, bg: Color) -> Line<'static> {
+    // the cache always renders unselected, matching `figure_lines`'s own bar
+    let (_, bar) = card_frame(theme, false, false, theme.accent);
+    let mut spans = vec![
+        bar,
+        Span::styled(
+            format!("figure {ordinal}"),
+            Style::new().fg(theme.accent).bg(bg),
+        ),
+    ];
+    let stale = figure.stale();
+    if stale > 0 {
+        spans.push(Span::styled(
+            format!("  {stale} stale"),
+            Style::new().fg(theme.warn_fg).bg(bg),
+        ));
+    }
+    Line::from(spans)
+}
+
 #[cfg(test)]
 mod tests {
     use diffler_core::model::HunkId;
@@ -682,6 +793,42 @@ mod tests {
     use ratatui::widgets::Paragraph;
 
     use super::*;
+
+    /// A figure the card had to redraw top-down carries a dim line under it
+    /// naming the key that opens the full graph; one that fits as drawn
+    /// carries no such line.
+    #[test]
+    fn a_redrawn_figure_names_the_key_that_opens_the_full_graph() {
+        use crate::app::walkthrough::{Block, blocks};
+
+        let (theme, _) = Theme::from_name("github-dark");
+        let wide_body = "\
+```mermaid
+flowchart LR
+  a[routers/ai_visualization.py<br/>create, edit, perspective] --> b[second stage of the pipeline]
+  b --> c[third stage of the pipeline]
+  c --> d[fourth stage of the pipeline]
+  d --> e[fifth stage of the pipeline]
+```
+";
+        let Some(Block::Figure(mut wide)) = blocks(wide_body, 40).into_iter().next() else {
+            panic!("a figure");
+        };
+        assert_eq!(wide.fit, Fit::Redrawn);
+        let rows = figure_lines(&mut wide, 1, 40, &theme, theme.bg, Some("o"));
+        assert_eq!(rows.len(), wide.rows(), "row count matches what was drawn");
+        let notice = rows.last().expect("a notice row").to_string();
+        assert!(notice.contains("top to bottom"), "{notice}");
+        assert!(notice.contains("o open full graph"), "{notice}");
+
+        let fits_body = "```mermaid\nflowchart LR\n  a[a] --> b[b]\n```\n";
+        let Some(Block::Figure(mut fits)) = blocks(fits_body, 80).into_iter().next() else {
+            panic!("a figure");
+        };
+        assert_eq!(fits.fit, Fit::AsDrawn);
+        let rows = figure_lines(&mut fits, 1, 80, &theme, theme.bg, Some("o"));
+        assert_eq!(rows.len(), fits.rows(), "no notice row added");
+    }
 
     #[test]
     fn align_scroll_positions_the_cursor_row() {

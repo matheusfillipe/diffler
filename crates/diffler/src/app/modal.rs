@@ -72,6 +72,8 @@ impl App {
                 self.delete_comment_by_id(&id);
             }
             PendingOp::DeleteAllComments => self.delete_all_comments(),
+            PendingOp::DeleteWalkthrough(id) => self.delete_walkthrough(&id),
+            PendingOp::DeleteStop(index) => self.delete_stop(index),
             PendingOp::RunGit { label, argv } => self.queue_network(label, argv),
             PendingOp::ForcePull { .. } => self.queue_network(
                 "reset --hard",
@@ -520,6 +522,14 @@ impl App {
         }
         if !session.delete_comment(id) {
             return false;
+        }
+        // an ad hoc slide names a comment by id, so deleting it on screen must
+        // not leave the pane windowed to one that no longer exists
+        if let Some(diff) = self.diff.as_mut()
+            && matches!(&diff.slide, Some(crate::app::diff::Slide::AdHoc(slide_id)) if slide_id == id)
+        {
+            diff.slide = None;
+            diff.mark_rows_dirty();
         }
         self.after_session_change();
         self.resettle_comments_cursor();

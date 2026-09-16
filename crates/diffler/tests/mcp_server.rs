@@ -110,8 +110,8 @@ async fn the_review_prompt_is_listed_and_carries_the_workflow() {
         .await
         .expect("list prompts")
         .prompts;
-    assert_eq!(prompts.len(), 1);
-    assert_eq!(prompts[0].name, "review");
+    let names: Vec<&str> = prompts.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["review", "walkthrough"]);
 
     let result = harness
         .client
@@ -124,7 +124,22 @@ async fn the_review_prompt_is_listed_and_carries_the_workflow() {
         "get_comments",
         "reply_comment",
         "wait_for_feedback",
+        "publish_walkthrough",
     ] {
+        assert!(text.contains(step), "prompt walks through {step}");
+    }
+}
+
+#[tokio::test]
+async fn the_walkthrough_prompt_carries_publish_and_wait() {
+    let harness = start(|_| {}).await;
+    let result = harness
+        .client
+        .get_prompt(rmcp::model::GetPromptRequestParams::new("walkthrough"))
+        .await
+        .expect("get prompt");
+    let text = format!("{:?}", result.messages);
+    for step in ["review_status", "publish_walkthrough", "wait_for_feedback"] {
         assert!(text.contains(step), "prompt walks through {step}");
     }
 }

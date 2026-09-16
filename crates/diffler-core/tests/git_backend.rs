@@ -597,8 +597,35 @@ fn branch_reports_ahead_and_behind_relative_to_upstream() {
         .iter()
         .find(|b| b.name == branch_name)
         .expect("current listed");
-    assert_eq!(current.ahead, 2);
-    assert_eq!(current.behind, 1);
+    assert_eq!(
+        current.divergence, None,
+        "a listing leaves the walk to the caller"
+    );
+    assert_eq!(
+        v.divergence(&branch_name).expect("divergence"),
+        Some((2, 1))
+    );
+}
+
+/// A listing resolves no upstream, so a repository carrying hundreds of
+/// branches pays for names and tips alone.
+#[test]
+fn listing_branches_asks_no_upstream() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "x\n");
+    fx.commit_all("base");
+    for index in 0..25 {
+        fx.branch(&format!("topic-{index}"));
+    }
+
+    let v = vcs(&fx);
+    let branches = v.branches().expect("branches");
+
+    assert!(branches.len() >= 25);
+    assert!(
+        branches.iter().all(|branch| branch.divergence.is_none()),
+        "every divergence is left to the caller"
+    );
 }
 
 #[test]
@@ -610,12 +637,11 @@ fn branch_without_upstream_reports_zero_divergence_and_still_appears() {
 
     let v = vcs(&fx);
     let branches = v.branches().expect("branches");
-    let solo = branches
-        .iter()
-        .find(|b| b.name == "solo")
-        .expect("branch without an upstream is still listed");
-    assert_eq!(solo.ahead, 0);
-    assert_eq!(solo.behind, 0);
+    assert!(
+        branches.iter().any(|b| b.name == "solo"),
+        "branch without an upstream is still listed"
+    );
+    assert_eq!(v.divergence("solo").expect("divergence"), None);
 }
 
 #[test]
@@ -1353,4 +1379,31 @@ fn tracked_files_lists_the_index_not_the_worktree() {
         .map(|p| p.to_string_lossy().replace('\\', "/"))
         .collect();
     assert_eq!(names, vec!["b.txt", "src/a.txt", "staged.txt"]);
+}
+
+#[test]
+fn read_at_returns_the_files_content_in_that_commits_tree() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\n");
+    fx.commit_all("base");
+    let oid = head_oid(&fx);
+    fx.write("a.txt", "changed\n");
+
+    let content = vcs(&fx).read_at(&oid, "a.txt").expect("read_at");
+    assert_eq!(
+        content.as_deref(),
+        Some("one\n"),
+        "the commit's own tree, not the edited worktree"
+    );
+}
+
+#[test]
+fn read_at_is_none_for_a_path_the_commit_never_had() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\n");
+    fx.commit_all("base");
+    let oid = head_oid(&fx);
+
+    let content = vcs(&fx).read_at(&oid, "missing.txt").expect("read_at");
+    assert_eq!(content, None);
 }

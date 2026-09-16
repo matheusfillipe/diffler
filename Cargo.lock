@@ -801,6 +801,7 @@ dependencies = [
  "tokio",
  "toml",
  "unicode-width",
+ "uuid",
 ]
 
 [[package]]

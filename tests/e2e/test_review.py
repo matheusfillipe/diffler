@@ -28,7 +28,7 @@ def test_enter_opens_the_diff_view(spawn):
     tui = spawn("--no-mcp")
     open_diff(tui)
     tui.wait_for("beta2")  # the added line, proving the diff rendered
-    tui.wait_for("c comment")  # diff hint line
+    tui.wait_for("c add comment")  # diff hint line
 
 
 def test_comment_modal_writes_comment_and_session(spawn, repo):

@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "diffler",
-      "description": "Connects the diffler MCP server and adds /diffler to check the review and respond to feedback.",
+      "description": "Connects the diffler MCP server and adds /df to answer review feedback and /dfa to walk the human through a change.",
       "source": "./",
       "category": "productivity"
     }

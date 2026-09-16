@@ -109,6 +109,9 @@ dbg_macro = "deny"
 print_stdout = "deny"
 print_stderr = "warn"
 indexing_slicing = "warn"
+# nursery, so it is named on its own: a rail against a function quietly
+# growing a second job, not a target to optimise
+cognitive_complexity = "warn"
 # pedantic noise control
 # rmcp's tool_handler/prompt_handler expand into async trait impls that never
 # await. The lint fires inside the expansion, where no `#[allow]` of ours

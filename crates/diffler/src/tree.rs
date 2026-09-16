@@ -49,6 +49,16 @@ pub enum TreeNode {
         count: usize,
         folded: bool,
     },
+    /// One stop of the review's walkthrough, by its position in it. The row
+    /// carries no title: the walkthrough is the session's, and the renderer
+    /// already reads it.
+    Stop {
+        index: usize,
+    },
+    /// The walkthrough layout's leading row: the walkthrough's own summary,
+    /// shown only where the walkthrough has one. The row carries no title
+    /// either, for the same reason.
+    WalkthroughSummary,
 }
 
 /// A flattened tree row: a node and its indentation depth (0 at the root).
@@ -250,6 +260,8 @@ mod tests {
             TreeNode::Dir { name, .. } => (row.depth, "dir", name.clone()),
             TreeNode::File { name, .. } => (row.depth, "file", name.clone()),
             TreeNode::Section { bucket, .. } => (row.depth, "section", bucket.label().to_owned()),
+            TreeNode::Stop { index } => (row.depth, "stop", index.to_string()),
+            TreeNode::WalkthroughSummary => (row.depth, "walkthrough_summary", String::new()),
         }
     }
 
@@ -452,7 +464,10 @@ mod tests {
             .iter()
             .filter_map(|r| match &r.node {
                 TreeNode::File { index, name } => Some((*index, name.as_str())),
-                TreeNode::Dir { .. } | TreeNode::Section { .. } => None,
+                TreeNode::Dir { .. }
+                | TreeNode::Section { .. }
+                | TreeNode::Stop { .. }
+                | TreeNode::WalkthroughSummary => None,
             })
             .collect();
         assert_eq!(files, vec![(0, "mod.rs"), (1, "mod.rs")]);

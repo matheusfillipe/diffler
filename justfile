@@ -10,8 +10,9 @@ run *args:
     cargo run -p diffler -- {{args}}
 
 # fast inner-loop verification (agents: run after every change)
+# same denials as ci, so a warning fails here rather than at the gate
 check:
-    cargo clippy --workspace --all-targets --all-features
+    cargo clippy --workspace --all-targets --all-features -- -D warnings -A unknown_lints -A clippy::unused_async_trait_impl
 
 test:
     cargo nextest run --workspace --all-features

@@ -99,6 +99,7 @@ pub enum Action {
     SearchPrev,
     OpenEditor,
     OpenFilePicker,
+    OpenFigureGraph,
     Blame,
     ToggleBlame,
     SendFeedback,
@@ -197,6 +198,7 @@ impl Action {
             Self::SearchPrev => "search_prev",
             Self::OpenEditor => "open_editor",
             Self::OpenFilePicker => "open_file_picker",
+            Self::OpenFigureGraph => "open_figure_graph",
             Self::Blame => "blame",
             Self::ToggleBlame => "toggle_blame",
             Self::SendFeedback => "send_feedback",
@@ -287,7 +289,7 @@ impl Action {
             Self::Reply => "reply to the comment",
             Self::Resolve => "resolve the comment",
             Self::MarkViewed => "mark the file or folder viewed",
-            Self::CopyFileFeedback => "copy this file's feedback as markdown",
+            Self::CopyFileFeedback => "copy the selection, or this file's feedback as markdown",
             Self::CopyAllFeedback => "copy all feedback as markdown",
             Self::CopyUrl => "copy the web URL",
             Self::Search => "search",
@@ -295,6 +297,7 @@ impl Action {
             Self::SearchPrev => "previous search match",
             Self::OpenEditor => "open in $EDITOR",
             Self::OpenFilePicker => "find a file in the repository",
+            Self::OpenFigureGraph => "open the figure under the cursor as a graph",
             Self::Blame => "blame this file",
             Self::ToggleBlame => "toggle the blame column",
             Self::SendFeedback => "send feedback to waiting agents",
@@ -305,7 +308,7 @@ impl Action {
         }
     }
 
-    pub(crate) const ALL: [Self; 92] = [
+    pub(crate) const ALL: [Self; 93] = [
         Self::CenterCursor,
         Self::CursorTop,
         Self::CursorBottom,
@@ -391,6 +394,7 @@ impl Action {
         Self::SearchPrev,
         Self::OpenEditor,
         Self::OpenFilePicker,
+        Self::OpenFigureGraph,
         Self::Blame,
         Self::ToggleBlame,
         Self::SendFeedback,
@@ -549,6 +553,7 @@ const DIFF_DEFAULTS: &[(&str, Action)] = &[
     ("Y", Action::CopyAllFeedback),
     ("e", Action::OpenEditor),
     ("gf", Action::OpenFilePicker),
+    ("o", Action::OpenFigureGraph),
     ("B", Action::Blame),
     ("Z", Action::SendFeedback),
     ("C", Action::CommentsOverview),
@@ -1289,6 +1294,10 @@ mod tests {
         assert_eq!(
             keymap.resolve(&mut pending, press("Y")),
             Resolved::Action(Action::CopyAllFeedback)
+        );
+        assert_eq!(
+            keymap.resolve(&mut pending, press("o")),
+            Resolved::Action(Action::OpenFigureGraph)
         );
     }
 

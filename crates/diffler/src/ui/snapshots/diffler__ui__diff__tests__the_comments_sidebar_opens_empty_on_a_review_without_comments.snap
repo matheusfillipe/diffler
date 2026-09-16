@@ -2,10 +2,10 @@
 source: crates/diffler/src/ui/diff.rs
 expression: render(&mut app).backend()
 ---
-" c comment · r reply · m viewed · C all comments · ? help                                                               "
+" c add comment · r reply · m mark viewed · C see comment list · ? help                                                  "
 " Files                           Diff                                                      Comments (0)                 "
 " ▾ src                    +1 -1  new file  ci.yml                             +1 -0 █████  no comments yet              "
-"   ● lib.rs               +1 -1  @@ -0,0 +1,1 @@                                           c writes the first           "
+"   ● lib.rs               +1 -1  @@ -0,0 +1,1 @@                                           c to add one                 "
 "▌+ ci.yml                 +1 -0 ▌        1 on: push                                                                     "
 " ○ todo.md                +1 -0                                                                                         "
 "                                                                                                                        "

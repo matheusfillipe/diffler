@@ -13,8 +13,19 @@ use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Widget};
 
 use crate::graph::engine::{GraphEngine, Layered, Layout, Placement, Zoom};
-use crate::graph::model::{Model, NodeId, NodeStatus};
+use crate::graph::model::{Model, NodeId, NodeStatus, RankDir};
 use crate::graph::theme::GraphTheme;
+
+/// Whether a figure fit the card as its author drew it, or needed help: a
+/// mermaid `flowchart LR` too wide is redrawn top to bottom (a chain always
+/// fits a card's width running downward); if even that overflows, the card
+/// crops it and says so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fit {
+    AsDrawn,
+    Redrawn,
+    Cropped,
+}
 
 /// What the component asks the host to do. The host owns the side effects.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +53,19 @@ pub struct GraphView {
     collapsed: HashSet<String>,
     marks: HashSet<NodeId>,
     last_click: Option<(std::time::Instant, u16, u16)>,
+}
+
+/// Shape only: a laid-out graph's cells and engine say nothing useful in a
+/// `{:?}` of the screen that embeds it.
+#[allow(clippy::missing_fields_in_debug)]
+impl std::fmt::Debug for GraphView {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GraphView")
+            .field("nodes", &self.model.nodes.len())
+            .field("edges", &self.model.edges.len())
+            .field("selected", &self.selected)
+            .finish()
+    }
 }
 
 impl Default for GraphView {
@@ -72,6 +96,26 @@ impl GraphView {
         self.zoom
     }
 
+    /// Rows the laid-out graph occupies, so a host embedding it in a document
+    /// can give it the height it actually needs.
+    #[must_use]
+    pub fn height(&self) -> u16 {
+        self.layout.height
+    }
+
+    /// Columns the laid-out graph occupies, for a host that has to know
+    /// whether it fits before committing to draw it.
+    #[must_use]
+    pub fn width(&self) -> u16 {
+        self.layout.width
+    }
+
+    /// The model currently laid out, for a host that wants to hand the same
+    /// graph to a second view (a card's static figure opened full-screen).
+    pub fn model(&self) -> &Model {
+        &self.model
+    }
+
     pub fn selected(&self) -> Option<&NodeId> {
         self.selected.as_ref()
     }
@@ -83,6 +127,29 @@ impl GraphView {
     pub fn set_model(&mut self, model: Model) {
         self.model = model;
         self.relayout();
+    }
+
+    /// Lay `model` out within `max_width` columns: its own declared
+    /// direction if that fits, else the same graph redrawn top-down (only a
+    /// `LeftRight` model gets this fallback: a `TopDown` one already runs
+    /// the direction that fits a card, so there is nothing more to try).
+    pub fn set_model_fit(&mut self, model: Model, max_width: u16) -> Fit {
+        let declared = model.rankdir;
+        self.set_model(model.clone());
+        if self.layout.width <= max_width {
+            return Fit::AsDrawn;
+        }
+        if declared != RankDir::LeftRight {
+            return Fit::Cropped;
+        }
+        let mut vertical = model;
+        vertical.rankdir = RankDir::TopDown;
+        self.set_model(vertical);
+        if self.layout.width <= max_width {
+            Fit::Redrawn
+        } else {
+            Fit::Cropped
+        }
     }
 
     /// Update node statuses in place (e.g. a live CI poll) without changing
@@ -117,6 +184,12 @@ impl GraphView {
             self.selected = Some(id.clone());
             self.ensure_visible();
         }
+    }
+
+    /// Deselect. `relayout` defaults a fresh view onto its first selectable
+    /// node, which a card figure never asked for: it draws a static picture.
+    pub fn clear_selection(&mut self) {
+        self.selected = None;
     }
 
     /// The searchable nodes in placement order: `(row, label)` pairs feeding

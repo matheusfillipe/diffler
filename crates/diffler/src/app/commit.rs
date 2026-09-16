@@ -258,3 +258,31 @@ impl App {
         self.apply_amend(Some(&message), use_index);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::LoadedConfig;
+    use crate::test_support::standard_fixture;
+
+    /// A commit made through diffler's own flow reports the ordinary
+    /// "committed …" message: a walkthrough is its own review source now,
+    /// with nothing tying it to the working tree or the commit it becomes.
+    #[test]
+    fn committing_reports_the_ordinary_commit_message() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+
+        let msg_path = app.review.repo_root.join("MSG");
+        std::fs::write(&msg_path, "a plain commit\n").expect("write commit message");
+        app.finish_commit(&msg_path, Ok(true));
+
+        assert!(
+            app.message
+                .as_ref()
+                .is_some_and(|m| m.text.starts_with("committed ")),
+            "{:?}",
+            app.message
+        );
+    }
+}

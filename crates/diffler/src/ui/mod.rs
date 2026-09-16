@@ -403,6 +403,7 @@ pub(super) fn status_color(theme: &Theme, status: FileStatus) -> Color {
         FileStatus::Added | FileStatus::Untracked => theme.added,
         FileStatus::Deleted => theme.error_fg,
         FileStatus::Modified | FileStatus::Renamed => theme.warn_fg,
+        FileStatus::Unchanged => theme.dim,
     }
 }
 
@@ -727,6 +728,53 @@ pub(super) fn cursor_line(line: Line<'static>, theme: &Theme, width: u16) -> Lin
         ));
     }
     Line::from(spans)
+}
+
+/// A row banded to its full width in `bg`, keeping every span's own colours.
+/// What marks a range of rows as one thing: the segment a reference points at,
+/// where the cursor rail still has to read on top of it.
+pub(super) fn fill_row(line: Line<'static>, bg: Color, width: u16) -> Line<'static> {
+    let mut spans: Vec<Span<'static>> = line
+        .spans
+        .into_iter()
+        .map(|span| {
+            let style = span.style.bg(bg);
+            Span::styled(span.content, style)
+        })
+        .collect();
+    let used: usize = spans.iter().map(Span::width).sum();
+    let pad = (width as usize).saturating_sub(used);
+    if pad > 0 {
+        spans.push(Span::styled(" ".repeat(pad), Style::new().bg(bg)));
+    }
+    Line::from(spans)
+}
+
+/// How far the reference band leans from the pane's ground toward the accent.
+/// Enough to read as a band, light enough for text to stay legible on it.
+const REFERENCE_BAND: u16 = 25;
+
+/// `rendered`, banded when `index` falls inside `referenced`: the segment a
+/// stop or a comment anchor points at, so the whole span reads as one thing
+/// and not just the line the cursor sits on. The colour is chosen here rather
+/// than passed in, so the diff pane and the file view cannot band the same
+/// kind of span in two different colours, and it replaces whatever background
+/// the row painted itself, an added line's green included.
+pub(super) fn band_referenced(
+    rendered: Vec<Line<'static>>,
+    referenced: Option<(usize, usize)>,
+    index: usize,
+    theme: &Theme,
+    width: u16,
+) -> Vec<Line<'static>> {
+    if !referenced.is_some_and(|(start, end)| index >= start && index <= end) {
+        return rendered;
+    }
+    let bg = crate::theme::blend(theme.bg, theme.accent, REFERENCE_BAND);
+    rendered
+        .into_iter()
+        .map(|line| fill_row(line, bg, width))
+        .collect()
 }
 
 /// Rows lead with an indent cell for the bar to claim, so claiming it holds

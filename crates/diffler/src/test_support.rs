@@ -51,6 +51,17 @@ impl Fixture {
         index.write().expect("index write");
     }
 
+    /// Delete a tracked file and commit the removal, so `rel` is gone from
+    /// both HEAD's tree and the worktree: a revision moved on from code a
+    /// walkthrough was pinned to.
+    pub(crate) fn remove_and_commit(&self, rel: &str, message: &str) {
+        std::fs::remove_file(self.root.join(rel)).expect("remove");
+        let mut index = self.repo.index().expect("index");
+        index.remove_path(Path::new(rel)).expect("index remove");
+        index.write().expect("index write");
+        self.commit_all(message);
+    }
+
     pub(crate) fn commit_all(&self, message: &str) {
         // fixed time: snapshots pin on the commit oid, which a real clock would churn
         let time = git2::Time::new(1_700_000_000, 0);
@@ -109,6 +120,107 @@ pub(crate) fn branch_fixture() -> Fixture {
     fixture
 }
 
+/// Populate `session` with a walkthrough over `stops`, each
+/// `(title, anchor, body)`, as the agent comments a stop is. Ids and times
+/// are fixed so a snapshot never churns on them, and the anchors stay
+/// unresolved until the worker answers, exactly as a fresh publish leaves
+/// them. `session` is the caller's own choice, but only a session for a
+/// `ReviewSource::Walkthrough` means anything once seated.
+pub(crate) fn seat_walkthrough_session(
+    session: &mut diffler_core::session::Session,
+    id: &str,
+    title: &str,
+    stops: &[(&str, Option<&str>, &str)],
+) {
+    use diffler_core::session::{Anchor, Comment, CommentStatus};
+    use diffler_core::walkthrough::{Target, Walkthrough};
+
+    let path_of = |anchor: &str| Target::parse(anchor).path().to_owned();
+    let fallback = stops
+        .iter()
+        .filter_map(|(_, anchor, _)| *anchor)
+        .map(path_of)
+        .next()
+        .unwrap_or_default();
+    let ids = stops
+        .iter()
+        .enumerate()
+        .map(|(index, (stop_title, anchor, body))| {
+            let comment_id = format!("stop-{index}");
+            session.comments.push(Comment {
+                id: comment_id.clone(),
+                author: "agent".to_owned(),
+                remote_id: None,
+                thread_id: None,
+                anchor: Anchor {
+                    file: anchor.map_or_else(|| fallback.clone(), path_of),
+                    line: None,
+                    line_end: None,
+                    on_old_side: false,
+                    line_text: None,
+                },
+                title: Some((*stop_title).to_owned()),
+                anchor_ref: anchor.map(str::to_owned),
+                body: (*body).to_owned(),
+                status: CommentStatus::Open,
+                replies: Vec::new(),
+                at: 1_700_000_000,
+            });
+            comment_id
+        })
+        .collect::<Vec<String>>();
+    session.set_walkthrough(Walkthrough {
+        id: id.to_owned(),
+        title: title.to_owned(),
+        author: "agent".to_owned(),
+        at: 1_700_000_000,
+        stops: ids,
+        skipped: None,
+        summary: None,
+        rev: None,
+    });
+}
+
+/// Give the open walkthrough source `id` a summary, the way a revision that
+/// passes `summary` would.
+pub(crate) fn set_walkthrough_summary(app: &mut App, id: &str, summary: &str) {
+    let source = diffler_core::source::ReviewSource::walkthrough(id);
+    if let Some(walkthrough) = app.review.session_for_mut(&source).walkthrough.as_mut() {
+        walkthrough.summary = Some(summary.to_owned());
+    }
+    app.review.save_for(&source).expect("save walkthrough");
+}
+
+/// Seat a walkthrough as its own review source (id `w1`), the way a fresh
+/// `publish_walkthrough` leaves one, and refresh the status screen's cached
+/// listing of walkthroughs so it shows up there too. Returns the source, for
+/// a caller that goes on to open it.
+pub(crate) fn seat_walkthrough(
+    app: &mut App,
+    title: &str,
+    stops: &[(&str, Option<&str>, &str)],
+) -> diffler_core::source::ReviewSource {
+    seat_walkthrough_at(app, "w1", title, stops)
+}
+
+/// Like [`seat_walkthrough`], naming the walkthrough's id, for a test that
+/// needs more than one.
+pub(crate) fn seat_walkthrough_at(
+    app: &mut App,
+    id: &str,
+    title: &str,
+    stops: &[(&str, Option<&str>, &str)],
+) -> diffler_core::source::ReviewSource {
+    let source = diffler_core::source::ReviewSource::walkthrough(id);
+    app.review
+        .ensure_source(&source)
+        .expect("ensure walkthrough source");
+    seat_walkthrough_session(app.review.session_for_mut(&source), id, title, stops);
+    app.review.save_for(&source).expect("save walkthrough");
+    app.reload_walkthroughs();
+    source
+}
+
 /// One untracked + one modified-unstaged + one staged-new file, exactly the
 /// shape the snapshot tests assert.
 pub(crate) fn standard_fixture() -> Fixture {
@@ -135,6 +247,35 @@ pub(crate) fn two_hunk_fixture() -> Fixture {
         .replace("line 1\n", "line one\n")
         .replace("line 20\n", "line twenty\n");
     fixture.write("data.txt", &edited);
+    fixture
+}
+
+/// A 200-line file with one line changed near the middle, far enough from
+/// both ends that a walkthrough stop's window has real, bounded context on
+/// both sides rather than running into the file's edges.
+pub(crate) fn big_file_fixture() -> Fixture {
+    let fixture = Fixture::new();
+    let lines: Vec<String> = (1..=200).map(|i| format!("line {i}")).collect();
+    fixture.write("big.txt", &(lines.join("\n") + "\n"));
+    fixture.commit_all("base");
+    let mut edited = lines;
+    edited[99] = "line 100 edited".to_owned();
+    fixture.write("big.txt", &(edited.join("\n") + "\n"));
+    fixture
+}
+
+/// A 200-line file with 70 contiguous lines (51-120) rewritten: one big
+/// change wide enough that a stop spanning it exceeds a window's row budget.
+pub(crate) fn huge_span_fixture() -> Fixture {
+    let fixture = Fixture::new();
+    let lines: Vec<String> = (1..=200).map(|i| format!("line {i}")).collect();
+    fixture.write("big.txt", &(lines.join("\n") + "\n"));
+    fixture.commit_all("base");
+    let mut edited = lines;
+    for entry in edited.iter_mut().take(120).skip(50) {
+        entry.push_str(" edited");
+    }
+    fixture.write("big.txt", &(edited.join("\n") + "\n"));
     fixture
 }
 

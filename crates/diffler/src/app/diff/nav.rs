@@ -1,8 +1,12 @@
 //! Moving around the diff screen: routing its actions, the mouse, and the
 //! cursor across the sidebar tree and the pane's rows.
 
-use super::{DiffRow, Pane, ScrollAlign, next_unviewed_index, sidebar_rows};
+use diffler_core::source::ReviewSource;
+
+use super::{DiffRow, DiffView, Pane, ScrollAlign, next_unviewed_index, sidebar_rows};
+use crate::app::rowsel::RowSelect;
 use crate::app::{App, MouseGesture, hit_index, page_step};
+use crate::config::FileLayout;
 use crate::keymap::Action;
 use crate::tree::{TreeNode, TreeRow};
 
@@ -18,6 +22,13 @@ fn foldable_at(rows: &[TreeRow], at: usize) -> Option<usize> {
     rows.get(..at)?
         .iter()
         .rposition(|above| above.depth < row.depth && header(&above.node))
+}
+
+/// What `d` deletes from the walkthrough layout's sidebar: everything, or one
+/// stop.
+enum WalkthroughSidebarRow {
+    Summary,
+    Stop(usize),
 }
 
 impl App {
@@ -41,7 +52,16 @@ impl App {
         match action {
             Action::NextFile => return self.diff_step_file(true),
             Action::PrevFile => return self.diff_step_file(false),
-            Action::NextUnviewed => return self.diff_jump_unviewed(),
+            Action::NextUnviewed => {
+                if self
+                    .diff
+                    .as_ref()
+                    .is_some_and(|diff| diff.layout == FileLayout::Walkthrough)
+                {
+                    return self.walkthrough_jump_unseen();
+                }
+                return self.diff_jump_unviewed();
+            }
             Action::CycleSidebarMode => return self.diff_cycle_sidebar_mode(),
             Action::MoveLeft => return self.diff_focus(self.pane_left()),
             Action::MoveRight => return self.diff_focus(self.pane_right()),
@@ -150,7 +170,18 @@ impl App {
             // a file in the sidebar takes a whole-file comment; the line-scoped
             // actions still need the diff pane
             Action::Comment => self.comment_on_selected_file(),
-            Action::VisualSelect | Action::Reply | Action::Resolve | Action::DeleteComment => {
+            // the walkthrough layout's leading row and stop rows take `d` as
+            // their own delete; everywhere else it keeps its usual meaning
+            Action::DeleteComment => match self.walkthrough_row_at_tree_cursor() {
+                Some(WalkthroughSidebarRow::Summary) => {
+                    if let Some(id) = self.active_walkthrough().map(|w| w.id.clone()) {
+                        self.confirm_delete_walkthrough(&id);
+                    }
+                }
+                Some(WalkthroughSidebarRow::Stop(index)) => self.confirm_delete_stop(index),
+                None => self.info("move into the diff to comment"),
+            },
+            Action::VisualSelect | Action::Reply | Action::Resolve => {
                 self.info("move into the diff to comment");
             }
             _ => {}
@@ -196,6 +227,7 @@ impl App {
             Action::CopyFileFeedback => self.copy_file_or_selection(),
             Action::CopyAllFeedback => self.copy_feedback(false),
             Action::OpenEditor => self.editor_at_diff_cursor(),
+            Action::OpenFigureGraph => self.open_figure_graph_at_cursor(),
             // folding is a sidebar concern; in the pane za is a no-op
             Action::ToggleFold => {}
             other => {
@@ -369,17 +401,126 @@ impl App {
         }
         let target = target.min(rows.len() - 1);
         diff.tree_cursor = target;
-        if let Some(TreeRow {
-            node: TreeNode::File { index, .. },
-            ..
-        }) = rows.get(target)
-        {
-            let index = *index;
-            diff.select(index, review);
-            // select() re-seats the tree cursor onto the selected file row via
-            // ensure_rows; restore the explicit target so it stays put
-            diff.tree_cursor = target;
+        match rows.get(target).map(|row| &row.node) {
+            Some(TreeNode::File { index, .. }) => {
+                let index = *index;
+                diff.select(index, review);
+                // select() re-seats the tree cursor onto the selected file row
+                // via ensure_rows; restore the explicit target so it stays put
+                diff.tree_cursor = target;
+            }
+            Some(TreeNode::Stop { index }) => {
+                let index = *index;
+                self.seat_stop(index);
+                if let Some(diff) = self.diff.as_mut() {
+                    diff.tree_cursor = target;
+                }
+            }
+            Some(TreeNode::WalkthroughSummary) => {
+                self.seat_summary();
+                if let Some(diff) = self.diff.as_mut() {
+                    diff.tree_cursor = target;
+                }
+            }
+            Some(TreeNode::Dir { .. } | TreeNode::Section { .. }) | None => {}
         }
+    }
+
+    /// The walkthrough row under the sidebar cursor, when the layout is on
+    /// screen and the cursor sits on its leading row or a stop: `None`
+    /// everywhere else, so `d` keeps its ordinary meaning.
+    fn walkthrough_row_at_tree_cursor(&self) -> Option<WalkthroughSidebarRow> {
+        let diff = self.diff.as_ref()?;
+        if diff.layout != FileLayout::Walkthrough {
+            return None;
+        }
+        let rows = sidebar_rows(diff, &self.review);
+        match rows.get(diff.tree_cursor).map(|row| &row.node) {
+            Some(TreeNode::WalkthroughSummary) => Some(WalkthroughSidebarRow::Summary),
+            Some(TreeNode::Stop { index }) => Some(WalkthroughSidebarRow::Stop(*index)),
+            _ => None,
+        }
+    }
+
+    /// Selecting a stop puts the reader where the agent pointed: the comment's
+    /// file, the cursor on the first row of its span, the whole span banded.
+    /// A stop whose file this diff does not carry leaves the pane alone, since
+    /// jumping somewhere arbitrary is worse than staying put. The window is
+    /// keyed off the tree cursor, not the selected file, so it has to move
+    /// here even when two stops share a file and `select` would otherwise see
+    /// no file change and skip the rebuild.
+    pub(crate) fn seat_stop(&mut self, index: usize) {
+        let review = &self.review;
+        let Some(diff) = self.diff.as_mut() else {
+            return;
+        };
+        let session = review.session_for(&diff.source);
+        // a stop's own row sits past the summary row where the walkthrough
+        // has one, else it is the sidebar's very first row
+        let offset = diff
+            .active_walkthrough(session)
+            .map_or(0, super::stop_row_offset);
+        diff.tree_cursor = index + offset;
+        diff.slide = Some(super::Slide::Stop(index));
+        diff.mark_rows_dirty();
+        diff.referenced = None;
+        let Some(id) = diff
+            .active_walkthrough(session)
+            .and_then(|walkthrough| walkthrough.stops.get(index))
+        else {
+            return;
+        };
+        let Some(comment) = session.comments.iter().position(|c| c.id == *id) else {
+            return;
+        };
+        let Some(anchor) = session.comments.get(comment).map(|c| c.anchor.clone()) else {
+            return;
+        };
+        let base = diff.model(review);
+        let model = DiffView::model_for_layout(diff.layout, base, &diff.context_files);
+        let Some(file) = model.files.iter().position(|f| f.path == anchor.file) else {
+            return;
+        };
+        let Some(hunks) = model.files.get(file).map(|entry| entry.hunks.clone()) else {
+            return;
+        };
+        let Some((line, end)) = anchor.span() else {
+            // a stop with nothing to sit on is prose: its card is the view
+            diff.seat_on(
+                review,
+                file,
+                |row| matches!(row, DiffRow::Comment { comment: c, line: 0, .. } if *c == comment),
+            );
+            return;
+        };
+        let covered = move |row: &DiffRow| {
+            let DiffRow::Line { hunk, line: at, .. } = *row else {
+                return false;
+            };
+            hunks
+                .get(hunk)
+                .and_then(|hunk| hunk.lines.get(at))
+                .and_then(|dl| dl.new_no)
+                .is_some_and(|no| line <= no && no <= end)
+        };
+        // a slide shows the stop's region and nothing else of the file, so
+        // banding that region would colour every code row and read as a
+        // selection; the seat is what says where the reader is standing
+        diff.seat_on(review, file, covered);
+    }
+
+    /// Selecting the leading summary row: the walkthrough's own summary, one
+    /// card and no code. No single span to band, since no comment sits behind it.
+    pub(crate) fn seat_summary(&mut self) {
+        let review = &self.review;
+        let Some(diff) = self.diff.as_mut() else {
+            return;
+        };
+        diff.tree_cursor = 0;
+        diff.slide = Some(super::Slide::Summary);
+        diff.referenced = None;
+        diff.mark_rows_dirty();
+        diff.ensure_rows(review);
     }
 
     /// `<cr>` on the tree cursor: focus the diff pane on a file row, or toggle
@@ -391,7 +532,9 @@ impl App {
         };
         let rows = sidebar_rows(diff, review);
         match rows.get(diff.tree_cursor).map(|r| &r.node) {
-            Some(TreeNode::File { .. }) => self.diff_focus(Pane::Diff),
+            Some(TreeNode::File { .. } | TreeNode::Stop { .. } | TreeNode::WalkthroughSummary) => {
+                self.diff_focus(Pane::Diff);
+            }
             Some(TreeNode::Dir { .. } | TreeNode::Section { .. }) => self.diff_toggle_dir_fold(),
             None => {}
         }
@@ -461,11 +604,36 @@ impl App {
         let Some(diff) = self.diff.as_mut() else {
             return;
         };
-        let layout = diff.cycle_layout();
+        let has_walkthrough = matches!(diff.source, ReviewSource::Walkthrough { .. });
+        let empty = diff
+            .commit_model
+            .as_ref()
+            .unwrap_or_else(|| review.model())
+            .files
+            .is_empty();
+        let leaving_walkthrough = diff.layout == FileLayout::Walkthrough;
+        let layout = diff.cycle_layout(has_walkthrough, empty);
+        diff.mark_rows_dirty();
+        if leaving_walkthrough {
+            diff.referenced = None;
+        }
         let rows = sidebar_rows(diff, review);
         diff.reseat_tree_cursor(&rows);
+        // the stop list lists stops, so arriving on one has to seat the reader
+        // where it points the way moving onto it does; row 0 is the summary's
+        // where the walkthrough has one, else a stop's own row already
+        let offset = diff
+            .active_walkthrough(review.session_for(&diff.source))
+            .map_or(0, super::stop_row_offset);
+        let arriving = (layout == FileLayout::Walkthrough).then_some(diff.tree_cursor);
         // a committed search indexes the old layout's rows
         self.search = None;
+        if let Some(row) = arriving {
+            match row.checked_sub(offset) {
+                Some(stop) => self.seat_stop(stop),
+                None => self.seat_summary(),
+            }
+        }
         self.queue_declared();
         self.info(format!("sidebar: {layout}"));
     }
@@ -488,7 +656,10 @@ impl App {
                 .files
                 .get(*index)
                 .map(|file| file.path.clone()),
-            Some(TreeNode::Section { .. }) | None => None,
+            Some(
+                TreeNode::Section { .. } | TreeNode::Stop { .. } | TreeNode::WalkthroughSummary,
+            )
+            | None => None,
         };
         match path {
             Some(path) => {
@@ -501,6 +672,11 @@ impl App {
 
     fn editor_at_diff_cursor(&mut self) {
         match self.diff_cursor_file_line() {
+            Some((path, _)) if !self.review.repo_root.join(&path).exists() => {
+                self.info(format!(
+                    "{path} is not in the working tree, nothing to edit"
+                ));
+            }
             Some((path, line)) => self.request_editor(&path, line),
             None => self.info("no file under the cursor"),
         }
@@ -510,16 +686,17 @@ impl App {
     /// and blame so both land on the same place.
     pub(crate) fn diff_cursor_file_line(&self) -> Option<(String, Option<u32>)> {
         self.diff.as_ref().and_then(|diff| {
-            let model = diff.model(&self.review);
-            let file = model.files.get(diff.selected)?;
+            let model = diff.model_for_rows(&self.review);
             if diff.focus == Pane::List {
+                let file = model.files.get(diff.selected)?;
                 return Some((file.path.clone(), None));
             }
             match diff.rows.get(diff.cursor) {
-                Some(DiffRow::Hunk { .. } | DiffRow::Composer { .. }) | None => {
-                    Some((file.path.clone(), None))
+                Some(DiffRow::Hunk { file, .. }) => {
+                    Some((model.files.get(*file)?.path.clone(), None))
                 }
-                Some(DiffRow::Line { hunk, line, .. }) => {
+                Some(DiffRow::Line { file, hunk, line }) => {
+                    let file = model.files.get(*file)?;
                     let line = file.hunks.get(*hunk)?.lines.get(*line)?;
                     Some((file.path.clone(), line.new_no.or(line.old_no)))
                 }
@@ -529,6 +706,12 @@ impl App {
                     .comments
                     .get(*comment)
                     .map(|c| (c.anchor.file.clone(), c.anchor.line_end.or(c.anchor.line))),
+                // neither carries a file of its own: the composer sits on
+                // `diff.selected` and the summary card sits on nothing at all
+                Some(DiffRow::Composer { .. } | DiffRow::Summary { .. }) | None => {
+                    let file = model.files.get(diff.selected)?;
+                    Some((file.path.clone(), None))
+                }
             }
         })
     }
@@ -574,11 +757,112 @@ impl App {
     }
 
     /// Jump the pane cursor to the next/previous comment block, landing on its
-    /// header row (`line == 0`) so multi-line comments are stepped as one.
+    /// header row (`line == 0`) so multi-line comments are stepped as one. The
+    /// walkthrough layout shows one slide at a time, so there the walk runs
+    /// over the slides and stepping past a slide's last comment enters the
+    /// next one.
     fn diff_jump_comment(&mut self, forward: bool) {
+        if self
+            .diff
+            .as_ref()
+            .is_some_and(|diff| diff.layout == FileLayout::Walkthrough)
+        {
+            self.walk_slide_comments(forward);
+            return;
+        }
         self.diff_jump(forward, |row| {
             matches!(row, DiffRow::Comment { line: 0, .. })
         });
+    }
+
+    /// Every comment of the review in slide order: slide by slide, each one's
+    /// region by line, then whatever no region holds, which the walk reaches
+    /// as an ad hoc slide of its own.
+    fn slide_comment_order(&self) -> Vec<String> {
+        let Some(diff) = self.diff.as_ref() else {
+            return Vec::new();
+        };
+        let session = self.review.session_for(&diff.source);
+        let mut order: Vec<String> = Vec::new();
+        for stop in diff
+            .active_walkthrough(session)
+            .into_iter()
+            .flat_map(|walkthrough| &walkthrough.stops)
+        {
+            let Some(primary) = session.comments.iter().position(|c| c.id == *stop) else {
+                continue;
+            };
+            for index in crate::app::walkthrough::slide_comments(session, primary) {
+                let Some(id) = session.comments.get(index).map(|c| c.id.clone()) else {
+                    continue;
+                };
+                if !order.contains(&id) {
+                    order.push(id);
+                }
+            }
+        }
+        for id in self.comment_order() {
+            if !order.contains(&id) {
+                order.push(id);
+            }
+        }
+        order
+    }
+
+    /// Step the slide walk one comment either way, entering the slide that
+    /// holds where it lands. The summary has no comment behind it, so it
+    /// sits before every entry `order` carries: stepping forward off it
+    /// reaches the first one, and stepping back onto the first one reaches it.
+    fn walk_slide_comments(&mut self, forward: bool) {
+        let on_summary = matches!(
+            self.diff.as_ref().map(|diff| &diff.slide),
+            Some(Some(super::Slide::Summary))
+        );
+        let order = self.slide_comment_order();
+        if on_summary {
+            if forward && let Some(id) = order.first().cloned() {
+                self.focus_comment(&id);
+            }
+            return;
+        }
+        let here = self.comment_at_diff_cursor().or_else(|| {
+            let diff = self.diff.as_ref()?;
+            let session = self.review.session_for(&diff.source);
+            let primary = diff.slide_primary(session)?;
+            session.comments.get(primary).map(|c| c.id.clone())
+        });
+        let at = here.and_then(|id| order.iter().position(|known| *known == id));
+        if !forward
+            && at == Some(0)
+            && self
+                .active_walkthrough()
+                .is_some_and(|w| w.summary.is_some())
+        {
+            self.seat_summary();
+            return;
+        }
+        let next = match at {
+            Some(at) if forward => order.get(at + 1),
+            Some(at) => at.checked_sub(1).and_then(|back| order.get(back)),
+            None => order.first(),
+        };
+        let Some(id) = next.cloned() else {
+            return;
+        };
+        self.focus_comment(&id);
+    }
+
+    /// The comment the diff cursor stands on, when it stands on a card.
+    fn comment_at_diff_cursor(&self) -> Option<String> {
+        let diff = self.diff.as_ref()?;
+        let DiffRow::Comment { comment, .. } = diff.rows.get(diff.cursor)? else {
+            return None;
+        };
+        self.review
+            .session_for(&diff.source)
+            .comments
+            .get(*comment)
+            .map(|c| c.id.clone())
     }
 
     /// Jump to the next/previous definition start visible in the diff, using
@@ -686,17 +970,11 @@ impl App {
         diff.ensure_rows(review);
     }
 
+    /// `V`: reuse the shared row-selection toggle every other screen uses, so
+    /// a selection can start on any row kind, a card or the summary included.
     fn toggle_visual(&mut self) {
-        let Some(diff) = self.diff.as_mut() else {
-            return;
-        };
-        if diff.visual_anchor.take().is_some() {
-            return;
-        }
-        if matches!(diff.rows.get(diff.cursor), Some(DiffRow::Line { .. })) {
-            diff.visual_anchor = Some(diff.cursor);
-        } else {
-            self.info("move to a diff line to start a selection");
+        if let Some(diff) = self.diff.as_mut() {
+            RowSelect::toggle_visual(diff);
         }
     }
 }

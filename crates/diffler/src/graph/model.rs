@@ -60,13 +60,14 @@ impl NodeStatus {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RankDir {
+    #[default]
     TopDown,
     LeftRight,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Node {
     pub id: NodeId,
     pub label: String,
@@ -108,14 +109,14 @@ impl Node {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Edge {
     pub from: NodeId,
     pub to: NodeId,
     pub label: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Model {
     pub rankdir: RankDir,
     pub nodes: Vec<Node>,
@@ -196,7 +197,7 @@ impl Model {
     #[cfg(test)]
     pub(crate) fn demo() -> Self {
         use NodeStatus::{Failed, Neutral, Ok, Queued, Running};
-        let mut model = Self::new(RankDir::TopDown);
+        let mut model = Self::new(RankDir::LeftRight);
         model.nodes = vec![
             Node::leaf("lint", Ok),
             Node::leaf("typos", Ok),

@@ -1,12 +1,13 @@
 //! Review session: comments and per-file viewed marks, reconciled against
 //! fresh diff models. Persistence lives in `store`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
 use crate::model::DiffModel;
+use crate::walkthrough::Walkthrough;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -45,6 +46,13 @@ pub struct Anchor {
 }
 
 impl Anchor {
+    /// The rows this anchor covers, on whichever side it names: `line`
+    /// through `line_end` (or just `line` for a point anchor). `None` for a
+    /// file-level anchor with no line at all.
+    pub fn span(&self) -> Option<(u32, u32)> {
+        self.line.map(|line| (line, self.line_end.unwrap_or(line)))
+    }
+
     /// Whether the anchor no longer matches the model. Range comments
     /// anchor to their end line: that is the line whose disappearance or
     /// `line_text` drift marks them outdated. A line-less anchor is
@@ -75,6 +83,14 @@ pub struct Comment {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread_id: Option<String>,
     pub anchor: Anchor,
+    /// The agent's own name for this comment: a walkthrough stop's title,
+    /// set when it is published.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// The anchor an agent wrote (`path#symbol`, `path:start-end`, `path`),
+    /// kept so the worker can resolve it again after the code moves.
+    #[serde(default)]
+    pub anchor_ref: Option<String>,
     pub body: String,
     pub status: CommentStatus,
     #[serde(default)]
@@ -90,12 +106,32 @@ pub struct Session {
     /// time of marking. A changed hash means the file needs re-review.
     #[serde(default)]
     pub viewed: BTreeMap<String, String>,
+    /// The walkthrough this session is, when its source is
+    /// `ReviewSource::Walkthrough`. Every comment in `comments` above is this
+    /// walkthrough's: its stops, their notes, and every human reply made on
+    /// it. `None` for every other source.
+    #[serde(default)]
+    pub walkthrough: Option<Walkthrough>,
+    /// Walkthrough stops (comment ids) the reader has marked read. Pruned to
+    /// the current walkthrough's `stops` on every change, so a stop id from a
+    /// superseded revision never lingers.
+    #[serde(default)]
+    pub seen_stops: BTreeSet<String>,
 }
 
 pub fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
+}
+
+/// Unix milliseconds, for a stamp that also has to order two things made in
+/// the same second. A stamp in seconds is smaller than any of these, so the
+/// two sort together and the older one still reads as older.
+pub fn now_unix_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
 impl Session {
@@ -106,6 +142,8 @@ impl Session {
             id: uuid::Uuid::new_v4().to_string(),
             author: author.to_owned(),
             anchor,
+            title: None,
+            anchor_ref: None,
             body: body.to_owned(),
             status: CommentStatus::Open,
             replies: Vec::new(),
@@ -118,6 +156,64 @@ impl Session {
 
     fn comment_mut(&mut self, comment_id: &str) -> Option<&mut Comment> {
         self.comments.iter_mut().find(|c| c.id == comment_id)
+    }
+
+    /// Set this session's walkthrough, replacing whatever it held before,
+    /// and prune seen marks for stops it no longer carries.
+    pub fn set_walkthrough(&mut self, walkthrough: Walkthrough) {
+        self.walkthrough = Some(walkthrough);
+        self.prune_seen_stops();
+    }
+
+    /// Remove one stop and its notes, keeping the walkthrough and its other
+    /// stops. `false` when there is no walkthrough or `index` is out of range.
+    pub fn delete_stop(&mut self, index: usize) -> bool {
+        let Some(walkthrough) = self.walkthrough.as_ref() else {
+            return false;
+        };
+        let Some(stop_id) = walkthrough.stops.get(index).cloned() else {
+            return false;
+        };
+        let mut remove: BTreeSet<String> = walkthrough
+            .notes_by_stop(&self.comments)
+            .get(index)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        remove.insert(stop_id);
+        let Some(walkthrough) = self.walkthrough.as_mut() else {
+            return false;
+        };
+        walkthrough.stops.remove(index);
+        self.comments.retain(|c| !remove.contains(&c.id));
+        self.prune_seen_stops();
+        true
+    }
+
+    /// Drop a seen mark for a stop the walkthrough no longer carries: a stop
+    /// id from a superseded revision would otherwise linger in `seen_stops`
+    /// forever.
+    fn prune_seen_stops(&mut self) {
+        let stops: BTreeSet<&str> = self
+            .walkthrough
+            .iter()
+            .flat_map(|w| w.stops.iter().map(String::as_str))
+            .collect();
+        self.seen_stops.retain(|id| stops.contains(id.as_str()));
+    }
+
+    /// Mark a walkthrough stop read.
+    pub fn mark_stop_seen(&mut self, id: &str) {
+        self.seen_stops.insert(id.to_owned());
+    }
+
+    pub fn unmark_stop_seen(&mut self, id: &str) {
+        self.seen_stops.remove(id);
+    }
+
+    pub fn is_stop_seen(&self, id: &str) -> bool {
+        self.seen_stops.contains(id)
     }
 
     /// Remove the comment with `id`; `true` when something was deleted.
@@ -299,6 +395,146 @@ mod tests {
         let back: Session = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(s, back);
         assert_eq!(back.comments[0].anchor.line_end, Some(7));
+    }
+
+    /// A review file written before the walkthrough field existed still
+    /// loads, with none, so an old `.diffler/reviews/*.json` keeps working
+    /// after an upgrade.
+    #[test]
+    fn a_session_with_the_old_boards_key_and_no_walkthrough_key_loads_with_none() {
+        let json = r#"{"comments":[],"viewed":{},"boards":[]}"#;
+        let s: Session = serde_json::from_str(json).expect("deserialize");
+        assert!(s.walkthrough.is_none());
+    }
+
+    /// A dedicated walkthrough session deserializes its walkthrough directly;
+    /// an older `comments` field on the object (the pre-source owned-id list)
+    /// is simply unknown and ignored.
+    #[test]
+    fn a_walkthrough_session_deserializes_its_walkthrough_and_ignores_a_stale_comments_field() {
+        let json = r#"{"comments":[],"viewed":{},"walkthrough":{"id":"w1","title":"tour","author":"agent","at":1,"stops":["stop-0"],"comments":["stop-0"]}}"#;
+        let s: Session = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(s.walkthrough.expect("walkthrough").id, "w1");
+    }
+
+    /// A review file written before seen marks existed carries no
+    /// `seen_stops` key at all, and still has to load.
+    #[test]
+    fn a_session_with_no_seen_stops_key_loads_empty() {
+        let json = r#"{"comments":[],"viewed":{}}"#;
+        let s: Session = serde_json::from_str(json).expect("deserialize");
+        assert!(s.seen_stops.is_empty());
+    }
+
+    #[test]
+    fn mark_and_unmark_stop_seen_round_trip() {
+        let mut s = Session::default();
+        assert!(!s.is_stop_seen("stop-0"));
+        s.mark_stop_seen("stop-0");
+        assert!(s.is_stop_seen("stop-0"));
+        s.unmark_stop_seen("stop-0");
+        assert!(!s.is_stop_seen("stop-0"));
+    }
+
+    fn walkthrough(id: &str, stops: &[&str]) -> Walkthrough {
+        Walkthrough {
+            id: id.to_owned(),
+            title: "tour".to_owned(),
+            author: "agent".to_owned(),
+            at: 1,
+            stops: stops.iter().map(|s| (*s).to_owned()).collect(),
+            skipped: None,
+            summary: None,
+            rev: None,
+        }
+    }
+
+    /// Setting a walkthrough drops a seen mark for a stop it no longer
+    /// carries, so a superseded stop id never lingers.
+    #[test]
+    fn set_walkthrough_prunes_seen_marks_for_dropped_stops() {
+        let mut s = Session::default();
+        s.mark_stop_seen("stop-0");
+        s.mark_stop_seen("stop-1");
+        s.set_walkthrough(walkthrough("w1", &["stop-1"]));
+        assert!(!s.is_stop_seen("stop-0"), "stop-0 no longer exists");
+        assert!(s.is_stop_seen("stop-1"), "stop-1 survives the revision");
+    }
+
+    /// Setting a walkthrough replaces whatever this session held before, in
+    /// place: there is only ever one.
+    #[test]
+    fn set_walkthrough_replaces_whatever_was_there() {
+        let mut s = Session::default();
+        s.set_walkthrough(walkthrough("w1", &["a"]));
+        s.set_walkthrough(Walkthrough {
+            title: "revised".to_owned(),
+            at: 2,
+            ..walkthrough("w1", &["a"])
+        });
+        assert_eq!(s.walkthrough.expect("walkthrough").title, "revised");
+    }
+
+    fn agent_comment(id: &str, file: &str, line: u32, title: Option<&str>) -> Comment {
+        Comment {
+            id: id.to_owned(),
+            author: "agent".to_owned(),
+            remote_id: None,
+            thread_id: None,
+            anchor: anchor(file, Some(line)),
+            title: title.map(str::to_owned),
+            anchor_ref: Some(format!("{file}:{line}")),
+            body: "why".to_owned(),
+            status: CommentStatus::Open,
+            replies: Vec::new(),
+            at: 1,
+        }
+    }
+
+    fn human_comment(id: &str, file: &str, line: u32) -> Comment {
+        Comment {
+            author: "reviewer".to_owned(),
+            title: None,
+            anchor_ref: None,
+            ..agent_comment(id, file, line, None)
+        }
+    }
+
+    /// Deleting one stop drops its primary and every note anchored in its
+    /// region, keeps the rest of the walkthrough, and never touches a human
+    /// comment in the same spot.
+    #[test]
+    fn delete_stop_removes_its_primary_and_notes_but_keeps_a_human_comment_there() {
+        let mut s = Session::default();
+        s.comments
+            .push(agent_comment("stop-0", "a.txt", 1, Some("first")));
+        s.comments.push(agent_comment("note-0", "a.txt", 1, None));
+        s.comments.push(human_comment("human-0", "a.txt", 1));
+        s.comments
+            .push(agent_comment("stop-1", "b.txt", 1, Some("second")));
+        s.set_walkthrough(walkthrough("w1", &["stop-0", "stop-1"]));
+
+        assert!(s.delete_stop(0));
+
+        let walkthrough = s.walkthrough.as_ref().expect("the walkthrough is kept");
+        assert_eq!(walkthrough.stops, ["stop-1".to_owned()]);
+        let ids: Vec<&str> = s.comments.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["human-0", "stop-1"],
+            "the human comment in stop-0's region survives"
+        );
+    }
+
+    #[test]
+    fn delete_stop_is_false_out_of_range_or_without_a_walkthrough() {
+        let mut s = Session::default();
+        assert!(!s.delete_stop(0), "no walkthrough at all");
+
+        s.comments
+            .push(agent_comment("stop-0", "a.txt", 1, Some("first")));
+        s.set_walkthrough(walkthrough("w1", &["stop-0"]));
+        assert!(!s.delete_stop(5), "past the end");
     }
 
     #[test]

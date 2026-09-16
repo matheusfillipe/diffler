@@ -22,8 +22,9 @@ pub enum FileAction {
 #[derive(Debug, Clone)]
 pub struct FileOpen {
     pub path: String,
-    /// Line to seat the cursor on once the content lands, 1-based.
-    pub line: Option<u32>,
+    /// Rows the reference covers, 1-based and inclusive. The cursor seats on
+    /// the first and the view marks the whole span.
+    pub span: Option<(u32, u32)>,
     pub blame: bool,
     /// The request this load answers. A result whose token no longer matches
     /// the app's is an answer to a question the user has moved on from, and
@@ -42,6 +43,9 @@ pub struct FileView {
     span_of_line: Vec<Option<usize>>,
     pub cursor: usize,
     pub scroll: usize,
+    /// Rows a reference brought the reader here for, 0-based and inclusive.
+    /// Marked so the segment reads as one thing, not a cursor on a line.
+    pub referenced: Option<(usize, usize)>,
     /// Line where `V` started; `Some` means range selection is active.
     pub visual_anchor: Option<usize>,
     pub show_blame: bool,
@@ -67,6 +71,7 @@ impl FileView {
             span_of_line,
             cursor: 0,
             scroll: 0,
+            referenced: None,
             visual_anchor: None,
             show_blame,
             viewport: 0,
@@ -161,11 +166,11 @@ fn index_spans(spans: &[BlameSpan], line_count: usize) -> Vec<Option<usize>> {
 impl App {
     /// Open the file view on a repo-relative path. The content and blame land
     /// through a worker, so the caller returns immediately.
-    pub(crate) fn open_file(&mut self, path: &str, line: Option<u32>, blame: bool) {
+    pub(crate) fn open_file(&mut self, path: &str, span: Option<(u32, u32)>, blame: bool) {
         self.file_token += 1;
         self.pending_file = Some(FileOpen {
             path: path.to_owned(),
-            line,
+            span,
             blame,
             token: self.file_token,
         });
@@ -199,29 +204,32 @@ impl App {
             self.info("no file under the cursor");
             return;
         };
-        self.open_file(&path, line, true);
+        self.open_file(&path, line.map(|line| (line, line)), true);
     }
 
     pub(crate) fn on_file_loaded(
         &mut self,
         result: Result<FileView, String>,
-        line: Option<u32>,
+        span: Option<(u32, u32)>,
         token: u64,
     ) -> Flow {
         if token != self.file_token {
             return Flow::Idle;
         }
         match result {
-            Ok(view) => self.install_file(view, line),
+            Ok(view) => self.install_file(view, span),
             Err(err) => self.error(err),
         }
         Flow::Continue
     }
 
-    pub(crate) fn install_file(&mut self, view: FileView, line: Option<u32>) {
+    pub(crate) fn install_file(&mut self, view: FileView, span: Option<(u32, u32)>) {
         let mut view = view;
-        if let Some(line) = line {
-            view.cursor = (line.saturating_sub(1) as usize).min(view.lines.len().saturating_sub(1));
+        if let Some((line, end)) = span {
+            let last = view.lines.len().saturating_sub(1);
+            let start = (line.saturating_sub(1) as usize).min(last);
+            view.cursor = start;
+            view.referenced = Some((start, (end.saturating_sub(1) as usize).min(last).max(start)));
         }
         self.file = Some(view);
         self.message = None;
@@ -501,7 +509,10 @@ mod tests {
         let (path, line) = app.diff_cursor_file_line().expect("a diff line");
         app.handle(key('B'));
         let request = app.pending_file.as_ref().expect("a queued file");
-        assert_eq!((request.path.clone(), request.line), (path, line));
+        assert_eq!(
+            (request.path.clone(), request.span),
+            (path, line.map(|l| (l, l)))
+        );
         assert!(request.blame);
     }
 
@@ -591,9 +602,9 @@ mod tests {
     #[test]
     fn opening_a_file_at_a_line_seats_the_cursor_there_and_clamps() {
         let (_fixture, mut app) = app();
-        app.install_file(view("one\ntwo\n", vec![span(1, 2, true)]), Some(2));
+        app.install_file(view("one\ntwo\n", vec![span(1, 2, true)]), Some((2, 2)));
         assert_eq!(app.file.as_ref().expect("view").cursor, 1);
-        app.install_file(view("one\ntwo\n", vec![span(1, 2, true)]), Some(99));
+        app.install_file(view("one\ntwo\n", vec![span(1, 2, true)]), Some((99, 99)));
         assert_eq!(
             app.file.as_ref().expect("view").cursor,
             1,

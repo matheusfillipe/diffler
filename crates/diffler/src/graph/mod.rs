@@ -4,14 +4,16 @@
 //! pushes it into a [`GraphView`], renders it, and reacts to [`GraphAction`]s.
 
 mod engine;
+pub mod mermaid;
 mod model;
 mod theme;
 mod view;
 
 pub use engine::{GraphEngine, Layered, Zoom};
+pub use mermaid::{Figure, MermaidError};
 pub use model::{Edge, Model, Node, NodeId, NodeStatus, RankDir};
 pub use theme::GraphTheme;
-pub use view::{Dir, GraphAction, GraphView};
+pub use view::{Dir, Fit, GraphAction, GraphView};
 
 use crate::theme::Theme;
 

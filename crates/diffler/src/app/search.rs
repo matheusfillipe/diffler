@@ -1,6 +1,7 @@
 //! The `/` search controller shared by the screens.
 
 use crossterm::event::{KeyCode, KeyEvent};
+use diffler_core::model::DiffModel;
 
 use super::{App, Flow, Pane, Screen, diff_row_text, tree_row_label};
 use crate::graph::GraphView;
@@ -151,7 +152,8 @@ impl App {
         let Some(diff) = self.diff.as_ref() else {
             return Vec::new();
         };
-        let model = diff.model(&self.review);
+        let model_cow = diff.model_for_rows(&self.review);
+        let model: &DiffModel = &model_cow;
         match diff.focus {
             Pane::List => diff
                 .tree_rows(model, self.review.session_for(&diff.source))

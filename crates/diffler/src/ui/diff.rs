@@ -18,9 +18,10 @@ use ratatui::widgets::{Block, Paragraph};
 use crate::app::composer::{Composer, ComposerKind, ComposerLine};
 use crate::app::markdown::MdSpan;
 use crate::app::rowsel::RowSelect;
+use crate::app::walkthrough::{Block as WalkthroughBlock, stop_title, summary_figure_key};
 use crate::app::{
-    App, CommentLine, DiffRow, DiffView, FileHighlights, FileScope, Pane, SplitRow, SplitSide,
-    comment_display,
+    App, CommentLine, DiffRow, DiffView, FileHighlights, FileScope, Pane, RowCopy, SplitRow,
+    SplitSide, comment_display, summary_display,
 };
 use crate::config::FileLayout;
 use crate::keymap::Action;
@@ -29,17 +30,18 @@ use crate::theme::Theme;
 use crate::tree::{Bucket, TreeNode};
 use crate::ui::Hint;
 use crate::ui::diff_render::{
-    LineFlags, PairSelection, align_scroll, cursor_band, diff_line_height, file_gutter_width,
-    hunk_header, line_syntax, render_diff_line, render_split_pair, split_pair_height,
+    LineFlags, PairSelection, align_scroll, card_frame, cursor_band, diff_line_height,
+    file_gutter_width, hunk_header, line_syntax, render_diff_line, render_split_pair,
+    split_pair_height,
 };
 use crate::ui::{diffstat_spans, proportion_bar, status_bar, status_color};
 
 /// Hint entries, rendered against the live keymap so remaps show.
 const HINTS: &[Hint] = &[
-    Hint::Leaf(&[Action::Comment], "comment"),
+    Hint::Leaf(&[Action::Comment], "add comment"),
     Hint::Leaf(&[Action::Reply], "reply"),
-    Hint::Leaf(&[Action::MarkViewed], "viewed"),
-    Hint::Leaf(&[Action::CommentsOverview], "all comments"),
+    Hint::Leaf(&[Action::MarkViewed], "mark viewed"),
+    Hint::Leaf(&[Action::CommentsOverview], "see comment list"),
     Hint::Leaf(&[Action::Help], "help"),
 ];
 
@@ -51,9 +53,21 @@ fn sidebar_width(total: u16) -> u16 {
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let (body, bar) = super::screen_chrome(frame, app, HINTS);
 
+    // a figure that needed help fitting names the key that opens it
+    // full-screen, read against the live keymap so a remap still shows
+    let open_figure_hint = app.active_keymap().chord_for(Action::OpenFigureGraph);
     // enrichment (emphasis/highlight/scope) runs on the blocking pool; this
     // only queues work, and the pane renders plain until the result lands
     app.queue_enrich_selected();
+    // comment wrap follows the diff pane's inner width: the body minus the
+    // sidebar column and the pane block's two border columns. The bodies are
+    // parsed to it, so the width has to be in before anything reads them
+    let pane_width = body.width.saturating_sub(sidebar_width(body.width) + 2);
+    if let Some(diff) = app.diff.as_mut() {
+        diff.set_wrap_width(pane_width);
+    }
+    // an agent republishing under a reader has to show; this only queues work
+    app.ensure_walkthrough_view();
 
     // disjoint field borrows: the diff view mutates (scroll, highlight
     // cache) while theme and review stay read-only
@@ -62,20 +76,31 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let search = app.search.as_ref();
     let highlighter = app.highlighter.as_ref();
     if let Some(diff) = app.diff.as_mut() {
-        // comment wrap follows the diff pane's inner width: the body minus
-        // the sidebar column and the pane block's two border columns
-        diff.set_wrap_width(body.width.saturating_sub(sidebar_width(body.width) + 2));
         diff.ensure_rows(review);
+        // the source is cloned out so the session's borrow is off the view,
+        // which the rasteriser needs mutably
+        let source = diff.source.clone();
+        let session = review.session_for(&source);
+        // rasterising a figure needs the graph mutably, and the pane's loop
+        // holds the model borrowed off the same view: do them all up front
+        let rasters = rasterize_figures(diff, theme, pane_width, open_figure_hint.as_deref());
+        // a figure's box-drawing text only exists once it is drawn, so a
+        // selection covering it copies exactly what this pass just rasterised
+        patch_figure_copy_text(diff, &rasters);
         // a commit view renders from its pinned model; only fall back to the
-        // (lazily computed) working-tree model for the working-tree view
+        // (lazily computed) working-tree model for the working-tree view.
+        // Context files are not folded in here: they live on `diff`, and this
+        // reference has to survive passing `diff` itself into `draw_body`
+        // below, so each renderer that needs them reads `diff.context_files`
+        // directly instead (a fresh, disjoint borrow of its own parameter).
         let review_model = (diff.commit_model.is_none()).then(|| review.model());
-        let session = review.session_for(&diff.source);
         let ctx = RenderCtx {
             theme,
             session,
             review_model,
             search,
             highlighter,
+            rasters: &rasters,
         };
         draw_body(frame, body, &ctx, diff);
     }
@@ -92,6 +117,74 @@ struct RenderCtx<'a> {
     review_model: Option<&'a DiffModel>,
     search: Option<&'a Search>,
     highlighter: &'a diffler_core::highlight::Highlighter,
+    /// Every card's figures, drawn once per frame and keyed by `(id, block)`
+    /// (a comment's id, or the walkthrough's own summary key); a card row
+    /// then only reads a line out of one.
+    rasters: &'a FigureRaster,
+}
+
+/// The rendered rows of every figure a card draws, by the card's figure-cache
+/// key and the block they belong to.
+type FigureRaster = HashMap<(String, usize), Vec<Line<'static>>>;
+
+/// Draw every figure the open view's cards hold into lines: every comment's
+/// and the walkthrough's own summary alike, since both cache their bodies the
+/// same way. Figures are static in the pane, so one pass per frame serves
+/// every row that shows part of one.
+fn rasterize_figures(
+    diff: &mut DiffView,
+    theme: &Theme,
+    width: u16,
+    open_figure_hint: Option<&str>,
+) -> FigureRaster {
+    let mut raster = FigureRaster::new();
+    for (id, cached) in &mut diff.figures {
+        let mut ordinal = 0;
+        for (block, part) in cached.blocks.iter_mut().enumerate() {
+            let WalkthroughBlock::Figure(figure) = part else {
+                continue;
+            };
+            ordinal += 1;
+            raster.insert(
+                (id.clone(), block),
+                super::diff_render::figure_lines(
+                    figure,
+                    ordinal,
+                    width,
+                    theme,
+                    theme.bg,
+                    open_figure_hint,
+                ),
+            );
+        }
+    }
+    raster
+}
+
+/// Resolve every figure row's copy text from the lines this pass just drew: a
+/// plain-text builder cannot reproduce the graph renderer's layout, so a
+/// figure row starts as a lookup key (see [`RowCopy`]) and is patched here,
+/// the one place the box-drawing already exists.
+fn patch_figure_copy_text(diff: &mut DiffView, rasters: &FigureRaster) {
+    for entry in &mut diff.row_copy {
+        let RowCopy::Figure { key, block, row } = entry else {
+            continue;
+        };
+        let Some(line) = rasters
+            .get(&(key.clone(), *block))
+            .and_then(|lines| lines.get(*row))
+        else {
+            continue;
+        };
+        // span 0 is the card's decorative bar; the rest is the figure itself
+        let text: String = line
+            .spans
+            .iter()
+            .skip(1)
+            .map(|span| span.content.as_ref())
+            .collect();
+        *entry = RowCopy::Text(text);
+    }
 }
 
 /// Whether a row sits under the cursor, and whether its pane holds focus
@@ -236,7 +329,7 @@ fn draw_comments(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &
     if lines.is_empty() {
         let dim = Style::new().fg(theme.dim).bg(surface);
         lines.push(Line::styled(" no comments yet", dim));
-        lines.push(Line::styled(" c writes the first", dim));
+        lines.push(Line::styled(" c to add one", dim));
     }
 
     let height = inner.height.max(1) as usize;
@@ -279,6 +372,39 @@ fn ordered_comments<'a>(
 }
 
 /// One comment as a header line plus its wrapped body.
+/// One line's search matches, in the shape `highlight_spans` paints everywhere.
+fn search_ranges(
+    search: Option<CardSearch<'_>>,
+    text: &str,
+) -> Vec<(std::ops::Range<usize>, bool)> {
+    search
+        .map(|search| {
+            crate::search::find_matches(&[(0, text.to_owned())], search.query)
+                .into_iter()
+                .map(|found| (found.range, search.current))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A titled comment is a walkthrough stop. In the list its title is the
+/// summary; the body waits in the card under its span, or ten stops of four
+/// bullets each would wall the pane.
+fn title_line(cc: &CardCtx<'_>, title: &str) -> Line<'static> {
+    let title = super::elide(title, cc.budget.saturating_sub(2));
+    let mut spans = vec![
+        tree_lead(cc.theme, 0, cc.bg, cc.on_cursor),
+        Span::styled(" ".to_owned(), Style::new().bg(cc.bg)),
+    ];
+    spans.extend(super::highlight_spans(
+        &title,
+        Style::new().fg(cc.theme.accent).bg(cc.bg),
+        &search_ranges(cc.search, &title),
+        cc.theme,
+    ));
+    pad_line(spans, cc.bg, cc.width)
+}
+
 fn comment_card(cc: &CardCtx<'_>, comment: &diffler_core::session::Comment) -> Vec<Line<'static>> {
     let &CardCtx {
         theme,
@@ -289,17 +415,7 @@ fn comment_card(cc: &CardCtx<'_>, comment: &diffler_core::session::Comment) -> V
         orphan,
         search,
     } = cc;
-    // one line's matches, in the shape `highlight_spans` paints everywhere
-    let ranges = |text: &str| {
-        search
-            .map(|search| {
-                crate::search::find_matches(&[(0, text.to_owned())], search.query)
-                    .into_iter()
-                    .map(|found| (found.range, search.current))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default()
-    };
+    let ranges = |text: &str| search_ranges(search, text);
     // the tree's own lead cell, so the `▌` rail runs down the selected card
     // exactly as it marks the selected file row
     let lead = || tree_lead(theme, 0, bg, on_cursor);
@@ -335,6 +451,10 @@ fn comment_card(cc: &CardCtx<'_>, comment: &diffler_core::session::Comment) -> V
         theme,
     ));
     let mut out = vec![pad(header)];
+    if let Some(title) = comment.title.as_deref() {
+        out.push(title_line(cc, title));
+        return out;
+    }
     for runs in crate::app::markdown::parse(&comment.body, None, budget) {
         for wrapped in crate::app::markdown::wrap(&runs, budget, budget) {
             let mut spans = vec![lead(), Span::styled(" ".to_owned(), Style::new().bg(bg))];
@@ -388,7 +508,12 @@ fn draw_sidebar(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &m
     let [heading, inner] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
     frame.render_widget(
-        Paragraph::new(pane_heading(theme, "Files", focused, surface)),
+        Paragraph::new(pane_heading(
+            theme,
+            &sidebar_title(ctx, diff),
+            focused,
+            surface,
+        )),
         heading,
     );
     diff.sidebar = inner;
@@ -402,6 +527,7 @@ fn draw_sidebar(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &m
     let stat = GroupStat::collect(diff, model, session);
     let scroll = super::scroll_to_cursor(diff.tree_cursor, diff.sidebar_scroll, height, rows.len());
     diff.sidebar_scroll = scroll;
+    let active_walkthrough = diff.active_walkthrough(session);
     let lines: Vec<Line<'static>> = rows
         .iter()
         .enumerate()
@@ -449,10 +575,115 @@ fn draw_sidebar(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &m
                     let open = open_comment_count(session, &file.path);
                     sidebar_file_line(&row_ctx, file, name, viewed, open)
                 }
+                TreeNode::Stop { index } => {
+                    sidebar_stop_line(&row_ctx, session, active_walkthrough, *index)
+                }
+                TreeNode::WalkthroughSummary => sidebar_summary_line(&row_ctx),
             }
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// What the sidebar is listing: files, or the walkthrough by name, since a
+/// stop list is only readable when the reader knows whose order it is. A
+/// broken pin says so here, since it is a fact about the whole walkthrough,
+/// not any one stop.
+fn sidebar_title(ctx: &RenderCtx<'_>, diff: &DiffView) -> String {
+    match (diff.layout, diff.active_walkthrough(ctx.session)) {
+        (FileLayout::Walkthrough, Some(walkthrough)) => {
+            let progress = crate::app::walkthrough::progress_label(ctx.session, walkthrough);
+            if diff.pin_broken {
+                format!("{} ({progress}, pin lost)", walkthrough.title)
+            } else {
+                format!("{} ({progress})", walkthrough.title)
+            }
+        }
+        _ => "Files".to_owned(),
+    }
+}
+
+/// A walkthrough stop row: its title, the file it is anchored to dimmed after
+/// it, and how many comments its region holds once that is more than the stop
+/// itself.
+fn sidebar_stop_line(
+    rc: &TreeRowCtx<'_>,
+    session: &Session,
+    walkthrough: Option<&diffler_core::walkthrough::Walkthrough>,
+    index: usize,
+) -> Line<'static> {
+    let &TreeRowCtx {
+        theme,
+        width,
+        on_cursor,
+        focused,
+        search,
+        ..
+    } = rc;
+    let Some(primary) = walkthrough
+        .and_then(|walkthrough| walkthrough.stops.get(index))
+        .and_then(|id| session.comments.iter().position(|c| c.id == *id))
+    else {
+        return Line::default();
+    };
+    let Some(stop) = session.comments.get(primary) else {
+        return Line::default();
+    };
+    let held = crate::app::walkthrough::slide_comments(session, primary).len();
+    let bg = sidebar_row_bg(theme, on_cursor, focused);
+    let dim = Style::new().fg(theme.dim).bg(bg);
+    let title_style = Style::new()
+        .fg(if on_cursor { theme.accent } else { theme.fg })
+        .bg(bg);
+    let mut spans = vec![tree_lead(theme, 0, bg, on_cursor)];
+    spans.extend(super::highlight_spans(
+        &stop_title(stop),
+        title_style,
+        search,
+        theme,
+    ));
+    if session.is_stop_seen(&stop.id) {
+        spans.push(Span::styled(" ✓".to_owned(), dim));
+    }
+    spans.push(Span::styled(
+        format!("  {}", base_name(&stop.anchor.file)),
+        dim,
+    ));
+    if held > 1 {
+        spans.push(Span::styled(format!(" · {held}"), dim));
+    }
+    pad_line(spans, bg, width)
+}
+
+/// The walkthrough layout's leading row, shown only where the walkthrough has
+/// a summary: no count, since it is one card, not a bucket of stops.
+fn sidebar_summary_line(rc: &TreeRowCtx<'_>) -> Line<'static> {
+    let &TreeRowCtx {
+        theme,
+        width,
+        on_cursor,
+        focused,
+        search,
+        ..
+    } = rc;
+    let bg = sidebar_row_bg(theme, on_cursor, focused);
+    let title_style = Style::new()
+        .fg(if on_cursor { theme.accent } else { theme.fg })
+        .bg(bg);
+    let mut spans = vec![tree_lead(theme, 0, bg, on_cursor)];
+    spans.extend(super::highlight_spans(
+        "Summary",
+        title_style,
+        search,
+        theme,
+    ));
+    pad_line(spans, bg, width)
+}
+
+/// The last segment of a path, which is how a file is named in a list beside
+/// something else.
+pub(crate) fn base_name(path: &str) -> String {
+    path.rsplit('/').next().unwrap_or(path).to_owned()
 }
 
 /// Right pane: the selected file's header then the visible slice of its rows,
@@ -471,11 +702,10 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
         heading,
     );
 
-    let Some((model, file)) = diff
-        .commit_model
-        .as_ref()
-        .or(review_model)
-        .and_then(|model| model.files.get(diff.selected).map(|file| (model, file)))
+    let model_base = diff.commit_model.as_ref().or(review_model);
+    let model = model_base.map(|base| DiffView::rendered_model(diff.merged_model.as_ref(), base));
+    let Some((model, file)) =
+        model.and_then(|model| model.files.get(diff.selected).map(|file| (model, file)))
     else {
         frame.render_widget(
             Paragraph::new(Line::styled(
@@ -570,6 +800,7 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
             top_row.get_or_insert(index);
             let rendered = split_row_lines(
                 ctx,
+                diff,
                 file_ctx,
                 rows_area.width,
                 row,
@@ -605,10 +836,10 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
     let selected = |index: usize| {
         index == cursor || selection.is_some_and(|(start, end)| index >= start && index <= end)
     };
-
     // long lines wrap, so rows vary in height: place every row first, then
     // scroll in visual lines keeping the whole cursor row on screen
     let rows = diff.rows().to_vec();
+    let referenced = diff.referenced;
     let heights: Vec<usize> = rows
         .iter()
         .map(|row| row_height(model, row, rows_area.width))
@@ -649,7 +880,7 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
             .filter(|_| focused)
             .map(|s| s.ranges_for(index))
             .unwrap_or_default();
-        let rendered = row_lines(
+        let mut rendered = row_lines(
             ctx,
             model,
             diff,
@@ -661,6 +892,12 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
             },
             &ranges,
         );
+        // a stop points at a segment, so the whole span is banded; the cursor
+        // row keeps its own band, which is what says where inside the span the
+        // reader is standing
+        if !selected(index) {
+            rendered = super::band_referenced(rendered, referenced, index, theme, rows_area.width);
+        }
         for (offset, line) in rendered.into_iter().enumerate() {
             let at = start + offset;
             if at < scroll || at >= scroll + height {
@@ -693,8 +930,10 @@ fn split_row_height(file_ctx: SplitFileCtx<'_>, row: &SplitRow, width: u16) -> u
     )
 }
 
+#[allow(clippy::too_many_arguments)] // a split row's inputs, none of them a group
 fn split_row_lines(
     ctx: &RenderCtx<'_>,
+    diff: &DiffView,
     file_ctx: SplitFileCtx<'_>,
     width: u16,
     row: &SplitRow,
@@ -751,8 +990,10 @@ fn split_row_lines(
             line,
             outdated,
         } => match ctx.session.comments.get(comment) {
-            Some(comment) => {
-                vec![comment_row_line(ctx, comment, line, outdated, width, state)]
+            Some(found) => {
+                vec![comment_row_line(
+                    ctx, diff, found, line, outdated, width, state,
+                )]
             }
             None => vec![Line::default()],
         },
@@ -789,7 +1030,9 @@ fn split_side_syntax<'a>(
 /// `oldest7..newest7` range span when the pane shows a combined commit range.
 fn pane_title(source: &ReviewSource) -> String {
     match source {
-        ReviewSource::WorkingTree | ReviewSource::Commit { .. } => "Diff".to_owned(),
+        ReviewSource::WorkingTree
+        | ReviewSource::Commit { .. }
+        | ReviewSource::Walkthrough { .. } => "Diff".to_owned(),
         ReviewSource::Range { oldest, newest } => {
             let short = |oid: &str| oid.get(..7).unwrap_or(oid).to_owned();
             format!("Diff {}..{}", short(oldest), short(newest))
@@ -858,6 +1101,9 @@ impl GroupStat {
                     };
                     tally(stat.sections.entry(bucket).or_default());
                 }
+                // a stop row stands for a span of one file, so it carries no
+                // group total
+                FileLayout::Walkthrough => {}
                 FileLayout::Tree | FileLayout::List => {
                     for (at, _) in file.path.match_indices('/') {
                         tally(stat.dirs.entry(file.path[..at].to_owned()).or_default());
@@ -1165,9 +1411,9 @@ fn row_lines(
             line,
             outdated,
         } => match ctx.session.comments.get(*comment) {
-            Some(comment) => {
+            Some(found) => {
                 vec![comment_row_line(
-                    ctx, comment, *line, *outdated, width, state,
+                    ctx, diff, found, *line, *outdated, width, state,
                 )]
             }
             None => vec![Line::default()],
@@ -1180,6 +1426,17 @@ fn row_lines(
                 width,
                 state.selected,
                 state.focused,
+            )],
+            None => vec![Line::default()],
+        },
+        DiffRow::Summary { line } => match diff.active_walkthrough(ctx.session) {
+            Some(walkthrough) => vec![summary_row_line(
+                ctx,
+                diff,
+                walkthrough,
+                *line,
+                width,
+                state,
             )],
             None => vec![Line::default()],
         },
@@ -1225,10 +1482,9 @@ fn line_annotated(session: &Session, file_path: &str, line: &DiffLine) -> bool {
         if c.anchor.file != file_path {
             return false;
         }
-        let Some(start) = c.anchor.line else {
+        let Some((start, end)) = c.anchor.span() else {
             return false;
         };
-        let end = c.anchor.line_end.unwrap_or(start);
         let no = if c.anchor.on_old_side {
             line.old_no
         } else {
@@ -1306,6 +1562,7 @@ fn pane_header_line(
 
 fn comment_row_line(
     ctx: &RenderCtx<'_>,
+    diff: &DiffView,
     comment: &Comment,
     line: usize,
     outdated: bool,
@@ -1313,11 +1570,6 @@ fn comment_row_line(
     state: RowState,
 ) -> Line<'static> {
     let theme = ctx.theme;
-    let bg = if state.selected {
-        cursor_band(theme, theme.bg, state.focused)
-    } else {
-        theme.bg
-    };
     // a solid left bar in the comment's status color turns the block into a
     // distinct card that stands out against the diff lines around it
     let (status_label, accent) = match comment.status {
@@ -1325,24 +1577,40 @@ fn comment_row_line(
         CommentStatus::Replied => ("replied", theme.accent),
         CommentStatus::Resolved => ("resolved", theme.dim),
     };
-    let bar = Span::styled("  ▌ ".to_owned(), Style::new().fg(accent).bg(bg));
+    let (bg, bar) = card_frame(theme, state.selected, state.focused, accent);
     let dim = Style::new().fg(theme.dim).bg(bg);
     let fg = Style::new().fg(theme.fg).bg(bg);
-    let lines = comment_display(comment, width, Some(ctx.highlighter));
+    let blocks = crate::app::blocks_of(&diff.figures, &comment.id);
+    let unresolved = diff.unresolved_anchors.get(&comment.id).copied();
+    let lines = comment_display(comment, width, Some(ctx.highlighter), blocks, unresolved);
     let Some(part) = lines.get(line) else {
         return Line::default();
     };
     let spans = match part {
         CommentLine::Header => {
-            let mut spans = vec![
-                bar,
+            let mut spans = vec![bar];
+            if let Some(title) = comment.title.as_ref() {
+                spans.push(Span::styled(
+                    format!("{title}  "),
+                    Style::new().fg(theme.accent).bg(bg),
+                ));
+            }
+            spans.extend([
                 Span::styled(comment.author.clone(), Style::new().fg(theme.purple).bg(bg)),
                 Span::styled(" · ".to_owned(), dim),
                 Span::styled(status_label.to_owned(), Style::new().fg(accent).bg(bg)),
-            ];
+            ]);
             if outdated {
                 spans.push(Span::styled(
                     " · outdated".to_owned(),
+                    Style::new().fg(theme.warn_fg).bg(bg),
+                ));
+            }
+            // only the worker can tell an anchor that is gone from one that
+            // has not been read yet, so the answer comes from its map
+            if unresolved.is_some() {
+                spans.push(Span::styled(
+                    " · stale".to_owned(),
                     Style::new().fg(theme.warn_fg).bg(bg),
                 ));
             }
@@ -1352,6 +1620,25 @@ fn comment_row_line(
             let mut spans = vec![bar];
             spans.extend(runs.iter().map(|run| md_span(run, fg, theme)));
             spans
+        }
+        CommentLine::Note(runs) => {
+            let mut spans = vec![bar];
+            spans.extend(runs.iter().map(|run| md_span(run, dim, theme)));
+            spans
+        }
+        CommentLine::Figure { block, row } => {
+            let Some(drawn) = ctx
+                .rasters
+                .get(&(comment.id.clone(), *block))
+                .and_then(|lines| lines.get(*row))
+            else {
+                return Line::default();
+            };
+            return if state.selected {
+                super::fill_row(drawn.clone(), bg, width)
+            } else {
+                drawn.clone()
+            };
         }
         CommentLine::Reply {
             author,
@@ -1378,6 +1665,62 @@ fn comment_row_line(
     pad_line(spans, bg, width)
 }
 
+/// The walkthrough's own summary as one card: a plain "Summary" header (no
+/// status, no author line, since nothing threads on it), its body, and any
+/// figure it draws through the same figure cache a comment's card reads.
+fn summary_row_line(
+    ctx: &RenderCtx<'_>,
+    diff: &DiffView,
+    walkthrough: &diffler_core::walkthrough::Walkthrough,
+    line: usize,
+    width: u16,
+    state: RowState,
+) -> Line<'static> {
+    let theme = ctx.theme;
+    let (bg, bar) = card_frame(theme, state.selected, state.focused, theme.accent);
+    let fg = Style::new().fg(theme.fg).bg(bg);
+    let key = summary_figure_key(&walkthrough.id);
+    let blocks = crate::app::blocks_of(&diff.figures, &key);
+    let summary = walkthrough.summary.as_deref().unwrap_or_default();
+    let lines = summary_display(summary, width, Some(ctx.highlighter), blocks);
+    let Some(part) = lines.get(line) else {
+        return Line::default();
+    };
+    let spans = match part {
+        CommentLine::Header => vec![
+            bar,
+            Span::styled("Summary".to_owned(), Style::new().fg(theme.accent).bg(bg)),
+        ],
+        CommentLine::Body(runs) => {
+            let mut spans = vec![bar];
+            spans.extend(runs.iter().map(|run| md_span(run, fg, theme)));
+            spans
+        }
+        CommentLine::Figure { block, row } => {
+            let Some(drawn) = ctx
+                .rasters
+                .get(&(key.clone(), *block))
+                .and_then(|lines| lines.get(*row))
+            else {
+                return Line::default();
+            };
+            return if state.selected {
+                super::fill_row(drawn.clone(), bg, width)
+            } else {
+                drawn.clone()
+            };
+        }
+        // the summary carries no anchor of its own, so nothing ever resolves
+        // it and nothing ever answers it directly
+        CommentLine::Note(_) | CommentLine::Reply { .. } => return Line::default(),
+        CommentLine::Footer => vec![Span::styled(
+            "  ▌".to_owned(),
+            Style::new().fg(theme.accent).bg(bg),
+        )],
+    };
+    pad_line(spans, bg, width)
+}
+
 /// The open composer, drawn as the card it is about to become: same bar, same
 /// wrap, with the caret shown as a reversed cell so the writer sees where the
 /// next character lands.
@@ -1389,13 +1732,8 @@ fn composer_row_line(
     selected: bool,
     focused: bool,
 ) -> Line<'static> {
-    let bg = if selected {
-        cursor_band(theme, theme.bg, focused)
-    } else {
-        theme.bg
-    };
     let accent = theme.accent;
-    let bar = Span::styled("  ▌ ".to_owned(), Style::new().fg(accent).bg(bg));
+    let (bg, bar) = card_frame(theme, selected, focused, accent);
     let dim = Style::new().fg(theme.dim).bg(bg);
     let fg = Style::new().fg(theme.fg).bg(bg);
     let lines = composer.display(width);
@@ -1451,7 +1789,7 @@ fn composer_title(composer: &Composer) -> String {
 
 /// Map a markdown run's flags onto `base` (the body foreground over the card
 /// background). Recoloring flags (code, link, muted) win over the base fg.
-fn md_span(run: &MdSpan, base: Style, theme: &Theme) -> Span<'static> {
+pub(super) fn md_span(run: &MdSpan, base: Style, theme: &Theme) -> Span<'static> {
     let mut style = base;
     if run.bold {
         style = style.add_modifier(Modifier::BOLD);
@@ -1505,6 +1843,70 @@ mod tests {
         ));
         app.handle(key('C'));
         insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    /// A titled comment is a walkthrough stop. In the list the title is the
+    /// summary; the body stays in the card under its span, or ten stops of
+    /// four bullets each turn the pane into a wall.
+    #[test]
+    fn the_comments_sidebar_lists_a_titled_comment_by_its_title_alone() {
+        let (_fixture, mut app) = diff_app();
+        let source = app.active_review_source();
+        let file = app
+            .diff
+            .as_ref()
+            .and_then(|diff| {
+                diff.model(&app.review)
+                    .files
+                    .first()
+                    .map(|f| f.path.clone())
+            })
+            .expect("a file in the diff");
+        let anchor = diffler_core::session::Anchor {
+            file,
+            line: None,
+            line_end: None,
+            on_old_side: false,
+            line_text: None,
+        };
+        let id = app
+            .review
+            .session_for_mut(&source)
+            .add_comment(
+                anchor,
+                "agent",
+                "We refuse a default here because it hides a missing list.",
+            )
+            .id
+            .clone();
+        if let Some(comment) = app
+            .review
+            .session_for_mut(&source)
+            .comments
+            .iter_mut()
+            .find(|comment| comment.id == id)
+        {
+            comment.title = Some("Missing staff list stops the run".to_owned());
+        }
+        app.handle(key('C'));
+        let screen = render(&mut app).backend().to_string();
+        // the body still draws in the pane's own card; only the list column
+        // must leave it out, so read the screen from the pane's left edge
+        let pane_start = screen
+            .lines()
+            .find_map(|row| row.find("Comments ("))
+            .expect("the comments pane heading");
+        let pane: String = screen
+            .lines()
+            .map(|row| row.get(pane_start..).unwrap_or_default())
+            .collect::<Vec<_>>()
+            .join("\n");
+        // the pane is narrow, so the title is elided; the head of it is enough
+        assert!(pane.contains("Missing staff list"), "{pane}");
+        assert!(
+            !pane.contains("We refuse a default here"),
+            "the body belongs in the card, not the list: {pane}"
+        );
     }
 
     #[test]
@@ -1597,6 +1999,458 @@ mod tests {
         app.author = "reviewer".to_owned();
         app.open_working_tree_diff(None);
         (fixture, app)
+    }
+
+    /// A stop list is only readable when the reader knows whose order it is,
+    /// so the pane heading carries the walkthrough's name instead of "Files".
+    #[test]
+    fn the_walkthrough_layout_names_itself_in_the_sidebar_heading() {
+        let fixture = standard_fixture();
+        let mut app = walkthrough_app(
+            &fixture,
+            &[("The answer", Some("src/lib.rs#answer"), "why 42")],
+        );
+        let screen = render(&mut app).backend().to_string();
+        assert!(screen.contains("How the answer moved"), "{screen}");
+        assert!(!screen.contains(" Files"), "{screen}");
+    }
+
+    /// A pin that no longer resolves (a squash, a rebase, a gc) is a fact
+    /// about the whole walkthrough, not any one stop, so it shows in the
+    /// sidebar heading rather than only on the stops that needed the pin.
+    #[test]
+    fn a_broken_pin_shows_in_the_sidebar_heading() {
+        let fixture = standard_fixture();
+        let mut loaded = LoadedConfig::default();
+        loaded.config.ui.diff_file_layout = crate::config::FileLayout::Walkthrough;
+        let mut app = App::new(fixture.review(), loaded);
+        app.author = "reviewer".to_owned();
+        let source = crate::test_support::seat_walkthrough(
+            &mut app,
+            "tour",
+            &[("The answer", Some("src/lib.rs#answer"), "why 42")],
+        );
+        app.review
+            .session_for_mut(&source)
+            .walkthrough
+            .as_mut()
+            .expect("walkthrough")
+            .rev = Some("0000000000000000000000000000000000dead".to_owned());
+        app.open_walkthrough_diff("w1");
+        let request = app
+            .pending_walkthrough
+            .take()
+            .expect("resolution queued for the walkthrough");
+        let root = app.review.repo_root.clone();
+        let read = diffler_core::review::Review::compute_walkthrough_files(
+            &root,
+            request.read_rev.as_deref(),
+            &request.files,
+        );
+        assert!(read.pin_broken, "the garbage rev must not resolve");
+        app.handle(crate::event::AppEvent::WalkthroughAnchors {
+            contents: read.contents,
+            pin_broken: read.pin_broken,
+            token: request.token,
+        });
+
+        let screen = render(&mut app).backend().to_string();
+        assert!(screen.contains("pin lost"), "{screen}");
+    }
+
+    const STOP_BODY: &str = "\
+The layer that wins is the last one to **set** the key.
+
+| Layer | Wins on |
+| --- | --- |
+| built-in | nothing |
+| cli | every key |
+
+```mermaid
+flowchart LR
+  load[load defaults] --> merge[merge]
+  click merge \"src/lib.rs#answer\"
+```
+";
+
+    /// The card is the walkthrough's whole surface in the pane: a header, the
+    /// body's markdown, and a figure, under the span it explains. A stop with
+    /// nothing to point at heads the file instead.
+    #[test]
+    fn a_stop_card_renders_its_body_table_and_figure_under_the_span() {
+        let fixture = standard_fixture();
+        let mut app = walkthrough_app(
+            &fixture,
+            &[
+                ("What changed", None, "the overview, pointing at nothing"),
+                ("The answer", Some("src/lib.rs#answer"), STOP_BODY),
+            ],
+        );
+        app.handle(key('j'));
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    /// An overview stop has no line to sit on, so its card is the whole view.
+    #[test]
+    fn the_current_anchorless_stop_shows_its_card_alone() {
+        let fixture = standard_fixture();
+        let mut app = walkthrough_app(
+            &fixture,
+            &[
+                ("What changed", None, "the overview, pointing at nothing"),
+                ("The answer", Some("src/lib.rs#answer"), "why 42"),
+            ],
+        );
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    /// A stop anchored inside a large synthetic file shows its span and
+    /// nothing else of the file: the bug this layout exists to fix.
+    #[test]
+    fn a_stop_in_a_large_file_windows_to_its_span() {
+        let fixture = crate::test_support::big_file_fixture();
+        let mut app = walkthrough_app(
+            &fixture,
+            &[("The change", Some("big.txt:100"), "why line 100 changed")],
+        );
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    /// A slide shows its region and nothing else, so banding the region would
+    /// paint every code row on screen and read as a selection; the band is for
+    /// a span inside what is shown, which a comment jump in a file layout gets.
+    #[test]
+    fn a_slide_never_bands_its_whole_region_while_a_file_layout_bands_a_span() {
+        let fixture = standard_fixture();
+        let mut app = walkthrough_app(
+            &fixture,
+            &[("The answer", Some("src/lib.rs#answer"), "why 42")],
+        );
+        let band = crate::theme::blend(app.theme.bg, app.theme.accent, 25);
+        let banded = |app: &mut App| {
+            let terminal = render(app);
+            let buffer = terminal.backend().buffer();
+            (0..buffer.area.height)
+                .filter(|&y| {
+                    let cell = &buffer[(buffer.area.width / 2, y)];
+                    cell.style().bg == Some(band)
+                })
+                .count()
+        };
+        assert!(
+            app.diff.as_ref().expect("diff view").referenced.is_none(),
+            "a slide bands nothing: it already shows the stop's region"
+        );
+        assert_eq!(banded(&mut app), 0, "so no row is banded");
+
+        let source = app.active_review_source();
+        let note = app
+            .review
+            .session_for_mut(&source)
+            .add_comment(
+                diffler_core::session::Anchor {
+                    file: "src/lib.rs".to_owned(),
+                    line: Some(2),
+                    line_end: Some(3),
+                    on_old_side: false,
+                    line_text: None,
+                },
+                "agent",
+                "two lines inside the region",
+            )
+            .id
+            .clone();
+        {
+            let diff = app.diff.as_mut().expect("diff view");
+            diff.layout = crate::config::FileLayout::Tree;
+            diff.slide = None;
+            diff.invalidate();
+        }
+        app.focus_comment(&note);
+        assert!(
+            banded(&mut app) >= 1,
+            "outside the slide the file is all on screen, so the jumped-to span is banded"
+        );
+    }
+
+    /// Commenting inside a slide leaves it unbanded: the card's rows shift the
+    /// code around them, which a band keyed on row numbers would follow into
+    /// colouring the whole slide.
+    #[test]
+    fn a_comment_added_inside_a_slide_leaves_it_unbanded() {
+        let fixture = standard_fixture();
+        let mut app = walkthrough_app(
+            &fixture,
+            &[("The answer", Some("src/lib.rs#answer"), "why 42")],
+        );
+        let band = crate::theme::blend(app.theme.bg, app.theme.accent, 25);
+
+        let source = app.active_review_source();
+        app.review.session_for_mut(&source).add_comment(
+            diffler_core::session::Anchor {
+                file: "src/lib.rs".to_owned(),
+                line: Some(2),
+                line_end: None,
+                on_old_side: false,
+                line_text: None,
+            },
+            "reviewer",
+            "why not 41?",
+        );
+        app.diff.as_mut().expect("diff view").invalidate();
+        app.seat_stop(0);
+
+        let terminal = render(&mut app);
+        let buffer = terminal.backend().buffer();
+        let banded = (0..buffer.area.height)
+            .filter(|&y| buffer[(buffer.area.width / 2, y)].style().bg == Some(band))
+            .count();
+        assert_eq!(banded, 0, "the slide stays plain with a comment in it");
+    }
+
+    /// A slide's second card sits right under the first: nothing from
+    /// another stop leaks in, and nothing gets cut off.
+    #[test]
+    fn a_slide_with_two_comments_renders_both_cards() {
+        let fixture = standard_fixture();
+        let mut app = walkthrough_app(
+            &fixture,
+            &[("The answer", Some("src/lib.rs#answer"), "why 42")],
+        );
+        let source = app.active_review_source();
+        app.review.session_for_mut(&source).add_comment(
+            diffler_core::session::Anchor {
+                file: "src/lib.rs".to_owned(),
+                line: Some(2),
+                line_end: None,
+                on_old_side: false,
+                line_text: None,
+            },
+            "reviewer",
+            "why 42 and not 41?",
+        );
+        app.diff.as_mut().expect("diff view").invalidate();
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    /// A stop's `notes` become extra agent comments in its own region:
+    /// publishing writes one comment per note, and the sidebar row counts
+    /// the whole slide, not just the stop.
+    #[test]
+    fn a_stops_notes_count_toward_its_sidebar_row() {
+        let fixture = standard_fixture();
+        let mut loaded = LoadedConfig::default();
+        loaded.config.ui.diff_file_layout = crate::config::FileLayout::Walkthrough;
+        let mut app = App::new(fixture.review(), loaded);
+        app.author = "reviewer".to_owned();
+
+        let stop = crate::mcp::StopParams {
+            id: None,
+            title: "The answer".to_owned(),
+            anchor: Some("src/lib.rs#answer".to_owned()),
+            body: "why 42".to_owned(),
+            notes: Some(vec![
+                crate::mcp::NoteParams {
+                    id: None,
+                    anchor: None,
+                    body: "a first remark".to_owned(),
+                },
+                crate::mcp::NoteParams {
+                    id: None,
+                    anchor: Some("src/lib.rs:2".to_owned()),
+                    body: "a second remark".to_owned(),
+                },
+            ]),
+        };
+        let crate::mcp::McpResponse::WalkthroughPublished(published) =
+            app.handle_mcp(crate::mcp::McpRequestKind::PublishWalkthrough {
+                id: None,
+                title: "tour".to_owned(),
+                stops: vec![stop],
+                skipped: None,
+                summary: None,
+            })
+        else {
+            panic!("expected a published walkthrough");
+        };
+
+        app.open_walkthrough_diff(&published.id);
+        let request = app
+            .pending_walkthrough
+            .take()
+            .expect("resolution queued for the new walkthrough");
+        let root = app.review.repo_root.clone();
+        let contents = request
+            .files
+            .iter()
+            .filter_map(|path| Some((path.clone(), std::fs::read_to_string(root.join(path)).ok()?)))
+            .collect();
+        app.handle(crate::event::AppEvent::WalkthroughAnchors {
+            contents,
+            pin_broken: false,
+            token: request.token,
+        });
+
+        let screen = render(&mut app).backend().to_string();
+        assert!(
+            screen.contains(" · 3"),
+            "the row counts the stop and both notes: {screen}"
+        );
+    }
+
+    /// A `mermaid` fence in any comment draws as a figure, not as its source:
+    /// what a stop keeps from the boards it replaced, and every other comment
+    /// gains.
+    #[test]
+    fn a_mermaid_fence_in_a_human_comment_draws_as_a_figure() {
+        let (_fixture, mut app) = diff_app();
+        let id = app
+            .review
+            .session
+            .add_comment(
+                diffler_core::session::Anchor {
+                    file: "src/lib.rs".to_owned(),
+                    line: Some(2),
+                    line_end: None,
+                    on_old_side: false,
+                    line_text: None,
+                },
+                "reviewer",
+                "does it go this way?\n\n```mermaid\nflowchart LR\n  a[read] --> b[merge]\n```\n",
+            )
+            .id
+            .clone();
+        app.diff.as_mut().expect("diff view").invalidate();
+        app.focus_comment(&id);
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    /// A figure's `GraphView` used to default a selection on `set_model`
+    /// (nothing asked for one, and a card figure is a static picture, not
+    /// something being navigated), so it drew one node bold and reversed.
+    /// Clearing the selection after `set_model` means no node in a card
+    /// figure ever renders reversed.
+    #[test]
+    fn a_figures_selection_is_cleared_so_no_node_reverses_in_the_card() {
+        let (_fixture, mut app) = diff_app();
+        let id = app
+            .review
+            .session
+            .add_comment(
+                diffler_core::session::Anchor {
+                    file: "src/lib.rs".to_owned(),
+                    line: Some(2),
+                    line_end: None,
+                    on_old_side: false,
+                    line_text: None,
+                },
+                "reviewer",
+                "does it go this way?\n\n```mermaid\nflowchart LR\n  a[read] --> b[merge]\n```\n",
+            )
+            .id
+            .clone();
+        app.diff.as_mut().expect("diff view").invalidate();
+        app.focus_comment(&id);
+        let figure_rows = {
+            let diff = app.diff.as_ref().expect("diff view");
+            let cached = diff.figures.get(&id).expect("the figure is cached");
+            cached
+                .blocks
+                .iter()
+                .find_map(|block| match block {
+                    crate::app::walkthrough::Block::Figure(figure) => Some(figure.rows()),
+                    crate::app::walkthrough::Block::Prose(_) => None,
+                })
+                .expect("a figure block")
+        };
+        let terminal = render(&mut app);
+        let buffer = terminal.backend().buffer();
+        let area = buffer.area;
+        let header_row = (area.y..area.y + area.height)
+            .find(|&y| {
+                let line: String = (area.x..area.x + area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect();
+                line.contains("figure 1")
+            })
+            .expect("the figure's header row is on screen");
+        let last_row =
+            (header_row + u16::try_from(figure_rows).unwrap_or(0)).min(area.y + area.height);
+        let reversed = (header_row..last_row)
+            .flat_map(|y| (area.x..area.x + area.width).map(move |x| (x, y)))
+            .filter(|&(x, y)| {
+                buffer[(x, y)]
+                    .modifier
+                    .contains(ratatui::style::Modifier::REVERSED)
+            })
+            .count();
+        assert_eq!(reversed, 0, "no node in the figure should render reversed");
+    }
+
+    /// The walkthrough layout with the stops resolved, the way the worker
+    /// leaves them.
+    fn walkthrough_app(fixture: &Fixture, stops: &[(&str, Option<&str>, &str)]) -> App {
+        let mut loaded = LoadedConfig::default();
+        loaded.config.ui.diff_file_layout = crate::config::FileLayout::Walkthrough;
+        let mut app = App::new(fixture.review(), loaded);
+        app.author = "reviewer".to_owned();
+        crate::test_support::seat_walkthrough(&mut app, "How the answer moved", stops);
+        app.open_walkthrough_diff("w1");
+        // the anchors resolve off-thread; the render tests want them landed
+        let Some(request) = app.pending_walkthrough.take() else {
+            return app;
+        };
+        let root = app.review.repo_root.clone();
+        let read = diffler_core::review::Review::compute_walkthrough_files(
+            &root,
+            request.read_rev.as_deref(),
+            &request.files,
+        );
+        app.handle(crate::event::AppEvent::WalkthroughAnchors {
+            contents: read.contents,
+            pin_broken: read.pin_broken,
+            token: request.token,
+        });
+        app
+    }
+
+    /// `draw_pane` runs every frame; a stop anchored outside the diff forces
+    /// `DiffView::model_with_context` to merge in a context file. That merge
+    /// is the clone `crate::app::merge_count` counts, and a render must not
+    /// trigger a fresh one: `ensure_rows` already cached it.
+    #[test]
+    fn draw_pane_reads_the_cached_merged_model_instead_of_rebuilding_it() {
+        let fixture = standard_fixture();
+        let mut app = walkthrough_app(&fixture, &[("Notes", Some("notes.txt:1"), "why alpha")]);
+        // the first render settles `walkthrough_built` and enrichment, which
+        // legitimately trigger a rebuild of their own; only renders after
+        // that are the steady state a per-frame rebuild bug would show up in
+        render(&mut app);
+        assert!(
+            app.diff.as_ref().expect("diff view").merged_model.is_some(),
+            "a context file forces a merged model"
+        );
+        let before = crate::app::merge_count();
+        render(&mut app);
+        render(&mut app);
+        assert_eq!(
+            crate::app::merge_count(),
+            before,
+            "draw_pane must read the cached merged model, not rebuild it"
+        );
+    }
+
+    /// The summary slide renders as one card, with no diff rows beneath it.
+    #[test]
+    fn the_summary_slide_renders_one_card_and_no_diff_rows() {
+        let fixture = standard_fixture();
+        let mut app = walkthrough_app(
+            &fixture,
+            &[("The answer", Some("src/lib.rs#answer"), "why 42")],
+        );
+        crate::test_support::set_walkthrough_summary(&mut app, "w1", "the shape of the change");
+        app.seat_summary();
+        insta::assert_snapshot!(render(&mut app).backend());
     }
 
     #[test]

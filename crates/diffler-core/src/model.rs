@@ -125,6 +125,9 @@ pub enum FileStatus {
     Deleted,
     Renamed,
     Untracked,
+    /// A walkthrough's own file: one a stop or note anchors outside the diff,
+    /// shown at its current content with nothing to compare it against.
+    Unchanged,
 }
 
 impl FileStatus {
@@ -138,6 +141,7 @@ impl FileStatus {
             Self::Deleted => '−',
             Self::Renamed => '~',
             Self::Untracked => '○',
+            Self::Unchanged => '·',
         }
     }
 
@@ -149,6 +153,7 @@ impl FileStatus {
             Self::Deleted => "deleted",
             Self::Renamed => "renamed",
             Self::Untracked => "untracked",
+            Self::Unchanged => "unchanged",
         }
     }
 }
@@ -261,9 +266,10 @@ mod tests {
             FileStatus::Deleted,
             FileStatus::Renamed,
             FileStatus::Untracked,
+            FileStatus::Unchanged,
         ]
         .map(FileStatus::glyph);
-        assert_eq!(glyphs, ['+', '●', '−', '~', '○']);
+        assert_eq!(glyphs, ['+', '●', '−', '~', '○', '·']);
         let mut distinct = glyphs.to_vec();
         distinct.sort_unstable();
         distinct.dedup();
@@ -278,6 +284,7 @@ mod tests {
         assert_eq!(FileStatus::Deleted.label(), "deleted");
         assert_eq!(FileStatus::Renamed.label(), "renamed");
         assert_eq!(FileStatus::Untracked.label(), "untracked");
+        assert_eq!(FileStatus::Unchanged.label(), "unchanged");
     }
 
     fn line(kind: LineKind, text: &str) -> DiffLine {

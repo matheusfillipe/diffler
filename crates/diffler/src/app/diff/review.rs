@@ -4,19 +4,21 @@
 use diffler_core::session::{Anchor, Comment, CommentStatus};
 
 use diffler_core::feedback::{self, FeedbackOptions};
-use diffler_core::model::{FileDiff, LineKind};
+use diffler_core::model::{DiffModel, FileDiff};
 use diffler_core::source::ReviewSource;
 
-use super::{ComposerKind, DiffRow, Pane, sidebar_rows};
+use super::{ComposerKind, DiffRow, Pane, Slide, sidebar_rows};
 use crate::app::rowsel::RowSelect;
 use crate::app::{App, Modal};
+use crate::config::FileLayout;
 use crate::tree::TreeNode;
 
 impl App {
     /// Anchor for a new comment at the cursor (or the visual selection).
     fn comment_anchor(&self) -> Option<Anchor> {
         let diff = self.diff.as_ref()?;
-        let model = diff.model(&self.review);
+        let model_cow = diff.model_for_rows(&self.review);
+        let model: &DiffModel = &model_cow;
         let line_at = |row: &DiffRow| -> Option<(
             usize,
             &diffler_core::model::Hunk,
@@ -210,6 +212,13 @@ impl App {
     }
 
     pub(super) fn diff_toggle_viewed(&mut self) {
+        if self
+            .diff
+            .as_ref()
+            .is_some_and(|diff| diff.layout == FileLayout::Walkthrough)
+        {
+            return self.walkthrough_toggle_seen();
+        }
         if self.diff_toggle_group_viewed() {
             return;
         }
@@ -303,7 +312,8 @@ impl App {
                 .filter_map(|index| model.files.get(index))
                 .map(|file| (file.path.clone(), file.content_hash()))
                 .collect(),
-            Some(TreeNode::File { .. }) | None => return false,
+            Some(TreeNode::File { .. } | TreeNode::Stop { .. } | TreeNode::WalkthroughSummary)
+            | None => return false,
         };
         if files.is_empty() {
             return false;
@@ -358,6 +368,83 @@ impl App {
             diff.reseat_tree_cursor(&rows);
         }
         self.info("cleared all viewed marks");
+    }
+
+    /// The stop index of the slide currently open, when it is a stop's own
+    /// (not the all-slides view, an ad hoc comment, or nothing seated yet).
+    fn current_stop_index(&self) -> Option<usize> {
+        match self.diff.as_ref()?.slide {
+            Some(Slide::Stop(index)) => Some(index),
+            _ => None,
+        }
+    }
+
+    /// `m` in the walkthrough layout: toggle the current slide's seen mark,
+    /// then advance to the next slide the way `m` on a file advances to the
+    /// row below it. Unmarking holds still, matching the file behaviour.
+    pub(super) fn walkthrough_toggle_seen(&mut self) {
+        let Some(index) = self.current_stop_index() else {
+            return;
+        };
+        let Some(id) = self
+            .active_walkthrough()
+            .and_then(|w| w.stops.get(index).cloned())
+        else {
+            return;
+        };
+        let source = self.active_review_source();
+        let seen = self.review.session_for(&source).is_stop_seen(&id);
+        let session = self.review.session_for_mut(&source);
+        if seen {
+            session.unmark_stop_seen(&id);
+        } else {
+            session.mark_stop_seen(&id);
+        }
+        let _ = self.persist_review_change(&source);
+        if seen {
+            return;
+        }
+        let total = self.active_walkthrough().map_or(0, |w| w.stops.len());
+        if index + 1 < total {
+            self.seat_stop(index + 1);
+            return;
+        }
+        let source = self.active_review_source();
+        let session = self.review.session_for(&source);
+        let seen_count = self.active_walkthrough().map_or(0, |w| {
+            w.stops.iter().filter(|id| session.is_stop_seen(id)).count()
+        });
+        if total > seen_count {
+            self.info(format!(
+                "end of the walkthrough, {} still unseen",
+                total - seen_count
+            ));
+        }
+    }
+
+    /// `u` in the walkthrough layout: jump to the next slide not yet marked
+    /// seen, wrapping past the end.
+    pub(super) fn walkthrough_jump_unseen(&mut self) {
+        let Some(walkthrough) = self.active_walkthrough().cloned() else {
+            return;
+        };
+        let source = self.active_review_source();
+        let total = walkthrough.stops.len();
+        if total == 0 {
+            return;
+        }
+        let session = self.review.session_for(&source);
+        let start = self.current_stop_index().map_or(0, |index| index + 1);
+        let next = (0..total).map(|step| (start + step) % total).find(|index| {
+            walkthrough
+                .stops
+                .get(*index)
+                .is_some_and(|id| !session.is_stop_seen(id))
+        });
+        match next {
+            Some(index) => self.seat_stop(index),
+            None => self.info("every slide is seen"),
+        }
     }
 
     /// The file the sidebar lists under the selected one, skipping headers and
@@ -437,61 +524,18 @@ impl App {
         self.info(format!("copied {count} {noun} ({scope})"));
     }
 
-    /// `y` while a visual range is selected: copy those lines as a diff body
-    /// (kept `+`/`-`/context markers, gutter line numbers stripped) to the
-    /// clipboard. Returns false when nothing is selected, so the caller falls
-    /// back to copying the file's comment feedback.
-    fn copy_selection(&mut self) -> bool {
-        let (text, count) = {
-            let Some(diff) = self.diff.as_ref() else {
-                return false;
-            };
-            let Some((start, end)) = diff.selection() else {
-                return false;
-            };
-            let model = diff.model(&self.review);
-            let mut text = String::new();
-            let mut count = 0;
-            for row in diff.rows().get(start..=end).into_iter().flatten() {
-                let DiffRow::Line { file, hunk, line } = row else {
-                    continue;
-                };
-                let Some(diff_line) = model
-                    .files
-                    .get(*file)
-                    .and_then(|f| f.hunks.get(*hunk))
-                    .and_then(|h| h.lines.get(*line))
-                else {
-                    continue;
-                };
-                let marker = match diff_line.kind {
-                    LineKind::Added => '+',
-                    LineKind::Deleted => '-',
-                    LineKind::Context => ' ',
-                };
-                text.push(marker);
-                text.push_str(&diff_line.text);
-                text.push('\n');
-                count += 1;
-            }
-            (text, count)
-        };
-        if count == 0 {
-            return false;
-        }
-        self.pending_clipboard = Some(text);
-        if let Some(diff) = self.diff.as_mut() {
-            diff.visual_anchor = None;
-        }
-        self.info(format!(
-            "copied {count} line{}",
-            if count == 1 { "" } else { "s" }
-        ));
-        true
-    }
-
+    /// `y`: with a visual selection, yank whatever rows it covers through the
+    /// shared row-text path every other screen uses; with none, keep the
+    /// review's own meaning for the key, exporting this file's comments as
+    /// markdown, since a reader relying on that fallback sees nothing change.
     pub(super) fn copy_file_or_selection(&mut self) {
-        if !self.copy_selection() {
+        if self
+            .diff
+            .as_ref()
+            .is_some_and(|diff| diff.selection().is_some())
+        {
+            self.yank_rows("yanked selection");
+        } else {
             self.copy_feedback(true);
         }
     }

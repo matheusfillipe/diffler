@@ -160,12 +160,24 @@ impl App {
         }
     }
 
-    /// React to a [`crate::graph::GraphAction`] from the component: activating a
-    /// node opens that job's log.
+    /// React to a [`crate::graph::GraphAction`] from the component: activating
+    /// a node opens that job's log for a CI run, or jumps to the code a card
+    /// figure's node resolved to when it is one of those instead. A node with
+    /// no resolved anchor does nothing.
     pub(super) fn on_graph_action(&mut self, action: &crate::graph::GraphAction) {
         match action {
             crate::graph::GraphAction::Activated(id) => {
-                self.open_ci_log(crate::ci::JobId(id.0.clone()));
+                let showing_figure = self.figure_graph_anchors.is_some();
+                let anchor = self
+                    .figure_graph_anchors
+                    .as_ref()
+                    .and_then(|anchors| anchors.get(id))
+                    .cloned();
+                match anchor {
+                    Some((path, line, end)) => self.open_file(&path, Some((line, end)), false),
+                    None if !showing_figure => self.open_ci_log(crate::ci::JobId(id.0.clone())),
+                    None => {}
+                }
             }
             crate::graph::GraphAction::Folded { .. } => {}
         }

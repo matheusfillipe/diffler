@@ -42,8 +42,7 @@ pub trait RowSelect {
 }
 
 /// A [`RowSelect`] screen whose rows are plain text, so a selection yanks as
-/// itself. The diff is the exception: its rows only read against the model, so
-/// it builds its own yank text.
+/// itself.
 pub trait RowText: RowSelect {
     fn row_count(&self) -> usize;
     fn row_text(&self, row: usize) -> String;
@@ -85,19 +84,14 @@ impl App {
         }
     }
 
-    /// The rows under the keyboard as plain text. The diff is absent on
-    /// purpose: its rows only read against the model, so it yanks its own way.
+    /// The rows under the keyboard as plain text.
     fn row_text_view(&self) -> Option<&dyn RowText> {
         match self.screen() {
+            Screen::Diff => self.diff.as_ref().map(|view| view as &dyn RowText),
             Screen::Log => self.log.as_ref().map(|view| view as &dyn RowText),
             Screen::CiLog => self.ci_log.as_ref().map(|view| view as &dyn RowText),
             Screen::File => self.file.as_ref().map(|view| view as &dyn RowText),
-            Screen::Diff
-            | Screen::Status
-            | Screen::Graph
-            | Screen::Runs
-            | Screen::Prs
-            | Screen::Stats => None,
+            Screen::Status | Screen::Graph | Screen::Runs | Screen::Prs | Screen::Stats => None,
         }
     }
 

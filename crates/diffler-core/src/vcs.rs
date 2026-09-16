@@ -57,10 +57,11 @@ pub struct BranchInfo {
     /// Tip commit's time as a Unix timestamp, so callers can sort branches
     /// newest-first and render an age.
     pub tip_unix: i64,
-    /// Commits on this branch its upstream lacks. Zero without an upstream.
-    pub ahead: usize,
-    /// Commits on the upstream this branch lacks. Zero without an upstream.
-    pub behind: usize,
+    /// How far this branch stands from its upstream, as `(ahead, behind)`.
+    /// Resolving one costs a config read and a graph walk, so a listing leaves
+    /// it `None` and the caller asks [`Vcs::divergence`] for the branches it
+    /// actually shows.
+    pub divergence: Option<(usize, usize)>,
 }
 
 /// A network operation the binary runs by shelling out to the backend's CLI,
@@ -146,6 +147,12 @@ pub trait Vcs: Send {
     /// span of their own, owned by no commit.
     fn blame(&self, rel: &Path) -> Result<Vec<BlameSpan>, VcsError>;
 
+    /// One file's content as recorded in `rev`'s tree, `None` when that tree
+    /// has no such path. Lets a review pinned to one tree (a commit, a
+    /// range's newest, a PR's head) resolve a walkthrough's anchors against
+    /// what it actually shows, rather than whatever the worktree holds now.
+    fn read_at(&self, rev: &str, path: &str) -> Result<Option<String>, VcsError>;
+
     /// Every tracked file, repo-relative and sorted. This is the index, so a
     /// staged new file is tracked and an untracked one is not.
     fn tracked_files(&self) -> Result<Vec<PathBuf>, VcsError>;
@@ -155,8 +162,12 @@ pub trait Vcs: Send {
     /// guess, so there is nothing to report and nothing to recover.
     fn attr(&self, rel: &Path, name: &str) -> bool;
 
-    /// Local branches.
+    /// Local branches, their divergence left unresolved.
     fn branches(&self) -> Result<Vec<BranchInfo>, VcsError>;
+
+    /// How far `branch` stands from its upstream, as `(ahead, behind)`, or
+    /// `None` when it tracks nothing.
+    fn divergence(&self, branch: &str) -> Result<Option<(usize, usize)>, VcsError>;
     /// Local and remote-tracking branch names, for pickers that name a
     /// revision rather than check one out.
     fn all_branches(&self) -> Result<Vec<String>, VcsError>;

@@ -386,6 +386,15 @@ impl Vcs for GitVcs {
         Ok(out)
     }
 
+    fn read_at(&self, rev: &str, path: &str) -> Result<Option<String>, VcsError> {
+        let commit = self.repo.revparse_single(rev)?.peel_to_commit()?;
+        match commit.tree()?.get_path(Path::new(path)) {
+            Ok(entry) => Ok(blob_text(&self.repo, entry.id())),
+            Err(err) if err.code() == git2::ErrorCode::NotFound => Ok(None),
+            Err(err) => Err(err.into()),
+        }
+    }
+
     fn tracked_files(&self) -> Result<Vec<PathBuf>, VcsError> {
         let index = self.repo.index()?;
         let mut out: Vec<PathBuf> = index
@@ -420,25 +429,30 @@ impl Vcs for GitVcs {
             let Some(name) = branch.name()?.map(str::to_owned) else {
                 continue;
             };
-            let tip = branch.get().peel_to_commit().ok();
-            let tip_unix = tip.as_ref().map_or(0, |c| c.time().seconds());
-            let upstream_target = branch.upstream().ok().and_then(|u| u.get().target());
-            let (ahead, behind) = match (&tip, upstream_target) {
-                (Some(tip), Some(target)) => self
-                    .repo
-                    .graph_ahead_behind(tip.id(), target)
-                    .unwrap_or((0, 0)),
-                _ => (0, 0),
-            };
+            let tip_unix = branch
+                .get()
+                .peel_to_commit()
+                .ok()
+                .map_or(0, |commit| commit.time().seconds());
             out.push(BranchInfo {
                 name,
                 is_head: branch.is_head(),
                 tip_unix,
-                ahead,
-                behind,
+                divergence: None,
             });
         }
         Ok(out)
+    }
+
+    fn divergence(&self, branch: &str) -> Result<Option<(usize, usize)>, VcsError> {
+        let branch = self.repo.find_branch(branch, git2::BranchType::Local)?;
+        let Some(tip) = branch.get().peel_to_commit().ok() else {
+            return Ok(None);
+        };
+        let Some(target) = branch.upstream().ok().and_then(|up| up.get().target()) else {
+            return Ok(None);
+        };
+        Ok(Some(self.repo.graph_ahead_behind(tip.id(), target)?))
     }
 
     fn all_branches(&self) -> Result<Vec<String>, VcsError> {

@@ -302,6 +302,8 @@ impl App {
                     on_old_side: !item.new_side,
                     line_text,
                 },
+                title: None,
+                anchor_ref: None,
                 body: item.body.clone(),
                 status,
                 replies: Vec::new(),
@@ -992,6 +994,56 @@ mod tests {
             posted,
             vec!["human comment".to_owned()],
             "nothing the agent wrote reaches the forge"
+        );
+    }
+
+    /// A walkthrough is its own review source: its comments are never in
+    /// reach of the PR posting flow, whatever the open PR review holds.
+    #[test]
+    fn a_walkthrough_comment_is_never_queued_for_posting_to_the_pr() {
+        let fixture = standard_fixture();
+        fixture.write("src/lib.rs", "pub fn answer() -> u32 {\n    43\n}\n");
+        fixture.stage("src/lib.rs");
+        fixture.commit_all("bump");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        crate::test_support::seat_walkthrough(
+            &mut app,
+            "tour",
+            &[("The answer", Some("src/lib.rs#answer"), "why 43")],
+        );
+        let head = app.review.vcs.resolve("HEAD").expect("head oid");
+        let base = app.review.vcs.resolve("HEAD~1").expect("base oid");
+        app.open_pr_diff(3, &base, &head);
+        let source = ReviewSource::pr(3);
+        app.review.session_for_mut(&source).add_comment(
+            Anchor {
+                file: "src/lib.rs".into(),
+                line: Some(2),
+                line_end: None,
+                on_old_side: false,
+                line_text: None,
+            },
+            "reviewer",
+            "why 43?",
+        );
+
+        app.queue_pr_review(3, ReviewVerdict::Comment, "");
+
+        let posted: Vec<String> = app
+            .pending_pr_posts
+            .iter()
+            .flat_map(|post| match post {
+                PrPost::Review { review, .. } => {
+                    review.comments.iter().map(|c| c.body.clone()).collect()
+                }
+                PrPost::Reply { body, .. } => vec![body.clone()],
+                _ => Vec::new(),
+            })
+            .collect();
+        assert_eq!(
+            posted,
+            vec!["why 43?".to_owned()],
+            "only the PR's own comment is queued, never the walkthrough's stop"
         );
     }
 

@@ -42,6 +42,7 @@ nucleo-matcher.workspace = true
 pulldown-cmark.workspace = true
 # the GitHub CI source parses workflow YAML into the graph Model
 serde_norway.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 git2.workspace = true

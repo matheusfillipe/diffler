@@ -26,16 +26,21 @@ mod search;
 pub mod stats;
 mod status;
 pub mod text_edit;
+pub mod walkthrough;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(test)]
+pub(crate) use diff::merge_count;
 pub use diff::{
-    CommentLine, DeclaredRequest, DiffRow, DiffView, FileHighlights, FileScope, Pane, ScrollAlign,
-    SplitRow, SplitSide, comment_display,
+    CommentLine, DeclaredRequest, DiffRow, DiffView, FileHighlights, FileScope, Pane, RowCopy,
+    ScrollAlign, SplitRow, SplitSide, blocks_of, comment_display, summary_display,
 };
 pub use log::LogView;
-pub(crate) use status::{BRANCHES_TITLE, CI_TITLE, PRS_TITLE, RECENT_TITLE, UNPUSHED_TITLE};
+pub(crate) use status::{
+    BRANCHES_TITLE, CI_TITLE, PRS_TITLE, RECENT_TITLE, UNPUSHED_TITLE, WALKTHROUGHS_TITLE,
+};
 pub use status::{Group, Row, Section, StatusView};
 
 use crossterm::event::{KeyCode, KeyEvent};
@@ -125,6 +130,11 @@ pub enum PendingOp {
     DeleteComment(String),
     /// Wipe every local comment of the active review.
     DeleteAllComments,
+    /// Remove the named walkthrough and every comment it owns.
+    DeleteWalkthrough(String),
+    /// Remove one stop (its primary and notes) of the active review's
+    /// walkthrough, keeping the rest of it.
+    DeleteStop(usize),
     /// Run a queued git op after the user confirms (set-upstream, force-push).
     RunGit {
         label: String,
@@ -355,8 +365,8 @@ const FALLBACK_REFRESH_TICKS: u32 = 20;
 const CLOCK_TICKS: u32 = 40;
 
 /// How much the CI poll slows while the terminal is unfocused. Focus regained
-/// polls at once, so the only cost of being wrong is a stale board nobody is
-/// looking at.
+/// polls at once, so the only cost of being wrong is a stale run list nobody
+/// is looking at.
 const UNFOCUSED_POLL_FACTOR: u64 = 12;
 
 /// What the main loop should fetch from the CI provider off-thread. Mirrors
@@ -543,6 +553,12 @@ pub struct App {
     pub diff: Option<DiffView>,
     /// The embedded CI graph component, present while the Graph screen is up.
     pub graph: Option<crate::graph::GraphView>,
+    /// The `click` anchors of a card figure opened full-screen onto the Graph
+    /// screen, keyed by node: `(path, line, end)` for a node whose target
+    /// resolved. `None` while the Graph screen shows a CI run instead, whose
+    /// `<cr>` opens a job's log rather than jumping to code.
+    pub(crate) figure_graph_anchors:
+        Option<std::collections::HashMap<crate::graph::NodeId, (String, u32, u32)>>,
     /// CI remotes for the repo: one per distinct forge across all git remotes,
     /// computed at startup. Empty when no provider could be determined.
     pub(crate) ci_remotes: Vec<CiRemote>,
@@ -632,6 +648,11 @@ pub struct App {
     pub pending_stats: Option<stats::StatsRequest>,
     /// Bumped per scan, so an answer for a screen since closed is dropped.
     stats_token: u64,
+    /// Files the main loop should read so the walkthrough's anchors resolve.
+    pub pending_walkthrough: Option<walkthrough::WalkthroughRequest>,
+    /// Bumped per rebuild, so an answer for a walkthrough the agent has
+    /// replaced is dropped.
+    walkthrough_token: u64,
     pub modal: Option<Modal>,
     /// Where the open modal drew its rows, so a click finds the one under the
     /// pointer. Written by the renderer each frame.
@@ -749,6 +770,7 @@ impl App {
                 Vec::new()
             }
         };
+        let walkthroughs = status::load_walkthroughs(&review);
 
         // `origin/main` names the remote in front of the slash
         let pushes_to = head
@@ -768,10 +790,11 @@ impl App {
             // a good-enough human label for feedback exports
             author: std::env::var("USER").unwrap_or_else(|_| "you".to_owned()),
             screens: vec![Screen::Status],
-            status: StatusView::new(unpushed, recent, branches),
+            status: StatusView::new(unpushed, recent, branches, walkthroughs),
             log: None,
             diff: None,
             graph: None,
+            figure_graph_anchors: None,
             // kick an initial CI fetch so the Status section populates at launch
             // (evaluated before `ci_remotes` is moved into the struct below)
             pending_ci: (!ci_remotes.is_empty()).then_some(CiRequest::Runs),
@@ -816,6 +839,8 @@ impl App {
             stats: None,
             pending_stats: None,
             stats_token: 0,
+            pending_walkthrough: None,
+            walkthrough_token: 0,
             declared_token: 0,
             file_token: 0,
             pending_clipboard: None,
@@ -959,7 +984,7 @@ impl App {
             AppEvent::Focus(focused) => {
                 self.focused = focused;
                 // catch up the moment someone looks again, so coming back
-                // never shows a stale board
+                // never shows a stale run list
                 if focused {
                     self.queue_ci_poll();
                 }
@@ -976,11 +1001,16 @@ impl App {
             }
             AppEvent::FileLoaded {
                 result,
-                line,
+                span,
                 token,
-            } => self.on_file_loaded(*result, line, token),
+            } => self.on_file_loaded(*result, span, token),
             AppEvent::DeclaredKinds { kinds, token } => self.on_declared_kinds(kinds, token),
             AppEvent::RepoStats { stats, token } => self.on_repo_stats(*stats, token),
+            AppEvent::WalkthroughAnchors {
+                contents,
+                pin_broken,
+                token,
+            } => self.on_walkthrough_anchors(&contents, pin_broken, token),
             AppEvent::CiRuns(runs) => {
                 self.on_ci_runs(runs);
                 Flow::Continue
@@ -1128,6 +1158,9 @@ impl App {
         self.pending = pending;
         match resolved {
             Resolved::Action(action) => self.dispatch(action),
+            Resolved::Transient(TransientKind::Diff) if self.status_cursor_on_walkthrough() => {
+                self.dispatch(Action::DeleteComment)
+            }
             Resolved::Transient(kind) => {
                 self.open_transient(kind);
                 Flow::Continue
@@ -1208,18 +1241,23 @@ impl App {
     fn after_session_change(&mut self) {
         self.feedback_tx.send_modify(|epoch| *epoch += 1);
         let source = self.active_review_source();
-        self.persist_review_change(&source);
+        let _ = self.persist_review_change(&source);
     }
 
     /// Persist `source`'s session and invalidate the open diff's cached rows
     /// so a stale comment/viewed-mark render never survives the mutation.
-    pub(crate) fn persist_review_change(&mut self, source: &ReviewSource) {
-        if let Err(err) = self.review.save_for(source) {
-            self.error(err.to_string());
-        }
+    /// Returns the save error, toasted here and also handed back so an MCP
+    /// caller whose response promises the write happened can say otherwise
+    /// when it did not.
+    pub(crate) fn persist_review_change(&mut self, source: &ReviewSource) -> Result<(), String> {
+        let result = self.review.save_for(source);
         if let Some(diff) = self.diff.as_mut() {
             diff.invalidate();
         }
+        if let Err(err) = &result {
+            self.error(err.to_string());
+        }
+        result.map_err(|err| err.to_string())
     }
 
     /// One 250ms beat: age the timed UI state and re-poll what the screen is
@@ -1355,6 +1393,7 @@ impl App {
                 self.open_run = None;
                 self.open_run_remote = None;
                 self.extras = None;
+                self.figure_graph_anchors = None;
             }
             Some(Screen::CiLog) => {
                 self.open_job = None;
@@ -1500,6 +1539,7 @@ impl App {
             Ok(branches) => self.status.branches = branches,
             Err(err) => self.error(err.to_string()),
         }
+        self.reload_walkthroughs();
         self.restore_status_cursor(status_anchor);
         self.refresh_log();
         let swap = against.and_then(|(rev, result)| self.against_swap(&rev, result));
@@ -1662,8 +1702,12 @@ fn tree_row_label(node: &crate::tree::TreeNode) -> String {
         crate::tree::TreeNode::Dir { name, .. } | crate::tree::TreeNode::File { name, .. } => {
             name.clone()
         }
-        // bucket headers are chrome, not content: `/` never matches them
-        crate::tree::TreeNode::Section { .. } => String::new(),
+        // bucket headers are chrome, and a stop row's title lives in the
+        // session rather than the row: `/` never matches either, nor the
+        // walkthrough's own leading row
+        crate::tree::TreeNode::Section { .. }
+        | crate::tree::TreeNode::Stop { .. }
+        | crate::tree::TreeNode::WalkthroughSummary => String::new(),
     }
 }
 

@@ -22,7 +22,7 @@ impl App {
     /// orphaned are the same question.
     fn file_rank(&self, path: &str) -> usize {
         self.diff.as_ref().map_or(usize::MAX, |diff| {
-            diff.model(&self.review)
+            diff.model_for_rows(&self.review)
                 .files
                 .iter()
                 .position(|file| file.path == path)
@@ -182,52 +182,96 @@ impl App {
         self.focus_comment(&id);
     }
 
+    /// Enter the slide that holds `id`, so the walkthrough layout never shows
+    /// a comment outside the slide on screen: the stop it is the primary of,
+    /// else the stop whose region covers it, else a slide of its own. A
+    /// comment reached this way always belongs to the open source's own
+    /// walkthrough, since that source carries no other. Every route into a
+    /// comment calls this; in any other layout it does nothing.
+    pub(crate) fn enter_slide_for_comment(&mut self, id: &str) {
+        let Some(diff) = self.diff.as_ref() else {
+            return;
+        };
+        if diff.layout != crate::config::FileLayout::Walkthrough || self.comment_is_orphan(id) {
+            return;
+        }
+        let session = self.review.session_for(&diff.source);
+        let Some(walkthrough) = diff.active_walkthrough(session) else {
+            return;
+        };
+        let holds = |stop: &String| {
+            session
+                .comments
+                .iter()
+                .position(|comment| comment.id == *stop)
+                .is_some_and(|primary| {
+                    crate::app::walkthrough::slide_comments(session, primary)
+                        .into_iter()
+                        .filter_map(|index| session.comments.get(index))
+                        .any(|comment| comment.id == id)
+                })
+        };
+        let slide = walkthrough
+            .stops
+            .iter()
+            .position(|stop| stop == id)
+            .or_else(|| walkthrough.stops.iter().position(holds));
+        // the stop's own seating bands its region and opens its file, the
+        // same arrival the sidebar gives
+        if let Some(index) = slide {
+            self.seat_stop(index);
+            return;
+        }
+        let Some(diff) = self.diff.as_mut() else {
+            return;
+        };
+        diff.slide = Some(super::Slide::AdHoc(id.to_owned()));
+        diff.referenced = None;
+        diff.mark_rows_dirty();
+    }
+
     /// Seat the diff cursor on the comment with `id`. Reports whether the
     /// comment's file is part of this diff at all.
     pub(crate) fn focus_comment(&mut self, id: &str) -> bool {
+        self.enter_slide_for_comment(id);
         let Some(diff) = self.diff.as_ref() else {
             return false;
         };
         let session = self.review.session_for(&diff.source);
-        let Some(file) = session
-            .comments
-            .iter()
-            .find(|comment| comment.id == id)
-            .map(|comment| comment.anchor.file.clone())
+        let Some(comment_index) = session.comments.iter().position(|comment| comment.id == id)
         else {
             return false;
         };
-        let model = diff.model(&self.review);
+        let Some(file) = session
+            .comments
+            .get(comment_index)
+            .map(|c| c.anchor.file.clone())
+        else {
+            return false;
+        };
+        let model = diff.model_for_rows(&self.review);
         let Some(file_index) = model.files.iter().position(|entry| entry.path == file) else {
             self.info("comment file is not in this diff");
             return false;
         };
-        if let Some(diff) = self.diff.as_mut()
-            && diff.selected != file_index
-        {
-            diff.selected = file_index;
-            diff.invalidate();
-        }
+        let span = session
+            .comments
+            .get(comment_index)
+            .and_then(|comment| comment.anchor.span());
+        let review = &self.review;
         let Some(diff) = self.diff.as_mut() else {
             return false;
         };
-        diff.reveal_selected(&self.review);
-        diff.ensure_rows(&self.review);
-        let Some(diff) = self.diff.as_ref() else {
-            return false;
-        };
-        let session = self.review.session_for(&diff.source);
-        let target = diff.rows().iter().position(|row| {
-            matches!(row, DiffRow::Comment { comment, line: 0, .. }
-                if session.comments.get(*comment).is_some_and(|c| c.id == id))
-        });
-        let Some(row) = target else {
-            return false;
-        };
-        if let Some(diff) = self.diff.as_mut() {
-            diff.cursor = row;
-        }
-        true
+        let seated = diff
+            .seat_on(review, file_index, |row| {
+                matches!(row, DiffRow::Comment { comment, line: 0, .. } if *comment == comment_index)
+            })
+            .is_some();
+        // a jump lands on the card, so the lines it speaks about are banded to
+        // say which of the code around it the reader was sent to
+        diff.referenced =
+            span.and_then(|(line, end)| diff.span_rows(review, file_index, line, end));
+        seated
     }
 }
 

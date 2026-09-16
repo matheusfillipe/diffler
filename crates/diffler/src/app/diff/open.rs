@@ -20,8 +20,16 @@ impl App {
         self.open_working_tree_diff_focused(Some(path), Pane::Diff);
     }
 
+    /// Open the walkthrough `id` as its own review source, even over a clean
+    /// working tree: its diff model is the working tree's, and its own
+    /// anchored files fill the pane once they resolve, so a clean tree is not
+    /// "nothing to review" here.
+    pub(crate) fn open_walkthrough_diff(&mut self, id: &str) {
+        self.install_diff_view(ReviewSource::Walkthrough { id: id.to_owned() }, None, true);
+    }
+
     fn open_working_tree_diff_focused(&mut self, scope: Option<&str>, focus: Pane) {
-        self.install_diff_view(ReviewSource::WorkingTree, None);
+        self.install_diff_view(ReviewSource::WorkingTree, None, false);
         let Some(view) = self.diff.as_mut() else {
             return;
         };
@@ -45,7 +53,15 @@ impl App {
     /// it as `self.diff`, and push the diff screen. On a source load failure
     /// the error is reported and nothing changes (`self.diff` stays `None` or
     /// keeps the previous view).
-    fn install_diff_view(&mut self, source: ReviewSource, model: Option<DiffModel>) {
+    /// `allow_empty` skips the "nothing to review" refusal below for a caller
+    /// whose own files will fill the pane once they resolve (a walkthrough
+    /// over a clean tree): every other opener passes `false`.
+    fn install_diff_view(
+        &mut self,
+        source: ReviewSource,
+        model: Option<DiffModel>,
+        allow_empty: bool,
+    ) {
         // a source with no files has nothing to read and no line to comment on,
         // so entering it strands the reader on an empty screen: say why instead.
         // A review already open stays open when its diff empties out.
@@ -53,7 +69,7 @@ impl App {
             || self.review.model().files.len(),
             |model| model.files.len(),
         );
-        if files == 0 {
+        if files == 0 && !allow_empty {
             self.info(if source == ReviewSource::WorkingTree {
                 "nothing to review: working tree clean".to_owned()
             } else {
@@ -105,12 +121,13 @@ impl App {
         }
         self.diff = Some(view);
         self.queue_declared();
+        self.ensure_walkthrough_view();
         self.push_screen(Screen::Diff);
     }
 
     pub(crate) fn open_commit_diff(&mut self, oid: &str) {
         match self.review.vcs.commit_diff(oid) {
-            Ok(model) => self.install_diff_view(ReviewSource::commit(oid), Some(model)),
+            Ok(model) => self.install_diff_view(ReviewSource::commit(oid), Some(model), false),
             Err(err) => self.error(err.to_string()),
         }
     }
@@ -128,7 +145,7 @@ impl App {
                     diff.ensure_rows(&self.review);
                     self.queue_declared();
                 } else {
-                    self.install_diff_view(source, Some(model));
+                    self.install_diff_view(source, Some(model), false);
                 }
             }
             Err(err) => self.error(err.to_string()),
@@ -161,7 +178,9 @@ impl App {
     /// full oids), pinned like a single commit's diff.
     pub(crate) fn open_range_diff(&mut self, oldest: &str, newest: &str) {
         match self.review.vcs.range_diff(oldest, newest) {
-            Ok(model) => self.install_diff_view(ReviewSource::range(oldest, newest), Some(model)),
+            Ok(model) => {
+                self.install_diff_view(ReviewSource::range(oldest, newest), Some(model), false);
+            }
             Err(err) => self.error(err.to_string()),
         }
     }
@@ -244,7 +263,7 @@ impl App {
                     diff.ensure_rows(&self.review);
                     self.queue_declared();
                 } else {
-                    self.install_diff_view(source, Some(model));
+                    self.install_diff_view(source, Some(model), false);
                 }
                 self.pending_ci = Some(crate::app::CiRequest::PrComments(number));
             }
