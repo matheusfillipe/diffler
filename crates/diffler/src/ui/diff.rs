@@ -485,25 +485,17 @@ fn comment_pane_lines(
                         current: search.current_row() == Some(row_index),
                     }),
                 };
-                // the cursor opens its own card; every other comment
-                // collapses to one line so a review with many comments reads
-                // as a list, not a wall
-                let card_lines = if on_cursor {
-                    comment_card(&card, comment)
-                } else {
-                    vec![comment_summary_line(&card, comment)]
-                };
-                for line in card_lines {
-                    lines.push(line);
-                    owners.push(Some(row_index));
-                }
-                // a spacer trails an open card or a group's last item, so a
-                // busy pane of collapsed rows reads dense and not as a wall
-                // of gaps; a header carries no spacer of its own, the same
-                // density the file sidebar's own sections keep
+                // every comment is one line, the cursor's included: the diff
+                // pane already shows the one it seats, and a row that grew
+                // under the cursor moved every row below it on each step
+                lines.push(comment_summary_line(&card, comment));
+                owners.push(Some(row_index));
+                // a spacer trails a group's last item, so a busy pane reads
+                // dense and not as a wall of gaps; a header carries no spacer
+                // of its own, the same density the file sidebar's sections keep
                 let last_in_group =
                     !matches!(rows.get(row_index + 1), Some(CommentPaneRow::Item { .. }));
-                if on_cursor || last_in_group {
+                if last_in_group {
                     lines.push(Line::styled(
                         " ".repeat(inner.width as usize),
                         Style::new().bg(surface),
@@ -558,24 +550,6 @@ fn search_ranges(
                 .collect()
         })
         .unwrap_or_default()
-}
-
-/// A titled comment is a walkthrough stop. In the list its title is the
-/// summary; the body waits in the card under its span, or ten stops of four
-/// bullets each would wall the pane.
-fn title_line(cc: &CardCtx<'_>, title: &str) -> Line<'static> {
-    let title = super::elide(title, cc.budget.saturating_sub(2));
-    let mut spans = vec![
-        tree_lead(cc.theme, cc.depth, cc.bg, cc.on_cursor),
-        Span::styled(" ".to_owned(), Style::new().bg(cc.bg)),
-    ];
-    spans.extend(super::highlight_spans(
-        &title,
-        Style::new().fg(cc.theme.accent).bg(cc.bg),
-        &search_ranges(cc.search, &title),
-        cc.theme,
-    ));
-    pad_line(spans, cc.bg, cc.width)
 }
 
 /// A hue turned into a saturated colour by `author_color`'s golden-angle
@@ -723,88 +697,6 @@ fn comment_summary_line(
         cc.theme,
     ));
     pad_line(spans, cc.bg, cc.width)
-}
-
-fn comment_card(cc: &CardCtx<'_>, comment: &diffler_core::session::Comment) -> Vec<Line<'static>> {
-    let &CardCtx {
-        theme,
-        budget,
-        bg,
-        width,
-        depth,
-        on_cursor,
-        search,
-        ..
-    } = cc;
-    let ranges = |text: &str| search_ranges(search, text);
-    // the tree's own lead cell, so the `▌` rail runs down the selected card
-    // exactly as it marks the selected file row
-    let lead = || tree_lead(theme, depth, bg, on_cursor);
-    let pad = |spans: Vec<Span<'static>>| pad_line(spans, bg, width);
-    let file = comment
-        .anchor
-        .file
-        .rsplit('/')
-        .next()
-        .unwrap_or(&comment.anchor.file)
-        .to_owned();
-    let line_no = comment
-        .anchor
-        .line
-        .map_or(String::new(), |l| format!(":{l}"));
-    let (mut header, rest_budget) = comment_header_spans(cc, comment);
-    let anchor = super::elide(&format!("{file}{line_no}"), rest_budget);
-    header.extend(super::highlight_spans(
-        &anchor,
-        Style::new().fg(theme.fg).bg(bg),
-        &ranges(&anchor),
-        theme,
-    ));
-    let mut out = vec![pad(header)];
-    if let Some(title) = comment.title.as_deref() {
-        out.push(title_line(cc, title));
-        return out;
-    }
-    for runs in crate::app::markdown::parse(&comment.body, None, budget) {
-        for wrapped in crate::app::markdown::wrap(&runs, budget, budget) {
-            let mut spans = vec![lead(), Span::styled(" ".to_owned(), Style::new().bg(bg))];
-            let text: String = wrapped.iter().map(|run| run.text.as_str()).collect();
-            let line_ranges = ranges(&text);
-            let mut offset = 0usize;
-            for run in &wrapped {
-                let span = md_span(run, Style::new().fg(theme.dim).bg(bg), theme);
-                let len = span.content.len();
-                let local: Vec<_> = line_ranges
-                    .iter()
-                    .filter(|(range, _)| range.start < offset + len && range.end > offset)
-                    .map(|(range, current)| {
-                        (
-                            range.start.saturating_sub(offset)..(range.end - offset).min(len),
-                            *current,
-                        )
-                    })
-                    .collect();
-                spans.extend(super::highlight_spans(
-                    &span.content,
-                    span.style,
-                    &local,
-                    theme,
-                ));
-                offset += len;
-            }
-            out.push(pad(spans));
-        }
-    }
-    if !comment.replies.is_empty() {
-        out.push(pad(vec![
-            lead(),
-            Span::styled(
-                format!(" +{} replies", comment.replies.len()),
-                Style::new().fg(theme.purple).bg(bg),
-            ),
-        ]));
-    }
-    out
 }
 
 /// Left pane: a heading row then one row per file in the diff, the selected
@@ -2263,13 +2155,15 @@ mod tests {
         let screen = render(&mut app).backend().to_string();
         // the body still draws in the pane's own card; only the list column
         // must leave it out, so read the screen from the pane's left edge
+        // by column, since a row carrying box-drawing glyphs has more bytes
+        // than columns and a byte slice into one lands mid-character
         let pane_start = screen
             .lines()
-            .find_map(|row| row.find("Comments ("))
+            .find_map(|row| row.find("Comments (").map(|at| row[..at].chars().count()))
             .expect("the comments pane heading");
         let pane: String = screen
             .lines()
-            .map(|row| row.get(pane_start..).unwrap_or_default())
+            .map(|row| row.chars().skip(pane_start).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n");
         // the pane is narrow, so the title is elided; the head of it is enough
