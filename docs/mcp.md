@@ -34,6 +34,9 @@ while diffler is open.
   round.
 - **walkthrough**: publish a walkthrough of a change and answer the human's
   comments on it (`/diffler:walkthrough`), the same steps as the `dfa` skill.
+- **critique**: review a change and leave comments on real problems
+  (`/diffler:critique`), the same steps as the `dfr` skill. It never submits
+  the review; only the human does that.
 
 ## Cross-repo discovery (proxy only)
 

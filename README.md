@@ -115,13 +115,14 @@ port 8417. Connect your agent once:
 claude mcp add --transport http diffler http://127.0.0.1:8417/mcp
 # or, over stdio, auto-discovering the port:
 claude mcp add diffler -- npx -y diffler-mcp
-# or, as a plugin (MCP server plus the /df and /dfa commands):
+# or, as a plugin (MCP server plus the /df, /dfa and /dfr commands):
 claude plugin marketplace add matheusfillipe/diffler && claude plugin install diffler@diffler
 ```
 
-Connected, the server's prompts show up as `/diffler:review` and
-`/diffler:walkthrough`. The plugin adds `/df`, to answer your comments, and
-`/dfa`, to walk you through a change.
+Connected, the server's prompts show up as `/diffler:review`,
+`/diffler:walkthrough` and `/diffler:critique`. The plugin adds `/df`, to
+answer your comments, `/dfa`, to walk you through a change, and `/dfr`, to
+review a change and leave comments.
 
 </details>
 
@@ -143,12 +144,12 @@ Add the server to `opencode.json` in the project, or globally in
 }
 ```
 
-And install the `/df` and `/dfa` commands (opencode has no package mechanism
-for commands, so this fetches the ones maintained in this repo):
+And install the `/df`, `/dfa` and `/dfr` commands (opencode has no package
+mechanism for commands, so this fetches the ones maintained in this repo):
 
 ```sh
 mkdir -p ~/.config/opencode/commands
-for c in df dfa; do curl -fsSLo ~/.config/opencode/commands/$c.md \
+for c in df dfa dfr; do curl -fsSLo ~/.config/opencode/commands/$c.md \
   https://raw.githubusercontent.com/matheusfillipe/diffler/main/.opencode/commands/$c.md; done
 ```
 
@@ -159,8 +160,8 @@ for c in df dfa; do curl -fsSLo ~/.config/opencode/commands/$c.md \
 
 Point it at `http://127.0.0.1:8417/mcp` (streamable HTTP), or run
 `npx -y diffler-mcp` as a stdio proxy that auto-discovers the port from
-`.diffler/mcp.json`. The server also ships `review` and `walkthrough` prompts
-that prompt-aware clients surface as commands.
+`.diffler/mcp.json`. The server also ships `review`, `walkthrough` and
+`critique` prompts that prompt-aware clients surface as commands.
 
 </details>
 

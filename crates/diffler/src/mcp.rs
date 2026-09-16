@@ -858,6 +858,8 @@ const DF_SKILL: &str = include_str!("../prompts/df.md");
 
 const DFA_SKILL: &str = include_str!("../prompts/dfa.md");
 
+const DFR_SKILL: &str = include_str!("../prompts/dfr.md");
+
 /// Clients surface MCP prompts as commands (Claude Code renders this as
 /// `/diffler:review`), so connected agents get a one-keystroke entry into
 /// the review loop.
@@ -877,6 +879,14 @@ impl DifflerMcp {
     )]
     async fn walkthrough(&self) -> Vec<PromptMessage> {
         vec![PromptMessage::new_text(Role::User, skill_body(DFA_SKILL))]
+    }
+
+    #[prompt(
+        name = "critique",
+        description = "Review a change in diffler: read the diff and leave comments on real problems, one per issue, and never submit."
+    )]
+    async fn critique(&self) -> Vec<PromptMessage> {
+        vec![PromptMessage::new_text(Role::User, skill_body(DFR_SKILL))]
     }
 }
 
@@ -1601,9 +1611,18 @@ mod agent_command_sync {
             env!("CARGO_MANIFEST_DIR"),
             "/../../.opencode/commands/dfa.md"
         ));
+        const DFR_SKILL: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../skills/dfr/SKILL.md"
+        ));
+        const DFR_OPENCODE: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../.opencode/commands/dfr.md"
+        ));
         for (name, skill, opencode, prompt) in [
             ("df", DF_SKILL, DF_OPENCODE, super::DF_SKILL),
             ("dfa", DFA_SKILL, DFA_OPENCODE, super::DFA_SKILL),
+            ("dfr", DFR_SKILL, DFR_OPENCODE, super::DFR_SKILL),
         ] {
             assert_eq!(
                 body(skill),
@@ -1637,12 +1656,12 @@ mod agent_command_sync {
         after[..end].trim()
     }
 
-    /// Answering a comment and writing a stop are both a card in the same
-    /// pane, so the two skills must teach the same rules for it: first
-    /// person plural, identifiers in backticks, plain verbs and the
-    /// no-metaphor list, and tables for comparisons.
+    /// Answering a comment, writing a stop, and writing a review comment are
+    /// all a card in the same pane, so all three skills must teach the same
+    /// rules for it: first person plural, identifiers in backticks, plain
+    /// verbs and the no-metaphor list, and tables for comparisons.
     #[test]
-    fn both_skills_write_the_card_the_same_way() {
+    fn every_skill_writes_the_card_the_same_way() {
         const DF_SKILL: &str = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../skills/df/SKILL.md"
@@ -1651,22 +1670,32 @@ mod agent_command_sync {
             env!("CARGO_MANIFEST_DIR"),
             "/../../skills/dfa/SKILL.md"
         ));
+        const DFR_SKILL: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../skills/dfr/SKILL.md"
+        ));
         let df = write_for_the_card(DF_SKILL);
         let dfa = write_for_the_card(DFA_SKILL);
+        let dfr = write_for_the_card(DFR_SKILL);
         assert!(
             !df.is_empty(),
             "df must have a '## Write for the card' section"
         );
         assert_eq!(
             df, dfa,
-            "the '## Write for the card' section must be identical in both skills"
+            "the '## Write for the card' section must be identical in df and dfa"
+        );
+        assert_eq!(
+            df, dfr,
+            "the '## Write for the card' section must be identical in df and dfr"
         );
     }
 
-    /// The `review` and `walkthrough` MCP prompts are generated from
-    /// `skills/df/SKILL.md` and `skills/dfa/SKILL.md`, so this checks the
-    /// wiring rather than the wording: the prompt an agent receives over MCP
-    /// must be that file's numbered steps, verbatim.
+    /// The `review`, `walkthrough` and `critique` MCP prompts are generated
+    /// from `skills/df/SKILL.md`, `skills/dfa/SKILL.md` and
+    /// `skills/dfr/SKILL.md`, so this checks the wiring rather than the
+    /// wording: the prompt an agent receives over MCP must be that file's
+    /// numbered steps, verbatim.
     #[tokio::test]
     async fn the_prompts_are_their_skills_bodies() {
         const DF_SKILL: &str = include_str!(concat!(
@@ -1677,12 +1706,17 @@ mod agent_command_sync {
             env!("CARGO_MANIFEST_DIR"),
             "/../../skills/dfa/SKILL.md"
         ));
+        const DFR_SKILL: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../skills/dfr/SKILL.md"
+        ));
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let (_feedback_tx, feedback_rx) = tokio::sync::watch::channel(0u64);
         let handler = super::DifflerMcp::new(tx, feedback_rx);
         for (messages, skill) in [
             (handler.review().await, DF_SKILL),
             (handler.walkthrough().await, DFA_SKILL),
+            (handler.critique().await, DFR_SKILL),
         ] {
             let text = &messages[0]
                 .content

@@ -448,7 +448,12 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   the working tree or to the commit a `c c` makes from it.
 - **MCP (rmcp, streamable HTTP).** Tools: `review_status`, `get_diff`,
   `get_comments`, `list_reviews`, `reply_comment`, `propose_resolve`,
-  `mark_viewed`, `wait_for_feedback`, `publish_walkthrough`, `get_walkthrough`.
+  `mark_viewed`, `add_comment`, `wait_for_feedback`, `publish_walkthrough`,
+  `get_walkthrough`. `add_comment` writes a new comment on a line or an
+  inclusive line range of the review the human is currently looking at,
+  anchored exactly the way a human's own comment is; authored as the agent
+  by default, or as the human when `as_human` is set, so it goes out
+  untouched with their next submitted review.
   Comments are tagged with their source. Agent triggering is the
   `wait_for_feedback` long-poll (MCP can't initiate agent turns); the human's
   "send" key unblocks it. `propose_resolve` only marks a comment Replied, and
