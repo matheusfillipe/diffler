@@ -75,6 +75,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let review = &app.review;
     let search = app.search.as_ref();
     let highlighter = app.highlighter.as_ref();
+    let human_author = app.author.as_str();
     if let Some(diff) = app.diff.as_mut() {
         diff.ensure_rows(review);
         // the source is cloned out so the session's borrow is off the view,
@@ -100,6 +101,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             review_model,
             search,
             highlighter,
+            human_author,
             rasters: &rasters,
         };
         draw_body(frame, body, &ctx, diff);
@@ -117,6 +119,9 @@ struct RenderCtx<'a> {
     review_model: Option<&'a DiffModel>,
     search: Option<&'a Search>,
     highlighter: &'a diffler_core::highlight::Highlighter,
+    /// The reviewer's own author name (`App::author`), so a comment's colour
+    /// can tell "you" apart from everyone else without a second source.
+    human_author: &'a str,
     /// Every card's figures, drawn once per frame and keyed by `(id, block)`
     /// (a comment's id, or the walkthrough's own summary key); a card row
     /// then only reads a line out of one.
@@ -267,6 +272,10 @@ struct CardCtx<'a> {
     width: u16,
     on_cursor: bool,
     orphan: bool,
+    /// The author's own colour: stable across sessions for anyone but the
+    /// human and the agent, who each take a fixed one so the reader's eye
+    /// finds them without reading.
+    author_color: Color,
     search: Option<CardSearch<'a>>,
 }
 
@@ -303,13 +312,15 @@ fn draw_comments(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &
         if on_cursor {
             cursor_line = lines.len();
         }
+        let bg = sidebar_row_bg(theme, on_cursor, focused);
         let card = CardCtx {
             theme,
             budget,
-            bg: sidebar_row_bg(theme, on_cursor, focused),
+            bg,
             width: inner.width,
             on_cursor,
             orphan: *orphan,
+            author_color: author_color(theme, bg, ctx.human_author, &comment.author),
             search: search.filter(|_| focused).map(|search| CardSearch {
                 query: search.query(),
                 current: search.current_row() == Some(index),
@@ -412,6 +423,56 @@ fn title_line(cc: &CardCtx<'_>, title: &str) -> Line<'static> {
     pad_line(spans, cc.bg, cc.width)
 }
 
+/// A hue turned into a saturated colour by `author_color`'s hash, lifted
+/// through [`readable_on`](diffler_core::language::readable_on) the same way
+/// `crate::ui::language_color` lifts Linguist's palette.
+fn hsl_to_rgb(hue: f32, saturation: f32, lightness: f32) -> (u8, u8, u8) {
+    let c = (1.0 - (2.0 * lightness - 1.0).abs()) * saturation;
+    let h = hue.rem_euclid(360.0) / 60.0;
+    let x = c * (1.0 - (h.rem_euclid(2.0) - 1.0).abs());
+    // `h` is `hue.rem_euclid(360.0) / 60.0`, always in 0.0..6.0
+    #[allow(clippy::cast_sign_loss)]
+    let sector = h as u32;
+    let (r1, g1, b1) = match sector {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = lightness - c / 2.0;
+    let channel = |v: f32| {
+        // scaled into 0.0..=255.0 by the clamp just above the cast
+        #[allow(clippy::cast_sign_loss)]
+        let byte = ((v + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+        byte
+    };
+    (channel(r1), channel(g1), channel(b1))
+}
+
+/// An author's colour: fixed for the two names that never move (the human
+/// reviewing, the agent replying) since the reader looks for those first,
+/// derived from a stable hash of the name for anyone else so the same author
+/// always reads the same colour across sessions. Lifted for contrast against
+/// `bg`, the row's own background, so it stays legible on any theme and
+/// under the cursor's own band.
+fn author_color(theme: &Theme, bg: Color, human_author: &str, author: &str) -> Color {
+    if !human_author.is_empty() && author == human_author {
+        return theme.accent;
+    }
+    if author == crate::mcp::AGENT_AUTHOR {
+        return theme.purple;
+    }
+    let hash = diffler_core::model::stable_hash(author.as_bytes());
+    let value = u64::from_str_radix(&hash, 16).unwrap_or(0);
+    #[allow(clippy::cast_precision_loss)] // a hue only needs to look distinct, not be exact
+    let hue = (value % 360) as f32;
+    let (r, g, b) = hsl_to_rgb(hue, 0.55, 0.6);
+    let (r, g, b) = diffler_core::language::readable_on((r, g, b), super::rgb_of(bg));
+    Color::Rgb(r, g, b)
+}
+
 /// A comment not under the cursor draws as one line: the status glyph and
 /// author lead it exactly as the open card's header does, then as much of
 /// its preview as the row holds.
@@ -440,6 +501,7 @@ fn comment_header_spans(
         bg,
         on_cursor,
         orphan,
+        author_color,
         ..
     } = cc;
     // an orphan outranks its status: the file it points at is gone, which is
@@ -456,7 +518,7 @@ fn comment_header_spans(
         Span::styled(
             format!("{} ", comment.author),
             Style::new()
-                .fg(theme.fg)
+                .fg(author_color)
                 .bg(bg)
                 .add_modifier(Modifier::BOLD),
         ),
@@ -1909,6 +1971,41 @@ mod tests {
         ));
         app.handle(key('C'));
         insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    /// The human and the agent never move, so the reader looks for those two
+    /// colours first; anyone else hashes to a colour that stays put across
+    /// sessions and tells two authors apart.
+    #[test]
+    fn author_color_is_fixed_for_human_and_agent_and_stable_for_everyone_else() {
+        let theme = Theme::github_dark();
+        let bg = theme.bg;
+        assert_eq!(
+            super::author_color(&theme, bg, "reviewer", "reviewer"),
+            theme.accent,
+            "the reviewer's own comments take the fixed accent colour"
+        );
+        assert_eq!(
+            super::author_color(&theme, bg, "reviewer", crate::mcp::AGENT_AUTHOR),
+            theme.purple,
+            "the agent's comments take the fixed purple colour"
+        );
+        let alice = super::author_color(&theme, bg, "reviewer", "alice");
+        assert_eq!(
+            alice,
+            super::author_color(&theme, bg, "reviewer", "alice"),
+            "the same author hashes to the same colour every time"
+        );
+        let bob = super::author_color(&theme, bg, "reviewer", "bob");
+        assert_ne!(alice, bob, "different authors read as different colours");
+        assert_ne!(
+            alice, theme.accent,
+            "no third author borrows the human's colour"
+        );
+        assert_ne!(
+            alice, theme.purple,
+            "no third author borrows the agent's colour"
+        );
     }
 
     /// A titled comment is a walkthrough stop. In the list the title is the
