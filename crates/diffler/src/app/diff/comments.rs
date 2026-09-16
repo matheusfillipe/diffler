@@ -425,13 +425,6 @@ impl App {
         }
     }
 
-    /// Whether the selected comment is anchored to a file this diff no longer
-    /// carries, so it has no row in the pane.
-    pub(crate) fn selected_comment_is_orphan(&self) -> bool {
-        self.selected_comment_id()
-            .is_some_and(|id| self.comment_is_orphan(&id))
-    }
-
     /// Whether `id` is anchored to a file outside this diff. The comment
     /// survives, since the file can come back on the next edit.
     pub(crate) fn comment_is_orphan(&self, id: &str) -> bool {
@@ -625,6 +618,11 @@ mod tests {
         (fixture, app)
     }
 
+    fn selected_comment_is_orphan(app: &App) -> bool {
+        app.selected_comment_id()
+            .is_some_and(|id| app.comment_is_orphan(&id))
+    }
+
     fn tree_cursor_on_selected(app: &App) -> bool {
         let diff = app.diff.as_ref().expect("diff");
         let rows = super::super::sidebar_rows(diff, &app.review);
@@ -695,7 +693,7 @@ mod tests {
             .add_comment(anchor("gone.rs", 1), "reviewer", "orphan");
         app.handle(key('C'));
         app.handle(key('G'));
-        assert!(app.selected_comment_is_orphan(), "the orphan sorts last");
+        assert!(selected_comment_is_orphan(&app), "the orphan sorts last");
 
         app.handle(key('d'));
         app.handle(key('y'));
@@ -722,7 +720,7 @@ mod tests {
                 .add_comment(anchor("gone.rs", 1), "reviewer", "orphan");
             app.handle(key('C'));
             app.handle(key('G'));
-            assert!(app.selected_comment_is_orphan());
+            assert!(selected_comment_is_orphan(&app));
 
             app.handle(key(verb));
 
@@ -756,7 +754,7 @@ mod tests {
             .add_comment(anchor("gone.rs", 1), "reviewer", "orphan");
         app.handle(key('C'));
         app.handle(key('G'));
-        assert!(app.selected_comment_is_orphan());
+        assert!(selected_comment_is_orphan(&app));
 
         app.handle(key('D'));
 

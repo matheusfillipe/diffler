@@ -128,7 +128,7 @@ impl App {
         if Self::needs_a_selected_comment(action) {
             match self.selected_comment_id() {
                 None => return self.info("no comment selected"),
-                Some(_) if self.selected_comment_is_orphan() => {
+                Some(id) if self.comment_is_orphan(&id) => {
                     return self.info("that comment's file is not in this diff");
                 }
                 Some(_) => {}
@@ -786,11 +786,11 @@ impl App {
         };
         let rows = page_step(diff.comments_rect.height, full);
         let lines = diff.comment_lines.len();
-        let cards = self.comment_rows().len();
-        let step = if lines == 0 || cards == 0 {
+        let pane_rows = self.comment_rows().len();
+        let step = if lines == 0 || pane_rows == 0 {
             UNMEASURED
         } else {
-            (rows * cards / lines).max(1)
+            (rows * pane_rows / lines).max(1)
         };
         isize::try_from(step).unwrap_or(1)
     }
