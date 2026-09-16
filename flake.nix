@@ -5,13 +5,13 @@
 
   outputs = { self, nixpkgs }:
     let
-      version = "0.14.1";
-      base = "https://github.com/matheusfillipe/diffler/releases/download/v0.14.1";
+      version = "0.15.0";
+      base = "https://github.com/matheusfillipe/diffler/releases/download/v0.15.0";
       targets = {
-        x86_64-linux = { triple = "x86_64-unknown-linux-musl"; sha256 = "4d363be38e6794f65d4cd72e75b7b4bc3ecb5cef7c227d6b6bf8c562adb87917"; };
-        aarch64-linux = { triple = "aarch64-unknown-linux-musl"; sha256 = "52c057552ce6c2b504cef3139578ba487375c53e51d85327655f0afa1441849c"; };
-        x86_64-darwin = { triple = "x86_64-apple-darwin"; sha256 = "b66e04728cc3f52da92040b00a0a47b0b5982b17d9bcd70cab26d6eeb89d884c"; };
-        aarch64-darwin = { triple = "aarch64-apple-darwin"; sha256 = "7f5e21437dc29e3a5ab3248bcbf4032688e596ac25a903916c26b1ea20e7d906"; };
+        x86_64-linux = { triple = "x86_64-unknown-linux-musl"; sha256 = "2469199688351c2a801536838ed37f0f533bcd2299982724e2c16c1f17526d45"; };
+        aarch64-linux = { triple = "aarch64-unknown-linux-musl"; sha256 = "0a4d5e1eb48d6f9c264c13e90a3c51e1d5f9cd0a8897e59ea3e0542c5c781222"; };
+        x86_64-darwin = { triple = "x86_64-apple-darwin"; sha256 = "44047bc75971fe9278cb87bafdec6b539d1db7a15ab987d161634a0366a84c43"; };
+        aarch64-darwin = { triple = "aarch64-apple-darwin"; sha256 = "560a0fcec8822098a978499cce0eb70a4f94e7ecaf17195b0dd2bb466daa2ad4"; };
       };
       forAllSystems = nixpkgs.lib.genAttrs (builtins.attrNames targets);
     in {
