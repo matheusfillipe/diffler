@@ -1112,6 +1112,18 @@ mod tests {
         }
     }
 
+    /// Row of the open composer's own caret, the row `seat_cursor_on_caret`
+    /// parks the pane cursor on while a reader is typing.
+    fn caret_row(app: &App) -> usize {
+        let diff = app.diff.as_ref().unwrap();
+        let composer = diff.composer.as_ref().expect("composer open");
+        let caret = composer.caret_line(diff.wrap_width);
+        diff.rows()
+            .iter()
+            .position(|row| matches!(row, DiffRow::Composer { line } if *line == caret))
+            .expect("the caret's own row")
+    }
+
     /// A review of nothing is a screen with no rows to read or comment on, so
     /// the opener declines and the reader stays where the answer is.
     #[test]
@@ -4142,6 +4154,34 @@ mod tests {
         assert!(
             app.diff.as_ref().unwrap().visual_anchor.is_some(),
             "the selected rows are still there, so the selection survives"
+        );
+    }
+
+    #[test]
+    fn a_refresh_while_composing_leaves_the_cursor_on_the_caret_line() {
+        let fixture = two_hunk_fixture();
+        let mut app = diff_app(&fixture);
+        enter_diff_pane(&mut app);
+        cursor_to_line(&mut app, |r| matches!(r, DiffRow::Line { .. }));
+        app.handle(key('c'));
+        type_text(&mut app, "still typing");
+        assert!(app.composer_open(), "composer stayed open");
+        assert_eq!(
+            app.diff.as_ref().unwrap().cursor,
+            caret_row(&app),
+            "typing seats the cursor on the caret"
+        );
+
+        // an unrelated file change forces a real refresh, rebuilding the rows
+        fixture.write("zzz.md", "new\n");
+        app.handle(AppEvent::RepoChanged);
+        app.settle_refresh();
+
+        assert!(app.composer_open(), "the draft survives the refresh");
+        assert_eq!(
+            app.diff.as_ref().unwrap().cursor,
+            caret_row(&app),
+            "the refresh leaves the cursor on the caret's line, not the card's header"
         );
     }
 

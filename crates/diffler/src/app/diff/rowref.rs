@@ -28,7 +28,10 @@ pub(crate) enum RowRef {
     /// stop" at the same position, which a comment id could not.
     Stop(usize),
     Comment(String),
-    Composer,
+    /// One display line of the open composer (its header is line 0): a
+    /// refresh names the caret's own row, so it lands back exactly where
+    /// the reader is typing.
+    Composer(usize),
     Summary,
 }
 
@@ -112,7 +115,7 @@ impl DiffView {
                     None => Some(RowRef::Comment(comment.id.clone())),
                 }
             }
-            DiffRow::Composer { .. } => Some(RowRef::Composer),
+            DiffRow::Composer { line } => Some(RowRef::Composer(line)),
             DiffRow::Summary { .. } => Some(RowRef::Summary),
         }
     }
@@ -166,10 +169,10 @@ impl DiffView {
                 Self::find_comment_row(&self.rows, session, id)
             }
             RowRef::Comment(id) => Self::find_comment_row(&self.rows, session, id),
-            RowRef::Composer => self
+            RowRef::Composer(line) => self
                 .rows
                 .iter()
-                .position(|row| matches!(row, DiffRow::Composer { line: 0 })),
+                .position(|row| matches!(row, DiffRow::Composer { line: l } if l == line)),
             RowRef::Summary => self
                 .rows
                 .iter()
@@ -259,9 +262,15 @@ mod tests {
             diff.row_ref(&app.review, comment_row),
             Some(RowRef::Comment(comment_id))
         );
+        let DiffRow::Composer {
+            line: composer_line,
+        } = diff.rows()[composer_row]
+        else {
+            panic!("composer_row is a DiffRow::Composer");
+        };
         assert_eq!(
             diff.row_ref(&app.review, composer_row),
-            Some(RowRef::Composer)
+            Some(RowRef::Composer(composer_line))
         );
     }
 
