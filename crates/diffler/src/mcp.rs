@@ -373,9 +373,9 @@ pub struct AddCommentParams {
     #[schemars(with = "Option<Count>")]
     pub line_end: Option<u32>,
     pub body: String,
-    /// Author the comment as the human instead of the agent, so it goes out
-    /// untouched with their next submitted review. Off by default: the
-    /// comment is the agent's own, and the human answers it.
+    /// Author the comment as the human, so it goes out untouched with their
+    /// next submitted review. Off by default, which leaves the comment the
+    /// agent's own for the human to answer.
     pub as_human: Option<bool>,
 }
 
