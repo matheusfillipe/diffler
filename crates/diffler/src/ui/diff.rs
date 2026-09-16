@@ -693,7 +693,7 @@ fn comment_header_spans(
         tree_lead(theme, depth, bg, on_cursor),
         Span::styled(format!("{status} "), Style::new().fg(colour).bg(bg)),
         Span::styled(
-            format!("{} ", comment.author),
+            format!("{} ", super::elide(&comment.author, AUTHOR_MAX)),
             Style::new()
                 .fg(author_color)
                 .bg(bg)
@@ -703,6 +703,10 @@ fn comment_header_spans(
     let used: usize = spans.iter().map(Span::width).sum();
     (spans, budget.saturating_sub(used))
 }
+
+/// Columns a name may take on a comment row. A long handle would otherwise
+/// fill the row and leave the preview beside it nothing to say.
+const AUTHOR_MAX: usize = 14;
 
 /// A comment not under the cursor: the status and author its own card leads
 /// with, then as much of its preview as the row still holds, elided.

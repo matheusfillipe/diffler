@@ -9,7 +9,7 @@ expression: render(&mut app).backend()
 " + ci.yml ·2              +1 -0  @@ -1,3 +1,3 @@                                          ▌  ○ reviewer lib.rs:1        "
 " ○ todo.md ·1             +1 -0     1    1 pub fn answer() -> u32 {                       ▌   why 42?                   "
 "                                  ▌ reviewer · open                                                                     "
-"                                  ▌ why 42?                                                  ○ alexandra-the-longform-re"
+"                                  ▌ why 42?                                                  ○ alexandra-the… looks f…  "
 "                                  ▌                                                          ○ dave This preview has …  "
 "                                ▌   2          41                                                                       "
 "                                ▌        2     42                                          ▸ todo.md (1)                "
