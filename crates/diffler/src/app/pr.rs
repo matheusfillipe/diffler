@@ -997,6 +997,56 @@ mod tests {
         );
     }
 
+    /// A comment written through `add_comment` follows the same authorship
+    /// rule as any other: the agent's own body is withheld from a submit
+    /// until `as_human` makes it the human's.
+    #[test]
+    fn an_added_comment_is_withheld_unless_authored_as_the_human() {
+        let fixture = standard_fixture();
+        fixture.write("src/lib.rs", "pub fn answer() -> u32 {\n    43\n}\n");
+        fixture.stage("src/lib.rs");
+        fixture.commit_all("bump");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let head = app.review.vcs.resolve("HEAD").expect("head oid");
+        let base = app.review.vcs.resolve("HEAD~1").expect("base oid");
+        app.open_pr_diff(3, &base, &head);
+
+        let crate::mcp::McpResponse::Added { id: agent_id } =
+            app.handle_mcp(crate::mcp::McpRequestKind::AddComment {
+                file: "src/lib.rs".to_owned(),
+                line: 2,
+                line_end: None,
+                body: "agent found this".to_owned(),
+                as_human: false,
+            })
+        else {
+            panic!("expected an added comment");
+        };
+        let pending = app.pr_pending(3).expect("plan");
+        assert!(
+            pending.review_comments.is_empty(),
+            "an agent-authored comment is withheld"
+        );
+        assert_eq!(pending.agent_withheld, 1);
+        assert!(!pending.comment_ids.contains(&agent_id));
+
+        let crate::mcp::McpResponse::Added { id: human_id } =
+            app.handle_mcp(crate::mcp::McpRequestKind::AddComment {
+                file: "src/lib.rs".to_owned(),
+                line: 2,
+                line_end: None,
+                body: "claimed by the human".to_owned(),
+                as_human: true,
+            })
+        else {
+            panic!("expected an added comment");
+        };
+        let pending = app.pr_pending(3).expect("plan");
+        assert_eq!(pending.review_comments.len(), 1);
+        assert_eq!(pending.review_comments[0].body, "claimed by the human");
+        assert!(pending.comment_ids.contains(&human_id));
+    }
+
     /// A walkthrough is its own review source: its comments are never in
     /// reach of the PR posting flow, whatever the open PR review holds.
     #[test]

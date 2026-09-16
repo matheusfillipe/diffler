@@ -15,6 +15,12 @@ while diffler is open.
 
 ## Respond
 
+- **add_comment**: write a new comment on a line or an inclusive line range
+  of a file, in the review you're currently looking at. Anchored exactly the
+  way a human's own comment is, so a rewrite marks it outdated the same way.
+  Authored as the agent by default, so the human answers it in the thread;
+  pass `as_human` to author it as the human's own instead, so it goes out
+  untouched with their next submitted review.
 - **reply_comment**: answer a comment in place; you see the reply immediately.
 - **propose_resolve**: mark a comment replied. Adds nothing to the thread, so an answered comment carries the answer alone; the note lands only when the agent has not replied to that comment. Only you resolve it, in the TUI.
 - **mark_viewed**: mark a file viewed in the review you're currently looking at.

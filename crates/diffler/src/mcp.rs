@@ -81,6 +81,16 @@ pub enum McpRequestKind {
     MarkViewed {
         file: String,
     },
+    /// A new comment on `file` at `line` (through `line_end` for a range),
+    /// in the review the human is currently looking at. `as_human` decides
+    /// its author: the agent by default, the human when set.
+    AddComment {
+        file: String,
+        line: u32,
+        line_end: Option<u32>,
+        body: String,
+        as_human: bool,
+    },
     /// Open + replied comments for `wait_for_feedback` after an epoch bump.
     Feedback,
     /// Revise the walkthrough `id` names, or publish a new one alongside any
@@ -109,6 +119,9 @@ pub enum McpResponse {
         status: String,
     },
     Ok,
+    Added {
+        id: String,
+    },
     /// Domain refusal (unknown id/file): surfaces as a tool error.
     Error(String),
     WalkthroughPublished(WalkthroughPublished),
@@ -347,6 +360,28 @@ pub struct ProposeResolveParams {
 pub struct MarkViewedParams {
     /// Repo-relative path of a file in the review diff.
     pub file: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AddCommentParams {
+    /// Repo-relative path of a file in the review diff.
+    pub file: String,
+    /// Line number in the diff (new-side, unless the line was deleted).
+    #[schemars(with = "Count")]
+    pub line: u32,
+    /// Last line of an inclusive range starting at `line`; omit for one line.
+    #[schemars(with = "Option<Count>")]
+    pub line_end: Option<u32>,
+    pub body: String,
+    /// Author the comment as the human instead of the agent, so it goes out
+    /// untouched with their next submitted review. Off by default: the
+    /// comment is the agent's own, and the human answers it.
+    pub as_human: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+pub struct AddCommentResponse {
+    pub id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, schemars::JsonSchema)]
@@ -691,6 +726,26 @@ impl DifflerMcp {
         let kind = McpRequestKind::MarkViewed { file: params.file };
         match self.request(kind).await? {
             McpResponse::Ok => Ok(Json(OkResponse { ok: true })),
+            _ => Err(mismatch()),
+        }
+    }
+
+    #[tool(
+        description = "Write a new review comment on a line or an inclusive line range of a file, in the review the human is currently looking at (working tree, or the open commit/range/PR diff). Anchored to that line exactly like a human's own comment, so a rewrite marks it outdated the same way. Authored as the agent by default, so the human answers it in the thread; pass as_human to author it as the human's own instead, so it goes out untouched with their next submitted review."
+    )]
+    async fn add_comment(
+        &self,
+        Parameters(params): Parameters<AddCommentParams>,
+    ) -> Result<Json<AddCommentResponse>, ErrorData> {
+        let kind = McpRequestKind::AddComment {
+            file: params.file,
+            line: params.line,
+            line_end: params.line_end,
+            body: params.body,
+            as_human: params.as_human.unwrap_or(false),
+        };
+        match self.request(kind).await? {
+            McpResponse::Added { id } => Ok(Json(AddCommentResponse { id })),
             _ => Err(mismatch()),
         }
     }

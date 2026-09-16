@@ -47,6 +47,13 @@ impl App {
                 self.agent_propose_resolve(&id, note.as_deref())
             }
             McpRequestKind::MarkViewed { file } => self.agent_mark_viewed(&file),
+            McpRequestKind::AddComment {
+                file,
+                line,
+                line_end,
+                body,
+                as_human,
+            } => self.agent_add_comment(&file, line, line_end, &body, as_human),
             McpRequestKind::Feedback => McpResponse::Feedback {
                 comments: self.comments_response(|c| c != CommentStatus::Resolved),
             },
@@ -505,6 +512,72 @@ impl App {
         self.info(format!("agent marked {file} viewed"));
         McpResponse::Ok
     }
+
+    /// A new comment on `file`, anchored to `line` (through `line_end` for a
+    /// range) in the review the human is currently looking at, exactly the
+    /// way a human's own comment anchors: a snapshot of the line's text, so
+    /// a later rewrite marks it outdated like any other.
+    fn agent_add_comment(
+        &mut self,
+        file: &str,
+        line: u32,
+        line_end: Option<u32>,
+        body: &str,
+        as_human: bool,
+    ) -> McpResponse {
+        if let Some(end) = line_end
+            && end < line
+        {
+            return McpResponse::Error(format!("line_end {end} is before line {line}"));
+        }
+        let source = self.active_review_source();
+        let model = self.source_model(&source);
+        let anchor_line = line_end.unwrap_or(line);
+        let Some((on_old_side, line_text)) = locate_anchor_line(&model, file, anchor_line) else {
+            return McpResponse::Error(format!("{file}:{anchor_line} is not part of the diff"));
+        };
+        let anchor = Anchor {
+            file: file.to_owned(),
+            line: Some(line),
+            line_end,
+            on_old_side,
+            line_text: Some(line_text),
+        };
+        if let Err(err) = self.review.ensure_source(&source) {
+            return McpResponse::Error(err.to_string());
+        }
+        let author = if as_human {
+            self.author.clone()
+        } else {
+            AGENT_AUTHOR.to_owned()
+        };
+        let id = self
+            .review
+            .session_for_mut(&source)
+            .add_comment(anchor, &author, body)
+            .id
+            .clone();
+        if let Err(err) = self.persist_review_change(&source) {
+            return McpResponse::Error(err);
+        }
+        self.info(if as_human {
+            format!("agent commented on {file} as you")
+        } else {
+            format!("agent commented on {file}")
+        });
+        McpResponse::Added { id }
+    }
+}
+
+/// The side and text of the line `line` names in `file`, tried on the new
+/// side first, then the old (a deleted line only exists there).
+fn locate_anchor_line(model: &DiffModel, file: &str, line: u32) -> Option<(bool, String)> {
+    if let Some(found) = model.find_line(file, line, false) {
+        return Some((false, found.text.clone()));
+    }
+    model
+        .find_line(file, line, true)
+        .map(|found| (true, found.text.clone()))
 }
 
 /// The file an anchor names, falling back to the file a walkthrough hangs its
@@ -1027,6 +1100,112 @@ mod tests {
             file: "nope.rs".to_owned(),
         });
         assert!(matches!(response, McpResponse::Error(_)));
+    }
+
+    /// The comment anchors to the line exactly the way a human's own does: a
+    /// snapshot of its text, so a later rewrite reads it outdated the same way.
+    #[test]
+    fn add_comment_anchors_the_line_and_reads_outdated_like_any_comment() {
+        let (_fixture, mut app, _human_id) = app_with_comment();
+        let response = app.handle_mcp(McpRequestKind::AddComment {
+            file: "src/lib.rs".to_owned(),
+            line: 2,
+            line_end: None,
+            body: "this looks wrong".to_owned(),
+            as_human: false,
+        });
+        let McpResponse::Added { id } = response else {
+            panic!("expected an added comment: {response:?}");
+        };
+        let comment = app.review.session.comment(&id).expect("comment stored");
+        assert_eq!(comment.author, AGENT_AUTHOR);
+        assert_eq!(comment.anchor.file, "src/lib.rs");
+        assert_eq!(comment.anchor.line, Some(2));
+        assert_eq!(comment.anchor.line_end, None);
+        assert_eq!(comment.anchor.line_text.as_deref(), Some("    42"));
+        assert!(!comment.anchor.on_old_side);
+        assert!(!comment.anchor.is_outdated(app.review.model()));
+
+        let mut drifted = app.review.model().clone();
+        for line in drifted
+            .files
+            .iter_mut()
+            .flat_map(|f| &mut f.hunks)
+            .flat_map(|h| &mut h.lines)
+        {
+            if line.new_no == Some(2) {
+                line.text = "changed since".to_owned();
+            }
+        }
+        assert!(comment.anchor.is_outdated(&drifted));
+    }
+
+    #[test]
+    fn add_comment_range_anchors_to_the_end_line() {
+        let (_fixture, mut app, _id) = app_with_comment();
+        let response = app.handle_mcp(McpRequestKind::AddComment {
+            file: "src/lib.rs".to_owned(),
+            line: 1,
+            line_end: Some(3),
+            body: "the whole function".to_owned(),
+            as_human: false,
+        });
+        let McpResponse::Added { id } = response else {
+            panic!("expected an added comment: {response:?}");
+        };
+        let comment = app.review.session.comment(&id).expect("comment stored");
+        assert_eq!(comment.anchor.line, Some(1));
+        assert_eq!(comment.anchor.line_end, Some(3));
+        assert_eq!(comment.anchor.line_text.as_deref(), Some("}"));
+    }
+
+    #[test]
+    fn add_comment_on_an_unknown_line_errors() {
+        let (_fixture, mut app, _id) = app_with_comment();
+        let response = app.handle_mcp(McpRequestKind::AddComment {
+            file: "src/lib.rs".to_owned(),
+            line: 999,
+            line_end: None,
+            body: "x".to_owned(),
+            as_human: false,
+        });
+        assert!(matches!(response, McpResponse::Error(message) if message.contains("999")));
+    }
+
+    /// `as_human` decides the author: off is the agent's own comment, the
+    /// human answers it; on posts it as the human's, so it goes out untouched.
+    #[test]
+    fn add_comment_as_human_authors_it_with_the_human_name() {
+        let (_fixture, mut app, _id) = app_with_comment();
+        app.author = "matheus".to_owned();
+
+        let McpResponse::Added { id: default_id } = app.handle_mcp(McpRequestKind::AddComment {
+            file: "src/lib.rs".to_owned(),
+            line: 2,
+            line_end: None,
+            body: "agent's own".to_owned(),
+            as_human: false,
+        }) else {
+            panic!("expected an added comment");
+        };
+        assert_eq!(
+            app.review.session.comment(&default_id).unwrap().author,
+            AGENT_AUTHOR
+        );
+
+        let McpResponse::Added { id: human_id } = app.handle_mcp(McpRequestKind::AddComment {
+            file: "src/lib.rs".to_owned(),
+            line: 2,
+            line_end: None,
+            body: "on behalf of the human".to_owned(),
+            as_human: true,
+        }) else {
+            panic!("expected an added comment");
+        };
+        assert_eq!(
+            app.review.session.comment(&human_id).unwrap().author,
+            "matheus"
+        );
     }
 
     fn commit_anchor(file: &str) -> Anchor {
