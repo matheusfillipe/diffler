@@ -147,6 +147,16 @@ impl App {
         self.confirm_delete_comment(&id);
     }
 
+    /// Claim the comment the sidebar has selected, by id: an orphan has no
+    /// row for the cursor, the same reason delete addresses it this way.
+    pub(crate) fn claim_selected_comment(&mut self) {
+        let Some(id) = self.selected_comment_id() else {
+            self.info("no comment selected");
+            return;
+        };
+        self.claim_comment(&id);
+    }
+
     /// Whether a column falls in the open comments sidebar.
     pub(crate) fn comments_col(&self, col: u16) -> bool {
         self.diff

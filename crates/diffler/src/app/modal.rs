@@ -72,6 +72,7 @@ impl App {
                 self.delete_comment_by_id(&id);
             }
             PendingOp::DeleteAllComments => self.delete_all_comments(),
+            PendingOp::ClaimAllComments => self.claim_all_comments(),
             PendingOp::DeleteWalkthrough(id) => self.delete_walkthrough(&id),
             PendingOp::DeleteStop(index) => self.delete_stop(index),
             PendingOp::RunGit { label, argv } => self.queue_network(label, argv),
@@ -552,6 +553,25 @@ impl App {
         } else {
             self.info(format!("deleted {removed} comments"));
         }
+    }
+
+    /// Claim every agent comment of the active review as the human's own, so
+    /// they go out with the next submitted review. A synced forge comment is
+    /// never one of these, so it is left untouched like `delete_all_comments`
+    /// leaves it.
+    pub(super) fn claim_all_comments(&mut self) {
+        let source = self.active_review_source();
+        let author = self.author.clone();
+        let session = self.review.session_for_mut(&source);
+        let mut claimed = 0;
+        for comment in &mut session.comments {
+            if comment.author == crate::mcp::AGENT_AUTHOR {
+                comment.author.clone_from(&author);
+                claimed += 1;
+            }
+        }
+        self.after_session_change();
+        self.info(format!("claimed {claimed} comments as you"));
     }
 
     pub(super) fn handle_palette_key(&mut self, key: &KeyEvent) -> Flow {

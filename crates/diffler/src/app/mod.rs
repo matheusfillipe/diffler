@@ -130,6 +130,8 @@ pub enum PendingOp {
     DeleteComment(String),
     /// Wipe every local comment of the active review.
     DeleteAllComments,
+    /// Claim every agent comment of the active review as the human's own.
+    ClaimAllComments,
     /// Remove the named walkthrough and every comment it owns.
     DeleteWalkthrough(String),
     /// Remove one stop (its primary and notes) of the active review's

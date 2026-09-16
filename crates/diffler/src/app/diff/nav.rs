@@ -107,10 +107,10 @@ impl App {
     }
 
     /// The comments sidebar. Its selection drives the diff cursor onto the
-    /// comment, so every comment verb (reply, resolve, delete, yank) is the
-    /// pane's own and works here untouched. An orphan seats no cursor and no
-    /// file: delete addresses the selection by id, and everything else
-    /// declines.
+    /// comment, so every comment verb (reply, resolve, delete, claim, yank)
+    /// is the pane's own and works here untouched. An orphan seats no cursor
+    /// and no file: delete and claim address the selection by id, and
+    /// everything else declines.
     fn dispatch_comments(&mut self, action: Action) {
         match action {
             Action::MoveDown => self.comments_step(1),
@@ -125,6 +125,7 @@ impl App {
             // is a focus move, and so is stepping out either side
             Action::Open | Action::MoveRight | Action::MoveLeft => self.diff_focus(Pane::Diff),
             Action::DeleteComment => self.delete_selected_comment(),
+            Action::ClaimComment => self.claim_selected_comment(),
             // these read the diff cursor or the selected file, and an orphan
             // seats neither. The review-wide verbs need no row and stay live
             Action::Reply
@@ -167,6 +168,7 @@ impl App {
             Action::CopyFileFeedback => self.copy_at_diff_tree_cursor(),
             Action::CopyAllFeedback => self.copy_feedback(false),
             Action::DeleteAllComments => self.delete_all_comments_start(),
+            Action::ClaimAllComments => self.claim_all_comments_start(),
             // a file in the sidebar takes a whole-file comment; the line-scoped
             // actions still need the diff pane
             Action::Comment => self.comment_on_selected_file(),
@@ -181,7 +183,7 @@ impl App {
                 Some(WalkthroughSidebarRow::Stop(index)) => self.confirm_delete_stop(index),
                 None => self.info("move into the diff to comment"),
             },
-            Action::VisualSelect | Action::Reply | Action::Resolve => {
+            Action::VisualSelect | Action::Reply | Action::Resolve | Action::ClaimComment => {
                 self.info("move into the diff to comment");
             }
             _ => {}
@@ -211,7 +213,11 @@ impl App {
             Action::Open => self.diff_focus(Pane::List),
             // side-by-side is a read-only view; commenting and selection stay
             // in the unified pane, reachable by toggling back with `|`
-            Action::Comment | Action::VisualSelect | Action::Reply | Action::Resolve
+            Action::Comment
+            | Action::VisualSelect
+            | Action::Reply
+            | Action::Resolve
+            | Action::ClaimComment
                 if self.diff.as_ref().is_some_and(|d| d.side_by_side) =>
             {
                 self.info("switch to the unified view (|) to comment");
@@ -222,6 +228,8 @@ impl App {
             Action::Resolve => self.resolve_at_cursor(),
             Action::DeleteComment => self.delete_comment_at_cursor(),
             Action::DeleteAllComments => self.delete_all_comments_start(),
+            Action::ClaimComment => self.claim_comment_at_cursor(),
+            Action::ClaimAllComments => self.claim_all_comments_start(),
             Action::MarkViewed => self.diff_toggle_viewed(),
             Action::UnviewAll => self.diff_unview_all(),
             Action::CopyFileFeedback => self.copy_file_or_selection(),

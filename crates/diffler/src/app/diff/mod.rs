@@ -4546,6 +4546,117 @@ mod tests {
     }
 
     #[test]
+    fn claiming_a_comment_toggles_authorship_and_back() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        let crate::mcp::McpResponse::Added { .. } =
+            app.handle_mcp(crate::mcp::McpRequestKind::AddComment {
+                file: "src/lib.rs".to_owned(),
+                line: 2,
+                line_end: None,
+                body: "looks off".to_owned(),
+                as_human: false,
+            })
+        else {
+            panic!("expected an added comment");
+        };
+        select_file(&mut app, "src/lib.rs");
+        let diff = app.diff.as_mut().unwrap();
+        diff.ensure_rows(&app.review);
+        let comment_row = rows(&app)
+            .iter()
+            .position(|r| matches!(r, DiffRow::Comment { .. }))
+            .expect("comment row present");
+        app.diff.as_mut().unwrap().cursor = comment_row;
+
+        app.claim_comment_at_cursor();
+        assert_eq!(app.review.session.comments[0].author, "reviewer");
+
+        app.claim_comment_at_cursor();
+        assert_eq!(
+            app.review.session.comments[0].author,
+            crate::mcp::AGENT_AUTHOR
+        );
+    }
+
+    #[test]
+    fn claiming_on_a_row_that_is_not_a_comment_says_so() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        select_file(&mut app, "src/lib.rs");
+        app.diff.as_mut().unwrap().cursor = added_line_position(&app);
+
+        app.claim_comment_at_cursor();
+        let message = app.message.clone().expect("info message");
+        assert!(message.text.contains("move onto a comment"), "{message:?}");
+    }
+
+    #[test]
+    fn claiming_all_comments_asks_first_claims_every_agent_comment_and_leaves_a_human_one() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        let crate::mcp::McpResponse::Added { id: agent_id } =
+            app.handle_mcp(crate::mcp::McpRequestKind::AddComment {
+                file: "src/lib.rs".to_owned(),
+                line: 2,
+                line_end: None,
+                body: "agent found this".to_owned(),
+                as_human: false,
+            })
+        else {
+            panic!("expected an added comment");
+        };
+        let human_id = app
+            .review
+            .session
+            .add_comment(
+                Anchor {
+                    file: "src/lib.rs".to_owned(),
+                    line: None,
+                    line_end: None,
+                    on_old_side: false,
+                    line_text: None,
+                },
+                "reviewer",
+                "human's own",
+            )
+            .id
+            .clone();
+
+        app.claim_all_comments_start();
+        assert!(
+            matches!(app.modal, Some(Modal::Confirm { .. })),
+            "claiming all asks first"
+        );
+        assert_eq!(
+            app.review.session.comment(&agent_id).unwrap().author,
+            crate::mcp::AGENT_AUTHOR,
+            "nothing claimed before confirming"
+        );
+
+        app.handle(key('n'));
+        assert!(app.modal.is_none(), "declining closes the dialog");
+        assert_eq!(
+            app.review.session.comment(&agent_id).unwrap().author,
+            crate::mcp::AGENT_AUTHOR,
+            "declining changes nothing"
+        );
+
+        app.claim_all_comments_start();
+        app.handle(key('y'));
+        assert_eq!(
+            app.review.session.comment(&agent_id).unwrap().author,
+            "reviewer",
+            "confirming claims the agent comment"
+        );
+        assert_eq!(
+            app.review.session.comment(&human_id).unwrap().author,
+            "reviewer",
+            "the human comment was always theirs, untouched"
+        );
+    }
+
+    #[test]
     fn build_split_rows_aligns_old_and_new_sides() {
         let fixture = standard_fixture();
         let app = diff_app(&fixture);

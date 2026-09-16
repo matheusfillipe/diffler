@@ -149,6 +149,70 @@ impl App {
         });
     }
 
+    pub(super) fn claim_comment_at_cursor(&mut self) {
+        let Some(comment) = self.comment_at_cursor_row() else {
+            self.info("move onto a comment to claim it");
+            return;
+        };
+        let id = comment.id.clone();
+        self.claim_comment(&id);
+    }
+
+    /// Flip one comment between the agent's authorship and the human's: an
+    /// agent comment becomes the human's own, so it goes out with the next
+    /// submitted review, and a second press hands it back. Any other author
+    /// (a synced forge comment, say) is left alone.
+    pub(crate) fn claim_comment(&mut self, id: &str) {
+        let source = self.active_review_source();
+        let author = self.author.clone();
+        let session = self.review.session_for_mut(&source);
+        let Some(comment) = session.comments.iter_mut().find(|c| c.id == id) else {
+            self.info("comment is gone");
+            return;
+        };
+        let claimed = if comment.author == crate::mcp::AGENT_AUTHOR {
+            comment.author = author;
+            Some(true)
+        } else if comment.author == author {
+            crate::mcp::AGENT_AUTHOR.clone_into(&mut comment.author);
+            Some(false)
+        } else {
+            None
+        };
+        match claimed {
+            Some(true) => {
+                self.after_session_change();
+                self.info("claimed the comment as you");
+            }
+            Some(false) => {
+                self.after_session_change();
+                self.info("handed the comment back to the agent");
+            }
+            None => self.info("not an agent comment to claim"),
+        }
+    }
+
+    /// `A`: ask before claiming every agent comment of the active review as
+    /// the human's own, the way it goes out with a submitted review.
+    pub(super) fn claim_all_comments_start(&mut self) {
+        let source = self.active_review_source();
+        let count = self
+            .review
+            .session_for(&source)
+            .comments
+            .iter()
+            .filter(|c| c.author == crate::mcp::AGENT_AUTHOR)
+            .count();
+        if count == 0 {
+            self.info("no agent comments to claim");
+            return;
+        }
+        self.modal = Some(Modal::Confirm {
+            message: format!("Claim all {count} agent comments as yours?"),
+            on_confirm: crate::app::PendingOp::ClaimAllComments,
+        });
+    }
+
     /// Forge comments survive the wipe, so the question counts the local ones.
     pub(super) fn delete_all_comments_start(&mut self) {
         let source = self.active_review_source();

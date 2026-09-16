@@ -73,6 +73,8 @@ pub enum Action {
     PrevFunction,
     DeleteComment,
     DeleteAllComments,
+    ClaimComment,
+    ClaimAllComments,
     NextComment,
     PrevComment,
     HalfPageDown,
@@ -171,6 +173,8 @@ impl Action {
             Self::PrevFunction => "prev_function",
             Self::DeleteComment => "delete_comment",
             Self::DeleteAllComments => "delete_all_comments",
+            Self::ClaimComment => "claim_comment",
+            Self::ClaimAllComments => "claim_all_comments",
             Self::PrevHunk => "prev_hunk",
             Self::NextComment => "next_comment",
             Self::PrevComment => "prev_comment",
@@ -271,6 +275,8 @@ impl Action {
             Self::PrevFunction => "previous function",
             Self::DeleteComment => "delete the comment under the cursor",
             Self::DeleteAllComments => "delete every local comment of this review",
+            Self::ClaimComment => "claim the comment under the cursor as yours",
+            Self::ClaimAllComments => "claim every agent comment of this review as yours",
             Self::NextComment => "next comment",
             Self::PrevComment => "previous comment",
             Self::HalfPageDown => "half page down",
@@ -308,7 +314,7 @@ impl Action {
         }
     }
 
-    pub(crate) const ALL: [Self; 93] = [
+    pub(crate) const ALL: [Self; 95] = [
         Self::CenterCursor,
         Self::CursorTop,
         Self::CursorBottom,
@@ -320,6 +326,8 @@ impl Action {
         Self::PrevFunction,
         Self::DeleteComment,
         Self::DeleteAllComments,
+        Self::ClaimComment,
+        Self::ClaimAllComments,
         Self::OpenPrs,
         Self::CreatePr,
         Self::CommentsOverview,
@@ -548,6 +556,8 @@ const DIFF_DEFAULTS: &[(&str, Action)] = &[
     ("R", Action::Resolve),
     ("d", Action::DeleteComment),
     ("D", Action::DeleteAllComments),
+    ("M", Action::ClaimComment),
+    ("A", Action::ClaimAllComments),
     ("m", Action::MarkViewed),
     ("y", Action::CopyFileFeedback),
     ("Y", Action::CopyAllFeedback),

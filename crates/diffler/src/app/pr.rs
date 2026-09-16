@@ -1047,6 +1047,40 @@ mod tests {
         assert!(pending.comment_ids.contains(&human_id));
     }
 
+    /// Bulk-claiming turns every agent comment of the open review into the
+    /// human's, so a submit carries them the way it carries the human's own.
+    #[test]
+    fn claiming_all_comments_makes_a_submit_carry_them() {
+        let fixture = standard_fixture();
+        fixture.write("src/lib.rs", "pub fn answer() -> u32 {\n    43\n}\n");
+        fixture.stage("src/lib.rs");
+        fixture.commit_all("bump");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let head = app.review.vcs.resolve("HEAD").expect("head oid");
+        let base = app.review.vcs.resolve("HEAD~1").expect("base oid");
+        app.open_pr_diff(3, &base, &head);
+
+        app.handle_mcp(crate::mcp::McpRequestKind::AddComment {
+            file: "src/lib.rs".to_owned(),
+            line: 2,
+            line_end: None,
+            body: "agent found this".to_owned(),
+            as_human: false,
+        });
+        let pending = app.pr_pending(3).expect("plan");
+        assert!(
+            pending.review_comments.is_empty(),
+            "withheld before claiming"
+        );
+
+        app.claim_all_comments();
+
+        let pending = app.pr_pending(3).expect("plan");
+        assert_eq!(pending.review_comments.len(), 1);
+        assert_eq!(pending.review_comments[0].body, "agent found this");
+        assert_eq!(pending.agent_withheld, 0);
+    }
+
     /// A walkthrough is its own review source: its comments are never in
     /// reach of the PR posting flow, whatever the open PR review holds.
     #[test]
