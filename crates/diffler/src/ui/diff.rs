@@ -315,7 +315,14 @@ fn draw_comments(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &
                 current: search.current_row() == Some(index),
             }),
         };
-        for line in comment_card(&card, comment) {
+        // the cursor opens its own card; every other comment collapses to one
+        // line so a review with many comments reads as a list, not a wall
+        let card_lines = if on_cursor {
+            comment_card(&card, comment)
+        } else {
+            vec![comment_summary_line(&card, comment)]
+        };
+        for line in card_lines {
             lines.push(line);
             owners.push(Some(index));
         }
@@ -405,21 +412,36 @@ fn title_line(cc: &CardCtx<'_>, title: &str) -> Line<'static> {
     pad_line(spans, cc.bg, cc.width)
 }
 
-fn comment_card(cc: &CardCtx<'_>, comment: &diffler_core::session::Comment) -> Vec<Line<'static>> {
+/// A comment not under the cursor draws as one line: the status glyph and
+/// author lead it exactly as the open card's header does, then as much of
+/// its preview as the row holds.
+fn comment_preview(comment: &diffler_core::session::Comment) -> String {
+    comment.title.clone().unwrap_or_else(|| {
+        comment
+            .body
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_owned()
+    })
+}
+
+/// The header spans every card leads with: status glyph, then the author in
+/// its own colour, at whatever width `rest_budget` still has room for once
+/// they are placed.
+fn comment_header_spans(
+    cc: &CardCtx<'_>,
+    comment: &diffler_core::session::Comment,
+) -> (Vec<Span<'static>>, usize) {
     let &CardCtx {
         theme,
         budget,
         bg,
-        width,
         on_cursor,
         orphan,
-        search,
+        ..
     } = cc;
-    let ranges = |text: &str| search_ranges(search, text);
-    // the tree's own lead cell, so the `▌` rail runs down the selected card
-    // exactly as it marks the selected file row
-    let lead = || tree_lead(theme, 0, bg, on_cursor);
-    let pad = |spans: Vec<Span<'static>>| pad_line(spans, bg, width);
     // an orphan outranks its status: the file it points at is gone, which is
     // the only thing worth saying about it
     let (status, colour) = match comment.status {
@@ -428,6 +450,53 @@ fn comment_card(cc: &CardCtx<'_>, comment: &diffler_core::session::Comment) -> V
         CommentStatus::Replied => ("◐", theme.accent),
         CommentStatus::Resolved => ("✓", theme.added),
     };
+    let spans = vec![
+        tree_lead(theme, 0, bg, on_cursor),
+        Span::styled(format!("{status} "), Style::new().fg(colour).bg(bg)),
+        Span::styled(
+            format!("{} ", comment.author),
+            Style::new()
+                .fg(theme.fg)
+                .bg(bg)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ];
+    let used: usize = spans.iter().map(Span::width).sum();
+    (spans, budget.saturating_sub(used))
+}
+
+/// A comment not under the cursor: the status and author its own card leads
+/// with, then as much of its preview as the row still holds, elided.
+fn comment_summary_line(
+    cc: &CardCtx<'_>,
+    comment: &diffler_core::session::Comment,
+) -> Line<'static> {
+    let (mut spans, rest_budget) = comment_header_spans(cc, comment);
+    let preview = super::elide(&comment_preview(comment), rest_budget);
+    spans.extend(super::highlight_spans(
+        &preview,
+        Style::new().fg(cc.theme.dim).bg(cc.bg),
+        &search_ranges(cc.search, &preview),
+        cc.theme,
+    ));
+    pad_line(spans, cc.bg, cc.width)
+}
+
+fn comment_card(cc: &CardCtx<'_>, comment: &diffler_core::session::Comment) -> Vec<Line<'static>> {
+    let &CardCtx {
+        theme,
+        budget,
+        bg,
+        width,
+        on_cursor,
+        search,
+        ..
+    } = cc;
+    let ranges = |text: &str| search_ranges(search, text);
+    // the tree's own lead cell, so the `▌` rail runs down the selected card
+    // exactly as it marks the selected file row
+    let lead = || tree_lead(theme, 0, bg, on_cursor);
+    let pad = |spans: Vec<Span<'static>>| pad_line(spans, bg, width);
     let file = comment
         .anchor
         .file
@@ -439,11 +508,8 @@ fn comment_card(cc: &CardCtx<'_>, comment: &diffler_core::session::Comment) -> V
         .anchor
         .line
         .map_or(String::new(), |l| format!(":{l}"));
-    let anchor = super::elide(&format!("{file}{line_no}"), budget.saturating_sub(2));
-    let mut header = vec![
-        lead(),
-        Span::styled(format!("{status} "), Style::new().fg(colour).bg(bg)),
-    ];
+    let (mut header, rest_budget) = comment_header_spans(cc, comment);
+    let anchor = super::elide(&format!("{file}{line_no}"), rest_budget);
     header.extend(super::highlight_spans(
         &anchor,
         Style::new().fg(theme.fg).bg(bg),
