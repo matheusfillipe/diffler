@@ -797,15 +797,11 @@ fn skill_body(doc: &str) -> String {
     body.trim().to_owned()
 }
 
-const DF_SKILL: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../skills/df/SKILL.md"
-));
+// a published crate carries only its own directory, so the prompts live here
+// and `agent_command_sync` pins them to the skill files the plugin ships
+const DF_SKILL: &str = include_str!("../prompts/df.md");
 
-const DFA_SKILL: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../skills/dfa/SKILL.md"
-));
+const DFA_SKILL: &str = include_str!("../prompts/dfa.md");
 
 /// Clients surface MCP prompts as commands (Claude Code renders this as
 /// `/diffler:review`), so connected agents get a one-keystroke entry into
@@ -1550,15 +1546,22 @@ mod agent_command_sync {
             env!("CARGO_MANIFEST_DIR"),
             "/../../.opencode/commands/dfa.md"
         ));
-        for (name, skill, opencode) in [
-            ("df", DF_SKILL, DF_OPENCODE),
-            ("dfa", DFA_SKILL, DFA_OPENCODE),
+        for (name, skill, opencode, prompt) in [
+            ("df", DF_SKILL, DF_OPENCODE, super::DF_SKILL),
+            ("dfa", DFA_SKILL, DFA_OPENCODE, super::DFA_SKILL),
         ] {
             assert_eq!(
                 body(skill),
                 body(opencode),
                 "skills/{name}/SKILL.md and .opencode/commands/{name}.md have drifted; \
                  edit both or neither"
+            );
+            assert_eq!(
+                body(skill),
+                body(prompt),
+                "skills/{name}/SKILL.md and crates/diffler/prompts/{name}.md have drifted; \
+                 the crate ships its own copy because a published crate carries only \
+                 its own directory"
             );
         }
     }

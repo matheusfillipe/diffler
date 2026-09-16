@@ -76,6 +76,12 @@ ci:
     # CI fails the whole run on a typo; catch it here when the tool is around
     command -v typos >/dev/null && typos || echo "typos not installed, skipping"
 
+# what crates.io will build: a crate packages only its own directory, so a
+# file it reaches outside one passes `just ci` and fails the publish
+package-check:
+    cargo package -p diffler-core --locked
+    cargo package -p diffler --locked
+
 # diff-pipeline benches (criterion)
 bench:
     cargo bench -p diffler-core --bench pipeline

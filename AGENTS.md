@@ -42,6 +42,9 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
 - `just fix`: clippy --fix + fmt
 - `just snap`: insta snapshot tests; read `.snap.new` diffs before `just snap-accept`
 - `just e2e`: PTY end-to-end suite (needs `uv`; CI runs it in a separate job)
+- `just package-check`: what crates.io builds, since a crate packages only its
+  own directory and a file it reaches outside one passes `just ci` and fails
+  the publish after the tag is public. The release script runs it.
 - `just ci`: fmt+clippy+tests gate, must pass before any commit (CI additionally runs msrv, deny, typos, dupes, machete, coverage)
 - `showcase/record.sh`: regenerate `showcase/img/*.png`, one screenshot per theme
   (needs `vhs`). It seeds a throwaway repo with a three-file review and shoots
