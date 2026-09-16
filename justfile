@@ -77,10 +77,12 @@ ci:
     command -v typos >/dev/null && typos || echo "typos not installed, skipping"
 
 # what crates.io will build: a crate packages only its own directory, so a
-# file it reaches outside one passes `just ci` and fails the publish
+# file it reaches outside one passes `just ci` and fails the publish. It
+# verifies the tree as it stands, version bump included, so it allows a
+# dirty one: the release script runs it between the bump and the commit
 package-check:
-    cargo package -p diffler-core --locked
-    cargo package -p diffler --locked
+    cargo package -p diffler-core --locked --allow-dirty
+    cargo package -p diffler --locked --allow-dirty
 
 # diff-pipeline benches (criterion)
 bench:
