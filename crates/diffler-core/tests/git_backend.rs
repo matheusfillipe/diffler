@@ -191,8 +191,43 @@ fn hunk_context_captures_the_enclosing_section() {
     );
     // context must not leak into the hunk id, which keys on lines alone
     let lines = hunk.lines.clone();
-    let id = diffler_core::model::hunk_id("a.rs", &lines);
+    let id = diffler_core::model::hunk_id("a.rs", &lines, 0);
     assert_eq!(id, hunk.id, "context does not perturb the hunk id");
+}
+
+#[test]
+fn two_hunks_with_identical_content_get_distinct_ids() {
+    let fx = Fixture::new();
+    let mut base = String::new();
+    for i in 1..=20 {
+        if i == 3 || i == 17 {
+            base.push_str("dup\n");
+        } else {
+            writeln!(base, "line {i}").expect("write");
+        }
+    }
+    fx.write("a.txt", &base);
+    fx.commit_all("base");
+    // the same one-line edit, made twice, far enough apart with no context
+    // lines between the two hunks that their content is byte-identical
+    fx.write("a.txt", &base.replace("dup\n", "changed\n"));
+
+    let model = GitVcs::open_with_context(fx.root(), 0)
+        .expect("open")
+        .working_tree_diff()
+        .expect("diff");
+    let hunks = &model.files[0].hunks;
+    assert_eq!(hunks.len(), 2, "two separate, far-apart edits");
+    assert_eq!(hunks[0].lines.len(), hunks[1].lines.len());
+    for (a, b) in hunks[0].lines.iter().zip(&hunks[1].lines) {
+        assert_eq!(a.kind, b.kind);
+        assert_eq!(a.text, b.text);
+    }
+    assert_ne!(
+        hunks[0].id, hunks[1].id,
+        "identical content still gets distinct ids, so a cursor on the \
+         second hunk never reseats onto the first"
+    );
 }
 
 #[test]

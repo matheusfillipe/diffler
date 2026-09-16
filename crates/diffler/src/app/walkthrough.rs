@@ -324,7 +324,9 @@ fn context_file_diff(path: &str, content: &str) -> FileDiff {
         .collect();
     let line_count = u32::try_from(lines.len()).unwrap_or(u32::MAX);
     let hunk = Hunk {
-        id: hunk_id(path, &lines),
+        // the only hunk this synthetic file ever carries, so it needs no
+        // disambiguation against a sibling
+        id: hunk_id(path, &lines, 0),
         old_start: 1,
         old_lines: line_count,
         new_start: 1,

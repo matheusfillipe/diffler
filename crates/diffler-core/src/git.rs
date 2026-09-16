@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::model::{DiffLine, DiffModel, FileDiff, FileStatus, Hunk, HunkId, LineKind, hunk_id};
+use crate::model::{
+    DiffLine, DiffModel, FileDiff, FileStatus, Hunk, HunkId, LineKind, disambiguated_hunk_id,
+};
 use crate::vcs::{
     BlameSpan, BranchInfo, HeadInfo, LogEntry, NetworkOp, StatusModel, Vcs, VcsError,
 };
@@ -743,8 +745,10 @@ fn synthesize_patch(
         if delta.flags().is_binary() || delta_new_path(&delta) != rel {
             continue;
         }
+        let mut seen = HashMap::new();
         for h in 0..patch.num_hunks() {
-            if hunk_id(&rel, &hunk_model_lines(&patch, h)?) == *target {
+            let lines = hunk_model_lines(&patch, h)?;
+            if disambiguated_hunk_id(&rel, &lines, &mut seen) == *target {
                 return render_hunk_patch(&patch, h, &rel, delta.status(), reverse);
             }
         }
@@ -908,10 +912,11 @@ pub fn rehunk_file(file: &FileDiff, context: u32) -> Option<Vec<Hunk>> {
 /// context re-diff so line numbers, ids, and section headings can't drift.
 fn patch_hunks(patch: &git2::Patch<'_>, file_path: &str) -> Result<Vec<Hunk>, VcsError> {
     let mut hunks = Vec::with_capacity(patch.num_hunks());
+    let mut seen = HashMap::new();
     for h in 0..patch.num_hunks() {
         let (hunk, _) = patch.hunk(h)?;
         let lines = hunk_model_lines(patch, h)?;
-        let id = hunk_id(file_path, &lines);
+        let id = disambiguated_hunk_id(file_path, &lines, &mut seen);
         hunks.push(Hunk {
             id,
             old_start: hunk.old_start(),

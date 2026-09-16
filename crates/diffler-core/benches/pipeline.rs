@@ -64,7 +64,7 @@ fn file_diff(old: &str, new: &str) -> FileDiff {
         };
         lines.push(DiffLine::new(kind, o, n, text));
     }
-    let id = hunk_id("bench.rs", &lines);
+    let id = hunk_id("bench.rs", &lines, 0);
     FileDiff {
         path: "bench.rs".to_owned(),
         old_path: None,
