@@ -145,7 +145,21 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   cards, since they are multi-line), and the rows from the diff. `C` opens
   the comments sidebar on the right, a third pane the motions walk: its
   selection seats the diff cursor on that comment, so the pane's own verbs
-  (reply, resolve, delete) reach it with no handling of their own. Comments,
+  (reply, resolve, delete) reach it with no handling of their own. Every
+  comment but the one under the cursor draws as one line, author then the
+  body's first line elided; the cursor's own opens the full card. The author
+  leads each row in a colour hashed from the name (`stable_hash`, lifted
+  through `readable_on`), stable across sessions; the human's own author name
+  and the agent's take the theme's fixed accent and purple, since a reader
+  looks for those two first. `t` in that pane cycles its own grouping,
+  independent of the file sidebar's own layout: by file (diff order), by
+  author (first-appearance order), by status (open, replied, resolved, the
+  last folded by default), or a flat list with no headers at all. A
+  grouping's headers follow the same header/count/fold shape `section_rows`
+  gives the file sidebar: `tab`/`za` folds the one the cursor sits in, `[`/`]`
+  step headers, and a header under the cursor selects no comment, so a verb
+  that needs one declines rather than reaching whatever the diff cursor was
+  last on. Comments,
   replies and edits are written in place: the composer occupies the rows the
   finished card will, under the anchored line, at the top of the file for a
   whole-file comment, under the thread for a reply. Runs (the

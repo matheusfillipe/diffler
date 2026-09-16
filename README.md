@@ -204,7 +204,7 @@ Vim-like: `j`/`k`/`gg`/`G` motions, `/` search, and
 | `V` | select a range: lines in the diff, rows anywhere else, or a run of commits on the status screen, which `<cr>` then reviews as one combined diff |
 | `o` | open the figure under the cursor as a full-screen graph you walk node by node |
 | `Z` | send feedback to the agent |
-| `C` | comments sidebar: walk every comment, Enter jumps to it in the pane |
+| `C` | comments sidebar: walk every comment, Enter jumps to it in the pane; `t` groups by file, author, or status (resolved folds away), or lists them flat |
 | `d` / `D` | delete the comment under the cursor / every local comment of the review |
 | `S` | submit stacked PR comments as one review |
 | `b` `P` | open a pull request for the current branch |

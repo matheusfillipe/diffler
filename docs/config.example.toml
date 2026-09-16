@@ -117,7 +117,7 @@
 # next_unviewed = "u"
 # mark_viewed = "m"
 # unview_all = "U"
-# cycle_sidebar_mode = "t"
+# cycle_sidebar_mode = "t"  # file sidebar layout, or the comments pane's grouping when it has focus
 # toggle_side_by_side = "|"
 # expand_context = "+"
 # collapse_context = "-"
@@ -135,8 +135,8 @@
 # send_feedback = "Z"
 # copy_file_feedback = "y"
 # copy_all_feedback = "Y"
-# next_hunk = "]"
-# prev_hunk = "["
+# next_hunk = "]"           # also steps sidebar/comments-pane group headers
+# prev_hunk = "["           # also steps sidebar/comments-pane group headers
 # next_function = ")"
 # prev_function = "("
 # next_comment = "}"
@@ -144,7 +144,7 @@
 # center_cursor = "zz"
 # cursor_top = "zt"
 # cursor_bottom = "zb"
-# toggle_fold = "za"       # also <tab>: folds the folder or section the cursor sits in
+# toggle_fold = "za"       # also <tab>: folds the folder/section/comments-group the cursor sits in
 # switch_theme = "T"
 # open_editor = "e"
 # open_file_picker = "gf"
