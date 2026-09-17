@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789599881735,
+  "lastUpdate": 1789643873104,
   "repoUrl": "https://github.com/matheusfillipe/diffler",
   "entries": {
     "Benchmark": [
@@ -15359,6 +15359,102 @@ window.BENCHMARK_DATA = {
             "name": "scope_index/20000",
             "value": 100063038,
             "range": "± 2618689",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "committer": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "distinct": true,
+          "id": "794a7a325c0319327648310c4c1cd8088bc2f2e0",
+          "message": "bump rmcp and 13 other deps, move MCP handshake off deprecated ServerInfo/ClientInfo",
+          "timestamp": "2026-09-17T13:13:21+02:00",
+          "tree_id": "a0fc79a6f317b7bee5b2a90c4dcdb818b05b2600",
+          "url": "https://github.com/matheusfillipe/diffler/commit/794a7a325c0319327648310c4c1cd8088bc2f2e0"
+        },
+        "date": 1789643872486,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "syndiff_emphasis/1000",
+            "value": 8195698,
+            "range": "± 151366",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/1000",
+            "value": 19539,
+            "range": "± 1985",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/1000",
+            "value": 5909342,
+            "range": "± 226702",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/1000",
+            "value": 4493931,
+            "range": "± 23976",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/5000",
+            "value": 44560973,
+            "range": "± 1567904",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/5000",
+            "value": 97971,
+            "range": "± 560",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/5000",
+            "value": 29705560,
+            "range": "± 387460",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/5000",
+            "value": 22556045,
+            "range": "± 328778",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/20000",
+            "value": 179320462,
+            "range": "± 3059531",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/20000",
+            "value": 390039,
+            "range": "± 1667",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/20000",
+            "value": 124829990,
+            "range": "± 3517452",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/20000",
+            "value": 94799191,
+            "range": "± 996732",
             "unit": "ns/iter"
           }
         ]
