@@ -574,11 +574,22 @@ impl ForgeProvider for GitHubProvider {
             format!("commit_id={}", new.head_oid),
             "-f".to_owned(),
             format!("path={}", new.path),
-            "-F".to_owned(),
-            format!("line={}", new.line),
-            "-f".to_owned(),
-            format!("side={}", if new.new_side { "RIGHT" } else { "LEFT" }),
         ];
+        // a line-less comment targets the whole file: GitHub's own sentinel
+        // for that is `subject_type=file` with no line/side at all
+        let Some(line) = new.line else {
+            args.push("-f".to_owned());
+            args.push("subject_type=file".to_owned());
+            let raw = self.runner.run("gh", &args).await?;
+            return parse_posted(&raw);
+        };
+        args.push("-F".to_owned());
+        args.push(format!("line={line}"));
+        args.push("-f".to_owned());
+        args.push(format!(
+            "side={}",
+            if new.new_side { "RIGHT" } else { "LEFT" }
+        ));
         if let Some(start) = new.start_line {
             args.push("-F".to_owned());
             args.push(format!("start_line={start}"));
@@ -634,7 +645,13 @@ impl ForgeProvider for GitHubProvider {
         ];
         let result = self.runner.run("gh", &args).await;
         let _ = std::fs::remove_file(&input);
-        result.map(|_| ())
+        result?;
+        // a whole-file comment has no slot in the review's own payload, so it
+        // posts on its own, as its own notification, once the review lands
+        for comment in review.comments.iter().filter(|c| c.line.is_none()) {
+            self.post_pr_comment(comment).await?;
+        }
+        Ok(())
     }
 
     async fn resolve_pr_thread(&self, _number: u64, thread_id: &str, resolved: bool) -> Result<()> {
@@ -1297,20 +1314,24 @@ struct ReviewPayload {
     body: String,
 }
 
+/// The review's line comments only: GitHub's reviews endpoint has no slot for
+/// a `subject_type: file` entry, so `submit_pr_review` posts a whole-file one
+/// through [`GitHubProvider::post_pr_comment`] instead, after this review lands.
 fn review_payload(review: &crate::ci::NewPrReview) -> serde_json::Value {
     let comments = review
         .comments
         .iter()
-        .map(|c| {
+        .filter_map(|c| {
+            let line = c.line?;
             let side = if c.new_side { "RIGHT" } else { "LEFT" };
-            ReviewCommentPayload {
+            Some(ReviewCommentPayload {
                 path: c.path.clone(),
-                line: c.line,
+                line,
                 side,
                 body: c.body.clone(),
                 start_line: c.start_line,
                 start_side: c.start_line.is_some().then_some(side),
-            }
+            })
         })
         .collect();
     let event = match review.verdict {
@@ -1507,6 +1528,19 @@ jobs:
     fn provider(responses: &[(&'static str, &str)]) -> GitHubProvider {
         GitHubProvider::new(
             Box::new(RecordingRunner::new(responses)),
+            vec![WORKFLOW.to_owned()],
+            None,
+            YamlCache::default(),
+            EtagCache::default(),
+            None,
+        )
+    }
+
+    /// A provider over a shared runner, so the caller can inspect `calls()`
+    /// after the exercised method returns.
+    fn provider_with(runner: std::sync::Arc<RecordingRunner>) -> GitHubProvider {
+        GitHubProvider::new(
+            Box::new(runner),
             vec![WORKFLOW.to_owned()],
             None,
             YamlCache::default(),
@@ -2072,7 +2106,7 @@ jobs:
                     number: 9,
                     head_oid: "abc".into(),
                     path: "src/a.rs".into(),
-                    line: 4,
+                    line: Some(4),
                     start_line: None,
                     new_side: true,
                     counterpart: None,
@@ -2082,7 +2116,7 @@ jobs:
                     number: 9,
                     head_oid: "abc".into(),
                     path: "src/a.rs".into(),
-                    line: 12,
+                    line: Some(12),
                     start_line: Some(10),
                     new_side: false,
                     counterpart: None,
@@ -2109,6 +2143,133 @@ jobs:
         let payload = review_payload(&bare);
         assert_eq!(payload["event"], "APPROVE");
         assert_eq!(payload.get("body"), None);
+    }
+
+    fn whole_file_comment(number: u64, body: &str) -> crate::ci::NewPrComment {
+        crate::ci::NewPrComment {
+            number,
+            head_oid: "abc".to_owned(),
+            path: "src/a.rs".to_owned(),
+            line: None,
+            start_line: None,
+            new_side: true,
+            counterpart: None,
+            body: body.to_owned(),
+        }
+    }
+
+    /// GitHub's reviews endpoint has no `subject_type` slot at all: a
+    /// whole-file comment never reaches this payload, batched or not.
+    #[test]
+    fn review_payload_drops_a_whole_file_comment_the_reviews_endpoint_cannot_carry() {
+        let review = crate::ci::NewPrReview {
+            number: 9,
+            head_oid: "abc".into(),
+            verdict: crate::ci::ReviewVerdict::Comment,
+            body: String::new(),
+            comments: vec![
+                crate::ci::NewPrComment {
+                    number: 9,
+                    head_oid: "abc".into(),
+                    path: "src/a.rs".into(),
+                    line: Some(4),
+                    start_line: None,
+                    new_side: true,
+                    counterpart: None,
+                    body: "a line".into(),
+                },
+                whole_file_comment(9, "about the whole file"),
+            ],
+        };
+        let payload = review_payload(&review);
+        let comments = payload["comments"].as_array().expect("comments array");
+        assert_eq!(comments.len(), 1, "the whole-file entry has no slot here");
+        assert_eq!(comments[0]["body"], "a line");
+    }
+
+    #[tokio::test]
+    async fn a_line_comment_posts_its_line_and_side() {
+        let runner = std::sync::Arc::new(RecordingRunner::new(&[(
+            "pulls/9/comments",
+            r#"{"id":1,"path":"src/a.rs","line":4,"side":"RIGHT","body":"a line",
+               "user":{"login":"reviewer"},"created_at":"2026-01-01T00:00:00Z"}"#,
+        )]));
+        let provider = provider_with(runner.clone());
+        let posted = provider
+            .post_pr_comment(&crate::ci::NewPrComment {
+                number: 9,
+                head_oid: "abc".into(),
+                path: "src/a.rs".into(),
+                line: Some(4),
+                start_line: None,
+                new_side: true,
+                counterpart: None,
+                body: "a line".into(),
+            })
+            .await
+            .expect("posted");
+        assert_eq!(posted.line, Some(4));
+        let call = runner.calls().remove(0);
+        assert!(call.contains("line=4"), "{call}");
+        assert!(call.contains("side=RIGHT"), "{call}");
+        assert!(!call.contains("subject_type"), "{call}");
+    }
+
+    /// GitHub's own sentinel for a file-level comment: `subject_type=file`
+    /// with no line, side, or start fields at all.
+    #[tokio::test]
+    async fn a_whole_file_comment_posts_subject_type_file_with_no_line() {
+        let runner = std::sync::Arc::new(RecordingRunner::new(&[(
+            "pulls/9/comments",
+            r#"{"id":2,"path":"src/a.rs","body":"about the whole file",
+               "user":{"login":"reviewer"},"created_at":"2026-01-01T00:00:00Z"}"#,
+        )]));
+        let provider = provider_with(runner.clone());
+        let posted = provider
+            .post_pr_comment(&whole_file_comment(9, "about the whole file"))
+            .await
+            .expect("posted");
+        assert_eq!(posted.line, None);
+        let call = runner.calls().remove(0);
+        assert!(call.contains("subject_type=file"), "{call}");
+        assert!(!call.contains("line="), "{call}");
+        assert!(!call.contains("side="), "{call}");
+    }
+
+    /// A whole-file comment has no slot in the batched review, so it posts as
+    /// its own call once that review lands.
+    #[tokio::test]
+    async fn submitting_a_review_posts_a_whole_file_comment_as_a_separate_call() {
+        let runner = std::sync::Arc::new(RecordingRunner::new(&[
+            ("pulls/9/reviews", "{}"),
+            (
+                "pulls/9/comments",
+                r#"{"id":2,"path":"src/a.rs","body":"about the whole file",
+                   "user":{"login":"reviewer"},"created_at":"2026-01-01T00:00:00Z"}"#,
+            ),
+        ]));
+        let provider = provider_with(runner.clone());
+        provider
+            .submit_pr_review(&crate::ci::NewPrReview {
+                number: 9,
+                head_oid: "abc".into(),
+                verdict: crate::ci::ReviewVerdict::Comment,
+                body: String::new(),
+                comments: vec![whole_file_comment(9, "about the whole file")],
+            })
+            .await
+            .expect("submitted");
+        let calls = runner.calls();
+        assert!(
+            calls.iter().any(|c| c.contains("reviews")),
+            "the batched review still goes out: {calls:?}"
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.contains("pulls/9/comments") && c.contains("subject_type=file")),
+            "the whole-file comment follows as its own post: {calls:?}"
+        );
     }
 
     #[tokio::test]

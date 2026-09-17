@@ -60,7 +60,10 @@ pub(crate) struct PrPending {
     pub replies: Vec<PrPost>,
     /// Agent-written bodies held back: a forge post carries the human's name.
     pub agent_withheld: usize,
+    /// Whole-file comments held back because the forge has no slot for one.
     pub file_level: usize,
+    /// The forge behind `file_level`, so the summary can name it.
+    pub file_level_forge: Option<crate::ci::ProviderKind>,
 }
 
 impl PrPending {
@@ -86,8 +89,11 @@ impl PrPending {
             ));
         }
         if self.file_level > 0 {
+            let forge = self
+                .file_level_forge
+                .map_or_else(|| "this forge".to_owned(), |kind| kind.to_string());
             lines.push(format!(
-                "{} whole-file {} held back (a review carries line comments only)",
+                "{} whole-file {} held back ({forge} takes line comments only)",
                 self.file_level,
                 plural(self.file_level, "comment", "comments")
             ));
@@ -98,6 +104,37 @@ impl PrPending {
 
 fn plural<'a>(count: usize, one: &'a str, many: &'a str) -> &'a str {
     if count == 1 { one } else { many }
+}
+
+/// Queue every non-agent body of `comment` (its own, then its unposted
+/// replies riding along at the same anchor: a flattened thread beats a lost
+/// reply) as its own post built by `anchor`, withholding agent-authored ones.
+/// An id lands in `comment_ids` only once every body posted, since a withheld
+/// reply would otherwise lose the local comment it still needs to answer under.
+fn queue_bodies(
+    pending: &mut PrPending,
+    comment: &Comment,
+    anchor: impl Fn(&str) -> crate::ci::NewPrComment,
+) {
+    let bodies = std::iter::once((comment.author.as_str(), comment.body.as_str())).chain(
+        comment
+            .replies
+            .iter()
+            .map(|reply| (reply.author.as_str(), reply.body.as_str())),
+    );
+    let (mut posted, mut withheld) = (false, false);
+    for (author, body) in bodies {
+        if author == crate::mcp::AGENT_AUTHOR {
+            pending.agent_withheld += 1;
+            withheld = true;
+            continue;
+        }
+        posted = true;
+        pending.review_comments.push(anchor(body));
+    }
+    if posted && !withheld {
+        pending.comment_ids.push(comment.id.clone());
+    }
 }
 
 /// Hand a published comment's unposted replies to the forge copy coming back
@@ -438,6 +475,9 @@ impl App {
         let (_, head) = self.pr_ranges.get(&number).cloned()?;
         let session = self.review.session_for(&ReviewSource::pr(number));
         let mut pending = PrPending::default();
+        let remote_kind = self.ci_remotes().first().map(|r| r.detected.kind);
+        let file_comments_supported =
+            remote_kind.is_none_or(|kind| crate::ci::capabilities_for(kind).file_comments);
         for comment in &session.comments {
             match (&comment.remote_id, comment.anchor.line) {
                 (None, Some(line)) => {
@@ -446,38 +486,28 @@ impl App {
                         Some(end) if end != line => (Some(line), end),
                         _ => (None, line),
                     };
-                    // a human reply under an unsent comment rides along at the
-                    // same anchor: a flattened thread beats a lost reply
-                    let bodies = std::iter::once((&comment.author, &comment.body)).chain(
-                        comment
-                            .replies
-                            .iter()
-                            .map(|reply| (&reply.author, &reply.body)),
-                    );
-                    let (mut posted, mut withheld) = (false, false);
-                    for (author, body) in bodies {
-                        if author == crate::mcp::AGENT_AUTHOR {
-                            pending.agent_withheld += 1;
-                            withheld = true;
-                            continue;
-                        }
-                        posted = true;
-                        pending.review_comments.push(crate::ci::NewPrComment {
-                            number,
-                            head_oid: head.clone(),
-                            path: comment.anchor.file.clone(),
-                            line,
-                            start_line,
-                            new_side: !comment.anchor.on_old_side,
-                            counterpart: self.counterpart_line(&comment.anchor, line),
-                            body: body.clone(),
-                        });
-                    }
-                    // an id here deletes the local comment once the forge acks,
-                    // which would take any withheld reply down with it
-                    if posted && !withheld {
-                        pending.comment_ids.push(comment.id.clone());
-                    }
+                    queue_bodies(&mut pending, comment, |body| crate::ci::NewPrComment {
+                        number,
+                        head_oid: head.clone(),
+                        path: comment.anchor.file.clone(),
+                        line: Some(line),
+                        start_line,
+                        new_side: !comment.anchor.on_old_side,
+                        counterpart: self.counterpart_line(&comment.anchor, line),
+                        body: body.to_owned(),
+                    });
+                }
+                (None, None) if file_comments_supported => {
+                    queue_bodies(&mut pending, comment, |body| crate::ci::NewPrComment {
+                        number,
+                        head_oid: head.clone(),
+                        path: comment.anchor.file.clone(),
+                        line: None,
+                        start_line: None,
+                        new_side: !comment.anchor.on_old_side,
+                        counterpart: None,
+                        body: body.to_owned(),
+                    });
                 }
                 (Some(parent), _) => {
                     for (reply_index, reply) in comment.replies.iter().enumerate() {
@@ -499,13 +529,17 @@ impl App {
                 _ => {}
             }
         }
-        // reviews carry line comments only; a line-less (whole-file) anchor
-        // has no review slot on the forge
-        pending.file_level = session
-            .comments
-            .iter()
-            .filter(|c| c.remote_id.is_none() && c.anchor.line.is_none())
-            .count();
+        // a forge with no slot for a whole-file comment holds it back entirely
+        pending.file_level = if file_comments_supported {
+            0
+        } else {
+            session
+                .comments
+                .iter()
+                .filter(|c| c.remote_id.is_none() && c.anchor.line.is_none())
+                .count()
+        };
+        pending.file_level_forge = (pending.file_level > 0).then_some(remote_kind).flatten();
         Some(pending)
     }
 
@@ -963,18 +997,25 @@ mod tests {
             "file level",
         );
 
+        // no ci remote is configured: the plan defaults to a forge that can
+        // take a whole-file comment, so it rides along with the line one
         let pending = app.pr_pending(3).expect("plan");
-        assert_eq!(pending.review_comments.len(), 1);
-        assert_eq!(pending.review_comments[0].body, "human comment");
+        assert_eq!(
+            pending
+                .review_comments
+                .iter()
+                .map(|c| c.body.as_str())
+                .collect::<Vec<_>>(),
+            vec!["human comment", "file level"]
+        );
         assert!(pending.replies.is_empty(), "the agent's thread reply stays");
         assert_eq!(pending.agent_withheld, 2);
-        assert_eq!(pending.file_level, 1);
+        assert_eq!(pending.file_level, 0);
         assert_eq!(
             pending.summary(),
             vec![
-                "posting 1 comment".to_owned(),
+                "posting 2 comments".to_owned(),
                 "2 agent replies held back (the forge post is yours)".to_owned(),
-                "1 whole-file comment held back (a review carries line comments only)".to_owned(),
             ]
         );
 
@@ -992,9 +1033,82 @@ mod tests {
             .collect();
         assert_eq!(
             posted,
-            vec!["human comment".to_owned()],
+            vec!["human comment".to_owned(), "file level".to_owned()],
             "nothing the agent wrote reaches the forge"
         );
+    }
+
+    fn file_level_comment(app: &mut App, number: u64) {
+        let head = app.review.vcs.resolve("HEAD").expect("head oid");
+        app.pr_ranges.insert(number, (head.clone(), head));
+        app.review
+            .session_for_mut(&ReviewSource::pr(number))
+            .add_comment(
+                Anchor {
+                    file: "app.txt".into(),
+                    line: None,
+                    line_end: None,
+                    on_old_side: false,
+                    line_text: None,
+                },
+                "reviewer",
+                "about the whole file",
+            );
+    }
+
+    /// Forgejo has no slot for a whole-file comment: it stays held back, and
+    /// the summary names the forge that can't take it rather than blaming
+    /// reviews in general.
+    #[test]
+    fn a_forge_with_no_file_level_comments_holds_it_back_and_names_itself() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.ci_remotes = vec![super::super::CiRemote {
+            name: "origin".into(),
+            detected: crate::ci::Detected {
+                kind: crate::ci::ProviderKind::Forgejo,
+                host: Some("forge.example.com".into()),
+            },
+            url: None,
+        }];
+        file_level_comment(&mut app, 4);
+
+        let pending = app.pr_pending(4).expect("plan");
+        assert!(
+            pending.review_comments.is_empty(),
+            "Forgejo has no slot for it"
+        );
+        assert_eq!(pending.file_level, 1);
+        assert_eq!(
+            pending.summary(),
+            vec![
+                "no comments pending".to_owned(),
+                "1 whole-file comment held back (Forgejo takes line comments only)".to_owned(),
+            ]
+        );
+    }
+
+    /// GitHub (and GitLab) can take a whole-file comment, so it posts
+    /// alongside the line ones instead of being held back.
+    #[test]
+    fn a_forge_with_file_level_comments_posts_it_alongside_the_line_ones() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.ci_remotes = vec![super::super::CiRemote {
+            name: "origin".into(),
+            detected: crate::ci::Detected {
+                kind: crate::ci::ProviderKind::GitHub,
+                host: None,
+            },
+            url: None,
+        }];
+        file_level_comment(&mut app, 4);
+
+        let pending = app.pr_pending(4).expect("plan");
+        assert_eq!(pending.review_comments.len(), 1);
+        assert_eq!(pending.review_comments[0].line, None);
+        assert_eq!(pending.file_level, 0);
+        assert_eq!(pending.summary(), vec!["posting 1 comment".to_owned()]);
     }
 
     /// A comment written through `add_comment` follows the same authorship

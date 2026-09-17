@@ -246,10 +246,13 @@ impl ForgeProvider for ForgejoProvider {
     }
 
     async fn post_pr_comment(&self, new: &NewPrComment) -> Result<PrComment> {
+        let line = new
+            .line
+            .ok_or(CiError::Unsupported("whole-file comments on Forgejo"))?;
         let payload = serde_json::json!({
             "event": "COMMENT",
             "commit_id": new.head_oid,
-            "comments": [anchored(&new.path, &new.body, new.line, new.start_line, new.new_side)],
+            "comments": [anchored(&new.path, &new.body, line, new.start_line, new.new_side)],
         });
         let raw = self
             .post(&format!("pulls/{}/reviews", new.number), &payload)
@@ -299,7 +302,7 @@ impl ForgeProvider for ForgejoProvider {
     async fn submit_pr_review(&self, review: &NewPrReview) -> Result<()> {
         self.post(
             &format!("pulls/{}/reviews", review.number),
-            &review_payload(review),
+            &review_payload(review)?,
         )
         .await
         .map(|_| ())
@@ -501,7 +504,11 @@ fn anchored(
     })
 }
 
-fn review_payload(review: &NewPrReview) -> serde_json::Value {
+/// Forgejo has no whole-file review comment: every entry anchors to a line, so
+/// a line-less comment (a whole-file one, from a forge that allows it) has
+/// nothing to translate to here and fails the review rather than dropping it
+/// silently.
+fn review_payload(review: &NewPrReview) -> Result<serde_json::Value> {
     let event = match review.verdict {
         // the API spells approval `APPROVED`; an unrecognised event quietly
         // creates a pending, invisible review
@@ -512,14 +519,19 @@ fn review_payload(review: &NewPrReview) -> serde_json::Value {
     let comments: Vec<serde_json::Value> = review
         .comments
         .iter()
-        .map(|c| anchored(&c.path, &c.body, c.line, c.start_line, c.new_side))
-        .collect();
-    serde_json::json!({
+        .map(|c| {
+            let line = c
+                .line
+                .ok_or(CiError::Unsupported("whole-file comments on Forgejo"))?;
+            Ok(anchored(&c.path, &c.body, line, c.start_line, c.new_side))
+        })
+        .collect::<Result<_>>()?;
+    Ok(serde_json::json!({
         "event": event,
         "body": review.body,
         "commit_id": review.head_oid,
         "comments": comments,
-    })
+    }))
 }
 
 #[derive(Deserialize)]
@@ -767,7 +779,7 @@ mod review_tests {
             number,
             head_oid: "abc".to_owned(),
             path: "src.rs".to_owned(),
-            line,
+            line: Some(line),
             start_line,
             new_side,
             counterpart: None,
@@ -865,6 +877,37 @@ mod review_tests {
             call.contains(r#""extra_lines_count":0,"new_position":0,"old_position":2"#),
             "{call}"
         );
+    }
+
+    /// Forgejo's review comments are line-anchored only: a whole-file
+    /// comment has nothing to translate to, so posting one fails rather than
+    /// silently dropping it or landing on the wrong line.
+    #[tokio::test]
+    async fn a_whole_file_comment_is_rejected_not_silently_dropped() {
+        let runner = Arc::new(RecordingRunner::new(&[("reviews", "{}")]));
+        let whole_file = NewPrComment {
+            line: None,
+            ..comment(7, 0, None, true)
+        };
+        let err = provider(&runner)
+            .post_pr_comment(&whole_file)
+            .await
+            .expect_err("Forgejo has no file-level comment");
+        assert!(matches!(err, CiError::Unsupported(_)), "{err:?}");
+        assert!(runner.calls().is_empty(), "never reaches the network");
+
+        let err = provider(&runner)
+            .submit_pr_review(&NewPrReview {
+                number: 7,
+                head_oid: "abc".to_owned(),
+                verdict: ReviewVerdict::Comment,
+                body: String::new(),
+                comments: vec![whole_file],
+            })
+            .await
+            .expect_err("a batch carrying one fails the whole review");
+        assert!(matches!(err, CiError::Unsupported(_)), "{err:?}");
+        assert!(runner.calls().is_empty(), "never reaches the network");
     }
 
     #[tokio::test]

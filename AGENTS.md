@@ -517,11 +517,24 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   comments sharing a review, a path and a signed line, rooted at the lowest id;
   the forge exposes no resolution API, so `Capabilities::resolve_threads` is
   false there and a resolve stays in the local session.
+  A comment anchored to a whole file rather than a line (`NewPrComment.line:
+  None`) needs `Capabilities::file_comments`: GitHub and GitLab have one, so
+  it rides along with a submit; Forgejo has none, so `pr_pending` holds it
+  back in `PrPending::file_level`, and the submit confirmation names the
+  forge rather than blaming reviews in general. GitHub's own review-comments
+  array has no slot for a line-less entry at all, so `GitHubProvider::
+  submit_pr_review` posts each whole-file comment through `post_pr_comment`
+  (`subject_type=file`, no line) once the batched review lands: one more
+  network call and one more forge notification per whole-file comment,
+  since GitHub gives no way to fold it into the single review post.
 - **GitLab merge requests.** A thread is a discussion and a comment is one of
   its notes, so a reply, an edit and a delete all route through the discussion
   the note belongs to, which `discussion_of` looks up. An anchored note repeats
   the merge request's `diff_refs` (base, start, head) plus the line, and a
-  multi-line one adds a `line_range`. Writes travel as multipart form fields:
+  multi-line one adds a `line_range`; a whole-file comment carries the same
+  refs with `position[position_type]=file` and no line, GitLab's own read on
+  a file-level note, so it drafts and publishes through the same batch a line
+  comment does. Writes travel as multipart form fields:
   GitLab's REST layer unflattens `position[new_line]` into nested parameters,
   which a JSON body never gets. A submitted review is draft notes plus one
   `bulk_publish`, so the author is notified once; the verdict maps onto

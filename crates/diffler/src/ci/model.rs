@@ -231,6 +231,9 @@ pub struct Capabilities {
     /// diffler can tell this forge a review thread is resolved. Where it
     /// cannot, a resolution stays local to the review session.
     pub resolve_threads: bool,
+    /// This forge can anchor a comment to a whole file instead of a line.
+    /// Where it can't, a line-less comment is held back from a submit.
+    pub file_comments: bool,
 }
 
 /// Where a provider's dependency edges come from.

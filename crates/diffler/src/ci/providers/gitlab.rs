@@ -498,21 +498,26 @@ fn form_hazard(value: &str) -> bool {
 }
 
 /// The `position[...]` fields an anchored note carries: the file, the shas the
-/// diff was taken against, and the line on whichever side the comment sits.
-/// A line both sides share names both, which is the only way GitLab resolves
-/// an unchanged line to a diff position.
+/// diff was taken against, and, for a line comment, the line on whichever
+/// side it sits on. A line both sides share names both, which is the only way
+/// GitLab resolves an unchanged line to a diff position. A whole-file comment
+/// (`new.line` is `None`) carries `position_type: file` and no line at all,
+/// GitLab's own equivalent of a line-less note.
 fn position_fields(refs: &DiffRefs, new: &NewPrComment) -> Vec<(String, String)> {
-    let side = if new.new_side { "new" } else { "old" };
-    let line_key = format!("position[{side}_line]");
     let mut fields = vec![
-        ("position[position_type]".to_owned(), "text".to_owned()),
         ("position[base_sha]".to_owned(), refs.base_sha.clone()),
         ("position[start_sha]".to_owned(), refs.start_sha.clone()),
         ("position[head_sha]".to_owned(), refs.head_sha.clone()),
         ("position[new_path]".to_owned(), new.path.clone()),
         ("position[old_path]".to_owned(), new.path.clone()),
-        (line_key, new.line.to_string()),
     ];
+    let Some(line) = new.line else {
+        fields.push(("position[position_type]".to_owned(), "file".to_owned()));
+        return fields;
+    };
+    fields.push(("position[position_type]".to_owned(), "text".to_owned()));
+    let side = if new.new_side { "new" } else { "old" };
+    fields.push((format!("position[{side}_line]"), line.to_string()));
     if let Some(counterpart) = new.counterpart {
         let other = if new.new_side { "old" } else { "new" };
         fields.push((format!("position[{other}_line]"), counterpart.to_string()));
@@ -529,7 +534,7 @@ fn position_fields(refs: &DiffRefs, new: &NewPrComment) -> Vec<(String, String)>
             ),
             (
                 format!("position[line_range][end][{side}_line]"),
-                new.line.to_string(),
+                line.to_string(),
             ),
             (
                 "position[line_range][end][type]".to_owned(),
@@ -958,11 +963,19 @@ mod tests {
             number: 1,
             head_oid: "aa11bb2".to_owned(),
             path: "calc.py".to_owned(),
-            line,
+            line: Some(line),
             start_line,
             new_side,
             counterpart: None,
             body: "a remark".to_owned(),
+        }
+    }
+
+    fn file_comment() -> NewPrComment {
+        NewPrComment {
+            line: None,
+            start_line: None,
+            ..new_comment(0, None, true)
         }
     }
 
@@ -1288,6 +1301,29 @@ mod tests {
         assert!(post.contains("position[new_path]=calc.py"), "{post}");
         assert!(post.contains("position[new_line]=7"), "{post}");
         assert!(!post.contains("line_range"), "single line: {post}");
+    }
+
+    /// GitLab's own equivalent of a file-level comment: `position_type: file`,
+    /// the file and the three shas, no line at all.
+    #[tokio::test]
+    async fn a_whole_file_comment_carries_position_type_file_and_no_line() {
+        let (runner, provider) = provider_on(
+            &[
+                ("GET projects/:fullpath/merge_requests/1", MR),
+                ("discussions", r#"{"id":"abc","notes":[]}"#),
+            ],
+            "feat/guard",
+        );
+        let _ = provider.post_pr_comment(&file_comment()).await;
+
+        let post = runner.calls().remove(1);
+        assert!(post.contains("position[position_type]=file"), "{post}");
+        assert!(post.contains("position[base_sha]=cc33dd4"), "{post}");
+        assert!(post.contains("position[head_sha]=aa11bb2"), "{post}");
+        assert!(post.contains("position[new_path]=calc.py"), "{post}");
+        assert!(!post.contains("position[new_line]"), "{post}");
+        assert!(!post.contains("position[old_line]"), "{post}");
+        assert!(!post.contains("line_range"), "{post}");
     }
 
     #[tokio::test]

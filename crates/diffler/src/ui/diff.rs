@@ -3058,7 +3058,7 @@ flowchart LR
             number: 7,
             head_oid: "abc".to_owned(),
             path: "src/lib.rs".to_owned(),
-            line: 2,
+            line: Some(2),
             start_line: None,
             new_side: true,
             counterpart: None,
@@ -3075,6 +3075,7 @@ flowchart LR
             }],
             agent_withheld: 2,
             file_level: 1,
+            file_level_forge: Some(crate::ci::ProviderKind::Forgejo),
             ..Default::default()
         };
         app.modal = Some(crate::app::Modal::ReviewVerdict {

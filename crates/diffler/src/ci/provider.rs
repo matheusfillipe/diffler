@@ -18,6 +18,16 @@ pub enum ProviderKind {
     Forgejo,
 }
 
+impl std::fmt::Display for ProviderKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            ProviderKind::GitHub => "GitHub",
+            ProviderKind::GitLab => "GitLab",
+            ProviderKind::Forgejo => "Forgejo",
+        })
+    }
+}
+
 /// The capabilities of a provider kind: a pure function of `kind()`, so it's
 /// exposed standalone: UI code can gate an affordance from just the detected
 /// kind (a [`CiRemote`](crate::app::CiRemote)'s `detected.kind`) without
@@ -28,16 +38,19 @@ pub fn capabilities_for(kind: ProviderKind) -> Capabilities {
             dag: DagSource::ConfigFile,
             logs: LogMode::Dump,
             resolve_threads: true,
+            file_comments: true,
         },
         ProviderKind::GitLab => Capabilities {
             dag: DagSource::RunApi,
             logs: LogMode::Poll,
             resolve_threads: true,
+            file_comments: true,
         },
         ProviderKind::Forgejo => Capabilities {
             dag: DagSource::None,
             logs: LogMode::None,
             resolve_threads: false,
+            file_comments: false,
         },
     }
 }
@@ -172,16 +185,19 @@ pub struct NewPrReview {
     pub comments: Vec<NewPrComment>,
 }
 
-/// A comment to post, anchored to a diff line of `path` at `head_oid`.
+/// A comment to post, anchored to a diff line of `path` at `head_oid`, or to
+/// `path` as a whole where `line` is `None` and the forge can take it
+/// (`Capabilities::file_comments`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewPrComment {
     pub number: u64,
     pub head_oid: String,
     pub path: String,
     /// 1-based line on the side the comment anchors to; for a multi-line
-    /// comment this is the range's last line.
-    pub line: u32,
-    /// First line of a multi-line comment; `None` anchors a single line.
+    /// comment this is the range's last line. `None` anchors the whole file.
+    pub line: Option<u32>,
+    /// First line of a multi-line comment; `None` anchors a single line (or,
+    /// with `line` also `None`, the whole file).
     pub start_line: Option<u32>,
     /// Anchored to the new side (`RIGHT`) or the old side of the diff.
     pub new_side: bool,
