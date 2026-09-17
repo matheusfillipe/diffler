@@ -16,7 +16,7 @@ use diffler::mcp;
 use diffler_core::review::Review;
 use diffler_core::session::Anchor;
 use rmcp::ServiceExt as _;
-use rmcp::model::{CallToolRequestParams, CallToolResult, ClientInfo};
+use rmcp::model::{CallToolRequestParams, CallToolResult, ClientConfig};
 use rmcp::transport::StreamableHttpClientTransport;
 use serde_json::{Value, json};
 use tokio::sync::mpsc::{self, UnboundedSender};
@@ -31,7 +31,7 @@ fn anchor_on_line_two() -> Anchor {
     }
 }
 
-type McpClient = rmcp::service::RunningService<rmcp::RoleClient, ClientInfo>;
+type McpClient = rmcp::service::RunningService<rmcp::RoleClient, ClientConfig>;
 
 struct Harness {
     _fixture: Fixture,
@@ -61,7 +61,7 @@ async fn start(seed: impl FnOnce(&mut App)) -> Harness {
 
     let transport =
         StreamableHttpClientTransport::from_uri(format!("http://127.0.0.1:{}/mcp", handle.port));
-    let client = ClientInfo::default()
+    let client = ClientConfig::default()
         .serve(transport)
         .await
         .expect("client");
