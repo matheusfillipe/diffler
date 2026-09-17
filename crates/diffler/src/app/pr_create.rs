@@ -7,17 +7,27 @@ use diffler_core::vcs::LogEntry;
 use super::App;
 use crate::ci::NewPullRequest;
 
-/// The field the cursor sits on in the create form.
+/// What the cursor sits on in the create form. The buttons are rows like the
+/// fields, so the pointer and `j`/`k` reach them the same way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrField {
     Base,
     Title,
     Body,
     Draft,
+    Create,
+    Cancel,
 }
 
 impl PrField {
-    pub(crate) const ORDER: [Self; 4] = [Self::Base, Self::Title, Self::Body, Self::Draft];
+    pub(crate) const ORDER: [Self; 6] = [
+        Self::Base,
+        Self::Title,
+        Self::Body,
+        Self::Draft,
+        Self::Create,
+        Self::Cancel,
+    ];
 
     pub(crate) fn step(self, down: bool) -> Self {
         let at = Self::ORDER.iter().position(|f| *f == self).unwrap_or(0);
@@ -208,6 +218,10 @@ impl App {
         match result {
             Ok(pr) => {
                 self.info(format!("opened #{}: {}", pr.number, pr.title));
+                // the branch's PR is resolved once per branch, so the new one
+                // has to be seated here or the band stays empty until a
+                // checkout re-arms the poll
+                self.seat_branch_pr(pr.clone());
                 // reviewing needs the head commit; a provider that answers
                 // without one leaves the review to be opened from the PR list
                 if pr.head_oid.is_empty() {
@@ -256,7 +270,11 @@ mod tests {
     fn fields_stop_at_both_ends() {
         assert_eq!(PrField::Base.step(false), PrField::Base);
         assert_eq!(PrField::Base.step(true), PrField::Title);
-        assert_eq!(PrField::Draft.step(true), PrField::Draft);
+        // the buttons are the last two rows, so the walk runs on past draft
+        assert_eq!(PrField::Draft.step(true), PrField::Create);
+        assert_eq!(PrField::Create.step(true), PrField::Cancel);
+        assert_eq!(PrField::Cancel.step(true), PrField::Cancel);
+        assert_eq!(PrField::Create.step(false), PrField::Draft);
     }
 
     #[test]
@@ -505,5 +523,141 @@ mod tests {
             panic!("form open");
         };
         assert_eq!(draft.field, PrField::Title, "the wheel steps the field");
+    }
+}
+
+#[cfg(test)]
+mod form_tests {
+    use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+
+    use super::PrField;
+    use crate::app::{App, Modal};
+    use crate::config::LoadedConfig;
+    use crate::test_support::standard_fixture;
+
+    fn press(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
+    }
+
+    fn click(row: u16) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 4,
+            row,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        }
+    }
+
+    /// The fixture owns the temp repo, so it has to outlive the app: a dropped
+    /// one takes `.git` with it and every editor write fails.
+    fn form(field: PrField) -> (crate::test_support::Fixture, App) {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.modal = Some(Modal::CreatePr {
+            draft: Box::new(super::PrDraft {
+                base: "main".to_owned(),
+                head: "feat/x".to_owned(),
+                title: "a title".to_owned(),
+                body: "a body".to_owned(),
+                draft: false,
+                commits: 1,
+                needs_push: false,
+                field,
+            }),
+        });
+        (fixture, app)
+    }
+
+    fn open_field(app: &App) -> Option<PrField> {
+        match app.modal.as_ref()? {
+            Modal::CreatePr { draft } => Some(draft.field),
+            _ => None,
+        }
+    }
+
+    /// The body edits in place like the title: `<cr>` opens the input modal,
+    /// not the editor.
+    #[test]
+    fn the_body_opens_the_inline_editor() {
+        let (_fixture, mut app) = form(PrField::Body);
+        app.handle_modal_key(&press(KeyCode::Enter));
+        assert!(
+            matches!(app.modal, Some(Modal::Input { ref title, .. }) if title == "Body"),
+            "{:?}",
+            app.modal
+        );
+        assert!(app.pending_editor.is_none(), "no editor was launched");
+    }
+
+    /// A body cleared to nothing stays cleared; a title cannot be blanked,
+    /// since a pull request needs one.
+    #[test]
+    fn an_emptied_body_sticks_but_an_emptied_title_does_not() {
+        let (_fixture, mut app) = form(PrField::Body);
+        app.handle_modal_key(&press(KeyCode::Enter));
+        if let Some(Modal::Input { buffer, cursor, .. }) = app.modal.as_mut() {
+            buffer.clear();
+            *cursor = 0;
+        }
+        app.handle_modal_key(&press(KeyCode::Enter));
+        let Some(Modal::CreatePr { draft }) = app.modal.as_ref() else {
+            panic!("back on the form: {:?}", app.modal);
+        };
+        assert_eq!(draft.body, "");
+        assert_eq!(draft.title, "a title", "the title is untouched");
+    }
+
+    #[test]
+    fn e_hands_the_body_to_the_editor() {
+        let (_fixture, mut app) = form(PrField::Body);
+        app.handle_modal_key(&press(KeyCode::Char('e')));
+        assert!(app.pending_editor.is_some(), "an editor was queued");
+    }
+
+    /// The base is a list and the draft flag is a toggle, so neither is text
+    /// the editor could take.
+    #[test]
+    fn e_on_a_non_text_field_says_so() {
+        let (_fixture, mut app) = form(PrField::Draft);
+        app.handle_modal_key(&press(KeyCode::Char('e')));
+        assert!(app.pending_editor.is_none());
+        assert_eq!(open_field(&app), Some(PrField::Draft), "the form stays up");
+    }
+
+    #[test]
+    fn the_cancel_button_closes_the_form() {
+        let (_fixture, mut app) = form(PrField::Cancel);
+        app.handle_modal_key(&press(KeyCode::Enter));
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn the_create_button_submits() {
+        let (_fixture, mut app) = form(PrField::Create);
+        app.handle_modal_key(&press(KeyCode::Enter));
+        // no forge is configured in the fixture, so the submit reports rather
+        // than queueing: what matters is that the button ran it
+        assert!(app.modal.is_none() || app.pending_git.is_some());
+    }
+
+    /// The buttons are rows in the same list the fields are, so the pointer
+    /// finds them: one click selects, a second takes it.
+    #[test]
+    fn clicking_the_cancel_button_closes_the_form() {
+        let (_fixture, mut app) = form(PrField::Base);
+        app.modal_hits = Some(crate::ui::popup::ListHits {
+            first_row: 3,
+            rows: PrField::ORDER.len() as u16,
+            first_index: 0,
+        });
+        let cancel_row = 3 + PrField::ORDER.len() as u16 - 1;
+        app.handle_modal_mouse(click(cancel_row));
+        assert_eq!(
+            open_field(&app),
+            Some(PrField::Cancel),
+            "first click selects"
+        );
+        app.handle_modal_mouse(click(cancel_row));
+        assert!(app.modal.is_none(), "second click takes it");
     }
 }

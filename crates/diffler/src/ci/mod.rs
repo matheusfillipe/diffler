@@ -185,9 +185,10 @@ fn read_workflows(repo_root: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Map a run's jobs + dependency edges onto a graph model (top-down layered).
+/// Map a run's jobs + dependency edges onto a graph model, drawn the
+/// GitHub-style way: longest-path layering ranks the jobs, left to right.
 pub fn to_model(detail: &RunDetail) -> Model {
-    let mut model = Model::new(RankDir::TopDown);
+    let mut model = Model::new(RankDir::LeftRight);
     model.nodes = detail
         .jobs
         .iter()

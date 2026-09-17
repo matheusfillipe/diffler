@@ -2,7 +2,7 @@
 source: crates/diffler/src/ui/diff.rs
 expression: render(&mut app).backend()
 ---
-" c comment · r reply · v viewed · C all comments · ? help                                                               "
+" c add comment · r reply · m mark viewed · C see comment list · ? help                                                  "
 " Files                           Diff                                                                                   "
 " ▾ src                    +1 -1  modified  src/lib.rs · 1 comment                                            +1 -1 █████"
 "▌  ● lib.rs ·1            +1 -1  answer                                                                                 "
@@ -11,11 +11,11 @@ expression: render(&mut app).backend()
 "                                ▌   2          41                                                                       "
 "                                ▌        2     42                                                                       "
 "                                  ▌ reviewer · open                                                                     "
-"                                  ▌ Between                   Ordering          What a failure costs                    "
-"                                  ▌ ────────────────────────  ────────────────  ────────────────────────────────────────"
-"                                  ▌ Two customers             Parallel          Nothing, one lane throwing leaves the   "
-"                                  ▌                                             others                                  "
-"                                  ▌ Postgres, then the sinks  Strictly ordered  No sink hears anything this run         "
+"                                  ▌ Between                  │ Ordering         │ What a failure costs                  "
+"                                  ▌ ─────────────────────────┼──────────────────┼───────────────────────────────────────"
+"                                  ▌ Two customers            │ Parallel         │ Nothing, one lane throwing leaves the "
+"                                  ▌                          │                  │ others                                "
+"                                  ▌ Postgres, then the sinks │ Strictly ordered │ No sink hears anything this run       "
 "                                  ▌                                                                                     "
 "                                    3    3 }                                                                            "
 "                                                                                                                        "

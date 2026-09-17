@@ -1,6 +1,7 @@
 //! Status screen: hint line, head line, neogit-style sections with inline
 //! diff expansion, recent commits, and the status bar.
 
+use crate::app::rowsel::RowSelect;
 use diffler_core::model::FileDiff;
 use diffler_core::stats::LanguageChurn;
 use diffler_core::vcs::LogEntry;
@@ -14,6 +15,7 @@ use std::ops::Range;
 
 use crate::app::{
     App, BRANCHES_TITLE, CI_TITLE, Group, PRS_TITLE, RECENT_TITLE, Row, Section, UNPUSHED_TITLE,
+    WALKTHROUGHS_TITLE,
 };
 use crate::config::FileLayout;
 use crate::keymap::Action;
@@ -132,8 +134,10 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16, Vec<Option<usize>>) 
                     lines.push(Line::default());
                     line_rows.push(None);
                 }
-                let on_cursor = index == app.status.cursor;
-                if on_cursor {
+                // a selected run tints like the cursor row, so the reader sees
+                // what `<cr>` is about to review
+                let selected = app.status.row_selected(index);
+                if index == app.status.cursor {
                     cursor_line_index = lines.len();
                     cursor_span = 1;
                 }
@@ -142,7 +146,7 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16, Vec<Option<usize>>) 
                     .as_ref()
                     .map(|search| search.ranges_for(index))
                     .unwrap_or_default();
-                lines.push(row_line(app, row, on_cursor, area.width, &ranges));
+                lines.push(row_line(app, row, selected, area.width, &ranges));
                 // furniture: never a mouse-click or search target
                 line_rows.push((!matches!(row, Row::RepoDivider)).then_some(index));
                 index += 1;
@@ -343,6 +347,7 @@ fn mix_line(theme: &Theme, mix: &[LanguageChurn], width: u16) -> Option<Line<'st
     Some(Line::from(spans))
 }
 
+#[allow(clippy::too_many_lines)] // one match arm per row kind, straight-line by design
 fn row_line(
     app: &App,
     row: &Row,
@@ -413,6 +418,14 @@ fn row_line(
             commit_spans(app, entry, theme, width, search)
         }
         Row::Pr => pr_spans(app, theme, search),
+        Row::WalkthroughHeader { count } => header_spans(
+            theme,
+            WALKTHROUGHS_TITLE,
+            Some(*count),
+            app.is_group_folded(Group::Walkthrough),
+            search,
+        ),
+        Row::Walkthrough { id } => walkthrough_row_spans(app, id, theme, search),
         Row::RepoDivider => repo_divider_spans(theme, width),
         Row::PrsHeader { count } => header_spans(
             theme,
@@ -632,6 +645,29 @@ fn pr_spans(app: &App, theme: &Theme, search: &[(Range<usize>, bool)]) -> Vec<Sp
     })
 }
 
+/// One walkthrough of the repo: its title, then dimmed ` · N stops`, and a
+/// dim `✓` once every stop of it is seen.
+fn walkthrough_row_spans(
+    app: &App,
+    id: &str,
+    theme: &Theme,
+    search: &[(Range<usize>, bool)],
+) -> Vec<Span<'static>> {
+    let Some(row) = app.status.walkthroughs.iter().find(|w| w.id == id) else {
+        return Vec::new();
+    };
+    let mut spans = vec![Span::styled(tree_indent(0), theme.base())];
+    spans.extend(highlight_spans(&row.title, theme.base(), search, theme));
+    spans.push(Span::styled(
+        format!(" · {} stops", row.stops),
+        theme.dim_style(),
+    ));
+    if row.all_seen {
+        spans.push(Span::styled(" ✓", theme.dim_style()));
+    }
+    spans
+}
+
 fn open_pr_spans(
     app: &App,
     index: usize,
@@ -669,7 +705,8 @@ fn branch_spans(
         search,
         theme,
     ));
-    spans.extend(divergence_spans(theme, branch.ahead, branch.behind));
+    let (ahead, behind) = branch.divergence.unwrap_or((0, 0));
+    spans.extend(divergence_spans(theme, ahead, behind));
     let used: usize = spans.iter().map(Span::width).sum();
     spans.extend(age_spans(
         theme,
@@ -1018,6 +1055,28 @@ mod tests {
         assert!(app.status.cursor < after, "wheel up moved it back");
     }
 
+    /// A click while a run of commits is selected starts over, so `<cr>` after
+    /// it reviews the row clicked and never a range nobody chose.
+    #[test]
+    fn clicking_a_row_ends_a_selection() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        render(&mut app);
+        let rows = app.visible_rows();
+        let target = rows
+            .iter()
+            .position(|r| matches!(r, Row::File { .. }))
+            .expect("a file row");
+        app.handle(key('V'));
+        assert!(app.status.anchor.is_some(), "a run is selected");
+
+        let (x, y) = screen_pos(&app, target);
+        app.handle(mouse_click(x, y));
+
+        assert!(app.status.anchor.is_none(), "the click starts over");
+        assert_eq!(app.status.cursor, target);
+    }
+
     #[test]
     fn clicking_a_file_row_selects_it() {
         let fixture = standard_fixture();
@@ -1155,6 +1214,25 @@ mod tests {
         let mut app = app_for(&fixture);
         let screen = render(&mut app).backend().to_string();
         assert!(!screen.contains("↑"), "{screen}");
+    }
+
+    /// The header leads the branch band, named and counted like any other
+    /// group header, folded until the reader unfolds it; a walkthrough row
+    /// then shows its title and how many stops it has.
+    #[test]
+    fn the_walkthrough_header_and_row_render() {
+        let fixture = standard_fixture();
+        let mut app = app_for(&fixture);
+        crate::test_support::seat_walkthrough(
+            &mut app,
+            "How the answer moved",
+            &[
+                ("The answer", Some("src/lib.rs#answer"), "why 42"),
+                ("The list", Some("todo.md:1"), "why a list"),
+            ],
+        );
+        app.status.group_folded[Group::Walkthrough.index()] = false;
+        insta::assert_snapshot!(render(&mut app).backend());
     }
 
     #[test]
@@ -1310,7 +1388,7 @@ mod tests {
         let mut app = app_for(&fixture);
         cursor_to_file(&mut app, Section::Unstaged);
         app.handle(key('\t'));
-        app.handle(key('v'));
+        app.handle(key('m'));
         insta::assert_snapshot!(render(&mut app).backend());
     }
 
@@ -1764,6 +1842,7 @@ mod tests {
         assert_eq!(status_color(&theme, FileStatus::Deleted), theme.error_fg);
         assert_eq!(status_color(&theme, FileStatus::Modified), theme.warn_fg);
         assert_eq!(status_color(&theme, FileStatus::Renamed), theme.warn_fg);
+        assert_eq!(status_color(&theme, FileStatus::Unchanged), theme.dim);
     }
 
     #[test]

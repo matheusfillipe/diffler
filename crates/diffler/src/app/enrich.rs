@@ -126,6 +126,28 @@ impl App {
         for index in targets {
             self.queue_enrich_file(index);
         }
+        self.queue_enrich_context_files();
+    }
+
+    /// The walkthrough's own files, the ones its stops name and the diff does
+    /// not carry, highlight like any other: they are few and deduped by hash.
+    fn queue_enrich_context_files(&mut self) {
+        let Some(diff) = self.diff.as_ref() else {
+            return;
+        };
+        for file in &diff.context_files {
+            let ready = diff
+                .highlights
+                .get(&file.path)
+                .is_some_and(|cached| cached.hash == file.sides_hash());
+            queue_if_stale(
+                &mut self.enrich_inflight,
+                &mut self.pending_enrich,
+                file,
+                false,
+                ready,
+            );
+        }
     }
 
     fn queue_enrich_file(&mut self, index: usize) {
@@ -173,7 +195,8 @@ impl App {
         let file = match diff.commit_model.as_mut() {
             Some(model) => model.files.iter_mut().find(|f| same(f)),
             None => self.review.model_mut().files.iter_mut().find(|f| same(f)),
-        };
+        }
+        .or_else(|| diff.context_files.iter_mut().find(|f| same(f)));
         let Some(file) = file else {
             return;
         };
@@ -181,10 +204,20 @@ impl App {
         // enrichment ships default-context hunks; reinstalling the expansion
         // reshapes them, so the row list must re-flow to match
         let reshaped = context.is_some_and(|context| super::expand::apply_context(file, context));
+        // the walkthrough render cache holds its own snapshot of this file,
+        // taken before enrichment landed, so it needs the same hunks mirrored in
+        let hunks = file.hunks.clone();
         diff.highlights
             .insert(outcome.path.clone(), outcome.highlights);
         diff.scopes.insert(outcome.path.clone(), outcome.scope);
         diff.mark_enriched(&outcome.path);
+        if let Some(cached) = diff
+            .merged_model
+            .as_mut()
+            .and_then(|merged| merged.files.iter_mut().find(|f| same(f)))
+        {
+            cached.hunks = hunks;
+        }
         if reshaped {
             diff.mark_rows_dirty();
         }
@@ -195,7 +228,7 @@ impl App {
     /// Test pump: run queued enrichment inline, as the main loop's workers
     /// would, so snapshots capture the enriched frame.
     pub fn enrich_now(&mut self) {
-        let jobs: Vec<EnrichJob> = self.pending_enrich.drain(..).collect();
+        let jobs = std::mem::take(&mut self.pending_enrich);
         for job in jobs {
             let outcome = run_enrich(&self.highlighter, job);
             self.on_enriched(outcome);

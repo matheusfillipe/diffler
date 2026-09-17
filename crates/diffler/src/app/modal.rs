@@ -72,6 +72,9 @@ impl App {
                 self.delete_comment_by_id(&id);
             }
             PendingOp::DeleteAllComments => self.delete_all_comments(),
+            PendingOp::ClaimAllComments => self.claim_all_comments(),
+            PendingOp::DeleteWalkthrough(id) => self.delete_walkthrough(&id),
+            PendingOp::DeleteStop(index) => self.delete_stop(index),
             PendingOp::RunGit { label, argv } => self.queue_network(label, argv),
             PendingOp::ForcePull { .. } => self.queue_network(
                 "reset --hard",
@@ -175,6 +178,12 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => draft.field = draft.field.step(false),
             KeyCode::Char('d') => draft.draft = !draft.draft,
             KeyCode::Char('c') => self.create_pr_submit(),
+            KeyCode::Char('e') => {
+                let Some(Modal::CreatePr { draft }) = self.modal.take() else {
+                    return Flow::Continue;
+                };
+                self.edit_pr_field_externally(draft);
+            }
             KeyCode::Esc | KeyCode::Char('q') => self.modal = None,
             KeyCode::Enter => {
                 let field = draft.field;
@@ -200,28 +209,50 @@ impl App {
                 draft.draft = !draft.draft;
                 self.modal = Some(Modal::CreatePr { draft });
             }
-            PrField::Body => {
-                let template = draft.body.clone();
-                let restore = draft.clone();
-                // a PR body is markdown on every forge, and the extension is
-                // what the editor reads the filetype from
-                let queued =
-                    self.queue_message_editor("PR_EDITMSG.md", template, move |msg_path| {
-                        crate::editor::EditorPurpose::PrBody { msg_path, draft }
-                    });
-                if !queued {
-                    self.modal = Some(Modal::CreatePr { draft: restore });
-                }
+            PrField::Create => {
+                self.modal = Some(Modal::CreatePr { draft });
+                self.create_pr_submit();
             }
+            PrField::Cancel => self.modal = None,
             PrField::Base => self.open_pr_base_list(draft),
-            PrField::Title => {
-                let buffer = draft.title.clone();
-                self.open_input(
-                    "Title".to_owned(),
-                    buffer,
-                    InputOp::PrField { draft, field },
-                );
+            // title and body edit the same way; the body just wraps. `e` is
+            // what reaches for $EDITOR, as it does everywhere else
+            PrField::Title | PrField::Body => {
+                let buffer = if field == PrField::Body {
+                    draft.body.clone()
+                } else {
+                    draft.title.clone()
+                };
+                let name = if field == PrField::Body {
+                    "Body"
+                } else {
+                    "Title"
+                };
+                self.open_input(name.to_owned(), buffer, InputOp::PrField { draft, field });
             }
+        }
+    }
+
+    /// `e` on the form: hand the focused text field to `$EDITOR`. The base and
+    /// the draft flag are not text, so they decline.
+    fn edit_pr_field_externally(&mut self, draft: Box<crate::app::pr_create::PrDraft>) {
+        use crate::app::pr_create::PrField;
+        let field = draft.field;
+        let (file, template) = match field {
+            PrField::Body => ("PR_EDITMSG.md", draft.body.clone()),
+            PrField::Title => ("PR_EDITTITLE.md", draft.title.clone()),
+            PrField::Base | PrField::Draft | PrField::Create | PrField::Cancel => {
+                self.modal = Some(Modal::CreatePr { draft });
+                self.info("only the title and body open in the editor");
+                return;
+            }
+        };
+        let restore = draft.clone();
+        let queued = self.queue_message_editor(file, template, move |msg_path| {
+            crate::editor::EditorPurpose::PrBody { msg_path, draft }
+        });
+        if !queued {
+            self.modal = Some(Modal::CreatePr { draft: restore });
         }
     }
 
@@ -270,11 +301,17 @@ impl App {
         match on_submit {
             InputOp::PrField { mut draft, field } => {
                 use crate::app::pr_create::PrField;
-                if !body.is_empty() {
-                    match field {
-                        PrField::Base => body.clone_into(&mut draft.base),
-                        _ => body.clone_into(&mut draft.title),
-                    }
+                match field {
+                    // a base is chosen from a list, so an empty answer is a
+                    // cancel; a body may legitimately be cleared
+                    PrField::Base if !body.is_empty() => body.clone_into(&mut draft.base),
+                    PrField::Body => body.clone_into(&mut draft.body),
+                    PrField::Title if !body.is_empty() => body.clone_into(&mut draft.title),
+                    PrField::Base
+                    | PrField::Title
+                    | PrField::Draft
+                    | PrField::Create
+                    | PrField::Cancel => {}
                 }
                 self.modal = Some(Modal::CreatePr { draft });
             }
@@ -487,6 +524,14 @@ impl App {
         if !session.delete_comment(id) {
             return false;
         }
+        // an ad hoc slide names a comment by id, so deleting it on screen must
+        // not leave the pane windowed to one that no longer exists
+        if let Some(diff) = self.diff.as_mut()
+            && matches!(&diff.slide, Some(crate::app::diff::Slide::AdHoc(slide_id)) if slide_id == id)
+        {
+            diff.slide = None;
+            diff.mark_rows_dirty();
+        }
         self.after_session_change();
         self.resettle_comments_cursor();
         true
@@ -508,6 +553,25 @@ impl App {
         } else {
             self.info(format!("deleted {removed} comments"));
         }
+    }
+
+    /// Claim every agent comment of the active review as the human's own, so
+    /// they go out with the next submitted review. A synced forge comment is
+    /// never one of these, so it is left untouched like `delete_all_comments`
+    /// leaves it.
+    pub(super) fn claim_all_comments(&mut self) {
+        let source = self.active_review_source();
+        let author = self.author.clone();
+        let session = self.review.session_for_mut(&source);
+        let mut claimed = 0;
+        for comment in &mut session.comments {
+            if comment.author == crate::mcp::AGENT_AUTHOR {
+                comment.author.clone_from(&author);
+                claimed += 1;
+            }
+        }
+        self.after_session_change();
+        self.info(format!("claimed {claimed} comments as you"));
     }
 
     pub(super) fn handle_palette_key(&mut self, key: &KeyEvent) -> Flow {

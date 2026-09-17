@@ -55,6 +55,9 @@ perl -0pi -e "s/(\"version\": )\"[^\"]*\"/\${1}\"$new\"/" npm/diffler-mcp/packag
 
 # --- gate: full build/lint/test (also syncs Cargo.lock to the new version) ---
 just ci
+# a crate carries only its own directory, so a file it reaches outside one
+# builds here and fails at publish, after the tag is already public
+just package-check
 
 # --- commit, tag, push; CI does the rest ---
 git add Cargo.toml Cargo.lock npm/diffler/package.json npm/diffler-mcp/package.json

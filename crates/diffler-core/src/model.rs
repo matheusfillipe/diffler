@@ -125,6 +125,9 @@ pub enum FileStatus {
     Deleted,
     Renamed,
     Untracked,
+    /// A walkthrough's own file: one a stop or note anchors outside the diff,
+    /// shown at its current content with nothing to compare it against.
+    Unchanged,
 }
 
 impl FileStatus {
@@ -138,6 +141,7 @@ impl FileStatus {
             Self::Deleted => '−',
             Self::Renamed => '~',
             Self::Untracked => '○',
+            Self::Unchanged => '·',
         }
     }
 
@@ -149,6 +153,7 @@ impl FileStatus {
             Self::Deleted => "deleted",
             Self::Renamed => "renamed",
             Self::Untracked => "untracked",
+            Self::Unchanged => "unchanged",
         }
     }
 }
@@ -223,8 +228,13 @@ impl DiffLine {
     }
 }
 
-/// Hash the hunk's content (kinds + text) into a stable id.
-pub fn hunk_id(file_path: &str, lines: &[DiffLine]) -> HunkId {
+/// Hash the hunk's content (kinds + text) into a stable id. `occurrence` is
+/// how many earlier hunks in the same file hash to the same content: two
+/// hunks with byte-identical lines in one file get distinct ids this way,
+/// while every other hunk's id depends on its own content alone, so it
+/// survives edits elsewhere in the file. [`disambiguated_hunk_id`] is the
+/// usual way to call this, since it tracks the count for the caller.
+pub fn hunk_id(file_path: &str, lines: &[DiffLine], occurrence: usize) -> HunkId {
     let mut buf = String::new();
     buf.push_str(file_path);
     buf.push('\n');
@@ -238,7 +248,30 @@ pub fn hunk_id(file_path: &str, lines: &[DiffLine]) -> HunkId {
         buf.push_str(&line.text);
         buf.push('\n');
     }
+    if occurrence > 0 {
+        buf.push_str(&occurrence.to_string());
+        buf.push('\n');
+    }
     HunkId(stable_hash(buf.as_bytes()))
+}
+
+/// [`hunk_id`] for one hunk of a file whose other hunks are being assigned
+/// ids through the same `seen` map: each distinct content gets occurrence 0
+/// the first time and counts up from there, so two identical hunks in one
+/// file never collide.
+// every caller shares one default-hashed map for one file's hunks, so a
+// generic hasher buys nothing
+#[allow(clippy::implicit_hasher)]
+pub fn disambiguated_hunk_id(
+    file_path: &str,
+    lines: &[DiffLine],
+    seen: &mut std::collections::HashMap<HunkId, usize>,
+) -> HunkId {
+    let base = hunk_id(file_path, lines, 0);
+    let occurrence = seen.entry(base).or_insert(0);
+    let id = hunk_id(file_path, lines, *occurrence);
+    *occurrence += 1;
+    id
 }
 
 #[cfg(test)]
@@ -261,9 +294,10 @@ mod tests {
             FileStatus::Deleted,
             FileStatus::Renamed,
             FileStatus::Untracked,
+            FileStatus::Unchanged,
         ]
         .map(FileStatus::glyph);
-        assert_eq!(glyphs, ['+', '●', '−', '~', '○']);
+        assert_eq!(glyphs, ['+', '●', '−', '~', '○', '·']);
         let mut distinct = glyphs.to_vec();
         distinct.sort_unstable();
         distinct.dedup();
@@ -278,6 +312,7 @@ mod tests {
         assert_eq!(FileStatus::Deleted.label(), "deleted");
         assert_eq!(FileStatus::Renamed.label(), "renamed");
         assert_eq!(FileStatus::Untracked.label(), "untracked");
+        assert_eq!(FileStatus::Unchanged.label(), "unchanged");
     }
 
     fn line(kind: LineKind, text: &str) -> DiffLine {
@@ -287,8 +322,8 @@ mod tests {
     #[test]
     fn hunk_id_is_stable() {
         let lines = vec![line(LineKind::Deleted, "a"), line(LineKind::Added, "b")];
-        let id1 = hunk_id("src/x.rs", &lines);
-        let id2 = hunk_id("src/x.rs", &lines);
+        let id1 = hunk_id("src/x.rs", &lines, 0);
+        let id2 = hunk_id("src/x.rs", &lines, 0);
         assert_eq!(id1, id2);
     }
 
@@ -296,20 +331,37 @@ mod tests {
     fn hunk_id_changes_with_content() {
         let a = vec![line(LineKind::Added, "x")];
         let b = vec![line(LineKind::Added, "y")];
-        assert_ne!(hunk_id("f", &a), hunk_id("f", &b));
+        assert_ne!(hunk_id("f", &a, 0), hunk_id("f", &b, 0));
     }
 
     #[test]
     fn hunk_id_changes_with_kind() {
         let a = vec![line(LineKind::Added, "x")];
         let b = vec![line(LineKind::Deleted, "x")];
-        assert_ne!(hunk_id("f", &a), hunk_id("f", &b));
+        assert_ne!(hunk_id("f", &a, 0), hunk_id("f", &b, 0));
     }
 
     #[test]
     fn hunk_id_changes_with_file() {
         let lines = vec![line(LineKind::Added, "x")];
-        assert_ne!(hunk_id("a", &lines), hunk_id("b", &lines));
+        assert_ne!(hunk_id("a", &lines, 0), hunk_id("b", &lines, 0));
+    }
+
+    #[test]
+    fn hunk_id_changes_with_occurrence() {
+        let lines = vec![line(LineKind::Added, "x")];
+        assert_ne!(hunk_id("f", &lines, 0), hunk_id("f", &lines, 1));
+    }
+
+    #[test]
+    fn disambiguated_hunk_id_gives_identical_hunks_distinct_ids() {
+        let lines = vec![line(LineKind::Added, "x")];
+        let mut seen = std::collections::HashMap::new();
+        let first = disambiguated_hunk_id("f", &lines, &mut seen);
+        let second = disambiguated_hunk_id("f", &lines, &mut seen);
+        assert_ne!(first, second);
+        assert_eq!(first, hunk_id("f", &lines, 0));
+        assert_eq!(second, hunk_id("f", &lines, 1));
     }
 
     #[test]

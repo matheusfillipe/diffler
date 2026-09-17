@@ -7,6 +7,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::app::App;
+use crate::app::rowsel::RowSelect;
 use crate::keymap::Action;
 use crate::theme::Theme;
 use crate::ui::Hint;
@@ -91,6 +92,7 @@ fn entry_line(
 
 #[cfg(test)]
 mod tests {
+    use crate::app::rowsel::RowSelect;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 

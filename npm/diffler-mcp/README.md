@@ -39,10 +39,21 @@ directory it searched.
 
 Resolution order (first match wins):
 
-1. `--url <url>` / `DIFFLER_MCP_URL`: full endpoint, e.g. `http://127.0.0.1:8417/mcp`
-2. `--port <n>` / `DIFFLER_MCP_PORT` and `--host <h>` / `DIFFLER_MCP_HOST`
-3. the live port in the nearest `.diffler/mcp.json`, searching the start
-   directory (`--repo <path>`, default: cwd) and then each parent
+1. `use_instance` called earlier in this session
+2. `--url <url>` / `DIFFLER_MCP_URL`: full endpoint, e.g. `http://127.0.0.1:8417/mcp`
+3. `--port <n>` / `DIFFLER_MCP_PORT` and `--host <h>` / `DIFFLER_MCP_HOST`
+4. the live port in the nearest `.diffler/mcp.json`, searching the start
+   directory (`--repo <path>`, default: cwd) and then each parent, if that
+   diffler is still running
+5. the per-user instance registry (`$XDG_STATE_HOME/diffler/instances`,
+   `~/.local/state` by default): the most recently started live diffler;
+   `use_instance` switches; several are listed by `list_instances`
+
+`use_instance` connects before it answers, so a bad target never gets bound.
+When diffler isn't running yet, the proxy keeps retrying quietly and announces
+its tools once one appears, so a human can start Claude first and diffler
+second. A call diffler doesn't answer within 110 s fails with that instance
+named.
 
 Discovery covers the normal case, so nothing needs configuring:
 
@@ -59,6 +70,14 @@ Discovery covers the normal case, so nothing needs configuring:
 
 Reach for `--port`, `--host` or `--repo` when diffler runs somewhere the walk-up
 cannot see, such as another machine over a tunnel.
+
+A human's diffler and an agent's shell are often in different repos. Two
+proxy-owned tools handle that, always available alongside diffler's own:
+
+- **list_instances**: every running diffler this proxy can reach, across all
+  repos, from the registry.
+- **use_instance**: point this proxy at one of them, by repo path (or a
+  unique directory-name suffix) or port, for the rest of this session.
 
 ## Prefer HTTP directly?
 

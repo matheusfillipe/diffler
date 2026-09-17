@@ -35,6 +35,16 @@ impl ScopeIndex {
         rows
     }
 
+    /// 0-based row span of the definition called `name`, start and end
+    /// inclusive. What lets a reference open on a symbol and show its whole
+    /// extent rather than seating a cursor on its first line.
+    pub fn def_span(&self, name: &str) -> Option<(usize, usize)> {
+        self.defs
+            .iter()
+            .find(|def| def.name == name)
+            .map(|def| (def.start_row, def.end_row))
+    }
+
     /// Names of the definitions enclosing `line` (0-based), outermost first. A
     /// line inside `class A` → `method` → body returns `["A", "method"]`.
     pub fn crumbs(&self, line: usize) -> Vec<String> {

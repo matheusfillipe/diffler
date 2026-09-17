@@ -64,12 +64,14 @@ struct Table {
 /// row by row instead.
 const MIN_COLUMN: usize = 8;
 /// Blank columns between cells.
-const COLUMN_GAP: usize = 2;
+/// A column separator is `" │ "`, so the gap between two columns is three.
+const COLUMN_GAP: usize = 3;
 
 /// Parse markdown into logical lines of styled runs (unwrapped). Line breaks,
 /// block boundaries, list items, and code-block lines each start a new logical
 /// line; a comment's own newlines are kept (GitHub renders them).
-#[allow(clippy::too_many_lines)] // one arm per markdown event; a flat match reads best
+// one arm per markdown event; a flat match reads best
+#[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
 pub fn parse(src: &str, highlighter: Option<&Highlighter>, width: usize) -> Vec<Vec<MdSpan>> {
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_STRIKETHROUGH);
@@ -163,6 +165,9 @@ pub fn parse(src: &str, highlighter: Option<&Highlighter>, width: usize) -> Vec<
             }
             Event::Start(Tag::Table(_)) => {
                 flush(&mut line, &mut lines, quote_depth);
+                if !lines.is_empty() {
+                    lines.push(quoted(Vec::new(), quote_depth));
+                }
                 table = Some(Table::default());
             }
             Event::Start(Tag::TableHead) => {
@@ -198,6 +203,7 @@ pub fn parse(src: &str, highlighter: Option<&Highlighter>, width: usize) -> Vec<
                     for row in table_lines(&table.head, &table.rows, across) {
                         lines.push(quoted(row, quote_depth));
                     }
+                    lines.push(quoted(Vec::new(), quote_depth));
                 }
             }
             Event::End(TagEnd::Item) => {
@@ -301,6 +307,9 @@ pub fn parse(src: &str, highlighter: Option<&Highlighter>, width: usize) -> Vec<
         }
     }
     flush(&mut line, &mut lines, quote_depth);
+    while lines.last().is_some_and(|last| is_blank(last)) {
+        lines.pop();
+    }
     lines
 }
 
@@ -334,6 +343,12 @@ fn quoted(mut spans: Vec<MdSpan>, depth: usize) -> Vec<MdSpan> {
 }
 
 /// Columns a quote's rail takes from the line, so what it wraps still fits.
+/// A line holding nothing but its quote rail, the margin a table leaves.
+fn is_blank(line: &[MdSpan]) -> bool {
+    line.iter()
+        .all(|span| span.text.trim_matches(['│', ' ']).is_empty())
+}
+
 fn rail_width(depth: usize) -> usize {
     depth * 2
 }
@@ -392,7 +407,7 @@ fn table_lines(head: &[Vec<MdSpan>], rows: &[Vec<Vec<MdSpan>>], width: usize) ->
                 .iter()
                 .map(|w| "─".repeat(*w))
                 .collect::<Vec<_>>()
-                .join(&" ".repeat(COLUMN_GAP)),
+                .join("─┼─"),
             muted: true,
             pre: true,
             ..MdSpan::default()
@@ -423,7 +438,12 @@ fn table_row(row: &[Vec<MdSpan>], widths: &[usize]) -> Vec<Vec<MdSpan>> {
                 let runs = cell.get(index).map_or(&[][..], Vec::as_slice);
                 let used: usize = runs.iter().map(MdSpan::width).sum();
                 if column > 0 {
-                    line.push(MdSpan::plain(" ".repeat(COLUMN_GAP)));
+                    line.push(MdSpan {
+                        text: " │ ".to_owned(),
+                        muted: true,
+                        pre: true,
+                        ..MdSpan::default()
+                    });
                 }
                 line.extend(runs.iter().cloned());
                 let pad = widths
@@ -553,20 +573,14 @@ fn flatten(word: &[MdSpan]) -> Vec<(char, &MdSpan)> {
 fn split_words(runs: &[MdSpan]) -> Vec<Vec<MdSpan>> {
     let mut words: Vec<Vec<MdSpan>> = Vec::new();
     let mut cur: Vec<MdSpan> = Vec::new();
-    let mut cur_code = false;
     for run in runs {
+        // a code span never splits, and the spaces around it are in the runs
+        // either side: breaking on the span itself puts a space before the
+        // comma in "`code`, and"
         if run.code {
-            if !cur.is_empty() && !cur_code {
-                words.push(std::mem::take(&mut cur));
-            }
             cur.push(run.clone());
-            cur_code = true;
             continue;
         }
-        if cur_code && !cur.is_empty() {
-            words.push(std::mem::take(&mut cur));
-        }
-        cur_code = false;
         for (i, part) in run.text.split(' ').enumerate() {
             if i > 0 && !cur.is_empty() {
                 words.push(std::mem::take(&mut cur));
@@ -766,10 +780,18 @@ mod tests {
             parse("| Lane | Ordering |\n|---|---|\n| Postgres | first |\n| Sinks | after |");
         assert_eq!(
             text(&lines),
-            "Lane      Ordering\n────────  ────────\nPostgres  first\nSinks     after"
+            "Lane     │ Ordering\n─────────┼─────────\nPostgres │ first\nSinks    │ after"
         );
         assert!(lines[0][0].bold, "the header reads as a header");
         assert!(lines[1][0].muted, "the rule is a rule");
+    }
+
+    #[test]
+    fn a_table_keeps_one_blank_line_from_the_text_around_it() {
+        let lines = parse("above\n\n| Lane |\n|---|\n| Sinks |\n\nbelow");
+        assert_eq!(text(&lines), "above\n\nLane\n─────\nSinks\n\nbelow");
+        let alone = parse("| Lane |\n|---|\n| Sinks |");
+        assert_eq!(text(&alone), "Lane\n─────\nSinks");
     }
 
     #[test]
@@ -782,10 +804,10 @@ mod tests {
         assert_eq!(
             text(&lines),
             [
-                "Lane      What a failure costs",
-                "────────  ────────────────────────",
-                "Postgres  a failed write means no",
-                "          sink hears anything",
+                "Lane     │ What a failure costs",
+                "─────────┼────────────────────────",
+                "Postgres │ a failed write means no",
+                "         │ sink hears anything",
             ]
             .join("\n"),
             "the neighbour stays padded beside the wrapped cell"
@@ -801,9 +823,10 @@ mod tests {
         assert_eq!(
             text(&lines),
             [
-                "Doc   Link",
-                "────  ───────────────────────",
-                "spec  rfc (https://x.dev/rfc)",
+                "Doc  │ Link",
+                "─────┼────────────────────────",
+                "spec │ rfc (https://x.dev/rfc)",
+                "",
                 "after",
             ]
             .join("\n")

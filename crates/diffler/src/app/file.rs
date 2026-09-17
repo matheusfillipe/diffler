@@ -6,6 +6,7 @@ use diffler_core::highlight::StyledRange;
 use diffler_core::vcs::BlameSpan;
 
 use super::fuzzy::{FuzzyKey, FuzzyList, name_haystack, selected};
+use super::rowsel::{RowSelect, RowText};
 use super::{App, Flow, Modal, Screen};
 use crate::keymap::Action;
 
@@ -21,8 +22,9 @@ pub enum FileAction {
 #[derive(Debug, Clone)]
 pub struct FileOpen {
     pub path: String,
-    /// Line to seat the cursor on once the content lands, 1-based.
-    pub line: Option<u32>,
+    /// Rows the reference covers, 1-based and inclusive. The cursor seats on
+    /// the first and the view marks the whole span.
+    pub span: Option<(u32, u32)>,
     pub blame: bool,
     /// The request this load answers. A result whose token no longer matches
     /// the app's is an answer to a question the user has moved on from, and
@@ -41,6 +43,11 @@ pub struct FileView {
     span_of_line: Vec<Option<usize>>,
     pub cursor: usize,
     pub scroll: usize,
+    /// Rows a reference brought the reader here for, 0-based and inclusive.
+    /// Marked so the segment reads as one thing, not a cursor on a line.
+    pub referenced: Option<(usize, usize)>,
+    /// Line where `V` started; `Some` means range selection is active.
+    pub visual_anchor: Option<usize>,
     pub show_blame: bool,
     /// Body height of the last draw, so paging steps a real screenful.
     pub viewport: u16,
@@ -64,6 +71,8 @@ impl FileView {
             span_of_line,
             cursor: 0,
             scroll: 0,
+            referenced: None,
+            visual_anchor: None,
             show_blame,
             viewport: 0,
         }
@@ -116,6 +125,30 @@ impl FileView {
     }
 }
 
+impl RowSelect for FileView {
+    fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    fn anchor(&self) -> Option<usize> {
+        self.visual_anchor
+    }
+
+    fn set_anchor(&mut self, anchor: Option<usize>) {
+        self.visual_anchor = anchor;
+    }
+}
+
+impl RowText for FileView {
+    fn row_count(&self) -> usize {
+        self.lines.len()
+    }
+
+    fn row_text(&self, row: usize) -> String {
+        self.lines.get(row).cloned().unwrap_or_default()
+    }
+}
+
 /// Map each line onto the span that owns it. Spans are line runs, so a line
 /// no span covers (blame gave up on it) stays `None` and renders plain.
 fn index_spans(spans: &[BlameSpan], line_count: usize) -> Vec<Option<usize>> {
@@ -133,11 +166,11 @@ fn index_spans(spans: &[BlameSpan], line_count: usize) -> Vec<Option<usize>> {
 impl App {
     /// Open the file view on a repo-relative path. The content and blame land
     /// through a worker, so the caller returns immediately.
-    pub(crate) fn open_file(&mut self, path: &str, line: Option<u32>, blame: bool) {
+    pub(crate) fn open_file(&mut self, path: &str, span: Option<(u32, u32)>, blame: bool) {
         self.file_token += 1;
         self.pending_file = Some(FileOpen {
             path: path.to_owned(),
-            line,
+            span,
             blame,
             token: self.file_token,
         });
@@ -171,29 +204,32 @@ impl App {
             self.info("no file under the cursor");
             return;
         };
-        self.open_file(&path, line, true);
+        self.open_file(&path, line.map(|line| (line, line)), true);
     }
 
     pub(crate) fn on_file_loaded(
         &mut self,
         result: Result<FileView, String>,
-        line: Option<u32>,
+        span: Option<(u32, u32)>,
         token: u64,
     ) -> Flow {
         if token != self.file_token {
             return Flow::Idle;
         }
         match result {
-            Ok(view) => self.install_file(view, line),
+            Ok(view) => self.install_file(view, span),
             Err(err) => self.error(err),
         }
         Flow::Continue
     }
 
-    pub(crate) fn install_file(&mut self, view: FileView, line: Option<u32>) {
+    pub(crate) fn install_file(&mut self, view: FileView, span: Option<(u32, u32)>) {
         let mut view = view;
-        if let Some(line) = line {
-            view.cursor = (line.saturating_sub(1) as usize).min(view.lines.len().saturating_sub(1));
+        if let Some((line, end)) = span {
+            let last = view.lines.len().saturating_sub(1);
+            let start = (line.saturating_sub(1) as usize).min(last);
+            view.cursor = start;
+            view.referenced = Some((start, (end.saturating_sub(1) as usize).min(last).max(start)));
         }
         self.file = Some(view);
         self.message = None;
@@ -226,6 +262,10 @@ impl App {
             Action::NextSection => view.step_span(true),
             Action::PrevSection => view.step_span(false),
             Action::ToggleBlame => view.show_blame = !view.show_blame,
+            Action::VisualSelect => view.toggle_visual(),
+            Action::CopyFileFeedback | Action::CopyAllFeedback => {
+                self.yank_rows("yanked lines");
+            }
             Action::Open => self.open_cursor_commit(),
             Action::OpenEditor => {
                 let (path, line) = (view.path.clone(), view.cursor as u32 + 1);
@@ -324,7 +364,7 @@ mod tests {
 
     use super::*;
     use crate::config::LoadedConfig;
-    use crate::test_support::{Fixture, ctrl_key, key, standard_fixture};
+    use crate::test_support::{Fixture, key, standard_fixture};
 
     /// The fixture rides along: dropping it deletes the repo the app reads
     /// lazily, and the diff model would come back empty.
@@ -354,7 +394,8 @@ mod tests {
     #[test]
     fn the_picker_lists_tracked_files_and_enter_opens_the_one_selected() {
         let (_fixture, mut app) = app();
-        app.handle(ctrl_key('t'));
+        app.handle(key('g'));
+        app.handle(key('f'));
         assert_eq!(
             app.picker_paths(),
             vec!["ci.yml", "notes.txt", "src/lib.rs"],
@@ -369,7 +410,8 @@ mod tests {
     #[test]
     fn the_picker_filters_on_typing_and_b_opens_the_match_with_blame() {
         let (_fixture, mut app) = app();
-        app.handle(ctrl_key('t'));
+        app.handle(key('g'));
+        app.handle(key('f'));
         for c in "lib".chars() {
             app.handle(key(c));
         }
@@ -384,7 +426,8 @@ mod tests {
     #[test]
     fn the_picker_sends_a_file_to_the_editor_without_opening_the_view() {
         let (_fixture, mut app) = app();
-        app.handle(ctrl_key('t'));
+        app.handle(key('g'));
+        app.handle(key('f'));
         app.handle(key('\t'));
         app.handle(key('e'));
         assert!(
@@ -392,6 +435,43 @@ mod tests {
             "the editor never loads the view"
         );
         assert!(app.pending_editor.is_some());
+    }
+
+    #[test]
+    fn visual_select_yanks_the_lines_it_covers() {
+        let (_fixture, mut app) = app();
+        app.install_file(view("one\ntwo\nthree\nfour\n", Vec::new()), None);
+        app.handle(key('V'));
+        app.handle(key('j'));
+        assert_eq!(
+            app.file.as_ref().and_then(FileView::selection),
+            Some((0, 1))
+        );
+        app.handle(key('y'));
+        assert_eq!(app.pending_clipboard.as_deref(), Some("one\ntwo"));
+        assert!(
+            app.file.as_ref().is_some_and(|v| v.anchor().is_none()),
+            "the yank drops the anchor"
+        );
+    }
+
+    #[test]
+    fn yank_without_a_selection_copies_the_cursor_line() {
+        let (_fixture, mut app) = app();
+        app.install_file(view("one\ntwo\nthree\n", Vec::new()), None);
+        app.handle(key('j'));
+        app.handle(key('y'));
+        assert_eq!(app.pending_clipboard.as_deref(), Some("two"));
+    }
+
+    #[test]
+    fn escape_drops_the_file_selection() {
+        let (_fixture, mut app) = app();
+        app.install_file(view("one\ntwo\n", Vec::new()), None);
+        app.handle(key('V'));
+        assert!(app.visual_active());
+        app.handle(crate::test_support::esc_key());
+        assert!(!app.visual_active());
     }
 
     /// Step `j` until `ready` holds, bounded so a regression fails instead of
@@ -429,7 +509,10 @@ mod tests {
         let (path, line) = app.diff_cursor_file_line().expect("a diff line");
         app.handle(key('B'));
         let request = app.pending_file.as_ref().expect("a queued file");
-        assert_eq!((request.path.clone(), request.line), (path, line));
+        assert_eq!(
+            (request.path.clone(), request.span),
+            (path, line.map(|l| (l, l)))
+        );
         assert!(request.blame);
     }
 
@@ -519,9 +602,9 @@ mod tests {
     #[test]
     fn opening_a_file_at_a_line_seats_the_cursor_there_and_clamps() {
         let (_fixture, mut app) = app();
-        app.install_file(view("one\ntwo\n", vec![span(1, 2, true)]), Some(2));
+        app.install_file(view("one\ntwo\n", vec![span(1, 2, true)]), Some((2, 2)));
         assert_eq!(app.file.as_ref().expect("view").cursor, 1);
-        app.install_file(view("one\ntwo\n", vec![span(1, 2, true)]), Some(99));
+        app.install_file(view("one\ntwo\n", vec![span(1, 2, true)]), Some((99, 99)));
         assert_eq!(
             app.file.as_ref().expect("view").cursor,
             1,

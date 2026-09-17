@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::model::{DiffLine, DiffModel, FileDiff, FileStatus, Hunk, HunkId, LineKind, hunk_id};
+use crate::model::{
+    DiffLine, DiffModel, FileDiff, FileStatus, Hunk, HunkId, LineKind, disambiguated_hunk_id,
+};
 use crate::vcs::{
     BlameSpan, BranchInfo, HeadInfo, LogEntry, NetworkOp, StatusModel, Vcs, VcsError,
 };
@@ -386,6 +388,15 @@ impl Vcs for GitVcs {
         Ok(out)
     }
 
+    fn read_at(&self, rev: &str, path: &str) -> Result<Option<String>, VcsError> {
+        let commit = self.repo.revparse_single(rev)?.peel_to_commit()?;
+        match commit.tree()?.get_path(Path::new(path)) {
+            Ok(entry) => Ok(blob_text(&self.repo, entry.id())),
+            Err(err) if err.code() == git2::ErrorCode::NotFound => Ok(None),
+            Err(err) => Err(err.into()),
+        }
+    }
+
     fn tracked_files(&self) -> Result<Vec<PathBuf>, VcsError> {
         let index = self.repo.index()?;
         let mut out: Vec<PathBuf> = index
@@ -420,25 +431,30 @@ impl Vcs for GitVcs {
             let Some(name) = branch.name()?.map(str::to_owned) else {
                 continue;
             };
-            let tip = branch.get().peel_to_commit().ok();
-            let tip_unix = tip.as_ref().map_or(0, |c| c.time().seconds());
-            let upstream_target = branch.upstream().ok().and_then(|u| u.get().target());
-            let (ahead, behind) = match (&tip, upstream_target) {
-                (Some(tip), Some(target)) => self
-                    .repo
-                    .graph_ahead_behind(tip.id(), target)
-                    .unwrap_or((0, 0)),
-                _ => (0, 0),
-            };
+            let tip_unix = branch
+                .get()
+                .peel_to_commit()
+                .ok()
+                .map_or(0, |commit| commit.time().seconds());
             out.push(BranchInfo {
                 name,
                 is_head: branch.is_head(),
                 tip_unix,
-                ahead,
-                behind,
+                divergence: None,
             });
         }
         Ok(out)
+    }
+
+    fn divergence(&self, branch: &str) -> Result<Option<(usize, usize)>, VcsError> {
+        let branch = self.repo.find_branch(branch, git2::BranchType::Local)?;
+        let Some(tip) = branch.get().peel_to_commit().ok() else {
+            return Ok(None);
+        };
+        let Some(target) = branch.upstream().ok().and_then(|up| up.get().target()) else {
+            return Ok(None);
+        };
+        Ok(Some(self.repo.graph_ahead_behind(tip.id(), target)?))
     }
 
     fn all_branches(&self) -> Result<Vec<String>, VcsError> {
@@ -729,8 +745,10 @@ fn synthesize_patch(
         if delta.flags().is_binary() || delta_new_path(&delta) != rel {
             continue;
         }
+        let mut seen = HashMap::new();
         for h in 0..patch.num_hunks() {
-            if hunk_id(&rel, &hunk_model_lines(&patch, h)?) == *target {
+            let lines = hunk_model_lines(&patch, h)?;
+            if disambiguated_hunk_id(&rel, &lines, &mut seen) == *target {
                 return render_hunk_patch(&patch, h, &rel, delta.status(), reverse);
             }
         }
@@ -894,10 +912,11 @@ pub fn rehunk_file(file: &FileDiff, context: u32) -> Option<Vec<Hunk>> {
 /// context re-diff so line numbers, ids, and section headings can't drift.
 fn patch_hunks(patch: &git2::Patch<'_>, file_path: &str) -> Result<Vec<Hunk>, VcsError> {
     let mut hunks = Vec::with_capacity(patch.num_hunks());
+    let mut seen = HashMap::new();
     for h in 0..patch.num_hunks() {
         let (hunk, _) = patch.hunk(h)?;
         let lines = hunk_model_lines(patch, h)?;
-        let id = hunk_id(file_path, &lines);
+        let id = disambiguated_hunk_id(file_path, &lines, &mut seen);
         hunks.push(Hunk {
             id,
             old_start: hunk.old_start(),

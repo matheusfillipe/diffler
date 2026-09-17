@@ -152,6 +152,8 @@ fn status_label(status: FileStatus) -> &'static str {
         // an untracked file in the staged section only happens via fixtures;
         // staging turns it into an addition either way
         FileStatus::Added | FileStatus::Untracked => "new file",
+        // a walkthrough's own file is never staged; the match still needs this arm
+        FileStatus::Unchanged => "unchanged",
     }
 }
 

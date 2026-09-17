@@ -1,7 +1,7 @@
 {
   "name": "diffler",
-  "version": "0.1.0",
-  "description": "Connects the diffler MCP server and adds /diffler to check the review and respond to feedback.",
+  "version": "0.3.0",
+  "description": "Connects the diffler MCP server and adds /df to answer review feedback, /dfa to walk the human through a change, and /dfr to review a change and leave comments.",
   "author": {
     "name": "Matheus Fillipe",
     "url": "https://github.com/matheusfillipe"

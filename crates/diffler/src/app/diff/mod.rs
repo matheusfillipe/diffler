@@ -7,23 +7,36 @@ mod comments;
 mod nav;
 mod open;
 mod review;
+mod rowref;
 mod rows;
+mod slide;
 
+use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use diffler_core::classify::{Kind, Rules};
 use diffler_core::highlight::StyledRange;
-use diffler_core::model::DiffModel;
+use diffler_core::model::{DiffModel, FileDiff};
 use diffler_core::review::Review;
 use diffler_core::session::Session;
 use diffler_core::source::ReviewSource;
 use diffler_core::syntax::ScopeIndex;
+use diffler_core::walkthrough::Located;
 
 use super::composer::{Composer, ComposerKind};
+use super::rowsel::{RowSelect, RowText};
 use super::{App, Flow};
-pub use rows::{CommentLine, DiffRow, SplitRow, SplitSide, comment_display};
+pub use comments::{CommentFacts, CommentGrouping, CommentPaneRow, group_comment_rows};
+pub use rows::{
+    CommentLine, DiffRow, RowCopy, SplitRow, SplitSide, blocks_of, comment_display, summary_display,
+};
 use rows::{build_rows, build_split_rows};
+#[cfg(test)]
+pub(crate) use slide::merge_count;
+use slide::stop_file_index;
+pub(crate) use slide::{Slide, stop_row_offset};
 
+use crate::app::walkthrough::FigureCache;
 use crate::config::FileLayout;
 use crate::tree::{self, Bucket, TreeNode, TreeRow};
 
@@ -126,6 +139,29 @@ pub struct DiffView {
     pub(crate) tree_cursor: usize,
     /// Row within the selected file's rows.
     pub cursor: usize,
+    /// Rows a walkthrough stop's anchor covers, banded so a reference reads as
+    /// the segment it names rather than the line it starts on.
+    pub(crate) referenced: Option<(usize, usize)>,
+    /// The slide the walkthrough layout is windowed to. `None` defaults to
+    /// the first stop, the way a freshly opened walkthrough view does.
+    pub(crate) slide: Option<Slide>,
+    /// Id and time of this source's walkthrough as the open rows were built
+    /// for it, so an agent revising it under a reader is noticed.
+    pub(crate) walkthrough_built: Option<(String, u64)>,
+    /// Parsed bodies of the comments that hold a figure, so a diagram is
+    /// parsed when it changes and not on every frame that draws a row of it.
+    pub(crate) figures: FigureCache,
+    /// A figure was parsed afresh, so its `click` targets still need reading.
+    figures_dirty: bool,
+    /// Stop and note comments whose `anchor_ref` stopped resolving, and why:
+    /// the file itself is missing, or the symbol/line named inside it is
+    /// gone. Only the worker can tell one from the other, or from a comment
+    /// that has not been resolved yet at all.
+    pub(crate) unresolved_anchors: HashMap<String, Located>,
+    /// The walkthrough's own pin no longer resolves: the worker fell back to
+    /// the worktree for every file, and the reader is shown live code
+    /// believing it is pinned. Set by the last landed anchor resolution.
+    pub(crate) pin_broken: bool,
     /// First visible row of the diff pane; the renderer keeps the cursor in
     /// view.
     pub scroll: usize,
@@ -148,9 +184,17 @@ pub struct DiffView {
     pub(crate) comments_cursor: usize,
     pub(crate) comments_scroll: usize,
     pub(crate) comments_rect: ratatui::layout::Rect,
-    /// Last render's comment-sidebar line -> comment index, so a click on any
-    /// wrapped body line selects the comment it belongs to.
+    /// Last render's comment-sidebar line -> row index (into
+    /// `App::comment_rows`), so a click on any wrapped body line selects the
+    /// row it belongs to, header or comment alike.
     pub(crate) comment_lines: Vec<Option<usize>>,
+    /// Comments-pane grouping cycled by `t` while it holds focus, independent
+    /// of the file sidebar's own layout.
+    pub(crate) comment_grouping: CommentGrouping,
+    /// Folded comments-pane group keys, namespaced per grouping (`file:`,
+    /// `author:`, `status:`) so switching grouping with `t` never confuses one
+    /// group's fold state for another's.
+    pub(crate) comment_folds: BTreeSet<String>,
     /// Row where `V` started; `Some` means line selection is active.
     pub visual_anchor: Option<usize>,
     /// Body height of the last diff-pane render, drives half-page motions.
@@ -160,6 +204,10 @@ pub struct DiffView {
     pub(crate) composer: Option<Composer>,
     /// Rows for the selected file only.
     pub(crate) rows: Vec<DiffRow>,
+    /// What a visual selection yanks for each of `rows`, same length, built
+    /// alongside it. A figure entry starts as a lookup key; the render pass
+    /// that draws the same figure patches its box-drawing text in once it runs.
+    pub(crate) row_copy: Vec<RowCopy>,
     /// Last render's pane line -> row index table; wrapped rows span several
     /// lines, so mouse hits map back through it.
     pub(crate) line_rows: Vec<Option<usize>>,
@@ -180,6 +228,19 @@ pub struct DiffView {
     /// Per-file diff context override (path -> git context lines, `u32::MAX`
     /// for the whole file). Absent means the source's default context.
     pub(crate) context: HashMap<String, u32>,
+    /// One `Unchanged` file per stop or note the active walkthrough anchors
+    /// outside the diff, filled in once the anchor worker reads them. Read
+    /// only by the walkthrough layout, through [`DiffView::model_for_rows`]
+    /// and [`DiffView::model_for_layout`]; every other layout sees the diff
+    /// alone.
+    pub(crate) context_files: Vec<FileDiff>,
+    /// What [`Self::ensure_rows`] last merged `context_files` into: `Some`
+    /// when there was anything to append, `None` when the base model alone
+    /// covers the layout, so the render path (`draw_pane`, every frame) reads
+    /// this instead of rebuilding the merge itself. `on_enriched` mirrors a
+    /// landed file's hunks in here too, since the merge is a snapshot taken
+    /// before enrichment runs.
+    pub(crate) merged_model: Option<DiffModel>,
 }
 
 impl DiffView {
@@ -204,6 +265,13 @@ impl DiffView {
             declared: HashMap::new(),
             tree_cursor: 0,
             cursor: 0,
+            referenced: None,
+            slide: None,
+            walkthrough_built: None,
+            figures: FigureCache::new(),
+            figures_dirty: false,
+            unresolved_anchors: HashMap::new(),
+            pin_broken: false,
             scroll: 0,
             scroll_align: None,
             side_by_side,
@@ -216,9 +284,12 @@ impl DiffView {
             comments_scroll: 0,
             comments_rect: ratatui::layout::Rect::default(),
             comment_lines: Vec::new(),
+            comment_grouping: CommentGrouping::Flat,
+            comment_folds: BTreeSet::from([comments::RESOLVED_FOLD_KEY.to_owned()]),
             visual_anchor: None,
             viewport: 0,
             rows: Vec::new(),
+            row_copy: Vec::new(),
             line_rows: Vec::new(),
             rows_dirty: true,
             wrap_width: u16::MAX,
@@ -228,6 +299,8 @@ impl DiffView {
             scopes: HashMap::new(),
             enriched: HashSet::new(),
             context: HashMap::new(),
+            context_files: Vec::new(),
+            merged_model: None,
         };
         view.ensure_rows(review);
         view
@@ -235,6 +308,48 @@ impl DiffView {
 
     pub fn model<'a>(&'a self, review: &'a Review) -> &'a DiffModel {
         self.commit_model.as_ref().unwrap_or_else(|| review.model())
+    }
+
+    /// The model every row index (`selected`, a `DiffRow`'s file index, a
+    /// comment's anchor path) resolves against for `layout`: `base` extended
+    /// with `context_files` where the walkthrough layout is windowing to
+    /// one, `base` alone everywhere else, since no other layout ever builds
+    /// a row against a context file. A free-standing function for the same
+    /// borrow-checker reason as `model_with_context`: composing it from
+    /// explicit field refs keeps a caller's other field borrows disjoint
+    /// from the model it still holds.
+    pub(crate) fn model_for_layout<'a>(
+        layout: FileLayout,
+        base: &'a DiffModel,
+        context_files: &'a [FileDiff],
+    ) -> Cow<'a, DiffModel> {
+        let context: &[FileDiff] = if layout == FileLayout::Walkthrough {
+            context_files
+        } else {
+            &[]
+        };
+        Self::model_with_context(base, context)
+    }
+
+    /// What the last [`Self::ensure_rows`] merged, for a caller that must not
+    /// rebuild it: `cached` (the view's own `merged_model`) when it holds
+    /// one, `base` otherwise. Free-standing for the same borrow-checker
+    /// reason as `model_with_context`: the render path holds other disjoint
+    /// borrows of the view (and mutates several of its fields) while this
+    /// reference is still alive, which a `&self` method would collide with.
+    pub(crate) fn rendered_model<'a>(
+        cached: Option<&'a DiffModel>,
+        base: &'a DiffModel,
+    ) -> &'a DiffModel {
+        cached.unwrap_or(base)
+    }
+
+    /// [`Self::model_for_layout`] against this view's own base and context,
+    /// for a caller that only reads: it borrows all of `self`, so a caller
+    /// that also mutates another field while the result is alive (building
+    /// rows, seating a stop) needs the free function above instead.
+    pub(crate) fn model_for_rows<'a>(&'a self, review: &'a Review) -> Cow<'a, DiffModel> {
+        Self::model_for_layout(self.layout, self.model(review), &self.context_files)
     }
 
     /// Attach intra-line emphasis to the selected file once, just before it
@@ -310,22 +425,25 @@ impl DiffView {
                     .unwrap_or(0),
                 None,
             ),
+            // the summary card is unified-only: split_rows never carries one
+            DiffRow::Summary { .. } => (0, None),
         }
     }
 
     /// Path of the selected file, when the diff is non-empty.
     pub fn selected_path(&self, review: &Review) -> Option<String> {
-        self.model(review)
+        self.model_for_rows(review)
             .files
             .get(self.selected)
             .map(|f| f.path.clone())
     }
 
-    /// Mark the row list stale, dropping any visual anchor (a row index that
-    /// would dangle across a rebuild). Enrichment caches survive.
+    /// Mark the row list stale so the next `ensure_rows` rebuilds it. The
+    /// cursor, the visual anchor and the banded span are each named by what
+    /// they sit on, so that rebuild finds every one of them again on its
+    /// own. Enrichment caches survive.
     pub(crate) fn mark_rows_dirty(&mut self) {
         self.rows_dirty = true;
-        self.visual_anchor = None;
     }
 
     /// Mark rows stale and forget enrichment, so a rebuilt model re-enriches.
@@ -352,20 +470,60 @@ impl DiffView {
         if !self.rows_dirty && !self.wrap_dirty {
             return;
         }
-        let model = self.commit_model.as_ref().unwrap_or_else(|| review.model());
-        self.selected = self.selected.min(model.files.len().saturating_sub(1));
         let session = review.session_for(&self.source);
+        self.ensure_figures(session);
+        if self.layout == FileLayout::Walkthrough {
+            self.validate_slide(session);
+        }
+        let base = self.commit_model.as_ref().unwrap_or_else(|| review.model());
+        let model_cow = Self::model_for_layout(self.layout, base, &self.context_files);
+        let model: &DiffModel = &model_cow;
+        self.selected = self.selected.min(model.files.len().saturating_sub(1));
         let composer = self.composer.as_ref();
-        self.rows = build_rows(model, session, self.selected, self.wrap_width, composer);
-        self.split_rows =
-            build_split_rows(model, session, self.selected, self.wrap_width, composer);
-        self.cursor = self.cursor.min(self.rows.len().saturating_sub(1));
-        self.scroll = self.scroll.min(self.rows.len().saturating_sub(1));
+        // name what the cursor, the visual anchor and the banded span sit on
+        // now, while `self.rows` still holds the list they were seated
+        // against, so they can be found again once it is rebuilt
+        let positions = self.capture_positions(review);
+        let (rows, copy) = build_rows(
+            model,
+            session,
+            self.selected,
+            self.wrap_width,
+            composer,
+            &self.figures,
+            &self.unresolved_anchors,
+        );
+        let (rows, copy) = if self.layout == FileLayout::Walkthrough {
+            self.window_slide(model, session, rows, copy)
+        } else {
+            (rows, copy)
+        };
+        self.rows = rows;
+        self.row_copy = copy;
+        self.split_rows = build_split_rows(
+            model,
+            session,
+            self.selected,
+            self.wrap_width,
+            composer,
+            &self.figures,
+            &self.unresolved_anchors,
+        );
         // the file list may have shifted (refresh) or folds may hide the old
         // cursor row: keep the tree cursor on the pane's file. A pure wrap
-        // re-flow changes neither, and must not move a browsing cursor.
-        if self.rows_dirty {
-            let tree_rows = self.tree_rows(model, session);
+        // re-flow changes neither, and must not move a browsing cursor. Read
+        // ahead of `merged_model` below: it is `model`'s last use, and that
+        // borrow has to end before `restore_positions`/`reseat_tree_cursor`
+        // can take `&mut self`.
+        let tree_rows = self.rows_dirty.then(|| self.tree_rows(model, session));
+        // stash what was just merged so the render path reads it instead of
+        // rebuilding it every frame
+        self.merged_model = match model_cow {
+            Cow::Borrowed(_) => None,
+            Cow::Owned(model) => Some(model),
+        };
+        self.restore_positions(review, positions);
+        if let Some(tree_rows) = tree_rows {
             self.reseat_tree_cursor(&tree_rows);
         }
         self.rows_dirty = false;
@@ -394,7 +552,7 @@ impl DiffView {
     /// directories in the tree layout, its section in the ones with headers.
     /// Only the layout on screen is touched, so the others keep their folds.
     pub(crate) fn reveal_selected(&mut self, review: &Review) {
-        let model = self.model(review);
+        let model = self.model_for_rows(review);
         let Some(file) = model.files.get(self.selected) else {
             return;
         };
@@ -415,6 +573,8 @@ impl DiffView {
                 let bucket = Bucket::Kind(self.kind_of(&path));
                 self.bucket_folds.unfold(bucket)
             }
+            // a stop list hides nothing: every stop is on screen
+            FileLayout::Walkthrough => false,
             FileLayout::Tree | FileLayout::List => {
                 let hidden_by = |dir: &String| path.starts_with(&format!("{dir}/"));
                 let hidden = self.folded_dirs.iter().any(hidden_by);
@@ -434,12 +594,6 @@ impl DiffView {
             .unwrap_or_else(|| self.tree_cursor.min(rows.len().saturating_sub(1)));
     }
 
-    /// Inclusive row span the visual selection covers, when active.
-    pub fn selection(&self) -> Option<(usize, usize)> {
-        let anchor = self.visual_anchor?;
-        Some((anchor.min(self.cursor), anchor.max(self.cursor)))
-    }
-
     /// Move the sidebar cursor to `selected`, rebuilding the diff rows and
     /// resetting the diff cursor to the top of the new file.
     fn select(&mut self, selected: usize, review: &Review) {
@@ -450,8 +604,56 @@ impl DiffView {
         self.cursor = 0;
         self.scroll = 0;
         self.visual_anchor = None;
+        self.referenced = None;
         self.rows_dirty = true;
         self.ensure_rows(review);
+    }
+
+    /// Select `file_index`, reveal it in the sidebar and rebuild the pane
+    /// rows, then seat the cursor on the first row `matches` picks out.
+    /// Returns the matched span, first row to last, so a caller can band it
+    /// the way a stop's card does. Shared by `seat_stop` and `focus_comment`,
+    /// the two verbs that jump the diff cursor onto something found by id.
+    pub(crate) fn seat_on(
+        &mut self,
+        review: &Review,
+        file_index: usize,
+        matches: impl Fn(&DiffRow) -> bool,
+    ) -> Option<(usize, usize)> {
+        self.select(file_index, review);
+        self.reveal_selected(review);
+        self.ensure_rows(review);
+        let first = self.rows.iter().position(&matches)?;
+        let last = self.rows.iter().rposition(&matches).unwrap_or(first);
+        self.cursor = first;
+        Some((first, last))
+    }
+
+    /// The rows in `file_index` whose new-side line numbers fall in
+    /// `line..=end`, first to last, so a caller can band the segment a comment
+    /// speaks about.
+    pub(crate) fn span_rows(
+        &self,
+        review: &Review,
+        file_index: usize,
+        line: u32,
+        end: u32,
+    ) -> Option<(usize, usize)> {
+        let model = self.model_for_rows(review);
+        let hunks = &model.files.get(file_index)?.hunks;
+        let covered = |row: &DiffRow| {
+            let DiffRow::Line { hunk, line: at, .. } = *row else {
+                return false;
+            };
+            hunks
+                .get(hunk)
+                .and_then(|hunk| hunk.lines.get(at))
+                .and_then(|diff_line| diff_line.new_no)
+                .is_some_and(|no| line <= no && no <= end)
+        };
+        let first = self.rows.iter().position(covered)?;
+        let last = self.rows.iter().rposition(covered).unwrap_or(first);
+        Some((first, last))
     }
 
     /// The flattened sidebar rows over the model's files. The tree layout
@@ -470,6 +672,26 @@ impl DiffView {
         match self.layout {
             FileLayout::Review => self.section_rows(model, Self::review_groups(model, session)),
             FileLayout::Kinds => self.section_rows(model, self.kind_groups(model, session)),
+            FileLayout::Walkthrough => match self.active_walkthrough(session) {
+                Some(walkthrough) => walkthrough
+                    .summary
+                    .is_some()
+                    .then_some(TreeRow {
+                        depth: 0,
+                        node: TreeNode::WalkthroughSummary,
+                    })
+                    .into_iter()
+                    .chain((0..walkthrough.stops.len()).map(|index| TreeRow {
+                        depth: 0,
+                        node: TreeNode::Stop { index },
+                    }))
+                    .collect(),
+                None => {
+                    tree::visible_rows_promoting(&Self::paths(model), &self.folded_dirs, &|index| {
+                        Self::is_viewed(model, session, index)
+                    })
+                }
+            },
             // list belongs to the status screen (config rejects it here); a
             // stray value degrades to the tree
             FileLayout::Tree | FileLayout::List => {
@@ -487,7 +709,18 @@ impl DiffView {
         match self.layout {
             FileLayout::Review => Self::review_groups(model, session),
             FileLayout::Kinds => self.kind_groups(model, session),
-            FileLayout::Tree | FileLayout::List => {
+            FileLayout::Walkthrough if self.active_walkthrough(session).is_some() => {
+                let stops = self
+                    .active_walkthrough(session)
+                    .into_iter()
+                    .flat_map(|walkthrough| &walkthrough.stops);
+                let mut seen = HashSet::new();
+                return stops
+                    .filter_map(|id| stop_file_index(model, session, id))
+                    .filter(|index| seen.insert(*index))
+                    .collect();
+            }
+            FileLayout::Walkthrough | FileLayout::Tree | FileLayout::List => {
                 let rows =
                     tree::visible_rows_promoting(&Self::paths(model), &BTreeSet::new(), &|index| {
                         Self::is_viewed(model, session, index)
@@ -587,6 +820,25 @@ impl DiffView {
             .collect()
     }
 
+    /// Model indices a sidebar bucket holds, folded or not. Derived from the
+    /// same grouping the rows come from, so a group verb covers exactly what
+    /// its header stands for.
+    pub(crate) fn bucket_files(
+        &self,
+        model: &DiffModel,
+        session: &Session,
+        bucket: Bucket,
+    ) -> Vec<usize> {
+        let groups = match bucket {
+            Bucket::Kind(_) => self.kind_groups(model, session),
+            Bucket::ToReview | Bucket::Viewed => Self::review_groups(model, session),
+        };
+        groups
+            .into_iter()
+            .find(|(known, _)| *known == bucket)
+            .map_or_else(Vec::new, |(_, indices)| indices)
+    }
+
     pub(crate) fn kind_of(&self, path: &str) -> Kind {
         self.rules.kind(path, self.declared.get(path).copied())
     }
@@ -604,12 +856,19 @@ impl DiffView {
             .collect()
     }
 
-    /// Advance the sidebar layout: tree → review → kinds → tree.
-    pub(crate) fn cycle_layout(&mut self) -> FileLayout {
+    /// Advance the sidebar layout: tree → review → kinds → walkthrough → tree.
+    /// The walkthrough is in the cycle only where the review has one, since a
+    /// layout with nothing to list is a dead stop in the rotation. Leaving it
+    /// for one of the file layouts is itself a dead stop when the diff has no
+    /// files of its own (`empty`): tree/review/kinds would list nothing, so
+    /// the walkthrough is the only content and stays put.
+    pub(crate) fn cycle_layout(&mut self, has_walkthrough: bool, empty: bool) -> FileLayout {
         self.layout = match self.layout {
             FileLayout::Review => FileLayout::Kinds,
-            FileLayout::Kinds => FileLayout::Tree,
-            _ => FileLayout::Review,
+            FileLayout::Kinds if has_walkthrough => FileLayout::Walkthrough,
+            FileLayout::Walkthrough if empty && has_walkthrough => FileLayout::Walkthrough,
+            FileLayout::Kinds | FileLayout::Walkthrough => FileLayout::Tree,
+            FileLayout::Tree | FileLayout::List => FileLayout::Review,
         };
         self.layout
     }
@@ -643,7 +902,10 @@ fn next_unviewed_index(diff: &DiffView, review: &Review, wrap: bool) -> Option<u
 fn row_file_index(row: &TreeRow) -> Option<usize> {
     match row.node {
         TreeNode::File { index, .. } => Some(index),
-        TreeNode::Dir { .. } | TreeNode::Section { .. } => None,
+        TreeNode::Dir { .. }
+        | TreeNode::Section { .. }
+        | TreeNode::Stop { .. }
+        | TreeNode::WalkthroughSummary => None,
     }
 }
 
@@ -653,18 +915,41 @@ fn tree_position_of_file(rows: &[TreeRow], file_index: usize) -> Option<usize> {
         .position(|row| row_file_index(row) == Some(file_index))
 }
 
-/// Row position of the File row next to `at`, `forward` down the list or back
-/// up it, skipping the headers in between.
+/// Row position of the next thing the sidebar lists after `at`, `forward` down
+/// the list or back up it, skipping the headers in between. A stop is what the
+/// walkthrough layout lists, so `<c-n>` steps stops there and files everywhere
+/// else.
 fn step_file_row(rows: &[TreeRow], at: usize, forward: bool) -> Option<usize> {
-    let rows = rows.iter().enumerate();
-    if forward {
-        rows.skip(at + 1)
-            .find(|(_, row)| row_file_index(row).is_some())
-    } else {
-        rows.take(at)
-            .rfind(|(_, row)| row_file_index(row).is_some())
+    crate::app::step_to(rows, at, forward, |row| {
+        row_file_index(row).is_some() || matches!(row.node, TreeNode::Stop { .. })
+    })
+}
+
+impl RowSelect for DiffView {
+    fn cursor(&self) -> usize {
+        self.cursor
     }
-    .map(|(position, _)| position)
+
+    fn anchor(&self) -> Option<usize> {
+        self.visual_anchor
+    }
+
+    fn set_anchor(&mut self, anchor: Option<usize>) {
+        self.visual_anchor = anchor;
+    }
+}
+
+impl RowText for DiffView {
+    fn row_count(&self) -> usize {
+        self.rows.len()
+    }
+
+    fn row_text(&self, row: usize) -> String {
+        self.row_copy
+            .get(row)
+            .map(RowCopy::text)
+            .unwrap_or_default()
+    }
 }
 
 /// Paths whose git attributes a worker should read, for the kinds sidebar.
@@ -719,7 +1004,8 @@ mod tests {
     use crate::config::LoadedConfig;
     use crate::event::AppEvent;
     use crate::test_support::{
-        Fixture, code_key, ctrl_key, key, standard_fixture, two_hunk_fixture,
+        Fixture, big_file_fixture, code_key, ctrl_key, huge_span_fixture, key, settle_submit,
+        standard_fixture, two_hunk_fixture,
     };
 
     fn diff_app(fixture: &Fixture) -> App {
@@ -765,8 +1051,8 @@ mod tests {
         sidebar_rows(diff, &app.review).len()
     }
 
-    /// Kinds of the visible sidebar tree rows: "dir", "file:<name>", or
-    /// "section:<label>:<count>".
+    /// Kinds of the visible sidebar tree rows: "dir", "file:<name>",
+    /// "section:<label>:<count>", or "stop:<index>".
     fn tree_kinds(app: &App) -> Vec<String> {
         let diff = app.diff.as_ref().expect("diff view");
         sidebar_rows(diff, &app.review)
@@ -777,6 +1063,8 @@ mod tests {
                 crate::tree::TreeNode::Section { bucket, count, .. } => {
                     format!("section:{}:{count}", bucket.label())
                 }
+                crate::tree::TreeNode::Stop { index } => format!("stop:{index}"),
+                crate::tree::TreeNode::WalkthroughSummary => "walkthrough_summary".to_owned(),
             })
             .collect()
     }
@@ -833,6 +1121,18 @@ mod tests {
         for c in text.chars() {
             app.handle(key(c));
         }
+    }
+
+    /// Row of the open composer's own caret, the row `seat_cursor_on_caret`
+    /// parks the pane cursor on while a reader is typing.
+    fn caret_row(app: &App) -> usize {
+        let diff = app.diff.as_ref().unwrap();
+        let composer = diff.composer.as_ref().expect("composer open");
+        let caret = composer.caret_line(diff.wrap_width);
+        diff.rows()
+            .iter()
+            .position(|row| matches!(row, DiffRow::Composer { line } if *line == caret))
+            .expect("the caret's own row")
     }
 
     /// A review of nothing is a screen with no rows to read or comment on, so
@@ -950,6 +1250,843 @@ mod tests {
                 "file:todo.md".to_owned(),
             ]
         );
+    }
+
+    /// The stop list replaces the file list: one row per stop, in the
+    /// agent's order, with no group headers between them. A walkthrough with
+    /// no summary has no leading row at all.
+    #[test]
+    fn a_walkthrough_with_no_summary_lists_only_its_stops() {
+        let fixture = standard_fixture();
+        let app = walkthrough_app(&fixture);
+        assert_eq!(
+            tree_kinds(&app),
+            vec![
+                "stop:0".to_owned(),
+                "stop:1".to_owned(),
+                "stop:2".to_owned()
+            ]
+        );
+    }
+
+    /// A walkthrough with a summary lists it as the leading row.
+    #[test]
+    fn a_walkthrough_with_a_summary_lists_it_as_the_leading_row() {
+        let fixture = standard_fixture();
+        let app = walkthrough_app_with_summary(&fixture);
+        assert_eq!(
+            tree_kinds(&app),
+            vec![
+                "walkthrough_summary".to_owned(),
+                "stop:0".to_owned(),
+                "stop:1".to_owned(),
+                "stop:2".to_owned()
+            ]
+        );
+    }
+
+    /// Selecting the leading row shows the summary slide.
+    #[test]
+    fn the_leading_summary_row_selects_the_summary_slide() {
+        let fixture = standard_fixture();
+        let mut app = walkthrough_app_with_summary(&fixture);
+        assert_eq!(
+            tree_cursor(&app),
+            1,
+            "starts on the first stop, one past the summary"
+        );
+
+        app.diff_tree_to(0);
+
+        assert_eq!(
+            app.diff.as_ref().expect("diff view").slide,
+            Some(Slide::Summary)
+        );
+        assert_eq!(tree_cursor(&app), 0);
+    }
+
+    /// The summary slide renders one card and no diff rows at all, the way a
+    /// stop with no anchored line already shows its own card alone.
+    #[test]
+    fn the_summary_slide_shows_its_card_and_no_diff_rows() {
+        let fixture = standard_fixture();
+        let mut app = walkthrough_app_with_summary(&fixture);
+
+        app.diff_tree_to(0);
+
+        assert!(
+            rows(&app)
+                .iter()
+                .all(|row| matches!(row, DiffRow::Summary { .. })),
+            "{:?}",
+            rows(&app)
+        );
+        assert!(!rows(&app).is_empty());
+    }
+
+    /// A `mermaid` fence in the summary renders as a figure through the same
+    /// path a comment's body does.
+    #[test]
+    fn a_mermaid_fence_in_the_summary_becomes_a_figure() {
+        let fixture = standard_fixture();
+        let mut app = walkthrough_app(&fixture);
+        crate::test_support::set_walkthrough_summary(
+            &mut app,
+            "w1",
+            "why\n\n```mermaid\nflowchart LR\n  a --> b\n```\n",
+        );
+        app.diff.as_mut().unwrap().invalidate();
+        app.seat_summary();
+
+        let diff = app.diff.as_ref().expect("diff view");
+        let key = crate::app::walkthrough::summary_figure_key("w1");
+        assert!(
+            diff.figures.get(&key).is_some_and(|cached| cached
+                .blocks
+                .iter()
+                .any(|block| matches!(block, crate::app::walkthrough::Block::Figure(_)))),
+            "the fence parsed into a figure block"
+        );
+    }
+
+    /// `display_order` drives the file walks, so it has to be the stops' files
+    /// in stop order with the repeats dropped.
+    #[test]
+    fn the_walkthrough_layout_orders_files_by_their_stops() {
+        let fixture = standard_fixture();
+        let app = walkthrough_app(&fixture);
+        let diff = app.diff.as_ref().expect("diff view");
+        let model = diff.model(&app.review);
+        let session = app.review.session_for(&diff.source);
+        let paths: Vec<&str> = diff
+            .display_order(model, session)
+            .into_iter()
+            .filter_map(|index| model.files.get(index))
+            .map(|file| file.path.as_str())
+            .collect();
+        assert_eq!(paths, ["todo.md", "src/lib.rs"]);
+    }
+
+    /// A layout with nothing to list is a dead stop in the rotation: `t`
+    /// reaches it only on a walkthrough's own source, never on the working
+    /// tree even when a walkthrough exists elsewhere.
+    #[test]
+    fn t_cycles_into_the_walkthrough_only_on_its_own_source() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        seat_walkthrough(&mut app);
+        for _ in 0..3 {
+            app.handle(key('t'));
+        }
+        assert_eq!(
+            layout_of(&app),
+            crate::config::FileLayout::Tree,
+            "a walkthrough elsewhere never enters this source's cycle"
+        );
+
+        // `open_walkthrough` seats the layout on Walkthrough directly, so the
+        // cycle from here runs Tree, Review, Kinds, back to Walkthrough
+        app.open_walkthrough("w1", Slide::Stop(0));
+        let layouts: Vec<crate::config::FileLayout> = (0..4)
+            .map(|_| {
+                app.handle(key('t'));
+                layout_of(&app)
+            })
+            .collect();
+        assert_eq!(
+            layouts,
+            [
+                crate::config::FileLayout::Tree,
+                crate::config::FileLayout::Review,
+                crate::config::FileLayout::Kinds,
+                crate::config::FileLayout::Walkthrough,
+            ]
+        );
+    }
+
+    /// A clean tree has nothing of its own for tree/review/kinds to list;
+    /// leaving the walkthrough for one of them would strand the reader on an
+    /// empty sidebar, so `t` cycles back to it instead.
+    #[test]
+    fn t_stays_on_the_walkthrough_when_the_diff_has_no_files_of_its_own() {
+        let fixture = Fixture::new();
+        fixture.write("README.md", "hello\n");
+        fixture.commit_all("initial commit");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        crate::test_support::seat_walkthrough(
+            &mut app,
+            "tour",
+            &[("Base", Some("README.md:1"), "why hello")],
+        );
+        app.open_walkthrough("w1", Slide::Stop(0));
+        assert_eq!(layout_of(&app), crate::config::FileLayout::Walkthrough);
+
+        app.handle(key('t'));
+
+        assert_eq!(
+            layout_of(&app),
+            crate::config::FileLayout::Walkthrough,
+            "tree/review/kinds would list nothing; t stays put"
+        );
+    }
+
+    fn layout_of(app: &App) -> crate::config::FileLayout {
+        app.diff.as_ref().expect("diff view").layout
+    }
+
+    /// Cycling into the walkthrough must show its stop cards immediately, and
+    /// cycling back out must drop them and any span band with them.
+    #[test]
+    fn cycling_into_and_out_of_the_walkthrough_toggles_its_stop_cards() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.author = "reviewer".to_owned();
+        seat_walkthrough(&mut app);
+        app.open_walkthrough_diff("w1");
+        resolve_walkthrough(&mut app);
+        assert_eq!(layout_of(&app), crate::config::FileLayout::Tree);
+
+        for _ in 0..3 {
+            app.handle(key('t'));
+        }
+        assert_eq!(layout_of(&app), crate::config::FileLayout::Walkthrough);
+        app.diff.as_mut().unwrap().ensure_rows(&app.review);
+        assert!(
+            stop_card_rows(&app) > 0,
+            "the walkthrough shows its stop card once cycled in"
+        );
+        let windowed = line_rows(&app);
+        assert!(
+            shown_line_numbers(&app).iter().all(|no| *no <= 3),
+            "and only the current stop's own span"
+        );
+
+        app.handle(key('t'));
+        assert_eq!(layout_of(&app), crate::config::FileLayout::Tree);
+        app.diff.as_mut().unwrap().ensure_rows(&app.review);
+        assert!(
+            line_rows(&app) > windowed,
+            "leaving the walkthrough shows the whole file again"
+        );
+        assert!(
+            app.diff.as_ref().expect("diff view").referenced.is_none(),
+            "leaving the walkthrough drops the span band too"
+        );
+    }
+
+    /// Diff-line rows on screen, deletions included.
+    fn line_rows(app: &App) -> usize {
+        rows(app)
+            .iter()
+            .filter(|row| matches!(row, DiffRow::Line { .. }))
+            .count()
+    }
+
+    /// Rows of the current stop's own card on screen. Row 0 of the sidebar is
+    /// the leading all-slides row, so a stop's own row sits one past it.
+    fn stop_card_rows(app: &App) -> usize {
+        let diff = app.diff.as_ref().expect("diff view");
+        let session = app.review.session_for(&diff.source);
+        let Some(walkthrough) = diff.active_walkthrough(session) else {
+            return 0;
+        };
+        let offset = super::stop_row_offset(walkthrough);
+        let Some(current) = diff
+            .tree_cursor
+            .checked_sub(offset)
+            .and_then(|stop| walkthrough.stops.get(stop))
+            .and_then(|id| session.comments.iter().position(|c| c.id == *id))
+        else {
+            return 0;
+        };
+        rows(app)
+            .iter()
+            .filter(|row| matches!(row, DiffRow::Comment { comment, .. } if *comment == current))
+            .count()
+    }
+
+    /// Three stops over the standard fixture: two files, one of them named
+    /// twice, and one stop with no anchor at all.
+    fn seat_walkthrough(app: &mut App) {
+        crate::test_support::seat_walkthrough(
+            app,
+            "How the answer moved",
+            &[
+                ("What changed", None, "the overview"),
+                ("The list", Some("todo.md:1"), "why a list"),
+                ("The answer", Some("src/lib.rs#answer"), "why 42"),
+            ],
+        );
+    }
+
+    fn walkthrough_app(fixture: &Fixture) -> App {
+        let mut loaded = LoadedConfig::default();
+        loaded.config.ui.diff_file_layout = crate::config::FileLayout::Walkthrough;
+        let mut app = App::new(fixture.review(), loaded);
+        app.author = "reviewer".to_owned();
+        seat_walkthrough(&mut app);
+        app.open_walkthrough_diff("w1");
+        resolve_walkthrough(&mut app);
+        app
+    }
+
+    /// Like `walkthrough_app`, with a summary set before the diff opens, so
+    /// its row appears in the sidebar and the initial seat lands past it.
+    fn walkthrough_app_with_summary(fixture: &Fixture) -> App {
+        let mut loaded = LoadedConfig::default();
+        loaded.config.ui.diff_file_layout = crate::config::FileLayout::Walkthrough;
+        let mut app = App::new(fixture.review(), loaded);
+        app.author = "reviewer".to_owned();
+        seat_walkthrough(&mut app);
+        crate::test_support::set_walkthrough_summary(&mut app, "w1", "the shape of the change");
+        app.open_walkthrough_diff("w1");
+        resolve_walkthrough(&mut app);
+        app
+    }
+
+    /// A walkthrough app over an arbitrary fixture with an arbitrary stop
+    /// list, resolved the way the worker would. Real usage always rebuilds
+    /// rows on the next key or render after a resolution lands; a test that
+    /// reads rows with neither has to ask explicitly.
+    fn walkthrough_app_with(fixture: &Fixture, stops: &[(&str, Option<&str>, &str)]) -> App {
+        let mut loaded = LoadedConfig::default();
+        loaded.config.ui.diff_file_layout = crate::config::FileLayout::Walkthrough;
+        let mut app = App::new(fixture.review(), loaded);
+        app.author = "reviewer".to_owned();
+        crate::test_support::seat_walkthrough(&mut app, "tour", stops);
+        app.open_walkthrough_diff("w1");
+        resolve_walkthrough(&mut app);
+        app.diff.as_mut().unwrap().ensure_rows(&app.review);
+        app
+    }
+
+    /// Read the anchored files the way the worker would: the live worktree,
+    /// since a walkthrough always tracks it.
+    fn resolve_walkthrough(app: &mut App) {
+        let Some(request) = app.pending_walkthrough.take() else {
+            return;
+        };
+        let root = app.review.repo_root.clone();
+        let contents = request
+            .files
+            .iter()
+            .filter_map(|path| Some((path.clone(), std::fs::read_to_string(root.join(path)).ok()?)))
+            .collect();
+        app.handle(AppEvent::WalkthroughAnchors {
+            contents,
+            pin_broken: false,
+            token: request.token,
+        });
+    }
+
+    /// The whole point of a stop: it seats the reader on the first row of the
+    /// span the agent named, in the file that holds it, and shows that span.
+    #[test]
+    fn moving_onto_a_stop_seats_the_cursor_on_its_span() {
+        let fixture = standard_fixture();
+        let mut app = walkthrough_app(&fixture);
+        // stop 2 anchors src/lib.rs#answer, whose definition is lines 1..=3
+        app.handle(key('j'));
+        app.handle(key('j'));
+        assert_eq!(selected_path(&app), "src/lib.rs");
+        let diff = app.diff.as_ref().expect("diff view");
+        assert_eq!(
+            diff.cursor, 1,
+            "the cursor lands on the first row of the span"
+        );
+        let last = diff.rows().len().saturating_sub(1);
+        let lines: Vec<u32> = (diff.cursor..=last)
+            .filter_map(|row| match diff.rows().get(row) {
+                Some(DiffRow::Line { hunk, line, .. }) => diff
+                    .model(&app.review)
+                    .files
+                    .get(diff.selected)
+                    .and_then(|file| file.hunks.get(*hunk))
+                    .and_then(|hunk| hunk.lines.get(*line))
+                    .and_then(|line| line.new_no),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(lines, [1, 2, 3], "the slide shows the whole definition");
+    }
+
+    /// A stop with nothing to point at is prose, so it leaves the pane where
+    /// the reader had it rather than jumping somewhere arbitrary.
+    #[test]
+    fn an_anchorless_stop_leaves_the_pane_alone() {
+        let fixture = standard_fixture();
+        let mut app = walkthrough_app(&fixture);
+        app.handle(key('j'));
+        let seated = selected_path(&app);
+        assert_eq!(seated, "todo.md");
+        app.handle(key('k'));
+        assert_eq!(selected_path(&app), seated, "stop 1 anchors nothing");
+        assert_eq!(
+            app.diff.as_ref().expect("diff view").referenced,
+            None,
+            "and bands nothing"
+        );
+    }
+
+    /// Talking back is how the walkthrough becomes a conversation, and a stop
+    /// is a comment, so `r` on its card answers it in its own thread.
+    #[test]
+    fn r_on_a_stop_card_replies_to_that_stop() {
+        let fixture = standard_fixture();
+        let mut app = walkthrough_app(&fixture);
+        app.handle(key('j'));
+        app.handle(key('j'));
+        enter_diff_pane(&mut app);
+        let card = rows(&app)
+            .iter()
+            .position(|row| matches!(row, DiffRow::Comment { line: 0, .. }))
+            .expect("a stop card");
+        app.diff.as_mut().expect("diff view").cursor = card;
+        app.handle(key('r'));
+        assert!(app.composer_open());
+        type_text(&mut app, "why not 43?");
+        app.handle(key('\n'));
+
+        let source = app.active_review_source();
+        let stop = app
+            .review
+            .session_for(&source)
+            .comment("stop-2")
+            .expect("the third stop's comment");
+        assert_eq!(stop.replies.len(), 1);
+        assert_eq!(stop.replies[0].body, "why not 43?");
+        assert_eq!(stop.status, CommentStatus::Replied);
+    }
+
+    /// The stops are comments, so the pane that lists comments lists them
+    /// with no handling of its own.
+    #[test]
+    fn the_comments_pane_lists_the_stops() {
+        let fixture = standard_fixture();
+        let mut app = walkthrough_app(&fixture);
+        app.handle(key('C'));
+        assert_eq!(
+            app.comment_order(),
+            vec![
+                "stop-2".to_owned(),
+                "stop-0".to_owned(),
+                "stop-1".to_owned()
+            ],
+            "by file as the diff orders them, then by line"
+        );
+    }
+
+    /// A comment the reader left, on a line of the open review.
+    fn add_comment(app: &mut App, file: &str, line: u32, body: &str) -> String {
+        let source = app.active_review_source();
+        let id = app
+            .review
+            .session_for_mut(&source)
+            .add_comment(
+                Anchor {
+                    file: file.to_owned(),
+                    line: Some(line),
+                    line_end: None,
+                    on_old_side: false,
+                    line_text: None,
+                },
+                "reviewer",
+                body,
+            )
+            .id
+            .clone();
+        let diff = app.diff.as_mut().expect("diff view");
+        diff.invalidate();
+        diff.ensure_rows(&app.review);
+        id
+    }
+
+    /// Comment ids the pane currently shows a card for.
+    fn shown_comment_ids(app: &App) -> Vec<String> {
+        let diff = app.diff.as_ref().expect("diff view");
+        let session = app.review.session_for(&diff.source);
+        rows(app)
+            .iter()
+            .filter_map(|row| match row {
+                DiffRow::Comment {
+                    comment, line: 0, ..
+                } => session.comments.get(*comment).map(|c| c.id.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Select the comment `id` in the open comments sidebar, the way a motion
+    /// key in that pane does.
+    fn select_comment(app: &mut App, id: &str) {
+        let at = app
+            .comment_order()
+            .iter()
+            .position(|known| known == id)
+            .expect("the comment is listed");
+        app.comments_to(at);
+    }
+
+    /// The bug the slides exist to fix: reaching a comment from the comments
+    /// pane used to leave the pane on the whole file with the card parked at
+    /// the bottom. Selecting one enters the slide that holds it.
+    #[test]
+    fn selecting_a_comment_from_the_pane_enters_the_slide_that_holds_it() {
+        let fixture = standard_fixture();
+        let mut app = walkthrough_app(&fixture);
+        let human = add_comment(&mut app, "src/lib.rs", 2, "why 42?");
+        assert_eq!(tree_cursor(&app), 0, "the reader starts on the first stop");
+
+        app.handle(key('C'));
+        select_comment(&mut app, &human);
+
+        assert_eq!(tree_cursor(&app), 2, "the sidebar follows to that stop");
+        assert_eq!(selected_path(&app), "src/lib.rs");
+        assert_eq!(shown_line_numbers(&app), [1, 2, 3], "the stop's own region");
+        assert_eq!(
+            shown_comment_ids(&app),
+            vec![human, "stop-2".to_owned()],
+            "cards in line order: line 2's comment before the stop's own card, \
+             which sits under line 3, the last line of its span"
+        );
+    }
+
+    /// A comment no stop's region holds is a slide of its own, so reaching it
+    /// still shows one thing rather than the whole file.
+    #[test]
+    fn a_comment_outside_every_region_opens_as_its_own_slide() {
+        let fixture = standard_fixture();
+        let mut app = walkthrough_app(&fixture);
+        let human = add_comment(&mut app, "ci.yml", 1, "why on push?");
+
+        app.handle(key('C'));
+        select_comment(&mut app, &human);
+
+        let diff = app.diff.as_ref().expect("diff view");
+        assert_eq!(diff.slide, Some(Slide::AdHoc(human.clone())));
+        assert_eq!(selected_path(&app), "ci.yml");
+        assert_eq!(shown_line_numbers(&app), [1]);
+        assert_eq!(shown_comment_ids(&app), vec![human]);
+    }
+
+    /// A comment on a deleted line anchors old-side. Reaching it through the
+    /// comments pane must window the deleted row and its hunk header in, not
+    /// just the card: `window_slide` used to compare every span against the
+    /// new-side line only, so a deleted row never matched.
+    #[test]
+    fn a_comment_on_a_deleted_line_bands_the_deleted_row_and_its_hunk() {
+        let fixture = two_hunk_fixture();
+        let mut app = walkthrough_app_with(
+            &fixture,
+            &[("Somewhere else", None, "unrelated to the deletion")],
+        );
+        let source = app.active_review_source();
+        let human = app
+            .review
+            .session_for_mut(&source)
+            .add_comment(
+                Anchor {
+                    file: "data.txt".to_owned(),
+                    line: Some(1),
+                    line_end: None,
+                    on_old_side: true,
+                    line_text: None,
+                },
+                "reviewer",
+                "why drop this line?",
+            )
+            .id
+            .clone();
+        app.diff.as_mut().expect("diff view").invalidate();
+        app.diff
+            .as_mut()
+            .expect("diff view")
+            .ensure_rows(&app.review);
+
+        app.handle(key('C'));
+        select_comment(&mut app, &human);
+
+        let diff = app.diff.as_ref().expect("diff view");
+        assert_eq!(diff.slide, Some(Slide::AdHoc(human.clone())));
+        let shown = rows(&app);
+        assert!(
+            shown
+                .iter()
+                .any(|row| matches!(row, DiffRow::Hunk { hunk: 0, .. })),
+            "the deleted row's hunk header must be windowed in: {shown:?}"
+        );
+        assert!(
+            shown.iter().any(|row| matches!(
+                row,
+                DiffRow::Line {
+                    hunk: 0,
+                    line: 0,
+                    ..
+                }
+            )),
+            "the deleted row itself must be windowed in, not only the card: {shown:?}"
+        );
+    }
+
+    /// The comment walk runs over the slides, so stepping past the last
+    /// comment of one enters the next.
+    #[test]
+    fn stepping_past_a_slides_last_comment_enters_the_next_slide() {
+        let fixture = standard_fixture();
+        let mut app = walkthrough_app(&fixture);
+        let human = add_comment(&mut app, "todo.md", 1, "is this list still right?");
+        app.handle(key('C'));
+        select_comment(&mut app, &human);
+        assert_eq!(tree_cursor(&app), 1, "the second stop holds it");
+        assert_eq!(
+            shown_comment_ids(&app),
+            vec!["stop-1".to_owned(), human],
+            "that slide holds both"
+        );
+
+        app.handle(key('}'));
+
+        assert_eq!(tree_cursor(&app), 2, "the walk moved on to the next stop");
+        assert_eq!(selected_path(&app), "src/lib.rs");
+        assert_eq!(shown_line_numbers(&app), [1, 2, 3]);
+        assert_eq!(shown_comment_ids(&app), vec!["stop-2".to_owned()]);
+    }
+
+    /// New-side line numbers of every `DiffRow::Line` the pane currently
+    /// shows, wherever the file lives in the model.
+    fn shown_line_numbers(app: &App) -> Vec<u32> {
+        let diff = app.diff.as_ref().expect("diff view");
+        let model = diff.model(&app.review);
+        rows(app)
+            .iter()
+            .filter_map(|row| {
+                let DiffRow::Line { file, hunk, line } = row else {
+                    return None;
+                };
+                model
+                    .files
+                    .get(*file)?
+                    .hunks
+                    .get(*hunk)?
+                    .lines
+                    .get(*line)?
+                    .new_no
+            })
+            .collect()
+    }
+
+    /// The bug this layout exists to fix: a stop anchored deep in a large file
+    /// used to render the file's entire diff with the card parked partway
+    /// through. The window is exactly what the agent pointed at, its hunk
+    /// header and its card.
+    #[test]
+    fn a_stops_window_is_its_anchored_rows_its_hunk_header_and_its_card() {
+        let fixture = big_file_fixture();
+        let app = walkthrough_app_with(
+            &fixture,
+            &[("The change", Some("big.txt:100"), "why line 100 changed")],
+        );
+        assert_eq!(
+            shown_line_numbers(&app),
+            [100],
+            "the anchored line and no context around it"
+        );
+        assert!(
+            rows(&app)
+                .iter()
+                .any(|row| matches!(row, DiffRow::Hunk { .. })),
+            "the hunk header it sits under stays"
+        );
+        assert!(stop_card_rows(&app) > 0, "the card still draws");
+    }
+
+    /// A wide span is what the agent chose, so the window shows all of it
+    /// rather than cutting it off at a row budget.
+    #[test]
+    fn a_wide_span_shows_every_row_it_covers() {
+        let fixture = huge_span_fixture();
+        let app = walkthrough_app_with(
+            &fixture,
+            &[("The rewrite", Some("big.txt:51-120"), "why 70 lines moved")],
+        );
+        assert_eq!(shown_line_numbers(&app).len(), 70);
+    }
+
+    /// A stop whose anchor names a file but resolves to no span (here, a bare
+    /// path) shows only its card.
+    #[test]
+    fn an_anchor_with_no_span_shows_only_its_card() {
+        let fixture = standard_fixture();
+        let app = walkthrough_app_with(
+            &fixture,
+            &[("Whole file", Some("todo.md"), "look at the whole file")],
+        );
+        assert!(
+            rows(&app)
+                .iter()
+                .all(|row| matches!(row, DiffRow::Comment { .. })),
+            "no hunks at all: {:?}",
+            rows(&app)
+        );
+    }
+
+    /// Cycling `t` out of the walkthrough drops the window: the file reads
+    /// whole again, the way any other layout shows it.
+    #[test]
+    fn cycling_out_of_the_walkthrough_restores_the_full_file_rows() {
+        let fixture = huge_span_fixture();
+        let mut app = walkthrough_app_with(
+            &fixture,
+            &[("The rewrite", Some("big.txt:51-120"), "why 70 lines moved")],
+        );
+        let windowed = shown_line_numbers(&app).len();
+        app.handle(key('t'));
+        app.diff.as_mut().unwrap().ensure_rows(&app.review);
+        assert_eq!(
+            layout_of(&app),
+            crate::config::FileLayout::Tree,
+            "left the walkthrough"
+        );
+        assert!(
+            shown_line_numbers(&app).len() > windowed,
+            "the whole hunk shows again, not just the window"
+        );
+    }
+
+    /// `<c-n>` means "the next thing the sidebar lists", which in this layout
+    /// is the next stop.
+    #[test]
+    fn ctrl_n_steps_stops_in_the_walkthrough_layout() {
+        let fixture = standard_fixture();
+        let mut app = walkthrough_app(&fixture);
+        app.handle(ctrl_key('n'));
+        assert_eq!(tree_cursor(&app), 1);
+        assert_eq!(selected_path(&app), "todo.md");
+        app.handle(ctrl_key('n'));
+        assert_eq!(tree_cursor(&app), 2);
+        assert_eq!(selected_path(&app), "src/lib.rs");
+        app.handle(ctrl_key('p'));
+        assert_eq!(tree_cursor(&app), 1);
+    }
+
+    /// `m` in the walkthrough layout marks the slide read and moves on, the
+    /// way `m` on a file advances to the row below it.
+    #[test]
+    fn m_marks_the_current_slide_seen_and_advances_to_the_next() {
+        let fixture = standard_fixture();
+        let mut app = walkthrough_app(&fixture);
+        assert_eq!(app.diff.as_ref().unwrap().slide, Some(Slide::Stop(0)));
+
+        app.handle(key('m'));
+
+        let source = app.active_review_source();
+        assert!(app.review.session_for(&source).is_stop_seen("stop-0"));
+        assert_eq!(app.diff.as_ref().unwrap().slide, Some(Slide::Stop(1)));
+    }
+
+    /// `u` skips a slide already marked seen and lands on the next one that
+    /// isn't.
+    #[test]
+    fn u_jumps_to_the_next_unseen_slide_skipping_seen_ones() {
+        let fixture = standard_fixture();
+        let mut app = walkthrough_app(&fixture);
+        let source = app.active_review_source();
+        app.review.session_for_mut(&source).mark_stop_seen("stop-1");
+
+        app.handle(key('u'));
+
+        assert_eq!(
+            app.diff.as_ref().unwrap().slide,
+            Some(Slide::Stop(2)),
+            "stop-1 is seen, so u skips past it to stop-2"
+        );
+    }
+
+    #[test]
+    fn u_says_every_slide_is_seen_when_none_is_left() {
+        let fixture = standard_fixture();
+        let mut app = walkthrough_app(&fixture);
+        let source = app.active_review_source();
+        for id in ["stop-0", "stop-1", "stop-2"] {
+            app.review.session_for_mut(&source).mark_stop_seen(id);
+        }
+
+        app.handle(key('u'));
+
+        assert_eq!(
+            app.message.as_ref().map(|m| m.text.as_str()),
+            Some("every slide is seen")
+        );
+    }
+
+    /// The diff sidebar's own heading counts the walkthrough's stops seen so
+    /// far; the status screen's header counts walkthroughs, not stops.
+    #[test]
+    fn seen_progress_shows_in_the_sidebar_heading_not_the_status_header() {
+        let fixture = standard_fixture();
+        let mut app = walkthrough_app(&fixture);
+        let source = app.active_review_source();
+        app.review.session_for_mut(&source).mark_stop_seen("stop-0");
+
+        let content = crate::test_support::render(&mut app).backend().to_string();
+        assert!(
+            content.contains("How the answer moved (1/3)"),
+            "sidebar heading: {content}"
+        );
+
+        app.handle(key('q'));
+        let content = crate::test_support::render(&mut app).backend().to_string();
+        assert!(
+            content.contains("Walkthroughs (1)"),
+            "status header: {content}"
+        );
+    }
+
+    /// `d` on the walkthrough layout's leading row asks, then deletes the
+    /// whole review file, closing the diff with it.
+    #[test]
+    fn d_on_the_leading_sidebar_row_asks_then_deletes_the_whole_walkthrough() {
+        let fixture = standard_fixture();
+        let mut app = walkthrough_app_with_summary(&fixture);
+        app.diff.as_mut().unwrap().tree_cursor = 0;
+
+        app.handle(key('d'));
+        assert!(matches!(app.modal, Some(crate::app::Modal::Confirm { .. })));
+        app.handle(key('y'));
+
+        assert!(app.diff.is_none(), "the diff closes with it");
+        let source = diffler_core::source::ReviewSource::walkthrough("w1");
+        assert!(
+            app.review
+                .all_reviews()
+                .expect("all reviews")
+                .into_iter()
+                .all(|(s, _)| s != source),
+            "the review file is gone"
+        );
+    }
+
+    /// `d` on a stop row asks, then deletes just that stop, keeping the rest
+    /// of the walkthrough.
+    #[test]
+    fn d_on_a_stop_row_asks_then_deletes_just_that_stop() {
+        let fixture = standard_fixture();
+        let mut app = walkthrough_app(&fixture);
+        // no summary, so row 0 is stop 0's own row
+        app.diff.as_mut().unwrap().tree_cursor = 0;
+
+        app.handle(key('d'));
+        app.handle(key('y'));
+
+        let source = app.active_review_source();
+        let walkthrough = app
+            .review
+            .session_for(&source)
+            .walkthrough
+            .as_ref()
+            .expect("the walkthrough is kept");
+        assert_eq!(walkthrough.stops.len(), 2);
+        assert!(!walkthrough.stops.contains(&"stop-0".to_owned()));
     }
 
     #[test]
@@ -1382,6 +2519,7 @@ mod tests {
         app.handle(key('\n'));
 
         // the comment header row sits right under the anchored line
+        settle_submit(&mut app);
         let position = added_line_position(&app);
         app.diff.as_mut().unwrap().cursor = position + 1;
         app.handle(key('r'));
@@ -1394,6 +2532,7 @@ mod tests {
         assert_eq!(comment.replies[0].body, "answer");
 
         // the block grew by the reply line; resolve from the same header
+        settle_submit(&mut app);
         let position = added_line_position(&app);
         app.diff.as_mut().unwrap().cursor = position + 1;
         app.handle(key('R'));
@@ -1548,7 +2687,7 @@ mod tests {
         let fixture = nested_fixture();
         let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Tree);
         cursor_to_dir(&mut app, "src");
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert_eq!(
             viewed_paths(&app),
             ["src/deep/inner.rs", "src/lib.rs", "src/main.rs"],
@@ -1561,7 +2700,7 @@ mod tests {
         let fixture = nested_fixture();
         let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Tree);
         cursor_to_dir(&mut app, "src/deep");
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert_eq!(viewed_paths(&app), ["src/deep/inner.rs"]);
     }
 
@@ -1570,13 +2709,250 @@ mod tests {
         let fixture = standard_fixture();
         let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Tree);
         cursor_to_dir(&mut app, "src");
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert!(!viewed_paths(&app).is_empty());
         cursor_to_dir(&mut app, "src");
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert!(
             viewed_paths(&app).is_empty(),
             "a second press unmarks the subtree"
+        );
+    }
+
+    /// Put the sidebar cursor on the section header for `label`.
+    fn cursor_to_section(app: &mut App, label: &str) {
+        let review = &app.review;
+        let diff = app.diff.as_ref().expect("diff view");
+        let rows = super::sidebar_rows(diff, review);
+        let at = rows
+            .iter()
+            .position(|row| {
+                matches!(&row.node, crate::tree::TreeNode::Section { bucket, .. }
+                    if bucket.label() == label)
+            })
+            .unwrap_or_else(|| panic!("a section row for {label}: {rows:?}"));
+        let diff = app.diff.as_mut().expect("diff view");
+        diff.focus = Pane::List;
+        diff.tree_cursor = at;
+    }
+
+    /// One source file and two the built-in rules call Generated (a lockfile
+    /// and a snapshot), so a kind header stands for more than one file.
+    fn kinds_fixture() -> Fixture {
+        let fixture = Fixture::new();
+        fixture.write("src/lib.rs", "pub fn a() {}\n");
+        fixture.write("tests/snapshots/render.snap", "old frame\n");
+        fixture.write("package-lock.json", "{\n  \"lockfileVersion\": 3\n}\n");
+        fixture.commit_all("initial");
+        fixture.write("src/lib.rs", "pub fn a() -> u32 {\n    1\n}\n");
+        fixture.write("tests/snapshots/render.snap", "new frame\n");
+        fixture.write("package-lock.json", "{\n  \"lockfileVersion\": 4\n}\n");
+        fixture
+    }
+
+    /// A kind header stands for every file in its bucket, and Generated opens
+    /// folded, so the mark cannot come from the rows on screen.
+    #[test]
+    fn viewing_a_kind_section_marks_every_file_it_holds() {
+        let fixture = kinds_fixture();
+        let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Kinds);
+        let rows = super::sidebar_rows(app.diff.as_ref().expect("diff"), &app.review);
+        assert!(
+            rows.iter().any(|row| matches!(&row.node,
+                crate::tree::TreeNode::Section { bucket, folded, .. }
+                    if bucket.label() == "Generated" && *folded)),
+            "Generated opens folded, so the mark cannot read the rows: {rows:?}"
+        );
+        cursor_to_section(&mut app, "Generated");
+        app.handle(key('m'));
+        assert_eq!(
+            viewed_paths(&app),
+            ["package-lock.json", "tests/snapshots/render.snap"],
+            "the whole bucket, folded though it is"
+        );
+    }
+
+    #[test]
+    fn viewing_a_kind_section_again_puts_it_back() {
+        let fixture = kinds_fixture();
+        let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Kinds);
+        cursor_to_section(&mut app, "Generated");
+        app.handle(key('m'));
+        assert!(!viewed_paths(&app).is_empty());
+        cursor_to_section(&mut app, "Generated");
+        app.handle(key('m'));
+        assert!(viewed_paths(&app).is_empty(), "a second press unmarks it");
+    }
+
+    #[test]
+    fn viewing_the_to_review_section_clears_the_whole_review() {
+        let fixture = kinds_fixture();
+        let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Review);
+        cursor_to_section(&mut app, "To review");
+        app.handle(key('m'));
+        assert_eq!(
+            viewed_paths(&app),
+            [
+                "package-lock.json",
+                "src/lib.rs",
+                "tests/snapshots/render.snap"
+            ]
+        );
+    }
+
+    /// The bucket a header stands for is read from the grouping, so a kind the
+    /// diff has nothing for cannot be reached and its neighbours are untouched.
+    #[test]
+    fn viewing_one_kind_leaves_the_others_alone() {
+        let fixture = kinds_fixture();
+        let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Kinds);
+        cursor_to_section(&mut app, "Source");
+        app.handle(key('m'));
+        assert_eq!(viewed_paths(&app), ["src/lib.rs"]);
+    }
+
+    fn tree_cursor_row(app: &App) -> String {
+        let diff = app.diff.as_ref().expect("diff view");
+        let rows = super::sidebar_rows(diff, &app.review);
+        match &rows[diff.tree_cursor].node {
+            crate::tree::TreeNode::Dir { path, .. } => format!("dir {path}"),
+            crate::tree::TreeNode::Section { bucket, .. } => format!("section {}", bucket.label()),
+            crate::tree::TreeNode::File { name, .. } => format!("file {name}"),
+            crate::tree::TreeNode::Stop { index } => format!("stop {index}"),
+            crate::tree::TreeNode::WalkthroughSummary => "walkthrough_summary".to_owned(),
+        }
+    }
+
+    /// `]` walks folder to folder in the tree layout, the way it walks
+    /// sections on the status screen.
+    /// Four files in one group, so marking has somewhere to sort them to.
+    fn flat_fixture() -> Fixture {
+        let fixture = Fixture::new();
+        for name in ["a.rs", "b.rs", "c.rs", "d.rs"] {
+            fixture.write(name, "fn x() {}\n");
+        }
+        fixture.commit_all("base");
+        for name in ["a.rs", "b.rs", "c.rs", "d.rs"] {
+            fixture.write(name, "fn x() -> u32 {\n    1\n}\n");
+        }
+        fixture
+    }
+
+    /// Marking the last file in a group sorts it to the top of that group. The
+    /// reader must not be dragged up there with it: they stay on the row they
+    /// were reading, which is now the file that was above.
+    #[test]
+    fn marking_the_bottom_file_keeps_the_reader_at_the_bottom() {
+        for layout in [
+            crate::config::FileLayout::Tree,
+            crate::config::FileLayout::Kinds,
+        ] {
+            let fixture = flat_fixture();
+            let mut app = diff_app_with_layout(&fixture, layout);
+            app.handle(key('G'));
+            assert_eq!(selected_path(&app), "d.rs", "{layout:?}");
+            let row = app.diff.as_ref().expect("diff").tree_cursor;
+
+            app.handle(key('m'));
+            assert_eq!(
+                selected_path(&app),
+                "c.rs",
+                "{layout:?}: the next one to read, not the file that moved"
+            );
+            assert_eq!(
+                app.diff.as_ref().expect("diff").tree_cursor,
+                row,
+                "{layout:?}: and the cursor holds its row"
+            );
+        }
+    }
+
+    /// Marking up the list from the bottom keeps walking the unviewed files
+    /// rather than bouncing off the top of the group each time.
+    #[test]
+    fn marking_from_the_bottom_walks_up_through_what_is_left() {
+        let fixture = flat_fixture();
+        let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Kinds);
+        app.handle(key('G'));
+        let mut walked = vec![selected_path(&app)];
+        for _ in 0..3 {
+            app.handle(key('m'));
+            walked.push(selected_path(&app));
+        }
+        assert_eq!(walked, ["d.rs", "c.rs", "b.rs", "a.rs"]);
+    }
+
+    /// With a file below, the walk still goes down: the hold only applies when
+    /// there is nothing under the one just marked.
+    #[test]
+    fn marking_with_a_file_below_still_steps_down() {
+        let fixture = flat_fixture();
+        let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Kinds);
+        assert_eq!(selected_path(&app), "a.rs");
+        app.handle(key('m'));
+        assert_eq!(selected_path(&app), "b.rs");
+    }
+
+    #[test]
+    fn brackets_step_the_sidebar_folder_by_folder() {
+        let fixture = nested_fixture();
+        let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Tree);
+        // the tree opens with the cursor on the selected file, inside a folder
+        assert_eq!(tree_cursor_row(&app), "file readme.md");
+        app.handle(key('['));
+        assert_eq!(
+            tree_cursor_row(&app),
+            "dir docs",
+            "back to the folder holding it"
+        );
+        app.handle(key(']'));
+        assert_eq!(tree_cursor_row(&app), "dir src");
+        app.handle(key(']'));
+        assert_eq!(
+            tree_cursor_row(&app),
+            "dir src/deep",
+            "a nested folder counts"
+        );
+        app.handle(key('['));
+        assert_eq!(tree_cursor_row(&app), "dir src", "and back up");
+    }
+
+    #[test]
+    fn brackets_step_the_sidebar_section_by_section() {
+        let fixture = kinds_fixture();
+        let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Kinds);
+        app.handle(key(']'));
+        assert_eq!(tree_cursor_row(&app), "section Generated");
+        app.handle(key('['));
+        assert_eq!(tree_cursor_row(&app), "section Source");
+    }
+
+    /// The last group has nothing after it, so the cursor stays put instead of
+    /// wrapping to the top.
+    #[test]
+    fn stepping_past_the_last_group_stands_still() {
+        let fixture = nested_fixture();
+        let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Tree);
+        app.handle(key('G'));
+        let last = tree_cursor_row(&app);
+        app.handle(key(']'));
+        assert_eq!(tree_cursor_row(&app), last);
+    }
+
+    /// The diff pane keeps the brackets for hunks: the motion moves the pane
+    /// holding the keyboard.
+    #[test]
+    fn brackets_in_the_diff_pane_still_step_hunks() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        app.handle(key('\n'));
+        assert_eq!(focus(&app), Pane::Diff);
+        let before = app.diff.as_ref().expect("diff").cursor;
+        app.handle(key(']'));
+        let diff = app.diff.as_ref().expect("diff");
+        assert!(
+            matches!(diff.rows.get(diff.cursor), Some(DiffRow::Hunk { .. }))
+                || diff.cursor == before
         );
     }
 
@@ -1585,7 +2961,7 @@ mod tests {
         let fixture = standard_fixture();
         let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Tree);
         select_file(&mut app, "src/lib.rs");
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert_eq!(viewed_paths(&app), ["src/lib.rs"]);
     }
 
@@ -1612,6 +2988,7 @@ mod tests {
         app.handle(key('c'));
         type_text(&mut app, "question");
         app.handle(key('\n'));
+        settle_submit(&mut app);
         app.diff.as_mut().unwrap().cursor = added_line_position(&app) + 1;
         app.handle(key('r'));
         let last_comment = app
@@ -1640,6 +3017,7 @@ mod tests {
         app.handle(key('c'));
         type_text(&mut app, "note");
         app.handle(key('\n'));
+        settle_submit(&mut app);
         app.diff.as_mut().unwrap().cursor = added_line_position(&app) + 1;
         app.handle(key('c'));
         assert_eq!(composer_rows(&app).first().copied(), Some(line + 1));
@@ -1751,7 +3129,8 @@ mod tests {
         type_text(&mut app, "old note");
         app.handle(key('\n'));
 
-        // move onto the comment row; `c` edits, prefilled with the body
+        // then move onto the comment row: `c` edits, prefilled with the body
+        settle_submit(&mut app);
         app.diff.as_mut().unwrap().cursor = added_line_position(&app) + 1;
         app.handle(key('c'));
         let composer = app
@@ -1824,7 +3203,7 @@ mod tests {
         );
         assert_eq!(selected_path(&app), "ci.yml");
 
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert!(app.is_path_viewed("ci.yml"));
         assert_eq!(
             selected_path(&app),
@@ -1832,7 +3211,7 @@ mod tests {
             "the row under ci.yml, not the next file in the diff"
         );
 
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert!(app.is_path_viewed("todo.md"));
         assert_eq!(
             selected_path(&app),
@@ -1866,7 +3245,7 @@ mod tests {
         );
 
         select_file(&mut app, "src/b.rs");
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert_eq!(
             tree_kinds(&app),
             vec!["dir", "file:b.rs", "file:a.rs", "file:c.rs"],
@@ -1878,7 +3257,7 @@ mod tests {
             "the row that was under b.rs"
         );
 
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert_eq!(
             tree_kinds(&app),
             vec!["dir", "file:b.rs", "file:c.rs", "file:a.rs"],
@@ -1905,7 +3284,7 @@ mod tests {
         );
 
         select_file(&mut app, "ci.yml");
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert_eq!(
             selected_path(&app),
             "ci.yml",
@@ -1936,7 +3315,7 @@ mod tests {
         );
 
         select_file(&mut app, "src/b.rs");
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert_eq!(
             tree_kinds(&app),
             vec![
@@ -1962,7 +3341,7 @@ mod tests {
             .collect();
         for path in &paths {
             select_file(&mut app, path);
-            app.handle(key('v'));
+            app.handle(key('m'));
         }
         assert!(
             paths.iter().all(|p| app.is_path_viewed(p)),
@@ -1982,9 +3361,9 @@ mod tests {
         let mut app = diff_app(&fixture);
         let first = selected_path(&app);
         assert_eq!(first, "ci.yml");
-        app.handle(key('v'));
+        app.handle(key('m'));
         select_file(&mut app, &first);
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert!(!app.is_path_viewed(&first));
         assert_eq!(
             selected_path(&app),
@@ -1999,7 +3378,7 @@ mod tests {
         let mut app = diff_app(&fixture);
         let first = selected_path(&app);
         enter_diff_pane(&mut app);
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert!(app.is_path_viewed(&first));
         // marking advanced the selection past the viewed file
         assert_ne!(selected_path(&app), first);
@@ -2020,7 +3399,7 @@ mod tests {
             ]
         );
         // v moves the file into the folded viewed bucket and advances
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert_eq!(
             tree_kinds(&app),
             [
@@ -2037,7 +3416,7 @@ mod tests {
     fn toggling_the_viewed_bucket_reveals_and_hides_its_files() {
         let fixture = standard_fixture();
         let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Review);
-        app.handle(key('v'));
+        app.handle(key('m'));
         // the folded viewed header is the last row; za on it unfolds
         app.handle(key('G'));
         app.handle(key('z'));
@@ -2064,7 +3443,7 @@ mod tests {
     fn editing_a_viewed_file_returns_it_to_the_to_review_bucket() {
         let fixture = standard_fixture();
         let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Review);
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert_eq!(tree_kinds(&app)[0], "section:To review:2");
         // the file changes on disk: its hash no longer matches the mark
         fixture.write("ci.yml", "on: push\njobs: {}\n");
@@ -2168,16 +3547,16 @@ mod tests {
         let fixture = standard_fixture();
         let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Review);
         // view everything, then unfold the viewed bucket and step onto a file
-        app.handle(key('v'));
-        app.handle(key('v'));
-        app.handle(key('v'));
+        app.handle(key('m'));
+        app.handle(key('m'));
+        app.handle(key('m'));
         app.handle(key('G'));
         app.handle(key('z'));
         app.handle(key('a'));
         app.handle(key('j'));
         assert_eq!(selected_path(&app), "ci.yml");
         // unmark: ci.yml jumps up into to-review; the cursor must follow it
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert_eq!(
             tree_kinds(&app),
             [
@@ -2195,11 +3574,18 @@ mod tests {
     fn marking_the_last_unviewed_file_keeps_the_cursor_in_range() {
         let fixture = standard_fixture();
         let mut app = diff_app_with_layout(&fixture, crate::config::FileLayout::Review);
-        app.handle(key('v'));
-        app.handle(key('v'));
-        // one file left; park the cursor on the trailing viewed header
-        app.handle(key('G'));
-        app.handle(key('v'));
+        // walk the files, marking each: the last one empties the to-review
+        // bucket under the cursor
+        for _ in 0..app
+            .diff
+            .as_ref()
+            .expect("diff")
+            .model(&app.review)
+            .files
+            .len()
+        {
+            app.handle(key('m'));
+        }
         let rows = tree_row_count(&app);
         assert_eq!(rows, 2, "both buckets, all files folded away");
         assert!(
@@ -2227,7 +3613,7 @@ mod tests {
     fn u_jumps_to_the_next_unviewed_file_wrapping_past_viewed_ones() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
-        app.handle(key('v')); // ci.yml viewed, selection lands on todo.md
+        app.handle(key('m')); // ci.yml viewed, selection lands on todo.md
         select_file(&mut app, "todo.md");
         app.handle(key('u'));
         assert_eq!(
@@ -2243,7 +3629,7 @@ mod tests {
         let mut app = diff_app(&fixture);
         for path in ["ci.yml", "src/lib.rs", "todo.md"] {
             select_file(&mut app, path);
-            app.handle(key('v'));
+            app.handle(key('m'));
         }
         let before = selected_path(&app);
         app.handle(key('u'));
@@ -2331,9 +3717,165 @@ mod tests {
     }
 
     #[test]
+    fn selecting_two_code_lines_yanks_them_with_their_markers() {
+        let fixture = two_hunk_fixture();
+        let mut app = diff_app(&fixture);
+        enter_diff_pane(&mut app);
+        cursor_to_line(&mut app, |r| {
+            matches!(
+                r,
+                DiffRow::Line {
+                    hunk: 0,
+                    line: 0,
+                    ..
+                }
+            )
+        });
+        app.handle(key('V'));
+        app.handle(key('j'));
+        app.handle(key('y'));
+        let text = app
+            .pending_clipboard
+            .clone()
+            .expect("selection copied to the clipboard");
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines, ["-line 1", "+line one"], "{lines:?}");
+    }
+
+    /// A stop with no anchor is prose alone: its card is the whole slide, so
+    /// selecting it copies the paragraph the reader sees.
+    #[test]
+    fn selecting_a_stops_card_yanks_its_prose_lines() {
+        let fixture = standard_fixture();
+        let mut app = walkthrough_app(&fixture);
+        enter_diff_pane(&mut app);
+        app.diff.as_mut().unwrap().cursor = 0;
+        app.handle(key('V'));
+        app.handle(key('G'));
+        app.handle(key('y'));
+        let text = app
+            .pending_clipboard
+            .clone()
+            .expect("selection copied to the clipboard");
+        assert!(text.contains("the overview"), "{text:?}");
+    }
+
+    #[test]
+    fn selecting_the_summary_yanks_its_lines() {
+        let fixture = standard_fixture();
+        let mut app = walkthrough_app_with_summary(&fixture);
+        app.diff_tree_to(0);
+        enter_diff_pane(&mut app);
+        app.diff.as_mut().unwrap().cursor = 0;
+        app.handle(key('V'));
+        app.handle(key('G'));
+        app.handle(key('y'));
+        let text = app
+            .pending_clipboard
+            .clone()
+            .expect("selection copied to the clipboard");
+        assert!(text.contains("the shape of the change"), "{text:?}");
+    }
+
+    /// A whole-file comment renders above the diff, so a selection that
+    /// starts on its card and runs into the first code line copies both,
+    /// the card first, the same order the pane shows them in.
+    #[test]
+    fn selecting_across_a_card_and_the_code_below_it_yanks_both_in_order() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        select_file(&mut app, "src/lib.rs");
+        app.review.session.add_comment(
+            Anchor {
+                file: "src/lib.rs".to_owned(),
+                line: None,
+                line_end: None,
+                on_old_side: false,
+                line_text: None,
+            },
+            "reviewer",
+            "why this file changed",
+        );
+        app.diff.as_mut().unwrap().invalidate();
+        app.diff.as_mut().unwrap().ensure_rows(&app.review);
+        let first_line = rows(&app)
+            .iter()
+            .position(|r| matches!(r, DiffRow::Line { .. }))
+            .expect("a code line follows the card");
+        app.diff.as_mut().unwrap().cursor = 0;
+        app.handle(key('V'));
+        app.diff.as_mut().unwrap().cursor = first_line;
+        app.handle(key('y'));
+        let text = app
+            .pending_clipboard
+            .clone()
+            .expect("selection copied to the clipboard");
+        let lines: Vec<&str> = text.lines().collect();
+        let card_at = lines
+            .iter()
+            .position(|line| line.contains("why this file changed"))
+            .expect("the card's prose is copied");
+        let code_at = lines
+            .iter()
+            .position(|line| {
+                line.starts_with('+') || line.starts_with('-') || line.starts_with(' ')
+            })
+            .expect("a code line is copied");
+        assert!(
+            card_at < code_at,
+            "the card reads before the code under it: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn y_with_no_selection_still_exports_comments_as_markdown() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        select_file(&mut app, "src/lib.rs");
+        app.review.session.add_comment(
+            Anchor {
+                file: "src/lib.rs".to_owned(),
+                line: None,
+                line_end: None,
+                on_old_side: false,
+                line_text: None,
+            },
+            "reviewer",
+            "why 42?",
+        );
+        app.diff.as_mut().unwrap().invalidate();
+        assert!(
+            app.diff.as_ref().unwrap().visual_anchor.is_none(),
+            "no selection is active"
+        );
+        app.handle(key('y'));
+        let text = app
+            .pending_clipboard
+            .clone()
+            .expect("clipboard text queued");
+        assert!(text.contains("why 42?"), "exported as markdown: {text:?}");
+    }
+
+    #[test]
+    fn yanking_a_selection_drops_the_anchor() {
+        let fixture = two_hunk_fixture();
+        let mut app = diff_app(&fixture);
+        enter_diff_pane(&mut app);
+        cursor_to_line(&mut app, |r| matches!(r, DiffRow::Line { .. }));
+        app.handle(key('V'));
+        app.handle(key('y'));
+        assert!(
+            app.diff.as_ref().unwrap().visual_anchor.is_none(),
+            "the yank drops the anchor"
+        );
+    }
+
+    #[test]
     fn y_with_no_comments_hints_instead_of_copying() {
         let fixture = standard_fixture();
         let mut app = diff_app(&fixture);
+        // feedback copy lives in the diff pane; the sidebar yanks paths
+        app.diff.as_mut().unwrap().focus = Pane::Diff;
         app.handle(key('y'));
         assert_eq!(app.pending_clipboard, None);
         let message = app.message.expect("message");
@@ -2504,19 +4046,247 @@ mod tests {
         );
     }
 
+    /// The `new_no` the cursor's own row carries, read fresh each time since
+    /// a rebuild can move it to a different row index.
+    fn cursor_line_no(app: &App) -> u32 {
+        let diff = app.diff.as_ref().unwrap();
+        let model = diff.model(&app.review);
+        let DiffRow::Line { hunk, line, .. } = diff.rows()[diff.cursor] else {
+            panic!("cursor sits on a line")
+        };
+        model.files[0].hunks[hunk].lines[line].new_no.unwrap()
+    }
+
     #[test]
-    fn real_change_refresh_clears_the_visual_selection() {
+    fn the_cursor_stays_on_the_same_line_after_a_comment_lands_above_it() {
+        let fixture = two_hunk_fixture();
+        let mut app = diff_app(&fixture);
+        app.author = "reviewer".to_owned();
+        enter_diff_pane(&mut app);
+        cursor_to_line(&mut app, |r| {
+            matches!(
+                r,
+                DiffRow::Line {
+                    hunk: 1,
+                    line: 2,
+                    ..
+                }
+            )
+        });
+        let before_row = app.diff.as_ref().unwrap().cursor;
+        let before_line = cursor_line_no(&app);
+
+        // an unanchored comment lands at the very top of the file, above
+        // every hunk the cursor could be on
+        app.review.session.add_comment(
+            Anchor {
+                file: "data.txt".to_owned(),
+                line: None,
+                line_end: None,
+                on_old_side: false,
+                line_text: None,
+            },
+            "reviewer",
+            "look here first",
+        );
+        let diff = app.diff.as_mut().unwrap();
+        diff.mark_rows_dirty();
+        diff.ensure_rows(&app.review);
+
+        assert_ne!(
+            app.diff.as_ref().unwrap().cursor,
+            before_row,
+            "the new comment pushed the row down"
+        );
+        assert_eq!(
+            cursor_line_no(&app),
+            before_line,
+            "and the cursor followed it"
+        );
+    }
+
+    #[test]
+    fn the_cursor_stays_on_the_same_line_after_a_refresh_rebuilds_every_hunk() {
+        let fixture = two_hunk_fixture();
+        let mut app = diff_app(&fixture);
+        enter_diff_pane(&mut app);
+        cursor_to_line(&mut app, |r| {
+            matches!(
+                r,
+                DiffRow::Line {
+                    hunk: 1,
+                    line: 2,
+                    ..
+                }
+            )
+        });
+        let before = cursor_line_no(&app);
+
+        // a third, unrelated edit in the middle of the file inserts a new
+        // hunk before the one the cursor sits in, shifting every later
+        // hunk's index
+        let lines: Vec<String> = (1..=20).map(|i| format!("line {i}")).collect();
+        let mut edited = lines;
+        edited[0] = "line one".to_owned();
+        edited[9] = "line ten edited".to_owned();
+        edited[19] = "line twenty".to_owned();
+        fixture.write("data.txt", &(edited.join("\n") + "\n"));
+        app.handle(AppEvent::RepoChanged);
+        app.settle_refresh();
+
+        let diff = app.diff.as_ref().unwrap();
+        assert_eq!(
+            diff.rows()
+                .iter()
+                .filter(|r| matches!(r, DiffRow::Hunk { .. }))
+                .count(),
+            3,
+            "the new edit split off a third hunk, shifting the one the cursor was in"
+        );
+        assert_eq!(
+            cursor_line_no(&app),
+            before,
+            "the cursor followed the same line even though its hunk index moved"
+        );
+    }
+
+    #[test]
+    fn a_refresh_elsewhere_in_the_repo_keeps_the_visual_selection() {
         let fixture = two_hunk_fixture();
         let mut app = diff_app(&fixture);
         enter_diff_pane(&mut app);
         cursor_to_line(&mut app, |r| matches!(r, DiffRow::Line { .. }));
         app.handle(key('V'));
+        // a new, unrelated file changes the model's fingerprint, but the
+        // selected file's own lines never moved
         fixture.write("zzz.md", "new\n");
         app.handle(AppEvent::RepoChanged);
         app.settle_refresh();
         assert!(
+            app.diff.as_ref().unwrap().visual_anchor.is_some(),
+            "the selected rows are still there, so the selection survives"
+        );
+    }
+
+    #[test]
+    fn a_refresh_while_composing_leaves_the_cursor_on_the_caret_line() {
+        let fixture = two_hunk_fixture();
+        let mut app = diff_app(&fixture);
+        enter_diff_pane(&mut app);
+        cursor_to_line(&mut app, |r| matches!(r, DiffRow::Line { .. }));
+        app.handle(key('c'));
+        type_text(&mut app, "still typing");
+        assert!(app.composer_open(), "composer stayed open");
+        assert_eq!(
+            app.diff.as_ref().unwrap().cursor,
+            caret_row(&app),
+            "typing seats the cursor on the caret"
+        );
+
+        // an unrelated file change forces a real refresh, rebuilding the rows
+        fixture.write("zzz.md", "new\n");
+        app.handle(AppEvent::RepoChanged);
+        app.settle_refresh();
+
+        assert!(app.composer_open(), "the draft survives the refresh");
+        assert_eq!(
+            app.diff.as_ref().unwrap().cursor,
+            caret_row(&app),
+            "the refresh leaves the cursor on the caret's line, not the card's header"
+        );
+    }
+
+    #[test]
+    fn a_selection_whose_rows_are_gone_ends_rather_than_covering_something_else() {
+        let fixture = two_hunk_fixture();
+        let mut app = diff_app(&fixture);
+        enter_diff_pane(&mut app);
+        cursor_to_line(&mut app, |r| matches!(r, DiffRow::Line { hunk: 0, .. }));
+        app.handle(key('V'));
+        app.handle(key('j'));
+        assert!(app.diff.as_ref().unwrap().visual_anchor.is_some());
+        // revert the first hunk's edit: those rows leave the diff entirely
+        let lines: Vec<String> = (1..=20).map(|i| format!("line {i}")).collect();
+        let mut edited = lines;
+        edited[19] = "line twenty".to_owned();
+        fixture.write("data.txt", &(edited.join("\n") + "\n"));
+        app.handle(AppEvent::RepoChanged);
+        app.settle_refresh();
+        assert!(
             app.diff.as_ref().unwrap().visual_anchor.is_none(),
-            "rows shifted: a stale anchor would dangle"
+            "the selected rows are gone, so the selection ends rather than \
+             latching onto whatever now sits at the old index"
+        );
+    }
+
+    #[test]
+    fn a_banded_span_still_covers_the_same_lines_after_a_card_lands_inside_it() {
+        let fixture = two_hunk_fixture();
+        let mut app = diff_app(&fixture);
+        app.author = "reviewer".to_owned();
+        let id = app
+            .review
+            .session
+            .add_comment(
+                Anchor {
+                    file: "data.txt".to_owned(),
+                    line: Some(2),
+                    line_end: Some(4),
+                    on_old_side: false,
+                    line_text: None,
+                },
+                "reviewer",
+                "range comment",
+            )
+            .id
+            .clone();
+        app.diff.as_mut().unwrap().mark_rows_dirty();
+        assert!(app.focus_comment(&id));
+        let line_no = |app: &App, row: usize| -> u32 {
+            let diff = app.diff.as_ref().unwrap();
+            let model = diff.model(&app.review);
+            let DiffRow::Line { hunk, line, .. } = diff.rows()[row] else {
+                panic!("band row is a line")
+            };
+            model.files[0].hunks[hunk].lines[line].new_no.unwrap()
+        };
+        let (start, end) = app
+            .diff
+            .as_ref()
+            .unwrap()
+            .referenced
+            .expect("a banded span");
+        assert_eq!(line_no(&app, start), 2);
+        assert_eq!(line_no(&app, end), 4);
+
+        // a second comment anchored on line 3 lands its card between the
+        // span's own endpoints
+        app.review.session.add_comment(
+            Anchor {
+                file: "data.txt".to_owned(),
+                line: Some(3),
+                line_end: None,
+                on_old_side: false,
+                line_text: None,
+            },
+            "reviewer",
+            "in between",
+        );
+        let diff = app.diff.as_mut().unwrap();
+        diff.mark_rows_dirty();
+        diff.ensure_rows(&app.review);
+
+        let (start, end) = app
+            .diff
+            .as_ref()
+            .unwrap()
+            .referenced
+            .expect("the band survives a card landing inside it");
+        assert_eq!(line_no(&app, start), 2, "band still opens on line 2");
+        assert_eq!(line_no(&app, end), 4, "band still closes on line 4");
+        assert!(
+            end - start > 2,
+            "the new card's rows now sit inside the band"
         );
     }
 
@@ -2559,7 +4329,7 @@ mod tests {
 
         // a commit-diff file lives in the pinned commit model, so viewed must
         // resolve against it, not the working-tree model
-        app.handle(key('v'));
+        app.handle(key('m'));
 
         let source = ReviewSource::commit(&oid);
         assert!(
@@ -2651,7 +4421,7 @@ mod tests {
             .id
             .clone();
         session.reply(&id, "agent", "done\nand verified");
-        let lines = comment_display(&session.comments[0], u16::MAX, None);
+        let lines = comment_display(&session.comments[0], u16::MAX, None, None, None);
         let plain = |s: &str| MdSpan {
             text: s.to_owned(),
             ..MdSpan::default()
@@ -2695,7 +4465,7 @@ mod tests {
             .id
             .clone();
         session.reply(&id, "agent", "a reply that also runs past the pane");
-        let lines = comment_display(&session.comments[0], 30, None);
+        let lines = comment_display(&session.comments[0], 30, None, None, None);
         let budget = 30 - 4;
         let text = |runs: &[MdSpan]| runs.iter().map(|s| s.text.clone()).collect::<String>();
         for line in &lines {
@@ -2741,7 +4511,7 @@ mod tests {
             "reviewer",
             "https://example.invalid/a/very/long/unbroken/path/segment/thing",
         );
-        let lines = comment_display(&session.comments[0], 24, None);
+        let lines = comment_display(&session.comments[0], 24, None, None, None);
         for line in &lines {
             if let CommentLine::Body(runs) = line {
                 let width: usize = runs.iter().map(|s| s.text.width()).sum();
@@ -2787,6 +4557,170 @@ mod tests {
     }
 
     #[test]
+    fn claiming_a_comment_toggles_authorship_and_back() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        let crate::mcp::McpResponse::Added { .. } =
+            app.handle_mcp(crate::mcp::McpRequestKind::AddComment {
+                file: "src/lib.rs".to_owned(),
+                line: 2,
+                line_end: None,
+                body: "looks off".to_owned(),
+                as_human: false,
+            })
+        else {
+            panic!("expected an added comment");
+        };
+        select_file(&mut app, "src/lib.rs");
+        let diff = app.diff.as_mut().unwrap();
+        diff.ensure_rows(&app.review);
+        let comment_row = rows(&app)
+            .iter()
+            .position(|r| matches!(r, DiffRow::Comment { .. }))
+            .expect("comment row present");
+        app.diff.as_mut().unwrap().cursor = comment_row;
+
+        app.claim_comment_at_cursor();
+        assert_eq!(app.review.session.comments[0].author, "reviewer");
+
+        app.claim_comment_at_cursor();
+        assert_eq!(
+            app.review.session.comments[0].author,
+            crate::mcp::AGENT_AUTHOR
+        );
+    }
+
+    #[test]
+    fn claiming_on_a_row_that_is_not_a_comment_says_so() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        select_file(&mut app, "src/lib.rs");
+        app.diff.as_mut().unwrap().cursor = added_line_position(&app);
+
+        app.claim_comment_at_cursor();
+        let message = app.message.clone().expect("info message");
+        assert!(message.text.contains("move onto a comment"), "{message:?}");
+    }
+
+    #[test]
+    fn claiming_all_comments_asks_first_claims_every_agent_comment_and_leaves_a_human_one() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        let crate::mcp::McpResponse::Added { id: agent_id } =
+            app.handle_mcp(crate::mcp::McpRequestKind::AddComment {
+                file: "src/lib.rs".to_owned(),
+                line: 2,
+                line_end: None,
+                body: "agent found this".to_owned(),
+                as_human: false,
+            })
+        else {
+            panic!("expected an added comment");
+        };
+        let human_id = app
+            .review
+            .session
+            .add_comment(
+                Anchor {
+                    file: "src/lib.rs".to_owned(),
+                    line: None,
+                    line_end: None,
+                    on_old_side: false,
+                    line_text: None,
+                },
+                "reviewer",
+                "human's own",
+            )
+            .id
+            .clone();
+
+        app.claim_all_comments_start();
+        assert!(
+            matches!(app.modal, Some(Modal::Confirm { .. })),
+            "claiming all asks first"
+        );
+        assert_eq!(
+            app.review.session.comment(&agent_id).unwrap().author,
+            crate::mcp::AGENT_AUTHOR,
+            "nothing claimed before confirming"
+        );
+
+        app.handle(key('n'));
+        assert!(app.modal.is_none(), "declining closes the dialog");
+        assert_eq!(
+            app.review.session.comment(&agent_id).unwrap().author,
+            crate::mcp::AGENT_AUTHOR,
+            "declining changes nothing"
+        );
+
+        app.claim_all_comments_start();
+        app.handle(key('y'));
+        assert_eq!(
+            app.review.session.comment(&agent_id).unwrap().author,
+            "reviewer",
+            "confirming claims the agent comment"
+        );
+        assert_eq!(
+            app.review.session.comment(&human_id).unwrap().author,
+            "reviewer",
+            "the human comment was always theirs, untouched"
+        );
+    }
+
+    /// A stop is never posted anywhere, and claiming it would hide it from
+    /// the revision logic that prunes superseded stops by their agent
+    /// authorship, so a walkthrough source refuses the verb outright.
+    #[test]
+    fn claiming_a_stop_on_a_walkthrough_is_refused() {
+        let fixture = standard_fixture();
+        let mut app = walkthrough_app(&fixture);
+        app.handle(key('j'));
+        app.handle(key('j'));
+        enter_diff_pane(&mut app);
+        let card = rows(&app)
+            .iter()
+            .position(|row| matches!(row, DiffRow::Comment { line: 0, .. }))
+            .expect("a stop card");
+        app.diff.as_mut().expect("diff view").cursor = card;
+
+        app.claim_comment_at_cursor();
+
+        let message = app.message.clone().expect("info message");
+        assert!(message.text.contains("claimable"), "{message:?}");
+        let source = app.active_review_source();
+        assert_eq!(
+            app.review
+                .session_for(&source)
+                .comment("stop-2")
+                .unwrap()
+                .author,
+            crate::mcp::AGENT_AUTHOR,
+            "the stop stays the agent's"
+        );
+    }
+
+    #[test]
+    fn claiming_all_comments_on_a_walkthrough_is_refused_without_a_prompt() {
+        let fixture = standard_fixture();
+        let mut app = walkthrough_app(&fixture);
+
+        app.claim_all_comments_start();
+
+        assert!(app.modal.is_none(), "no confirm prompt for a walkthrough");
+        let message = app.message.clone().expect("info message");
+        assert!(message.text.contains("claimable"), "{message:?}");
+        let source = app.active_review_source();
+        assert!(
+            app.review
+                .session_for(&source)
+                .comments
+                .iter()
+                .all(|c| c.author == crate::mcp::AGENT_AUTHOR),
+            "every stop stays the agent's"
+        );
+    }
+
+    #[test]
     fn build_split_rows_aligns_old_and_new_sides() {
         let fixture = standard_fixture();
         let app = diff_app(&fixture);
@@ -2794,7 +4728,15 @@ mod tests {
         let model = diff.model(&app.review);
         let session = app.review.session_for(&ReviewSource::WorkingTree);
         for (index, file) in model.files.iter().enumerate() {
-            for row in build_split_rows(model, session, index, u16::MAX, None) {
+            for row in build_split_rows(
+                model,
+                session,
+                index,
+                u16::MAX,
+                None,
+                &diff.figures,
+                &diff.unresolved_anchors,
+            ) {
                 let SplitRow::Pair { hunk, left, right } = row else {
                     continue;
                 };
@@ -2826,6 +4768,29 @@ mod tests {
         assert!(app.diff.as_ref().unwrap().side_by_side);
         app.handle(key('|'));
         assert!(!app.diff.as_ref().unwrap().side_by_side);
+    }
+
+    #[test]
+    fn yank_in_the_sidebar_copies_the_path_the_row_names() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        app.diff.as_mut().unwrap().focus = Pane::List;
+        app.handle(key('y'));
+        let path = app
+            .diff
+            .as_ref()
+            .and_then(|diff| {
+                let model = diff.model(&app.review);
+                model.files.get(diff.selected).map(|file| file.path.clone())
+            })
+            .expect("a file under the cursor");
+        assert_eq!(app.pending_clipboard.as_deref(), Some(path.as_str()));
+        assert!(
+            app.message
+                .as_ref()
+                .is_some_and(|m| !m.text.contains("no comments")),
+            "the sidebar never reaches the feedback copy"
+        );
     }
 
     #[test]

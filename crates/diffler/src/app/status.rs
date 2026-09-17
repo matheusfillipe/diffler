@@ -6,9 +6,12 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 use diffler_core::model::FileDiff;
+use diffler_core::review::Review;
+use diffler_core::source::ReviewSource;
 use diffler_core::vcs::{BranchInfo, LogEntry, NetworkOp, Vcs, VcsError};
 
 use super::enrich::EnrichOutcome;
+use super::rowsel::RowSelect;
 use super::{App, BranchAction, FileHighlights, Modal, PendingOp};
 use crate::config::FileLayout;
 use crate::keymap::Action;
@@ -31,6 +34,9 @@ pub(crate) const BRANCHES_TITLE: &str = "Branches";
 /// Heading for the leading Open-pull-requests section (when a forge is
 /// detected).
 pub(crate) const PRS_TITLE: &str = "Open pull requests";
+
+/// Heading for the review's walkthroughs group.
+pub(crate) const WALKTHROUGHS_TITLE: &str = "Walkthroughs";
 
 /// How far the unpushed walk goes. Nothing prunes it in a repository whose
 /// remote refs sit off HEAD's history, where the honest answer is the whole
@@ -79,7 +85,7 @@ impl Section {
 
 /// The status screen's collapsible groups below (and including) the
 /// unpushed-commits list, each addressed by one slot of
-/// [`StatusView::group_folded`] instead of a bool field apiece.
+/// [`StatusView::group_folded`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Group {
     /// Commits on HEAD its upstream lacks: local and actionable, so it opens
@@ -96,12 +102,14 @@ pub enum Group {
     /// to nothing on screen: a scheduled job, a cron run, a run on a branch
     /// that fell off the list.
     Ci,
+    /// The review's walkthroughs, listed under their header.
+    Walkthrough,
 }
 
 impl Group {
-    /// Variant count, so `group_folded`'s array length is derived from this
-    /// one spot instead of a literal that can drift as variants are added.
-    pub(crate) const COUNT: usize = 5;
+    /// Variant count: `group_folded`'s array length derives from this one
+    /// spot, so it grows automatically as variants are added.
+    pub(crate) const COUNT: usize = 6;
 
     pub(crate) fn index(self) -> usize {
         match self {
@@ -110,6 +118,7 @@ impl Group {
             Self::Branches => 2,
             Self::Recent => 3,
             Self::Ci => 4,
+            Self::Walkthrough => 5,
         }
     }
 }
@@ -176,6 +185,15 @@ pub enum Row {
     },
     /// The branch's open pull request; Enter reviews it.
     Pr,
+    /// Header of the review's walkthroughs; `count` is how many there are.
+    WalkthroughHeader {
+        count: usize,
+    },
+    /// One walkthrough of the review, named by id. Enter opens the diff in
+    /// its walkthrough layout.
+    Walkthrough {
+        id: String,
+    },
     /// Divider between the branch band (this branch) and the repo band (this
     /// repo). Furniture, not a cursor-addressable row: it never holds the
     /// cursor, has no search label, and is skipped by every movement.
@@ -235,6 +253,8 @@ pub(super) enum CursorAnchor {
     Recent,
     Commit(usize),
     Pr,
+    WalkthroughHeader,
+    Walkthrough(String),
     Prs,
     PrsRow(usize),
     Branches,
@@ -252,24 +272,75 @@ pub(super) struct LineAnchor {
 }
 
 /// The unpushed commits and whether the walk that found them stopped at its
-/// ceiling, so a count rendered from this says `100+` instead of claiming an
-/// exact total it never reached.
+/// ceiling, so a count rendered from this can say `100+` there.
 pub struct Unpushed {
     pub commits: Vec<LogEntry>,
     pub capped: bool,
 }
 
+/// One walkthrough of the repo, as its own review file holds it: what the
+/// status screen's row needs, without going through whatever diff is open.
+pub struct WalkthroughRow {
+    pub id: String,
+    pub title: String,
+    pub stops: usize,
+    pub all_seen: bool,
+    /// Whether the walkthrough has a summary: `<cr>` opens on it when so,
+    /// else on the first stop.
+    pub has_summary: bool,
+}
+
+/// Every walkthrough source on disk (the working review's in-memory edits
+/// included), newest published first. Real disk IO, so this runs once per
+/// refresh (`App::new`, `App::apply_refresh`), never from the render path.
+pub(super) fn load_walkthroughs(review: &Review) -> Vec<WalkthroughRow> {
+    let mut rows: Vec<(u64, WalkthroughRow)> = review
+        .all_reviews()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(source, session)| {
+            let ReviewSource::Walkthrough { id } = source else {
+                return None;
+            };
+            let walkthrough = session.walkthrough.as_ref()?;
+            let all_seen = !walkthrough.stops.is_empty()
+                && walkthrough
+                    .stops
+                    .iter()
+                    .all(|stop| session.is_stop_seen(stop));
+            Some((
+                walkthrough.at,
+                WalkthroughRow {
+                    id,
+                    title: walkthrough.title.clone(),
+                    stops: walkthrough.stops.len(),
+                    all_seen,
+                    has_summary: walkthrough.summary.is_some(),
+                },
+            ))
+        })
+        .collect();
+    rows.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
+    rows.into_iter().map(|(_, row)| row).collect()
+}
+
 /// All state owned by the status screen.
 pub struct StatusView {
     pub cursor: usize,
+    /// Where a `V` selection started, so a run of commits can be reviewed as
+    /// one range.
+    pub anchor: Option<usize>,
     pub folded: [bool; 3],
     /// Commits no remote has yet: local, free to act on, so shown unfolded by
-    /// default. `None` in a repository with no remote-tracking refs, the one
-    /// case where the section is absent instead of reading zero.
+    /// default. `None` in a repository with no remote-tracking refs, where
+    /// the section is absent entirely.
     pub unpushed: Option<Unpushed>,
     pub recent: Vec<LogEntry>,
     /// Local branches, newest tip first, capped to `BRANCHES_INLINE_LIMIT`.
     pub branches: Vec<BranchInfo>,
+    /// Every walkthrough source on disk, newest published first. Loaded once
+    /// per refresh, not per frame: real disk IO.
+    pub walkthroughs: Vec<WalkthroughRow>,
     /// Fold state of the repo-band groups (and Unpushed above them), indexed
     /// by [`Group::index`]. The whole repo band starts folded, unlike the
     /// always-open branch band above it.
@@ -308,18 +379,35 @@ pub struct StatusView {
     pub(crate) line_rows: Vec<Option<usize>>,
 }
 
+impl RowSelect for StatusView {
+    fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    fn anchor(&self) -> Option<usize> {
+        self.anchor
+    }
+
+    fn set_anchor(&mut self, anchor: Option<usize>) {
+        self.anchor = anchor;
+    }
+}
+
 impl StatusView {
     pub(super) fn new(
         unpushed: Option<Unpushed>,
         recent: Vec<LogEntry>,
         branches: Vec<BranchInfo>,
+        walkthroughs: Vec<WalkthroughRow>,
     ) -> Self {
         Self {
             cursor: 0,
+            anchor: None,
             folded: [false; 3],
             unpushed,
             recent,
             branches,
+            walkthroughs,
             group_folded: default_group_folded(),
             unfolded_commits: BTreeSet::new(),
             viewport: 0,
@@ -384,10 +472,24 @@ pub(super) fn load_commit_lists(
 pub(super) fn load_branches(vcs: &dyn Vcs) -> Result<Vec<BranchInfo>, VcsError> {
     let mut branches = vcs.branches()?;
     branches.sort_by_key(|branch| (!branch.is_head, std::cmp::Reverse(branch.tip_unix)));
+    // a divergence costs a config read and a graph walk each, which a
+    // repository carrying hundreds of branches feels on every refresh, so only
+    // the rows the section renders ask for one
+    for branch in branches.iter_mut().take(BRANCHES_INLINE_LIMIT) {
+        branch.divergence = vcs.divergence(&branch.name).unwrap_or_default();
+    }
     Ok(branches)
 }
 
 impl App {
+    /// Re-read every walkthrough source on disk. Called after a refresh, and
+    /// after any change to a walkthrough's own file (publish, delete, a stop
+    /// removed), so the status screen's listing never trails the change that
+    /// just made it.
+    pub(crate) fn reload_walkthroughs(&mut self) {
+        self.status.walkthroughs = load_walkthroughs(&self.review);
+    }
+
     pub fn is_folded(&self, section: Section) -> bool {
         self.status
             .folded
@@ -502,7 +604,7 @@ impl App {
         match self.config.ui.status_file_layout {
             // review and kinds are diff-sidebar-only (config rejects them
             // here); a stray value degrades to the flat list
-            FileLayout::List | FileLayout::Review | FileLayout::Kinds => {
+            FileLayout::List | FileLayout::Review | FileLayout::Kinds | FileLayout::Walkthrough => {
                 let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
                 tree::flat_rows(&paths)
             }
@@ -517,7 +619,8 @@ impl App {
     /// Flattened cursor-addressable rows given current fold/expansion state.
     /// Empty sections are hidden, neogit-style; blank separators are a
     /// rendering concern, so j/k skip them by construction.
-    #[allow(clippy::too_many_lines)] // one flat block per band, straight-line by design
+    // one flat block per band, straight-line by design
+    #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
     pub fn visible_rows(&self) -> Vec<Row> {
         let mut rows = Vec::new();
         // the branch's own PR leads the band: it is the thing the branch is
@@ -525,6 +628,21 @@ impl App {
         // re-seats the cursor over the rows it displaces
         if self.pr.is_some() {
             rows.push(Row::Pr);
+        }
+        // the repo's walkthroughs, right where the reader decides what to
+        // open; newest first, so the one just published leads
+        if !self.status.walkthroughs.is_empty() {
+            rows.push(Row::WalkthroughHeader {
+                count: self.status.walkthroughs.len(),
+            });
+            if !self.is_group_folded(Group::Walkthrough) {
+                rows.extend(
+                    self.status
+                        .walkthroughs
+                        .iter()
+                        .map(|w| Row::Walkthrough { id: w.id.clone() }),
+                );
+            }
         }
         for section in Section::ALL {
             let files = self.section_files(section);
@@ -543,8 +661,11 @@ impl App {
             // layouts; Tree groups files under collapsible directory rows.
             for tree_row in self.section_layout_rows(section, files) {
                 match tree_row.node {
-                    // status sections never produce review buckets
-                    TreeNode::Section { .. } => {}
+                    // status sections never produce review buckets, stops,
+                    // or the walkthrough sidebar's leading row
+                    TreeNode::Section { .. }
+                    | TreeNode::Stop { .. }
+                    | TreeNode::WalkthroughSummary => {}
                     TreeNode::Dir { path, name } => rows.push(Row::Dir {
                         section,
                         path,
@@ -674,6 +795,14 @@ impl App {
                 let pr = self.pr.as_ref()?;
                 format!("PR #{} {}", pr.number, pr.title)
             }
+            Row::WalkthroughHeader { .. } => WALKTHROUGHS_TITLE.to_owned(),
+            Row::Walkthrough { id } => self
+                .status
+                .walkthroughs
+                .iter()
+                .find(|w| w.id == *id)?
+                .title
+                .clone(),
             Row::PrsHeader { .. } => PRS_TITLE.to_owned(),
             Row::OpenPr { index } => {
                 let pr = self.other_prs();
@@ -823,8 +952,10 @@ impl App {
                     self.status_activate_cursor();
                 }
             }
-            // the status screen has no line selection to drag or cancel
-            MouseGesture::Drag { .. } | MouseGesture::Cancel => {}
+            // a right-click cancels what is in progress, which here is a run of
+            // rows the reader was selecting
+            MouseGesture::Cancel => self.status.set_anchor(None),
+            MouseGesture::Drag { .. } => {}
         }
     }
 
@@ -841,6 +972,9 @@ impl App {
         if index >= self.visible_rows().len() {
             return false;
         }
+        // a click names where the reader wants to be, so it clears any
+        // anchor and starts a fresh selection there
+        self.status.set_anchor(None);
         self.status.cursor = index;
         true
     }
@@ -853,7 +987,8 @@ impl App {
                 | Row::Commit { .. }
                 | Row::Branch { .. }
                 | Row::OpenPr { .. }
-                | Row::CiRun { .. },
+                | Row::CiRun { .. }
+                | Row::Walkthrough { .. },
             ) => {
                 self.open_at_cursor();
             }
@@ -864,7 +999,8 @@ impl App {
                 | Row::PrsHeader { .. }
                 | Row::BranchesHeader { .. }
                 | Row::RecentHeader { .. }
-                | Row::CiHeader { .. },
+                | Row::CiHeader { .. }
+                | Row::WalkthroughHeader { .. },
             ) => {
                 self.toggle_fold();
             }
@@ -874,6 +1010,7 @@ impl App {
 
     pub(super) fn dispatch_status(&mut self, action: Action) {
         match action {
+            Action::VisualSelect => self.status.toggle_visual(),
             Action::MoveDown => {
                 let rows = self.visible_rows();
                 let last = rows.len().saturating_sub(1);
@@ -908,6 +1045,7 @@ impl App {
             Action::StageAll => self.stage_all(),
             Action::UnstageAll => self.unstage_all(),
             Action::Discard => self.discard_at_cursor(),
+            Action::DeleteComment => self.delete_walkthrough_at_cursor(),
             Action::Open => self.open_at_cursor(),
             Action::OpenReviewDiff | Action::DiffWorkingTree => self.open_working_tree_diff(None),
             Action::DiffBase => self.diff_against_base(),
@@ -1002,13 +1140,21 @@ impl App {
     }
 
     /// Copy whatever the cursor is on, in the form you would paste elsewhere:
-    /// a pull request as its forge URL, a commit as its full sha.
+    /// a pull request as its forge URL, a commit as its full sha, a file or a
+    /// folder as its repo-relative path.
     fn copy_at_status_cursor(&mut self) {
         let copied = match self.cursor_row() {
+            Some(Row::Dir { path, .. }) => Some((Some(path.clone()), path)),
             Some(Row::Pr) => self
                 .pr
                 .as_ref()
                 .map(|pr| (pr.url.clone(), format!("#{}", pr.number))),
+            Some(Row::Walkthrough { id }) => self
+                .status
+                .walkthroughs
+                .iter()
+                .find(|w| w.id == id)
+                .map(|w| (Some(w.title.clone()), w.title.clone())),
             Some(Row::OpenPr { index }) => self
                 .other_prs()
                 .get(index)
@@ -1023,7 +1169,14 @@ impl App {
                 .unpushed_commits()
                 .get(index)
                 .map(|entry| (Some(entry.oid.clone()), entry.oid7.clone())),
-            _ => None,
+            // a file row, a hunk header, or a line inside an expanded diff:
+            // all of them address one file, the way the editor jump reads them
+            // a file row, a hunk header, or a line inside an expanded diff:
+            // all of them address one file, the way the editor jump reads them
+            other => other
+                .as_ref()
+                .and_then(|row| self.row_file(row))
+                .map(|(_, file, _)| (Some(file.path.clone()), file.path.clone())),
         };
         let Some((value, label)) = copied else {
             self.info("nothing to copy here");
@@ -1094,6 +1247,8 @@ impl App {
             | Row::UnpushedHeader { .. }
             | Row::Unpushed { .. }
             | Row::Pr
+            | Row::WalkthroughHeader { .. }
+            | Row::Walkthrough { .. }
             | Row::RepoDivider
             | Row::PrsHeader { .. }
             | Row::OpenPr { .. }
@@ -1152,10 +1307,9 @@ impl App {
         }
     }
 
-    /// Stage everything, resolved by the backend rather than from the section
-    /// model: that model is a snapshot, and a file edited on disk since the
-    /// last refresh is missing from it, which is what made this take two
-    /// presses.
+    /// Stage everything, resolved by the backend: the section model is a
+    /// snapshot, and a file edited on disk since the last refresh is missing
+    /// from it, which is what made this take two presses.
     fn stage_all(&mut self) {
         if self.section_files(Section::Untracked).is_empty()
             && self.section_files(Section::Unstaged).is_empty()
@@ -1188,6 +1342,20 @@ impl App {
         });
     }
 
+    /// `d` is the diff transient's key on this screen, and a walkthrough
+    /// row's delete only while the cursor sits on one; the header takes no
+    /// special action, like every other header.
+    pub(super) fn status_cursor_on_walkthrough(&self) -> bool {
+        self.screen() == super::Screen::Status
+            && matches!(self.cursor_row(), Some(Row::Walkthrough { .. }))
+    }
+
+    fn delete_walkthrough_at_cursor(&mut self) {
+        if let Some(Row::Walkthrough { id }) = self.cursor_row() {
+            self.confirm_delete_walkthrough(&id);
+        }
+    }
+
     fn stash_push(&mut self) {
         self.message = None;
         self.vcs_op(|vcs| vcs.stash_push(None));
@@ -1204,7 +1372,48 @@ impl App {
         }
     }
 
+    /// The oids of the commits a `V` selection covers, newest first. Rows that
+    /// are not commits sit between the sections and are simply passed over.
+    fn selected_commit_oids(&self) -> Vec<String> {
+        let Some((top, bottom)) = self.status.selection() else {
+            return Vec::new();
+        };
+        let rows = self.visible_rows();
+        let unpushed = self.status.unpushed_commits();
+        rows.get(top..=bottom)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|row| match *row {
+                Row::Unpushed { index } => unpushed.get(index).map(|entry| entry.oid.clone()),
+                Row::Commit { index } => {
+                    self.status.recent.get(index).map(|entry| entry.oid.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// `<cr>` with a selection: the selected commits read as one review, since
+    /// a run of commits is usually one piece of work. The list is newest first,
+    /// so the last of it is the range's oldest end.
+    fn open_selected_commits(&mut self) -> bool {
+        let oids = self.selected_commit_oids();
+        let (Some(newest), Some(oldest)) = (oids.first(), oids.last()) else {
+            return false;
+        };
+        if oids.len() < 2 {
+            return false;
+        }
+        let (oldest, newest) = (oldest.clone(), newest.clone());
+        self.status.set_anchor(None);
+        self.open_range_diff(&oldest, &newest);
+        true
+    }
+
     fn open_at_cursor(&mut self) {
+        if self.open_selected_commits() {
+            return;
+        }
         let Some(row) = self.cursor_row() else {
             return;
         };
@@ -1227,6 +1436,19 @@ impl App {
                 self.open_commit_diff(&oid);
             }
             Row::Pr => self.open_pr_review(),
+            Row::Walkthrough { id } => {
+                let has_summary = self
+                    .status
+                    .walkthroughs
+                    .iter()
+                    .any(|w| w.id == *id && w.has_summary);
+                let slide = if has_summary {
+                    crate::app::diff::Slide::Summary
+                } else {
+                    crate::app::diff::Slide::Stop(0)
+                };
+                self.open_walkthrough(id, slide);
+            }
             // a PR row reviews that PR directly; the header opens the full list
             Row::OpenPr { index } => {
                 let Some(pr) = self.other_prs().get(*index).map(|pr| (*pr).clone()) else {
@@ -1302,8 +1524,10 @@ impl App {
         if let Err(err) = self.review.save() {
             self.error(err.to_string());
         }
+        self.clamp_cursor();
     }
 
+    #[allow(clippy::too_many_lines)] // one match arm per row kind, straight-line by design
     fn toggle_fold(&mut self) {
         let Some(row) = self.cursor_row() else {
             return;
@@ -1384,6 +1608,11 @@ impl App {
             Row::CiHeader { .. } => {
                 self.toggle_group(Group::Ci, |row| matches!(row, Row::CiHeader { .. }));
             }
+            Row::WalkthroughHeader { .. } => {
+                self.toggle_group(Group::Walkthrough, |row| {
+                    matches!(row, Row::WalkthroughHeader { .. })
+                });
+            }
             Row::Unpushed { index } => {
                 if let Some(oid) = self
                     .status
@@ -1400,6 +1629,7 @@ impl App {
                 }
             }
             Row::Pr
+            | Row::Walkthrough { .. }
             | Row::RepoDivider
             | Row::CiRun { .. }
             | Row::Branch { .. }
@@ -1421,6 +1651,7 @@ impl App {
     /// Move the cursor onto the first visible row matching `pred`, if any.
     /// Every fold toggle needs this re-seat once the row set it sits in shifts.
     fn seat_cursor_on(&mut self, pred: impl Fn(&Row) -> bool) {
+        self.status.set_anchor(None);
         if let Some(position) = self.visible_rows().iter().position(pred) {
             self.status.cursor = position;
         }
@@ -1435,20 +1666,7 @@ impl App {
     /// Move the cursor to the next/previous row matching `target`.
     fn jump(&mut self, forward: bool, target: impl Fn(&Row) -> bool) {
         let rows = self.visible_rows();
-        let position = if forward {
-            rows.iter()
-                .enumerate()
-                .skip(self.status.cursor + 1)
-                .find(|(_, row)| target(row))
-                .map(|(index, _)| index)
-        } else {
-            rows.iter()
-                .enumerate()
-                .take(self.status.cursor)
-                .rfind(|(_, row)| target(row))
-                .map(|(index, _)| index)
-        };
-        if let Some(position) = position {
+        if let Some(position) = super::step_to(&rows, self.status.cursor, forward, target) {
             self.status.cursor = position;
         }
     }
@@ -1466,6 +1684,8 @@ impl App {
             Row::RecentHeader { .. } => CursorAnchor::Recent,
             Row::Commit { index } => CursorAnchor::Commit(*index),
             Row::Pr => CursorAnchor::Pr,
+            Row::WalkthroughHeader { .. } => CursorAnchor::WalkthroughHeader,
+            Row::Walkthrough { id } => CursorAnchor::Walkthrough(id.clone()),
             // furniture: the cursor never actually rests here
             Row::RepoDivider => return None,
             Row::PrsHeader { .. } => CursorAnchor::Prs,
@@ -1510,6 +1730,7 @@ impl App {
     /// Re-seat the cursor after rows changed: exact hunk → same file in the
     /// same section → same path anywhere → the section header → clamp.
     pub(super) fn restore_status_cursor(&mut self, anchor: Option<CursorAnchor>) {
+        self.status.set_anchor(None);
         let Some(anchor) = anchor else {
             self.clamp_cursor();
             return;
@@ -1532,6 +1753,14 @@ impl App {
                 |r| matches!(r, Row::RecentHeader { .. }),
             ),
             CursorAnchor::Pr => header_pos(&rows, |r| matches!(r, Row::Pr)),
+            CursorAnchor::WalkthroughHeader => {
+                header_pos(&rows, |r| matches!(r, Row::WalkthroughHeader { .. }))
+            }
+            CursorAnchor::Walkthrough(id) => indexed_or_header(
+                &rows,
+                |r| matches!(r, Row::Walkthrough { id: i } if i == id),
+                |r| matches!(r, Row::WalkthroughHeader { .. }),
+            ),
             CursorAnchor::Prs => header_pos(&rows, |r| matches!(r, Row::PrsHeader { .. })),
             CursorAnchor::PrsRow(index) => indexed_or_header(
                 &rows,
@@ -1650,6 +1879,9 @@ impl App {
     }
 
     pub(super) fn clamp_cursor(&mut self) {
+        // a selection names rows by position, so it cannot outlive a rebuild of
+        // the row list: the rows it covered are no longer the rows it covered
+        self.status.set_anchor(None);
         let rows = self.visible_rows();
         let clamped = self.status.cursor.min(rows.len().saturating_sub(1));
         self.status.cursor = nearest_selectable(&rows, clamped, true);
@@ -1686,6 +1918,7 @@ fn is_section_header(row: &Row) -> bool {
             | Row::BranchesHeader { .. }
             | Row::RecentHeader { .. }
             | Row::CiHeader { .. }
+            | Row::WalkthroughHeader { .. }
     )
 }
 
@@ -1826,6 +2059,141 @@ mod tests {
     }
 
     /// Move the cursor onto the first row matching `pred`.
+    /// Three commits on the status screen, so a run of them can be selected.
+    fn app_with_commits() -> (Fixture, App) {
+        let fixture = standard_fixture();
+        fixture.write("notes.txt", "alpha\nbeta\n");
+        fixture.commit_all("add beta note");
+        fixture.write(
+            "src/util.rs",
+            "pub fn twice(x: u32) -> u32 {\n    x * 2\n}\n",
+        );
+        fixture.commit_all("add util module");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        cursor_to(&mut app, |row| matches!(row, Row::RecentHeader { .. }));
+        app.handle(key('\t'));
+        (fixture, app)
+    }
+
+    /// `V` over a run of commits and `<cr>`: the whole run reads as one range,
+    /// which is what a stack of commits usually is.
+    #[test]
+    fn enter_on_a_selected_run_of_commits_opens_their_combined_range() {
+        let (_fixture, mut app) = app_with_commits();
+        cursor_to(&mut app, |row| matches!(row, Row::Commit { index: 0 }));
+        let newest = app.status.recent[0].oid.clone();
+        let oldest = app.status.recent[1].oid.clone();
+
+        app.handle(key('V'));
+        app.handle(key('j'));
+        app.handle(key('\n'));
+
+        let diff = app.diff.as_ref().expect("diff view");
+        let diffler_core::source::ReviewSource::Range {
+            oldest: from,
+            newest: to,
+        } = &diff.source
+        else {
+            panic!("expected a range, got {:?}", diff.source);
+        };
+        assert_eq!(
+            (from.as_str(), to.as_str()),
+            (oldest.as_str(), newest.as_str())
+        );
+        assert!(app.status.anchor.is_none(), "opening ends the selection");
+    }
+
+    /// One commit selected is one commit: the range only earns itself with a
+    /// second, so `<cr>` opens the single review it always did.
+    #[test]
+    fn enter_on_a_single_selected_commit_opens_that_commit() {
+        let (_fixture, mut app) = app_with_commits();
+        cursor_to(&mut app, |row| matches!(row, Row::Commit { index: 0 }));
+        let newest = app.status.recent[0].oid.clone();
+
+        app.handle(key('V'));
+        app.handle(key('\n'));
+
+        let diff = app.diff.as_ref().expect("diff view");
+        assert_eq!(
+            diff.source,
+            diffler_core::source::ReviewSource::commit(&newest)
+        );
+    }
+
+    /// A selection dragged up over the section header covers rows that are not
+    /// commits; they carry no oid, so the range is still the commits in it.
+    #[test]
+    fn a_selection_reaching_past_the_header_ranges_only_the_commits() {
+        let (_fixture, mut app) = app_with_commits();
+        cursor_to(&mut app, |row| matches!(row, Row::Commit { index: 1 }));
+        let oldest = app.status.recent[1].oid.clone();
+        let newest = app.status.recent[0].oid.clone();
+
+        app.handle(key('V'));
+        app.handle(key('k'));
+        app.handle(key('k'));
+        assert!(
+            matches!(app.cursor_row(), Some(Row::RecentHeader { .. })),
+            "the selection reaches the header"
+        );
+        app.handle(key('\n'));
+
+        let diff = app.diff.as_ref().expect("diff view");
+        let diffler_core::source::ReviewSource::Range {
+            oldest: from,
+            newest: to,
+        } = &diff.source
+        else {
+            panic!("expected a range, got {:?}", diff.source);
+        };
+        assert_eq!(
+            (from.as_str(), to.as_str()),
+            (oldest.as_str(), newest.as_str())
+        );
+    }
+
+    /// Expanding a file's diff inserts rows above the selected commits, so the
+    /// rows the selection named are no longer those rows. It ends there rather
+    /// than reviewing whatever moved under it.
+    #[test]
+    fn expanding_a_file_above_the_selection_ends_it() {
+        let fixture = standard_fixture();
+        fixture.commit_all("second commit");
+        fixture.write("notes.txt", "alpha\nbeta\ngamma\n");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        cursor_to(&mut app, |row| matches!(row, Row::RecentHeader { .. }));
+        app.handle(key('\t'));
+        cursor_to(&mut app, |row| matches!(row, Row::Commit { index: 0 }));
+        app.handle(key('V'));
+        app.handle(key('j'));
+        assert!(app.status.anchor.is_some(), "a run of commits is selected");
+
+        cursor_to(&mut app, |row| matches!(row, Row::File { .. }));
+        app.handle(key('\t'));
+
+        assert!(app.status.anchor.is_none(), "the rows it named have moved");
+        app.handle(key('\n'));
+        assert!(
+            !matches!(
+                app.diff.as_ref().map(|diff| &diff.source),
+                Some(diffler_core::source::ReviewSource::Range { .. })
+            ),
+            "no range is built from rows nobody selected"
+        );
+    }
+
+    /// Esc drops a status selection, the way it drops one anywhere else.
+    #[test]
+    fn escape_cancels_the_status_selection() {
+        let (_fixture, mut app) = app_with_commits();
+        cursor_to(&mut app, |row| matches!(row, Row::Commit { index: 0 }));
+        app.handle(key('V'));
+        assert!(app.status.anchor.is_some());
+        app.handle(crate::test_support::esc_key());
+        assert!(app.status.anchor.is_none());
+    }
+
     fn cursor_to(app: &mut App, pred: impl Fn(&Row) -> bool) -> Row {
         let rows = app.visible_rows();
         let position = rows.iter().position(pred).expect("row present");
@@ -2463,7 +2831,7 @@ mod tests {
         cursor_to(&mut app, file_row_in(Section::Unstaged));
         app.handle(key('\t'));
         assert!(app.is_expanded(Section::Unstaged, "src/lib.rs"));
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert!(app.is_path_viewed("src/lib.rs"));
         assert!(
             !app.is_expanded(Section::Unstaged, "src/lib.rs"),
@@ -2472,7 +2840,7 @@ mod tests {
         let reloaded = diffler_core::store::load(&fixture.root).unwrap();
         assert!(reloaded.viewed.contains_key("src/lib.rs"));
 
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert!(!app.is_path_viewed("src/lib.rs"));
         let reloaded = diffler_core::store::load(&fixture.root).unwrap();
         assert!(!reloaded.viewed.contains_key("src/lib.rs"));
@@ -2483,7 +2851,7 @@ mod tests {
         let (_fixture, mut app) = app();
         assert_eq!(app.viewed_counts(), (3, 0));
         cursor_to(&mut app, file_row_in(Section::Unstaged));
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert_eq!(app.viewed_counts(), (3, 1));
     }
 
@@ -2500,7 +2868,7 @@ mod tests {
             .files
             .len();
         assert_eq!(app.viewed_counts(), (total, 0));
-        app.handle(key('v'));
+        app.handle(key('m'));
         assert_eq!(
             app.viewed_counts(),
             (total, 1),
@@ -2974,8 +3342,8 @@ mod tests {
             Some("feat/topic")
         );
 
-        // checking out re-sorts the list (head leads), and the cursor rides the
-        // branch it was on rather than whatever now occupies that slot
+        // checking out re-sorts the list (head leads), and the cursor rides
+        // the branch it was on
         app.settle_refresh();
         let Some(Row::Branch { index }) = app.visible_rows().get(app.status.cursor).cloned() else {
             panic!("the cursor stays on a branch row");
@@ -3380,6 +3748,218 @@ mod tests {
         );
     }
 
+    /// The repo's walkthroughs sit in the branch band under the pull
+    /// request, folded like any other group until unfolded.
+    #[test]
+    fn the_walkthrough_header_follows_the_branch_pr_and_starts_folded() {
+        let (_fixture, mut app) = app();
+        app.ci_remotes = vec![github_remote()];
+        app.pr = Some(pull_request(7));
+        seat_walkthrough(&mut app);
+        let rows = app.visible_rows();
+        assert!(matches!(rows.first(), Some(Row::Pr)), "{rows:?}");
+        assert!(
+            matches!(rows.get(1), Some(Row::WalkthroughHeader { count: 1 })),
+            "{rows:?}"
+        );
+        assert!(
+            !rows
+                .iter()
+                .any(|row| matches!(row, Row::Walkthrough { .. })),
+            "folded by default: {rows:?}"
+        );
+    }
+
+    /// A review with no walkthrough has no row: the band never says an agent
+    /// wrote nothing.
+    #[test]
+    fn a_review_without_a_walkthrough_has_no_row() {
+        let (_fixture, app) = app();
+        assert!(
+            !app.visible_rows()
+                .iter()
+                .any(|row| matches!(row, Row::WalkthroughHeader { .. }))
+        );
+    }
+
+    /// `tab` on the header unfolds the walkthroughs, one row each.
+    #[test]
+    fn tab_on_the_walkthrough_header_unfolds_the_walkthroughs() {
+        let (_fixture, mut app) = app();
+        seat_walkthrough(&mut app);
+        cursor_to(&mut app, |row| matches!(row, Row::WalkthroughHeader { .. }));
+        app.dispatch_status(Action::ToggleFold);
+        let rows = app.visible_rows();
+        let ids: Vec<String> = rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Walkthrough { id } => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, vec!["w1".to_owned()], "{rows:?}");
+    }
+
+    /// Every walkthrough on disk lists as its own row, newest published first.
+    #[test]
+    fn two_walkthroughs_list_as_two_rows_newest_first() {
+        let (_fixture, mut app) = app();
+        seat_walkthrough(&mut app);
+        let source = diffler_core::source::ReviewSource::walkthrough("w2");
+        app.review.ensure_source(&source).expect("ensure");
+        app.review.session_for_mut(&source).set_walkthrough(
+            diffler_core::walkthrough::Walkthrough {
+                id: "w2".to_owned(),
+                title: "A second tour".to_owned(),
+                author: "agent".to_owned(),
+                at: 1_700_000_001,
+                stops: Vec::new(),
+                skipped: None,
+                summary: None,
+                rev: None,
+            },
+        );
+        app.review.save_for(&source).expect("save w2");
+        app.reload_walkthroughs();
+        app.status.group_folded[Group::Walkthrough.index()] = false;
+        let rows = app.visible_rows();
+        assert!(
+            matches!(rows[0], Row::WalkthroughHeader { count: 2 }),
+            "{rows:?}"
+        );
+        let ids: Vec<&str> = rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Walkthrough { id } => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, vec!["w2", "w1"], "the newest one leads");
+    }
+
+    /// `<cr>` on the header does nothing special, like every other header:
+    /// only `tab` folds and unfolds it.
+    #[test]
+    fn enter_on_the_walkthrough_header_does_nothing_special() {
+        let (_fixture, mut app) = app();
+        seat_walkthrough(&mut app);
+        cursor_to(&mut app, |row| matches!(row, Row::WalkthroughHeader { .. }));
+        app.dispatch_status(Action::Open);
+        assert_eq!(app.screen(), crate::app::Screen::Status);
+    }
+
+    /// `<cr>` on a walkthrough row opens its summary when it has one.
+    #[test]
+    fn enter_on_a_walkthrough_row_opens_its_summary() {
+        let (_fixture, mut app) = app();
+        seat_walkthrough(&mut app);
+        crate::test_support::set_walkthrough_summary(&mut app, "w1", "the shape of the change");
+        app.reload_walkthroughs();
+        app.status.group_folded[Group::Walkthrough.index()] = false;
+        cursor_to(&mut app, |row| matches!(row, Row::Walkthrough { .. }));
+
+        app.dispatch_status(Action::Open);
+
+        assert_eq!(app.screen(), crate::app::Screen::Diff);
+        let diff = app.diff.as_ref().expect("diff view");
+        assert_eq!(diff.layout, crate::config::FileLayout::Walkthrough);
+        assert_eq!(diff.slide, Some(crate::app::diff::Slide::Summary));
+        assert_eq!(diff.tree_cursor, 0);
+    }
+
+    /// `<cr>` on a walkthrough row with no summary opens straight on its
+    /// first stop, since the sidebar has no leading row to land on.
+    #[test]
+    fn enter_on_a_walkthrough_row_with_no_summary_opens_the_first_stop() {
+        let (_fixture, mut app) = app();
+        seat_walkthrough(&mut app);
+        app.status.group_folded[Group::Walkthrough.index()] = false;
+        cursor_to(&mut app, |row| matches!(row, Row::Walkthrough { .. }));
+
+        app.dispatch_status(Action::Open);
+
+        assert_eq!(app.screen(), crate::app::Screen::Diff);
+        let diff = app.diff.as_ref().expect("diff view");
+        assert_eq!(diff.layout, crate::config::FileLayout::Walkthrough);
+        assert_eq!(diff.slide, Some(crate::app::diff::Slide::Stop(0)));
+    }
+
+    #[test]
+    fn y_on_a_walkthrough_row_copies_its_title() {
+        let (_fixture, mut app) = app();
+        seat_walkthrough(&mut app);
+        app.status.group_folded[Group::Walkthrough.index()] = false;
+        cursor_to(&mut app, |row| matches!(row, Row::Walkthrough { .. }));
+        app.dispatch_status(Action::CopyUrl);
+        assert_eq!(
+            app.pending_clipboard.as_deref(),
+            Some("How the answer moved")
+        );
+    }
+
+    /// `y` on the header copies nothing, the same as any other header.
+    #[test]
+    fn y_on_the_walkthrough_header_copies_nothing() {
+        let (_fixture, mut app) = app();
+        seat_walkthrough(&mut app);
+        cursor_to(&mut app, |row| matches!(row, Row::WalkthroughHeader { .. }));
+        app.dispatch_status(Action::CopyUrl);
+        assert_eq!(app.pending_clipboard, None);
+    }
+
+    /// `d` on a walkthrough row asks, then deletes its review file and every
+    /// comment in it; `d` on the header still opens the diff transient, like
+    /// every other header.
+    #[test]
+    fn d_on_a_walkthrough_row_asks_then_deletes_it_and_its_comments() {
+        let (_fixture, mut app) = app();
+        seat_walkthrough(&mut app);
+        app.status.group_folded[Group::Walkthrough.index()] = false;
+
+        cursor_to(&mut app, |row| matches!(row, Row::WalkthroughHeader { .. }));
+        app.handle(key('d'));
+        assert!(app.modal.is_none());
+        assert!(
+            app.transient.is_some(),
+            "the header keeps the diff transient"
+        );
+        app.handle(esc());
+
+        cursor_to(&mut app, |row| matches!(row, Row::Walkthrough { .. }));
+        app.handle(key('d'));
+        assert!(matches!(app.modal, Some(crate::app::Modal::Confirm { .. })));
+        app.handle(key('n'));
+        assert!(!app.status.walkthroughs.is_empty(), "declined: still there");
+
+        app.handle(key('d'));
+        app.handle(key('y'));
+
+        assert!(
+            app.status.walkthroughs.is_empty(),
+            "the walkthrough is gone"
+        );
+        let source = diffler_core::source::ReviewSource::walkthrough("w1");
+        assert!(
+            app.review
+                .all_reviews()
+                .expect("all reviews")
+                .into_iter()
+                .all(|(s, _)| s != source),
+            "its review file is gone too"
+        );
+    }
+
+    fn seat_walkthrough(app: &mut App) {
+        crate::test_support::seat_walkthrough(
+            app,
+            "How the answer moved",
+            &[
+                ("The answer", Some("src/lib.rs#answer"), "why 42"),
+                ("The list", Some("todo.md:1"), "why a list"),
+            ],
+        );
+    }
+
     #[test]
     fn y_on_the_branch_pr_copies_its_url() {
         let (_fixture, mut app) = app();
@@ -3436,6 +4016,46 @@ mod tests {
 
         app.dispatch_status(Action::CopyUrl);
         assert!(app.pending_clipboard.is_none());
+    }
+
+    #[test]
+    fn y_on_a_file_copies_its_repo_relative_path() {
+        let (_fixture, mut app) = app();
+        cursor_to(&mut app, |row| matches!(row, Row::File { .. }));
+        app.dispatch_status(Action::CopyUrl);
+        assert_eq!(app.pending_clipboard.as_deref(), Some("todo.md"));
+    }
+
+    /// A line inside an expanded file still addresses that file, the way the
+    /// editor jump reads it.
+    #[test]
+    fn y_on_a_line_inside_an_expanded_file_copies_the_file() {
+        let (_fixture, mut app) = app();
+        cursor_to(&mut app, |row| matches!(row, Row::File { .. }));
+        app.handle(key('\t'));
+        cursor_to(&mut app, |row| matches!(row, Row::DiffLine { .. }));
+        app.dispatch_status(Action::CopyUrl);
+        assert_eq!(app.pending_clipboard.as_deref(), Some("todo.md"));
+    }
+
+    #[test]
+    fn y_on_a_folder_copies_the_folder() {
+        let fixture = crate::test_support::Fixture::new();
+        fixture.write("src/deep/inner.rs", "pub fn b() {}\n");
+        fixture.commit_all("base");
+        fixture.write("src/deep/inner.rs", "pub fn b() -> u32 {\n    2\n}\n");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.config.ui.status_file_layout = crate::config::FileLayout::Tree;
+        app.handle(AppEvent::Tick);
+        cursor_to(&mut app, |row| matches!(row, Row::Dir { .. }));
+        app.dispatch_status(Action::CopyUrl);
+        assert!(
+            app.pending_clipboard
+                .as_deref()
+                .is_some_and(|path| path.starts_with("src")),
+            "{:?}",
+            app.pending_clipboard
+        );
     }
 
     #[test]

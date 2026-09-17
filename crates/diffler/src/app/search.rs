@@ -1,6 +1,7 @@
 //! The `/` search controller shared by the screens.
 
 use crossterm::event::{KeyCode, KeyEvent};
+use diffler_core::model::DiffModel;
 
 use super::{App, Flow, Pane, Screen, diff_row_text, tree_row_label};
 use crate::graph::GraphView;
@@ -132,7 +133,7 @@ impl App {
                 view.rows()
                     .iter()
                     .enumerate()
-                    .map(|(i, row)| (i, view.row_text(*row).to_owned()))
+                    .map(|(i, row)| (i, view.line_text(*row).to_owned()))
                     .collect()
             }),
             Screen::File => self.file.as_ref().map_or_else(Vec::new, |view| {
@@ -151,7 +152,8 @@ impl App {
         let Some(diff) = self.diff.as_ref() else {
             return Vec::new();
         };
-        let model = diff.model(&self.review);
+        let model_cow = diff.model_for_rows(&self.review);
+        let model: &DiffModel = &model_cow;
         match diff.focus {
             Pane::List => diff
                 .tree_rows(model, self.review.session_for(&diff.source))
@@ -159,22 +161,27 @@ impl App {
                 .enumerate()
                 .map(|(i, r)| (i, tree_row_label(&r.node)))
                 .collect(),
-            // the comments sidebar lists comments, so that is what it searches
+            // the comments sidebar lists rows under its own grouping, so that
+            // is what it searches: a header by its label, a comment the way
+            // it always has
             Pane::Comments => {
                 let session = self.review.session_for(&diff.source);
-                self.comment_order()
-                    .iter()
+                self.comment_rows()
+                    .into_iter()
                     .enumerate()
-                    .filter_map(|(index, id)| {
-                        let comment = session.comments.iter().find(|c| &c.id == id)?;
-                        let line = comment
-                            .anchor
-                            .line
-                            .map_or(String::new(), |line| format!(":{line}"));
-                        Some((
-                            index,
-                            format!("{}{line} {}", comment.anchor.file, comment.body),
-                        ))
+                    .filter_map(|(index, row)| match row {
+                        crate::app::CommentPaneRow::Header { label, .. } => Some((index, label)),
+                        crate::app::CommentPaneRow::Item { id, .. } => {
+                            let comment = session.comment(&id)?;
+                            let line = comment
+                                .anchor
+                                .line
+                                .map_or(String::new(), |line| format!(":{line}"));
+                            Some((
+                                index,
+                                format!("{}{line} {}", comment.anchor.file, comment.body),
+                            ))
+                        }
                     })
                     .collect()
             }

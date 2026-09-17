@@ -10,7 +10,7 @@ def test_picker_opens_any_tracked_file_with_its_blame(spawn):
     tui = spawn("--no-mcp")
     tui.wait_for("Unstaged changes (1)")
 
-    tui.send_ctrl("t")
+    tui.send("gf")
     tui.wait_for("File ·")
     # README.md is committed and untouched, so the review never lists it
     tui.send("README")

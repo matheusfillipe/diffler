@@ -72,8 +72,9 @@ impl ClassifyConfig {
 
 /// How a view lists files: a flat magit-style list (one row per file, full
 /// repo-relative path), a collapsible directory tree, the review mode that
-/// splits files into to-review and viewed buckets, or the kinds mode that
-/// groups them by what they are (diff sidebar only for the last two).
+/// splits files into to-review and viewed buckets, the kinds mode that groups
+/// them by what they are, or the walkthrough mode that lists the agent's stops
+/// instead of files (diff sidebar only for the last three).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FileLayout {
@@ -81,6 +82,7 @@ pub enum FileLayout {
     Tree,
     Review,
     Kinds,
+    Walkthrough,
 }
 
 impl FileLayout {
@@ -93,6 +95,7 @@ impl FileLayout {
             "tree" => (Self::Tree, None),
             "review" => (Self::Review, None),
             "kinds" => (Self::Kinds, None),
+            "walkthrough" => (Self::Walkthrough, None),
             other => (
                 default,
                 Some(format!("unknown {key} \"{other}\", using \"{default}\"")),
@@ -108,6 +111,7 @@ impl fmt::Display for FileLayout {
             Self::Tree => "tree",
             Self::Review => "review",
             Self::Kinds => "kinds",
+            Self::Walkthrough => "walkthrough",
         })
     }
 }

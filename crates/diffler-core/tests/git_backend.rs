@@ -191,8 +191,43 @@ fn hunk_context_captures_the_enclosing_section() {
     );
     // context must not leak into the hunk id, which keys on lines alone
     let lines = hunk.lines.clone();
-    let id = diffler_core::model::hunk_id("a.rs", &lines);
+    let id = diffler_core::model::hunk_id("a.rs", &lines, 0);
     assert_eq!(id, hunk.id, "context does not perturb the hunk id");
+}
+
+#[test]
+fn two_hunks_with_identical_content_get_distinct_ids() {
+    let fx = Fixture::new();
+    let mut base = String::new();
+    for i in 1..=20 {
+        if i == 3 || i == 17 {
+            base.push_str("dup\n");
+        } else {
+            writeln!(base, "line {i}").expect("write");
+        }
+    }
+    fx.write("a.txt", &base);
+    fx.commit_all("base");
+    // the same one-line edit, made twice, far enough apart with no context
+    // lines between the two hunks that their content is byte-identical
+    fx.write("a.txt", &base.replace("dup\n", "changed\n"));
+
+    let model = GitVcs::open_with_context(fx.root(), 0)
+        .expect("open")
+        .working_tree_diff()
+        .expect("diff");
+    let hunks = &model.files[0].hunks;
+    assert_eq!(hunks.len(), 2, "two separate, far-apart edits");
+    assert_eq!(hunks[0].lines.len(), hunks[1].lines.len());
+    for (a, b) in hunks[0].lines.iter().zip(&hunks[1].lines) {
+        assert_eq!(a.kind, b.kind);
+        assert_eq!(a.text, b.text);
+    }
+    assert_ne!(
+        hunks[0].id, hunks[1].id,
+        "identical content still gets distinct ids, so a cursor on the \
+         second hunk never reseats onto the first"
+    );
 }
 
 #[test]
@@ -597,8 +632,35 @@ fn branch_reports_ahead_and_behind_relative_to_upstream() {
         .iter()
         .find(|b| b.name == branch_name)
         .expect("current listed");
-    assert_eq!(current.ahead, 2);
-    assert_eq!(current.behind, 1);
+    assert_eq!(
+        current.divergence, None,
+        "a listing leaves the walk to the caller"
+    );
+    assert_eq!(
+        v.divergence(&branch_name).expect("divergence"),
+        Some((2, 1))
+    );
+}
+
+/// A listing resolves no upstream, so a repository carrying hundreds of
+/// branches pays for names and tips alone.
+#[test]
+fn listing_branches_asks_no_upstream() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "x\n");
+    fx.commit_all("base");
+    for index in 0..25 {
+        fx.branch(&format!("topic-{index}"));
+    }
+
+    let v = vcs(&fx);
+    let branches = v.branches().expect("branches");
+
+    assert!(branches.len() >= 25);
+    assert!(
+        branches.iter().all(|branch| branch.divergence.is_none()),
+        "every divergence is left to the caller"
+    );
 }
 
 #[test]
@@ -610,12 +672,11 @@ fn branch_without_upstream_reports_zero_divergence_and_still_appears() {
 
     let v = vcs(&fx);
     let branches = v.branches().expect("branches");
-    let solo = branches
-        .iter()
-        .find(|b| b.name == "solo")
-        .expect("branch without an upstream is still listed");
-    assert_eq!(solo.ahead, 0);
-    assert_eq!(solo.behind, 0);
+    assert!(
+        branches.iter().any(|b| b.name == "solo"),
+        "branch without an upstream is still listed"
+    );
+    assert_eq!(v.divergence("solo").expect("divergence"), None);
 }
 
 #[test]
@@ -1353,4 +1414,31 @@ fn tracked_files_lists_the_index_not_the_worktree() {
         .map(|p| p.to_string_lossy().replace('\\', "/"))
         .collect();
     assert_eq!(names, vec!["b.txt", "src/a.txt", "staged.txt"]);
+}
+
+#[test]
+fn read_at_returns_the_files_content_in_that_commits_tree() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\n");
+    fx.commit_all("base");
+    let oid = head_oid(&fx);
+    fx.write("a.txt", "changed\n");
+
+    let content = vcs(&fx).read_at(&oid, "a.txt").expect("read_at");
+    assert_eq!(
+        content.as_deref(),
+        Some("one\n"),
+        "the commit's own tree, not the edited worktree"
+    );
+}
+
+#[test]
+fn read_at_is_none_for_a_path_the_commit_never_had() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\n");
+    fx.commit_all("base");
+    let oid = head_oid(&fx);
+
+    let content = vcs(&fx).read_at(&oid, "missing.txt").expect("read_at");
+    assert_eq!(content, None);
 }

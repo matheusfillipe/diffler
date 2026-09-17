@@ -10,12 +10,14 @@ run *args:
     cargo run -p diffler -- {{args}}
 
 # fast inner-loop verification (agents: run after every change)
+# same denials as ci, so a warning fails here rather than at the gate
 check:
-    cargo clippy --workspace --all-targets --all-features
+    cargo clippy --workspace --all-targets --all-features -- -D warnings -A unknown_lints -A clippy::unused_async_trait_impl
 
 test:
     cargo nextest run --workspace --all-features
     cargo test --doc --workspace
+    bash scripts/check-package-includes.sh
 
 # auto-fix what's mechanical
 fix:
@@ -67,11 +69,20 @@ cov:
 # core gate, matches CI's test+lint jobs (CI additionally runs msrv, deny, typos, dupes, machete, coverage)
 ci:
     cargo fmt --all -- --check
-    cargo clippy --workspace --all-targets --all-features -- -D warnings
+    # the trailing allow repeats Cargo.toml's: `-D warnings` is a group flag and
+    # lands after cargo's own lint flags, so it re-enables what they allowed
+    cargo clippy --workspace --all-targets --all-features -- -D warnings -A unknown_lints -A clippy::unused_async_trait_impl
     cargo nextest run --workspace --all-features
     cargo test --doc --workspace
     # CI fails the whole run on a typo; catch it here when the tool is around
     command -v typos >/dev/null && typos || echo "typos not installed, skipping"
+
+# what crates.io will build. The binary crate cannot be packaged here, since
+# the release bumps it and its library together and the new library version is
+# not on the index yet, so its rule is checked directly instead.
+package-check:
+    cargo package -p diffler-core --locked --allow-dirty
+    bash scripts/check-package-includes.sh
 
 # diff-pipeline benches (criterion)
 bench:

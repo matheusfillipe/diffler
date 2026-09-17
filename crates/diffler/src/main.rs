@@ -316,7 +316,7 @@ fn dispatch_file(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
             });
         let _ = tx.send(AppEvent::FileLoaded {
             result: Box::new(result),
-            line: request.line,
+            span: request.span,
             token: request.token,
         });
     });
@@ -369,8 +369,34 @@ fn dispatch_stats(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     });
 }
 
+/// Read the files the walkthrough points at, so its stops and figure nodes
+/// can resolve to lines. One read and one parse per file, which is the same
+/// shape as enrichment and belongs on the same pool. Reads `read_rev` when
+/// the walkthrough was published with one, falling back to the worktree for
+/// a path that revision lacks (or when there is no revision at all).
+fn dispatch_walkthrough(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
+    let Some(request) = app.pending_walkthrough.take() else {
+        return;
+    };
+    let tx = tx.clone();
+    let root = app.review.repo_root.clone();
+    tokio::task::spawn_blocking(move || {
+        let read = diffler_core::review::Review::compute_walkthrough_files(
+            &root,
+            request.read_rev.as_deref(),
+            &request.files,
+        );
+        let _ = tx.send(AppEvent::WalkthroughAnchors {
+            contents: read.contents,
+            pin_broken: read.pin_broken,
+            token: request.token,
+        });
+    });
+}
+
 fn dispatch_workers(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     dispatch_enrich(app, tx);
+    dispatch_walkthrough(app, tx);
     dispatch_file(app, tx);
     dispatch_declared(app, tx);
     dispatch_stats(app, tx);

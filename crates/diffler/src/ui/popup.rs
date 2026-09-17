@@ -3,7 +3,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
@@ -323,8 +323,9 @@ impl CreatePrForm<'_> {
                 PrField::Body,
                 "body ",
                 match body_lines {
-                    0 => "empty                    ⏎ edit in $EDITOR".to_owned(),
-                    n => format!("{n} lines                 ⏎ edit in $EDITOR"),
+                    0 => "empty".to_owned(),
+                    1 => draft.body.clone(),
+                    n => format!("{n} lines"),
                 },
             ),
             (
@@ -357,9 +358,34 @@ impl CreatePrForm<'_> {
                 Span::styled(value, value_style),
             ]));
         }
+        // the buttons are rows in the same list, so a click and `j` reach them
+        // the way they reach a field; a gap here would break the row mapping
+        for (field, text, colour) in [
+            (PrField::Create, "[ Create ]", theme.added),
+            (PrField::Cancel, "[ Cancel ]", theme.dim),
+        ] {
+            let picked = field == draft.field;
+            lines.push(Line::from(vec![
+                Span::styled(
+                    if picked { "▌" } else { " " }.to_owned(),
+                    Style::new().fg(theme.accent),
+                ),
+                Span::styled(
+                    format!("{text:<9}"),
+                    Style::new()
+                        .fg(colour)
+                        .bg(theme.panel)
+                        .add_modifier(if picked {
+                            Modifier::REVERSED
+                        } else {
+                            Modifier::empty()
+                        }),
+                ),
+            ]));
+        }
         lines.push(Line::styled(String::new(), dim));
         lines.push(Line::styled(
-            " j/k move   ⏎ edit   d draft   c create   esc cancel".to_owned(),
+            " j/k move   ⏎ edit   e editor   d draft   c create   esc cancel".to_owned(),
             dim,
         ));
 

@@ -31,6 +31,18 @@ pub struct FileSnapshot {
     pub blame: Vec<crate::vcs::BlameSpan>,
 }
 
+/// The result of [`Review::compute_walkthrough_files`]: every file it could
+/// read, plus whether the revision it was asked to pin to still resolves.
+#[derive(Debug, Default)]
+pub struct WalkthroughFiles {
+    pub contents: HashMap<String, String>,
+    /// A `rev` was named but no longer resolves (a squash, a rebase, a gc):
+    /// every file fell back to the worktree, and the reader is looking at
+    /// live code believing it is pinned. `false` when nothing was pinned at
+    /// all, which is not broken, just untracked.
+    pub pin_broken: bool,
+}
+
 /// One landed off-thread refresh.
 #[derive(Debug)]
 pub struct Refreshed {
@@ -149,6 +161,43 @@ impl Review {
             .collect())
     }
 
+    /// Every requested file's content as the walkthrough's own `rev` recorded
+    /// it, falling back to the live worktree for a path that revision has
+    /// none of (or when `rev` is `None`, a walkthrough saved before it was
+    /// tracked). Opens its own backend so it runs on a worker thread like
+    /// [`Review::compute_refresh`]; a path neither the revision nor the
+    /// worktree can produce is left out rather than failing the whole read.
+    /// `rev` itself can also stop resolving (a squash, a rebase, a gc): that
+    /// is distinct from a path merely absent from a revision that still
+    /// resolves, so it comes back as `pin_broken` rather than folding into
+    /// the same silent worktree fallback.
+    pub fn compute_walkthrough_files(
+        repo_root: &Path,
+        rev: Option<&str>,
+        files: &[String],
+    ) -> WalkthroughFiles {
+        let vcs = GitVcs::open(repo_root).ok();
+        let pin_broken = match (rev, vcs.as_ref()) {
+            (Some(rev), Some(vcs)) => vcs.resolve(rev).is_err(),
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
+        let rev = (!pin_broken).then_some(rev).flatten();
+        let contents = files
+            .iter()
+            .filter_map(|path| {
+                let pinned = rev.and_then(|rev| vcs.as_ref()?.read_at(rev, path).ok().flatten());
+                let content =
+                    pinned.or_else(|| std::fs::read_to_string(repo_root.join(path)).ok())?;
+                Some((path.clone(), content))
+            })
+            .collect();
+        WalkthroughFiles {
+            contents,
+            pin_broken,
+        }
+    }
+
     /// One file's worktree text and blame, for the file view. Opens its own
     /// backend so it runs on a worker thread like [`Review::compute_refresh`].
     /// A file git cannot blame (untracked, or newly staged) still loads: it
@@ -221,14 +270,29 @@ impl Review {
         Ok(())
     }
 
+    /// Forget a non-working source's cached session, after its file is
+    /// deleted from disk (e.g. a walkthrough removed for good), so a later
+    /// access reloads default state rather than serving stale memory.
+    pub fn forget_source(&mut self, source: &ReviewSource) {
+        self.sources.remove(&source.key());
+    }
+
     /// Every review across all sources, in-memory state overriding disk, sorted
-    /// by source key. Powers the agent-facing aggregate feed.
+    /// by source key. Powers the agent-facing aggregate feed. A review file
+    /// that fails to parse is skipped rather than failing the whole call; see
+    /// [`Review::all_reviews_and_corrupt`] for the list of what was skipped.
     pub fn all_reviews(&self) -> Result<Vec<(ReviewSource, Session)>, ReviewError> {
-        let mut by_key: BTreeMap<String, (ReviewSource, Session)> =
-            store::load_all(&self.repo_root)?
-                .into_iter()
-                .map(|(source, session)| (source.key(), (source, session)))
-                .collect();
+        Ok(self.all_reviews_and_corrupt()?.0)
+    }
+
+    /// [`Review::all_reviews`] plus the path of every review file that failed
+    /// to parse and was skipped, for a caller that wants to tell the reader.
+    pub fn all_reviews_and_corrupt(&self) -> Result<store::LoadedReviews, ReviewError> {
+        let (loaded, corrupt) = store::load_all(&self.repo_root)?;
+        let mut by_key: BTreeMap<String, (ReviewSource, Session)> = loaded
+            .into_iter()
+            .map(|(source, session)| (source.key(), (source, session)))
+            .collect();
         by_key.insert(
             ReviewSource::WorkingTree.key(),
             (ReviewSource::WorkingTree, self.session.clone()),
@@ -236,7 +300,7 @@ impl Review {
         for (key, (source, session)) in &self.sources {
             by_key.insert(key.clone(), (source.clone(), session.clone()));
         }
-        Ok(by_key.into_values().collect())
+        Ok((by_key.into_values().collect(), corrupt))
     }
 
     /// Swap a previously computed model back in. Used when a refresh proved
@@ -391,5 +455,90 @@ mod tests {
         let all = reopened.all_reviews().expect("all");
         let keys: Vec<String> = all.iter().map(|(s, _)| s.key()).collect();
         assert_eq!(keys, ["commit-deadbeef", "working"]);
+    }
+
+    /// A walkthrough pinned to a revision reads a file as that revision had
+    /// it, ignoring a dirty worktree, and falls back to the worktree for a
+    /// path the revision never had.
+    #[test]
+    fn compute_walkthrough_files_reads_the_pinned_revision_and_falls_back_for_the_rest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        init_repo(root);
+        write(root, "a.txt", "old\n");
+        commit_all(root, "base");
+        let root = repo::discover(root).expect("discover");
+        let pinned = Review::open(&root)
+            .expect("open")
+            .vcs
+            .resolve("HEAD")
+            .expect("resolve");
+        write(&root, "a.txt", "new\n");
+        write(&root, "b.txt", "worktree only\n");
+
+        let files = ["a.txt".to_owned(), "b.txt".to_owned()];
+        let read = Review::compute_walkthrough_files(&root, Some(&pinned), &files);
+        assert_eq!(
+            read.contents.get("a.txt").map(String::as_str),
+            Some("old\n"),
+            "reads the pinned revision, not the dirty worktree"
+        );
+        assert_eq!(
+            read.contents.get("b.txt").map(String::as_str),
+            Some("worktree only\n"),
+            "a path the revision never had falls back to the worktree"
+        );
+        assert!(!read.pin_broken, "the pin itself still resolves");
+    }
+
+    /// No `rev` at all (a walkthrough saved before it was tracked) reads the
+    /// worktree directly.
+    #[test]
+    fn compute_walkthrough_files_with_no_revision_reads_the_worktree() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        init_repo(root);
+        write(root, "a.txt", "committed\n");
+        commit_all(root, "base");
+        write(root, "a.txt", "edited\n");
+        let root = repo::discover(root).expect("discover");
+
+        let files = ["a.txt".to_owned()];
+        let read = Review::compute_walkthrough_files(&root, None, &files);
+        assert_eq!(
+            read.contents.get("a.txt").map(String::as_str),
+            Some("edited\n")
+        );
+        assert!(
+            !read.pin_broken,
+            "no revision was ever pinned, so nothing is broken"
+        );
+    }
+
+    /// A `rev` that no longer resolves (a squash, a rebase, a gc) is a
+    /// different fact than a path merely absent from a revision that does
+    /// resolve: every file still falls back to the worktree, but `pin_broken`
+    /// says so, so the reader is not shown live code believing it is pinned.
+    #[test]
+    fn compute_walkthrough_files_with_an_unresolvable_revision_reports_the_broken_pin() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        init_repo(root);
+        write(root, "a.txt", "edited\n");
+        commit_all(root, "base");
+        let root = repo::discover(root).expect("discover");
+
+        let files = ["a.txt".to_owned()];
+        let read = Review::compute_walkthrough_files(
+            &root,
+            Some("0000000000000000000000000000000000dead"),
+            &files,
+        );
+        assert_eq!(
+            read.contents.get("a.txt").map(String::as_str),
+            Some("edited\n"),
+            "still falls back to the worktree"
+        );
+        assert!(read.pin_broken, "the named revision does not resolve");
     }
 }

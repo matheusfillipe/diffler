@@ -2,3 +2,6 @@ allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true
 allow-indexing-slicing-in-tests = true
+# the worst dispatch loop we have scores 25; 20 leaves the shape of the code
+# alone and still catches a function growing a second job
+cognitive-complexity-threshold = 20

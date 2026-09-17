@@ -73,6 +73,8 @@ pub enum Action {
     PrevFunction,
     DeleteComment,
     DeleteAllComments,
+    ClaimComment,
+    ClaimAllComments,
     NextComment,
     PrevComment,
     HalfPageDown,
@@ -99,6 +101,7 @@ pub enum Action {
     SearchPrev,
     OpenEditor,
     OpenFilePicker,
+    OpenFigureGraph,
     Blame,
     ToggleBlame,
     SendFeedback,
@@ -170,6 +173,8 @@ impl Action {
             Self::PrevFunction => "prev_function",
             Self::DeleteComment => "delete_comment",
             Self::DeleteAllComments => "delete_all_comments",
+            Self::ClaimComment => "claim_comment",
+            Self::ClaimAllComments => "claim_all_comments",
             Self::PrevHunk => "prev_hunk",
             Self::NextComment => "next_comment",
             Self::PrevComment => "prev_comment",
@@ -197,6 +202,7 @@ impl Action {
             Self::SearchPrev => "search_prev",
             Self::OpenEditor => "open_editor",
             Self::OpenFilePicker => "open_file_picker",
+            Self::OpenFigureGraph => "open_figure_graph",
             Self::Blame => "blame",
             Self::ToggleBlame => "toggle_blame",
             Self::SendFeedback => "send_feedback",
@@ -269,6 +275,8 @@ impl Action {
             Self::PrevFunction => "previous function",
             Self::DeleteComment => "delete the comment under the cursor",
             Self::DeleteAllComments => "delete every local comment of this review",
+            Self::ClaimComment => "claim the comment under the cursor as yours",
+            Self::ClaimAllComments => "claim every agent comment of this review as yours",
             Self::NextComment => "next comment",
             Self::PrevComment => "previous comment",
             Self::HalfPageDown => "half page down",
@@ -283,11 +291,11 @@ impl Action {
             Self::ExpandWholeFile => "expand to the whole file",
             Self::SwitchTheme => "switch theme",
             Self::Comment => "comment the diff line",
-            Self::VisualSelect => "select a line range",
+            Self::VisualSelect => "select a range of rows",
             Self::Reply => "reply to the comment",
             Self::Resolve => "resolve the comment",
             Self::MarkViewed => "mark the file or folder viewed",
-            Self::CopyFileFeedback => "copy this file's feedback as markdown",
+            Self::CopyFileFeedback => "copy the selection, or this file's feedback as markdown",
             Self::CopyAllFeedback => "copy all feedback as markdown",
             Self::CopyUrl => "copy the web URL",
             Self::Search => "search",
@@ -295,6 +303,7 @@ impl Action {
             Self::SearchPrev => "previous search match",
             Self::OpenEditor => "open in $EDITOR",
             Self::OpenFilePicker => "find a file in the repository",
+            Self::OpenFigureGraph => "open the figure under the cursor as a graph",
             Self::Blame => "blame this file",
             Self::ToggleBlame => "toggle the blame column",
             Self::SendFeedback => "send feedback to waiting agents",
@@ -305,7 +314,7 @@ impl Action {
         }
     }
 
-    pub(crate) const ALL: [Self; 92] = [
+    pub(crate) const ALL: [Self; 95] = [
         Self::CenterCursor,
         Self::CursorTop,
         Self::CursorBottom,
@@ -317,6 +326,8 @@ impl Action {
         Self::PrevFunction,
         Self::DeleteComment,
         Self::DeleteAllComments,
+        Self::ClaimComment,
+        Self::ClaimAllComments,
         Self::OpenPrs,
         Self::CreatePr,
         Self::CommentsOverview,
@@ -391,6 +402,7 @@ impl Action {
         Self::SearchPrev,
         Self::OpenEditor,
         Self::OpenFilePicker,
+        Self::OpenFigureGraph,
         Self::Blame,
         Self::ToggleBlame,
         Self::SendFeedback,
@@ -445,13 +457,14 @@ pub struct Keymap {
 }
 
 const STATUS_DEFAULTS: &[(&str, Action)] = &[
+    ("V", Action::VisualSelect),
     ("j", Action::MoveDown),
     ("k", Action::MoveUp),
     ("gg", Action::GoTop),
     ("G", Action::GoBottom),
     ("<c-d>", Action::HalfPageDown),
     ("<c-u>", Action::HalfPageUp),
-    ("v", Action::MarkViewed),
+    ("m", Action::MarkViewed),
     ("<c-n>", Action::NextSection),
     ("<c-p>", Action::PrevSection),
     ("<tab>", Action::ToggleFold),
@@ -470,7 +483,7 @@ const STATUS_DEFAULTS: &[(&str, Action)] = &[
     ("[", Action::PrevSection),
     ("]", Action::NextSection),
     ("e", Action::OpenEditor),
-    ("<c-t>", Action::OpenFilePicker),
+    ("gf", Action::OpenFilePicker),
     ("B", Action::Blame),
     ("L", Action::OpenStats),
     ("y", Action::CopyUrl),
@@ -543,11 +556,14 @@ const DIFF_DEFAULTS: &[(&str, Action)] = &[
     ("R", Action::Resolve),
     ("d", Action::DeleteComment),
     ("D", Action::DeleteAllComments),
-    ("v", Action::MarkViewed),
+    ("M", Action::ClaimComment),
+    ("A", Action::ClaimAllComments),
+    ("m", Action::MarkViewed),
     ("y", Action::CopyFileFeedback),
     ("Y", Action::CopyAllFeedback),
     ("e", Action::OpenEditor),
-    ("<c-t>", Action::OpenFilePicker),
+    ("gf", Action::OpenFilePicker),
+    ("o", Action::OpenFigureGraph),
     ("B", Action::Blame),
     ("Z", Action::SendFeedback),
     ("C", Action::CommentsOverview),
@@ -579,8 +595,11 @@ const FILE_DEFAULTS: &[(&str, Action)] = &[
     ("]", Action::NextSection),
     ("<cr>", Action::Open),
     ("e", Action::OpenEditor),
+    ("V", Action::VisualSelect),
+    ("y", Action::CopyFileFeedback),
+    ("Y", Action::CopyAllFeedback),
     ("T", Action::SwitchTheme),
-    ("<c-t>", Action::OpenFilePicker),
+    ("gf", Action::OpenFilePicker),
     ("/", Action::Search),
     ("n", Action::SearchNext),
     ("N", Action::SearchPrev),
@@ -601,7 +620,7 @@ const LOG_DEFAULTS: &[(&str, Action)] = &[
     ("V", Action::VisualSelect),
     ("<cr>", Action::Open),
     ("<c-r>", Action::Refresh),
-    ("<c-t>", Action::OpenFilePicker),
+    ("gf", Action::OpenFilePicker),
     ("/", Action::Search),
     ("n", Action::SearchNext),
     ("N", Action::SearchPrev),
@@ -720,6 +739,27 @@ impl Keymap {
         warnings.extend(keymap.apply_prefix_overrides(overrides, section));
         warnings.extend(keymap.enforce_leaf_prefix(section));
         (keymap, warnings)
+    }
+
+    /// The motion an arrow stands for in this context, when nothing is bound
+    /// to the arrow itself. Resolved at lookup rather than added to the
+    /// bindings, so an arrow cannot double every motion row in the help popup
+    /// and cannot drift from the letter it mirrors.
+    fn arrow_motion(&self, press: &KeyPress) -> Option<Action> {
+        if press.ctrl || press.alt || press.shift {
+            return None;
+        }
+        let action = match press.code {
+            KeyCode::Up => Action::MoveUp,
+            KeyCode::Down => Action::MoveDown,
+            KeyCode::Left => Action::MoveLeft,
+            KeyCode::Right => Action::MoveRight,
+            _ => return None,
+        };
+        self.bindings
+            .iter()
+            .any(|(_, bound)| *bound == action)
+            .then_some(action)
     }
 
     fn apply_overrides(
@@ -959,14 +999,19 @@ impl Keymap {
                         pending.push(press);
                         Resolved::Pending
                     }
-                    Lookup::None => Resolved::Unbound,
+                    Lookup::None => self.arrow_or_unbound(&press),
                 }
             }
             Lookup::None => {
                 pending.clear();
-                Resolved::Unbound
+                self.arrow_or_unbound(&press)
             }
         }
+    }
+
+    fn arrow_or_unbound(&self, press: &KeyPress) -> Resolved {
+        self.arrow_motion(press)
+            .map_or(Resolved::Unbound, Resolved::Action)
     }
 
     /// All `(chord, action)` pairs in binding order, defaults first then
@@ -1077,6 +1122,15 @@ mod tests {
         presses.remove(0)
     }
 
+    fn action_of(keymap: &Keymap, chord: &str) -> Option<Action> {
+        let wanted = parse_chord(chord).expect("valid chord");
+        keymap
+            .bindings
+            .iter()
+            .find(|(bound, _)| *bound == wanted)
+            .map(|(_, action)| *action)
+    }
+
     #[test]
     fn all_defaults_parse() {
         for (defaults, context) in [
@@ -1090,7 +1144,13 @@ mod tests {
             (STATS_DEFAULTS, Context::Stats),
         ] {
             let (keymap, _) = Keymap::for_context(context, &KeysConfig::default());
-            assert_eq!(keymap.bindings.len(), defaults.len(), "{context:?}");
+            for (chord, action) in defaults {
+                assert_eq!(
+                    action_of(&keymap, chord),
+                    Some(*action),
+                    "{context:?} lost {chord}"
+                );
+            }
         }
     }
 
@@ -1245,6 +1305,10 @@ mod tests {
             keymap.resolve(&mut pending, press("Y")),
             Resolved::Action(Action::CopyAllFeedback)
         );
+        assert_eq!(
+            keymap.resolve(&mut pending, press("o")),
+            Resolved::Action(Action::OpenFigureGraph)
+        );
     }
 
     #[test]
@@ -1293,12 +1357,24 @@ mod tests {
         // `g` becomes a strict prefix of the default `gg` go-top chord
         keys.status.insert("stage".to_owned(), "g".to_owned());
         let (keymap, warnings) = Keymap::for_context(Context::Status, &keys);
-        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        // every chord it shadows is named, not just the first
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
         assert!(
-            warnings[0].contains("binding g for stage shadows chord gg (go_top)"),
+            warnings
+                .iter()
+                .any(|w| w.contains("binding g for stage shadows chord gg (go_top)")),
             "{warnings:?}"
         );
-        assert!(warnings[0].contains("[keys.status]"), "{warnings:?}");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("shadows chord gf (open_file_picker)")),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings.iter().all(|w| w.contains("[keys.status]")),
+            "{warnings:?}"
+        );
         // behavior is unchanged: the short binding still fires
         let mut pending = Vec::new();
         assert_eq!(
@@ -1441,6 +1517,79 @@ mod tests {
             keymap.resolve(&mut pending, press("c")),
             Resolved::Transient(TransientKind::Commit)
         );
+    }
+
+    fn resolved(keymap: &Keymap, chord: &str) -> Resolved {
+        let mut pending = Vec::new();
+        keymap.resolve(&mut pending, press(chord))
+    }
+
+    /// Arrows are the motion everyone reaches for first: wherever a screen
+    /// binds `hjkl`, the matching arrow must reach the same action.
+    #[test]
+    fn every_context_answers_arrows_wherever_it_answers_hjkl() {
+        for context in [
+            Context::Status,
+            Context::Diff,
+            Context::Log,
+            Context::CiLog,
+            Context::Graph,
+            Context::Prs,
+            Context::File,
+            Context::Stats,
+        ] {
+            let keymap = keymap(context);
+            for (letter, arrow) in [
+                ("j", "<down>"),
+                ("k", "<up>"),
+                ("h", "<left>"),
+                ("l", "<right>"),
+            ] {
+                let Some(action) = action_of(&keymap, letter) else {
+                    continue;
+                };
+                assert_eq!(
+                    resolved(&keymap, arrow),
+                    Resolved::Action(action),
+                    "{context:?} binds {letter} but not {arrow}"
+                );
+            }
+        }
+    }
+
+    /// The alias is derived from the action, so a remapped motion carries its
+    /// arrow with it.
+    #[test]
+    fn an_arrow_follows_a_remapped_motion() {
+        let mut keys = KeysConfig::default();
+        keys.log.insert("move_down".to_owned(), "n".to_owned());
+        let (keymap, warnings) = Keymap::for_context(Context::Log, &keys);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(resolved(&keymap, "n"), Resolved::Action(Action::MoveDown));
+        assert_eq!(
+            resolved(&keymap, "<down>"),
+            Resolved::Action(Action::MoveDown)
+        );
+    }
+
+    /// An explicit arrow binding is the reader's, not ours to shadow.
+    #[test]
+    fn an_explicit_arrow_binding_wins_over_the_alias() {
+        let mut keys = KeysConfig::default();
+        keys.log.insert("go_bottom".to_owned(), "<down>".to_owned());
+        let (keymap, _) = Keymap::for_context(Context::Log, &keys);
+        assert_eq!(
+            resolved(&keymap, "<down>"),
+            Resolved::Action(Action::GoBottom)
+        );
+    }
+
+    /// The help popup and the palette list the letter once; the arrow is a
+    /// lookup fallback, not a second row.
+    #[test]
+    fn an_arrow_alias_is_not_listed_as_its_own_binding() {
+        let keymap = keymap(Context::Log);
+        assert_eq!(action_of(&keymap, "<down>"), None);
     }
 
     #[test]

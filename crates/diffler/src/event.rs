@@ -27,8 +27,8 @@ pub enum AppEvent {
     /// A file the view asked for came back loaded and blamed, or failed to.
     FileLoaded {
         result: Box<Result<crate::app::file::FileView, String>>,
-        /// Line the request wanted the cursor on, 1-based.
-        line: Option<u32>,
+        /// Rows the request pointed at, 1-based and inclusive.
+        span: Option<(u32, u32)>,
         /// The request this answers; a stale one is dropped on arrival.
         token: u64,
     },
@@ -42,6 +42,16 @@ pub enum AppEvent {
     /// The language breakdown's repo scan came back.
     RepoStats {
         stats: Box<diffler_core::stats::RepoStats>,
+        /// The request this answers; a stale one is dropped on arrival.
+        token: u64,
+    },
+    /// The files the walkthrough's anchors name, read off-thread so its stops
+    /// and figures can resolve to lines.
+    WalkthroughAnchors {
+        contents: std::collections::HashMap<String, String>,
+        /// The pinned revision the walkthrough was read against no longer
+        /// resolves, so every file fell back to the worktree.
+        pin_broken: bool,
         /// The request this answers; a stale one is dropped on arrival.
         token: u64,
     },

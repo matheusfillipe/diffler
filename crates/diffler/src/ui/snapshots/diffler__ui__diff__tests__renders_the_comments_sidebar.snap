@@ -2,12 +2,12 @@
 source: crates/diffler/src/ui/diff.rs
 expression: render(&mut app).backend()
 ---
-" c comment · r reply · v viewed · C all comments · ? help                                                               "
-" Files                           Diff                                                      Comments (1)                 "
-" ▾ src                    +1 -1  new file  ci.yml · 1 comment                 +1 -0 █████ ▌○ ci.yml:1                   "
-"   ● lib.rs               +1 -1  @@ -0,0 +1,1 @@                                          ▌ this line reads oddly and   "
-"▌+ ci.yml ·1              +1 -0 ▌        1 on: push                                       ▌ should wrap across the      "
-" ○ todo.md                +1 -0   ▌ reviewer · open                                       ▌ column                      "
+" c add comment · r reply · m mark viewed · C see comment list · ? help                                                  "
+" Files                           Diff                                                      Comments (1) · flat list     "
+" ▾ src                    +1 -1  new file  ci.yml · 1 comment                 +1 -0 █████ ▌○ reviewer this line reads…  "
+"   ● lib.rs               +1 -1  @@ -0,0 +1,1 @@                                                                        "
+"▌+ ci.yml ·1              +1 -0 ▌        1 on: push                                                                     "
+" ○ todo.md                +1 -0   ▌ reviewer · open                                                                     "
 "                                  ▌ this line reads oddly and should wrap across the                                    "
 "                                  ▌ column                                                                              "
 "                                                                                                                        "

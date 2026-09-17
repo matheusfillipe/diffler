@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/diffler", "crates/diffler-core"]
 
 [workspace.package]
-version = "0.12.0"
+version = "0.15.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
@@ -14,7 +14,7 @@ categories = ["command-line-utilities", "development-tools"]
 keywords = ["diff", "tui", "code-review", "mcp", "agents"]
 
 [workspace.dependencies]
-diffler-core = { path = "crates/diffler-core", version = "0.12.0" }
+diffler-core = { path = "crates/diffler-core", version = "0.15.0" }
 ratatui = "0.30"
 async-trait = "0.1"
 time = { version = "0.3", features = ["formatting", "parsing"] }
@@ -89,6 +89,9 @@ tempfile = "3"
 
 [workspace.lints.rust]
 unsafe_code = "deny"
+# the clippy allow below names a lint that only exists from rust 1.98, and the
+# msrv build is older
+unknown_lints = { level = "allow", priority = -2 }
 rust_2018_idioms = { level = "warn", priority = -1 }
 # a pub item a private module keeps unreachable evades dead_code analysis
 unreachable_pub = "warn"
@@ -106,7 +109,14 @@ dbg_macro = "deny"
 print_stdout = "deny"
 print_stderr = "warn"
 indexing_slicing = "warn"
+# nursery, so it is named on its own: a rail against a function quietly
+# growing a second job, not a target to optimise
+cognitive_complexity = "warn"
 # pedantic noise control
+# rmcp's tool_handler/prompt_handler expand into async trait impls that never
+# await. The lint fires inside the expansion, where no `#[allow]` of ours
+# reaches it, so it has to be a compiler flag.
+unused_async_trait_impl = "allow"
 module_name_repetitions = "allow"
 must_use_candidate = "allow"
 missing_errors_doc = "allow"

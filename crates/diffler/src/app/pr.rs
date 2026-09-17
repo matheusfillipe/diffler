@@ -302,6 +302,8 @@ impl App {
                     on_old_side: !item.new_side,
                     line_text,
                 },
+                title: None,
+                anchor_ref: None,
                 body: item.body.clone(),
                 status,
                 replies: Vec::new(),
@@ -995,6 +997,140 @@ mod tests {
         );
     }
 
+    /// A comment written through `add_comment` follows the same authorship
+    /// rule as any other: the agent's own body is withheld from a submit
+    /// until `as_human` makes it the human's.
+    #[test]
+    fn an_added_comment_is_withheld_unless_authored_as_the_human() {
+        let fixture = standard_fixture();
+        fixture.write("src/lib.rs", "pub fn answer() -> u32 {\n    43\n}\n");
+        fixture.stage("src/lib.rs");
+        fixture.commit_all("bump");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let head = app.review.vcs.resolve("HEAD").expect("head oid");
+        let base = app.review.vcs.resolve("HEAD~1").expect("base oid");
+        app.open_pr_diff(3, &base, &head);
+
+        let crate::mcp::McpResponse::Added { id: agent_id } =
+            app.handle_mcp(crate::mcp::McpRequestKind::AddComment {
+                file: "src/lib.rs".to_owned(),
+                line: 2,
+                line_end: None,
+                body: "agent found this".to_owned(),
+                as_human: false,
+            })
+        else {
+            panic!("expected an added comment");
+        };
+        let pending = app.pr_pending(3).expect("plan");
+        assert!(
+            pending.review_comments.is_empty(),
+            "an agent-authored comment is withheld"
+        );
+        assert_eq!(pending.agent_withheld, 1);
+        assert!(!pending.comment_ids.contains(&agent_id));
+
+        let crate::mcp::McpResponse::Added { id: human_id } =
+            app.handle_mcp(crate::mcp::McpRequestKind::AddComment {
+                file: "src/lib.rs".to_owned(),
+                line: 2,
+                line_end: None,
+                body: "claimed by the human".to_owned(),
+                as_human: true,
+            })
+        else {
+            panic!("expected an added comment");
+        };
+        let pending = app.pr_pending(3).expect("plan");
+        assert_eq!(pending.review_comments.len(), 1);
+        assert_eq!(pending.review_comments[0].body, "claimed by the human");
+        assert!(pending.comment_ids.contains(&human_id));
+    }
+
+    /// Bulk-claiming turns every agent comment of the open review into the
+    /// human's, so a submit carries them the way it carries the human's own.
+    #[test]
+    fn claiming_all_comments_makes_a_submit_carry_them() {
+        let fixture = standard_fixture();
+        fixture.write("src/lib.rs", "pub fn answer() -> u32 {\n    43\n}\n");
+        fixture.stage("src/lib.rs");
+        fixture.commit_all("bump");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let head = app.review.vcs.resolve("HEAD").expect("head oid");
+        let base = app.review.vcs.resolve("HEAD~1").expect("base oid");
+        app.open_pr_diff(3, &base, &head);
+
+        app.handle_mcp(crate::mcp::McpRequestKind::AddComment {
+            file: "src/lib.rs".to_owned(),
+            line: 2,
+            line_end: None,
+            body: "agent found this".to_owned(),
+            as_human: false,
+        });
+        let pending = app.pr_pending(3).expect("plan");
+        assert!(
+            pending.review_comments.is_empty(),
+            "withheld before claiming"
+        );
+
+        app.claim_all_comments();
+
+        let pending = app.pr_pending(3).expect("plan");
+        assert_eq!(pending.review_comments.len(), 1);
+        assert_eq!(pending.review_comments[0].body, "agent found this");
+        assert_eq!(pending.agent_withheld, 0);
+    }
+
+    /// A walkthrough is its own review source: its comments are never in
+    /// reach of the PR posting flow, whatever the open PR review holds.
+    #[test]
+    fn a_walkthrough_comment_is_never_queued_for_posting_to_the_pr() {
+        let fixture = standard_fixture();
+        fixture.write("src/lib.rs", "pub fn answer() -> u32 {\n    43\n}\n");
+        fixture.stage("src/lib.rs");
+        fixture.commit_all("bump");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        crate::test_support::seat_walkthrough(
+            &mut app,
+            "tour",
+            &[("The answer", Some("src/lib.rs#answer"), "why 43")],
+        );
+        let head = app.review.vcs.resolve("HEAD").expect("head oid");
+        let base = app.review.vcs.resolve("HEAD~1").expect("base oid");
+        app.open_pr_diff(3, &base, &head);
+        let source = ReviewSource::pr(3);
+        app.review.session_for_mut(&source).add_comment(
+            Anchor {
+                file: "src/lib.rs".into(),
+                line: Some(2),
+                line_end: None,
+                on_old_side: false,
+                line_text: None,
+            },
+            "reviewer",
+            "why 43?",
+        );
+
+        app.queue_pr_review(3, ReviewVerdict::Comment, "");
+
+        let posted: Vec<String> = app
+            .pending_pr_posts
+            .iter()
+            .flat_map(|post| match post {
+                PrPost::Review { review, .. } => {
+                    review.comments.iter().map(|c| c.body.clone()).collect()
+                }
+                PrPost::Reply { body, .. } => vec![body.clone()],
+                _ => Vec::new(),
+            })
+            .collect();
+        assert_eq!(
+            posted,
+            vec!["why 43?".to_owned()],
+            "only the PR's own comment is queued, never the walkthrough's stop"
+        );
+    }
+
     /// Publishing a comment deletes the local copy once the forge acks it, so
     /// a reply that was never posted has to survive the handover.
     #[test]
@@ -1281,6 +1417,65 @@ mod tests {
         // a second sighting while the fetch is pending must not re-queue
         app.on_pr_head_seen(&moved);
         assert!(app.pending_git.is_none(), "fetch already in flight");
+    }
+
+    /// `on_pr_head_seen` re-opens the PR on its own when a force-push moves
+    /// the head, with nobody at the keyboard to notice a wrong jump: the row
+    /// the reader was on must be found again by what it is, not by whatever
+    /// now sits at its old row index.
+    #[test]
+    fn reopening_a_pr_after_a_force_push_keeps_the_cursor_on_its_own_row() {
+        use std::fmt::Write as _;
+
+        let fixture = crate::test_support::Fixture::new();
+        let mut base = String::new();
+        for i in 1..=30 {
+            writeln!(base, "line {i}").expect("write");
+        }
+        fixture.write("a.py", &base);
+        fixture.stage("a.py");
+        fixture.commit_all("base");
+        // two edits far enough apart to land in separate hunks
+        let head1 = base
+            .replace("line 5\n", "five\n")
+            .replace("line 25\n", "twentyfive\n");
+        fixture.write("a.py", &head1);
+        fixture.stage("a.py");
+        fixture.commit_all("head1");
+
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let head1_oid = app.review.vcs.resolve("HEAD").expect("head1 oid");
+        let base_oid = app.review.vcs.resolve("HEAD~1").expect("base oid");
+        app.open_pr_diff(1, &base_oid, &head1_oid);
+
+        let target_row = |app: &App| {
+            let diff = app.diff.as_ref().unwrap();
+            let model = diff.model(&app.review);
+            diff.rows().iter().position(|r| {
+                let crate::app::DiffRow::Line { file, hunk, line } = r else {
+                    return false;
+                };
+                model.files[*file].hunks[*hunk].lines[*line].text == "line 22"
+            })
+        };
+        let row = target_row(&app).expect("a context row of the second hunk");
+        app.diff.as_mut().unwrap().cursor = row;
+
+        // a force-push: the first edit is reverted, so the second (the one
+        // the cursor sits in) becomes the file's only hunk
+        let head2 = base.replace("line 25\n", "twentyfive\n");
+        fixture.write("a.py", &head2);
+        fixture.stage("a.py");
+        fixture.commit_all("head2");
+        let head2_oid = app.review.vcs.resolve("HEAD").expect("head2 oid");
+        app.open_pr_diff(1, &base_oid, &head2_oid);
+
+        assert_eq!(
+            Some(app.diff.as_ref().unwrap().cursor),
+            target_row(&app),
+            "the cursor followed its own row to the hunk's new index, not \
+             whatever now sits at the old one"
+        );
     }
 
     /// The full submit→ack→resync event chain, as the live app sees it.

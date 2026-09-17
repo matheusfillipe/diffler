@@ -76,12 +76,13 @@
 
 [keys.status]
 # palette = "<c-k>"   # fuzzy command palette, bound on every screen
+# visual_select = "V" # select a run of commits, <cr> reviews them as one range
 # stage = "s"
 # unstage = "u"
 # stage_all = "S"
 # unstage_all = "U"
 # discard = "x"
-# mark_viewed = "v"
+# mark_viewed = "m"
 # next_section = "<c-n>"   # also "]", stepping the section and group headers
 # prev_section = "<c-p>"   # also "["
 # toggle_fold = "<tab>"
@@ -91,7 +92,7 @@
 # switch_theme = "T"
 # open_editor = "e"
 # send_feedback = "Z"
-# open_file_picker = "<c-t>"   # fuzzy over every tracked file
+# open_file_picker = "gf"      # fuzzy over every tracked file
 # blame = "B"                  # blame the file under the cursor
 # open_stats = "L"             # the repo's language breakdown
 # copy_url = "y"               # a pull request as its URL, a commit as its sha
@@ -114,9 +115,9 @@
 # next_file = "<c-n>"      # also J
 # prev_file = "<c-p>"      # also K
 # next_unviewed = "u"
-# mark_viewed = "v"
+# mark_viewed = "m"
 # unview_all = "U"
-# cycle_sidebar_mode = "t"
+# cycle_sidebar_mode = "t"  # file sidebar layout, or the comments pane's grouping when it has focus
 # toggle_side_by_side = "|"
 # expand_context = "+"
 # collapse_context = "-"
@@ -127,13 +128,15 @@
 # resolve = "R"
 # delete_comment = "d"
 # delete_all_comments = "D"
+# claim_comment = "M"           # take an agent comment as yours, or hand a claimed one back
+# claim_all_comments = "A"      # claim every agent comment of this review as yours
 # comments_overview = "C"
 # submit_review = "S"
 # send_feedback = "Z"
 # copy_file_feedback = "y"
 # copy_all_feedback = "Y"
-# next_hunk = "]"
-# prev_hunk = "["
+# next_hunk = "]"           # also steps sidebar/comments-pane group headers
+# prev_hunk = "["           # also steps sidebar/comments-pane group headers
 # next_function = ")"
 # prev_function = "("
 # next_comment = "}"
@@ -141,10 +144,11 @@
 # center_cursor = "zz"
 # cursor_top = "zt"
 # cursor_bottom = "zb"
-# toggle_fold = "za"       # also <tab>: folds the folder or section the cursor sits in
+# toggle_fold = "za"       # also <tab>: folds the folder/section/comments-group the cursor sits in
 # switch_theme = "T"
 # open_editor = "e"
-# open_file_picker = "<c-t>"
+# open_file_picker = "gf"
+# open_figure_graph = "o"  # open the figure under the cursor as a graph
 # blame = "B"
 # open = "<cr>"
 # refresh = "<c-r>"
@@ -152,7 +156,7 @@
 [keys.log]
 # visual_select = "V"
 # open = "<cr>"
-# open_file_picker = "<c-t>"
+# open_file_picker = "gf"
 # refresh = "<c-r>"
 
 # The whole-file view, reached with the file picker or by blaming a file.
@@ -162,7 +166,7 @@
 # prev_section = "["
 # open = "<cr>"            # review the commit that wrote this line
 # open_editor = "e"
-# open_file_picker = "<c-t>"
+# open_file_picker = "gf"
 # center_cursor = "zz"
 # cursor_top = "zt"
 # cursor_bottom = "zb"

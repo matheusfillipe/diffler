@@ -16,7 +16,7 @@ use diffler::mcp;
 use diffler_core::review::Review;
 use diffler_core::session::Anchor;
 use rmcp::ServiceExt as _;
-use rmcp::model::{CallToolRequestParams, CallToolResult, ClientInfo};
+use rmcp::model::{CallToolRequestParams, CallToolResult, ClientConfig};
 use rmcp::transport::StreamableHttpClientTransport;
 use serde_json::{Value, json};
 use tokio::sync::mpsc::{self, UnboundedSender};
@@ -31,7 +31,7 @@ fn anchor_on_line_two() -> Anchor {
     }
 }
 
-type McpClient = rmcp::service::RunningService<rmcp::RoleClient, ClientInfo>;
+type McpClient = rmcp::service::RunningService<rmcp::RoleClient, ClientConfig>;
 
 struct Harness {
     _fixture: Fixture,
@@ -61,7 +61,7 @@ async fn start(seed: impl FnOnce(&mut App)) -> Harness {
 
     let transport =
         StreamableHttpClientTransport::from_uri(format!("http://127.0.0.1:{}/mcp", handle.port));
-    let client = ClientInfo::default()
+    let client = ClientConfig::default()
         .serve(transport)
         .await
         .expect("client");
@@ -110,8 +110,8 @@ async fn the_review_prompt_is_listed_and_carries_the_workflow() {
         .await
         .expect("list prompts")
         .prompts;
-    assert_eq!(prompts.len(), 1);
-    assert_eq!(prompts[0].name, "review");
+    let names: Vec<&str> = prompts.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["critique", "review", "walkthrough"]);
 
     let result = harness
         .client
@@ -124,9 +124,42 @@ async fn the_review_prompt_is_listed_and_carries_the_workflow() {
         "get_comments",
         "reply_comment",
         "wait_for_feedback",
+        "publish_walkthrough",
     ] {
         assert!(text.contains(step), "prompt walks through {step}");
     }
+}
+
+#[tokio::test]
+async fn the_walkthrough_prompt_carries_publish_and_wait() {
+    let harness = start(|_| {}).await;
+    let result = harness
+        .client
+        .get_prompt(rmcp::model::GetPromptRequestParams::new("walkthrough"))
+        .await
+        .expect("get prompt");
+    let text = format!("{:?}", result.messages);
+    for step in ["review_status", "publish_walkthrough", "wait_for_feedback"] {
+        assert!(text.contains(step), "prompt walks through {step}");
+    }
+}
+
+#[tokio::test]
+async fn the_critique_prompt_carries_add_comment_and_never_submit() {
+    let harness = start(|_| {}).await;
+    let result = harness
+        .client
+        .get_prompt(rmcp::model::GetPromptRequestParams::new("critique"))
+        .await
+        .expect("get prompt");
+    let text = format!("{:?}", result.messages);
+    for step in ["review_status", "get_diff", "add_comment", "as_human"] {
+        assert!(text.contains(step), "prompt walks through {step}");
+    }
+    assert!(
+        text.contains("never submit"),
+        "prompt says it never submits"
+    );
 }
 
 #[tokio::test]

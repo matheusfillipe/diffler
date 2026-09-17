@@ -31,6 +31,12 @@ pub enum ReviewSource {
     Against {
         rev: String,
     },
+    /// An agent-published walkthrough: its own comments, its own viewed and
+    /// seen marks, nothing shared with the working tree, a PR, a commit or a
+    /// range review.
+    Walkthrough {
+        id: String,
+    },
 }
 
 impl ReviewSource {
@@ -53,9 +59,14 @@ impl ReviewSource {
         Self::Against { rev: rev.into() }
     }
 
+    pub fn walkthrough(id: impl Into<String>) -> Self {
+        Self::Walkthrough { id: id.into() }
+    }
+
     /// Stable persistence key, also the on-disk filename stem. The `-`
     /// separator is unambiguous because git/jj oids are dash-free hex; every
-    /// character is filesystem-safe.
+    /// character is filesystem-safe. A walkthrough id is agent-supplied text,
+    /// not an oid, so it goes through the same sanitising a ref name does.
     pub fn key(&self) -> String {
         match self {
             Self::WorkingTree => "working".to_owned(),
@@ -63,10 +74,13 @@ impl ReviewSource {
             Self::Range { oldest, newest } => format!("range-{oldest}-{newest}"),
             Self::Pr { number } => format!("pr-{number}"),
             Self::Against { rev } => format!("against-{}", filename_safe(rev)),
+            Self::Walkthrough { id } => format!("walkthrough-{}", filename_safe(id)),
         }
     }
 
-    /// Human-facing description of what is being reviewed.
+    /// Human-facing description of what is being reviewed. A walkthrough's
+    /// title lives in its own session, out of reach here, so this names it
+    /// generically; a caller holding that session shows the title instead.
     pub fn label(&self) -> String {
         match self {
             Self::WorkingTree => "working tree".to_owned(),
@@ -76,12 +90,20 @@ impl ReviewSource {
             }
             Self::Pr { number } => format!("PR #{number}"),
             Self::Against { rev } => format!("vs {}", short_rev(rev)),
+            Self::Walkthrough { id } => format!("walkthrough {}", short_id(id)),
         }
     }
 }
 
 fn short(oid: &str) -> &str {
     oid.get(..SHORT_OID).unwrap_or(oid)
+}
+
+/// Characters of a walkthrough id shown in its fallback label.
+const SHORT_ID: usize = 8;
+
+fn short_id(id: &str) -> &str {
+    id.get(..SHORT_ID).unwrap_or(id)
 }
 
 /// A raw oid shortens like the other arms; a ref name stays whole.
@@ -119,6 +141,7 @@ mod tests {
         assert_eq!(ReviewSource::range("aaa", "bbb").key(), "range-aaa-bbb");
         assert_eq!(ReviewSource::pr(42).key(), "pr-42");
         assert_eq!(ReviewSource::against("main").key(), "against-main");
+        assert_eq!(ReviewSource::walkthrough("w1").key(), "walkthrough-w1");
     }
 
     #[test]
@@ -132,6 +155,20 @@ mod tests {
         assert_eq!(
             ReviewSource::against("feat/x").key(),
             ReviewSource::against("feat-x").key()
+        );
+    }
+
+    /// An agent-supplied walkthrough id is arbitrary text, not an oid: a `/`
+    /// in it must not turn the key into a path with a missing directory.
+    #[test]
+    fn walkthrough_keys_are_filename_safe() {
+        assert_eq!(
+            ReviewSource::walkthrough("feature/login").key(),
+            "walkthrough-feature-login"
+        );
+        assert_eq!(
+            ReviewSource::walkthrough("../../etc/passwd").key(),
+            "walkthrough-..-..-etc-passwd"
         );
     }
 
@@ -156,11 +193,16 @@ mod tests {
             ReviewSource::against("0123456789abcdef").label(),
             "vs 0123456"
         );
+        assert_eq!(
+            ReviewSource::walkthrough("0123456789abcdef").label(),
+            "walkthrough 01234567"
+        );
     }
 
     #[test]
     fn short_oid_tolerates_a_short_string() {
         assert_eq!(ReviewSource::commit("ab").label(), "commit ab");
+        assert_eq!(ReviewSource::walkthrough("ab").label(), "walkthrough ab");
     }
 
     #[test]
@@ -171,6 +213,7 @@ mod tests {
             ReviewSource::range("aaa", "bbb"),
             ReviewSource::pr(3),
             ReviewSource::against("origin/main"),
+            ReviewSource::walkthrough("w1"),
         ] {
             let json = serde_json::to_string(&source).expect("serialize");
             let back: ReviewSource = serde_json::from_str(&json).expect("deserialize");

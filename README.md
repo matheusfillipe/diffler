@@ -115,12 +115,14 @@ port 8417. Connect your agent once:
 claude mcp add --transport http diffler http://127.0.0.1:8417/mcp
 # or, over stdio, auto-discovering the port:
 claude mcp add diffler -- npx -y diffler-mcp
-# or, as a plugin (MCP server plus a /diffler command):
+# or, as a plugin (MCP server plus the /df, /dfa and /dfr commands):
 claude plugin marketplace add matheusfillipe/diffler && claude plugin install diffler@diffler
 ```
 
-Connected, the server's `review` prompt shows up as the `/diffler:review`
-command; the plugin adds a bare `/diffler`.
+Connected, the server's prompts show up as `/diffler:review`,
+`/diffler:walkthrough` and `/diffler:critique`. The plugin adds `/df`, to
+answer your comments, `/dfa`, to walk you through a change, and `/dfr`, to
+review a change and leave comments.
 
 </details>
 
@@ -142,12 +144,13 @@ Add the server to `opencode.json` in the project, or globally in
 }
 ```
 
-And install the `/diffler` command (opencode has no package mechanism for
-commands, so this fetches the one maintained in this repo):
+And install the `/df`, `/dfa` and `/dfr` commands (opencode has no package
+mechanism for commands, so this fetches the ones maintained in this repo):
 
 ```sh
-mkdir -p ~/.config/opencode/commands && curl -fsSLo ~/.config/opencode/commands/diffler.md \
-  https://raw.githubusercontent.com/matheusfillipe/diffler/main/.opencode/commands/diffler.md
+mkdir -p ~/.config/opencode/commands
+for c in df dfa dfr; do curl -fsSLo ~/.config/opencode/commands/$c.md \
+  https://raw.githubusercontent.com/matheusfillipe/diffler/main/.opencode/commands/$c.md; done
 ```
 
 </details>
@@ -157,8 +160,8 @@ mkdir -p ~/.config/opencode/commands && curl -fsSLo ~/.config/opencode/commands/
 
 Point it at `http://127.0.0.1:8417/mcp` (streamable HTTP), or run
 `npx -y diffler-mcp` as a stdio proxy that auto-discovers the port from
-`.diffler/mcp.json`. The server also ships a `review` prompt that
-prompt-aware clients surface as a command.
+`.diffler/mcp.json`. The server also ships `review`, `walkthrough` and
+`critique` prompts that prompt-aware clients surface as commands.
 
 </details>
 
@@ -167,6 +170,12 @@ ranges in the diff view and press `Z` to send feedback. The agent picks the
 comments up through `wait_for_feedback`, replies or proposes resolutions, and
 you confirm in the TUI. `y`/`Y` copy the same feedback as markdown if you would
 rather paste it into a prompt.
+
+Ask the agent to walk you through what it changed and it publishes a
+walkthrough: a summary, then one stop per decision, in reading order, each
+anchored to the code it is about. The status screen lists every walkthrough the
+repository has, and `<cr>` opens one. See
+[docs/walkthroughs.md](docs/walkthroughs.md).
 
 The same review works against real pull requests: the status screen shows the
 branch's PR (and `b` `p` lists all open ones; reviewing never needs a
@@ -188,19 +197,21 @@ Vim-like: `j`/`k`/`gg`/`G` motions, `/` search, and
 | `s` / `u` | stage / unstage |
 | `cc` | commit |
 | `c` | comment the diff line (`V` selects a range first) |
-| `v` / `u` / `U` | in the diff view: mark the file viewed and step to the row under it, sorting it to the top of its group (a folder row marks everything under it) / jump to the next unviewed / clear every mark |
+| `m` / `u` / `U` | in the diff view: mark the file viewed and step to the row under it, sorting it to the top of its group (a folder row marks everything under it) / jump to the next unviewed / clear every mark |
 | `+` / `-` / `=` | widen / narrow the context around a hunk, or open the whole file |
 | `\|` | side-by-side diff |
-| `t` | cycle the sidebar: file tree, review buckets (viewed files fold away, come back if they change), kinds (source, tests, docs, config, build, generated, assets) |
+| `t` | cycle the sidebar: file tree, review buckets (viewed files fold away, come back if they change), kinds (source, tests, docs, config, build, generated, assets), and the walkthrough when the review has one |
+| `V` | select a range: lines in the diff, rows anywhere else, or a run of commits on the status screen, which `<cr>` then reviews as one combined diff |
+| `o` | open the figure under the cursor as a full-screen graph you walk node by node |
 | `Z` | send feedback to the agent |
-| `C` | comments sidebar: walk every comment, Enter jumps to it in the pane |
+| `C` | comments sidebar: walk every comment, Enter jumps to it in the pane; `t` groups by file, author, or status (resolved folds away), or lists them flat |
 | `d` / `D` | delete the comment under the cursor / every local comment of the review |
 | `S` | submit stacked PR comments as one review |
 | `b` `P` | open a pull request for the current branch |
 | `d` | review the working tree against something else: `d` base branch, `c` last commit, `b` a branch, `s` a commit, `w` HEAD |
 | `y` / `Y` | copy feedback as markdown (file / all) |
-| `y` | on a status or PR-list row, copy what it points at: a pull request as its URL, a commit as its sha |
-| `<c-t>` | find any tracked file: Enter opens it, `b` blames it, `e` sends it to `$EDITOR` |
+| `y` | on a status or PR-list row, copy what it points at: a pull request as its URL, a commit as its sha, a file or folder as its repo-relative path |
+| `gf` | find any tracked file: Enter opens it, `b` blames it, `e` sends it to `$EDITOR` |
 | `B` | blame the file under the cursor, at that line (`b` toggles the column, `<cr>` reviews the commit) |
 | `L` | language breakdown of the repo: files, lines, code, comments per language (`s` sorts) |
 | `e` | open the file in `$EDITOR` |

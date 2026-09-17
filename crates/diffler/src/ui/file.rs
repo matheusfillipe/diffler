@@ -9,14 +9,15 @@ use ratatui::widgets::Paragraph;
 
 use crate::app::App;
 use crate::app::file::FileView;
+use crate::app::rowsel::RowSelect;
 use crate::keymap::Action;
 use crate::theme::Theme;
 use crate::ui::{Hint, cursor_line, status_bar};
 
 const HINTS: &[Hint] = &[
-    Hint::Leaf(&[Action::ToggleBlame], "blame"),
-    Hint::Leaf(&[Action::Open], "commit"),
-    Hint::Leaf(&[Action::OpenEditor], "editor"),
+    Hint::Leaf(&[Action::ToggleBlame], "toggle blame"),
+    Hint::Leaf(&[Action::Open], "open commit"),
+    Hint::Leaf(&[Action::OpenEditor], "open editor"),
     Hint::Leaf(&[Action::Help], "help"),
 ];
 
@@ -72,6 +73,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     );
 
     // walk source lines until the viewport is full, skipping the rows above it
+    let selected = |index: usize| view.row_selected(index);
+    let referenced = view.referenced;
+
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut row = 0usize;
     for index in 0..view.lines.len() {
@@ -85,7 +89,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             .and_then(|all| all.get(index).cloned())
             .unwrap_or_default();
         let mut rendered = row_line(&theme, view, index, gutter, body.width, &ranges, now);
-        if index == view.cursor {
+        // a reference points at a segment, so the whole span is banded and
+        // the cursor rail still says which line inside it the reader is on
+        rendered = super::band_referenced(rendered, referenced, index, &theme, body.width);
+        if selected(index) {
             rendered = rendered
                 .into_iter()
                 .map(|line| cursor_line(line, &theme, body.width))
@@ -242,6 +249,62 @@ mod tests {
         let backend = TestBackend::new(72, 9);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal.draw(|f| draw(f, &mut app)).expect("draw");
+        insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn a_visual_selection_tints_every_line_it_covers() {
+        let mut app = app_with_file(true);
+        app.handle(crate::test_support::key('V'));
+        app.handle(crate::test_support::key('j'));
+        assert_eq!(
+            app.file.as_ref().and_then(FileView::selection),
+            Some((0, 1))
+        );
+        let paint = |app: &mut App| {
+            let mut terminal = Terminal::new(TestBackend::new(72, 9)).expect("terminal");
+            terminal.draw(|f| draw(f, app)).expect("draw");
+            terminal
+        };
+        let bg = format!("{:?}", app.theme.cursor_line);
+        let terminal = paint(&mut app);
+        let selected = format!("{:?}", terminal.backend().buffer())
+            .matches(&bg)
+            .count();
+        app.file.as_mut().expect("a file view").visual_anchor = None;
+        let unselected = format!("{:?}", paint(&mut app).backend().buffer())
+            .matches(&bg)
+            .count();
+        assert!(
+            selected > unselected,
+            "the selection must paint past the cursor row: {selected} vs {unselected}"
+        );
+        insta::assert_snapshot!(terminal.backend());
+    }
+
+    /// A reference points at a segment, so the whole span is banded: opening
+    /// one shows the reader the code it names, not a cursor on a line.
+    #[test]
+    fn a_referenced_span_is_banded_across_its_rows() {
+        let mut app = app_with_file(true);
+        app.install_file(
+            FileView::new(
+                "src/lib.rs".to_owned(),
+                "fn main() {\n    let total = 1;\n    println!(\"{total}\");\n}\n",
+                Vec::new(),
+                vec![span(1, 4, "aaaaaaa", "reviewer", "first")],
+                false,
+            ),
+            Some((2, 3)),
+        );
+        assert_eq!(app.file.as_ref().and_then(|v| v.referenced), Some((1, 2)));
+        let mut terminal = Terminal::new(TestBackend::new(72, 9)).expect("terminal");
+        terminal.draw(|f| draw(f, &mut app)).expect("draw");
+        let band = format!("{:?}", app.theme.panel);
+        let painted = format!("{:?}", terminal.backend().buffer())
+            .matches(&band)
+            .count();
+        assert!(painted > 0, "the referenced rows carry the band");
         insta::assert_snapshot!(terminal.backend());
     }
 
