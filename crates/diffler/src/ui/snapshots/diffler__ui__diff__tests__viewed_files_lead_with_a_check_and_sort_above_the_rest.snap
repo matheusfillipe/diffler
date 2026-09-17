@@ -4,9 +4,9 @@ expression: render(&mut app).backend()
 ---
 " c add comment · r reply · m mark viewed · C see comment list · ? help                                                  "
 " Files                           Diff                                                                                   "
-"▌▸ src                    +2 -0  modified  src/a.rs ✓ viewed                                                 +1 -0 █████"
-"                                 @@ -1,1 +1,2 @@                                                                        "
-"                                    1    1 one                                                                          "
+"▌✓ a.txt                  +1 -0  modified  a.txt ✓ viewed                                                    +1 -0 █████"
+" ✓ b.txt                  +1 -0  @@ -1,1 +1,2 @@                                                                        "
+" ● c.txt                  +1 -0     1    1 one                                                                          "
 "                                ▌        2 two                                                                          "
 "                                                                                                                        "
 "                                                                                                                        "
@@ -41,4 +41,4 @@ expression: render(&mut app).backend()
 "                                                                                                                        "
 "                                                                                                                        "
 "                                                                                                                        "
-" DIFF  fixture@main · mcp off · viewed 1/2 files                                                                        "
+" DIFF  fixture@main · mcp off · viewed 2/3 files                                                                        "

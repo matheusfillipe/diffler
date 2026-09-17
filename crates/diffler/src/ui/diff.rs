@@ -311,13 +311,11 @@ struct HeaderCtx<'a> {
     bg: Color,
     width: u16,
     on_cursor: bool,
-    rail: ViewedRail,
 }
 
 /// A group header row: fold arrow, bold label, its count, and an optional
-/// right-aligned tail. Shared by the file sidebar's own sections (a diffstat
-/// tail and a viewed rail) and the comments pane's (neither, since a comment
-/// carries no diff and no viewed state of its own).
+/// right-aligned tail. Shared by the file sidebar's own sections, which pass a
+/// diffstat, and the comments pane's, which pass none.
 fn group_header_line(
     hc: HeaderCtx<'_>,
     label: &str,
@@ -330,7 +328,6 @@ fn group_header_line(
         bg,
         width,
         on_cursor,
-        rail,
     } = hc;
     let arrow = if folded { "▸ " } else { "▾ " };
     let label_style = Style::new()
@@ -338,7 +335,7 @@ fn group_header_line(
         .bg(bg);
     let dim = Style::new().fg(theme.dim).bg(bg);
     let mut spans = vec![
-        tree_lead(theme, 0, bg, on_cursor, rail),
+        tree_lead(theme, 0, bg, on_cursor),
         Span::styled(arrow.to_owned(), dim),
         Span::styled(label.to_owned(), label_style),
         Span::styled(format!(" ({count})"), dim),
@@ -347,7 +344,7 @@ fn group_header_line(
     pad_line(spans, bg, width)
 }
 
-/// A comments-pane group header: `group_header_line` with no tail and no rail.
+/// A comments-pane group header: `group_header_line` with no tail.
 fn comment_group_header_line(
     theme: &Theme,
     bg: Color,
@@ -363,7 +360,6 @@ fn comment_group_header_line(
             bg,
             width,
             on_cursor,
-            rail: ViewedRail::None,
         },
         label,
         count,
@@ -668,7 +664,7 @@ fn comment_header_spans(
         CommentStatus::Resolved => ("✓", theme.added),
     };
     let spans = vec![
-        tree_lead(theme, depth, bg, on_cursor, ViewedRail::None),
+        tree_lead(theme, depth, bg, on_cursor),
         Span::styled(format!("{status} "), Style::new().fg(colour).bg(bg)),
         Span::styled(
             format!("{} ", super::elide(&comment.author, AUTHOR_MAX)),
@@ -761,7 +757,6 @@ fn draw_sidebar(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &m
                     name,
                     diff.folded_dirs.contains(path),
                     stat.dirs.get(path).copied().unwrap_or_default(),
-                    ViewedRail::of_group(stat.dirs_viewed.get(path).copied()),
                 ),
                 TreeNode::Section {
                     bucket,
@@ -773,7 +768,6 @@ fn draw_sidebar(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &m
                     *count,
                     stat.sections.get(bucket).copied().unwrap_or_default(),
                     *folded,
-                    ViewedRail::of_group(stat.sections_viewed.get(bucket).copied()),
                 ),
                 TreeNode::File { index, name } => {
                     let Some(file) = model.files.get(*index) else {
@@ -846,7 +840,7 @@ fn sidebar_stop_line(
     // stops keep their reading order regardless of what is seen, so a rail
     // here would not read as a run the way a sorted file list does; the `✓`
     // already says a stop is seen
-    let mut spans = vec![tree_lead(theme, 0, bg, on_cursor, ViewedRail::None)];
+    let mut spans = vec![tree_lead(theme, 0, bg, on_cursor)];
     spans.extend(super::highlight_spans(
         &stop_title(stop),
         title_style,
@@ -881,7 +875,7 @@ fn sidebar_summary_line(rc: &TreeRowCtx<'_>) -> Line<'static> {
     let title_style = Style::new()
         .fg(if on_cursor { theme.accent } else { theme.fg })
         .bg(bg);
-    let mut spans = vec![tree_lead(theme, 0, bg, on_cursor, ViewedRail::None)];
+    let mut spans = vec![tree_lead(theme, 0, bg, on_cursor)];
     spans.extend(super::highlight_spans(
         "Summary",
         title_style,
@@ -1283,15 +1277,11 @@ fn open_comment_count(session: &Session, path: &str) -> usize {
 /// each sidebar group covers, built once per frame from one pass over the
 /// model: a header row knows its own name, not its members. A directory
 /// covers every file beneath it at any depth; a section covers the files its
-/// bucket holds. Only the layout on screen is walked. The review layout's own
-/// buckets carry no `_viewed` entry: their name already says whether they
-/// hold viewed files, so the header draws no rail from it.
+/// bucket holds. Only the layout on screen is walked.
 #[derive(Default)]
 struct GroupStat {
     dirs: HashMap<String, (usize, usize)>,
     sections: HashMap<Bucket, (usize, usize)>,
-    dirs_viewed: HashMap<String, (usize, usize)>,
-    sections_viewed: HashMap<Bucket, (usize, usize)>,
 }
 
 impl GroupStat {
@@ -1304,15 +1294,10 @@ impl GroupStat {
                 slot.0 += added;
                 slot.1 += deleted;
             };
-            let tally_viewed = |slot: &mut (usize, usize)| {
-                slot.0 += usize::from(viewed);
-                slot.1 += 1;
-            };
             match diff.layout {
                 FileLayout::Kinds => {
                     let bucket = Bucket::Kind(diff.kind_of(&file.path));
                     tally(stat.sections.entry(bucket).or_default());
-                    tally_viewed(stat.sections_viewed.entry(bucket).or_default());
                 }
                 FileLayout::Review => {
                     let bucket = if viewed {
@@ -1329,7 +1314,6 @@ impl GroupStat {
                     for (at, _) in file.path.match_indices('/') {
                         let dir = &file.path[..at];
                         tally(stat.dirs.entry(dir.to_owned()).or_default());
-                        tally_viewed(stat.dirs_viewed.entry(dir.to_owned()).or_default());
                     }
                 }
             }
@@ -1366,67 +1350,24 @@ fn sidebar_row_bg(theme: &Theme, on_cursor: bool, focused: bool) -> Color {
     }
 }
 
-/// A row's viewed signal for the lead cell: solid once everything it stands
-/// for is viewed, muted while part of it still is, absent otherwise. A file
-/// only ever carries `None` or `Done`; a directory or kind bucket carries
-/// `Partial` for what a folded group can't otherwise say without unfolding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ViewedRail {
-    None,
-    Partial,
-    Done,
-}
-
-impl ViewedRail {
-    fn of_group(counts: Option<(usize, usize)>) -> Self {
-        match counts {
-            None | Some((0, _)) => Self::None,
-            Some((viewed, total)) if viewed >= total => Self::Done,
-            Some(_) => Self::Partial,
-        }
-    }
-}
-
-/// How far a partial rail leans from the row's own background toward the
-/// viewed colour, muted enough to read as unfinished next to a solid one.
-const PARTIAL_RAIL: u16 = 50;
-
 /// Sidebar leading cells: the cursor `▌` marker plus the tree indent for
-/// `depth`. Shared by dir and file rows so columns line up. The cursor always
-/// wins the cell: a reader scans a run of viewed rows from a glance away, but
-/// the row under the keyboard has to stay unmistakable up close, so its own
-/// rail waits until the cursor moves off it.
-fn tree_lead(
-    theme: &Theme,
-    depth: usize,
-    bg: Color,
-    on_cursor: bool,
-    rail: ViewedRail,
-) -> Span<'static> {
-    let (marker, color) = if on_cursor {
-        ("▌", theme.accent)
-    } else {
-        match rail {
-            ViewedRail::None => (" ", theme.accent),
-            ViewedRail::Partial => ("▌", crate::theme::blend(bg, theme.added, PARTIAL_RAIL)),
-            ViewedRail::Done => ("▌", theme.added),
-        }
-    };
+/// `depth`. Shared by dir and file rows so columns line up.
+fn tree_lead(theme: &Theme, depth: usize, bg: Color, on_cursor: bool) -> Span<'static> {
+    // a left bar makes the cursor row unmistakable where the bg tint is subtle
+    let marker = if on_cursor { "▌" } else { " " };
     Span::styled(
         format!("{marker}{}", " ".repeat(depth * 2)),
-        Style::new().fg(color).bg(bg),
+        Style::new().fg(theme.accent).bg(bg),
     )
 }
 
 /// A directory row: indent, fold arrow, the dim directory name, and the
-/// diffstat of everything beneath it. `rail` says how much of it is viewed,
-/// so a fully or partly reviewed directory reads that way while still folded.
+/// diffstat of everything beneath it.
 fn sidebar_dir_line(
     rc: &TreeRowCtx<'_>,
     name: &str,
     folded: bool,
     stat: (usize, usize),
-    rail: ViewedRail,
 ) -> Line<'static> {
     let &TreeRowCtx {
         theme,
@@ -1442,7 +1383,7 @@ fn sidebar_dir_line(
         .fg(if on_cursor { theme.accent } else { theme.fg })
         .bg(bg);
     let mut spans = vec![
-        tree_lead(theme, depth, bg, on_cursor, rail),
+        tree_lead(theme, depth, bg, on_cursor),
         Span::styled(arrow.to_owned(), Style::new().fg(theme.dim).bg(bg)),
     ];
     // dir names are never clipped, so the highlight maps straight onto them
@@ -1453,16 +1394,13 @@ fn sidebar_dir_line(
 }
 
 /// A section header row: `group_header_line` with the bucket's own diffstat
-/// as its tail and `rail` for how much of the bucket is viewed. The review
-/// layout's own buckets (`To review`, `Viewed`) already say that in their
-/// name, so their caller passes `ViewedRail::None` rather than double it.
+/// as its tail.
 fn sidebar_section_line(
     rc: &TreeRowCtx<'_>,
     bucket: Bucket,
     count: usize,
     stat: (usize, usize),
     folded: bool,
-    rail: ViewedRail,
 ) -> Line<'static> {
     let &TreeRowCtx {
         theme,
@@ -1479,7 +1417,6 @@ fn sidebar_section_line(
             bg,
             width,
             on_cursor,
-            rail,
         },
         bucket.label(),
         count,
@@ -1509,27 +1446,24 @@ fn sidebar_file_line(
     } = rc;
     let bg = sidebar_row_bg(theme, on_cursor, focused);
     let dim = Style::new().fg(theme.dim).bg(bg);
-    let glyph = file.status.glyph();
-    let rail = if viewed {
-        ViewedRail::Done
+    // a viewed file leads with its check, the way a resolved comment does, so
+    // a column of them reads down the left edge without reading a name
+    let (glyph, glyph_colour) = if viewed {
+        ('✓', theme.added)
     } else {
-        ViewedRail::None
+        (file.status.glyph(), status_color(theme, file.status))
     };
     let mut spans = vec![
-        tree_lead(theme, depth, bg, on_cursor, rail),
-        Span::styled(
-            format!("{glyph} "),
-            Style::new().fg(status_color(theme, file.status)).bg(bg),
-        ),
+        tree_lead(theme, depth, bg, on_cursor),
+        Span::styled(format!("{glyph} "), Style::new().fg(glyph_colour).bg(bg)),
     ];
-    // reserve room for the trailing markers, then clip the basename into the
-    // rest. " ·{open}" is 2 + the count's digits wide; " ✓" is 2
-    let suffix_width = usize::from(viewed) * 2
-        + if open > 0 {
-            2 + open.to_string().len()
-        } else {
-            0
-        };
+    // reserve room for the trailing count, then clip the basename into the
+    // rest: " ·{open}" is 2 + the count's digits wide
+    let suffix_width = if open > 0 {
+        2 + open.to_string().len()
+    } else {
+        0
+    };
     let used = spans.iter().map(Span::width).sum::<usize>() + suffix_width;
     let room = (width as usize).saturating_sub(used + 1);
     let name_style = Style::new()
@@ -1547,9 +1481,6 @@ fn sidebar_file_line(
         name.contains('/'),
         name_style,
     ));
-    if viewed {
-        spans.push(Span::styled(" ✓".to_owned(), dim));
-    }
     if open > 0 {
         spans.push(Span::styled(format!(" ·{open}"), dim));
     }
@@ -3643,7 +3574,7 @@ flowchart LR
             focused: true,
             search: &[],
         };
-        let spans = super::sidebar_dir_line(&rc, "src", false, (3, 1), super::ViewedRail::None);
+        let spans = super::sidebar_dir_line(&rc, "src", false, (3, 1));
         let painted: Vec<(&str, Option<super::Color>)> = spans
             .spans
             .iter()
@@ -3654,76 +3585,6 @@ flowchart LR
             painted,
             vec![(" +3", Some(theme.added)), (" -1", Some(theme.error_fg))],
             "the header reuses the file row's diffstat, no bar: {spans:?}"
-        );
-    }
-
-    /// A group where every file is viewed leads with the same solid colour a
-    /// viewed file itself does.
-    #[test]
-    fn a_fully_viewed_group_leads_with_the_viewed_colour() {
-        let theme = Theme::github_dark();
-        let rc = super::TreeRowCtx {
-            theme: &theme,
-            depth: 0,
-            width: 40,
-            on_cursor: false,
-            focused: true,
-            search: &[],
-        };
-        let spans = super::sidebar_dir_line(&rc, "src", true, (3, 1), super::ViewedRail::Done);
-        assert_eq!(
-            spans.spans[0].style.fg,
-            Some(theme.added),
-            "done reuses the file row's own viewed colour: {spans:?}"
-        );
-    }
-
-    /// A group where only some files are viewed leads with a muted version of
-    /// the viewed colour, readable as unfinished next to a fully done one.
-    #[test]
-    fn a_partly_viewed_group_leads_with_a_muted_colour() {
-        let theme = Theme::github_dark();
-        let rc = super::TreeRowCtx {
-            theme: &theme,
-            depth: 0,
-            width: 40,
-            on_cursor: false,
-            focused: true,
-            search: &[],
-        };
-        let spans = super::sidebar_dir_line(&rc, "src", true, (3, 1), super::ViewedRail::Partial);
-        let fg = spans.spans[0]
-            .style
-            .fg
-            .expect("a partial group still paints a rail");
-        assert_ne!(
-            fg, theme.added,
-            "partial reads lighter than done: {spans:?}"
-        );
-        assert_ne!(
-            fg, theme.accent,
-            "partial never reads as the cursor: {spans:?}"
-        );
-    }
-
-    /// The row under the keyboard always shows the cursor bar, even when it
-    /// is itself a fully viewed group: the cursor has to stay unmistakable.
-    #[test]
-    fn the_cursor_bar_wins_over_a_viewed_rail() {
-        let theme = Theme::github_dark();
-        let rc = super::TreeRowCtx {
-            theme: &theme,
-            depth: 0,
-            width: 40,
-            on_cursor: true,
-            focused: true,
-            search: &[],
-        };
-        let spans = super::sidebar_dir_line(&rc, "src", true, (3, 1), super::ViewedRail::Done);
-        assert_eq!(
-            spans.spans[0].style.fg,
-            Some(theme.accent),
-            "the cursor colour wins over a done rail: {spans:?}"
         );
     }
 
@@ -3991,7 +3852,7 @@ flowchart LR
     /// they stack into one run: their lead cells carry the rail, the file
     /// still to review below carries none.
     #[test]
-    fn a_run_of_viewed_files_reads_as_one_stripe_in_the_sidebar() {
+    fn viewed_files_lead_with_a_check_and_sort_above_the_rest() {
         let fixture = Fixture::new();
         fixture.write("a.txt", "one\n");
         fixture.write("b.txt", "one\n");
@@ -4017,35 +3878,6 @@ flowchart LR
         session.mark_viewed("a.txt", &hash_of("a.txt"));
         session.mark_viewed("b.txt", &hash_of("b.txt"));
         app.diff.as_mut().unwrap().invalidate();
-        insta::assert_snapshot!(render(&mut app).backend());
-    }
-
-    /// A folder half viewed reads as partial while still folded, distinct
-    /// from an untouched one and from one fully done, without opening it.
-    #[test]
-    fn a_partly_viewed_folded_folder_reads_as_partial() {
-        let fixture = Fixture::new();
-        fixture.write("src/a.rs", "one\n");
-        fixture.write("src/b.rs", "one\n");
-        fixture.commit_all("base");
-        fixture.write("src/a.rs", "one\ntwo\n");
-        fixture.write("src/b.rs", "one\ntwo\n");
-        let mut app = App::new(fixture.review(), LoadedConfig::default());
-        app.open_working_tree_diff(None);
-        let hash = app
-            .review
-            .model()
-            .files
-            .iter()
-            .find(|f| f.path == "src/a.rs")
-            .expect("src/a.rs in the diff")
-            .content_hash();
-        app.review
-            .session_for_mut(&super::ReviewSource::WorkingTree)
-            .mark_viewed("src/a.rs", &hash);
-        let diff = app.diff.as_mut().expect("diff view");
-        diff.folded_dirs.insert("src".to_owned());
-        diff.invalidate();
         insta::assert_snapshot!(render(&mut app).backend());
     }
 
