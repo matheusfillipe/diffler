@@ -251,7 +251,9 @@ pub struct ReplyResponse {
 
 /// One line of what `publish_walkthrough` checked or resolved. A refusal
 /// (`too_many_stops`, `empty_stops`, `body_too_long`, `total_too_long`,
-/// `anchor_unparsed`) means nothing was stored; the rest land alongside a
+/// `anchor_unparsed`, `anchor_file_missing`, `nothing_to_anchor`,
+/// `note_outside_stop`, `duplicate_id`) means nothing was stored; the rest
+/// (`anchor_whole`, `figure_dropped`, `figure_simplified`) land alongside a
 /// stored walkthrough so the agent learns what to fix without a broken
 /// figure ever reaching the reader.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]

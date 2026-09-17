@@ -3,6 +3,7 @@
 //! requests here and renders the responses.
 
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 use diffler_core::model::DiffModel;
 use diffler_core::session::{Anchor, Comment, CommentStatus, now_unix};
@@ -201,9 +202,12 @@ impl App {
     /// own thread; a stop that passes its comment id back keeps that thread,
     /// and every other agent comment the source held goes with it (a human
     /// comment or reply is never one of these, so it always survives).
-    /// Anchor and figure receipts are reported but never refuse: the
-    /// walkthrough is stored either way, so the agent learns what to fix
-    /// without a broken figure ever reaching the reader.
+    /// A stop's anchor has to name something real, so an anchor naming no
+    /// file this review can reach, or a publish with nothing at all to
+    /// anchor an anchorless stop on, is refused rather than stored (see
+    /// `walkthrough_refusals`). Figure receipts, by contrast, are reported
+    /// but never refuse: the walkthrough is stored either way, so the agent
+    /// learns what to fix without a broken figure ever reaching the reader.
     fn agent_publish_walkthrough(
         &mut self,
         id: Option<String>,
@@ -223,36 +227,10 @@ impl App {
         // named; a repo with no commits yet resolves to nothing, the same as
         // a walkthrough saved before `rev` existed
         let rev = self.review.vcs.resolve("HEAD").ok();
-        // a stop with no anchor still needs a file to hang its card on: the
-        // first one the walkthrough names, else the first file of the
-        // working tree, which a walkthrough always tracks
-        let model = self.review.model().clone();
-        let fallback = stops
-            .iter()
-            .filter_map(|stop| stop.anchor.as_deref())
-            .map(|anchor| Target::parse(anchor).path().to_owned())
-            .next()
-            .or_else(|| model.files.first().map(|file| file.path.clone()))
-            .unwrap_or_default();
-        let files: Vec<String> = stops
-            .iter()
-            .map(|stop| anchored_path(stop.anchor.as_deref(), &fallback))
-            .collect();
-
-        let refusals = walkthrough_refusals(stops, &files, summary.as_deref());
-        if !refusals.is_empty() {
-            let text = refusals
-                .iter()
-                .map(|receipt| {
-                    let stop = receipt
-                        .stop
-                        .map_or("-".to_owned(), |index| index.to_string());
-                    format!("stop {stop}: {}: {}", receipt.code.name(), receipt.detail)
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            return McpResponse::Error(text);
-        }
+        let files = match self.resolve_stop_files(stops, summary.as_deref()) {
+            Ok(files) => files,
+            Err(text) => return McpResponse::Error(text),
+        };
 
         let receipts = walkthrough_receipts(stops);
         let kept: HashSet<&str> = stops
@@ -322,6 +300,56 @@ impl App {
             receipts,
             rev,
         })
+    }
+
+    /// Every stop's own file, once `stops` and `summary` clear every
+    /// [`walkthrough_refusals`] check; the refusals formatted as the tool's
+    /// error text otherwise, so nothing is ever stored against them. A stop
+    /// with no anchor falls back to the first anchored stop's file, or the
+    /// diff's own first file, `None` when neither exists.
+    fn resolve_stop_files(
+        &self,
+        stops: &[StopParams],
+        summary: Option<&str>,
+    ) -> Result<Vec<String>, String> {
+        let model = self.review.model();
+        let fallback = stops
+            .iter()
+            .filter_map(|stop| stop.anchor.as_deref())
+            .map(|anchor| Target::parse(anchor).path().to_owned())
+            .next()
+            .or_else(|| model.files.first().map(|file| file.path.clone()));
+
+        let refusals = walkthrough_refusals(
+            stops,
+            fallback.as_deref(),
+            model,
+            &self.review.repo_root,
+            summary,
+        );
+        if !refusals.is_empty() {
+            return Err(refusals
+                .iter()
+                .map(|receipt| {
+                    let stop = receipt
+                        .stop
+                        .map_or("-".to_owned(), |index| index.to_string());
+                    format!("stop {stop}: {}: {}", receipt.code.name(), receipt.detail)
+                })
+                .collect::<Vec<_>>()
+                .join("\n"));
+        }
+        // every stop above cleared `walkthrough_refusals`, so its own anchor
+        // is either real or absent with a real fallback to use instead
+        Ok(stops
+            .iter()
+            .map(|stop| {
+                anchored_path(
+                    stop.anchor.as_deref(),
+                    fallback.as_deref().unwrap_or_default(),
+                )
+            })
+            .collect())
     }
 
     fn review_summaries(&self) -> Vec<ReviewSummary> {
@@ -704,12 +732,132 @@ fn duplicate_id_receipts(stops: &[StopParams]) -> Vec<Receipt> {
     receipts
 }
 
+/// Whether `path` is something this review can honestly point a reader at: a
+/// file the diff itself covers (added, modified or deleted), or one the
+/// context-file machinery can still read live off disk. An empty path never
+/// qualifies, even though `repo_root.join("")` is the repo root and exists:
+/// `Target::parse` returns one for a malformed anchor like `"#foo"` or `":1"`
+/// (no path before the marker), and that must not slip through as if it
+/// named the repo itself.
+fn file_in_review(path: &str, model: &DiffModel, repo_root: &Path) -> bool {
+    !path.is_empty()
+        && (model.files.iter().any(|f| f.path == path) || repo_root.join(path).exists())
+}
+
+/// The file `index`'s own anchor resolves to, or the receipt refusing it.
+/// `Ok(None)` is a stop with no anchor and no fallback either: the
+/// publish-level `NothingToAnchor` receipt already names that, so there is
+/// nothing more to say about this one stop.
+fn stop_file_receipt(
+    index: usize,
+    anchor: Option<&str>,
+    fallback: Option<&str>,
+    model: &DiffModel,
+    repo_root: &Path,
+) -> Result<Option<String>, Receipt> {
+    let Some(anchor) = anchor.map(str::trim) else {
+        return Ok(fallback.map(str::to_owned));
+    };
+    if anchor.is_empty() {
+        return Err(Receipt {
+            stop: Some(index),
+            code: ReceiptCode::AnchorUnparsed,
+            detail: "anchor is empty; name a file, or omit it to use the walkthrough's own \
+                     file"
+                .to_owned(),
+        });
+    }
+    let path = Target::parse(anchor).path().to_owned();
+    if file_in_review(&path, model, repo_root) {
+        Ok(Some(path))
+    } else {
+        Err(Receipt {
+            stop: Some(index),
+            code: ReceiptCode::AnchorFileMissing,
+            detail: format!(
+                "\"{anchor}\" names \"{path}\", not in this review: no such file in the \
+                 diff or on disk; anchor a file that exists, or check it out first if you \
+                 meant a different revision"
+            ),
+        })
+    }
+}
+
+/// Every refusal receipt one stop and its notes earn: a body over the cap, an
+/// anchor naming nothing real, and a note that strays from its stop's own
+/// file. Adds every body length counted along the way to `total`, the
+/// walkthrough's own running byte count.
+fn stop_and_note_refusals(
+    index: usize,
+    stop: &StopParams,
+    fallback: Option<&str>,
+    model: &DiffModel,
+    repo_root: &Path,
+    total: &mut usize,
+) -> Vec<Receipt> {
+    let mut receipts = Vec::new();
+    *total += stop.body.len();
+    if stop.body.len() > BODY_MAX_BYTES {
+        receipts.push(Receipt {
+            stop: Some(index),
+            code: ReceiptCode::BodyTooLong,
+            detail: format!(
+                "{} bytes, {BODY_MAX_BYTES} at most; trim it and republish",
+                stop.body.len()
+            ),
+        });
+    }
+
+    let stop_path = stop_file_receipt(index, stop.anchor.as_deref(), fallback, model, repo_root)
+        .unwrap_or_else(|receipt| {
+            receipts.push(receipt);
+            None
+        });
+
+    for (at, note) in notes_of(stop).enumerate() {
+        *total += note.body.len();
+        if note.body.len() > BODY_MAX_BYTES {
+            receipts.push(Receipt {
+                stop: Some(index),
+                code: ReceiptCode::BodyTooLong,
+                detail: format!(
+                    "note {at}: {} bytes, {BODY_MAX_BYTES} at most; trim it and republish",
+                    note.body.len()
+                ),
+            });
+        }
+        let Some(note_anchor) = note.anchor.as_deref() else {
+            continue;
+        };
+        let note_path = Target::parse(note_anchor).path().to_owned();
+        if let Some(stop_path) = stop_path.as_deref()
+            && stop_path != note_path
+        {
+            receipts.push(Receipt {
+                stop: Some(index),
+                code: ReceiptCode::NoteOutsideStop,
+                detail: format!(
+                    "note {at} names a different file (\"{note_path}\") than stop \
+                     {index}'s (\"{stop_path}\"); a note can anchor anywhere in that \
+                     same file, not just inside the stop's own span, or give it its \
+                     own stop if \"{note_path}\" is what it's really about"
+                ),
+            });
+        }
+    }
+    receipts
+}
+
 /// Every hard-limit receipt the incoming stops and summary earn. All codes
-/// here are refusals: nothing is stored while any are present. `files` is the
-/// file each stop lands in, which is the file its notes have to stay inside.
+/// here are refusals: nothing is stored while any are present. `fallback` is
+/// the file an anchorless stop falls back on (the first stop's own anchor, or
+/// the diff's first file), `None` when neither exists. A stop's own resolved
+/// file is also what its notes have to stay inside.
 fn walkthrough_refusals(
     stops: &[StopParams],
-    files: &[String],
+    fallback: Option<&str>,
+    model: &DiffModel,
+    repo_root: &Path,
     summary: Option<&str>,
 ) -> Vec<Receipt> {
     let mut receipts = Vec::new();
@@ -717,13 +865,27 @@ fn walkthrough_refusals(
         receipts.push(Receipt {
             stop: None,
             code: ReceiptCode::EmptyStops,
-            detail: "a walkthrough needs at least one stop".to_owned(),
+            detail: "a walkthrough needs at least one stop; add one and republish".to_owned(),
         });
     } else if stops.len() > MAX_STOPS {
         receipts.push(Receipt {
             stop: None,
             code: ReceiptCode::TooManyStops,
-            detail: format!("{} stops, {MAX_STOPS} at most", stops.len()),
+            detail: format!(
+                "{} stops, {MAX_STOPS} at most; drop some or split the change and republish",
+                stops.len()
+            ),
+        });
+    }
+    if fallback.is_none() && stops.iter().any(|stop| stop.anchor.is_none()) {
+        receipts.push(Receipt {
+            stop: None,
+            code: ReceiptCode::NothingToAnchor,
+            detail: "no stop names a file and the diff is empty, so an anchorless stop has \
+                     nothing real to land on; anchor every stop explicitly, or check out the \
+                     change you mean first (a walkthrough always describes the working tree, \
+                     never a pull request or commit that isn't checked out)"
+                .to_owned(),
         });
     }
     receipts.extend(duplicate_id_receipts(stops));
@@ -733,60 +895,24 @@ fn walkthrough_refusals(
         receipts.push(Receipt {
             stop: None,
             code: ReceiptCode::BodyTooLong,
-            detail: format!("summary: {} bytes, {BODY_MAX_BYTES} at most", summary.len()),
+            detail: format!(
+                "summary: {} bytes, {BODY_MAX_BYTES} at most; trim it and republish",
+                summary.len()
+            ),
         });
     }
     for (index, stop) in stops.iter().enumerate() {
-        total += stop.body.len();
-        for (at, note) in notes_of(stop).enumerate() {
-            total += note.body.len();
-            if note.body.len() > BODY_MAX_BYTES {
-                receipts.push(Receipt {
-                    stop: Some(index),
-                    code: ReceiptCode::BodyTooLong,
-                    detail: format!(
-                        "note {at}: {} bytes, {BODY_MAX_BYTES} at most",
-                        note.body.len()
-                    ),
-                });
-            }
-            let Some(anchor) = note.anchor.as_deref() else {
-                continue;
-            };
-            let path = Target::parse(anchor).path().to_owned();
-            if files.get(index).is_some_and(|file| *file != path) {
-                receipts.push(Receipt {
-                    stop: Some(index),
-                    code: ReceiptCode::NoteOutsideStop,
-                    detail: format!(
-                        "note {at} anchors \"{anchor}\", outside stop {index}'s file {}",
-                        files.get(index).map_or("", String::as_str)
-                    ),
-                });
-            }
-        }
-        if stop.body.len() > BODY_MAX_BYTES {
-            receipts.push(Receipt {
-                stop: Some(index),
-                code: ReceiptCode::BodyTooLong,
-                detail: format!("{} bytes, {BODY_MAX_BYTES} at most", stop.body.len()),
-            });
-        }
-        // `Target::parse` never fails, so the only unparsable anchor is one
-        // with nothing in it
-        if stop.anchor.as_deref().is_some_and(|a| a.trim().is_empty()) {
-            receipts.push(Receipt {
-                stop: Some(index),
-                code: ReceiptCode::AnchorUnparsed,
-                detail: "anchor is empty".to_owned(),
-            });
-        }
+        receipts.extend(stop_and_note_refusals(
+            index, stop, fallback, model, repo_root, &mut total,
+        ));
     }
     if total > TOTAL_MAX_BYTES {
         receipts.push(Receipt {
             stop: None,
             code: ReceiptCode::TotalTooLong,
-            detail: format!("{total} bytes total, {TOTAL_MAX_BYTES} at most"),
+            detail: format!(
+                "{total} bytes total, {TOTAL_MAX_BYTES} at most; cut some stops or notes and republish"
+            ),
         });
     }
     receipts
@@ -1807,6 +1933,106 @@ mod tests {
                 ),
             "a refused walkthrough is never stored"
         );
+    }
+
+    /// The real failure this refusal exists for: an agent walking through a
+    /// change whose diff it never actually reads (a PR reviewed while
+    /// diffler sits on a clean working tree) publishes stops with no anchor
+    /// at all. With nothing in the diff to fall back on, the old fallback
+    /// chain silently hung every stop's card on `""`; this must refuse
+    /// instead, and never write a walkthrough whose stops point nowhere.
+    #[test]
+    fn publishing_with_no_anchors_against_an_empty_diff_is_refused() {
+        let fixture = crate::test_support::Fixture::new();
+        fixture.write("a.rs", "pub fn a() {}\n");
+        fixture.commit_all("initial commit");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        assert!(
+            app.review.model().files.is_empty(),
+            "the fixture must start with nothing in the diff"
+        );
+
+        let response = app.handle_mcp(McpRequestKind::PublishWalkthrough {
+            id: None,
+            title: "tour".to_owned(),
+            stops: vec![stop("one", None, "why")],
+            skipped: None,
+            summary: None,
+        });
+        let McpResponse::Error(text) = response else {
+            panic!("expected a refusal: {response:?}");
+        };
+        assert!(text.contains("nothing_to_anchor"), "{text}");
+        assert!(
+            app.review
+                .all_reviews()
+                .expect("all reviews")
+                .into_iter()
+                .all(
+                    |(s, session)| !matches!(s, ReviewSource::Walkthrough { .. })
+                        || session.walkthrough.is_none()
+                ),
+            "a refused walkthrough is never stored, and never with an empty anchor"
+        );
+    }
+
+    #[test]
+    fn a_stop_anchored_to_a_file_outside_the_review_is_refused() {
+        let (_fixture, mut app, _id) = app_with_comment();
+        let response = app.handle_mcp(McpRequestKind::PublishWalkthrough {
+            id: None,
+            title: "tour".to_owned(),
+            stops: vec![stop("nowhere", Some("does/not/exist.rs"), "why")],
+            skipped: None,
+            summary: None,
+        });
+        let McpResponse::Error(text) = response else {
+            panic!("expected a refusal: {response:?}");
+        };
+        assert!(text.contains("anchor_file_missing"), "{text}");
+        assert!(text.contains("does/not/exist.rs"), "{text}");
+        assert!(
+            app.review
+                .all_reviews()
+                .expect("all reviews")
+                .into_iter()
+                .all(
+                    |(s, session)| !matches!(s, ReviewSource::Walkthrough { .. })
+                        || session.walkthrough.is_none()
+                ),
+            "a refused walkthrough is never stored"
+        );
+    }
+
+    /// The context-file machinery exists so a stop can anchor to a file the
+    /// diff never touched: `notes.txt` is committed with no further edits, so
+    /// it never appears in `model.files`, yet it is a real file on disk and
+    /// must still be accepted.
+    #[test]
+    fn a_stop_anchored_outside_the_diff_but_on_disk_still_publishes() {
+        let (_fixture, mut app, _id) = app_with_comment();
+        assert!(
+            !app.review
+                .model()
+                .files
+                .iter()
+                .any(|f| f.path == "notes.txt"),
+            "notes.txt must not be part of the diff for this to test the context-file case"
+        );
+        let response = app.handle_mcp(McpRequestKind::PublishWalkthrough {
+            id: None,
+            title: "tour".to_owned(),
+            stops: vec![
+                stop("The answer", Some("src/lib.rs#answer"), "why 42"),
+                stop("Some context", Some("notes.txt"), "unrelated but real"),
+            ],
+            skipped: None,
+            summary: None,
+        });
+        let McpResponse::WalkthroughPublished(published) = response else {
+            panic!("expected a published walkthrough: {response:?}");
+        };
+        assert_eq!(published.stops, 2);
     }
 
     #[test]

@@ -99,6 +99,12 @@ pub enum ReceiptCode {
     BodyTooLong,
     TotalTooLong,
     AnchorUnparsed,
+    /// A stop's anchor names a file this review has no honest way to reach:
+    /// not in the diff, and not readable on disk either.
+    AnchorFileMissing,
+    /// No stop names a file and the diff itself is empty, so an anchorless
+    /// stop has nothing real to fall back on.
+    NothingToAnchor,
     NoteOutsideStop,
     DuplicateId,
 }
@@ -113,6 +119,8 @@ impl ReceiptCode {
             Self::BodyTooLong => "body_too_long",
             Self::TotalTooLong => "total_too_long",
             Self::AnchorUnparsed => "anchor_unparsed",
+            Self::AnchorFileMissing => "anchor_file_missing",
+            Self::NothingToAnchor => "nothing_to_anchor",
             Self::NoteOutsideStop => "note_outside_stop",
             Self::DuplicateId => "duplicate_id",
         }
@@ -255,6 +263,8 @@ mod tests {
             ReceiptCode::BodyTooLong,
             ReceiptCode::TotalTooLong,
             ReceiptCode::AnchorUnparsed,
+            ReceiptCode::AnchorFileMissing,
+            ReceiptCode::NothingToAnchor,
             ReceiptCode::NoteOutsideStop,
             ReceiptCode::DuplicateId,
         ] {
