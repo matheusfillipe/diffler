@@ -180,6 +180,13 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   pass per frame over the layout on screen. Inside a group, a directory or a
   section alike, the files already viewed sort to the top, so what is left to
   read is one run at the bottom the way the review layout's buckets do it.
+  The lead cell (`tree_lead`, shared with the cursor's own `▌`) carries a rail
+  for that state: solid once a file or a whole group is viewed, muted while a
+  group is only partly there, so a run of finished files or a folder half read
+  both read that way at a glance without unfolding it; a file's own status
+  checkmark stays alongside it for the exact confirmation a colour alone can't
+  give. The cursor bar takes the cell first, since it has to stay unmistakable
+  over whatever the row itself is signaling.
   `m` marks the file and moves to the row listed under it, walking what the
   sidebar shows: a folded group stays folded, and reaching the end of the list
   with files left says so. With nothing below it the cursor holds its row
