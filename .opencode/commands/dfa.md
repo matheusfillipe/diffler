@@ -13,7 +13,10 @@ this review when `$ARGUMENTS` is empty:
    A walkthrough is pinned to the commit it is published at, so publish it
    once the code it describes is the code checked out; once the branch has
    moved on, revise it so the stops point at the revision it is on now.
-2. Read the diff with `get_diff`.
+2. Read the diff with `get_diff`. It is always the working tree's own diff,
+   never a pull request, branch, or commit you have not checked out: an
+   empty diff while you're describing one of those means check it out
+   first, then read again.
 3. Choose one stop per real decision, as few as the change needs: five is
    common, ten is a lot, and more means the change wants splitting. Order
    them as a reader should meet them. Each stop is a span (`path#symbol`
