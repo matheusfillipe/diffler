@@ -597,6 +597,9 @@ pub struct App {
     pub(crate) pending_pr_open: Option<crate::ci::PullRequest>,
     /// A branch to switch to once its PR fetch lands.
     pub(crate) pending_pr_switch: Option<String>,
+    /// A walkthrough about a PR still resolving its range, with the slide it
+    /// was opened on; retried once the PR fetch or list lands.
+    pub(crate) pending_walkthrough_open: Option<(String, diff::Slide)>,
     pub prs: Vec<crate::ci::PullRequest>,
     pub prs_cursor: usize,
     /// Scroll offsets of the two full-screen lists, kept so the view holds
@@ -816,6 +819,7 @@ impl App {
             pr_ranges: std::collections::HashMap::new(),
             pending_pr_open: None,
             pending_pr_switch: None,
+            pending_walkthrough_open: None,
             prs: Vec::new(),
             prs_cursor: 0,
             pending_pr_posts: Vec::new(),
@@ -1673,11 +1677,9 @@ impl App {
             self.pending_pr_create = None;
         }
         if label.starts_with(Self::PR_FETCH_PREFIX) {
-            if let Some(pr) = self.pending_pr_open.take().filter(|_| ok) {
-                match self.resolve_pr_range(&pr) {
-                    Some((base, head)) => self.open_pr_diff(pr.number, &base, &head),
-                    None => self.error("PR head still missing after fetch"),
-                }
+            if let Some(pr) = self.pending_pr_open.take()
+                && self.continue_pr_fetch(&pr, ok)
+            {
                 return;
             }
             if let Some(branch) = self.pending_pr_switch.take().filter(|_| ok) {
@@ -1709,6 +1711,29 @@ impl App {
         } else {
             self.error(summary);
         }
+    }
+
+    /// Finish a PR head fetch queued by `ensure_pr_range` (a plain PR open,
+    /// or a walkthrough resolving one via `resolve_walkthrough_pr`). `true`
+    /// means handled: `git_finished` returns without falling through to the
+    /// generic toast; `false` means the fetch failed and that toast should
+    /// report it, so a walkthrough waiting on it is dropped here rather than
+    /// retried into a fetch that just failed.
+    fn continue_pr_fetch(&mut self, pr: &crate::ci::PullRequest, ok: bool) -> bool {
+        if !ok {
+            self.pending_walkthrough_open = None;
+            return false;
+        }
+        if let Some((base, head)) = self.resolve_pr_range(pr) {
+            self.open_pr_diff(pr.number, &base, &head);
+            if let Some((id, slide)) = self.pending_walkthrough_open.take() {
+                self.open_walkthrough(&id, slide);
+            }
+        } else {
+            self.pending_walkthrough_open = None;
+            self.error("PR head still missing after fetch");
+        }
+        true
     }
 }
 

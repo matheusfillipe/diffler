@@ -185,6 +185,11 @@ impl App {
         self.status.prs_in_flight = false;
         self.prs_cursor = self.prs_cursor.min(self.prs.len().saturating_sub(1));
         self.restore_status_cursor(anchor);
+        // a walkthrough waiting on this list to name its PR retries now that
+        // it's landed, whether that PR turns up in it or not
+        if let Some((id, slide)) = self.pending_walkthrough_open.take() {
+            self.open_walkthrough(&id, slide);
+        }
         super::Flow::Continue
     }
 

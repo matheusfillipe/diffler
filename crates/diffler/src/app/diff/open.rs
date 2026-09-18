@@ -25,13 +25,27 @@ impl App {
     /// range, or PR the human had open when it was published. Even over an
     /// empty diff there this still opens: its own anchored files fill the
     /// pane once they resolve, so that is not "nothing to review" here.
-    pub(crate) fn open_walkthrough_diff(&mut self, id: &str) {
+    ///
+    /// A PR `about` names isn't always resolved yet (a fresh session never
+    /// opened it, so `pr_ranges` has nothing for it): `resolve_walkthrough_pr`
+    /// resolves it the way opening that PR directly would, fetching its head
+    /// first when needed. Returns `false` while that resolution is still in
+    /// flight, leaving `self.diff` untouched; the caller retries once it
+    /// lands rather than opening a diff that renders the PR as unchanged.
+    pub(crate) fn open_walkthrough_diff(&mut self, id: &str) -> bool {
         let about = self.walkthrough_about(id);
+        if let ReviewSource::Pr { number } = about
+            && !self.pr_ranges.contains_key(&number)
+            && !self.resolve_walkthrough_pr(number)
+        {
+            return false;
+        }
         let model = match about {
             ReviewSource::WorkingTree => None,
             other => Some((*self.source_model(&other)).clone()),
         };
         self.install_diff_view(ReviewSource::Walkthrough { id: id.to_owned() }, model, true);
+        true
     }
 
     fn open_working_tree_diff_focused(&mut self, scope: Option<&str>, focus: Pane) {
@@ -209,30 +223,44 @@ impl App {
     /// Review any PR, including one whose branch was never checked out; the
     /// diff needs only the fetched objects.
     pub(crate) fn open_pr_review_for(&mut self, pr: crate::ci::PullRequest) {
-        if let Some((base, head)) = self.resolve_pr_range(&pr) {
-            self.open_pr_diff(pr.number, &base, &head);
-        } else {
-            let remote = self
-                .ci_remotes
-                .first()
-                .map_or_else(|| "origin".to_owned(), |r| r.name.clone());
-            let refspec = format!("refs/pull/{}/head", pr.number);
-            let base_ref = pr.base_ref.clone();
-            let label = Self::pr_fetch_label(pr.number);
-            self.pending_pr_open = Some(pr);
-            // the base ref comes along so merge-base reflects the forge's
-            // view, not however stale the last fetch left it
-            self.pending_git = Some(crate::app::GitOp {
-                label,
-                argv: vec![
-                    "git".to_owned(),
-                    "fetch".to_owned(),
-                    remote,
-                    refspec,
-                    base_ref,
-                ],
-            });
+        let number = pr.number;
+        if let Some((base, head)) = self.ensure_pr_range(pr) {
+            self.open_pr_diff(number, &base, &head);
         }
+    }
+
+    /// `(merge_base, head)` for `pr` against the local objects, fetching its
+    /// head first when the repository doesn't have it: the fetch lands as a
+    /// `git_finished` continuation keyed off `pending_pr_open`, so `None`
+    /// here means the caller must retry once that lands.
+    pub(crate) fn ensure_pr_range(
+        &mut self,
+        pr: crate::ci::PullRequest,
+    ) -> Option<(String, String)> {
+        if let Some(range) = self.resolve_pr_range(&pr) {
+            return Some(range);
+        }
+        let remote = self
+            .ci_remotes
+            .first()
+            .map_or_else(|| "origin".to_owned(), |r| r.name.clone());
+        let refspec = format!("refs/pull/{}/head", pr.number);
+        let base_ref = pr.base_ref.clone();
+        let label = Self::pr_fetch_label(pr.number);
+        self.pending_pr_open = Some(pr);
+        // the base ref comes along so merge-base reflects the forge's
+        // view, not however stale the last fetch left it
+        self.pending_git = Some(crate::app::GitOp {
+            label,
+            argv: vec![
+                "git".to_owned(),
+                "fetch".to_owned(),
+                remote,
+                refspec,
+                base_ref,
+            ],
+        });
+        None
     }
 
     /// `(merge_base, head)` for the PR against the local objects; `None` when
@@ -251,6 +279,49 @@ impl App {
             .or_else(|| self.review.vcs.resolve(&pr.base_ref).ok())?;
         let base = self.review.vcs.merge_base(&base_tip, &head).ok()?;
         Some((base, head))
+    }
+
+    /// The PR the branch's own current review or the fetched open-PRs list
+    /// already knows about, if either names `number`.
+    fn known_pr(&self, number: u64) -> Option<crate::ci::PullRequest> {
+        self.pr
+            .clone()
+            .filter(|pr| pr.number == number)
+            .or_else(|| self.prs.iter().find(|pr| pr.number == number).cloned())
+    }
+
+    /// Make sure `pr_ranges` holds `number`, the way opening that PR
+    /// directly resolves it: a PR already known locally resolves its range
+    /// or queues fetching its head; a number nobody has fetched yet queues
+    /// the open-PRs list and is looked up once it lands. `false` means
+    /// resolution is still in flight (a git fetch or a forge poll) and the
+    /// caller must retry once it completes.
+    pub(crate) fn resolve_walkthrough_pr(&mut self, number: u64) -> bool {
+        let Some(pr) = self.known_pr(number) else {
+            if self.status.prs_loaded {
+                self.error(format!(
+                    "PR #{number} isn't among the repo's open pull requests; \
+                     this walkthrough's diff can't be resolved"
+                ));
+            } else if self.ci_remotes.is_empty() {
+                self.error(format!(
+                    "no CI provider detected for this repo; \
+                     can't resolve PR #{number} for this walkthrough"
+                ));
+            } else if !self.status.prs_in_flight {
+                self.status.prs_in_flight = true;
+                self.pending_ci = Some(crate::app::CiRequest::Prs);
+                self.info(format!("loading PR #{number} for this walkthrough"));
+            }
+            return false;
+        };
+        if let Some((base, head)) = self.ensure_pr_range(pr) {
+            self.pr_ranges.insert(number, (base, head));
+            true
+        } else {
+            self.info(format!("fetching PR #{number} for this walkthrough"));
+            false
+        }
     }
 
     pub(crate) fn open_pr_diff(&mut self, number: u64, base: &str, head: &str) {

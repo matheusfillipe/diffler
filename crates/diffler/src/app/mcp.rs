@@ -1087,6 +1087,7 @@ mod tests {
 
     use super::*;
     use crate::config::LoadedConfig;
+    use crate::event::AppEvent;
     use crate::test_support::{standard_fixture, two_hunk_fixture};
 
     fn app_with_comment() -> (crate::test_support::Fixture, App, String) {
@@ -2101,6 +2102,192 @@ mod tests {
                 .iter()
                 .any(|f| f.path == "pr_only.rs"),
             "the walkthrough renders the PR's diff, not the empty working tree"
+        );
+    }
+
+    fn github_ci_remote() -> crate::app::CiRemote {
+        crate::app::CiRemote {
+            name: "origin".into(),
+            detected: crate::ci::Detected {
+                kind: crate::ci::ProviderKind::GitHub,
+                host: None,
+            },
+            url: None,
+        }
+    }
+
+    /// The bug this fixes: a walkthrough about a PR, opened in a session
+    /// that never touched that PR (`pr_ranges` empty, the branch's own PR
+    /// unresolved, the open-PRs list never fetched), the way a restart
+    /// leaves every one of them. Before the fix `open_walkthrough_diff`
+    /// rendered it straight off `pr_ranges`, found nothing, and opened on an
+    /// empty diff with no word to the reader that anything was unresolved.
+    #[test]
+    fn opening_a_walkthrough_about_a_pr_resolves_it_with_nothing_fetched_yet() {
+        let fixture = crate::test_support::Fixture::new();
+        fixture.write("base.rs", "pub fn base() {}\n");
+        fixture.commit_all("base");
+        fixture.branch("feature");
+        fixture.checkout("feature");
+        fixture.write("pr_only.rs", "pub fn only_in_pr() -> u32 {\n    7\n}\n");
+        fixture.commit_all("add pr_only.rs");
+        fixture.checkout("main");
+        std::fs::remove_file(fixture.root.join("pr_only.rs")).expect("remove");
+
+        let published_id = {
+            let mut app = App::new(fixture.review(), LoadedConfig::default());
+            let base = app.review.vcs.resolve("main").expect("base");
+            let head = app.review.vcs.resolve("feature").expect("head");
+            app.open_pr_diff(7, &base, &head);
+            let McpResponse::WalkthroughPublished(published) =
+                app.handle_mcp(McpRequestKind::PublishWalkthrough {
+                    id: None,
+                    title: "add only_in_pr".to_owned(),
+                    stops: vec![stop("Only in the PR", Some("pr_only.rs#only_in_pr"), "why")],
+                    skipped: None,
+                    summary: None,
+                })
+            else {
+                panic!("expected a published walkthrough");
+            };
+            published.id
+        };
+        let head_oid = fixture.review().vcs.resolve("feature").expect("head");
+
+        // a fresh session: nothing about PR #7 has been fetched yet
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.ci_remotes = vec![github_ci_remote()];
+        assert!(app.pr_ranges.is_empty(), "nothing resolved yet");
+        assert!(app.pr.is_none());
+        assert!(app.prs.is_empty());
+
+        app.open_walkthrough(&published_id, crate::app::diff::Slide::Stop(0));
+        assert!(
+            app.diff.is_none(),
+            "the PR isn't known yet: the walkthrough waits rather than opening empty"
+        );
+        assert!(
+            matches!(app.pending_ci, Some(crate::app::CiRequest::Prs)),
+            "{:?}",
+            app.pending_ci
+        );
+        assert_eq!(
+            app.pending_walkthrough_open
+                .as_ref()
+                .map(|(id, _)| id.clone()),
+            Some(published_id.clone())
+        );
+
+        // the open-PRs list lands, naming the PR the walkthrough is about
+        app.on_prs_event(vec![crate::ci::PullRequest {
+            number: 7,
+            title: "add pr_only.rs".into(),
+            url: None,
+            base_ref: "main".into(),
+            head_ref: "feature".into(),
+            head_oid,
+            author: "reviewer".into(),
+        }]);
+
+        assert!(
+            app.pending_walkthrough_open.is_none(),
+            "the retry consumes the stashed open"
+        );
+        let diff = app
+            .diff
+            .as_ref()
+            .expect("the walkthrough opens once the PR resolves");
+        assert!(
+            diff.model(&app.review)
+                .files
+                .iter()
+                .any(|f| f.path == "pr_only.rs"),
+            "the walkthrough renders the PR's diff, not an empty one"
+        );
+    }
+
+    /// A PR the open-PRs list already named, but whose head the local
+    /// repository hasn't fetched, is resolved the same way `open_pr_diff`
+    /// resolves any other PR: a fetch queued first, the walkthrough opening
+    /// once it lands.
+    #[test]
+    fn opening_a_walkthrough_about_a_known_pr_fetches_its_head_first() {
+        let fixture = crate::test_support::Fixture::new();
+        fixture.write("base.rs", "pub fn base() {}\n");
+        fixture.commit_all("base");
+        fixture.branch("feature");
+        fixture.checkout("feature");
+        fixture.write("pr_only.rs", "pub fn only_in_pr() -> u32 {\n    7\n}\n");
+        fixture.commit_all("add pr_only.rs");
+        fixture.checkout("main");
+        std::fs::remove_file(fixture.root.join("pr_only.rs")).expect("remove");
+
+        let published_id = {
+            let mut app = App::new(fixture.review(), LoadedConfig::default());
+            let base = app.review.vcs.resolve("main").expect("base");
+            let head = app.review.vcs.resolve("feature").expect("head");
+            app.open_pr_diff(7, &base, &head);
+            let McpResponse::WalkthroughPublished(published) =
+                app.handle_mcp(McpRequestKind::PublishWalkthrough {
+                    id: None,
+                    title: "add only_in_pr".to_owned(),
+                    stops: vec![stop("Only in the PR", Some("pr_only.rs#only_in_pr"), "why")],
+                    skipped: None,
+                    summary: None,
+                })
+            else {
+                panic!("expected a published walkthrough");
+            };
+            published.id
+        };
+        let head_oid = fixture.review().vcs.resolve("feature").expect("head");
+
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.ci_remotes = vec![github_ci_remote()];
+        // the list already named the PR, but its base isn't fetched locally
+        // yet (the head is a real, resolvable oid on its own)
+        app.prs = vec![crate::ci::PullRequest {
+            number: 7,
+            title: "add pr_only.rs".into(),
+            url: None,
+            base_ref: "not-fetched-yet".into(),
+            head_ref: "feature".into(),
+            head_oid,
+            author: "reviewer".into(),
+        }];
+
+        app.open_walkthrough(&published_id, crate::app::diff::Slide::Stop(0));
+        assert!(
+            app.diff.is_none(),
+            "the base isn't local yet: waits rather than opening empty"
+        );
+        let git = app.pending_git.take().expect("a fetch is queued");
+        assert!(
+            git.argv.iter().any(|a| a == "refs/pull/7/head"),
+            "{:?}",
+            git.argv
+        );
+        assert_eq!(app.pending_pr_open.as_ref().map(|pr| pr.number), Some(7));
+        assert!(app.pending_walkthrough_open.is_some());
+
+        // the fetch lands, bringing the base ref in
+        fixture.branch("not-fetched-yet");
+        app.handle(AppEvent::GitDone {
+            label: App::pr_fetch_label(7),
+            ok: true,
+            output: String::new(),
+        });
+
+        let diff = app
+            .diff
+            .as_ref()
+            .expect("the walkthrough opens once the fetch lands");
+        assert!(
+            diff.model(&app.review)
+                .files
+                .iter()
+                .any(|f| f.path == "pr_only.rs"),
+            "the walkthrough renders the PR's diff, not an empty one"
         );
     }
 

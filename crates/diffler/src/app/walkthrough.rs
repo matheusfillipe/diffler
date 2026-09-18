@@ -426,9 +426,14 @@ impl App {
     }
 
     /// `<cr>` on a status row: open the walkthrough `id` names, in its own
-    /// order, seated on `slide`.
+    /// order, seated on `slide`. A walkthrough about a PR still resolving
+    /// its range stashes `(id, slide)` and returns without touching the
+    /// screen; the resolution's continuation calls this again once it lands.
     pub(crate) fn open_walkthrough(&mut self, id: &str, slide: Slide) {
-        self.open_walkthrough_diff(id);
+        if !self.open_walkthrough_diff(id) {
+            self.pending_walkthrough_open = Some((id.to_owned(), slide));
+            return;
+        }
         let Some(diff) = self.diff.as_mut() else {
             return;
         };
