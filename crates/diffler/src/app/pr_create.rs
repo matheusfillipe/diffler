@@ -38,6 +38,23 @@ impl PrField {
         };
         Self::ORDER.get(next).copied().unwrap_or(Self::Title)
     }
+
+    /// The text-field pair this row maps to, for the two the editor can open.
+    pub(crate) fn as_text(self) -> Option<PrTextField> {
+        match self {
+            Self::Title => Some(PrTextField::Title),
+            Self::Body => Some(PrTextField::Body),
+            Self::Base | Self::Draft | Self::Create | Self::Cancel => None,
+        }
+    }
+}
+
+/// The two [`PrField`] rows that hold text, for [`crate::editor::EditorPurpose::PrBody`]
+/// to say which one an edit lands in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrTextField {
+    Title,
+    Body,
 }
 
 /// The pull request being composed.
@@ -612,6 +629,67 @@ mod form_tests {
         let (_fixture, mut app) = form(PrField::Body);
         app.handle_modal_key(&press(KeyCode::Char('e')));
         assert!(app.pending_editor.is_some(), "an editor was queued");
+    }
+
+    /// The file is scratch, not the gitdir's `PR_EDITMSG.md` of before, and it
+    /// is gone once the text is read back.
+    #[test]
+    fn e_writes_a_scratch_file_removed_after_the_round_trip() {
+        let (_fixture, mut app) = form(PrField::Body);
+        app.handle_modal_key(&press(KeyCode::Char('e')));
+        let request = app.pending_editor.take().expect("editor queued");
+        let crate::editor::EditorPurpose::PrBody { msg_path, .. } = &request.purpose else {
+            panic!("expected a PrBody purpose, got {:?}", request.purpose);
+        };
+        assert!(
+            msg_path.starts_with(std::env::temp_dir()),
+            "{}",
+            msg_path.display()
+        );
+        assert_eq!(std::fs::read_to_string(msg_path).unwrap(), "a body");
+        let path = msg_path.clone();
+        app.editor_finished(request.purpose, Ok(true));
+        assert!(!path.exists(), "the scratch file is removed");
+    }
+
+    /// Editing the title must land in the title, not the body: the purpose
+    /// carries which field opened, since both go through the one scratch-file
+    /// mechanism.
+    #[test]
+    fn e_on_the_title_lands_in_the_title_not_the_body() {
+        let (_fixture, mut app) = form(PrField::Title);
+        app.handle_modal_key(&press(KeyCode::Char('e')));
+        let request = app.pending_editor.take().expect("editor queued");
+        let crate::editor::EditorPurpose::PrBody { msg_path, .. } = &request.purpose else {
+            panic!("expected a PrBody purpose, got {:?}", request.purpose);
+        };
+        std::fs::write(msg_path, "a new title").unwrap();
+        app.editor_finished(request.purpose, Ok(true));
+        let Some(Modal::CreatePr { draft }) = app.modal.as_ref() else {
+            panic!("back on the form: {:?}", app.modal);
+        };
+        assert_eq!(draft.title, "a new title");
+        assert_eq!(draft.body, "a body", "the body is untouched");
+    }
+
+    /// A cancelled edit (a non-zero editor exit) must leave the body exactly
+    /// as it was.
+    #[test]
+    fn a_cancelled_body_edit_keeps_the_body() {
+        let (_fixture, mut app) = form(PrField::Body);
+        app.handle_modal_key(&press(KeyCode::Char('e')));
+        let request = app.pending_editor.take().expect("editor queued");
+        let crate::editor::EditorPurpose::PrBody { msg_path, .. } = &request.purpose else {
+            panic!("expected a PrBody purpose, got {:?}", request.purpose);
+        };
+        std::fs::write(msg_path, "an edit the editor never saved").unwrap();
+        let path = msg_path.clone();
+        app.editor_finished(request.purpose, Ok(false));
+        assert!(!path.exists(), "the scratch file is removed regardless");
+        let Some(Modal::CreatePr { draft }) = app.modal.as_ref() else {
+            panic!("back on the form: {:?}", app.modal);
+        };
+        assert_eq!(draft.body, "a body", "the cancelled edit changed nothing");
     }
 
     /// The base is a list and the draft flag is a toggle, so neither is text

@@ -7,6 +7,7 @@ use std::path::Path;
 use super::fuzzy::{FuzzyKey, FuzzyList, branch_haystack, name_haystack, rev_haystack, selected};
 use super::text_edit;
 use super::{App, BranchAction, Flow, InputOp, Modal, PendingOp, RevChoice};
+use crate::editor::EditorPurpose;
 
 impl App {
     pub(super) fn handle_modal_key(&mut self, key: &KeyEvent) -> Flow {
@@ -236,20 +237,21 @@ impl App {
     /// `e` on the form: hand the focused text field to `$EDITOR`. The base and
     /// the draft flag are not text, so they decline.
     fn edit_pr_field_externally(&mut self, draft: Box<crate::app::pr_create::PrDraft>) {
-        use crate::app::pr_create::PrField;
-        let field = draft.field;
-        let (file, template) = match field {
-            PrField::Body => ("PR_EDITMSG.md", draft.body.clone()),
-            PrField::Title => ("PR_EDITTITLE.md", draft.title.clone()),
-            PrField::Base | PrField::Draft | PrField::Create | PrField::Cancel => {
-                self.modal = Some(Modal::CreatePr { draft });
-                self.info("only the title and body open in the editor");
-                return;
-            }
+        use crate::app::pr_create::PrTextField;
+        let Some(text_field) = draft.field.as_text() else {
+            self.modal = Some(Modal::CreatePr { draft });
+            self.info("only the title and body open in the editor");
+            return;
+        };
+        let template = match text_field {
+            PrTextField::Title => draft.title.clone(),
+            PrTextField::Body => draft.body.clone(),
         };
         let restore = draft.clone();
-        let queued = self.queue_message_editor(file, template, move |msg_path| {
-            crate::editor::EditorPurpose::PrBody { msg_path, draft }
+        let queued = self.queue_scratch_editor(&template, move |msg_path| EditorPurpose::PrBody {
+            msg_path,
+            draft,
+            field: text_field,
         });
         if !queued {
             self.modal = Some(Modal::CreatePr { draft: restore });

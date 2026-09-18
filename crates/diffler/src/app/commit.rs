@@ -130,6 +130,65 @@ impl App {
         true
     }
 
+    /// Write `template` to a fresh scratch file and queue the editor on it,
+    /// the way [`Self::queue_message_editor`] does for a commit message.
+    /// Unlike that file, this one is temporary: nothing outside this one
+    /// round trip ever reads it, so [`Self::take_scratch_edit`] removes it
+    /// once the text is back. The name carries a fresh id so two diffler
+    /// instances editing at once never collide.
+    pub(super) fn queue_scratch_editor(
+        &mut self,
+        template: &str,
+        purpose: impl FnOnce(std::path::PathBuf) -> EditorPurpose,
+    ) -> bool {
+        let path = std::env::temp_dir().join(format!("diffler-edit-{}.md", uuid::Uuid::new_v4()));
+        if let Err(err) = std::fs::write(&path, template) {
+            self.error(format!("cannot write {}: {err}", path.display()));
+            return false;
+        }
+        let cmd = editor::command_for(&self.editor_command(), &path, None);
+        self.pending_editor = Some(EditorRequest {
+            cmd,
+            purpose: purpose(path),
+        });
+        true
+    }
+
+    /// Read a scratch editor's file back and remove it, whatever the
+    /// outcome: nothing outside this one round trip needs the file once it
+    /// is read, and it must never linger. `None` for a cancelled edit, a
+    /// failed editor, or an unreadable file, so the caller's buffer stays
+    /// exactly as it was; `Some` carries the edited text with the editor's
+    /// own trailing newline trimmed.
+    pub(super) fn take_scratch_edit(
+        &mut self,
+        path: &Path,
+        outcome: Result<bool, String>,
+    ) -> Option<String> {
+        let read = match outcome {
+            Ok(true) => std::fs::read_to_string(path),
+            // a non-zero editor exit (e.g. vim's :cq) cancels the edit
+            Ok(false) => {
+                self.info("edit aborted");
+                let _ = std::fs::remove_file(path);
+                return None;
+            }
+            Err(err) => {
+                self.error(format!("editor failed: {err}"));
+                let _ = std::fs::remove_file(path);
+                return None;
+            }
+        };
+        let _ = std::fs::remove_file(path);
+        match read {
+            Ok(text) => Some(text.strip_suffix('\n').unwrap_or(&text).to_owned()),
+            Err(err) => {
+                self.error(format!("cannot read {}: {err}", path.display()));
+                None
+            }
+        }
+    }
+
     /// Run the backend amend and report. `message` `None` reuses HEAD's
     /// message (extend); `use_index` folds the staged index in.
     pub(super) fn apply_amend(&mut self, message: Option<&str>, use_index: bool) {
@@ -165,15 +224,13 @@ impl App {
             EditorPurpose::PrBody {
                 msg_path,
                 mut draft,
+                field,
             } => {
-                match outcome {
-                    Ok(_) => match std::fs::read_to_string(&msg_path) {
-                        Ok(body) => draft.body = body,
-                        Err(err) => {
-                            self.error(format!("cannot read {}: {err}", msg_path.display()));
-                        }
-                    },
-                    Err(err) => self.error(format!("editor failed: {err}")),
+                if let Some(text) = self.take_scratch_edit(&msg_path, outcome) {
+                    match field {
+                        crate::app::pr_create::PrTextField::Title => draft.title = text,
+                        crate::app::pr_create::PrTextField::Body => draft.body = text,
+                    }
                 }
                 self.modal = Some(super::Modal::CreatePr { draft });
             }
