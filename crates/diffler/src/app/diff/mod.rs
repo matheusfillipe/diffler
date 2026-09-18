@@ -2361,6 +2361,115 @@ mod tests {
         )));
     }
 
+    /// Cursor on the added line, `c` open, a note typed: the setup every
+    /// composer editor test starts from.
+    fn composer_with_typed_note(app: &mut App) {
+        select_file(app, "src/lib.rs");
+        let position = added_line_position(app);
+        app.diff.as_mut().unwrap().cursor = position;
+        app.handle(key('c'));
+        type_text(app, "why 42?");
+    }
+
+    #[test]
+    fn ctrl_g_sends_the_composer_buffer_to_the_editor_and_reads_it_back() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        composer_with_typed_note(&mut app);
+
+        app.handle(ctrl_key('g'));
+        let request = app.pending_editor.take().expect("editor queued");
+        let (path, target) = match &request.purpose {
+            crate::editor::EditorPurpose::TextBox { path, target } => (path.clone(), *target),
+            other => panic!("expected a text box purpose, got {other:?}"),
+        };
+        assert_eq!(target, crate::editor::TextBoxTarget::Composer);
+        assert!(
+            path.starts_with(std::env::temp_dir()),
+            "scratch, not the gitdir: {}",
+            path.display()
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "why 42?");
+        assert!(
+            app.composer_open(),
+            "the composer stays put while suspended"
+        );
+
+        std::fs::write(&path, "edited externally").unwrap();
+        app.editor_finished(request.purpose, Ok(true));
+
+        assert!(!path.exists(), "the scratch file is removed");
+        let composer = app
+            .diff
+            .as_ref()
+            .unwrap()
+            .composer
+            .as_ref()
+            .expect("composer stays open");
+        assert_eq!(composer.buffer, "edited externally");
+    }
+
+    #[test]
+    fn a_cancelled_composer_edit_keeps_the_buffer() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        composer_with_typed_note(&mut app);
+
+        app.handle(ctrl_key('g'));
+        let request = app.pending_editor.take().expect("editor queued");
+        let path = match &request.purpose {
+            crate::editor::EditorPurpose::TextBox { path, .. } => path.clone(),
+            other => panic!("expected a text box purpose, got {other:?}"),
+        };
+        // the editor wrote something before exiting non-zero (e.g. vim's :cq)
+        std::fs::write(&path, "an edit the editor never saved").unwrap();
+
+        app.editor_finished(request.purpose, Ok(false));
+
+        assert!(!path.exists(), "the scratch file is removed regardless");
+        let composer = app
+            .diff
+            .as_ref()
+            .unwrap()
+            .composer
+            .as_ref()
+            .expect("composer stays open");
+        assert_eq!(
+            composer.buffer, "why 42?",
+            "the cancelled edit changed nothing"
+        );
+    }
+
+    #[test]
+    fn a_failed_composer_editor_keeps_the_buffer_and_says_so() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        composer_with_typed_note(&mut app);
+
+        app.handle(ctrl_key('g'));
+        let request = app.pending_editor.take().expect("editor queued");
+        let path = match &request.purpose {
+            crate::editor::EditorPurpose::TextBox { path, .. } => path.clone(),
+            other => panic!("expected a text box purpose, got {other:?}"),
+        };
+
+        app.editor_finished(request.purpose, Err("boom".to_owned()));
+
+        assert!(!path.exists(), "the scratch file is removed regardless");
+        let composer = app
+            .diff
+            .as_ref()
+            .unwrap()
+            .composer
+            .as_ref()
+            .expect("composer stays open");
+        assert_eq!(composer.buffer, "why 42?");
+        let message = app.message.clone().expect("message");
+        assert_eq!(message.severity, crate::app::Severity::Error);
+        assert!(message.text.contains("editor failed"));
+        assert!(message.text.contains("boom"));
+    }
+
     #[test]
     fn outdated_comment_is_flagged_when_the_line_text_drifts() {
         let fixture = standard_fixture();

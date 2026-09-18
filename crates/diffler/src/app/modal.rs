@@ -7,7 +7,8 @@ use std::path::Path;
 use super::fuzzy::{FuzzyKey, FuzzyList, branch_haystack, name_haystack, rev_haystack, selected};
 use super::text_edit;
 use super::{App, BranchAction, Flow, InputOp, Modal, PendingOp, RevChoice};
-use crate::editor::EditorPurpose;
+use crate::editor::{EditorPurpose, TextBoxTarget};
+use crate::keymap::Action;
 
 impl App {
     pub(super) fn handle_modal_key(&mut self, key: &KeyEvent) -> Flow {
@@ -90,6 +91,10 @@ impl App {
     }
 
     pub(super) fn handle_input_key(&mut self, key: &KeyEvent) {
+        if self.matches_action(key, Action::EditExternally) {
+            self.edit_input_externally();
+            return;
+        }
         let Some(Modal::Input { buffer, cursor, .. }) = self.modal.as_mut() else {
             return;
         };
@@ -98,6 +103,19 @@ impl App {
             text_edit::Edit::Submit => self.submit_input(),
             text_edit::Edit::Cancel => self.cancel_input(),
         }
+    }
+
+    /// `ctrl+g`: hand the input modal's buffer to `$EDITOR` on a scratch
+    /// file, left in place until the terminal is back.
+    fn edit_input_externally(&mut self) {
+        let Some(Modal::Input { buffer, .. }) = self.modal.as_ref() else {
+            return;
+        };
+        let template = buffer.clone();
+        self.queue_scratch_editor(&template, |path| EditorPurpose::TextBox {
+            path,
+            target: TextBoxTarget::Input,
+        });
     }
 
     /// The pointer over an open dialog: the wheel walks the rows, a click puts
@@ -1001,5 +1019,74 @@ mod tests {
         let id = app.review.session.comments[0].id.clone();
         assert!(!app.delete_comment_by_id(&id));
         assert_eq!(app.review.session.comments.len(), 1);
+    }
+
+    #[test]
+    fn ctrl_g_sends_the_input_buffer_to_the_editor_and_reads_it_back() {
+        let mut app = input_app("fix the name");
+        chord(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
+
+        let request = app.pending_editor.take().expect("editor queued");
+        let (path, target) = match &request.purpose {
+            crate::editor::EditorPurpose::TextBox { path, target } => (path.clone(), *target),
+            other => panic!("expected a text box purpose, got {other:?}"),
+        };
+        assert_eq!(target, crate::editor::TextBoxTarget::Input);
+        assert!(
+            path.starts_with(std::env::temp_dir()),
+            "scratch, not the gitdir: {}",
+            path.display()
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "fix the name");
+        assert!(app.modal.is_some(), "the modal stays put while suspended");
+
+        std::fs::write(&path, "renamed branch").unwrap();
+        app.editor_finished(request.purpose, Ok(true));
+
+        assert!(!path.exists(), "the scratch file is removed");
+        assert_eq!(
+            input_state(&app),
+            (
+                "renamed branch".to_owned(),
+                "renamed branch".chars().count()
+            )
+        );
+    }
+
+    #[test]
+    fn a_cancelled_input_edit_keeps_the_buffer() {
+        let mut app = input_app("fix the name");
+        chord(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
+        let request = app.pending_editor.take().expect("editor queued");
+        let path = match &request.purpose {
+            crate::editor::EditorPurpose::TextBox { path, .. } => path.clone(),
+            other => panic!("expected a text box purpose, got {other:?}"),
+        };
+        std::fs::write(&path, "an edit the editor never saved").unwrap();
+
+        app.editor_finished(request.purpose, Ok(false));
+
+        assert!(!path.exists(), "the scratch file is removed regardless");
+        assert_eq!(input_state(&app).0, "fix the name");
+    }
+
+    #[test]
+    fn a_failed_input_editor_keeps_the_buffer_and_says_so() {
+        let mut app = input_app("fix the name");
+        chord(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
+        let request = app.pending_editor.take().expect("editor queued");
+        let path = match &request.purpose {
+            crate::editor::EditorPurpose::TextBox { path, .. } => path.clone(),
+            other => panic!("expected a text box purpose, got {other:?}"),
+        };
+
+        app.editor_finished(request.purpose, Err("boom".to_owned()));
+
+        assert!(!path.exists(), "the scratch file is removed regardless");
+        assert_eq!(input_state(&app).0, "fix the name");
+        let message = app.message.clone().expect("message");
+        assert_eq!(message.severity, crate::app::Severity::Error);
+        assert!(message.text.contains("editor failed"));
+        assert!(message.text.contains("boom"));
     }
 }

@@ -24,8 +24,27 @@ pub enum EditorPurpose {
         draft: Box<crate::app::pr_create::PrDraft>,
         field: crate::app::pr_create::PrTextField,
     },
+    /// Read a text box's scratch file back into the box it came from. The
+    /// file is temporary, so `App::take_scratch_edit` removes it once read,
+    /// whatever the outcome.
+    TextBox {
+        path: std::path::PathBuf,
+        target: TextBoxTarget,
+    },
     /// The human edited a file under review; refresh to pick up changes.
     OpenFile { path: String },
+}
+
+/// Which text box a [`EditorPurpose::TextBox`] round trip writes back to.
+/// Both sit exactly where they were left while the editor runs, since the
+/// terminal stays fully suspended for the whole round trip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextBoxTarget {
+    /// The diff pane's comment/reply/edit composer.
+    Composer,
+    /// The generic single- or multi-line input modal (branch name, PR field,
+    /// review summary, ...).
+    Input,
 }
 
 /// A subprocess the main loop must run with the terminal suspended.

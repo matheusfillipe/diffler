@@ -100,6 +100,8 @@ pub enum Action {
     SearchNext,
     SearchPrev,
     OpenEditor,
+    /// Hand the focused text box (comment, reply, or field) to `$EDITOR`.
+    EditExternally,
     OpenFilePicker,
     OpenFigureGraph,
     Blame,
@@ -201,6 +203,7 @@ impl Action {
             Self::SearchNext => "search_next",
             Self::SearchPrev => "search_prev",
             Self::OpenEditor => "open_editor",
+            Self::EditExternally => "edit_externally",
             Self::OpenFilePicker => "open_file_picker",
             Self::OpenFigureGraph => "open_figure_graph",
             Self::Blame => "blame",
@@ -302,6 +305,7 @@ impl Action {
             Self::SearchNext => "next search match",
             Self::SearchPrev => "previous search match",
             Self::OpenEditor => "open in $EDITOR",
+            Self::EditExternally => "edit the focused text box in $EDITOR",
             Self::OpenFilePicker => "find a file in the repository",
             Self::OpenFigureGraph => "open the figure under the cursor as a graph",
             Self::Blame => "blame this file",
@@ -314,7 +318,7 @@ impl Action {
         }
     }
 
-    pub(crate) const ALL: [Self; 95] = [
+    pub(crate) const ALL: [Self; 96] = [
         Self::CenterCursor,
         Self::CursorTop,
         Self::CursorBottom,
@@ -401,6 +405,7 @@ impl Action {
         Self::SearchNext,
         Self::SearchPrev,
         Self::OpenEditor,
+        Self::EditExternally,
         Self::OpenFilePicker,
         Self::OpenFigureGraph,
         Self::Blame,
@@ -483,6 +488,7 @@ const STATUS_DEFAULTS: &[(&str, Action)] = &[
     ("[", Action::PrevSection),
     ("]", Action::NextSection),
     ("e", Action::OpenEditor),
+    ("<c-g>", Action::EditExternally),
     ("gf", Action::OpenFilePicker),
     ("B", Action::Blame),
     ("L", Action::OpenStats),
@@ -562,6 +568,7 @@ const DIFF_DEFAULTS: &[(&str, Action)] = &[
     ("y", Action::CopyFileFeedback),
     ("Y", Action::CopyAllFeedback),
     ("e", Action::OpenEditor),
+    ("<c-g>", Action::EditExternally),
     ("gf", Action::OpenFilePicker),
     ("o", Action::OpenFigureGraph),
     ("B", Action::Blame),

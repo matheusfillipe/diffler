@@ -166,7 +166,12 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   declines rather than reaching whatever the diff cursor was last on. Comments,
   replies and edits are written in place: the composer occupies the rows the
   finished card will, under the anchored line, at the top of the file for a
-  whole-file comment, under the thread for a reply. Runs (the
+  whole-file comment, under the thread for a reply. `<c-g>` there, and in the
+  input modal behind a branch name, a PR title or body, and a review summary,
+  hands the buffer to `$EDITOR` on a scratch temp file, deleted once the text
+  is read back whatever the outcome, and reads it into the same box; a
+  cancelled edit, a failed editor, or the box holding nothing focused all
+  leave it exactly as it was, the last one saying so. Runs (the
   CI run list), Graph (CI run detail on the shared node-graph component), Prs
   (open PRs of the repo's forge), CiLog (a
   job's log folded into its real steps), and File (below). The diff sidebar has three
@@ -277,9 +282,12 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   a `[ Create ]` and a `[ Cancel ]` button, so `j`/`k` and the pointer reach the
   buttons the way they reach a field (a blank line between them would break the
   row mapping `ListHits` does, hence none). Title and body both edit inline
-  through the input modal, which is already multiline, and `e` hands either to
-  `$EDITOR`; the base opens a branch list and draft is a toggle, so both decline
-  the editor. A created PR is seated into the branch band by `seat_branch_pr`,
+  through the input modal, which is already multiline, and its own `<c-g>`
+  already reaches `$EDITOR` once a field is open; the form keeps a direct `e`
+  as a shortcut past that step, straight from the row, through the same
+  scratch-file mechanism, so the base and the draft toggle still decline (not
+  text) while title and body skip typing `<cr>` first. A created PR is seated
+  into the branch band by `seat_branch_pr`,
   since the band resolves its PR once per branch and would otherwise stay empty
   until a checkout re-armed the poll.
 - **Config.** TOML, XDG-layered (built-in defaults → `~/.config/diffler/config.toml`

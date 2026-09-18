@@ -91,6 +91,7 @@
 # open_runs = "o"
 # switch_theme = "T"
 # open_editor = "e"
+# edit_externally = "<c-g>"    # a focused text box (branch name, PR field, review summary) to $EDITOR
 # send_feedback = "Z"
 # open_file_picker = "gf"      # fuzzy over every tracked file
 # blame = "B"                  # blame the file under the cursor
@@ -147,6 +148,7 @@
 # toggle_fold = "za"       # also <tab>: folds the folder/section/comments-group the cursor sits in
 # switch_theme = "T"
 # open_editor = "e"
+# edit_externally = "<c-g>"  # the open comment, reply, or review summary to $EDITOR
 # open_file_picker = "gf"
 # open_figure_graph = "o"  # open the figure under the cursor as a graph
 # blame = "B"

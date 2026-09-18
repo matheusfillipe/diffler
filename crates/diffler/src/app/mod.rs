@@ -938,6 +938,15 @@ impl App {
         }
     }
 
+    /// Whether `key` resolves to `action` in the keymap of the screen
+    /// underneath: the composer and the input modal intercept every key
+    /// before that keymap ever sees it, so this is how they still honor a
+    /// configured remap.
+    pub(crate) fn matches_action(&self, key: &KeyEvent, action: Action) -> bool {
+        let press = keymap::press_from_event(key);
+        self.active_keymap().resolve(&mut Vec::new(), press) == Resolved::Action(action)
+    }
+
     /// Whether the path carries a current viewed mark, judged against the
     /// review diff (the model viewed hashes are reconciled with).
     pub fn is_path_viewed(&self, path: &str) -> bool {
@@ -1360,6 +1369,11 @@ impl App {
             Action::OpenFilePicker => self.open_file_picker(),
             Action::Blame => self.blame_focused(),
             Action::OpenStats => self.open_stats(),
+            // reaching `dispatch` at all means the composer and the input
+            // modal declined it: neither has the keyboard right now
+            Action::EditExternally => {
+                self.info("nothing here to edit; open a comment or a field first");
+            }
             action => match self.screen() {
                 Screen::Status => self.dispatch_status(action),
                 Screen::Log => self.dispatch_log(action),
@@ -1822,7 +1836,7 @@ mod tests {
     use crossterm::event::KeyModifiers;
 
     use super::*;
-    use crate::test_support::{Fixture, key, standard_fixture, two_hunk_fixture};
+    use crate::test_support::{Fixture, ctrl_key, key, standard_fixture, two_hunk_fixture};
     use diffler_core::session::Anchor;
 
     fn app() -> (Fixture, App) {
@@ -2324,6 +2338,15 @@ mod tests {
         assert_eq!(message.severity, Severity::Error);
         assert!(message.text.contains("editor failed"));
         assert!(message.text.contains("boom"));
+    }
+
+    #[test]
+    fn ctrl_g_with_nothing_focused_says_so() {
+        let (_fixture, mut app) = app();
+        app.handle(ctrl_key('g'));
+        assert!(app.pending_editor.is_none());
+        let message = app.message.expect("message");
+        assert!(message.text.contains("nothing"), "{}", message.text);
     }
 
     #[test]

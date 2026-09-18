@@ -215,6 +215,7 @@ Vim-like: `j`/`k`/`gg`/`G` motions, `/` search, and
 | `B` | blame the file under the cursor, at that line (`b` toggles the column, `<cr>` reviews the commit) |
 | `L` | language breakdown of the repo: files, lines, code, comments per language (`s` sorts) |
 | `e` | open the file in `$EDITOR` |
+| `<c-g>` | edit the focused comment, reply, or field in `$EDITOR` |
 | `?` | full keymap for the current screen |
 | `q` | back / quit |
 

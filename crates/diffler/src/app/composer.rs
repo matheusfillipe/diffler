@@ -6,6 +6,8 @@ use diffler_core::session::Anchor;
 use unicode_width::UnicodeWidthChar;
 
 use super::{App, Flow, text_edit};
+use crate::editor::{EditorPurpose, TextBoxTarget};
+use crate::keymap::Action;
 
 /// What the composer will do with its buffer once submitted.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,7 +147,28 @@ impl App {
         self.diff.as_ref().is_some_and(|d| d.composer.is_some())
     }
 
+    /// `ctrl+g`: hand the composer's buffer to `$EDITOR` on a scratch file,
+    /// left in place until the terminal is back.
+    fn edit_composer_externally(&mut self) {
+        let Some(buffer) = self
+            .diff
+            .as_ref()
+            .and_then(|d| d.composer.as_ref())
+            .map(|c| c.buffer.clone())
+        else {
+            return;
+        };
+        self.queue_scratch_editor(&buffer, |path| EditorPurpose::TextBox {
+            path,
+            target: TextBoxTarget::Composer,
+        });
+    }
+
     pub(super) fn handle_composer_key(&mut self, key: &KeyEvent) -> Flow {
+        if self.matches_action(key, Action::EditExternally) {
+            self.edit_composer_externally();
+            return Flow::Continue;
+        }
         let Some(diff) = self.diff.as_mut() else {
             return Flow::Continue;
         };

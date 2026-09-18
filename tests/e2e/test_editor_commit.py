@@ -1,5 +1,7 @@
 # $EDITOR suspend/restore through a real PTY: commit abort, scripted commit,
 # and line-jump argv construction.
+from pathlib import Path
+
 from harness import MODIFIED_CONTENT, git, make_script
 
 
@@ -78,3 +80,34 @@ def test_e_passes_line_jump_argv_to_the_editor(spawn, repo, tmp_path):
     argv = argv_file.read_text().split()
     assert "+2" in argv
     assert argv[-1].endswith("app.txt")
+
+
+def test_ctrl_g_edits_the_comment_composer_and_removes_the_scratch_file(spawn, repo, tmp_path):
+    # the terminal is fully suspended and restored around the editor, same as
+    # the commit flow above, but here the box coming back is the composer
+    initial = tmp_path / "initial.txt"
+    scratch_path_file = tmp_path / "scratch_path.txt"
+    editor = make_script(
+        tmp_path / "bin" / "ed.sh",
+        f'cp "$1" "{initial}"; echo "$1" > "{scratch_path_file}"; '
+        f'printf "edited via editor" > "$1"',
+    )
+    tui = spawn("--no-mcp", env_extra={"EDITOR": str(editor)})
+    tui.wait_for("Unstaged changes (1)")
+    tui.send("jjj")
+    tui.send("\r")
+    tui.wait_for(" DIFF ")
+    # hunk header → context alpha → -beta → -gamma → +beta2 (new line 2)
+    tui.send("jjjj")
+    tui.send("c")
+    tui.wait_for("comment on")
+    tui.send("typed first")
+    tui.send_ctrl("g")
+    tui.wait_for("edited via editor")
+
+    assert initial.read_text() == "typed first", "the editor opens with what was typed"
+    scratch = Path(scratch_path_file.read_text().strip())
+    assert not scratch.exists(), "the scratch file is removed once read back"
+
+    tui.send("\r")
+    tui.wait_for("edited via editor")

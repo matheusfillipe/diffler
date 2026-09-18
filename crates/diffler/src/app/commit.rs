@@ -189,6 +189,36 @@ impl App {
         }
     }
 
+    /// Write an externally edited text box's result back into the box it
+    /// came from.
+    pub(super) fn apply_text_box_edit(
+        &mut self,
+        target: crate::editor::TextBoxTarget,
+        text: String,
+    ) {
+        use crate::editor::TextBoxTarget;
+        match target {
+            TextBoxTarget::Composer => {
+                let Some(composer) = self.diff.as_mut().and_then(|d| d.composer.as_mut()) else {
+                    return;
+                };
+                composer.buffer = text;
+                composer.cursor = composer.buffer.chars().count();
+                if let Some(diff) = self.diff.as_mut() {
+                    diff.mark_reflow();
+                    diff.ensure_rows(&self.review);
+                }
+            }
+            TextBoxTarget::Input => {
+                let Some(super::Modal::Input { buffer, cursor, .. }) = self.modal.as_mut() else {
+                    return;
+                };
+                *buffer = text;
+                *cursor = buffer.chars().count();
+            }
+        }
+    }
+
     /// Run the backend amend and report. `message` `None` reuses HEAD's
     /// message (extend); `use_index` folds the staged index in.
     pub(super) fn apply_amend(&mut self, message: Option<&str>, use_index: bool) {
@@ -233,6 +263,11 @@ impl App {
                     }
                 }
                 self.modal = Some(super::Modal::CreatePr { draft });
+            }
+            EditorPurpose::TextBox { path, target } => {
+                if let Some(text) = self.take_scratch_edit(&path, outcome) {
+                    self.apply_text_box_edit(target, text);
+                }
             }
             EditorPurpose::OpenFile { path } => {
                 if let Err(err) = outcome {
