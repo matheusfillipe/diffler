@@ -940,6 +940,42 @@ mod tests {
             .collect()
     }
 
+    /// `<cr>` takes the reader to the comment the pane has selected, whether or
+    /// not they moved the selection. Moving seats the diff cursor as it goes,
+    /// so the bug this guards is the selection nobody moved: opening the pane
+    /// and pressing `<cr>` straight away, or leaving and coming back.
+    #[test]
+    fn enter_goes_to_the_selected_comment_without_moving_the_selection() {
+        let (_fixture, mut app, _resolved) = app_with_grouped_comments();
+        // park the diff cursor somewhere that is not a comment
+        app.handle(key('l'));
+        app.handle(key('j'));
+        app.handle(key('j'));
+        app.handle(key('C'));
+        let wanted = app
+            .selected_comment_id()
+            .expect("the pane opens with a comment selected");
+
+        app.handle(key('\n'));
+
+        assert_eq!(
+            app.diff.as_ref().expect("diff view").focus,
+            Pane::Diff,
+            "it hands the keyboard to the diff"
+        );
+        let diff = app.diff.as_ref().expect("diff view");
+        let landed = match diff.rows().get(diff.cursor) {
+            Some(DiffRow::Comment { comment, .. }) => app
+                .review
+                .session_for(&diff.source)
+                .comments
+                .get(*comment)
+                .map(|comment| comment.id.clone()),
+            _ => None,
+        };
+        assert_eq!(landed.as_ref(), Some(&wanted), "and lands on that comment");
+    }
+
     #[test]
     fn the_comments_pane_opens_flat_with_no_headers() {
         let (_fixture, mut app, _resolved) = app_with_grouped_comments();

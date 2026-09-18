@@ -148,9 +148,14 @@ impl App {
             Action::NextHunk => self.comments_jump_header(true),
             Action::PrevHunk => self.comments_jump_header(false),
             Action::ToggleFold => self.comments_toggle_fold(),
-            // the cursor already sits on the comment, so entering the diff
-            // is a focus move, and so is stepping out either side
-            Action::Open | Action::MoveRight | Action::MoveLeft => self.diff_focus(Pane::Diff),
+            // stepping out either side is a focus move, but `<cr>` means take
+            // me to this comment: the diff cursor may sit anywhere if the
+            // reader focused away and came back without moving the selection
+            Action::Open => {
+                self.seat_cursor_on_selected_comment();
+                self.diff_focus(Pane::Diff);
+            }
+            Action::MoveRight | Action::MoveLeft => self.diff_focus(Pane::Diff),
             Action::DeleteComment => self.delete_selected_comment(),
             Action::ClaimComment => self.claim_selected_comment(),
             other => self.dispatch_diff_pane(other),
