@@ -3817,6 +3817,7 @@ mod tests {
                 skipped: None,
                 summary: None,
                 rev: None,
+                about: diffler_core::source::ReviewSource::WorkingTree,
             },
         );
         app.review.save_for(&source).expect("save w2");

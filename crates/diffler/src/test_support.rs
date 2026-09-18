@@ -178,6 +178,7 @@ pub(crate) fn seat_walkthrough_session(
         skipped: None,
         summary: None,
         rev: None,
+        about: diffler_core::source::ReviewSource::WorkingTree,
     });
 }
 

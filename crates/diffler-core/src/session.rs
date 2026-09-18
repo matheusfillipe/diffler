@@ -446,6 +446,7 @@ mod tests {
             skipped: None,
             summary: None,
             rev: None,
+            about: crate::source::ReviewSource::WorkingTree,
         }
     }
 

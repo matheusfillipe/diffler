@@ -296,12 +296,15 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   `anchor_ref` (the agent's `path#symbol` / `path:a-b` / `path`, kept so the
   worker can resolve it again after the code moves), and `Walkthrough` is
   `{ id, title, author, at, skipped, stops: Vec<String>, summary:
-  Option<String>, rev: Option<String> }`: `stops` is the primary comment ids
-  in reading order, `summary` is the walkthrough's own overview, a markdown
-  body exactly like a stop's but with no comment or anchor behind it, `None`
-  for a walkthrough with none, and `rev` is the full oid of `HEAD` at publish
-  time, `None` for a walkthrough saved before that field existed. A
-  walkthrough source's session holds exactly one
+  Option<String>, rev: Option<String>, about: ReviewSource }`: `stops` is the
+  primary comment ids in reading order, `summary` is the walkthrough's own
+  overview, a markdown body exactly like a stop's but with no comment or
+  anchor behind it, `None` for a walkthrough with none, `rev` is the full oid
+  of `HEAD` at publish time, `None` for a walkthrough saved before that field
+  existed, and `about` is the review this walkthrough describes: the working
+  tree, or the commit/range/PR the human had open when it was published,
+  defaulting to the working tree for a walkthrough saved before this field
+  existed. A walkthrough source's session holds exactly one
   (`Session::walkthrough: Option<Walkthrough>`); since the source is the
   walkthrough's own, every comment in that session is this walkthrough's, its
   stops, their notes, and any human reply, with nothing left to track
@@ -309,10 +312,14 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   (`diffler_core::walkthrough`) targets the source `id` names, or a fresh
   random id when it is omitted. That is what gives a stop a thread the human
   answers in, a row in the comments pane, and the card renderer, with no
-  second comment system beside the first. `publish_walkthrough` materialises
+  second comment system beside the first. `about` is whichever review the
+  human has open at publish time (what `review_status` already reports), so
+  no separate argument names it; revising a walkthrough while looking at its
+  own diff keeps whatever it already described, since that source names no
+  review of its own to fall back on. `publish_walkthrough` materialises
   each stop as a comment (`author: agent`, `anchor.file` from the ref, or with
-  no ref the first stop's file that has one, else the first file in the
-  working tree, which a walkthrough always tracks)
+  no ref the first stop's file that has one, else the first file of the
+  review it is about)
   and each of its `notes` as a further comment in the same file, titleless,
   anchored where it names or else at the region's first line; a revision that
   passes a stop's or a note's `id` back keeps that comment and its replies,
@@ -336,13 +343,15 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   walkthrough's own source, since every other source has none) shows the
   open source's own walkthrough: `DiffView::active_walkthrough` reads
   `session.walkthrough` directly, so there is nothing to pick between. Opening
-  a walkthrough by id installs its own source's diff even over a clean
-  working tree (`App::open_walkthrough_diff`,
-  the one caller `install_diff_view` lets through empty), since the
-  walkthrough's own context files fill the pane once anchors resolve, and its
-  diff model is the working tree's, the same one `WorkingTree` reads; leaving
-  the layout with `t` when the diff itself carries nothing cycles back to it
-  rather than to tree/review/kinds, which would list nothing. The layout
+  a walkthrough by id (`App::open_walkthrough_diff`) resolves `about`
+  (`App::walkthrough_about`) and installs its own source's diff over that
+  review's own model (`App::source_model`, which recurses into `about` for a
+  `Walkthrough` source), the working tree's when `about` is one, even over a
+  clean working tree (the one caller `install_diff_view` lets through empty),
+  since the walkthrough's own context files fill the pane once anchors
+  resolve; leaving the layout with `t` when the diff itself carries nothing
+  cycles back to it rather than to tree/review/kinds, which would list
+  nothing. The layout
   lists a leading `Summary` row (`TreeNode::WalkthroughSummary`) only where
   the walkthrough has one, then one row per stop, no numbers and no group
   headers, its title with the file dimmed after it and a ` · N` count once

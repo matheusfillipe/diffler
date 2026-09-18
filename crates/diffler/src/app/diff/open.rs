@@ -20,12 +20,18 @@ impl App {
         self.open_working_tree_diff_focused(Some(path), Pane::Diff);
     }
 
-    /// Open the walkthrough `id` as its own review source, even over a clean
-    /// working tree: its diff model is the working tree's, and its own
-    /// anchored files fill the pane once they resolve, so a clean tree is not
-    /// "nothing to review" here.
+    /// Open the walkthrough `id` as its own review source, rendering whatever
+    /// review it is about: the working tree by default, or the commit,
+    /// range, or PR the human had open when it was published. Even over an
+    /// empty diff there this still opens: its own anchored files fill the
+    /// pane once they resolve, so that is not "nothing to review" here.
     pub(crate) fn open_walkthrough_diff(&mut self, id: &str) {
-        self.install_diff_view(ReviewSource::Walkthrough { id: id.to_owned() }, None, true);
+        let about = self.walkthrough_about(id);
+        let model = match about {
+            ReviewSource::WorkingTree => None,
+            other => Some((*self.source_model(&other)).clone()),
+        };
+        self.install_diff_view(ReviewSource::Walkthrough { id: id.to_owned() }, model, true);
     }
 
     fn open_working_tree_diff_focused(&mut self, scope: Option<&str>, focus: Pane) {

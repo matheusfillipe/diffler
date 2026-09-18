@@ -9,6 +9,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::session::Comment;
+use crate::source::ReviewSource;
 use crate::syntax::registry::REGISTRY;
 
 /// A rail against dumping the diff, not a target: the skill asks for one stop
@@ -39,6 +40,13 @@ pub struct Walkthrough {
     /// existed; its anchors resolve against the live worktree.
     #[serde(default)]
     pub rev: Option<String>,
+    /// The review this walkthrough describes: the working tree, or the
+    /// commit/range/PR the human had open when it was published. Its diff is
+    /// what a stop's anchor resolves against and what opening the walkthrough
+    /// renders. Defaults to the working tree for a walkthrough saved before
+    /// this existed, and for a publish with no other review open.
+    #[serde(default)]
+    pub about: ReviewSource,
 }
 
 impl Walkthrough {
@@ -284,6 +292,7 @@ mod tests {
             skipped: Some("the tests".to_owned()),
             summary: Some("what changed".to_owned()),
             rev: Some("deadbeef".to_owned()),
+            about: ReviewSource::pr(7),
         };
         let json = serde_json::to_string(&w).expect("serialize");
         let back: Walkthrough = serde_json::from_str(&json).expect("deserialize");
@@ -297,6 +306,16 @@ mod tests {
         let json = r#"{"id":"w1","title":"tour","author":"agent","at":1,"stops":["c1"]}"#;
         let w: Walkthrough = serde_json::from_str(json).expect("deserialize");
         assert_eq!(w.rev, None);
+    }
+
+    /// A walkthrough saved before `about` existed has no such key at all; it
+    /// still loads, describing the working tree, exactly what every
+    /// walkthrough described before this field existed.
+    #[test]
+    fn a_walkthrough_with_no_about_field_deserializes_to_the_working_tree() {
+        let json = r#"{"id":"w1","title":"tour","author":"agent","at":1,"stops":["c1"]}"#;
+        let w: Walkthrough = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(w.about, ReviewSource::WorkingTree);
     }
 
     fn stop(id: &str, file: &str, line: u32) -> Comment {
@@ -341,6 +360,7 @@ mod tests {
             skipped: None,
             summary: None,
             rev: None,
+            about: ReviewSource::WorkingTree,
         };
         let comments = vec![
             stop("c1", "a.txt", 1),
@@ -367,6 +387,7 @@ mod tests {
             skipped: None,
             summary: None,
             rev: None,
+            about: ReviewSource::WorkingTree,
         };
         let human = Comment {
             anchor_ref: None,

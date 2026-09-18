@@ -227,7 +227,21 @@ impl App {
         // named; a repo with no commits yet resolves to nothing, the same as
         // a walkthrough saved before `rev` existed
         let rev = self.review.vcs.resolve("HEAD").ok();
-        let files = match self.resolve_stop_files(stops, summary.as_deref()) {
+        // the review this walkthrough describes is whichever one the human
+        // has open right now; looking at the walkthrough's own diff while
+        // revising it keeps whatever it already described, since that
+        // source names no review of its own to fall back on
+        let about = match self.active_review_source() {
+            ReviewSource::Walkthrough { .. } => self
+                .review
+                .session_for(&source)
+                .walkthrough
+                .as_ref()
+                .map_or(ReviewSource::WorkingTree, |w| w.about.clone()),
+            other => other,
+        };
+        let model = self.source_model(&about);
+        let files = match self.resolve_stop_files(stops, summary.as_deref(), &model) {
             Ok(files) => files,
             Err(text) => return McpResponse::Error(text),
         };
@@ -285,6 +299,7 @@ impl App {
             skipped,
             summary,
             rev: rev.clone(),
+            about,
         });
         if let Err(err) = self.persist_review_change(&source) {
             return McpResponse::Error(format!("walkthrough not saved: {err}"));
@@ -305,14 +320,15 @@ impl App {
     /// Every stop's own file, once `stops` and `summary` clear every
     /// [`walkthrough_refusals`] check; the refusals formatted as the tool's
     /// error text otherwise, so nothing is ever stored against them. A stop
-    /// with no anchor falls back to the first anchored stop's file, or the
-    /// diff's own first file, `None` when neither exists.
+    /// with no anchor falls back to the first anchored stop's file, or
+    /// `model`'s own first file, `None` when neither exists. `model` is the
+    /// diff of whichever review this walkthrough is about.
     fn resolve_stop_files(
         &self,
         stops: &[StopParams],
         summary: Option<&str>,
+        model: &DiffModel,
     ) -> Result<Vec<String>, String> {
-        let model = self.review.model();
         let fallback = stops
             .iter()
             .filter_map(|stop| stop.anchor.as_deref())
@@ -384,10 +400,14 @@ impl App {
         // narrowing to the cacheable sources up front makes WorkingTree
         // structurally absent below, instead of an unreachable match arm
         let kind = match source {
-            // a walkthrough always tracks the working tree, the same as
-            // `WorkingTree` itself, never pinned to a rev
-            ReviewSource::WorkingTree | ReviewSource::Walkthrough { .. } => {
+            ReviewSource::WorkingTree => {
                 return std::sync::Arc::new(self.review.model().clone());
+            }
+            // a walkthrough's diff is whatever review it is about; resolve
+            // that once and recurse into this same lookup for it
+            ReviewSource::Walkthrough { id } => {
+                let about = self.walkthrough_about(id);
+                return self.source_model(&about);
             }
             // live like the working tree, so caching it would go stale; the
             // open view already holds a model the refresh keeps current
@@ -851,8 +871,8 @@ fn stop_and_note_refusals(
 /// Every hard-limit receipt the incoming stops and summary earn. All codes
 /// here are refusals: nothing is stored while any are present. `fallback` is
 /// the file an anchorless stop falls back on (the first stop's own anchor, or
-/// the diff's first file), `None` when neither exists. A stop's own resolved
-/// file is also what its notes have to stay inside.
+/// `model`'s own first file), `None` when neither exists. A stop's own
+/// resolved file is also what its notes have to stay inside.
 fn walkthrough_refusals(
     stops: &[StopParams],
     fallback: Option<&str>,
@@ -881,10 +901,11 @@ fn walkthrough_refusals(
         receipts.push(Receipt {
             stop: None,
             code: ReceiptCode::NothingToAnchor,
-            detail: "no stop names a file and the diff is empty, so an anchorless stop has \
-                     nothing real to land on; anchor every stop explicitly, or check out the \
-                     change you mean first (a walkthrough always describes the working tree, \
-                     never a pull request or commit that isn't checked out)"
+            detail: "no stop names a file and the review you have open carries none either, \
+                     so an anchorless stop has nothing real to land on; anchor every stop \
+                     explicitly, or open the review this walkthrough should describe (the \
+                     working tree, a commit, a range, or a PR) before publishing, so it has \
+                     a file to fall back on"
                 .to_owned(),
         });
     }
@@ -1724,6 +1745,91 @@ mod tests {
         assert_eq!(
             stops[1].anchor.file, "src/lib.rs",
             "an anchorless stop hangs on the first file the walkthrough names"
+        );
+    }
+
+    /// A walkthrough published with nothing else open still describes the
+    /// working tree, exactly like every walkthrough before `about` existed.
+    #[test]
+    fn publishing_with_nothing_else_open_describes_the_working_tree() {
+        let (_fixture, mut app, _id) = app_with_comment();
+        let McpResponse::WalkthroughPublished(published) =
+            app.handle_mcp(McpRequestKind::PublishWalkthrough {
+                id: None,
+                title: "tour".to_owned(),
+                stops: vec![stop("The answer", Some("src/lib.rs#answer"), "why 42")],
+                skipped: None,
+                summary: None,
+            })
+        else {
+            panic!("expected a published walkthrough");
+        };
+        let walkthrough = walkthrough_session(&mut app, &published.id)
+            .walkthrough
+            .clone()
+            .expect("walkthrough stored");
+        assert_eq!(walkthrough.about, ReviewSource::WorkingTree);
+    }
+
+    /// The bug this fixes: a pull request review is open on a clean working
+    /// tree, and the PR adds a file the checkout never had at all (built on a
+    /// branch that was never checked out, the way a PR review always works).
+    /// Before this fix `publish_walkthrough` checked every anchor against the
+    /// working tree's own (empty) diff, so this stop was refused as
+    /// `anchor_file_missing`. It must be accepted, and the walkthrough must
+    /// record the PR as what it is about, and open on that PR's diff, not an
+    /// empty working tree.
+    #[test]
+    fn publishing_while_a_pr_is_open_describes_and_later_renders_that_pr() {
+        let fixture = crate::test_support::Fixture::new();
+        fixture.write("base.rs", "pub fn base() {}\n");
+        fixture.commit_all("base");
+        fixture.branch("feature");
+        fixture.checkout("feature");
+        fixture.write("pr_only.rs", "pub fn only_in_pr() -> u32 {\n    7\n}\n");
+        fixture.commit_all("add pr_only.rs");
+        fixture.checkout("main");
+        // `checkout` only moves HEAD; the file the feature commit wrote is
+        // still sitting in the worktree until this removes it, which is what
+        // makes the tree match main's own tree again: clean, and without a
+        // file that exists only in the PR's history.
+        std::fs::remove_file(fixture.root.join("pr_only.rs")).expect("remove");
+
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        assert!(
+            app.review.model().files.is_empty(),
+            "the working tree must be clean"
+        );
+        let base = app.review.vcs.resolve("main").expect("base");
+        let head = app.review.vcs.resolve("feature").expect("head");
+        app.open_pr_diff(7, &base, &head);
+
+        let response = app.handle_mcp(McpRequestKind::PublishWalkthrough {
+            id: None,
+            title: "add only_in_pr".to_owned(),
+            stops: vec![stop("Only in the PR", Some("pr_only.rs#only_in_pr"), "why")],
+            skipped: None,
+            summary: None,
+        });
+        let McpResponse::WalkthroughPublished(published) = response else {
+            panic!("expected a published walkthrough, not a refusal: {response:?}");
+        };
+        assert!(published.receipts.is_empty(), "{:?}", published.receipts);
+
+        let walkthrough = walkthrough_session(&mut app, &published.id)
+            .walkthrough
+            .clone()
+            .expect("walkthrough stored");
+        assert_eq!(walkthrough.about, ReviewSource::pr(7));
+
+        app.open_walkthrough_diff(&published.id);
+        let diff = app.diff.as_ref().expect("the walkthrough opened");
+        assert!(
+            diff.model(&app.review)
+                .files
+                .iter()
+                .any(|f| f.path == "pr_only.rs"),
+            "the walkthrough renders the PR's diff, not the empty working tree"
         );
     }
 

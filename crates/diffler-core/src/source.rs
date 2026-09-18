@@ -9,9 +9,10 @@ use serde::{Deserialize, Serialize};
 /// Characters of an oid shown in a label; full oids stay in the key.
 const SHORT_OID: usize = 7;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ReviewSource {
+    #[default]
     WorkingTree,
     Commit {
         oid: String,

@@ -400,6 +400,22 @@ impl App {
         self.review.session_for(&diff.source).walkthrough.as_ref()
     }
 
+    /// The review the walkthrough `id` describes: the source
+    /// `publish_walkthrough` recorded when it was published, `WorkingTree`
+    /// for one saved before that existed, one loaded from nothing at all, or
+    /// (defensively; this should never be written) one that names a
+    /// walkthrough, which would recurse into [`App::source_model`] forever.
+    pub(crate) fn walkthrough_about(&mut self, id: &str) -> ReviewSource {
+        let source = ReviewSource::Walkthrough { id: id.to_owned() };
+        if self.review.ensure_source(&source).is_err() {
+            return ReviewSource::WorkingTree;
+        }
+        match self.review.session_for(&source).walkthrough.as_ref() {
+            Some(w) if !matches!(w.about, ReviewSource::Walkthrough { .. }) => w.about.clone(),
+            _ => ReviewSource::WorkingTree,
+        }
+    }
+
     /// The comment stop `index` of the open review's walkthrough is.
     #[cfg(test)]
     pub(crate) fn stop_comment(&self, index: usize) -> Option<&Comment> {

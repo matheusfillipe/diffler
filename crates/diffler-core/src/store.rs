@@ -164,6 +164,9 @@ fn split_embedded_walkthroughs(
                 // a walkthrough this old predates the field entirely, so its
                 // anchors resolve against the live worktree
                 rev: None,
+                // a walkthrough this old predates the field too, and only
+                // ever described the working tree
+                about: ReviewSource::WorkingTree,
             }),
             seen_stops: seen,
         };
