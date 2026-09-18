@@ -837,9 +837,10 @@ fn sidebar_stop_line(
     let title_style = Style::new()
         .fg(if on_cursor { theme.accent } else { theme.fg })
         .bg(bg);
-    // stops keep their reading order regardless of what is seen, so a rail
-    // here would not read as a run the way a sorted file list does; the `✓`
-    // already says a stop is seen
+    // stops keep their reading order regardless of what is seen, so leading
+    // with a check the way a viewed file does would not read as a run the
+    // way a sorted file list does; the trailing `✓` already says a stop is
+    // seen
     let mut spans = vec![tree_lead(theme, 0, bg, on_cursor)];
     spans.extend(super::highlight_spans(
         &stop_title(stop),
@@ -1425,10 +1426,10 @@ fn sidebar_section_line(
     )
 }
 
-/// A file row: a viewed rail in the lead cell, status glyph (colored),
-/// basename, then the viewed and comment-count marks and the `+A -B`
-/// diffstat. The diffstat is dropped first when the sidebar is too narrow to
-/// keep the name and marks legible.
+/// A file row: cursor lead, a viewed file's check in place of its status
+/// glyph, basename, then the comment-count mark and the `+A -B` diffstat.
+/// The diffstat is dropped first when the sidebar is too narrow to keep the
+/// name and marks legible.
 fn sidebar_file_line(
     rc: &TreeRowCtx<'_>,
     file: &FileDiff,
@@ -3849,8 +3850,8 @@ flowchart LR
     }
 
     /// Viewed files sort to the top of their group, so once a few are marked
-    /// they stack into one run: their lead cells carry the rail, the file
-    /// still to review below carries none.
+    /// they stack into one run: their rows lead with a check in place of the
+    /// status glyph, the file still to review below keeps its own.
     #[test]
     fn viewed_files_lead_with_a_check_and_sort_above_the_rest() {
         let fixture = Fixture::new();
