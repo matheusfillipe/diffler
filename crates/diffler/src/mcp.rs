@@ -91,6 +91,18 @@ pub enum McpRequestKind {
         body: String,
         as_human: bool,
     },
+    /// Delete a comment the agent itself wrote. Refused for a human's own
+    /// comment, or a walkthrough stop or note (`publish_walkthrough` manages
+    /// those).
+    DeleteComment {
+        id: String,
+    },
+    /// Replace the body of a comment the agent itself wrote, keeping its
+    /// status, replies and anchor. Same refusals as `DeleteComment`.
+    EditComment {
+        id: String,
+        body: String,
+    },
     /// Open + replied comments for `wait_for_feedback` after an epoch bump.
     Feedback,
     /// Revise the walkthrough `id` names, or publish a new one alongside any
@@ -384,6 +396,21 @@ pub struct AddCommentParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub struct AddCommentResponse {
     pub id: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct DeleteCommentParams {
+    /// The comment to delete. Must be the agent's own, and not a walkthrough
+    /// stop or note.
+    pub id: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct EditCommentParams {
+    /// The comment to rewrite. Must be the agent's own, and not a
+    /// walkthrough stop or note.
+    pub id: String,
+    pub body: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, schemars::JsonSchema)]
@@ -748,6 +775,37 @@ impl DifflerMcp {
         };
         match self.request(kind).await? {
             McpResponse::Added { id } => Ok(Json(AddCommentResponse { id })),
+            _ => Err(mismatch()),
+        }
+    }
+
+    #[tool(
+        description = "Delete a comment you wrote with add_comment. Refused for a human's own comment, and for a walkthrough stop or note (revise or drop those with publish_walkthrough instead)."
+    )]
+    async fn delete_comment(
+        &self,
+        Parameters(params): Parameters<DeleteCommentParams>,
+    ) -> Result<Json<OkResponse>, ErrorData> {
+        let kind = McpRequestKind::DeleteComment { id: params.id };
+        match self.request(kind).await? {
+            McpResponse::Ok => Ok(Json(OkResponse { ok: true })),
+            _ => Err(mismatch()),
+        }
+    }
+
+    #[tool(
+        description = "Replace the body of a comment you wrote with add_comment, keeping its status, replies and anchor. Refused for a human's own comment, and for a walkthrough stop or note (revise those with publish_walkthrough instead)."
+    )]
+    async fn edit_comment(
+        &self,
+        Parameters(params): Parameters<EditCommentParams>,
+    ) -> Result<Json<OkResponse>, ErrorData> {
+        let kind = McpRequestKind::EditComment {
+            id: params.id,
+            body: params.body,
+        };
+        match self.request(kind).await? {
+            McpResponse::Ok => Ok(Json(OkResponse { ok: true })),
             _ => Err(mismatch()),
         }
     }

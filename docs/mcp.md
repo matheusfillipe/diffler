@@ -23,6 +23,13 @@ while diffler is open.
   Authored as the agent by default, so the human answers it in the thread;
   pass `as_human` to author it as the human's own instead, so it goes out
   untouched with their next submitted review.
+- **delete_comment**: delete a comment you wrote with `add_comment`. Refused
+  for a human's own comment, and for a walkthrough stop or note (revise or
+  drop those with `publish_walkthrough` instead, which already tracks their
+  ids and threads).
+- **edit_comment**: replace the body of a comment you wrote with
+  `add_comment`, keeping its status, replies, and anchor. Same refusals as
+  `delete_comment`.
 - **reply_comment**: answer a comment in place; you see the reply immediately.
 - **propose_resolve**: mark a comment replied. Adds nothing to the thread, so an answered comment carries the answer alone; the note lands only when the agent has not replied to that comment. Only you resolve it, in the TUI.
 - **mark_viewed**: mark a file viewed in the review you're currently looking at.

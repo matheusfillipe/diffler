@@ -18,12 +18,15 @@ Review the active review in diffler:
 4. For each real problem, call `add_comment` on the exact line or range it
    is about (`line_end` only past one line), a body written as the section
    below says. One comment per problem, none for what is fine.
-5. You never submit the review. Only the human presses the submit key,
+5. A comment of yours drifts or turns out wrong (`get_comments` marks it
+   `outdated`, or the branch moved on): fix it with `edit_comment`, or
+   retract it with `delete_comment`. Never stack a new comment on a stale one.
+6. You never submit the review. Only the human presses the submit key,
    after reading what you wrote, so say this plainly when you report back.
-6. Write as yourself by default, so the human answers you in the thread.
+7. Write as yourself by default, so the human answers you in the thread.
    Pass `as_human` on a comment only when they ask for a draft they will
    send as their own.
-7. Tell the human the comments are ready; run /df to keep answering their
+8. Tell the human the comments are ready; run /df to keep answering their
    feedback on them afterward.
 
 ## Write every comment like this

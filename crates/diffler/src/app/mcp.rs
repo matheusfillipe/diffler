@@ -55,6 +55,8 @@ impl App {
                 body,
                 as_human,
             } => self.agent_add_comment(&file, line, line_end, &body, as_human),
+            McpRequestKind::DeleteComment { id } => self.agent_delete_comment(&id),
+            McpRequestKind::EditComment { id, body } => self.agent_edit_comment(&id, &body),
             McpRequestKind::Feedback => McpResponse::Feedback {
                 comments: self.comments_response(|c| c != CommentStatus::Resolved),
             },
@@ -636,6 +638,82 @@ impl App {
             format!("agent commented on {file}")
         });
         McpResponse::Added { id }
+    }
+
+    /// Refuses the comment `id` names when it belongs to someone else, or
+    /// to a walkthrough (a stop or note, kept and dropped only through
+    /// `publish_walkthrough`, which already tracks their ids and threads;
+    /// touching one here would desync that bookkeeping).
+    fn check_own_editable_comment(&self, source: &ReviewSource, id: &str) -> Option<McpResponse> {
+        let Some(comment) = self.review.session_for(source).comment(id) else {
+            return Some(McpResponse::Error(format!("unknown comment id: {id}")));
+        };
+        if comment.author != AGENT_AUTHOR {
+            return Some(McpResponse::Error(format!(
+                "comment {id} is {}'s, not the agent's; only its own comments can be changed \
+                 this way",
+                comment.author
+            )));
+        }
+        if comment.anchor_ref.is_some() {
+            return Some(McpResponse::Error(
+                "this comment is a walkthrough stop or note; publish_walkthrough manages those, \
+                 revise or drop it there instead"
+                    .to_owned(),
+            ));
+        }
+        None
+    }
+
+    /// Delete a comment the agent itself wrote (never a human's, and never a
+    /// walkthrough stop or note).
+    fn agent_delete_comment(&mut self, id: &str) -> McpResponse {
+        let Some(source) = self.source_of_comment(id) else {
+            return McpResponse::Error(format!("unknown comment id: {id}"));
+        };
+        if let Err(err) = self.review.ensure_source(&source) {
+            return McpResponse::Error(err.to_string());
+        }
+        if let Some(response) = self.check_own_editable_comment(&source, id) {
+            return response;
+        }
+        self.review.session_for_mut(&source).delete_comment(id);
+        if let Err(err) = self.persist_review_change(&source) {
+            return McpResponse::Error(err);
+        }
+        self.info("agent deleted its own comment");
+        McpResponse::Ok
+    }
+
+    /// Replace the body of a comment the agent itself wrote (never a
+    /// human's, and never a walkthrough stop or note). Status, replies and
+    /// anchor stay as they are.
+    fn agent_edit_comment(&mut self, id: &str, body: &str) -> McpResponse {
+        let body = body.trim();
+        if body.is_empty() {
+            return McpResponse::Error("comment body is empty".to_owned());
+        }
+        if body.len() > BODY_MAX_BYTES {
+            return McpResponse::Error(format!(
+                "comment body: {} bytes, {BODY_MAX_BYTES} at most",
+                body.len()
+            ));
+        }
+        let Some(source) = self.source_of_comment(id) else {
+            return McpResponse::Error(format!("unknown comment id: {id}"));
+        };
+        if let Err(err) = self.review.ensure_source(&source) {
+            return McpResponse::Error(err.to_string());
+        }
+        if let Some(response) = self.check_own_editable_comment(&source, id) {
+            return response;
+        }
+        self.review.session_for_mut(&source).edit_comment(id, body);
+        if let Err(err) = self.persist_review_change(&source) {
+            return McpResponse::Error(err);
+        }
+        self.info("agent edited its own comment");
+        McpResponse::Ok
     }
 }
 
@@ -1469,6 +1547,127 @@ mod tests {
             app.review.session.comment(&human_id).unwrap().author,
             "matheus"
         );
+    }
+
+    /// The agent can rewrite a comment it wrote itself, keeping its status
+    /// and anchor.
+    #[test]
+    fn edit_comment_replaces_the_body_of_the_agents_own_comment() {
+        let (_fixture, mut app, _human_id) = app_with_comment();
+        let McpResponse::Added { id } = app.handle_mcp(McpRequestKind::AddComment {
+            file: "src/lib.rs".to_owned(),
+            line: 2,
+            line_end: None,
+            body: "first guess".to_owned(),
+            as_human: false,
+        }) else {
+            panic!("expected an added comment");
+        };
+
+        let response = app.handle_mcp(McpRequestKind::EditComment {
+            id: id.clone(),
+            body: "corrected".to_owned(),
+        });
+        assert!(matches!(response, McpResponse::Ok), "{response:?}");
+        let comment = app.review.session.comment(&id).expect("comment stored");
+        assert_eq!(comment.body, "corrected");
+        assert_eq!(comment.author, AGENT_AUTHOR);
+    }
+
+    /// The agent can drop a comment it wrote itself.
+    #[test]
+    fn delete_comment_removes_the_agents_own_comment() {
+        let (_fixture, mut app, _human_id) = app_with_comment();
+        let McpResponse::Added { id } = app.handle_mcp(McpRequestKind::AddComment {
+            file: "src/lib.rs".to_owned(),
+            line: 2,
+            line_end: None,
+            body: "drifted onto the wrong line".to_owned(),
+            as_human: false,
+        }) else {
+            panic!("expected an added comment");
+        };
+
+        let response = app.handle_mcp(McpRequestKind::DeleteComment { id: id.clone() });
+        assert!(matches!(response, McpResponse::Ok), "{response:?}");
+        assert!(app.review.session.comment(&id).is_none());
+    }
+
+    /// Neither tool ever reaches a human's own comment, in any review source.
+    #[test]
+    fn delete_and_edit_comment_refuse_a_humans_own_comment() {
+        let (_fixture, mut app, human_id) = app_with_comment();
+
+        let edit = app.handle_mcp(McpRequestKind::EditComment {
+            id: human_id.clone(),
+            body: "rewritten by the agent".to_owned(),
+        });
+        assert!(matches!(edit, McpResponse::Error(_)), "{edit:?}");
+        assert_eq!(
+            app.review.session.comment(&human_id).unwrap().body,
+            "why 42?",
+            "the human's comment is untouched"
+        );
+
+        let delete = app.handle_mcp(McpRequestKind::DeleteComment {
+            id: human_id.clone(),
+        });
+        assert!(matches!(delete, McpResponse::Error(_)), "{delete:?}");
+        assert!(
+            app.review.session.comment(&human_id).is_some(),
+            "the human's comment survives"
+        );
+    }
+
+    /// A walkthrough stop is an agent comment too, but its lifecycle belongs
+    /// to `publish_walkthrough`: touching it through these tools would leave
+    /// `Walkthrough.stops` naming a comment that no longer matches what is on
+    /// screen.
+    #[test]
+    fn delete_and_edit_comment_refuse_a_walkthrough_stop() {
+        let (_fixture, mut app, _human_id) = app_with_comment();
+        let McpResponse::WalkthroughPublished(published) =
+            app.handle_mcp(McpRequestKind::PublishWalkthrough {
+                id: None,
+                title: "tour".to_owned(),
+                stops: vec![stop("The answer", Some("src/lib.rs#answer"), "why 42")],
+                skipped: None,
+                summary: None,
+            })
+        else {
+            panic!("expected a published walkthrough");
+        };
+        let stop_id = stop_ids(&mut app, &published.id)
+            .into_iter()
+            .next()
+            .expect("a stop");
+
+        let edit = app.handle_mcp(McpRequestKind::EditComment {
+            id: stop_id.clone(),
+            body: "rewritten outside publish_walkthrough".to_owned(),
+        });
+        assert!(matches!(edit, McpResponse::Error(_)), "{edit:?}");
+
+        let delete = app.handle_mcp(McpRequestKind::DeleteComment {
+            id: stop_id.clone(),
+        });
+        assert!(matches!(delete, McpResponse::Error(_)), "{delete:?}");
+        assert!(
+            walkthrough_session(&mut app, &published.id)
+                .comment(&stop_id)
+                .is_some(),
+            "the stop survives"
+        );
+    }
+
+    #[test]
+    fn edit_comment_on_an_unknown_id_errors() {
+        let (_fixture, mut app, _id) = app_with_comment();
+        let response = app.handle_mcp(McpRequestKind::EditComment {
+            id: "nope".to_owned(),
+            body: "x".to_owned(),
+        });
+        assert!(matches!(response, McpResponse::Error(message) if message.contains("nope")));
     }
 
     fn commit_anchor(file: &str) -> Anchor {
