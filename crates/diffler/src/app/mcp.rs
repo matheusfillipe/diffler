@@ -665,6 +665,20 @@ impl App {
         None
     }
 
+    /// Refuses deleting `id` when someone other than the agent has replied
+    /// to it: a reply lives inside its comment, so deleting the comment
+    /// would take the reply down with it. `agent_edit_comment` only ever
+    /// rewrites the body, so a comment with an answer is still reachable
+    /// through that.
+    fn check_no_foreign_reply(&self, source: &ReviewSource, id: &str) -> Option<McpResponse> {
+        let comment = self.review.session_for(source).comment(id)?;
+        let reply = comment.replies.iter().find(|r| r.author != AGENT_AUTHOR)?;
+        Some(McpResponse::Error(format!(
+            "comment {id} has a reply from {}; edit its body instead of deleting it",
+            reply.author
+        )))
+    }
+
     /// Delete a comment the agent itself wrote (never a human's, and never a
     /// walkthrough stop or note).
     fn agent_delete_comment(&mut self, id: &str) -> McpResponse {
@@ -675,6 +689,9 @@ impl App {
             return McpResponse::Error(err.to_string());
         }
         if let Some(response) = self.check_own_editable_comment(&source, id) {
+            return response;
+        }
+        if let Some(response) = self.check_no_foreign_reply(&source, id) {
             return response;
         }
         self.review.session_for_mut(&source).delete_comment(id);
@@ -1658,6 +1675,61 @@ mod tests {
                 .is_some(),
             "the stop survives"
         );
+    }
+
+    /// The bug this fixes: a human's reply lives inside its comment, so
+    /// deleting the comment used to take the reply down with it, silently.
+    #[test]
+    fn deleting_an_agents_comment_with_a_humans_reply_is_refused() {
+        let (_fixture, mut app, _human_comment_id) = app_with_comment();
+        let McpResponse::Added { id } = app.handle_mcp(McpRequestKind::AddComment {
+            file: "src/lib.rs".to_owned(),
+            line: 2,
+            line_end: None,
+            body: "this branch looks dead".to_owned(),
+            as_human: false,
+        }) else {
+            panic!("expected an added comment");
+        };
+        assert!(app.review.session.reply(&id, "human", "no, main calls it"));
+
+        let response = app.handle_mcp(McpRequestKind::DeleteComment { id: id.clone() });
+        assert!(matches!(response, McpResponse::Error(_)), "{response:?}");
+        let comment = app.review.session.comment(&id).expect("comment survives");
+        assert_eq!(comment.replies.len(), 1, "the human's reply survives too");
+        assert_eq!(comment.replies[0].body, "no, main calls it");
+
+        // the agent can still take its finding back by rewriting it
+        let edit = app.handle_mcp(McpRequestKind::EditComment {
+            id: id.clone(),
+            body: "corrected: it is reachable from main".to_owned(),
+        });
+        assert!(matches!(edit, McpResponse::Ok), "{edit:?}");
+    }
+
+    /// Only a reply from someone other than the agent blocks a delete: the
+    /// agent answering its own finding is not a human's words to lose.
+    #[test]
+    fn deleting_an_agents_comment_with_only_its_own_reply_still_works() {
+        let (_fixture, mut app, _human_comment_id) = app_with_comment();
+        let McpResponse::Added { id } = app.handle_mcp(McpRequestKind::AddComment {
+            file: "src/lib.rs".to_owned(),
+            line: 2,
+            line_end: None,
+            body: "checking this again".to_owned(),
+            as_human: false,
+        }) else {
+            panic!("expected an added comment");
+        };
+        assert!(
+            app.review
+                .session
+                .reply(&id, AGENT_AUTHOR, "confirmed, dropping it")
+        );
+
+        let response = app.handle_mcp(McpRequestKind::DeleteComment { id: id.clone() });
+        assert!(matches!(response, McpResponse::Ok), "{response:?}");
+        assert!(app.review.session.comment(&id).is_none());
     }
 
     #[test]

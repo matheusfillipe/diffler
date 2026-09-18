@@ -492,7 +492,10 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   (`comment.author`) and a walkthrough stop or note (`comment.anchor_ref` set)
   regardless of author, since those two live and die with
   `publish_walkthrough`, which already tracks their ids and threads across a
-  revision.
+  revision. `delete_comment` also refuses one someone else has replied to,
+  since a reply lives inside its comment and would otherwise disappear with
+  it unseen; `edit_comment` never touches replies, so it carries no such
+  refusal.
   Comments are tagged with their source. Agent triggering is the
   `wait_for_feedback` long-poll (MCP can't initiate agent turns); the human's
   "send" key unblocks it. `propose_resolve` only marks a comment Replied, and
