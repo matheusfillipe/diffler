@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 use crate::ci::error::{CiError, Result, parse_json};
 use crate::ci::exec::CommandRunner;
 use crate::ci::model::{
-    Annotation, AnnotationLevel, Artifact, CiJob, CiRun, JobId, JobStatus, LogChunk, LogStepMeta,
-    PrComment, PullRequest, RunDetail, RunExtras, RunId, ts_sort_key,
+    Annotation, AnnotationLevel, Artifact, CiJob, CiJobLeg, CiRun, JobId, JobStatus, LogChunk,
+    LogStepMeta, PrComment, PullRequest, RunDetail, RunExtras, RunId, ts_sort_key,
 };
 use crate::ci::provider::{ForgeProvider, ProviderKind};
 
@@ -273,44 +273,41 @@ impl GitHubProvider {
 
         let mut jobs = Vec::new();
         for spec in specs {
-            match children.get(spec.id.as_str()) {
-                Some((_, kids)) => {
-                    for kid in kids {
-                        let id = scope(&spec.label, &kid.id);
-                        let status_label = scope(&spec.label, &kid.label);
-                        let needs = if kid.needs.is_empty() {
-                            spec.needs
-                                .iter()
-                                .flat_map(|d| resolve_dep(d, &children))
-                                .map(JobId)
-                                .collect()
-                        } else {
-                            kid.needs
-                                .iter()
-                                .map(|n| JobId(scope(&spec.label, n)))
-                                .collect()
-                        };
-                        jobs.push(CiJob {
-                            name: child_display(&id, &status_label, run_jobs),
-                            status: aggregate_status(&id, &status_label, run_jobs),
-                            duration_secs: aggregate_duration(&id, &status_label, run_jobs, now),
-                            id: JobId(id),
-                            needs,
-                        });
-                    }
+            if let Some((_, kids)) = children.get(spec.id.as_str()) {
+                for kid in kids {
+                    let id = scope(&spec.label, &kid.id);
+                    let status_label = scope(&spec.label, &kid.label);
+                    let needs = if kid.needs.is_empty() {
+                        spec.needs
+                            .iter()
+                            .flat_map(|d| resolve_dep(d, &children))
+                            .map(JobId)
+                            .collect()
+                    } else {
+                        kid.needs
+                            .iter()
+                            .map(|n| JobId(scope(&spec.label, n)))
+                            .collect()
+                    };
+                    let name = child_display(&id, &status_label, run_jobs);
+                    let matches = matching_run_jobs(&id, &status_label, run_jobs);
+                    jobs.push(build_job(id, name, needs, &matches, now));
                 }
-                None => jobs.push(CiJob {
-                    id: JobId(spec.id.clone()),
-                    name: spec.label.clone(),
-                    status: aggregate_status(&spec.id, &spec.label, run_jobs),
-                    duration_secs: aggregate_duration(&spec.id, &spec.label, run_jobs, now),
-                    needs: spec
-                        .needs
-                        .iter()
-                        .flat_map(|d| resolve_dep(d, &children))
-                        .map(JobId)
-                        .collect(),
-                }),
+            } else {
+                let needs = spec
+                    .needs
+                    .iter()
+                    .flat_map(|d| resolve_dep(d, &children))
+                    .map(JobId)
+                    .collect();
+                let matches = matching_run_jobs(&spec.id, &spec.label, run_jobs);
+                jobs.push(build_job(
+                    spec.id.clone(),
+                    spec.label.clone(),
+                    needs,
+                    &matches,
+                    now,
+                ));
             }
         }
         jobs
@@ -413,7 +410,8 @@ impl ForgeProvider for GitHubProvider {
             .and_then(|yaml| parse_workflow(yaml).ok())
             .unwrap_or_default();
         let jobs = if specs.is_empty() {
-            // no workflow file: a flat, edgeless node per run job
+            // no workflow file: a flat, edgeless node per run job, one leg
+            // and all, since there's no job id to fold several run jobs under
             let now = time::OffsetDateTime::now_utc();
             view.jobs
                 .iter()
@@ -423,6 +421,7 @@ impl ForgeProvider for GitHubProvider {
                     status: map_status(&j.status, j.conclusion.as_deref()),
                     duration_secs: j.duration_secs(now),
                     needs: Vec::new(),
+                    legs: Vec::new(),
                 })
                 .collect()
         } else {
@@ -909,26 +908,69 @@ fn job_matches(run_job_name: &str, id: &str, label: &str) -> bool {
     name_matches(run_job_name, label) || name_matches(run_job_name, id)
 }
 
-/// The longest leg's time, so a matrix node reads as the wall clock its slowest
-/// member spent.
-fn aggregate_duration(
-    id: &str,
-    label: &str,
-    jobs: &[RunJob],
-    now: time::OffsetDateTime,
-) -> Option<i64> {
+/// Every run job answering to a job spec's id or label, in run order: one
+/// entry per matrix leg the forge actually ran, or a single entry for a job
+/// that ran as itself.
+fn matching_run_jobs<'a>(id: &str, label: &str, jobs: &'a [RunJob]) -> Vec<&'a RunJob> {
     jobs.iter()
         .filter(|j| job_matches(&j.name, id, label))
-        .filter_map(|j| j.duration_secs(now))
-        .max()
+        .collect()
 }
 
-fn aggregate_status(id: &str, label: &str, jobs: &[RunJob]) -> JobStatus {
-    jobs.iter()
-        .filter(|j| job_matches(&j.name, id, label))
-        .map(|j| map_status(&j.status, j.conclusion.as_deref()))
+/// One job spec's `CiJob`, aggregated across every run job that answered to
+/// it: `status` and `duration_secs` are the worst status and longest span
+/// over the whole set, and `legs` keeps each one separately once there was
+/// more than one (the job's `strategy.matrix` fanned it out), so the graph
+/// can render a foldable root instead of losing which leg failed.
+fn build_job(
+    id: String,
+    name: String,
+    needs: Vec<JobId>,
+    matches: &[&RunJob],
+    now: time::OffsetDateTime,
+) -> CiJob {
+    let leg_status = |j: &RunJob| map_status(&j.status, j.conclusion.as_deref());
+    let status = matches
+        .iter()
+        .map(|j| leg_status(j))
         .reduce(JobStatus::worse)
-        .unwrap_or(JobStatus::Queued)
+        .unwrap_or(JobStatus::Queued);
+    let duration_secs = matches.iter().filter_map(|j| j.duration_secs(now)).max();
+    let legs = if matches.len() > 1 {
+        matches
+            .iter()
+            .map(|j| CiJobLeg {
+                name: leg_label(&name, &j.name),
+                status: leg_status(j),
+                duration_secs: j.duration_secs(now),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    CiJob {
+        id: JobId(id),
+        name,
+        status,
+        duration_secs,
+        needs,
+        legs,
+    }
+}
+
+/// A leg's own label: its run job's name with the job's own name stripped off
+/// the front, so a leg under a root already labeled "build" reads as
+/// "Dockerfile.cuda, -cuda" rather than repeating "build (Dockerfile.cuda,
+/// -cuda)". Falls back to the run job's full name when it doesn't carry the
+/// job's name as a literal prefix (an expression-named job matched by its
+/// prefix before `${{`, say).
+fn leg_label(job_name: &str, run_job_name: &str) -> String {
+    run_job_name
+        .strip_prefix(job_name)
+        .and_then(|rest| rest.strip_prefix(" ("))
+        .and_then(|rest| rest.strip_suffix(')'))
+        .unwrap_or(run_job_name)
+        .to_owned()
 }
 
 fn map_status(status: &str, conclusion: Option<&str>) -> JobStatus {
@@ -1815,6 +1857,91 @@ jobs:
             detail.jobs[2].status,
             JobStatus::Queued,
             "publish not started"
+        );
+    }
+
+    // an `include` matrix whose legs carry an uneven number of parameters,
+    // since GitHub drops an empty one from the run job's name: exactly the
+    // shape a naive "split and count" parser gets wrong
+    const MATRIX_WORKFLOW: &str = r"
+name: CI
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - file: Dockerfile.cuda
+            suffix: '-cuda'
+          - file: Dockerfile.gpu
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+";
+
+    #[tokio::test]
+    async fn run_detail_splits_a_real_matrix_job_into_legs() {
+        let view = r#"{
+          "displayTitle":"build images","headBranch":"main","headSha":"abc","status":"in_progress",
+          "conclusion":null,"workflowName":"CI",
+          "createdAt":"2026-06-18T10:00:00Z","url":"https://gh/run/42",
+          "jobs":[
+            {"databaseId":1,"name":"build (Dockerfile.cuda, -cuda)","status":"completed","conclusion":"success"},
+            {"databaseId":2,"name":"build (Dockerfile.gpu)","status":"completed","conclusion":"success"},
+            {"databaseId":3,"name":"publish","status":"queued","conclusion":null}
+          ]
+        }"#;
+        let detail = GitHubProvider::new(
+            Box::new(RecordingRunner::new(&[("run view", view)])),
+            vec![MATRIX_WORKFLOW.to_owned()],
+            None,
+            YamlCache::default(),
+            EtagCache::default(),
+            None,
+        )
+        .run_detail(&RunId("42".into()))
+        .await
+        .expect("detail");
+
+        let ids: Vec<&str> = detail.jobs.iter().map(|j| j.id.0.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["build", "publish"],
+            "one CiJob per YAML job, not per leg"
+        );
+
+        let build = &detail.jobs[0];
+        assert_eq!(build.status, JobStatus::Ok);
+        let leg_names: Vec<&str> = build.legs.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(
+            leg_names,
+            ["Dockerfile.cuda, -cuda", "Dockerfile.gpu"],
+            "each leg's own parameters, uneven counts included"
+        );
+        assert!(
+            build.legs.iter().all(|l| l.status == JobStatus::Ok),
+            "each leg carries its own status: {:?}",
+            build.legs
+        );
+
+        let publish = &detail.jobs[1];
+        assert_eq!(
+            publish.needs,
+            vec![JobId("build".into())],
+            "publish's need resolves to the job id, not a leg"
+        );
+
+        let model = crate::ci::to_model(&detail);
+        let edges: Vec<(&str, &str)> = model
+            .edges
+            .iter()
+            .map(|e| (e.from.0.as_str(), e.to.0.as_str()))
+            .collect();
+        assert_eq!(
+            edges,
+            [("build", "publish")],
+            "the needs edge connects to the matrix root, not a leg"
         );
     }
 

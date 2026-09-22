@@ -379,6 +379,7 @@ mod tests {
                 status: JobStatus::Ok,
                 duration_secs: None,
                 needs: vec![],
+                legs: vec![],
             }],
         };
         let mut graph = crate::graph::GraphView::new();
@@ -422,6 +423,7 @@ mod tests {
                     status: JobStatus::Ok,
                     duration_secs: None,
                     needs: vec![],
+                    legs: vec![],
                 },
                 CiJob {
                     id: JobId("deploy".into()),
@@ -429,6 +431,7 @@ mod tests {
                     status: JobStatus::Ok,
                     duration_secs: None,
                     needs: vec![JobId("build".into())],
+                    legs: vec![],
                 },
             ],
         };

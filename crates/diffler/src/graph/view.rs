@@ -596,6 +596,22 @@ mod tests {
     }
 
     #[test]
+    fn renders_the_demo_with_a_collapsed_group() {
+        let mut v = view();
+        v.set_collapsed("test", true);
+        let art = render(&mut v).backend().to_string();
+        assert!(
+            art.contains("▸ test (3)"),
+            "folded root names its legs: {art}"
+        );
+        assert!(
+            !art.contains("test ubuntu") && !art.contains("test windows"),
+            "legs are hidden once folded: {art}"
+        );
+        insta::assert_snapshot!(render(&mut v).backend());
+    }
+
+    #[test]
     fn horizontal_nav_enters_the_gate_vertical_enters_legs() {
         let mut v = view();
         render(&mut v);

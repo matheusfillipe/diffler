@@ -2002,6 +2002,7 @@ mod tests {
                 status: JobStatus::Ok,
                 duration_secs: None,
                 needs: vec![],
+                legs: vec![],
             }],
         };
         app.handle(AppEvent::CiRunDetail(detail));

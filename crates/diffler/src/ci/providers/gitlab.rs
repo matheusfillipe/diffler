@@ -588,6 +588,7 @@ fn jobs_with_stage_edges(raw: &[JobItem]) -> Vec<CiJob> {
                 status: map_status(&job.status),
                 duration_secs: job.duration.map(|secs| secs.round() as i64),
                 needs,
+                legs: Vec::new(),
             }
         })
         .collect()

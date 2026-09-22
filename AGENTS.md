@@ -278,6 +278,24 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   `origin`. The GitHub provider then names that repo on every call, `-R` for
   the `gh` subcommands and an expanded `{owner}/{repo}` for `gh api`, because
   `gh` resolves a fork to its parent when nobody tells it otherwise.
+- **Matrix legs on the run graph.** A `CiJob` carries `legs`, populated by the
+  provider when a `strategy.matrix` fanned a YAML job out into several run
+  jobs: GitHub's `expand_jobs` still folds every matching run job into one
+  `CiJob` (one node per YAML job, not per leg), but now keeps each leg's own
+  name, status and duration instead of losing them to the aggregate. A leg is
+  recognized by its run job name starting with `<job name> (`, GitHub's own
+  matrix naming, never by parsing or counting the matrix parameters, since a
+  leg whose matrix value is empty drops that parameter from the name (`build
+  (Dockerfile.cuda, -cuda)` beside `build (Dockerfile.gpu)`). `to_model` turns
+  a job with legs into a foldable group: the job keeps its node id as the
+  group's root (`Node.foldable`), and each leg becomes a member node
+  (`Node.group`) with the matrix parameters alone as its label, the job's own
+  name already on the root. A `needs` edge is always resolved at the job
+  level, so it lands on the root, never a leg. Forgejo's provider maps each
+  task straight into its own `CiJob` with no per-job grouping step at all (no
+  workflow YAML is parsed there), so a Forgejo matrix already shows one plain
+  node per leg, just not folded under a shared root; GitLab's `parallel:`
+  jobs have the same gap and are untouched for the same reason.
 - **Create-pull-request form.** One list of rows: base, title, body, draft, then
   a `[ Create ]` and a `[ Cancel ]` button, so `j`/`k` and the pointer reach the
   buttons the way they reach a field (a blank line between them would break the

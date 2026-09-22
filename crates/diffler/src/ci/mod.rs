@@ -16,8 +16,8 @@ pub use error::{CiError, Result};
 pub(crate) use exec::test_support;
 pub use exec::{CommandRunner, RealRunner};
 pub use model::{
-    Annotation, AnnotationLevel, Artifact, Capabilities, CiJob, CiRun, DagSource, JobId, JobStatus,
-    LogChunk, LogMode, LogStepMeta, PrComment, PullRequest, RunDetail, RunExtras, RunId,
+    Annotation, AnnotationLevel, Artifact, Capabilities, CiJob, CiJobLeg, CiRun, DagSource, JobId,
+    JobStatus, LogChunk, LogMode, LogStepMeta, PrComment, PullRequest, RunDetail, RunExtras, RunId,
     fmt_duration, ts_sort_key,
 };
 pub use provider::{
@@ -186,23 +186,30 @@ fn read_workflows(repo_root: &Path) -> Vec<String> {
 }
 
 /// Map a run's jobs + dependency edges onto a graph model, drawn the
-/// GitHub-style way: longest-path layering ranks the jobs, left to right.
+/// GitHub-style way: longest-path layering ranks the jobs, left to right. A
+/// job that fanned out into matrix legs becomes a foldable root plus one
+/// member node per leg; external edges always target the root, since `needs`
+/// is already resolved at the job level.
 pub fn to_model(detail: &RunDetail) -> Model {
     let mut model = Model::new(RankDir::LeftRight);
-    model.nodes = detail
-        .jobs
-        .iter()
-        .map(|job| Node {
+    for job in &detail.jobs {
+        model.nodes.push(Node {
             id: NodeId::new(job.id.0.clone()),
-            label: match job.duration_secs {
-                Some(secs) => format!("{}  {}", job.name, fmt_duration(secs)),
-                None => job.name.clone(),
-            },
+            label: job_label(&job.name, job.duration_secs),
             status: node_status(job.status),
             group: None,
-            foldable: None,
-        })
-        .collect();
+            foldable: (!job.legs.is_empty()).then(|| job.id.0.clone()),
+        });
+        for (i, leg) in job.legs.iter().enumerate() {
+            model.nodes.push(Node {
+                id: NodeId::new(format!("{}#{i}", job.id.0)),
+                label: job_label(&leg.name, leg.duration_secs),
+                status: node_status(leg.status),
+                group: Some(job.id.0.clone()),
+                foldable: None,
+            });
+        }
+    }
     model.edges = detail
         .jobs
         .iter()
@@ -216,6 +223,13 @@ pub fn to_model(detail: &RunDetail) -> Model {
         })
         .collect();
     model
+}
+
+fn job_label(name: &str, duration_secs: Option<i64>) -> String {
+    match duration_secs {
+        Some(secs) => format!("{name}  {}", fmt_duration(secs)),
+        None => name.to_owned(),
+    }
 }
 
 fn node_status(status: JobStatus) -> NodeStatus {
@@ -232,7 +246,7 @@ fn node_status(status: JobStatus) -> NodeStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::{CiJob, CiRun, JobId, RunId};
+    use super::{CiJob, CiJobLeg, CiRun, JobId, RunId};
 
     #[test]
     fn on_path_finds_files_in_listed_dirs_only() {
@@ -364,6 +378,7 @@ mod tests {
                     status: JobStatus::Ok,
                     duration_secs: None,
                     needs: vec![],
+                    legs: vec![],
                 },
                 CiJob {
                     id: JobId("test".into()),
@@ -371,6 +386,7 @@ mod tests {
                     status: JobStatus::Running,
                     duration_secs: None,
                     needs: vec![JobId("lint".into())],
+                    legs: vec![],
                 },
             ],
         };
@@ -397,6 +413,7 @@ mod tests {
                     status: JobStatus::Ok,
                     duration_secs: Some(73),
                     needs: vec![],
+                    legs: vec![],
                 },
                 CiJob {
                     id: JobId("queued".into()),
@@ -404,6 +421,7 @@ mod tests {
                     status: JobStatus::Queued,
                     duration_secs: None,
                     needs: vec![],
+                    legs: vec![],
                 },
             ],
         };
@@ -412,6 +430,103 @@ mod tests {
         assert_eq!(
             model.nodes[1].label, "queued",
             "a job that has not started says nothing about time"
+        );
+    }
+
+    #[test]
+    fn a_matrix_job_becomes_a_foldable_root_with_one_member_per_leg() {
+        let detail = RunDetail {
+            run: run(),
+            jobs: vec![
+                CiJob {
+                    id: JobId("build".into()),
+                    name: "build".into(),
+                    status: JobStatus::Failed,
+                    duration_secs: Some(90),
+                    needs: vec![],
+                    legs: vec![
+                        CiJobLeg {
+                            name: "Dockerfile.cuda, -cuda".into(),
+                            status: JobStatus::Ok,
+                            duration_secs: Some(60),
+                        },
+                        CiJobLeg {
+                            name: "Dockerfile.gpu".into(),
+                            status: JobStatus::Failed,
+                            duration_secs: Some(90),
+                        },
+                    ],
+                },
+                CiJob {
+                    id: JobId("publish".into()),
+                    name: "publish".into(),
+                    status: JobStatus::Queued,
+                    duration_secs: None,
+                    needs: vec![JobId("build".into())],
+                    legs: vec![],
+                },
+            ],
+        };
+        let model = to_model(&detail);
+
+        let ids: Vec<&str> = model.nodes.iter().map(|n| n.id.0.as_str()).collect();
+        assert_eq!(ids, ["build", "build#0", "build#1", "publish"]);
+
+        let root = &model.nodes[0];
+        assert_eq!(
+            root.foldable.as_deref(),
+            Some("build"),
+            "the job is its group's root"
+        );
+        assert_eq!(root.group, None, "a root is not itself a member");
+
+        let leg0 = &model.nodes[1];
+        assert_eq!(leg0.group.as_deref(), Some("build"));
+        assert_eq!(leg0.foldable, None);
+        assert_eq!(
+            leg0.label, "Dockerfile.cuda, -cuda  1m00s",
+            "a leg reads as its own parameters, not the job name repeated"
+        );
+
+        let leg1 = &model.nodes[2];
+        assert_eq!(leg1.label, "Dockerfile.gpu  1m30s");
+        assert_eq!(leg1.status, NodeStatus::Failed);
+
+        let publish = &model.nodes[3];
+        assert_eq!(publish.group, None, "a single-leg job stays a plain node");
+        assert_eq!(publish.foldable, None);
+
+        let edges: Vec<(&str, &str)> = model
+            .edges
+            .iter()
+            .map(|e| (e.from.0.as_str(), e.to.0.as_str()))
+            .collect();
+        assert_eq!(
+            edges,
+            [("build", "publish")],
+            "the needs edge lands on the root, never a leg"
+        );
+
+        let collapsed = model.collapse(&std::collections::HashSet::from(["build".to_owned()]));
+        assert_eq!(
+            collapsed.nodes.len(),
+            2,
+            "the legs fold away, the root and publish remain"
+        );
+        let root = collapsed
+            .nodes
+            .iter()
+            .find(|n| n.id.0 == "build")
+            .expect("root stays");
+        assert_eq!(
+            root.status,
+            NodeStatus::Failed,
+            "a failing leg still reads through the fold"
+        );
+        assert!(
+            root.label.contains('▸'),
+            "the collapsed root marks its fold state: {}",
+            root.label
         );
     }
 }

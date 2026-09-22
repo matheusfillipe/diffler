@@ -160,6 +160,10 @@ impl ForgeProvider for ForgejoProvider {
                 // Forgejo's task list carries no timings
                 duration_secs: None,
                 needs: Vec::new(),
+                // one task per run-job already, matrix legs included: there's
+                // no workflow YAML parsed here to fold several tasks under a
+                // shared job id, so each leg stays its own plain node
+                legs: Vec::new(),
             })
             .collect();
         Ok(RunDetail { run: found, jobs })

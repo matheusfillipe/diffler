@@ -88,6 +88,21 @@ pub struct CiJob {
     /// How long the job took, or has been running so far. `None` where the
     /// forge reports no times, or before it starts.
     pub duration_secs: Option<i64>,
+    /// The job's `strategy.matrix` legs, one per run the forge actually
+    /// reported under this job, when there was more than one; empty for a job
+    /// that ran once. `status` and `duration_secs` above stay the aggregate
+    /// across every leg, so a plain rendering (no fold container) still reads
+    /// correctly without looking at this field.
+    pub legs: Vec<CiJobLeg>,
+}
+
+/// One matrix leg of a [`CiJob`]: its own display name (the leg's parameters,
+/// not the job's name repeated), status and duration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CiJobLeg {
+    pub name: String,
+    pub status: JobStatus,
+    pub duration_secs: Option<i64>,
 }
 
 /// A span of time as `13s` or `1m03s`: how a job or step reads wherever one is
