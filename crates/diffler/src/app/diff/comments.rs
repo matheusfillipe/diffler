@@ -411,7 +411,20 @@ impl App {
         if !diff.comments_open {
             return;
         }
-        self.comments_to(diff.comments_cursor);
+        // the pane's own cursor holds its place, which is the next comment once
+        // the one it sat on is gone, and only follows through to the diff when
+        // the reader is standing in the pane: deleting from the diff would
+        // otherwise throw them onto whatever comment took the vacated row
+        let follow = diff.focus == Pane::Comments;
+        let index = diff.comments_cursor;
+        if follow {
+            self.comments_to(index);
+            return;
+        }
+        let count = self.comment_rows().len();
+        if let Some(diff) = self.diff.as_mut() {
+            diff.comments_cursor = index.min(count.saturating_sub(1));
+        }
     }
 
     /// The comment the sidebar has selected; `None` when it sits on a group
@@ -974,6 +987,67 @@ mod tests {
             _ => None,
         };
         assert_eq!(landed.as_ref(), Some(&wanted), "and lands on that comment");
+    }
+
+    /// Deleting from the diff leaves the reader where they were, on the row
+    /// under the comment that went; the pane's own cursor takes the next
+    /// comment for when they step back into it.
+    #[test]
+    fn deleting_from_the_diff_holds_the_cursor_and_the_pane_takes_the_next() {
+        let (_fixture, mut app, _resolved) = app_with_grouped_comments();
+        app.handle(key('C'));
+        app.handle(key('j'));
+        app.handle(key('h'));
+        assert_eq!(
+            app.diff.as_ref().expect("diff view").focus,
+            Pane::Diff,
+            "the reader is standing in the diff"
+        );
+        let id = app
+            .selected_comment_id()
+            .expect("the pane still names a comment");
+        let before = app.diff.as_ref().expect("diff view").cursor;
+
+        app.delete_comment_by_id(&id);
+
+        assert_eq!(
+            app.diff.as_ref().expect("diff view").cursor,
+            before,
+            "the diff cursor holds its row"
+        );
+        assert_ne!(
+            app.selected_comment_id(),
+            Some(id),
+            "the pane moved on to the next comment"
+        );
+    }
+
+    /// Deleting from the pane is the reader working through the list, so the
+    /// next comment is where they want to be, in both panes.
+    #[test]
+    fn deleting_from_the_pane_moves_to_the_next_comment() {
+        let (_fixture, mut app, _resolved) = app_with_grouped_comments();
+        app.handle(key('C'));
+        app.handle(key('j'));
+        let id = app.selected_comment_id().expect("a comment is selected");
+
+        app.delete_comment_by_id(&id);
+
+        let landed = app
+            .selected_comment_id()
+            .expect("the pane lands on another comment");
+        assert_ne!(landed, id, "and not the one that went");
+        let diff = app.diff.as_ref().expect("diff view");
+        let seated = match diff.rows().get(diff.cursor) {
+            Some(DiffRow::Comment { comment, .. }) => app
+                .review
+                .session_for(&diff.source)
+                .comments
+                .get(*comment)
+                .map(|comment| comment.id.clone()),
+            _ => None,
+        };
+        assert_eq!(seated, Some(landed), "the diff follows the pane");
     }
 
     #[test]
