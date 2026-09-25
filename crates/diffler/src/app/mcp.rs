@@ -3363,17 +3363,17 @@ mod tests {
     #[test]
     fn every_tool_call_maps_itself_to_an_activity_phrase() {
         let (_fixture, mut app, _id) = app_with_comment();
-        assert!(app.agent_activity.is_none());
+        assert!(app.agent_activity.current.is_none());
 
         app.handle_mcp(McpRequestKind::GetDiff {
             file: Some("src/lib.rs".to_owned()),
         });
-        let activity = app.agent_activity.as_ref().expect("activity set");
+        let activity = app.agent_activity.current.as_ref().expect("activity set");
         assert_eq!(activity.focus, "reading the diff");
         assert_eq!(activity.file.as_deref(), Some("src/lib.rs"));
 
         app.handle_mcp(McpRequestKind::ListReviews);
-        let activity = app.agent_activity.as_ref().expect("activity set");
+        let activity = app.agent_activity.current.as_ref().expect("activity set");
         assert_eq!(activity.focus, "listing reviews");
         assert_eq!(activity.file, None, "no call names a file for this one");
     }
@@ -3386,14 +3386,14 @@ mod tests {
             file: Some("src/app/refresh.rs".to_owned()),
         });
         assert_eq!(response, McpResponse::Ok);
-        let activity = app.agent_activity.as_ref().expect("activity set");
+        let activity = app.agent_activity.current.as_ref().expect("activity set");
         assert_eq!(activity.focus, "writing the walkthrough");
         assert_eq!(activity.file.as_deref(), Some("src/app/refresh.rs"));
 
         // a later call with no file report replaces the whole indicator,
         // never merges: a stale file name would outlive the activity it was about
         app.handle_mcp(McpRequestKind::ListReviews);
-        let activity = app.agent_activity.as_ref().expect("activity set");
+        let activity = app.agent_activity.current.as_ref().expect("activity set");
         assert_eq!(activity.file, None);
     }
 }

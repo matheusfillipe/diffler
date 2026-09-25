@@ -413,6 +413,54 @@ pub struct AgentActivity {
     pub file: Option<String>,
 }
 
+/// The status bar's live agent-activity indicator, owning its own expiry:
+/// what the most recently active MCP connection reported, when it was
+/// reported, and how long it stays up from there.
+#[derive(Debug)]
+pub(crate) struct AgentActivityTracker {
+    pub(crate) current: Option<AgentActivity>,
+    reported_at: u32,
+    lasts: u32,
+    ttl_ticks: u32,
+}
+
+impl AgentActivityTracker {
+    fn new(ttl_ticks: u32) -> Self {
+        Self {
+            current: None,
+            reported_at: 0,
+            lasts: 0,
+            ttl_ticks,
+        }
+    }
+
+    /// Report fresh activity, up for `lasts` ticks from `now`.
+    fn show(&mut self, focus: &str, file: Option<&str>, lasts: u32, now: u32) {
+        self.current = Some(AgentActivity {
+            focus: status_text(focus),
+            file: file.map(status_text),
+        });
+        self.reported_at = now;
+        self.lasts = lasts;
+    }
+
+    /// Report fresh activity at the tracker's own ttl.
+    fn set(&mut self, focus: &str, file: Option<&str>, now: u32) {
+        self.show(focus, file, self.ttl_ticks, now);
+    }
+
+    /// Drop the indicator once `now` has outlived it. `true` when this call
+    /// dropped it, so the caller knows to redraw.
+    fn expire(&mut self, now: u32) -> bool {
+        if self.current.is_some() && now.wrapping_sub(self.reported_at) >= self.lasts {
+            self.current = None;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 /// How much the CI poll slows while the terminal is unfocused. Focus regained
 /// polls at once, so the only cost of being wrong is a stale run list nobody
 /// is looking at.
@@ -748,11 +796,8 @@ pub struct App {
     /// Bound port of the embedded MCP server, if it started successfully.
     pub mcp_port: Option<u16>,
     /// Live status of the most recently active MCP connection, shown in the
-    /// status bar. `None` once nothing has reported for `agent_activity_ttl_ticks`.
-    pub agent_activity: Option<AgentActivity>,
-    agent_activity_at: u32,
-    agent_activity_lasts: u32,
-    agent_activity_ttl_ticks: u32,
+    /// status bar.
+    pub(crate) agent_activity: AgentActivityTracker,
     keymaps: Keymaps,
     transients: Transients,
     /// The open transient, if any. Set when a top-level prefix fires; cleared
@@ -961,10 +1006,7 @@ impl App {
             refresh_flash: 0,
             feedback_tx: tokio::sync::watch::Sender::new(0),
             mcp_port: None,
-            agent_activity: None,
-            agent_activity_at: 0,
-            agent_activity_lasts: 0,
-            agent_activity_ttl_ticks: agent_activity_ttl_ticks(),
+            agent_activity: AgentActivityTracker::new(agent_activity_ttl_ticks()),
             keymaps,
             transients,
             transient: None,
@@ -1084,16 +1126,13 @@ impl App {
     }
 
     pub(crate) fn set_agent_activity(&mut self, focus: &str, file: Option<&str>) {
-        self.show_agent_activity(focus, file, self.agent_activity_ttl_ticks);
+        let now = self.tick_count;
+        self.agent_activity.set(focus, file, now);
     }
 
     fn show_agent_activity(&mut self, focus: &str, file: Option<&str>, lasts: u32) {
-        self.agent_activity = Some(AgentActivity {
-            focus: status_text(focus),
-            file: file.map(status_text),
-        });
-        self.agent_activity_at = self.tick_count;
-        self.agent_activity_lasts = lasts;
+        let now = self.tick_count;
+        self.agent_activity.show(focus, file, lasts, now);
     }
 
     #[allow(clippy::too_many_lines)] // one arm per event; a flat match reads best
@@ -1208,7 +1247,7 @@ impl App {
                 // a poll can outlast the ttl, so we hold the indicator until
                 // the poll's own deadline and age it out from there
                 let poll = ticks_in(until.saturating_duration_since(Instant::now()));
-                let lasts = poll.saturating_add(self.agent_activity_ttl_ticks);
+                let lasts = poll.saturating_add(self.agent_activity.ttl_ticks);
                 self.show_agent_activity("waiting on you", None, lasts);
                 Flow::Continue
             }
@@ -1440,12 +1479,7 @@ impl App {
             changed |= now != self.now_unix && self.screen_shows_ages();
             self.now_unix = now;
         }
-        if self.agent_activity.is_some()
-            && self.tick_count.wrapping_sub(self.agent_activity_at) >= self.agent_activity_lasts
-        {
-            self.agent_activity = None;
-            changed = true;
-        }
+        changed |= self.agent_activity.expire(self.tick_count);
         // re-poll the active CI screen on a relaxed cadence (250ms ticks);
         // saturating + clamp so a pathological config can't zero or overflow it.
         // Nobody watching means nobody to show it to, so an unfocused terminal
@@ -3367,28 +3401,37 @@ mod tests {
     fn agent_activity_expires_after_its_ttl_and_asks_for_a_draw() {
         let (_fixture, mut app) = app();
         app.set_agent_activity("reading the diff", None);
-        for _ in 0..app.agent_activity_ttl_ticks - 1 {
+        for _ in 0..app.agent_activity.ttl_ticks - 1 {
             app.handle(AppEvent::Tick);
-            assert!(app.agent_activity.is_some(), "still fresh inside the ttl");
+            assert!(
+                app.agent_activity.current.is_some(),
+                "still fresh inside the ttl"
+            );
         }
         assert_eq!(
             app.handle(AppEvent::Tick),
             Flow::Continue,
             "the tick that clears it must ask for a redraw"
         );
-        assert!(app.agent_activity.is_none(), "expired once the ttl elapsed");
+        assert!(
+            app.agent_activity.current.is_none(),
+            "expired once the ttl elapsed"
+        );
     }
 
     #[test]
     fn a_fresh_report_pushes_the_expiry_back_out() {
         let (_fixture, mut app) = app();
         app.set_agent_activity("reading the diff", None);
-        for _ in 0..app.agent_activity_ttl_ticks / 2 {
+        for _ in 0..app.agent_activity.ttl_ticks / 2 {
             app.handle(AppEvent::Tick);
         }
         app.set_agent_activity("writing a comment", None);
-        for _ in 0..app.agent_activity_ttl_ticks / 2 {
-            assert!(app.agent_activity.is_some(), "the new report reset the ttl");
+        for _ in 0..app.agent_activity.ttl_ticks / 2 {
+            assert!(
+                app.agent_activity.current.is_some(),
+                "the new report reset the ttl"
+            );
             app.handle(AppEvent::Tick);
         }
     }
@@ -3401,16 +3444,19 @@ mod tests {
             until: std::time::Instant::now() + poll,
         });
         let poll_ticks = super::ticks_in(poll);
-        assert!(poll_ticks > app.agent_activity_ttl_ticks);
+        assert!(poll_ticks > app.agent_activity.ttl_ticks);
         for _ in 0..poll_ticks {
             app.handle(AppEvent::Tick);
         }
-        let activity = app.agent_activity.as_ref().expect("still waiting");
+        let activity = app.agent_activity.current.as_ref().expect("still waiting");
         assert_eq!(activity.focus, "waiting on you");
-        for _ in 0..app.agent_activity_ttl_ticks {
+        for _ in 0..app.agent_activity.ttl_ticks {
             app.handle(AppEvent::Tick);
         }
-        assert!(app.agent_activity.is_none(), "ages out after the poll ends");
+        assert!(
+            app.agent_activity.current.is_none(),
+            "ages out after the poll ends"
+        );
     }
 
     #[test]
@@ -3418,7 +3464,7 @@ mod tests {
         let (_fixture, mut app) = app();
         let long = "x".repeat(500);
         app.set_agent_activity(&format!("line one\nline two {long}"), Some("a\nb.rs"));
-        let activity = app.agent_activity.as_ref().expect("activity set");
+        let activity = app.agent_activity.current.as_ref().expect("activity set");
         assert!(
             activity.focus.starts_with("line one line two"),
             "{}",

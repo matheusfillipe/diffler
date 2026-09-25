@@ -918,7 +918,7 @@ pub(super) fn status_bar(app: &App, width: u16) -> Line<'static> {
             Span::styled(format!("{} ", message.text), on_panel(fg))
         });
     if app.config.ui.show_agent_activity
-        && let Some(activity) = &app.agent_activity
+        && let Some(activity) = &app.agent_activity.current
     {
         let used: usize = spans.iter().chain(&tail).map(Span::width).sum();
         let reserved = message
