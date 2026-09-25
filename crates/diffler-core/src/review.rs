@@ -53,6 +53,37 @@ pub struct Refreshed {
     /// recomputed diff. The rev rides along so a review swapped while the
     /// worker ran can ignore an answer meant for the previous one.
     pub against: Option<(String, Result<DiffModel, VcsError>)>,
+    /// A pinned commit, range, or PR source's freshly recomputed diff, when
+    /// the caller asked [`Review::compute_refresh`] for one (an algorithm
+    /// switch re-diffing whatever source is open).
+    pub pinned: Option<Result<DiffModel, VcsError>>,
+}
+
+/// The freshly fetched diff for a commit, range, or PR review source,
+/// straight from the backend: the one place each variant's vcs call is
+/// made, whether the caller reads it on the UI thread or off it.
+/// `pr_head` is the PR's own `(merge_base, head)`, resolved by the caller (a
+/// PR's range lives in app state, not the backend); `None` rejects an
+/// unresolved PR rather than silently reading it as unchanged.
+/// `WorkingTree`, `Walkthrough`, and `Against` carry no pinned diff of their
+/// own and read back empty.
+pub fn pinned_diff(
+    vcs: &dyn Vcs,
+    source: &ReviewSource,
+    pr_head: Option<(&str, &str)>,
+) -> Result<DiffModel, VcsError> {
+    match source {
+        ReviewSource::Commit { oid } => vcs.commit_diff(oid),
+        ReviewSource::Range { oldest, newest } => vcs.range_diff(oldest, newest),
+        ReviewSource::Pr { number } => {
+            let (base, head) = pr_head
+                .ok_or_else(|| VcsError::Rejected(format!("PR #{number} is not resolved")))?;
+            vcs.tree_diff(base, head)
+        }
+        ReviewSource::WorkingTree
+        | ReviewSource::Walkthrough { .. }
+        | ReviewSource::Against { .. } => Ok(DiffModel::default()),
+    }
 }
 
 pub struct Review {
@@ -136,21 +167,26 @@ impl Review {
     /// Compute a refresh on a separate repo handle, so it can run off the UI
     /// thread; the result is applied later with [`Review::install_refresh`].
     /// `against` recomputes the open three-dot review in the same pass, since
-    /// it tracks edits and cannot be pinned like a commit's diff.
+    /// it tracks edits and cannot be pinned like a commit's diff. `pinned`
+    /// additionally recomputes a commit, range, or PR source's diff on this
+    /// same backend (an algorithm switch re-diffing whatever source is open).
     pub fn compute_refresh(
         repo_root: &Path,
         settings: &DiffSettings,
         against: Option<&str>,
+        pinned: Option<(&ReviewSource, Option<(&str, &str)>)>,
     ) -> Result<Refreshed, ReviewError> {
         let vcs = repo::open_with_settings(repo_root, settings)?;
         let status = vcs.status()?;
         let model = vcs.working_tree_diff()?;
         let against =
             against.map(|rev| (rev.to_owned(), crate::vcs::against_diff(vcs.as_ref(), rev)));
+        let pinned = pinned.map(|(source, pr_head)| pinned_diff(vcs.as_ref(), source, pr_head));
         Ok(Refreshed {
             status,
             model,
             against,
+            pinned,
         })
     }
 

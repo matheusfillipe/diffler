@@ -44,9 +44,12 @@ pub(crate) enum RowRef {
 /// The cursor, the visual selection anchor, and the banded span, each named
 /// by the [`RowRef`] it currently sits on. [`DiffView::capture_positions`]
 /// takes this before something rebuilds the rows out from under them;
-/// [`DiffView::restore_positions`] resolves it back afterward.
+/// [`DiffView::restore_positions`] resolves it back afterward. `pub` only so
+/// an off-thread re-diff request (`main.rs`, a different crate from this
+/// library) can carry one through opaquely; every field stays private, so
+/// nothing outside this module can construct or inspect one.
 #[derive(Debug)]
-pub(crate) struct RowPositions {
+pub struct RowPositions {
     cursor: Option<RowRef>,
     anchor: Option<RowRef>,
     referenced: Option<(RowRef, RowRef)>,

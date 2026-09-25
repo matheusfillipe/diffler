@@ -2502,6 +2502,7 @@ mod tests {
         app.queue_enrich_selected();
 
         app.apply_diff_algorithm("histogram");
+        app.settle_rediff();
         let expected = histogram_hunks(old, new, "a.txt", 3, true);
         let ids = |hunks: &[diffler_core::model::Hunk]| -> Vec<_> {
             hunks.iter().map(|h| h.id.clone()).collect()

@@ -32,12 +32,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+pub use diff::RowPositions;
 #[cfg(test)]
 pub(crate) use diff::merge_count;
 pub use diff::{
     CommentFacts, CommentGrouping, CommentLine, CommentPaneRow, DeclaredRequest, DiffRow, DiffView,
-    FileHighlights, FileScope, Pane, RowCopy, ScrollAlign, SplitRow, SplitSide, blocks_of,
-    comment_display, group_comment_rows, summary_display,
+    FileHighlights, FileScope, Pane, RediffRequest, RowCopy, ScrollAlign, SplitRow, SplitSide,
+    blocks_of, comment_display, group_comment_rows, summary_display,
 };
 pub use log::LogView;
 pub(crate) use status::{
@@ -693,6 +694,12 @@ pub struct App {
     /// Bumped per declared-kinds request, so an answer for a file list the
     /// view has since replaced is dropped.
     declared_token: u64,
+    /// A re-diff the main loop should run off-thread (an algorithm switch),
+    /// on a fresh backend rather than the render loop's own.
+    pub pending_rediff: Option<RediffRequest>,
+    /// Bumped per re-diff request, so a stale one landing after another
+    /// switch (or after the open view moved on) is dropped.
+    rediff_token: u64,
     /// The language breakdown screen, present only while it is open.
     pub stats: Option<stats::StatsView>,
     /// A repo scan the main loop should run off-thread.
@@ -942,6 +949,8 @@ impl App {
             pending_walkthrough: None,
             walkthrough_token: 0,
             declared_token: 0,
+            pending_rediff: None,
+            rediff_token: 0,
             file_token: 0,
             pending_clipboard: None,
             pending_editor: None,
@@ -1121,6 +1130,12 @@ impl App {
                 self.on_refresh_done(*result);
                 Flow::Continue
             }
+            AppEvent::RediffDone {
+                result,
+                about,
+                positions,
+                token,
+            } => self.on_rediff_done(*result, about.as_ref(), positions, token),
             AppEvent::Enriched(outcome) => {
                 self.on_enriched(*outcome);
                 Flow::Continue
@@ -1576,8 +1591,9 @@ impl App {
     }
 
     /// Switch the line-diff algorithm live: the config (which every refresh
-    /// worker reads), the review's own backend, and every model computed
-    /// under the old one.
+    /// worker reads) and the review's own backend take it immediately; every
+    /// model already computed under the old one is re-diffed off-thread (see
+    /// [`Self::queue_rediff`]), so picking one never blocks the render loop.
     pub(crate) fn apply_diff_algorithm(&mut self, name: &str) {
         let Some(algorithm) = diffler_core::diffalgo::DiffAlgorithm::parse(name) else {
             return;
@@ -1586,7 +1602,7 @@ impl App {
         self.review
             .set_diff_algorithm(algorithm, self.config.diff.indent_heuristic);
         self.source_models.clear();
-        self.rediff_open_view();
+        self.queue_rediff();
         // a refresh already running diffs under the old algorithm, so we
         // queue one more behind it
         if self.refresh_state == RefreshState::Running {
@@ -1595,33 +1611,144 @@ impl App {
         self.info(format!("diff algorithm: {algorithm}"));
     }
 
-    /// Re-diff the status sections and the open review, keeping the cursor.
-    fn rediff_open_view(&mut self) {
-        // capture before the model swap, or the position named would already
-        // read against the row it is moving to
+    /// Queue an off-thread re-diff of the status sections, the working tree,
+    /// and whatever the open diff view is showing (a three-dot review or a
+    /// pinned commit/range/PR), on a fresh backend under the settings
+    /// current when this is called (an algorithm switch). The cursor and
+    /// folds ride along as `RowPositions`, captured now while rows and
+    /// review still agree, and resolved back once [`Self::on_rediff_done`]
+    /// rebuilds against the landed result.
+    fn queue_rediff(&mut self) {
         let positions = self
             .diff
             .as_ref()
             .map(|diff| diff.capture_positions(&self.review));
-        if let Err(err) = self.review.refresh() {
-            self.error(err.to_string());
-        }
-        self.status.clear_enriched();
-        let Some(source) = self.diff.as_ref().map(|d| d.source.clone()) else {
+        let about = self
+            .diff
+            .as_ref()
+            .map(|diff| diff.source.clone())
+            .map(|source| self.resolve_about(&source));
+        let against = match &about {
+            Some(ReviewSource::Against { rev }) => Some(rev.clone()),
+            _ => None,
+        };
+        let pr_head = match &about {
+            Some(ReviewSource::Pr { number }) => self.pr_ranges.get(number).cloned(),
+            _ => None,
+        };
+        self.rediff_token += 1;
+        self.pending_rediff = Some(RediffRequest {
+            about,
+            against,
+            pr_head,
+            positions,
+            token: self.rediff_token,
+        });
+    }
+
+    /// Run the queued re-diff inline, mirroring `dispatch_rediff` in the
+    /// runtime down to the guard: with nothing queued there is nothing to
+    /// settle, so a test that expects state to move has to have asked for it.
+    #[cfg(test)]
+    pub(crate) fn settle_rediff(&mut self) {
+        let Some(request) = self.pending_rediff.take() else {
             return;
         };
-        let about = match &source {
-            ReviewSource::Walkthrough { id } => self.walkthrough_about(id),
-            other => other.clone(),
-        };
-        let model = match self.pinned_model(&about) {
-            Ok(model) => model,
-            Err(err) => {
-                self.error(err.to_string());
-                return;
+        let pr_head = request
+            .pr_head
+            .as_ref()
+            .map(|(base, head)| (base.as_str(), head.as_str()));
+        let pinned = request
+            .about
+            .as_ref()
+            .filter(|about| {
+                matches!(
+                    about,
+                    ReviewSource::Commit { .. }
+                        | ReviewSource::Range { .. }
+                        | ReviewSource::Pr { .. }
+                )
+            })
+            .map(|source| (source, pr_head));
+        let result = Review::compute_refresh(
+            &self.review.repo_root,
+            &self.config.diff_settings(),
+            request.against.as_deref(),
+            pinned,
+        )
+        .map_err(|err| err.to_string());
+        self.on_rediff_done(
+            result,
+            request.about.as_ref(),
+            request.positions,
+            request.token,
+        );
+    }
+
+    /// Apply a landed [`Self::queue_rediff`] result: install the recomputed
+    /// status and working diff unconditionally (an algorithm switch always
+    /// changes the hunks), then, only if the diff view still shows the same
+    /// source it did when the switch was made, swap in its recomputed model
+    /// too.
+    pub(crate) fn on_rediff_done(
+        &mut self,
+        result: Result<diffler_core::review::Refreshed, String>,
+        about: Option<&ReviewSource>,
+        positions: Option<RowPositions>,
+        token: u64,
+    ) -> Flow {
+        if token != self.rediff_token {
+            return Flow::Idle;
+        }
+        let refreshed = match result {
+            Ok(refreshed) => refreshed,
+            Err(message) => {
+                self.error(message);
+                return Flow::Continue;
             }
         };
-        let (Some(diff), Some(positions)) = (self.diff.as_mut(), positions) else {
+        self.review
+            .install_refresh(refreshed.status, refreshed.model);
+        self.status.clear_enriched();
+        let current_about = self
+            .diff
+            .as_ref()
+            .map(|diff| diff.source.clone())
+            .map(|source| self.resolve_about(&source));
+        let Some(positions) = positions.filter(|_| current_about.as_ref() == about) else {
+            return Flow::Continue;
+        };
+        let pinned = match about {
+            // `None` here is the correct, live-reading value for the working
+            // tree; rows still need rebuilding against the model just installed
+            Some(ReviewSource::WorkingTree | ReviewSource::Walkthrough { .. }) | None => Ok(None),
+            Some(ReviewSource::Against { .. }) => {
+                refreshed.against.map_or(Ok(None), |(_, r)| r.map(Some))
+            }
+            Some(
+                ReviewSource::Commit { .. } | ReviewSource::Range { .. } | ReviewSource::Pr { .. },
+            ) => refreshed.pinned.map_or(Ok(None), |r| r.map(Some)),
+        };
+        match pinned {
+            Ok(model) => self.finish_diff_swap(positions, model),
+            // the pinned fetch failed: nothing here changed, so the view
+            // keeps showing what it already had rather than going blank
+            Err(err) => self.error(err.to_string()),
+        }
+        Flow::Continue
+    }
+
+    /// The shared tail of every diff view model swap (a `<c-a>` algorithm
+    /// switch, re-opening the PR or three-dot review already on screen):
+    /// install the new model, invalidate, rebuild rows against it, then
+    /// resolve `positions` (captured with `DiffView::capture_positions`
+    /// before whatever produced `model`) back onto the rebuilt rows.
+    pub(crate) fn finish_diff_swap(
+        &mut self,
+        positions: RowPositions,
+        model: Option<diffler_core::model::DiffModel>,
+    ) {
+        let Some(diff) = self.diff.as_mut() else {
             return;
         };
         diff.commit_model = model;
@@ -1629,28 +1756,6 @@ impl App {
         diff.ensure_rows(&self.review);
         diff.restore_positions(&self.review, positions);
         self.queue_declared();
-    }
-
-    /// A fresh compute of the model a diff view keeps for `about`; `None` for
-    /// the working tree, which the view reads off the review itself.
-    fn pinned_model(
-        &self,
-        about: &ReviewSource,
-    ) -> Result<Option<diffler_core::model::DiffModel>, diffler_core::vcs::VcsError> {
-        let vcs = self.review.vcs.as_ref();
-        let model = match about {
-            ReviewSource::WorkingTree | ReviewSource::Walkthrough { .. } => return Ok(None),
-            ReviewSource::Commit { oid } => vcs.commit_diff(oid)?,
-            ReviewSource::Range { oldest, newest } => vcs.range_diff(oldest, newest)?,
-            ReviewSource::Pr { number } => {
-                let (base, head) = self.pr_ranges.get(number).ok_or_else(|| {
-                    diffler_core::vcs::VcsError::Rejected(format!("PR #{number} is not resolved"))
-                })?;
-                vcs.tree_diff(base, head)?
-            }
-            ReviewSource::Against { rev } => diffler_core::vcs::against_diff(vcs, rev)?,
-        };
-        Ok(Some(model))
     }
 
     pub fn info(&mut self, text: impl Into<String>) {
@@ -1708,6 +1813,7 @@ impl App {
             &self.review.repo_root,
             &self.config.diff_settings(),
             against.as_deref(),
+            None,
         )
         .map_err(|err| err.to_string());
         self.on_refresh_done(result);
@@ -1730,6 +1836,7 @@ impl App {
             status,
             model,
             against,
+            ..
         } = refreshed;
         self.now_unix = now_unix();
         let status_anchor = self.status_cursor_anchor();

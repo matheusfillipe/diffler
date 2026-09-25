@@ -28,6 +28,7 @@ use super::composer::{Composer, ComposerKind};
 use super::rowsel::{RowSelect, RowText};
 use super::{App, Flow};
 pub use comments::{CommentFacts, CommentGrouping, CommentPaneRow, group_comment_rows};
+pub use rowref::RowPositions;
 pub use rows::{
     CommentLine, DiffRow, RowCopy, SplitRow, SplitSide, blocks_of, comment_display, summary_display,
 };
@@ -1160,6 +1161,22 @@ impl RowText for DiffView {
             .map(RowCopy::text)
             .unwrap_or_default()
     }
+}
+
+/// A queued re-diff of the working tree, plus whatever source is open (a
+/// three-dot review or a pinned commit/range/PR), all recomputed on one
+/// fresh backend under the algorithm just switched to (`<c-a>`).
+#[derive(Debug)]
+pub struct RediffRequest {
+    /// The open diff's resolved source (a walkthrough already resolved to
+    /// whatever it is about); `None` when no diff is open.
+    pub about: Option<ReviewSource>,
+    pub against: Option<String>,
+    pub pr_head: Option<(String, String)>,
+    pub positions: Option<RowPositions>,
+    /// The request this answers; a stale one, or one landing after the open
+    /// view moved to another source, is dropped on arrival.
+    pub token: u64,
 }
 
 /// Paths whose git attributes a worker should read, for the kinds sidebar.
@@ -5211,6 +5228,7 @@ mod tests {
             status: diffler_core::vcs::StatusModel::default(),
             model: DiffModel::default(),
             against: Some(("develop".to_owned(), Ok(DiffModel::default()))),
+            pinned: None,
         });
         assert_eq!(against_paths(&app), ["dirty.rs", "landed.rs"]);
     }

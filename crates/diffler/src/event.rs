@@ -58,6 +58,16 @@ pub enum AppEvent {
     /// An off-thread repo refresh finished (status + working diff, plus the
     /// open three-dot diff when one is up), or failed.
     RefreshDone(Box<Result<diffler_core::review::Refreshed, String>>),
+    /// An off-thread re-diff under a newly switched algorithm finished:
+    /// status, the working diff, and whatever source the diff view had open
+    /// when the switch was made.
+    RediffDone {
+        result: Box<Result<diffler_core::review::Refreshed, String>>,
+        about: Option<diffler_core::source::ReviewSource>,
+        positions: Option<crate::app::RowPositions>,
+        /// The request this answers; a stale one is dropped on arrival.
+        token: u64,
+    },
     /// Agent tool call routed through the event channel so the app stays
     /// the single owner of the review state (`mcp` module).
     Mcp(McpRequest),

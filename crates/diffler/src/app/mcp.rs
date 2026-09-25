@@ -8,6 +8,7 @@ use std::path::Path;
 use diffler_core::model::DiffModel;
 use diffler_core::session::{Anchor, Comment, CommentStatus, now_unix};
 use diffler_core::source::ReviewSource;
+use diffler_core::vcs::VcsError;
 use diffler_core::walkthrough::{
     BODY_MAX_BYTES, MAX_STOPS, Receipt, ReceiptCode, TOTAL_MAX_BYTES, Target, Walkthrough,
 };
@@ -19,15 +20,6 @@ use crate::mcp::{
     WalkthroughPublished, WalkthroughSummary, comment_info, comment_status_name, file_status_name,
     render_unified,
 };
-
-/// The [`ReviewSource`] variants whose diffs are computed once and cached;
-/// `WorkingTree` and `Against` always read live and never reach
-/// [`App::source_model`]'s cache path.
-enum CachedKind<'a> {
-    Commit(&'a str),
-    Range(&'a str, &'a str),
-    Pr(u64),
-}
 
 impl App {
     pub(crate) fn handle_mcp(&mut self, kind: McpRequestKind) -> McpResponse {
@@ -425,16 +417,12 @@ impl App {
     /// once and stay cached: agent polls must not stall the render loop.
     /// Backend errors degrade to an empty diff.
     pub(crate) fn source_model(&mut self, source: &ReviewSource) -> std::sync::Arc<DiffModel> {
-        // narrowing to the cacheable sources up front makes WorkingTree
-        // structurally absent below, instead of an unreachable match arm
-        let kind = match source {
-            ReviewSource::WorkingTree => {
-                return std::sync::Arc::new(self.review.model().clone());
-            }
+        match source {
+            ReviewSource::WorkingTree => return std::sync::Arc::new(self.review.model().clone()),
             // a walkthrough's diff is whatever review it is about; resolve
             // that once and recurse into this same lookup for it
-            ReviewSource::Walkthrough { id } => {
-                let about = self.walkthrough_about(id);
+            ReviewSource::Walkthrough { .. } => {
+                let about = self.resolve_about(source);
                 return self.source_model(&about);
             }
             // live like the working tree, so caching it would go stale; the
@@ -442,30 +430,48 @@ impl App {
             ReviewSource::Against { rev } => {
                 return std::sync::Arc::new(self.against_model_for(rev));
             }
-            ReviewSource::Commit { oid } => CachedKind::Commit(oid),
-            ReviewSource::Range { oldest, newest } => CachedKind::Range(oldest, newest),
-            ReviewSource::Pr { number } => CachedKind::Pr(*number),
-        };
+            ReviewSource::Commit { .. } | ReviewSource::Range { .. } | ReviewSource::Pr { .. } => {}
+        }
         let key = source.key();
         if !self.source_models.contains_key(&key) {
-            let model = match kind {
-                CachedKind::Commit(oid) => self.review.vcs.commit_diff(oid).unwrap_or_default(),
-                CachedKind::Range(oldest, newest) => self
-                    .review
-                    .vcs
-                    .range_diff(oldest, newest)
-                    .unwrap_or_default(),
-                // resolved when the PR view opened; unknown PRs degrade empty
-                CachedKind::Pr(number) => self
-                    .pr_ranges
-                    .get(&number)
-                    .and_then(|(base, head)| self.review.vcs.tree_diff(base, head).ok())
-                    .unwrap_or_default(),
-            };
+            let model = self.fetch_pinned(source).unwrap_or_default();
             self.source_models
                 .insert(key.clone(), std::sync::Arc::new(model));
         }
         self.source_models.get(&key).cloned().unwrap_or_default()
+    }
+
+    /// The concrete source `source`'s diff actually reads: a walkthrough
+    /// carries no diff of its own, so it resolves to whatever review it is
+    /// about; every other source names itself. Shared by
+    /// [`Self::source_model`] and [`App::queue_rediff`] so both read the
+    /// same resolution.
+    pub(crate) fn resolve_about(&mut self, source: &ReviewSource) -> ReviewSource {
+        match source {
+            ReviewSource::Walkthrough { id } => self.walkthrough_about(id),
+            other => other.clone(),
+        }
+    }
+
+    /// The freshly fetched diff for a commit, range, or PR source, on this
+    /// review's own live backend: [`Self::source_model`]'s cache reads it on
+    /// the UI thread the same way an algorithm switch's off-thread re-diff
+    /// reads [`diffler_core::review::pinned_diff`] on a fresh one, since both
+    /// go through that one function.
+    pub(crate) fn fetch_pinned(&self, source: &ReviewSource) -> Result<DiffModel, VcsError> {
+        let pr_head = match source {
+            ReviewSource::Pr { number } => Some(
+                self.pr_ranges
+                    .get(number)
+                    .ok_or_else(|| VcsError::Rejected(format!("PR #{number} is not resolved")))?,
+            ),
+            _ => None,
+        };
+        diffler_core::review::pinned_diff(
+            self.review.vcs.as_ref(),
+            source,
+            pr_head.map(|(base, head)| (base.as_str(), head.as_str())),
+        )
     }
 
     /// Comments across every review, each tagged with its source so the agent
