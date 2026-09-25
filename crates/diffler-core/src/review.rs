@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
+use crate::diffalgo::DiffAlgorithm;
 use crate::model::DiffModel;
 use crate::repo;
 use crate::session::Session;
@@ -82,7 +83,24 @@ impl Review {
     /// Like [`Review::open`] with a custom number of context lines around
     /// diff hunks (config key `ui.context_lines`).
     pub fn open_with_context(repo_root: &Path, context_lines: u32) -> Result<Self, ReviewError> {
-        let vcs = repo::open(repo_root, context_lines)?;
+        Self::open_with_options(
+            repo_root,
+            context_lines,
+            DiffAlgorithm::default(),
+            crate::git::DEFAULT_INDENT_HEURISTIC,
+        )
+    }
+
+    /// Like [`Review::open`] with a custom context, line-diff algorithm and
+    /// indent heuristic (config keys `ui.context_lines`, `diff.algorithm`,
+    /// `diff.indent_heuristic`).
+    pub fn open_with_options(
+        repo_root: &Path,
+        context_lines: u32,
+        algorithm: DiffAlgorithm,
+        indent_heuristic: bool,
+    ) -> Result<Self, ReviewError> {
+        let vcs = repo::open_with_options(repo_root, context_lines, algorithm, indent_heuristic)?;
         let status = vcs.status()?;
         let session = store::load(repo_root)?;
         Ok(Self {
@@ -94,6 +112,17 @@ impl Review {
             sources: HashMap::new(),
             empty: Session::default(),
         })
+    }
+
+    /// Switch the session's line-diff algorithm live, so every diff this
+    /// review's own backend computes afterward uses it.
+    pub fn set_diff_algorithm(&self, algorithm: DiffAlgorithm, indent_heuristic: bool) {
+        self.vcs.set_diff_algorithm(algorithm, indent_heuristic);
+    }
+
+    /// The algorithm currently in effect.
+    pub fn diff_algorithm(&self) -> (DiffAlgorithm, bool) {
+        self.vcs.diff_algorithm()
     }
 
     /// The working-tree review diff, computed and cached on first access. A
@@ -129,9 +158,11 @@ impl Review {
     pub fn compute_refresh(
         repo_root: &Path,
         context_lines: u32,
+        algorithm: DiffAlgorithm,
+        indent_heuristic: bool,
         against: Option<&str>,
     ) -> Result<Refreshed, ReviewError> {
-        let vcs = repo::open(repo_root, context_lines)?;
+        let vcs = repo::open_with_options(repo_root, context_lines, algorithm, indent_heuristic)?;
         let status = vcs.status()?;
         let model = vcs.working_tree_diff()?;
         let against =

@@ -15,6 +15,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::diffalgo::DiffAlgorithm;
 use crate::git::GitVcs;
 use crate::model::{DiffModel, HunkId};
 use crate::vcs::{
@@ -34,6 +35,18 @@ impl JjVcs {
     pub fn open_with_context(root: &Path, context_lines: u32) -> Result<Self, VcsError> {
         Ok(Self {
             git: GitVcs::open_with_context(root, context_lines)?,
+            root: root.to_path_buf(),
+        })
+    }
+
+    pub fn open_with_options(
+        root: &Path,
+        context_lines: u32,
+        algorithm: DiffAlgorithm,
+        indent_heuristic: bool,
+    ) -> Result<Self, VcsError> {
+        Ok(Self {
+            git: GitVcs::open_with_options(root, context_lines, algorithm, indent_heuristic)?,
             root: root.to_path_buf(),
         })
     }
@@ -306,5 +319,13 @@ impl Vcs for JjVcs {
 
     fn remotes(&self) -> Result<Vec<String>, VcsError> {
         self.git.remotes()
+    }
+
+    fn set_diff_algorithm(&self, algorithm: DiffAlgorithm, indent_heuristic: bool) {
+        self.git.set_diff_algorithm(algorithm, indent_heuristic);
+    }
+
+    fn diff_algorithm(&self) -> (DiffAlgorithm, bool) {
+        self.git.diff_algorithm()
     }
 }

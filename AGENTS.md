@@ -171,6 +171,31 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   emphasis → syntect whole-file highlight sliced onto diff lines → composite
   (syntax-fg over diff-bg over emphasis-bg). GitHub-dark default theme;
   progressive render (a plain first frame is fine).
+- **Diff algorithm.** `diffler_core::diffalgo::DiffAlgorithm` (myers, minimal,
+  patience, histogram, structural) is the line-diff algorithm every source
+  honours: `GitVcs` carries it (plus the indent heuristic) as a `Cell`, so a
+  live switch reaches the review's own long-lived backend, while every
+  worker that opens a fresh one (the background refresh) takes it as an
+  explicit construction argument, same as `context_lines`. Myers/minimal/
+  patience are git2's own `DiffOptions` flags, applied at every
+  `DiffOptions::new()` site through one `apply_git_algorithm` helper.
+  Histogram has no libgit2 implementation: `GitVcs::diff_to_model` re-derives
+  a modified file's hunks through `diffalgo::histogram_hunks` (imara-diff,
+  already linked in as `syndiff`'s own line-diff engine), mirroring git's own
+  hunk-merging rule for context. Structural is histogram plus reformat
+  detection: `syntax::intraline` reuses the AST diff it already computes for
+  intraline emphasis, and a paired deleted/added line with zero structural
+  difference (a pure reindent) is flagged `DiffLine::reformat_only` and
+  renders as one dimmed line instead of red/green. Hunk staging always
+  re-derives the target file's hunks the same way the open view did (through
+  the session's current algorithm), so the id the reviewer picked is
+  findable and unstage/stage reverses cleanly under every algorithm; under
+  histogram/structural the staged patch is written straight from the model's
+  `DiffLine`s (`render_hunk_patch_from_model`) since there is no `git2::Patch`
+  to read lines from. A live switch (`<c-a>` on the diff screen) updates the
+  config, the backend, and re-diffs whatever review is open, keeping the
+  cursor through `RowRef`'s capture/restore; the pane heading trails
+  `· <algorithm>` whenever it isn't the default.
 - **Grammars.** `syntax::registry::REGISTRY` is one process-wide `LazyLock`
   holding every bundled grammar; a language compiles its highlight query on
   first use (~15ms) behind a `OnceLock`, on the enrichment thread. Registering
@@ -354,7 +379,9 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   until a checkout re-armed the poll.
 - **Config.** TOML, XDG-layered (built-in defaults → `~/.config/diffler/config.toml`
   → `<repo>/.diffler/config.toml` → CLI flags; every flag has a config key).
-  `diffler config --dump` prints the merged config with origins.
+  `diffler config --dump` prints the merged config with origins. `[diff]
+  algorithm`/`indent_heuristic` set the line-diff algorithm (see Diff
+  algorithm, above).
 - **Walkthrough.** The agent that made a change is the only party who knows the
   order it should be read in, and a walkthrough is that order: one stop per
   real decision, as few as the change needs, opened by its own summary.

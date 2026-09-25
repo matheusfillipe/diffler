@@ -44,6 +44,7 @@ impl App {
             Some(Modal::Palette { .. }) => return self.handle_palette_key(key),
             Some(Modal::FilePicker { .. }) => return self.handle_file_picker_key(key),
             Some(Modal::Themes { .. }) => self.handle_theme_key(key),
+            Some(Modal::DiffAlgorithm { .. }) => self.handle_diff_algorithm_key(key),
             Some(Modal::RemoteList { .. }) => self.handle_remote_list_key(key),
             Some(Modal::PullDiverged { .. }) => self.handle_pull_diverged_key(key),
             Some(Modal::Help) => match key.code {
@@ -637,6 +638,37 @@ impl App {
         };
         self.modal = None;
         self.apply_theme(&name);
+    }
+
+    pub(super) fn handle_diff_algorithm_key(&mut self, key: &KeyEvent) {
+        let Some(Modal::DiffAlgorithm { list }) = self.modal.as_mut() else {
+            return;
+        };
+        let names: Vec<String> = diffler_core::diffalgo::DiffAlgorithm::ALL
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        match list.feed(key) {
+            FuzzyKey::Submit => self.submit_diff_algorithm(),
+            FuzzyKey::Cancel => self.modal = None,
+            FuzzyKey::Edited => list.rerank(&names),
+            _ => {}
+        }
+    }
+
+    fn submit_diff_algorithm(&mut self) {
+        let names: Vec<String> = diffler_core::diffalgo::DiffAlgorithm::ALL
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let Some(Modal::DiffAlgorithm { list }) = &self.modal else {
+            return;
+        };
+        let Some(name) = selected(list, &names).cloned() else {
+            return;
+        };
+        self.modal = None;
+        self.apply_diff_algorithm(&name);
     }
 
     pub(super) fn handle_remote_list_key(&mut self, key: &KeyEvent) {

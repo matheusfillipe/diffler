@@ -210,6 +210,7 @@ mod tests {
                 new_no: Some(1),
                 text: "x".into(),
                 emphasis: Vec::new(),
+                reformat_only: false,
             });
         }
         for _ in 0..deleted {
@@ -219,6 +220,7 @@ mod tests {
                 new_no: None,
                 text: "y".into(),
                 emphasis: Vec::new(),
+                reformat_only: false,
             });
         }
         FileDiff {

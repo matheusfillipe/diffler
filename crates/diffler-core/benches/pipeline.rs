@@ -95,7 +95,7 @@ fn bench_pipeline(c: &mut Criterion) {
         c.bench_function(&format!("syndiff_emphasis/{lines}"), |b| {
             b.iter_batched(
                 || base.clone(),
-                |mut f| highlighter.syntactic_emphasis(&mut f),
+                |mut f| highlighter.syntactic_emphasis(&mut f, false),
                 criterion::BatchSize::LargeInput,
             );
         });

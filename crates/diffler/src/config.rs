@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 use crossterm::event::KeyCode;
 use diffler_core::classify::{Kind, Rules};
+use diffler_core::diffalgo::DiffAlgorithm;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -22,11 +23,33 @@ use thiserror::Error;
 #[serde(default)]
 pub struct Config {
     pub ui: UiConfig,
+    pub diff: DiffConfig,
     pub mcp: McpConfig,
     pub editor: EditorConfig,
     pub ci: CiConfig,
     pub classify: ClassifyConfig,
     pub keys: KeysConfig,
+}
+
+/// The line-diff algorithm and its tuning, session-wide. `algorithm` is also
+/// switchable live from the diff screen's algorithm picker; that switch
+/// writes back here too, so a later background refresh keeps using it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DiffConfig {
+    pub algorithm: DiffAlgorithm,
+    /// A heuristic that shifts ambiguous hunk boundaries to indentation, the
+    /// way modern git does by default. On by default.
+    pub indent_heuristic: bool,
+}
+
+impl Default for DiffConfig {
+    fn default() -> Self {
+        Self {
+            algorithm: DiffAlgorithm::default(),
+            indent_heuristic: diffler_core::git::DEFAULT_INDENT_HEURISTIC,
+        }
+    }
 }
 
 /// Globs that pin a path into a sidebar bucket, consulted before the built-in
@@ -381,11 +404,21 @@ fn load_layers(
 #[serde(default)]
 struct PartialConfig {
     ui: PartialUi,
+    diff: PartialDiff,
     mcp: PartialMcp,
     editor: PartialEditor,
     ci: PartialCi,
     classify: ClassifyConfig,
     keys: KeysConfig,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct PartialDiff {
+    // read as a raw string so an unknown value warns and falls back, like
+    // the file-layout keys
+    algorithm: Option<String>,
+    indent_heuristic: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -488,6 +521,28 @@ fn set_layout(
     origins.insert(key.to_owned(), origin.clone());
 }
 
+/// Apply a layer's `diff.algorithm` value: an unrecognized name keeps the
+/// prior value and warns, matching the file-layout keys' lenient handling.
+fn set_algorithm(
+    value: Option<String>,
+    target: &mut DiffAlgorithm,
+    origin: &Origin,
+    origins: &mut BTreeMap<String, Origin>,
+    warnings: &mut Vec<String>,
+) {
+    let Some(value) = value else {
+        return;
+    };
+    let Some(algorithm) = DiffAlgorithm::parse(&value) else {
+        warnings.push(format!(
+            "unknown diff.algorithm \"{value}\", using \"{target}\""
+        ));
+        return;
+    };
+    *target = algorithm;
+    origins.insert("diff.algorithm".to_owned(), origin.clone());
+}
+
 // flat per-key application list
 #[allow(clippy::too_many_lines)]
 fn apply_layer(
@@ -560,6 +615,20 @@ fn apply_layer(
         layer.ui.semantic_diff,
         &mut config.ui.semantic_diff,
         "ui.semantic_diff",
+        origin,
+        origins,
+    );
+    set_algorithm(
+        layer.diff.algorithm,
+        &mut config.diff.algorithm,
+        origin,
+        origins,
+        warnings,
+    );
+    set(
+        layer.diff.indent_heuristic,
+        &mut config.diff.indent_heuristic,
+        "diff.indent_heuristic",
         origin,
         origins,
     );
@@ -691,7 +760,7 @@ fn apply_cli(cli: &CliOverrides, config: &mut Config, origins: &mut BTreeMap<Str
 
 /// Scalar keys always listed in the `--dump` origins block; `keys.*` entries
 /// are appended dynamically since their names come from the user.
-const SCALAR_KEYS: [&str; 16] = [
+const SCALAR_KEYS: [&str; 18] = [
     "ui.theme",
     "ui.context_lines",
     "ui.recent_commits",
@@ -700,6 +769,8 @@ const SCALAR_KEYS: [&str; 16] = [
     "ui.side_by_side",
     "ui.semantic_diff",
     "ui.show_agent_activity",
+    "diff.algorithm",
+    "diff.indent_heuristic",
     "mcp.enabled",
     "mcp.port",
     "editor.command",
@@ -1117,6 +1188,37 @@ mod tests {
         let warning = &loaded.warnings[0];
         assert!(warning.contains("nope"), "names the bad value: {warning}");
         assert!(warning.contains("list"), "names the fallback: {warning}");
+    }
+
+    #[test]
+    fn diff_algorithm_and_indent_heuristic_parse_from_a_project_layer() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project.toml");
+        fs::write(
+            &project,
+            "[diff]\nalgorithm = \"histogram\"\nindent_heuristic = false\n",
+        )
+        .unwrap();
+        let loaded = load_layers(None, Some(&project), &CliOverrides::default()).unwrap();
+        assert_eq!(loaded.warnings, Vec::<String>::new());
+        assert_eq!(loaded.config.diff.algorithm, DiffAlgorithm::Histogram);
+        assert!(!loaded.config.diff.indent_heuristic);
+        assert!(loaded.origins.contains_key("diff.algorithm"));
+        assert!(loaded.origins.contains_key("diff.indent_heuristic"));
+    }
+
+    #[test]
+    fn unknown_diff_algorithm_warns_and_keeps_the_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project.toml");
+        fs::write(&project, "[diff]\nalgorithm = \"bogus\"\n").unwrap();
+        let loaded = load_layers(None, Some(&project), &CliOverrides::default()).unwrap();
+        assert_eq!(loaded.config.diff.algorithm, DiffAlgorithm::Myers);
+        assert!(!loaded.origins.contains_key("diff.algorithm"));
+        assert_eq!(loaded.warnings.len(), 1);
+        let warning = &loaded.warnings[0];
+        assert!(warning.contains("bogus"), "names the bad value: {warning}");
+        assert!(warning.contains("myers"), "names the fallback: {warning}");
     }
 
     #[test]

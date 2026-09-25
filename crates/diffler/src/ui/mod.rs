@@ -214,6 +214,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) -> Option<popup::ListHits> {
             | Modal::RevList { .. }
             | Modal::Palette { .. }
             | Modal::Themes { .. }
+            | Modal::DiffAlgorithm { .. }
             | Modal::FilePicker { .. }
             | Modal::RemoteList { .. },
         ) => fuzzy_modal(app).map(|modal| modal.render(frame, &app.theme)),
@@ -356,6 +357,18 @@ fn fuzzy_modal(app: &App) -> Option<popup::FuzzyModal> {
             &crate::theme::names(),
             " apply",
         )),
+        Some(Modal::DiffAlgorithm { list }) => {
+            let names: Vec<String> = diffler_core::diffalgo::DiffAlgorithm::ALL
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            Some(plain_list(
+                "Diff algorithm".to_owned(),
+                list,
+                &names,
+                " apply",
+            ))
+        }
         Some(Modal::RemoteList { remotes, list, .. }) => {
             Some(plain_list("Remote".to_owned(), list, remotes, " select"))
         }

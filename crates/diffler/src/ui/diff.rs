@@ -104,6 +104,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             highlighter,
             human_author,
             rasters: &rasters,
+            algorithm: review.diff_algorithm().0,
         };
         draw_body(frame, body, &ctx, diff);
     }
@@ -127,6 +128,9 @@ struct RenderCtx<'a> {
     /// (a comment's id, or the walkthrough's own summary key); a card row
     /// then only reads a line out of one.
     rasters: &'a FigureRaster,
+    /// The session's current line-diff algorithm, named in the pane heading
+    /// when it isn't the default.
+    algorithm: diffler_core::diffalgo::DiffAlgorithm,
 }
 
 /// The rendered rows of every figure a card draws, by the card's figure-cache
@@ -899,7 +903,7 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
     let (theme, session, review_model, search) =
         (ctx.theme, ctx.session, ctx.review_model, ctx.search);
     let focused = diff.focus == Pane::Diff;
-    let title = pane_title(&diff.source);
+    let title = pane_title(&diff.source, ctx.algorithm);
     frame.render_widget(Block::new().style(Style::new().bg(theme.panel)), area);
     let [heading, inner] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
@@ -1234,8 +1238,10 @@ fn split_side_syntax<'a>(
 
 /// Diff-pane title: a plain "Diff" for the working tree or a single commit, a
 /// `oldest7..newest7` range span when the pane shows a combined commit range.
-fn pane_title(source: &ReviewSource) -> String {
-    match source {
+/// A non-default algorithm trails as `· <name>`, so switching stays visible
+/// past the one-time status message.
+fn pane_title(source: &ReviewSource, algorithm: diffler_core::diffalgo::DiffAlgorithm) -> String {
+    let base = match source {
         ReviewSource::WorkingTree
         | ReviewSource::Commit { .. }
         | ReviewSource::Walkthrough { .. } => "Diff".to_owned(),
@@ -1245,6 +1251,11 @@ fn pane_title(source: &ReviewSource) -> String {
         }
         ReviewSource::Pr { number } => format!("PR #{number}"),
         ReviewSource::Against { .. } => format!("Diff {}", source.label()),
+    };
+    if algorithm == diffler_core::diffalgo::DiffAlgorithm::default() {
+        base
+    } else {
+        format!("{base} · {algorithm}")
     }
 }
 
@@ -2419,6 +2430,32 @@ mod tests {
         app.author = "reviewer".to_owned();
         app.open_working_tree_diff(None);
         (fixture, app)
+    }
+
+    /// `<c-a>` opens the algorithm picker; picking one switches it live,
+    /// re-diffs the open view, and names it in the pane heading.
+    #[test]
+    fn diff_algorithm_picker_switches_the_algorithm_live() {
+        let (_fixture, mut app) = diff_app();
+        app.handle(crate::test_support::ctrl_key('a'));
+        insta::assert_snapshot!(render(&mut app).backend());
+
+        // myers, minimal, patience, histogram: three steps down
+        app.handle(key('j'));
+        app.handle(key('j'));
+        app.handle(key('j'));
+        app.handle(crate::test_support::code_key(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert_eq!(
+            app.config.diff.algorithm,
+            diffler_core::diffalgo::DiffAlgorithm::Histogram
+        );
+        let screen = render(&mut app).backend().to_string();
+        assert!(
+            screen.contains("histogram"),
+            "pane heading names the active algorithm: {screen}"
+        );
     }
 
     /// A stop list is only readable when the reader knows whose order it is,

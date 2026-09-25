@@ -811,6 +811,7 @@ dependencies = [
  "arborium-dockerfile",
  "criterion",
  "git2",
+ "imara-diff",
  "serde",
  "serde_json",
  "similar 3.2.0",

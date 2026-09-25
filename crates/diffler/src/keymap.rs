@@ -88,6 +88,7 @@ pub enum Action {
     CollapseContext,
     ExpandWholeFile,
     SwitchTheme,
+    SwitchDiffAlgorithm,
     Comment,
     VisualSelect,
     Reply,
@@ -191,6 +192,7 @@ impl Action {
             Self::CollapseContext => "collapse_context",
             Self::ExpandWholeFile => "expand_whole_file",
             Self::SwitchTheme => "switch_theme",
+            Self::SwitchDiffAlgorithm => "switch_diff_algorithm",
             Self::Comment => "comment",
             Self::VisualSelect => "visual_select",
             Self::Reply => "reply",
@@ -293,6 +295,7 @@ impl Action {
             Self::CollapseContext => "collapse diff context",
             Self::ExpandWholeFile => "expand to the whole file",
             Self::SwitchTheme => "switch theme",
+            Self::SwitchDiffAlgorithm => "diff: switch algorithm",
             Self::Comment => "comment the diff line",
             Self::VisualSelect => "select a range of rows",
             Self::Reply => "reply to the comment",
@@ -318,7 +321,7 @@ impl Action {
         }
     }
 
-    pub(crate) const ALL: [Self; 96] = [
+    pub(crate) const ALL: [Self; 97] = [
         Self::CenterCursor,
         Self::CursorTop,
         Self::CursorBottom,
@@ -326,6 +329,7 @@ impl Action {
         Self::CollapseContext,
         Self::ExpandWholeFile,
         Self::SwitchTheme,
+        Self::SwitchDiffAlgorithm,
         Self::NextFunction,
         Self::PrevFunction,
         Self::DeleteComment,
@@ -535,6 +539,7 @@ const DIFF_DEFAULTS: &[(&str, Action)] = &[
     ("U", Action::UnviewAll),
     ("t", Action::CycleSidebarMode),
     ("T", Action::SwitchTheme),
+    ("<c-a>", Action::SwitchDiffAlgorithm),
     ("h", Action::MoveLeft),
     ("l", Action::MoveRight),
     ("<left>", Action::MoveLeft),

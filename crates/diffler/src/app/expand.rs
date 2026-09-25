@@ -71,9 +71,11 @@ impl App {
     }
 
     fn rebuild_file(&mut self, path: &str, context: u32) {
+        let algorithm = self.config.diff.algorithm;
+        let indent_heuristic = self.config.diff.indent_heuristic;
         let changed = self
             .diff_file_mut(path)
-            .is_some_and(|file| apply_context(file, context));
+            .is_some_and(|file| apply_context(file, context, algorithm, indent_heuristic));
         if changed && let Some(diff) = self.diff.as_mut() {
             diff.mark_rows_dirty();
         }
@@ -92,10 +94,16 @@ impl App {
     }
 }
 
-/// Rebuild `file`'s hunks at `context`, carrying changed-line emphasis onto the
-/// rebuilt lines. Returns whether the hunks were replaced.
-pub(super) fn apply_context(file: &mut FileDiff, context: u32) -> bool {
-    let Some(mut hunks) = rehunk_file(file, context) else {
+/// Rebuild `file`'s hunks at `context` under `algorithm`, carrying
+/// changed-line emphasis onto the rebuilt lines. Returns whether the hunks
+/// were replaced.
+pub(super) fn apply_context(
+    file: &mut FileDiff,
+    context: u32,
+    algorithm: diffler_core::diffalgo::DiffAlgorithm,
+    indent_heuristic: bool,
+) -> bool {
+    let Some(mut hunks) = rehunk_file(file, context, algorithm, indent_heuristic) else {
         return false;
     };
     carry_emphasis(&file.hunks, &mut hunks);

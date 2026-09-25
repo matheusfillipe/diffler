@@ -17,6 +17,7 @@ uuid.workspace = true
 tree-sitter.workspace = true
 tree-sitter-highlight.workspace = true
 syndiff.workspace = true
+imara-diff.workspace = true
 tree-sitter-rust.workspace = true
 tree-sitter-python.workspace = true
 tree-sitter-javascript.workspace = true

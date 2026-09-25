@@ -214,6 +214,10 @@ pub struct DiffLine {
     pub text: String,
     /// Byte ranges within `text` to emphasize (intra-line changes).
     pub emphasis: Vec<Range<usize>>,
+    /// True on a paired deleted/added line the structural algorithm found to
+    /// be a pure reformat (identical token structure, e.g. reindentation):
+    /// the renderer dims it instead of the usual red/green.
+    pub reformat_only: bool,
 }
 
 impl DiffLine {
@@ -224,6 +228,7 @@ impl DiffLine {
             new_no,
             text,
             emphasis: Vec::new(),
+            reformat_only: false,
         }
     }
 }

@@ -206,6 +206,9 @@ pub enum Modal {
     Palette { list: fuzzy::FuzzyList },
     /// Fuzzy picker over the built-in themes; applies the pick live.
     Themes { list: fuzzy::FuzzyList },
+    /// Fuzzy picker over the line-diff algorithms; applies the pick live and
+    /// re-diffs the open view.
+    DiffAlgorithm { list: fuzzy::FuzzyList },
     /// Remote picker feeding `purpose` with the selected remote name.
     RemoteList {
         remotes: Vec<String>,
@@ -251,6 +254,7 @@ impl Modal {
             | Self::RevList { list, .. }
             | Self::Palette { list }
             | Self::Themes { list }
+            | Self::DiffAlgorithm { list }
             | Self::FilePicker { list, .. }
             | Self::RemoteList { list, .. } => Some(list),
             Self::Confirm { .. }
@@ -1444,6 +1448,7 @@ impl App {
             Action::CreatePr => self.create_pr_start(),
             Action::CommentsOverview => self.toggle_comments_sidebar(),
             Action::SwitchTheme => self.open_theme_picker(),
+            Action::SwitchDiffAlgorithm => self.open_diff_algorithm_picker(),
             Action::OpenFilePicker => self.open_file_picker(),
             Action::Blame => self.blame_focused(),
             Action::OpenStats => self.open_stats(),
@@ -1528,6 +1533,102 @@ impl App {
         self.info(format!("theme: {name}"));
     }
 
+    fn open_diff_algorithm_picker(&mut self) {
+        let names: Vec<String> = diffler_core::diffalgo::DiffAlgorithm::ALL
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let mut list = fuzzy::FuzzyList::default();
+        list.rerank(&names);
+        self.modal = Some(Modal::DiffAlgorithm { list });
+    }
+
+    /// Switch the active line-diff algorithm live: writes it back to config
+    /// (so a later background refresh keeps using it), updates the review's
+    /// own backend, drops the immutable per-source model cache the MCP
+    /// handlers serve (it would otherwise keep answering with the old
+    /// algorithm's hunks), and re-diffs whatever is open.
+    pub(crate) fn apply_diff_algorithm(&mut self, name: &str) {
+        let Some(algorithm) = diffler_core::diffalgo::DiffAlgorithm::parse(name) else {
+            return;
+        };
+        let indent_heuristic = self.config.diff.indent_heuristic;
+        self.config.diff.algorithm = algorithm;
+        self.review.set_diff_algorithm(algorithm, indent_heuristic);
+        self.source_models.clear();
+        self.rediff_open_view();
+        self.info(format!("diff algorithm: {algorithm}"));
+    }
+
+    /// Re-diff whatever review is open under the session's current algorithm,
+    /// keeping the cursor through `RowRef`'s capture/restore, the way
+    /// `open_against_diff`/`open_pr_diff` already do for a live model swap.
+    fn rediff_open_view(&mut self) {
+        let Some(source) = self.diff.as_ref().map(|d| d.source.clone()) else {
+            return;
+        };
+        let about = match &source {
+            ReviewSource::Walkthrough { id } => self.walkthrough_about(id),
+            other => other.clone(),
+        };
+        let model = match &about {
+            ReviewSource::WorkingTree => {
+                if let Err(err) = self.review.refresh() {
+                    self.error(err.to_string());
+                }
+                None
+            }
+            ReviewSource::Commit { oid } => match self.review.vcs.commit_diff(oid) {
+                Ok(model) => Some(model),
+                Err(err) => {
+                    self.error(err.to_string());
+                    return;
+                }
+            },
+            ReviewSource::Range { oldest, newest } => {
+                match self.review.vcs.range_diff(oldest, newest) {
+                    Ok(model) => Some(model),
+                    Err(err) => {
+                        self.error(err.to_string());
+                        return;
+                    }
+                }
+            }
+            ReviewSource::Pr { number } => {
+                let Some((base, head)) = self.pr_ranges.get(number).cloned() else {
+                    return;
+                };
+                match self.review.vcs.tree_diff(&base, &head) {
+                    Ok(model) => Some(model),
+                    Err(err) => {
+                        self.error(err.to_string());
+                        return;
+                    }
+                }
+            }
+            ReviewSource::Against { rev } => {
+                match diffler_core::vcs::against_diff(self.review.vcs.as_ref(), rev) {
+                    Ok(model) => Some(model),
+                    Err(err) => {
+                        self.error(err.to_string());
+                        return;
+                    }
+                }
+            }
+            // a walkthrough's own `about` never names another walkthrough
+            ReviewSource::Walkthrough { .. } => None,
+        };
+        let Some(diff) = self.diff.as_mut() else {
+            return;
+        };
+        let positions = diff.capture_positions(&self.review);
+        diff.commit_model = model;
+        diff.invalidate();
+        diff.ensure_rows(&self.review);
+        diff.restore_positions(&self.review, positions);
+        self.queue_declared();
+    }
+
     pub fn info(&mut self, text: impl Into<String>) {
         self.message = Some(StatusMessage {
             text: text.into(),
@@ -1582,6 +1683,8 @@ impl App {
         let result = Review::compute_refresh(
             &self.review.repo_root,
             self.config.ui.context_lines,
+            self.config.diff.algorithm,
+            self.config.diff.indent_heuristic,
             against.as_deref(),
         )
         .map_err(|err| err.to_string());

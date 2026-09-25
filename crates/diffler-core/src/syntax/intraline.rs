@@ -54,9 +54,13 @@ impl LanguageRegistry {
     }
 
     /// Set char-precise emphasis on `file`'s diff lines from the AST diff.
-    /// Returns `false` when the syntactic engine is unavailable, so the caller
-    /// can fall back to the textual engine.
-    pub fn syntactic_emphasis(&self, file: &mut FileDiff) -> bool {
+    /// `mark_reformat_only` additionally flags a paired deleted/added line the
+    /// AST diff found no structural difference on at all (a pure reformat)
+    /// for the structural algorithm's dimmed rendering. Returns `false` when
+    /// the syntactic engine is unavailable, so the caller can fall back to
+    /// the textual engine (and structural mode silently reads as a plain
+    /// histogram diff for that file).
+    pub fn syntactic_emphasis(&self, file: &mut FileDiff, mark_reformat_only: bool) -> bool {
         let emphasis = match (file.old_text.as_deref(), file.new_text.as_deref()) {
             (Some(old), Some(new)) => self.line_emphasis(&file.path, old, new),
             _ => None,
@@ -75,8 +79,38 @@ impl LanguageRegistry {
                     classify_line(line.kind, &line.text, ranges.map_or(&[], Vec::as_slice));
             }
             refine_partial_changes(hunk);
+            if mark_reformat_only {
+                mark_reformat_pairs(hunk, &old_emph, &new_emph);
+            }
         }
         true
+    }
+}
+
+/// Flag a paired deleted/added line as `reformat_only` when the AST diff
+/// found zero structural difference on either side: not "punctual" (the
+/// gating [`classify_line`] applies for emphasis), genuinely empty, meaning
+/// the two lines are the same tokens differently formatted.
+fn mark_reformat_pairs(hunk: &mut Hunk, old_emph: &LineEmphasis, new_emph: &LineEmphasis) {
+    for (del_idx, add_idx) in crate::pairing::paired_run_indices(&hunk.lines) {
+        let del_empty = hunk
+            .lines
+            .get(del_idx)
+            .and_then(|l| l.old_no)
+            .is_some_and(|n| old_emph.get(n as usize - 1).is_some_and(Vec::is_empty));
+        let add_empty = hunk
+            .lines
+            .get(add_idx)
+            .and_then(|l| l.new_no)
+            .is_some_and(|n| new_emph.get(n as usize - 1).is_some_and(Vec::is_empty));
+        if del_empty && add_empty {
+            if let Some(line) = hunk.lines.get_mut(del_idx) {
+                line.reformat_only = true;
+            }
+            if let Some(line) = hunk.lines.get_mut(add_idx) {
+                line.reformat_only = true;
+            }
+        }
     }
 }
 
@@ -229,7 +263,7 @@ mod tests {
             }],
             hashes: crate::model::HashCache::default(),
         };
-        assert!(LanguageRegistry::build().syntactic_emphasis(&mut file));
+        assert!(LanguageRegistry::build().syntactic_emphasis(&mut file, false));
         let added = &file.hunks[0].lines[1];
         assert!(!added.emphasis.is_empty(), "the changed line is emphasized");
         let covered: String = added
@@ -246,6 +280,78 @@ mod tests {
             !covered.contains("foo"),
             "the unchanged prefix is not emphasized: {covered:?}"
         );
+    }
+
+    #[test]
+    fn structural_mode_marks_a_pure_reindent_pair_reformat_only() {
+        use crate::model::{DiffLine, FileDiff, FileStatus, Hunk, HunkId, LineKind};
+        let old_line = "    let x = compute();";
+        let new_line = "        let x = compute();";
+        let old_src = format!("fn f() {{\n{old_line}\n    use_it(x);\n}}\n");
+        let new_src = format!("fn f() {{\n{new_line}\n        use_it(x);\n}}\n");
+        let mut file = FileDiff {
+            path: "a.rs".into(),
+            old_path: None,
+            status: FileStatus::Modified,
+            binary: false,
+            old_text: Some(old_src),
+            new_text: Some(new_src),
+            hunks: vec![Hunk {
+                id: HunkId("h".into()),
+                old_start: 2,
+                old_lines: 1,
+                new_start: 2,
+                new_lines: 1,
+                context: String::new(),
+                lines: vec![
+                    DiffLine::new(LineKind::Deleted, Some(2), None, old_line.to_owned()),
+                    DiffLine::new(LineKind::Added, None, Some(2), new_line.to_owned()),
+                ],
+            }],
+            hashes: crate::model::HashCache::default(),
+        };
+        assert!(LanguageRegistry::build().syntactic_emphasis(&mut file, true));
+        assert!(
+            file.hunks[0].lines[0].reformat_only,
+            "deleted side flagged reformat-only"
+        );
+        assert!(
+            file.hunks[0].lines[1].reformat_only,
+            "added side flagged reformat-only"
+        );
+    }
+
+    #[test]
+    fn structural_mode_leaves_a_real_change_unflagged() {
+        use crate::model::{DiffLine, FileDiff, FileStatus, Hunk, HunkId, LineKind};
+        let old_line = "    let x = 1;";
+        let new_line = "    let x = 2;";
+        let old_src = format!("fn f() {{\n{old_line}\n}}\n");
+        let new_src = format!("fn f() {{\n{new_line}\n}}\n");
+        let mut file = FileDiff {
+            path: "a.rs".into(),
+            old_path: None,
+            status: FileStatus::Modified,
+            binary: false,
+            old_text: Some(old_src),
+            new_text: Some(new_src),
+            hunks: vec![Hunk {
+                id: HunkId("h".into()),
+                old_start: 2,
+                old_lines: 1,
+                new_start: 2,
+                new_lines: 1,
+                context: String::new(),
+                lines: vec![
+                    DiffLine::new(LineKind::Deleted, Some(2), None, old_line.to_owned()),
+                    DiffLine::new(LineKind::Added, None, Some(2), new_line.to_owned()),
+                ],
+            }],
+            hashes: crate::model::HashCache::default(),
+        };
+        assert!(LanguageRegistry::build().syntactic_emphasis(&mut file, true));
+        assert!(!file.hunks[0].lines[0].reformat_only);
+        assert!(!file.hunks[0].lines[1].reformat_only);
     }
 
     /// A block of wholly-new code where the AST diff matches stray tokens
@@ -294,7 +400,7 @@ mod tests {
             }],
             hashes: crate::model::HashCache::default(),
         };
-        assert!(LanguageRegistry::build().syntactic_emphasis(&mut file));
+        assert!(LanguageRegistry::build().syntactic_emphasis(&mut file, false));
         for line in &file.hunks[0].lines {
             assert!(
                 line.emphasis.is_empty(),

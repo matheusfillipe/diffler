@@ -30,6 +30,16 @@
 # Show what the connected agent is doing in the status bar.
 # show_agent_activity = true
 
+[diff]
+# The line-diff algorithm: "myers", "minimal" (slower, more minimal myers),
+# "patience", "histogram", or "structural" (histogram, plus a paired changed
+# line that is only reformatted renders dimmed instead of red/green). Also
+# switchable live from the diff screen (<c-a>).
+# algorithm = "myers"
+# A heuristic that shifts ambiguous hunk boundaries to indentation, the way
+# modern git does by default.
+# indent_heuristic = true
+
 [mcp]
 # enabled = true
 # port = 8417
@@ -149,6 +159,7 @@
 # cursor_bottom = "zb"
 # toggle_fold = "za"       # also <tab>: folds the folder/section/comments-group the cursor sits in
 # switch_theme = "T"
+# switch_diff_algorithm = "<c-a>"
 # open_editor = "e"
 # edit_externally = "<c-g>"  # the open comment, reply, or review summary to $EDITOR
 # open_file_picker = "gf"

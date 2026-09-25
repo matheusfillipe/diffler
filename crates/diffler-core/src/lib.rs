@@ -5,6 +5,7 @@
 
 pub mod classify;
 pub mod diff;
+pub mod diffalgo;
 pub mod feedback;
 pub mod git;
 pub mod highlight;

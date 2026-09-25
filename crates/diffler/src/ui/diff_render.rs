@@ -359,10 +359,14 @@ fn line_backgrounds(
     focused: bool,
     annotated: bool,
 ) -> (Color, Color) {
-    let (line_bg, emph_bg) = match line.kind {
-        LineKind::Added => (theme.add_line_bg, theme.add_emph_bg),
-        LineKind::Deleted => (theme.del_line_bg, theme.del_emph_bg),
-        LineKind::Context => (theme.panel, theme.panel),
+    let (line_bg, emph_bg) = if line.reformat_only {
+        (theme.panel, theme.panel)
+    } else {
+        match line.kind {
+            LineKind::Added => (theme.add_line_bg, theme.add_emph_bg),
+            LineKind::Deleted => (theme.del_line_bg, theme.del_emph_bg),
+            LineKind::Context => (theme.panel, theme.panel),
+        }
     };
     let base_bg = match (selected, line.kind) {
         (true, LineKind::Context) => cursor_band(theme, theme.panel, focused),
@@ -377,6 +381,9 @@ fn line_backgrounds(
 /// [`rail_color`] already tints it, so the kind of a line reads from the
 /// margin even where the background tint is washed out.
 fn rail(line: &DiffLine) -> &'static str {
+    if line.reformat_only {
+        return "┊";
+    }
     match line.kind {
         LineKind::Added | LineKind::Deleted => "▌",
         LineKind::Context => " ",
@@ -388,6 +395,9 @@ fn rail(line: &DiffLine) -> &'static str {
 fn rail_color(theme: &Theme, line: &DiffLine, selected: bool) -> Color {
     if selected {
         return theme.accent;
+    }
+    if line.reformat_only {
+        return theme.dim;
     }
     match line.kind {
         LineKind::Added => theme.added,
@@ -949,6 +959,30 @@ flowchart LR
 
     fn line(kind: LineKind, old: Option<u32>, new: Option<u32>, text: &str) -> DiffLine {
         DiffLine::new(kind, old, new, text.to_owned())
+    }
+
+    /// A reformat-only paired line dims instead of reading red/green, on both
+    /// the background and the rail, whichever side it is.
+    #[test]
+    fn reformat_only_lines_dim_instead_of_red_or_green() {
+        let (theme, _) = Theme::from_name("github-dark");
+        for kind in [LineKind::Deleted, LineKind::Added] {
+            let plain = line(kind, Some(1), Some(1), "x");
+            let mut reformat = plain.clone();
+            reformat.reformat_only = true;
+
+            let (plain_bg, _) = line_backgrounds(&theme, &plain, false, true, false);
+            let (reformat_bg, _) = line_backgrounds(&theme, &reformat, false, true, false);
+            assert_ne!(plain_bg, reformat_bg, "{kind:?} background dims");
+            assert_eq!(reformat_bg, theme.panel);
+
+            assert_ne!(rail(&plain), rail(&reformat));
+            assert_ne!(
+                rail_color(&theme, &plain, false),
+                rail_color(&theme, &reformat, false)
+            );
+            assert_eq!(rail_color(&theme, &reformat, false), theme.dim);
+        }
     }
 
     fn focused_flags() -> LineFlags {

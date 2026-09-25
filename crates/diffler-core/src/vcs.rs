@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
+use crate::diffalgo::DiffAlgorithm;
 use crate::model::{DiffModel, HunkId};
 
 #[derive(Debug, Error)]
@@ -232,6 +233,14 @@ pub trait Vcs: Send {
     fn remote_url(&self, name: &str) -> Result<Option<String>, VcsError>;
     /// Names of every configured remote, for multi-remote CI detection.
     fn remotes(&self) -> Result<Vec<String>, VcsError>;
+
+    /// Switch the line-diff algorithm every diff this instance computes from
+    /// now on uses (config keys `diff.algorithm`, `diff.indent_heuristic`).
+    /// Live: a palette switch calls this on the review's own long-lived
+    /// backend so the change takes effect without reopening it.
+    fn set_diff_algorithm(&self, algorithm: DiffAlgorithm, indent_heuristic: bool);
+    /// The algorithm currently in effect.
+    fn diff_algorithm(&self) -> (DiffAlgorithm, bool);
 }
 
 /// Three-dot diff of `rev` against the working tree: `merge-base(rev, HEAD)`

@@ -116,8 +116,10 @@ fn rehunk_file_expands_context_from_the_files_own_text() {
     };
 
     let default = context_of(&file.hunks);
-    let wider = diffler_core::git::rehunk_file(file, 10).expect("rehunk");
-    let whole = diffler_core::git::rehunk_file(file, u32::MAX).expect("rehunk all");
+    let algorithm = diffler_core::diffalgo::DiffAlgorithm::default();
+    let wider = diffler_core::git::rehunk_file(file, 10, algorithm, true).expect("rehunk");
+    let whole =
+        diffler_core::git::rehunk_file(file, u32::MAX, algorithm, true).expect("rehunk all");
 
     assert!(
         context_of(&wider) > default,
@@ -1441,4 +1443,176 @@ fn read_at_is_none_for_a_path_the_commit_never_had() {
 
     let content = vcs(&fx).read_at(&oid, "missing.txt").expect("read_at");
     assert_eq!(content, None);
+}
+
+mod diff_algorithm {
+    use std::fmt::Write as _;
+    use std::path::Path;
+
+    use diffler_core::diffalgo::DiffAlgorithm;
+    use diffler_core::git::GitVcs;
+    use diffler_core::model::LineKind;
+    use diffler_core::vcs::Vcs;
+
+    use super::Fixture;
+
+    // helper fns run outside #[test] fns, where clippy's test allowances don't reach
+    #[allow(clippy::expect_used)]
+    fn open(fx: &Fixture, algorithm: DiffAlgorithm) -> GitVcs {
+        GitVcs::open_with_options(
+            fx.root(),
+            diffler_core::git::DEFAULT_CONTEXT_LINES,
+            algorithm,
+            true,
+        )
+        .expect("open")
+    }
+
+    /// Myers and patience disagree on how to align a unique line that moved
+    /// past a run of repeated, non-unique ones: patience's own strength.
+    #[test]
+    fn patience_and_myers_disagree_on_a_classic_case() {
+        let fx = Fixture::new();
+        // a unique anchor line moves past a run of repeated, non-unique
+        // lines: patience anchors on the unique line, myers does not
+        fx.write(
+            "a.txt",
+            "begin\nrepeat\nrepeat\nunique_anchor\nrepeat\nrepeat\nend\n",
+        );
+        fx.commit_all("base");
+        fx.write(
+            "a.txt",
+            "begin\nunique_anchor\nrepeat\nrepeat\nrepeat\nrepeat\nend\n",
+        );
+
+        let hunks = |algorithm| -> Vec<(LineKind, String)> {
+            open(&fx, algorithm)
+                .working_tree_diff()
+                .expect("diff")
+                .files[0]
+                .hunks
+                .iter()
+                .flat_map(|h| &h.lines)
+                .map(|l| (l.kind, l.text.clone()))
+                .collect()
+        };
+        let myers = hunks(DiffAlgorithm::Myers);
+        let patience = hunks(DiffAlgorithm::Patience);
+        assert_ne!(
+            myers, patience,
+            "patience aligns on unique lines differently than myers"
+        );
+    }
+
+    /// Histogram has no git2 flag at all; it must still produce a correct
+    /// line diff (not just "different from myers").
+    #[test]
+    fn histogram_finds_the_single_changed_line() {
+        let fx = Fixture::new();
+        let mut base = String::new();
+        for i in 1..=10 {
+            writeln!(base, "line {i}").expect("write");
+        }
+        fx.write("a.txt", &base);
+        fx.commit_all("base");
+        fx.write("a.txt", &base.replace("line 5\n", "LINE FIVE\n"));
+
+        let model = open(&fx, DiffAlgorithm::Histogram)
+            .working_tree_diff()
+            .expect("diff");
+        let lines = &model.files[0].hunks[0].lines;
+        let deleted: Vec<&str> = lines
+            .iter()
+            .filter(|l| l.kind == LineKind::Deleted)
+            .map(|l| l.text.as_str())
+            .collect();
+        let added: Vec<&str> = lines
+            .iter()
+            .filter(|l| l.kind == LineKind::Added)
+            .map(|l| l.text.as_str())
+            .collect();
+        assert_eq!(deleted, vec!["line 5"]);
+        assert_eq!(added, vec!["LINE FIVE"]);
+    }
+
+    /// Every algorithm stages exactly the hunk shown and nothing else, then
+    /// reverses cleanly on unstage: hunk ids are computed from the same
+    /// algorithm that produced them, so the id the reviewer picked is always
+    /// findable regardless of which one is active.
+    #[test]
+    fn staging_stays_correct_under_every_algorithm() {
+        for algorithm in DiffAlgorithm::ALL {
+            let fx = Fixture::new();
+            let mut base = String::new();
+            for i in 1..=40 {
+                writeln!(base, "line {i}").expect("write");
+            }
+            fx.write("a.txt", &base);
+            fx.commit_all("base");
+            let edited = base
+                .replace("line 5\n", "LINE FIVE\n")
+                .replace("line 35\n", "LINE THIRTY-FIVE\n");
+            fx.write("a.txt", &edited);
+
+            let v = open(&fx, algorithm);
+            let st = v.status().expect("status");
+            assert_eq!(
+                st.unstaged.files[0].hunks.len(),
+                2,
+                "{algorithm}: two separate hunks"
+            );
+            let first = st.unstaged.files[0].hunks[0].id.clone();
+
+            v.stage_hunk(Path::new("a.txt"), &first)
+                .unwrap_or_else(|err| panic!("{algorithm}: stage hunk: {err}"));
+            let st = v.status().expect("status");
+            assert_eq!(st.staged.files.len(), 1, "{algorithm}: one file staged");
+            assert_eq!(
+                st.staged.files[0].hunks.len(),
+                1,
+                "{algorithm}: only the picked hunk staged"
+            );
+            let staged_text = st.staged.files[0].new_text.as_deref().expect("text");
+            assert!(
+                staged_text.contains("LINE FIVE"),
+                "{algorithm}: the staged hunk landed"
+            );
+            assert!(
+                !staged_text.contains("LINE THIRTY-FIVE"),
+                "{algorithm}: the other hunk stayed unstaged"
+            );
+
+            v.unstage_hunk(Path::new("a.txt"), &first)
+                .unwrap_or_else(|err| panic!("{algorithm}: unstage hunk: {err}"));
+            let st = v.status().expect("status");
+            assert!(
+                st.staged.files.is_empty(),
+                "{algorithm}: unstage reverses cleanly"
+            );
+            assert_eq!(st.unstaged.files[0].hunks.len(), 2, "{algorithm}");
+        }
+    }
+
+    /// Staging under the structural/histogram model-based patch path must
+    /// still honour a file with no trailing newline, the case libgit2's own
+    /// `git2::Patch` line stream handles for the native algorithms.
+    #[test]
+    fn staging_a_file_without_trailing_newline_under_histogram() {
+        let fx = Fixture::new();
+        fx.write("a.txt", "one\ntwo\n");
+        fx.commit_all("base");
+        fx.write("a.txt", "one\ntwo\nthree");
+
+        let v = open(&fx, DiffAlgorithm::Histogram);
+        let st = v.status().expect("status");
+        let id = st.unstaged.files[0].hunks[0].id.clone();
+        v.stage_hunk(Path::new("a.txt"), &id).expect("stage hunk");
+
+        let st = v.status().expect("status");
+        assert!(st.unstaged.files.is_empty());
+        assert_eq!(
+            st.staged.files[0].new_text.as_deref(),
+            Some("one\ntwo\nthree")
+        );
+    }
 }

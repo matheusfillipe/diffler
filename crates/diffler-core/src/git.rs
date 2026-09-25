@@ -1,10 +1,12 @@
 //! git2 backend for the [`Vcs`] trait: the only module that may touch git2
 //! (test fixtures aside).
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::diffalgo::{DiffAlgorithm, histogram_hunks};
 use crate::model::{
     DiffLine, DiffModel, FileDiff, FileStatus, Hunk, HunkId, LineKind, disambiguated_hunk_id,
 };
@@ -15,9 +17,17 @@ use crate::vcs::{
 /// git's own default amount of context around hunks.
 pub const DEFAULT_CONTEXT_LINES: u32 = 3;
 
+/// git's own default: on, matching modern git's behaviour.
+pub const DEFAULT_INDENT_HEURISTIC: bool = true;
+
 pub struct GitVcs {
     repo: git2::Repository,
     context_lines: u32,
+    /// The session's current line-diff algorithm. A `Cell` so a live palette
+    /// switch (`Vcs::set_diff_algorithm`) reaches every diff this instance
+    /// computes afterward without needing `&mut self`.
+    algorithm: Cell<DiffAlgorithm>,
+    indent_heuristic: Cell<bool>,
 }
 
 impl GitVcs {
@@ -25,8 +35,25 @@ impl GitVcs {
         Self::open_with_context(root, DEFAULT_CONTEXT_LINES)
     }
 
-    /// Open with a custom number of context lines around diff hunks.
+    /// Open with a custom number of context lines around diff hunks, the
+    /// default algorithm (myers) and indent heuristic on.
     pub fn open_with_context(root: &Path, context_lines: u32) -> Result<Self, VcsError> {
+        Self::open_with_options(
+            root,
+            context_lines,
+            DiffAlgorithm::default(),
+            DEFAULT_INDENT_HEURISTIC,
+        )
+    }
+
+    /// Open with a custom context, line-diff algorithm and indent heuristic
+    /// (config keys `ui.context_lines`, `diff.algorithm`, `diff.indent_heuristic`).
+    pub fn open_with_options(
+        root: &Path,
+        context_lines: u32,
+        algorithm: DiffAlgorithm,
+        indent_heuristic: bool,
+    ) -> Result<Self, VcsError> {
         let repo = git2::Repository::open(root)?;
         if repo.workdir().is_none() {
             return Err(VcsError::NoWorkdir);
@@ -34,6 +61,8 @@ impl GitVcs {
         Ok(Self {
             repo,
             context_lines,
+            algorithm: Cell::new(algorithm),
+            indent_heuristic: Cell::new(indent_heuristic),
         })
     }
 
@@ -53,14 +82,65 @@ impl GitVcs {
     /// `base` tree vs workdir+index including untracked, renames folded in.
     /// `None` is the empty tree (an unborn branch).
     fn workdir_diff(&self, base: Option<&git2::Tree<'_>>) -> Result<DiffModel, VcsError> {
-        let mut diff = self.repo.diff_tree_to_workdir_with_index(
-            base,
-            Some(&mut workdir_diff_options(self.context_lines)),
-        )?;
+        let mut diff = self
+            .repo
+            .diff_tree_to_workdir_with_index(base, Some(&mut self.workdir_diff_options()))?;
         let mut find = git2::DiffFindOptions::new();
         find.renames(true);
         diff.find_similar(Some(&mut find))?;
-        diff_to_model(&self.repo, &mut diff)
+        self.diff_to_model(&mut diff)
+    }
+
+    /// `git2::DiffOptions` for a tree-vs-tree or tree-vs-index diff at the
+    /// session's current context and algorithm.
+    fn plain_diff_options(&self) -> git2::DiffOptions {
+        let mut opts = git2::DiffOptions::new();
+        opts.context_lines(self.context_lines);
+        apply_git_algorithm(&mut opts, self.algorithm.get(), self.indent_heuristic.get());
+        opts
+    }
+
+    /// Working-tree diff options (untracked files included) at the session's
+    /// current context and algorithm.
+    fn workdir_diff_options(&self) -> git2::DiffOptions {
+        let mut opts = self.plain_diff_options();
+        opts.include_untracked(true)
+            .recurse_untracked_dirs(true)
+            .show_untracked_content(true);
+        opts
+    }
+
+    /// Assemble a [`DiffModel`] from a computed git2 diff. `Myers`/`Minimal`/
+    /// `Patience` already produced the right hunks (their flags were baked
+    /// into the `DiffOptions` that built `diff`); `Histogram`/`Structural`
+    /// have no git2 equivalent, so every non-binary file with both sides
+    /// present gets its hunks re-derived through imara-diff instead. Rename
+    /// and binary detection, resolved on `diff` itself, are untouched either
+    /// way. Intra-line emphasis is a render-time concern: the TUI enriches
+    /// the file it is about to draw (see `crate::pairing::enrich_file`), so
+    /// every line here leaves `.emphasis` empty.
+    fn diff_to_model(&self, diff: &mut git2::Diff<'_>) -> Result<DiffModel, VcsError> {
+        let mut files = Vec::new();
+        for idx in 0..diff.deltas().len() {
+            if let Some(file) = build_file(&self.repo, diff, idx)? {
+                files.push(file);
+            }
+        }
+        let algorithm = self.algorithm.get();
+        if algorithm.is_imara() {
+            let indent_heuristic = self.indent_heuristic.get();
+            for file in &mut files {
+                if file.binary {
+                    continue;
+                }
+                if let (Some(old), Some(new)) = (file.old_text.as_deref(), file.new_text.as_deref())
+                {
+                    file.hunks =
+                        histogram_hunks(old, new, &file.path, self.context_lines, indent_heuristic);
+                }
+            }
+        }
+        Ok(DiffModel { files })
     }
 
     fn walk_entries(
@@ -167,20 +247,20 @@ impl Vcs for GitVcs {
         // staged new file lands in staged only, not here
         let mut workdir = self
             .repo
-            .diff_index_to_workdir(None, Some(&mut workdir_diff_options(self.context_lines)))?;
-        let workdir_model = diff_to_model(&self.repo, &mut workdir)?;
+            .diff_index_to_workdir(None, Some(&mut self.workdir_diff_options()))?;
+        let workdir_model = self.diff_to_model(&mut workdir)?;
         let (untracked, unstaged): (Vec<_>, Vec<_>) = workdir_model
             .files
             .into_iter()
             .partition(|f| f.status == FileStatus::Untracked);
 
         let head_tree = self.head_tree()?;
-        let mut opts = git2::DiffOptions::new();
-        opts.context_lines(self.context_lines);
-        let mut staged = self
-            .repo
-            .diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts))?;
-        let staged = diff_to_model(&self.repo, &mut staged)?;
+        let mut staged = self.repo.diff_tree_to_index(
+            head_tree.as_ref(),
+            None,
+            Some(&mut self.plain_diff_options()),
+        )?;
+        let staged = self.diff_to_model(&mut staged)?;
 
         Ok(StatusModel {
             untracked: DiffModel { files: untracked },
@@ -204,25 +284,23 @@ impl Vcs for GitVcs {
         let tree = commit.tree()?;
         // root commit: first-parent tree is the empty tree
         let parent_tree = commit.parent(0).ok().map(|p| p.tree()).transpose()?;
-        let mut opts = git2::DiffOptions::new();
-        opts.context_lines(self.context_lines);
-        let mut diff =
-            self.repo
-                .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut opts))?;
-        diff_to_model(&self.repo, &mut diff)
+        let mut diff = self.repo.diff_tree_to_tree(
+            parent_tree.as_ref(),
+            Some(&tree),
+            Some(&mut self.plain_diff_options()),
+        )?;
+        self.diff_to_model(&mut diff)
     }
 
     fn tree_diff(&self, base_oid: &str, newest_oid: &str) -> Result<DiffModel, VcsError> {
         let base = self.repo.find_commit(git2::Oid::from_str(base_oid)?)?;
         let newest = self.repo.find_commit(git2::Oid::from_str(newest_oid)?)?;
-        let mut opts = git2::DiffOptions::new();
-        opts.context_lines(self.context_lines);
         let mut diff = self.repo.diff_tree_to_tree(
             Some(&base.tree()?),
             Some(&newest.tree()?),
-            Some(&mut opts),
+            Some(&mut self.plain_diff_options()),
         )?;
-        diff_to_model(&self.repo, &mut diff)
+        self.diff_to_model(&mut diff)
     }
 
     fn merge_base(&self, a: &str, b: &str) -> Result<String, VcsError> {
@@ -246,12 +324,12 @@ impl Vcs for GitVcs {
         // commit's first parent; a root commit has none and diffs against the
         // empty tree, matching commit_diff
         let base_tree = oldest.parent(0).ok().map(|p| p.tree()).transpose()?;
-        let mut opts = git2::DiffOptions::new();
-        opts.context_lines(self.context_lines);
-        let mut diff =
-            self.repo
-                .diff_tree_to_tree(base_tree.as_ref(), Some(&newest_tree), Some(&mut opts))?;
-        diff_to_model(&self.repo, &mut diff)
+        let mut diff = self.repo.diff_tree_to_tree(
+            base_tree.as_ref(),
+            Some(&newest_tree),
+            Some(&mut self.plain_diff_options()),
+        )?;
+        self.diff_to_model(&mut diff)
     }
 
     fn log(&self, limit: usize) -> Result<Vec<LogEntry>, VcsError> {
@@ -492,8 +570,8 @@ impl Vcs for GitVcs {
     fn stage_hunk(&self, rel: &Path, hunk: &HunkId) -> Result<(), VcsError> {
         let diff = self
             .repo
-            .diff_index_to_workdir(None, Some(&mut workdir_diff_options(self.context_lines)))?;
-        let patch = synthesize_patch(&diff, rel, hunk, false)?;
+            .diff_index_to_workdir(None, Some(&mut self.workdir_diff_options()))?;
+        let patch = self.synthesize_patch(&diff, rel, hunk, false)?;
         let diff = git2::Diff::from_buffer(&patch)?;
         self.repo.apply(&diff, git2::ApplyLocation::Index, None)?;
         Ok(())
@@ -545,12 +623,12 @@ impl Vcs for GitVcs {
 
     fn unstage_hunk(&self, rel: &Path, hunk: &HunkId) -> Result<(), VcsError> {
         let head_tree = self.head_tree()?;
-        let mut opts = git2::DiffOptions::new();
-        opts.context_lines(self.context_lines);
-        let diff = self
-            .repo
-            .diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts))?;
-        let patch = synthesize_patch(&diff, rel, hunk, true)?;
+        let diff = self.repo.diff_tree_to_index(
+            head_tree.as_ref(),
+            None,
+            Some(&mut self.plain_diff_options()),
+        )?;
+        let patch = self.synthesize_patch(&diff, rel, hunk, true)?;
         let diff = git2::Diff::from_buffer(&patch)?;
         self.repo.apply(&diff, git2::ApplyLocation::Index, None)?;
         Ok(())
@@ -728,36 +806,103 @@ impl Vcs for GitVcs {
         }
         Ok(names)
     }
+
+    fn set_diff_algorithm(&self, algorithm: DiffAlgorithm, indent_heuristic: bool) {
+        self.algorithm.set(algorithm);
+        self.indent_heuristic.set(indent_heuristic);
+    }
+
+    fn diff_algorithm(&self) -> (DiffAlgorithm, bool) {
+        (self.algorithm.get(), self.indent_heuristic.get())
+    }
 }
 
-/// Render one hunk of `rel` as a unified patch libgit2 can apply to the
-/// index. `reverse` flips the patch so applying it undoes a staged hunk.
-/// Built from the raw git2 patch lines (not the display model) so original
-/// line endings and missing-trailing-newline markers survive intact.
-fn synthesize_patch(
-    diff: &git2::Diff<'_>,
-    rel: &Path,
-    target: &HunkId,
-    reverse: bool,
-) -> Result<Vec<u8>, VcsError> {
-    let rel = rel.to_string_lossy();
-    for idx in 0..diff.deltas().len() {
-        let Some(patch) = git2::Patch::from_diff(diff, idx)? else {
-            continue;
-        };
-        let delta = patch.delta();
-        if delta.flags().is_binary() || delta_new_path(&delta) != rel {
-            continue;
+/// `DiffOptions` flags for the git2-native algorithms (myers is git2's
+/// default, so it sets nothing); `Histogram`/`Structural` have no git2 flag
+/// and are handled entirely by [`GitVcs::diff_to_model`] instead.
+fn apply_git_algorithm(
+    opts: &mut git2::DiffOptions,
+    algorithm: DiffAlgorithm,
+    indent_heuristic: bool,
+) {
+    match algorithm {
+        DiffAlgorithm::Minimal => {
+            opts.minimal(true);
         }
-        let mut seen = HashMap::new();
-        for h in 0..patch.num_hunks() {
-            let lines = hunk_model_lines(&patch, h)?;
-            if disambiguated_hunk_id(&rel, &lines, &mut seen) == *target {
-                return render_hunk_patch(&patch, h, &rel, delta.status(), reverse);
-            }
+        DiffAlgorithm::Patience => {
+            opts.patience(true);
         }
+        DiffAlgorithm::Myers | DiffAlgorithm::Histogram | DiffAlgorithm::Structural => {}
     }
-    Err(VcsError::Rejected("hunk not found (diff changed?)".into()))
+    opts.indent_heuristic(indent_heuristic);
+}
+
+impl GitVcs {
+    /// Render one hunk of `rel` as a unified patch libgit2 can apply to the
+    /// index. `reverse` flips the patch so applying it undoes a staged hunk.
+    /// Under `Histogram`/`Structural`, `diff`'s own git2-computed hunks don't
+    /// match what the reviewer sees (libgit2 has no histogram algorithm), so
+    /// a modified file's hunks are re-derived the same way the display model
+    /// is (`histogram_hunks`) and the patch is built from that model instead;
+    /// this is also what keeps the hunk id the reviewer picked findable.
+    /// Every other case (an add/delete/binary file, or a git2-native
+    /// algorithm) still renders straight from git2's own patch lines, so
+    /// original line endings and missing-trailing-newline markers survive
+    /// untouched.
+    fn synthesize_patch(
+        &self,
+        diff: &git2::Diff<'_>,
+        rel: &Path,
+        target: &HunkId,
+        reverse: bool,
+    ) -> Result<Vec<u8>, VcsError> {
+        let rel = rel.to_string_lossy();
+        for idx in 0..diff.deltas().len() {
+            let Some(delta) = diff.get_delta(idx) else {
+                continue;
+            };
+            if delta.flags().is_binary() || delta_new_path(&delta) != rel {
+                continue;
+            }
+            let algorithm = self.algorithm.get();
+            let old_text = blob_text(&self.repo, delta.old_file().id());
+            let new_text = new_side_text(&self.repo, &delta, &rel);
+            if algorithm.is_imara()
+                && let (Some(old), Some(new)) = (old_text.as_deref(), new_text.as_deref())
+            {
+                let hunks = histogram_hunks(
+                    old,
+                    new,
+                    &rel,
+                    self.context_lines,
+                    self.indent_heuristic.get(),
+                );
+                let Some(hunk) = hunks.into_iter().find(|h| h.id == *target) else {
+                    return Err(VcsError::Rejected("hunk not found (diff changed?)".into()));
+                };
+                return Ok(render_hunk_patch_from_model(
+                    &hunk,
+                    &rel,
+                    delta.status(),
+                    reverse,
+                    old,
+                    new,
+                ));
+            }
+            let Some(patch) = git2::Patch::from_diff(diff, idx)? else {
+                continue;
+            };
+            let mut seen = HashMap::new();
+            for h in 0..patch.num_hunks() {
+                let lines = hunk_model_lines(&patch, h)?;
+                if disambiguated_hunk_id(&rel, &lines, &mut seen) == *target {
+                    return render_hunk_patch(&patch, h, &rel, delta.status(), reverse);
+                }
+            }
+            return Err(VcsError::Rejected("hunk not found (diff changed?)".into()));
+        }
+        Err(VcsError::Rejected("hunk not found (diff changed?)".into()))
+    }
 }
 
 fn render_hunk_patch(
@@ -815,33 +960,75 @@ fn render_hunk_patch(
     Ok(out)
 }
 
-fn workdir_diff_options(context_lines: u32) -> git2::DiffOptions {
-    let mut opts = git2::DiffOptions::new();
-    opts.include_untracked(true)
-        .recurse_untracked_dirs(true)
-        .show_untracked_content(true)
-        .context_lines(context_lines);
-    opts
+/// [`render_hunk_patch`]'s counterpart for a hunk imara-diff computed:
+/// there is no `git2::Patch` to read lines from, so the patch text is built
+/// straight from the model's `DiffLine`s, and the "no newline at end of
+/// file" markers are derived from whether `old_text`/`new_text` themselves
+/// end in a newline (unified-diff patch lines are always themselves
+/// newline-terminated; the marker line is what signals the original had none).
+fn render_hunk_patch_from_model(
+    hunk: &Hunk,
+    rel: &str,
+    status: git2::Delta,
+    reverse: bool,
+    old_text: &str,
+    new_text: &str,
+) -> Vec<u8> {
+    let added = matches!(status, git2::Delta::Added | git2::Delta::Untracked);
+    let deleted = status == git2::Delta::Deleted;
+    let mut out = Vec::new();
+    out.extend_from_slice(format!("diff --git a/{rel} b/{rel}\n").as_bytes());
+    if (added && !reverse) || (deleted && reverse) {
+        out.extend_from_slice(
+            format!("new file mode 100644\n--- /dev/null\n+++ b/{rel}\n").as_bytes(),
+        );
+    } else if (deleted && !reverse) || (added && reverse) {
+        out.extend_from_slice(
+            format!("deleted file mode 100644\n--- a/{rel}\n+++ /dev/null\n").as_bytes(),
+        );
+    } else {
+        out.extend_from_slice(format!("--- a/{rel}\n+++ b/{rel}\n").as_bytes());
+    }
+    let old = (hunk.old_start, hunk.old_lines);
+    let new = (hunk.new_start, hunk.new_lines);
+    let ((minus_start, minus_lines), (plus_start, plus_lines)) =
+        if reverse { (new, old) } else { (old, new) };
+    out.extend_from_slice(
+        format!("@@ -{minus_start},{minus_lines} +{plus_start},{plus_lines} @@\n").as_bytes(),
+    );
+
+    #[allow(clippy::cast_possible_truncation)]
+    let old_total = old_text.lines().count() as u32;
+    #[allow(clippy::cast_possible_truncation)]
+    let new_total = new_text.lines().count() as u32;
+    let old_no_eof_nl = !old_text.is_empty() && !old_text.ends_with('\n');
+    let new_no_eof_nl = !new_text.is_empty() && !new_text.ends_with('\n');
+
+    for line in &hunk.lines {
+        let out_origin: u8 = match (line.kind, reverse) {
+            (LineKind::Context, _) => b' ',
+            (LineKind::Added, false) | (LineKind::Deleted, true) => b'+',
+            (LineKind::Deleted, false) | (LineKind::Added, true) => b'-',
+        };
+        out.push(out_origin);
+        out.extend_from_slice(line.text.as_bytes());
+        out.push(b'\n');
+        let old_last = old_total > 0 && line.old_no == Some(old_total);
+        let new_last = new_total > 0 && line.new_no == Some(new_total);
+        let no_newline = match line.kind {
+            LineKind::Deleted => old_last && old_no_eof_nl,
+            LineKind::Added => new_last && new_no_eof_nl,
+            LineKind::Context => (old_last && old_no_eof_nl) || (new_last && new_no_eof_nl),
+        };
+        if no_newline {
+            out.extend_from_slice(b"\\ No newline at end of file\n");
+        }
+    }
+    out
 }
 
 fn short7(oid: &str) -> String {
     oid.get(..7).unwrap_or(oid).to_owned()
-}
-
-fn diff_to_model(
-    repo: &git2::Repository,
-    diff: &mut git2::Diff<'_>,
-) -> Result<DiffModel, VcsError> {
-    let mut files = Vec::new();
-    for idx in 0..diff.deltas().len() {
-        if let Some(file) = build_file(repo, diff, idx)? {
-            files.push(file);
-        }
-    }
-    // intra-line emphasis is a render-time concern: the TUI enriches the
-    // file it is about to draw (see crate::pairing::enrich_file), so the
-    // backend leaves `.emphasis` empty.
-    Ok(DiffModel { files })
 }
 
 fn build_file(
@@ -885,15 +1072,29 @@ fn build_file(
     }))
 }
 
-/// Re-diff a file's own old/new text at `context` lines of surrounding context
-/// (`u32::MAX` for the whole file), yielding the hunks the diff pane would show
-/// at that context. `None` for binary files or when a side's text is absent, so
-/// the caller keeps its current hunks.
-pub fn rehunk_file(file: &FileDiff, context: u32) -> Option<Vec<Hunk>> {
+/// Re-diff a file's own old/new text at `context` lines of surrounding
+/// context (`u32::MAX` for the whole file) and `algorithm`, yielding the
+/// hunks the diff pane would show at that context. `None` for binary files or
+/// when a side's text is absent, so the caller keeps its current hunks.
+pub fn rehunk_file(
+    file: &FileDiff,
+    context: u32,
+    algorithm: DiffAlgorithm,
+    indent_heuristic: bool,
+) -> Option<Vec<Hunk>> {
     if file.binary {
         return None;
     }
     let (old, new) = (file.old_text.as_deref()?, file.new_text.as_deref()?);
+    if algorithm.is_imara() {
+        return Some(histogram_hunks(
+            old,
+            new,
+            &file.path,
+            context,
+            indent_heuristic,
+        ));
+    }
     let as_path = Path::new(&file.path);
     // libgit2's context math overflows on a huge value (the whole-file
     // sentinel u32::MAX), yielding zero context on some platforms; the line
@@ -901,6 +1102,7 @@ pub fn rehunk_file(file: &FileDiff, context: u32) -> Option<Vec<Hunk>> {
     let cap = u32::try_from(old.lines().count().max(new.lines().count())).unwrap_or(u32::MAX);
     let mut opts = git2::DiffOptions::new();
     opts.context_lines(context.min(cap));
+    apply_git_algorithm(&mut opts, algorithm, indent_heuristic);
     let patch = git2::Patch::from_buffers(
         old.as_bytes(),
         Some(as_path),

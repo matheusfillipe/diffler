@@ -19,6 +19,9 @@ pub struct EnrichJob {
     pub new_text: Option<String>,
     pub hunks: Vec<Hunk>,
     pub semantic: bool,
+    /// The structural algorithm is active: mark reformat-only pairs when the
+    /// AST-diff engine runs, so the renderer can dim them.
+    pub structural: bool,
 }
 
 /// The computed result, installed back into the caches if still current.
@@ -43,6 +46,7 @@ pub(super) fn queue_if_stale(
     pending: &mut Vec<EnrichJob>,
     file: &FileDiff,
     semantic: bool,
+    structural: bool,
     ready: bool,
 ) {
     if ready {
@@ -59,6 +63,7 @@ pub(super) fn queue_if_stale(
         new_text: file.new_text.clone(),
         hunks: file.hunks.clone(),
         semantic,
+        structural,
     });
 }
 
@@ -74,7 +79,7 @@ pub fn run_enrich(highlighter: &Highlighter, job: EnrichJob) -> EnrichOutcome {
         hunks: job.hunks,
         hashes: HashCache::default(),
     };
-    if !(job.semantic && highlighter.syntactic_emphasis(&mut file)) {
+    if !(job.semantic && highlighter.syntactic_emphasis(&mut file, job.structural)) {
         pairing::enrich_file(&mut file);
     }
     let highlight = |text: &Option<String>| {
@@ -132,6 +137,8 @@ impl App {
     /// The walkthrough's own files, the ones its stops name and the diff does
     /// not carry, highlight like any other: they are few and deduped by hash.
     fn queue_enrich_context_files(&mut self) {
+        let structural =
+            self.config.diff.algorithm == diffler_core::diffalgo::DiffAlgorithm::Structural;
         let Some(diff) = self.diff.as_ref() else {
             return;
         };
@@ -145,6 +152,7 @@ impl App {
                 &mut self.pending_enrich,
                 file,
                 false,
+                structural,
                 ready,
             );
         }
@@ -152,6 +160,8 @@ impl App {
 
     fn queue_enrich_file(&mut self, index: usize) {
         let semantic = self.config.ui.semantic_diff;
+        let structural =
+            self.config.diff.algorithm == diffler_core::diffalgo::DiffAlgorithm::Structural;
         let Some(diff) = self.diff.as_ref() else {
             return;
         };
@@ -175,6 +185,7 @@ impl App {
             &mut self.pending_enrich,
             file,
             semantic,
+            structural,
             ready,
         );
     }
@@ -187,6 +198,8 @@ impl App {
     pub(crate) fn on_enriched(&mut self, outcome: EnrichOutcome) {
         self.enrich_inflight.remove(&outcome.hash);
         self.install_status_enrichment(&outcome);
+        let algorithm = self.config.diff.algorithm;
+        let indent_heuristic = self.config.diff.indent_heuristic;
         let Some(diff) = self.diff.as_mut() else {
             return;
         };
@@ -203,7 +216,9 @@ impl App {
         file.hunks = outcome.hunks;
         // enrichment ships default-context hunks; reinstalling the expansion
         // reshapes them, so the row list must re-flow to match
-        let reshaped = context.is_some_and(|context| super::expand::apply_context(file, context));
+        let reshaped = context.is_some_and(|context| {
+            super::expand::apply_context(file, context, algorithm, indent_heuristic)
+        });
         // the walkthrough render cache holds its own snapshot of this file,
         // taken before enrichment landed, so it needs the same hunks mirrored in
         let hunks = file.hunks.clone();

@@ -133,8 +133,14 @@ impl Highlighter {
 
     /// Set AST-diff char-precise emphasis on `file`. Returns `false` (caller
     /// should fall back to the textual engine) when unavailable.
-    pub fn syntactic_emphasis(&self, file: &mut crate::model::FileDiff) -> bool {
-        self.registry.syntactic_emphasis(file)
+    /// `mark_reformat_only` flags reformat-only line pairs for the structural
+    /// algorithm's dimmed rendering.
+    pub fn syntactic_emphasis(
+        &self,
+        file: &mut crate::model::FileDiff,
+        mark_reformat_only: bool,
+    ) -> bool {
+        self.registry.syntactic_emphasis(file, mark_reformat_only)
     }
 }
 
