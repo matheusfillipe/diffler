@@ -400,6 +400,7 @@ struct PartialUi {
     diff_file_layout: Option<String>,
     side_by_side: Option<bool>,
     semantic_diff: Option<bool>,
+    show_agent_activity: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -563,6 +564,13 @@ fn apply_layer(
         origins,
     );
     set(
+        layer.ui.show_agent_activity,
+        &mut config.ui.show_agent_activity,
+        "ui.show_agent_activity",
+        origin,
+        origins,
+    );
+    set(
         layer.mcp.enabled,
         &mut config.mcp.enabled,
         "mcp.enabled",
@@ -683,7 +691,7 @@ fn apply_cli(cli: &CliOverrides, config: &mut Config, origins: &mut BTreeMap<Str
 
 /// Scalar keys always listed in the `--dump` origins block; `keys.*` entries
 /// are appended dynamically since their names come from the user.
-const SCALAR_KEYS: [&str; 15] = [
+const SCALAR_KEYS: [&str; 16] = [
     "ui.theme",
     "ui.context_lines",
     "ui.recent_commits",
@@ -691,6 +699,7 @@ const SCALAR_KEYS: [&str; 15] = [
     "ui.diff_file_layout",
     "ui.side_by_side",
     "ui.semantic_diff",
+    "ui.show_agent_activity",
     "mcp.enabled",
     "mcp.port",
     "editor.command",

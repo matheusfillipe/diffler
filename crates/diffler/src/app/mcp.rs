@@ -81,29 +81,21 @@ impl App {
     /// to a plain phrase, so a quiet stretch between calls never reads as
     /// idle just because the agent didn't say anything extra.
     fn record_mcp_activity(&mut self, kind: &McpRequestKind) {
-        let (focus, file): (String, Option<String>) = match kind {
-            McpRequestKind::ReportActivity { focus, file } => (focus.clone(), file.clone()),
-            McpRequestKind::ReviewStatus => ("checking the review".to_owned(), None),
-            McpRequestKind::GetDiff { file } => ("reading the diff".to_owned(), file.clone()),
-            McpRequestKind::GetComments { .. } => ("reading comments".to_owned(), None),
-            McpRequestKind::ListReviews => ("listing reviews".to_owned(), None),
-            McpRequestKind::ReplyComment { .. } => ("replying to a comment".to_owned(), None),
-            McpRequestKind::ProposeResolve { .. } => {
-                ("flagging a comment addressed".to_owned(), None)
-            }
-            McpRequestKind::MarkViewed { file } => {
-                ("marking a file viewed".to_owned(), Some(file.clone()))
-            }
-            McpRequestKind::AddComment { file, .. } => {
-                ("writing a comment".to_owned(), Some(file.clone()))
-            }
-            McpRequestKind::DeleteComment { .. } => ("deleting a comment".to_owned(), None),
-            McpRequestKind::EditComment { .. } => ("editing a comment".to_owned(), None),
-            McpRequestKind::Feedback => ("reading feedback".to_owned(), None),
-            McpRequestKind::PublishWalkthrough { .. } => {
-                ("publishing a walkthrough".to_owned(), None)
-            }
-            McpRequestKind::GetWalkthrough { .. } => ("reading the walkthrough".to_owned(), None),
+        let (focus, file): (&str, Option<&str>) = match kind {
+            McpRequestKind::ReportActivity { focus, file } => (focus, file.as_deref()),
+            McpRequestKind::ReviewStatus => ("checking the review", None),
+            McpRequestKind::GetDiff { file } => ("reading the diff", file.as_deref()),
+            McpRequestKind::GetComments { .. } => ("reading comments", None),
+            McpRequestKind::ListReviews => ("listing reviews", None),
+            McpRequestKind::ReplyComment { .. } => ("replying to a comment", None),
+            McpRequestKind::ProposeResolve { .. } => ("flagging a comment addressed", None),
+            McpRequestKind::MarkViewed { file } => ("marking a file viewed", Some(file.as_str())),
+            McpRequestKind::AddComment { file, .. } => ("writing a comment", Some(file.as_str())),
+            McpRequestKind::DeleteComment { .. } => ("deleting a comment", None),
+            McpRequestKind::EditComment { .. } => ("editing a comment", None),
+            McpRequestKind::Feedback => ("reading feedback", None),
+            McpRequestKind::PublishWalkthrough { .. } => ("publishing a walkthrough", None),
+            McpRequestKind::GetWalkthrough { .. } => ("reading the walkthrough", None),
         };
         self.set_agent_activity(focus, file);
     }

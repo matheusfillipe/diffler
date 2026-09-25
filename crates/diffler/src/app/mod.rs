@@ -30,6 +30,7 @@ pub mod walkthrough;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 #[cfg(test)]
 pub(crate) use diff::merge_count;
@@ -366,15 +367,12 @@ const REFRESH_FLASH_TICKS: u8 = 4;
 const FALLBACK_REFRESH_TICKS: u32 = 20;
 /// How often (in 250ms ticks) the wall clock behind every rendered age moves.
 const CLOCK_TICKS: u32 = 40;
-/// How long the agent-activity indicator stays up after the last tool call
-/// or `report_activity`, in 250ms ticks (45s). An agent can go quiet for
-/// tens of seconds between calls (model latency, editing several files), so
-/// the indicator has to outlast an ordinary gap without flickering idle
-/// mid-turn, while still reading stale soon after the agent actually stops.
+/// How long the agent-activity indicator stays up after the last tool call,
+/// in 250ms ticks (45s): long enough to span an agent's ordinary pause
+/// between calls.
 const AGENT_ACTIVITY_TTL_TICKS: u32 = 180;
-/// Bound on a `report_activity` focus string, so an agent's free-text status
-/// stays a status line rather than a monologue.
-const AGENT_ACTIVITY_FOCUS_MAX_CHARS: usize = 160;
+/// Cap on the agent's free-text focus and file, in chars.
+const AGENT_ACTIVITY_MAX_CHARS: usize = 160;
 
 /// `DIFFLER_ACTIVITY_TTL_MS` overrides [`AGENT_ACTIVITY_TTL_TICKS`] above, so
 /// a test doesn't have to sleep out 45 real seconds to see the indicator
@@ -384,10 +382,21 @@ fn agent_activity_ttl_ticks() -> u32 {
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .map_or(AGENT_ACTIVITY_TTL_TICKS, |ms| {
-            u32::try_from(ms / 250)
-                .unwrap_or(AGENT_ACTIVITY_TTL_TICKS)
-                .max(1)
+            ticks_in(Duration::from_millis(ms)).max(1)
         })
+}
+
+fn ticks_in(span: Duration) -> u32 {
+    u32::try_from(span.as_millis() / crate::event::TICK.as_millis()).unwrap_or(u32::MAX)
+}
+
+/// One line of agent-supplied text, capped, so it can't break or flood the
+/// status bar.
+fn status_text(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take(AGENT_ACTIVITY_MAX_CHARS)
+        .collect()
 }
 
 /// The most recently active MCP connection's status, for the status-bar
@@ -730,7 +739,8 @@ pub struct App {
     /// Live status of the most recently active MCP connection, shown in the
     /// status bar. `None` once nothing has reported for `agent_activity_ttl_ticks`.
     pub agent_activity: Option<AgentActivity>,
-    agent_activity_expires_at: u32,
+    agent_activity_at: u32,
+    agent_activity_lasts: u32,
     agent_activity_ttl_ticks: u32,
     keymaps: Keymaps,
     transients: Transients,
@@ -897,7 +907,8 @@ impl App {
             feedback_tx: tokio::sync::watch::Sender::new(0),
             mcp_port: None,
             agent_activity: None,
-            agent_activity_expires_at: 0,
+            agent_activity_at: 0,
+            agent_activity_lasts: 0,
             agent_activity_ttl_ticks: agent_activity_ttl_ticks(),
             keymaps,
             transients,
@@ -1017,18 +1028,17 @@ impl App {
         (total, viewed)
     }
 
-    /// Record the agent's current focus for the status-bar indicator,
-    /// bounding it so a `report_activity` free-text report can't grow the
-    /// status bar or break the layout with an embedded newline.
-    pub(crate) fn set_agent_activity(&mut self, focus: impl Into<String>, file: Option<String>) {
-        let mut focus: String = focus.into();
-        focus.retain(|c| c != '\n' && c != '\r');
-        if focus.chars().count() > AGENT_ACTIVITY_FOCUS_MAX_CHARS {
-            focus = focus.chars().take(AGENT_ACTIVITY_FOCUS_MAX_CHARS).collect();
-        }
-        self.agent_activity = Some(AgentActivity { focus, file });
-        self.agent_activity_expires_at =
-            self.tick_count.wrapping_add(self.agent_activity_ttl_ticks);
+    pub(crate) fn set_agent_activity(&mut self, focus: &str, file: Option<&str>) {
+        self.show_agent_activity(focus, file, self.agent_activity_ttl_ticks);
+    }
+
+    fn show_agent_activity(&mut self, focus: &str, file: Option<&str>, lasts: u32) {
+        self.agent_activity = Some(AgentActivity {
+            focus: status_text(focus),
+            file: file.map(status_text),
+        });
+        self.agent_activity_at = self.tick_count;
+        self.agent_activity_lasts = lasts;
     }
 
     #[allow(clippy::too_many_lines)] // one arm per event; a flat match reads best
@@ -1133,8 +1143,12 @@ impl App {
                 }
                 Flow::Continue
             }
-            AppEvent::McpWaiting => {
-                self.set_agent_activity("waiting on you", None);
+            AppEvent::McpWaiting { until } => {
+                // a poll can outlast the ttl, so we hold the indicator until
+                // the poll's own deadline and age it out from there
+                let poll = ticks_in(until.saturating_duration_since(Instant::now()));
+                let lasts = poll.saturating_add(self.agent_activity_ttl_ticks);
+                self.show_agent_activity("waiting on you", None, lasts);
                 Flow::Continue
             }
             AppEvent::GitDone { label, ok, output } => {
@@ -1365,7 +1379,9 @@ impl App {
             changed |= now != self.now_unix && self.screen_shows_ages();
             self.now_unix = now;
         }
-        if self.agent_activity.is_some() && self.tick_count >= self.agent_activity_expires_at {
+        if self.agent_activity.is_some()
+            && self.tick_count.wrapping_sub(self.agent_activity_at) >= self.agent_activity_lasts
+        {
             self.agent_activity = None;
             changed = true;
         }
@@ -3111,13 +3127,41 @@ mod tests {
     }
 
     #[test]
-    fn set_agent_activity_strips_newlines_and_caps_length() {
+    fn waiting_outlasts_the_ttl_until_the_poll_ends() {
+        let (_fixture, mut app) = app();
+        let poll = std::time::Duration::from_secs(55);
+        app.handle(AppEvent::McpWaiting {
+            until: std::time::Instant::now() + poll,
+        });
+        let poll_ticks = super::ticks_in(poll);
+        assert!(poll_ticks > app.agent_activity_ttl_ticks);
+        for _ in 0..poll_ticks {
+            app.handle(AppEvent::Tick);
+        }
+        let activity = app.agent_activity.as_ref().expect("still waiting");
+        assert_eq!(activity.focus, "waiting on you");
+        for _ in 0..app.agent_activity_ttl_ticks {
+            app.handle(AppEvent::Tick);
+        }
+        assert!(app.agent_activity.is_none(), "ages out after the poll ends");
+    }
+
+    #[test]
+    fn set_agent_activity_keeps_one_line_and_caps_length() {
         let (_fixture, mut app) = app();
         let long = "x".repeat(500);
-        app.set_agent_activity(format!("line one\nline two {long}"), None);
+        app.set_agent_activity(&format!("line one\nline two {long}"), Some("a\nb.rs"));
         let activity = app.agent_activity.as_ref().expect("activity set");
-        assert!(!activity.focus.contains('\n'), "{}", activity.focus);
-        assert!(activity.focus.chars().count() <= 160, "{}", activity.focus);
+        assert!(
+            activity.focus.starts_with("line one line two"),
+            "{}",
+            activity.focus
+        );
+        assert_eq!(
+            activity.focus.chars().count(),
+            super::AGENT_ACTIVITY_MAX_CHARS
+        );
+        assert_eq!(activity.file.as_deref(), Some("a b.rs"));
     }
 
     #[test]

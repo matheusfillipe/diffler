@@ -797,32 +797,39 @@ fn claim_lead_cell(spans: &mut Vec<Span<'static>>, theme: &Theme) {
     }
 }
 
-/// `agent · <focus>[ · <file>]`: the most recent MCP tool call or
-/// `report_activity` report, dropped once it ages out.
+/// `agent · <focus>[ · <file>]` in at most `room` cells: the file goes first,
+/// then the focus elides, so the indicator never pushes the bar's own
+/// content off screen.
 fn agent_activity_spans(
     activity: &AgentActivity,
     theme: &Theme,
     on_panel: impl Fn(Color) -> Style,
+    room: usize,
 ) -> Vec<Span<'static>> {
+    let lead = " · agent".chars().count();
+    let focus = format!(" · {}", activity.focus);
+    let left = room.saturating_sub(lead);
+    if left <= " · ".chars().count() {
+        return Vec::new();
+    }
     let mut spans = vec![
         Span::styled(" · ", on_panel(theme.dim)),
         Span::styled("agent", on_panel(theme.purple)),
-        Span::styled(format!(" · {}", activity.focus), on_panel(theme.fg)),
+        Span::styled(elide(&focus, left), on_panel(theme.fg)),
     ];
     if let Some(file) = &activity.file {
-        spans.push(Span::styled(format!(" · {file}"), on_panel(theme.dim)));
+        let file = format!(" · {file}");
+        if focus.chars().count() + file.chars().count() <= left {
+            spans.push(Span::styled(file, on_panel(theme.dim)));
+        }
     }
     spans
 }
 
-/// Bottom bar shared by every screen: mode chip, repo@branch, MCP state,
-/// viewed counts, and the transient message.
-pub(super) fn status_bar(app: &App, width: u16) -> Line<'static> {
-    let theme = &app.theme;
-    let on_panel = |fg| Style::new().fg(fg).bg(theme.panel);
-    // the chip is the mode indicator: a forge-backed review must read
-    // differently from a local one, so the PR source names itself
-    let chip = match app.screen() {
+/// The status bar's mode indicator: a forge-backed review must read
+/// differently from a local one, so the PR source names itself.
+fn mode_chip(app: &App) -> String {
+    match app.screen() {
         Screen::Status => " STATUS ".to_owned(),
         Screen::Diff => match app.diff.as_ref().map(|d| &d.source) {
             Some(source @ diffler_core::source::ReviewSource::Pr { number }) => {
@@ -851,7 +858,15 @@ pub(super) fn status_bar(app: &App, width: u16) -> Line<'static> {
         Screen::CiLog => " LOGS ".to_owned(),
         Screen::File => " FILE ".to_owned(),
         Screen::Stats => " STATS ".to_owned(),
-    };
+    }
+}
+
+/// Bottom bar shared by every screen: mode chip, repo@branch, MCP state,
+/// viewed counts, the agent's activity, and the transient message.
+pub(super) fn status_bar(app: &App, width: u16) -> Line<'static> {
+    let theme = &app.theme;
+    let on_panel = |fg| Style::new().fg(fg).bg(theme.panel);
+    let chip = mode_chip(app);
     let repo = app
         .review
         .repo_root
@@ -872,11 +887,6 @@ pub(super) fn status_bar(app: &App, width: u16) -> Line<'static> {
     if app.refresh_flash > 0 {
         spans.push(Span::styled(" · ↻", on_panel(theme.dim)));
     }
-    if app.config.ui.show_agent_activity
-        && let Some(activity) = &app.agent_activity
-    {
-        spans.extend(agent_activity_spans(activity, theme, on_panel));
-    }
     let (files, viewed) = app.viewed_counts();
     if files > 0 {
         // the diff view is the review walk, so its counter reads as progress
@@ -888,6 +898,7 @@ pub(super) fn status_bar(app: &App, width: u16) -> Line<'static> {
         };
         spans.push(Span::styled(text, on_panel(theme.dim)));
     }
+    let mut tail = Vec::new();
     if let Some(search) = &app.search {
         let (i, n) = search.count();
         let count = if n == 0 {
@@ -895,26 +906,41 @@ pub(super) fn status_bar(app: &App, width: u16) -> Line<'static> {
         } else {
             format!(" [{i}/{n}]")
         };
-        spans.push(Span::styled(
+        tail.push(Span::styled(
             format!(" · /{}", search.query()),
             on_panel(theme.accent),
         ));
-        spans.push(Span::styled(count, on_panel(theme.dim)));
-    } else if let Some(message) = &app.message {
-        let fg = match message.severity {
-            Severity::Info => theme.dim,
-            Severity::Warning => theme.warn_fg,
-            Severity::Error => theme.error_fg,
-        };
+        tail.push(Span::styled(count, on_panel(theme.dim)));
+    }
+    let message = app
+        .message
+        .as_ref()
+        .filter(|_| app.search.is_none())
+        .map(|message| {
+            let fg = match message.severity {
+                Severity::Info => theme.dim,
+                Severity::Warning => theme.warn_fg,
+                Severity::Error => theme.error_fg,
+            };
+            Span::styled(format!("{} ", message.text), on_panel(fg))
+        });
+    if app.config.ui.show_agent_activity
+        && let Some(activity) = &app.agent_activity
+    {
+        let used: usize = spans.iter().chain(&tail).map(Span::width).sum();
+        let reserved = message
+            .as_ref()
+            .map_or(0, |message| message.content.len() + 2);
+        let room = (width as usize).saturating_sub(used + reserved);
+        spans.extend(agent_activity_spans(activity, theme, on_panel, room));
+    }
+    spans.extend(tail);
+    if let Some(message) = message {
         let used: usize = spans.iter().map(Span::width).sum();
-        let text = format!("{} ", message.text);
-        let pad = (width as usize).saturating_sub(used + text.len());
-        if pad > 0 {
-            spans.push(Span::styled(" ".repeat(pad), on_panel(theme.fg)));
-        } else {
-            spans.push(Span::styled("  ", on_panel(theme.fg)));
-        }
-        spans.push(Span::styled(text, on_panel(fg)));
+        let pad = (width as usize).saturating_sub(used + message.content.len());
+        let pad = if pad > 0 { pad } else { 2 };
+        spans.push(Span::styled(" ".repeat(pad), on_panel(theme.fg)));
+        spans.push(message);
     }
     Line::from(spans)
 }
@@ -1035,19 +1061,35 @@ mod tests {
 
         let fixture = standard_fixture();
         let mut app = App::new(fixture.review(), LoadedConfig::default());
-        app.set_agent_activity(
-            "writing the walkthrough",
-            Some("src/app/refresh.rs".to_owned()),
-        );
+        app.set_agent_activity("writing the walkthrough", Some("src/lib.rs"));
 
-        let mut terminal = Terminal::new(TestBackend::new(80, 1)).expect("terminal");
+        let mut terminal = Terminal::new(TestBackend::new(100, 1)).expect("terminal");
         terminal
             .draw(|frame| {
-                let bar = super::status_bar(&app, 80);
+                let bar = super::status_bar(&app, 100);
                 frame.render_widget(Paragraph::new(bar), frame.area());
             })
             .expect("draw");
         insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn agent_activity_gives_way_to_the_message_on_a_narrow_bar() {
+        use crate::app::App;
+        use crate::config::LoadedConfig;
+        use crate::test_support::standard_fixture;
+
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.set_agent_activity(&"reading ".repeat(20), Some("src/app/refresh.rs"));
+        app.error("push failed");
+
+        let bar = super::status_bar(&app, 80);
+        let text: String = bar.spans.iter().map(|s| s.content.clone()).collect();
+        assert_eq!(bar.width(), 80, "{text}");
+        assert!(text.ends_with("push failed "), "{text}");
+        assert!(text.contains("agent · rea…"), "{text}");
+        assert!(!text.contains("refresh.rs"), "{text}");
     }
 
     #[test]

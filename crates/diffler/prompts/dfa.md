@@ -56,9 +56,9 @@ this review when `$ARGUMENTS` is empty:
    walkthrough with `publish_walkthrough` when asked to change it, and keep
    waiting.
 
-Call `report_activity` with a short focus whenever you move to a new phase
-(reading, drafting stops, publishing, waiting), so the human sees what you
-are doing.
+Every diffler tool call already shows in the human's status bar. Before a
+stretch of work no tool call covers, such as reading the code around the
+change or drafting the stops, call `report_activity` with a few words for it.
 
 ## Write every stop like this
 

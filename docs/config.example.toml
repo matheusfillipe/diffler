@@ -27,6 +27,8 @@
 # Emphasize what changed in the syntax tree, so a reindented or rewrapped block
 # highlights only the tokens that differ. Set false for the textual engine.
 # semantic_diff = true
+# Show what the connected agent is doing in the status bar.
+# show_agent_activity = true
 
 [mcp]
 # enabled = true

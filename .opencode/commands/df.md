@@ -23,8 +23,9 @@ Check the diffler review and respond to the human's feedback:
    call itself fails, check `review_status`: diffler is closed only when that
    fails too, otherwise keep waiting.
 
-Call `report_activity` with a short focus whenever you move to a new phase
-(reading, replying, waiting), so the human sees what you are doing.
+Every diffler tool call already shows in the human's status bar. Before a
+stretch of work no tool call covers, such as editing the code a comment asks
+about, call `report_activity` with a few words for it.
 
 ## Write every reply like this
 

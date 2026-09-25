@@ -31,8 +31,9 @@ Review the active review in diffler:
 8. Tell the human the comments are ready; run /df to keep answering their
    feedback on them afterward.
 
-Call `report_activity` with a short focus whenever you move to a new phase
-(reading, commenting, waiting), so the human sees what you are doing.
+Every diffler tool call already shows in the human's status bar. Before a
+stretch of work no tool call covers, such as reading the code around a hunk,
+call `report_activity` with a few words for it.
 
 ## Write every comment like this
 

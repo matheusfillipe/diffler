@@ -527,11 +527,13 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   any) for the status bar's live indicator; every other tool call already
   counts as activity on its own, mapped to a plain phrase (`app/mcp.rs`'s
   `record_mcp_activity`) so a call that carries no report never reads as
-  idle, and `wait_for_feedback` marks the indicator waiting for the whole
-  poll rather than only once it resolves. The indicator drops once nothing
-  has been reported for `AGENT_ACTIVITY_TTL_TICKS` (45s at the tick rate),
-  ages in memory only, and shows whichever MCP session reported most
-  recently.
+  idle, and `wait_for_feedback` sends `AppEvent::McpWaiting` with its poll's
+  deadline before it blocks, since the poll sends no request until the human
+  answers. The indicator drops `AGENT_ACTIVITY_TTL_TICKS` (45s) after the last
+  call, or after a poll's deadline, which can outlast that ttl; it lives in
+  memory only, shows whichever MCP session reported most recently, and takes
+  only the status bar's leftover width, so the viewed count and a message
+  always win.
   Comments are tagged with their source. Agent triggering is the
   `wait_for_feedback` long-poll (MCP can't initiate agent turns); the human's
   "send" key unblocks it. `propose_resolve` only marks a comment Replied, and

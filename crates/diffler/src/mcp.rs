@@ -8,7 +8,7 @@ use std::fmt;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use diffler_core::feedback;
 use diffler_core::model::{DiffModel, FileStatus};
@@ -474,8 +474,8 @@ pub struct GetWalkthroughParams {
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ReportActivityParams {
     /// Short plain phrase for what you're doing right now, e.g. "writing the
-    /// walkthrough" or "fixing the failing test". Trimmed and capped; keep it
-    /// to a few words.
+    /// walkthrough" or "fixing the failing test". Keep it to a few words;
+    /// the bar cuts a long one.
     pub focus: String,
     /// The file this is about, if any.
     pub file: Option<String>,
@@ -889,10 +889,6 @@ impl DifflerMcp {
         &self,
         Parameters(params): Parameters<WaitForFeedbackParams>,
     ) -> Result<Json<WaitForFeedbackResponse>, ErrorData> {
-        // fired directly, ahead of the request/reply round trip below: that
-        // round trip only completes once the human sends feedback, but the
-        // indicator has to read "waiting" for the whole poll, not just after
-        let _ = self.tx.send(AppEvent::McpWaiting);
         let mut rx = self.feedback_rx.clone();
         let since = params.since_epoch.unwrap_or_else(|| *rx.borrow());
         let timeout = Duration::from_secs(
@@ -901,6 +897,11 @@ impl DifflerMcp {
                 .unwrap_or(DEFAULT_WAIT_SECONDS)
                 .min(MAX_WAIT_SECONDS),
         );
+        // we tell the app before blocking, since the poll sends no request
+        // until the human answers
+        let _ = self.tx.send(AppEvent::McpWaiting {
+            until: Instant::now() + timeout,
+        });
         let waited = tokio::time::timeout(timeout, rx.wait_for(|epoch| *epoch > since))
             .await
             // copy the epoch out so the watch borrow ends before the match
@@ -1486,10 +1487,6 @@ mod tests {
         let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counted = requests.clone();
         tokio::spawn(async move {
-            // `wait_for_feedback` also fires `McpWaiting` ahead of its own
-            // request, so a real consumer (and this stand-in for one) must
-            // shrug off event kinds it doesn't care about rather than treat
-            // one as the end of the stream
             while let Some(event) = rx.recv().await {
                 let AppEvent::Mcp(request) = event else {
                     continue;

@@ -2,4 +2,4 @@
 source: crates/diffler/src/ui/mod.rs
 expression: terminal.backend()
 ---
-" STATUS  fixture@main · mcp off · agent · writing the walkthrough · src/app/refr"
+" STATUS  fixture@main · mcp off · 3 files, 0 viewed · agent · writing the walkthrough · src/lib.rs  "

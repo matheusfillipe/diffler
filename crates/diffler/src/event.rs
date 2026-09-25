@@ -2,7 +2,7 @@
 //! multiplexed onto one channel. Kept thin: all decisions live in
 //! `App::handle`, which is what the tests drive.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{Event, EventStream, KeyEvent, MouseEvent};
 use futures_util::StreamExt as _;
@@ -61,11 +61,10 @@ pub enum AppEvent {
     /// Agent tool call routed through the event channel so the app stays
     /// the single owner of the review state (`mcp` module).
     Mcp(McpRequest),
-    /// `wait_for_feedback` sends this itself when it starts blocking, ahead
-    /// of the request/reply round trip in `Mcp` above (which only completes
-    /// once the human sends feedback), so the agent-activity indicator reads
-    /// "waiting on you" for the whole poll rather than only after it resolves.
-    McpWaiting,
+    /// `wait_for_feedback` started a poll that ends by `until` at the latest.
+    McpWaiting {
+        until: Instant,
+    },
     /// A shelled-out network git op finished (`app::GitOp`). The result returns
     /// as an event so the run loop keeps drawing while the process runs.
     GitDone {
@@ -111,7 +110,7 @@ pub enum AppEvent {
     Quit,
 }
 
-const TICK: Duration = Duration::from_millis(250);
+pub(crate) const TICK: Duration = Duration::from_millis(250);
 
 /// Forward terminal events and ticks into `tx` until the terminal stream
 /// ends or the receiver is dropped.
