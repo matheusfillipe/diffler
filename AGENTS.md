@@ -11,7 +11,8 @@ small native binary, alternate-screen TUI, no daemon, no browser).
 ```
 crates/diffler-core/   pure logic, no terminal (errors via thiserror):
   vcs.rs / git.rs      Vcs trait + git2 backend (status, diff, log, stage, commit, branch)
-  repo.rs              repository discovery (finds the repo root from any path)
+  jj.rs                JjVcs: composes the git2 backend for reads, shells out to `jj` for writes
+  repo.rs              repository discovery and backend selection (git vs colocated jj)
   model.rs diff.rs     diff model, hunks
   pairing.rs           similarity line-pairing + grapheme intraline emphasis
   syntax/              tree-sitter language registry + AST-diff intraline emphasis + scope index
@@ -38,10 +39,10 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
 ## Commands (just; see `just --list`)
 
 - `just check`: clippy with ci's denials, run after every change
-- `just test`: nextest + doctests
+- `just test`: nextest + doctests (needs `jj` on PATH for the jj backend's integration tests)
 - `just fix`: clippy --fix + fmt
 - `just snap`: insta snapshot tests; read `.snap.new` diffs before `just snap-accept`
-- `just e2e`: PTY end-to-end suite (needs `uv`; CI runs it in a separate job)
+- `just e2e`: PTY end-to-end suite (needs `uv` and `jj`; CI runs it in a separate job)
 - `just package-check`: what crates.io builds. A crate packages only its own
   directory, so a file it reaches outside one builds here and fails the publish
   after the tag is public. `just ci` carries the include rule; the release
@@ -86,9 +87,40 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
 
 ## Architecture & decisions
 
-- **Layering.** Nothing above the `Vcs` trait may import git2. Only the git2
-  backend exists; the trait is there because jj is planned, but no second
-  backend is built or stubbed (YAGNI).
+- **Layering.** Nothing above the `Vcs` trait may import git2 or shell out to
+  `jj`. Two backends exist: `git.rs`'s git2 backend, and `jj.rs`'s `JjVcs`.
+  `repo::open` picks between them by whether the discovered root has a `.jj`
+  directory beside `.git`.
+- **jj support.** Colocated repos only: a `.jj` directory beside `.git`, what
+  `jj git init --colocate` makes and what plain `jj git init` makes by
+  default since jj 0.45. In a colocated repo git's HEAD sits on jj's `@-` and
+  the worktree matches `@`, so `JjVcs` delegates every read (diff, log,
+  blame, `read_at`, tree diffs) to `GitVcs` unchanged. Writes shell out to
+  `jj`: commit -> `jj commit -m`, extend/amend -> `jj squash` (a message
+  folds in as `-m` on the same call), reword -> `jj describe -r @- -m`
+  (touches only `@-`'s description, never the working copy), branch
+  create/delete -> `jj bookmark create -r @` / `jj bookmark delete`, checkout
+  -> `jj new <rev>` (not `jj edit`: checkout means keep working on top of a
+  branch, not edit its tip commit in place), discard -> `jj restore <path>`.
+  Staging, unstaging, hunk staging, and stash have no jj equivalent; each
+  returns a `VcsError::Rejected` the UI shows as a status message instead of
+  running. `Vcs::status` reads `working_tree_diff` (one diff pass, `@-`
+  against the whole working copy) into the `staged` section rather than
+  merging git's own untracked/unstaged/staged lists: jj's colocation
+  snapshot marks a new file intent-to-add in the git index, and git2 then
+  reports it once as added (tree vs index) and again as modified (index vs
+  workdir), double-counting it. The status screen folds to that one section
+  (titled "Working copy (@)") and its hint line drops `s stage`; nothing else
+  about the screen forks for jj. `repo::discover` reports a jj repo with no
+  `.git` at all (`jj git init --no-colocate`) as `RepoError::JjNotColocated`,
+  naming `jj git colocation enable` as the fix. The watcher ignores `.jj/`
+  the way it ignores `.git/objects`: a jj command rewrites its operation log
+  and working-copy snapshot on every invocation, but the same command also
+  moves the `.git/refs`/`.git/HEAD` it exports to, which carries the real
+  signal. `head()` reads git HEAD as-is (often detached, since jj never
+  moves a bookmark for you) rather than resolving `@`'s own bookmark or
+  change id on every refresh, which would cost a `jj` subprocess call on the
+  UI thread for a cosmetic label.
 - **Runtime.** One tokio runtime: MCP server (axum, `127.0.0.1:{port}/mcp`),
   notify watcher (debounce ~200ms → refresh), main task = the ratatui loop.
   `App` owns all state; workers (git, CI, editor, clipboard, refresh,

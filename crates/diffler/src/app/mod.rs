@@ -1709,11 +1709,12 @@ impl App {
 
     pub(crate) fn request_network(&mut self, op: NetworkOp, label: &str) {
         let argv = self.review.vcs.network_argv(op);
+        let program = argv.first().map_or("git", String::as_str).to_owned();
         self.pending_git = Some(GitOp {
             label: label.to_owned(),
             argv,
         });
-        self.info(format!("running git {label}…"));
+        self.info(format!("running {program} {label}…"));
     }
 
     fn on_ci_extras(&mut self, extras: crate::ci::RunExtras) -> Flow {

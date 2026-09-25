@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import pytest
-from harness import Tui, make_repo, tui_env
+from harness import Tui, make_jj_repo, make_repo, tui_env
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BIN = REPO_ROOT / "target" / "debug" / "diffler"
@@ -20,6 +20,11 @@ def repo(tmp_path):
 
 
 @pytest.fixture
+def jj_repo(tmp_path):
+    return make_jj_repo(tmp_path / "repo")
+
+
+@pytest.fixture
 def home(tmp_path):
     return tmp_path / "home"
 
@@ -33,6 +38,22 @@ def spawn(repo, home):
     def _spawn(*args, env_extra=None):
         env = tui_env(home, **(env_extra or {}))
         tui = Tui([str(BIN), *args, str(repo)], cwd=str(repo), env=env)
+        children.append(tui)
+        return tui
+
+    yield _spawn
+    for tui in children:
+        tui.close()
+
+
+@pytest.fixture
+def jj_spawn(jj_repo, home):
+    """Like `spawn`, on the colocated jj fixture repo."""
+    children = []
+
+    def _spawn(*args, env_extra=None):
+        env = tui_env(home, **(env_extra or {}))
+        tui = Tui([str(BIN), *args, str(jj_repo)], cwd=str(jj_repo), env=env)
         children.append(tui)
         return tui
 

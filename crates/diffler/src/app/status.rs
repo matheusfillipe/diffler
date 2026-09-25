@@ -66,11 +66,16 @@ pub enum Section {
 impl Section {
     pub const ALL: [Self; 3] = [Self::Untracked, Self::Unstaged, Self::Staged];
 
-    pub fn title(self) -> &'static str {
-        match self {
-            Self::Untracked => "Untracked",
-            Self::Unstaged => "Unstaged changes",
-            Self::Staged => "Staged changes",
+    /// jj has no index, so `Vcs::status` folds everything into `Staged` (see
+    /// `diffler_core::jj`); that section reads as the working copy, not as
+    /// "staged", since there is nothing else to compare it against.
+    pub fn title(self, kind: diffler_core::vcs::VcsKind) -> &'static str {
+        use diffler_core::vcs::VcsKind;
+        match (self, kind) {
+            (Self::Staged, VcsKind::Jj) => "Working copy (@)",
+            (Self::Untracked, _) => "Untracked",
+            (Self::Unstaged, _) => "Unstaged changes",
+            (Self::Staged, VcsKind::Git) => "Staged changes",
         }
     }
 
@@ -780,7 +785,9 @@ impl App {
 
     fn status_row_label(&self, row: &Row) -> Option<String> {
         Some(match row {
-            Row::SectionHeader { section, .. } => section.title().to_owned(),
+            Row::SectionHeader { section, .. } => {
+                section.title(self.review.vcs.vcs_kind()).to_owned()
+            }
             Row::UnpushedHeader { .. } => UNPUSHED_TITLE.to_owned(),
             Row::Unpushed { index } => self.status.unpushed_commits().get(*index)?.subject.clone(),
             Row::RecentHeader { .. } => RECENT_TITLE.to_owned(),

@@ -123,6 +123,10 @@ fn exit_without_repo(err: &diffler_core::repo::RepoError, path: &str) -> ! {
             eprintln!("diffler: {shown} is a bare repository, which has nothing to review");
             eprintln!("open a clone with a working tree instead");
         }
+        diffler_core::repo::RepoError::JjNotColocated(_) => {
+            eprintln!("diffler: {shown} is a jj repo without git colocation");
+            eprintln!("run `jj git colocation enable` there, then reopen diffler");
+        }
         git @ diffler_core::repo::RepoError::Git(_) => eprintln!("diffler: {git}"),
     }
     std::process::exit(1)

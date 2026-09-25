@@ -84,8 +84,11 @@ pub fn spawn_watcher(
 
 /// Whether an event path should trigger a refresh. Filters the session
 /// store (`.diffler/`), git's own transient lockfiles (`*.lock` under the
-/// gitdir flickers on every git write), and the object database (every
-/// commit floods it). Project lockfiles (Cargo.lock, uv.lock, etc.) are
+/// gitdir flickers on every git write), the object database (every commit
+/// floods it), and a colocated jj repo's own state (`.jj/`, which rewrites
+/// its operation log and working-copy snapshot on every jj command; the same
+/// command also moves `.git/HEAD` and `.git/refs`, which stay unfiltered and
+/// carry the real signal). Project lockfiles (Cargo.lock, uv.lock, etc.) are
 /// kept because they represent real working-tree changes worth reviewing.
 fn relevant(path: &Path, repo_root: &Path, git_dir: &Path) -> bool {
     // git metadata, wherever the gitdir lives: in-tree `.git` or a linked
@@ -97,7 +100,7 @@ fn relevant(path: &Path, repo_root: &Path, git_dir: &Path) -> bool {
     if rel.starts_with(".git") && is_lockfile(path) {
         return false;
     }
-    !(rel.starts_with(".diffler") || rel.starts_with(".git/objects"))
+    !(rel.starts_with(".diffler") || rel.starts_with(".jj") || rel.starts_with(".git/objects"))
 }
 
 fn is_lockfile(path: &Path) -> bool {
@@ -128,6 +131,20 @@ mod tests {
     fn session_store_paths_are_filtered() {
         assert!(!relevant_in("/repo", ".diffler/session.json"));
         assert!(!relevant_in("/repo", ".diffler/config.toml"));
+    }
+
+    #[test]
+    fn jj_state_paths_are_filtered() {
+        assert!(!relevant_in("/repo", ".jj/working_copy/tree_state"));
+        assert!(!relevant_in("/repo", ".jj/repo/op_store/operations/abc123"));
+        assert!(!relevant_in("/repo", ".jj/repo/index/segments"));
+    }
+
+    #[test]
+    fn a_jj_write_still_surfaces_through_its_git_refs() {
+        // a colocated jj command rewrites .jj/ on every invocation but also
+        // moves the git refs it exports to, which is the real signal
+        assert!(relevant_in("/repo", ".git/refs/jj/keep/deadbeef"));
     }
 
     #[test]

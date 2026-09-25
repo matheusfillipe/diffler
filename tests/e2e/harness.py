@@ -178,6 +178,38 @@ def make_repo(root):
     return root
 
 
+def jj(repo, *args):
+    """Run a jj command in `repo`, isolated from the developer's config. jj's
+    own per-user config lives beside the repo, not inside it: HOME pointed
+    at the repo itself would leave `.config/jj/` as untracked content in the
+    very tree diffler is reviewing."""
+    home = Path(repo).parent / "jjhome"
+    home.mkdir(exist_ok=True)
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": str(home),
+    }
+    return subprocess.run(
+        ["jj", *args],
+        cwd=str(repo),
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+
+def make_jj_repo(root):
+    """`make_repo`'s fixture, colocated with jj: the commit and the
+    uncommitted app.txt edit and untracked notes.txt are all plain git, and
+    jj is introduced only afterward for its working-copy snapshot."""
+    root = make_repo(root)
+    jj(root, "git", "init", "--colocate")
+    jj(root, "config", "set", "--repo", "user.name", "reviewer")
+    jj(root, "config", "set", "--repo", "user.email", "reviewer@example.com")
+    return root
+
+
 def make_script(path, body):
     """Write an executable shell script (editor stand-ins for the tests)."""
     path = Path(path)

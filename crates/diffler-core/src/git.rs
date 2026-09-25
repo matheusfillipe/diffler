@@ -9,7 +9,7 @@ use crate::model::{
     DiffLine, DiffModel, FileDiff, FileStatus, Hunk, HunkId, LineKind, disambiguated_hunk_id,
 };
 use crate::vcs::{
-    BlameSpan, BranchInfo, HeadInfo, LogEntry, NetworkOp, StatusModel, Vcs, VcsError,
+    BlameSpan, BranchInfo, HeadInfo, LogEntry, NetworkOp, StatusModel, Vcs, VcsError, VcsKind,
 };
 
 /// git's own default amount of context around hunks.
@@ -97,6 +97,10 @@ impl GitVcs {
 }
 
 impl Vcs for GitVcs {
+    fn vcs_kind(&self) -> VcsKind {
+        VcsKind::Git
+    }
+
     fn git_dir(&self) -> Result<PathBuf, VcsError> {
         // libgit2 resolves gitlink files, so linked worktrees come back as
         // their external gitdir under the main repo's .git/worktrees/

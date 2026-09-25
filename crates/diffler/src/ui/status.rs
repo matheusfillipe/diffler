@@ -4,7 +4,7 @@
 use crate::app::rowsel::RowSelect;
 use diffler_core::model::FileDiff;
 use diffler_core::stats::LanguageChurn;
-use diffler_core::vcs::LogEntry;
+use diffler_core::vcs::{LogEntry, VcsKind};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -31,16 +31,27 @@ use crate::ui::{
 /// Prefix-only hint entries: top-level keys and the transient prefixes,
 /// rendered against the live keymap so remaps show. Sub-commands stay out of
 /// the hint line: they appear in the which-key panel and the help popup.
-const HINTS: &[Hint] = &[
+/// `stage` is left out for jj, which has no staging area to advertise.
+const GIT_HINTS: &[Hint] = &[
     Hint::Prefix(TransientKind::Commit, "commit"),
     Hint::Prefix(TransientKind::Branch, "branch"),
     Hint::Leaf(&[Action::Stage], "stage"),
     Hint::Leaf(&[Action::Discard], "discard"),
     Hint::Leaf(&[Action::Help], "help"),
 ];
+const JJ_HINTS: &[Hint] = &[
+    Hint::Prefix(TransientKind::Commit, "commit"),
+    Hint::Prefix(TransientKind::Branch, "branch"),
+    Hint::Leaf(&[Action::Discard], "discard"),
+    Hint::Leaf(&[Action::Help], "help"),
+];
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
-    let (body_area, bar) = super::screen_chrome(frame, app, HINTS);
+    let hints = match app.review.vcs.vcs_kind() {
+        VcsKind::Git => GIT_HINTS,
+        VcsKind::Jj => JJ_HINTS,
+    };
+    let (body_area, bar) = super::screen_chrome(frame, app, hints);
     app.status.viewport = body_area.height;
     let (lines, scroll, line_rows) = body(app, body_area);
     app.status.body = body_area;
@@ -360,7 +371,7 @@ fn row_line(
         Row::SectionHeader { section, count } => {
             let mut spans = header_spans(
                 theme,
-                section.title(),
+                section.title(app.review.vcs.vcs_kind()),
                 Some(*count),
                 app.is_folded(*section),
                 search,
@@ -803,7 +814,8 @@ mod tests {
     use crate::config::LoadedConfig;
     use crate::event::AppEvent;
     use crate::test_support::{
-        Fixture, key, mouse_click, mouse_scroll, render, standard_fixture, two_hunk_fixture,
+        Fixture, jj_fixture, key, mouse_click, mouse_scroll, render, standard_fixture,
+        two_hunk_fixture,
     };
 
     /// One language is not a mix, and the line would be furniture on every
@@ -875,6 +887,16 @@ mod tests {
             .collect();
         assert!(text.chars().count() <= 30, "stays inside the row: {text:?}");
         assert!(text.contains('█'), "the bar survives: {text:?}");
+    }
+
+    /// jj has no staging area: the three sections `standard_fixture` would
+    /// otherwise show fold into one "Working copy (@)" section, and the
+    /// hint line drops `s stage`.
+    #[test]
+    fn status_screen_in_a_jj_repo_folds_into_one_working_copy_section() {
+        let fixture = jj_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        insta::assert_snapshot!(render(&mut app).backend());
     }
 
     #[test]

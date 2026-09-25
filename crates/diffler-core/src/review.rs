@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
-use crate::git::GitVcs;
 use crate::model::DiffModel;
+use crate::repo;
 use crate::session::Session;
 use crate::source::ReviewSource;
 use crate::store::{self, StoreError};
@@ -82,7 +82,7 @@ impl Review {
     /// Like [`Review::open`] with a custom number of context lines around
     /// diff hunks (config key `ui.context_lines`).
     pub fn open_with_context(repo_root: &Path, context_lines: u32) -> Result<Self, ReviewError> {
-        let vcs: Box<dyn Vcs> = Box::new(GitVcs::open_with_context(repo_root, context_lines)?);
+        let vcs = repo::open(repo_root, context_lines)?;
         let status = vcs.status()?;
         let session = store::load(repo_root)?;
         Ok(Self {
@@ -131,10 +131,11 @@ impl Review {
         context_lines: u32,
         against: Option<&str>,
     ) -> Result<Refreshed, ReviewError> {
-        let vcs = GitVcs::open_with_context(repo_root, context_lines)?;
+        let vcs = repo::open(repo_root, context_lines)?;
         let status = vcs.status()?;
         let model = vcs.working_tree_diff()?;
-        let against = against.map(|rev| (rev.to_owned(), crate::vcs::against_diff(&vcs, rev)));
+        let against =
+            against.map(|rev| (rev.to_owned(), crate::vcs::against_diff(vcs.as_ref(), rev)));
         Ok(Refreshed {
             status,
             model,
@@ -150,7 +151,7 @@ impl Review {
         repo_root: &Path,
         paths: &[String],
     ) -> Result<HashMap<String, crate::classify::Kind>, ReviewError> {
-        let vcs = GitVcs::open(repo_root)?;
+        let vcs = repo::open(repo_root, crate::git::DEFAULT_CONTEXT_LINES)?;
         Ok(paths
             .iter()
             .filter_map(|path| {
@@ -176,7 +177,7 @@ impl Review {
         rev: Option<&str>,
         files: &[String],
     ) -> WalkthroughFiles {
-        let vcs = GitVcs::open(repo_root).ok();
+        let vcs = repo::open(repo_root, crate::git::DEFAULT_CONTEXT_LINES).ok();
         let pin_broken = match (rev, vcs.as_ref()) {
             (Some(rev), Some(vcs)) => vcs.resolve(rev).is_err(),
             (Some(_), None) => true,
@@ -203,7 +204,7 @@ impl Review {
     /// A file git cannot blame (untracked, or newly staged) still loads: it
     /// comes back with text and no spans.
     pub fn compute_file(repo_root: &Path, rel: &str) -> Result<FileSnapshot, ReviewError> {
-        let vcs = GitVcs::open(repo_root)?;
+        let vcs = repo::open(repo_root, crate::git::DEFAULT_CONTEXT_LINES)?;
         let path = Path::new(rel);
         let content = std::fs::read_to_string(repo_root.join(path)).map_err(VcsError::from)?;
         Ok(FileSnapshot {

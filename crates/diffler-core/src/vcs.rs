@@ -96,7 +96,18 @@ pub struct StatusModel {
     pub staged: DiffModel,
 }
 
+/// Which backend a [`Vcs`] is talking to, for the handful of UI decisions
+/// that differ by backend (jj has no staging area, so the status screen
+/// collapses to one section and hides the staging hints).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VcsKind {
+    Git,
+    Jj,
+}
+
 pub trait Vcs: Send {
+    /// Which backend this is, for the few UI decisions that differ by kind.
+    fn vcs_kind(&self) -> VcsKind;
     /// Resolved repository metadata directory. In a plain repo this is
     /// `<root>/.git`; in a linked worktree `<root>/.git` is a gitlink file
     /// and this resolves to the external gitdir it points at.

@@ -8,6 +8,7 @@ pub mod diff;
 pub mod feedback;
 pub mod git;
 pub mod highlight;
+pub mod jj;
 pub mod language;
 pub mod model;
 pub mod pairing;

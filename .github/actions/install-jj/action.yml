@@ -1,0 +1,41 @@
+name: Install jj
+description: >
+  Download a pinned jj release and put it on PATH. taiki-e/install-action has
+  no jj entry and jj-cli carries no cargo-binstall metadata, so this fetches
+  the prebuilt binary from jj's own GitHub releases directly.
+runs:
+  using: composite
+  steps:
+    - if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        set -euo pipefail
+        version=0.45.1
+        case "${{ runner.os }}-${{ runner.arch }}" in
+          Linux-X64) target=x86_64-unknown-linux-musl ;;
+          Linux-ARM64) target=aarch64-unknown-linux-musl ;;
+          macOS-X64) target=x86_64-apple-darwin ;;
+          macOS-ARM64) target=aarch64-apple-darwin ;;
+          *)
+            echo "no jj build for ${{ runner.os }}-${{ runner.arch }}" >&2
+            exit 1
+            ;;
+        esac
+        curl -fsSL "https://github.com/jj-vcs/jj/releases/download/v${version}/jj-v${version}-${target}.tar.gz" -o /tmp/jj.tar.gz
+        mkdir -p /tmp/jj-extract "$HOME/.local/bin"
+        tar -xzf /tmp/jj.tar.gz -C /tmp/jj-extract
+        cp /tmp/jj-extract/jj "$HOME/.local/bin/jj"
+        chmod +x "$HOME/.local/bin/jj"
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        "$HOME/.local/bin/jj" --version
+    - if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $version = "0.45.1"
+        $url = "https://github.com/jj-vcs/jj/releases/download/v$version/jj-v$version-x86_64-pc-windows-msvc.zip"
+        Invoke-WebRequest -Uri $url -OutFile jj.zip
+        Expand-Archive -Path jj.zip -DestinationPath jj-extract
+        New-Item -ItemType Directory -Force -Path "$HOME\.local\bin" | Out-Null
+        Copy-Item "jj-extract\jj.exe" "$HOME\.local\bin\jj.exe"
+        Add-Content -Path $env:GITHUB_PATH -Value "$HOME\.local\bin"
+        & "$HOME\.local\bin\jj.exe" --version
