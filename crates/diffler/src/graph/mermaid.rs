@@ -38,11 +38,7 @@ const IGNORED: &[&str] = &["style", "classdef", "class", "linkstyle", "direction
 
 pub fn parse(src: &str) -> Result<Figure, MermaidError> {
     let mut out = Parsed::default();
-    let mut lines = src
-        .lines()
-        .map(strip_comment)
-        .map(str::trim)
-        .filter(|line| !line.is_empty());
+    let mut lines = statements(src);
 
     let header = lines.next().ok_or(MermaidError::Empty)?;
     out.model.rankdir = header_rankdir(header, &mut out.notes)?;
@@ -73,6 +69,25 @@ pub fn parse(src: &str) -> Result<Figure, MermaidError> {
 
 fn strip_comment(line: &str) -> &str {
     line.split_once("%%").map_or(line, |(head, _)| head)
+}
+
+/// `src`'s statements: each line with a `%%` comment stripped, trimmed, and
+/// blank lines dropped. Every mermaid-family parser (flowchart, sequence
+/// diagram) and the fence sniffer that routes between them read this stream.
+pub(crate) fn statements(src: &str) -> impl Iterator<Item = &str> {
+    src.lines()
+        .map(strip_comment)
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+}
+
+/// Whether a mermaid fence's first statement is a `sequenceDiagram` header
+/// rather than a `flowchart`/`graph` one.
+pub(crate) fn is_sequence_header(first: &str) -> bool {
+    first
+        .split_whitespace()
+        .next()
+        .is_some_and(|word| word.eq_ignore_ascii_case("sequenceDiagram"))
 }
 
 fn header_rankdir(header: &str, notes: &mut Vec<String>) -> Result<RankDir, MermaidError> {

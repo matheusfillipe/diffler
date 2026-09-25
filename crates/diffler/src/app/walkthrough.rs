@@ -179,7 +179,7 @@ pub fn blocks(body: &str, width: usize) -> Vec<Block> {
                 } else {
                     // a diagram we cannot draw still has to reach the reader
                     use std::fmt::Write as _;
-                    let _ = writeln!(prose, "```{}", fence_lang(kind));
+                    let _ = writeln!(prose, "```{}", kind.lang());
                     prose.push_str(&src);
                     prose.push_str("```\n");
                 }
@@ -188,13 +188,6 @@ pub fn blocks(body: &str, width: usize) -> Vec<Block> {
     }
     push_prose(&mut blocks, &mut prose, width);
     blocks
-}
-
-fn fence_lang(kind: FenceKind) -> &'static str {
-    match kind {
-        FenceKind::Mermaid => "mermaid",
-        FenceKind::Callstack => "callstack",
-    }
 }
 
 /// Figures a body would draw, and what drawing them simplified. What the MCP

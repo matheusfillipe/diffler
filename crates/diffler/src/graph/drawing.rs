@@ -36,6 +36,14 @@ impl FenceKind {
             None
         }
     }
+
+    /// [`Self::of`]'s inverse: the fence language a stop body opens with.
+    pub fn lang(self) -> &'static str {
+        match self {
+            Self::Mermaid => "mermaid",
+            Self::Callstack => "callstack",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -72,20 +80,13 @@ impl ParsedFigure {
     }
 }
 
-/// Whether a ` ```mermaid ` fence's first line names a `sequenceDiagram`
+/// Whether a ` ```mermaid ` fence's first statement names a `sequenceDiagram`
 /// rather than a flowchart: what routes it to [`sequence::parse`] instead of
 /// [`mermaid::parse`], since the two share one fence language.
 fn is_sequence_diagram(src: &str) -> bool {
-    src.lines()
-        .map(|line| line.split_once("%%").map_or(line, |(head, _)| head))
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .is_some_and(|first| {
-            first
-                .split_whitespace()
-                .next()
-                .is_some_and(|word| word.eq_ignore_ascii_case("sequenceDiagram"))
-        })
+    mermaid::statements(src)
+        .next()
+        .is_some_and(mermaid::is_sequence_header)
 }
 
 fn parse_fence(kind: FenceKind, src: &str, width: usize) -> Result<ParsedFigure, FigureError> {

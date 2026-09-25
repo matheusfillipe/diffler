@@ -310,11 +310,7 @@ fn find_arrow(line: &str) -> Option<(&str, &str, &str)> {
 /// labels fit, as far as `max_width` columns allow; a label that still does
 /// not fit its lane is elided.
 pub(crate) fn parse(src: &str, max_width: usize) -> Result<SequenceFigure, SequenceError> {
-    let mut lines = src
-        .lines()
-        .map(|line| line.split_once("%%").map_or(line, |(head, _)| head))
-        .map(str::trim)
-        .filter(|line| !line.is_empty());
+    let mut lines = crate::graph::mermaid::statements(src);
     // the header (`sequenceDiagram`) is already how the caller chose this
     // parser; skip it here too so it is never read as a bare message
     let _ = lines.next();
