@@ -209,6 +209,9 @@ impl App {
             self.error("no remote to push the branch to");
             return;
         };
+        if self.declines_jj_network() {
+            return;
+        }
         // arm the slot and queue the push it waits on together: a slot armed
         // ahead of a dialog stays armed when the dialog is declined, and the
         // next push of any kind would then open a pull request nobody asked for

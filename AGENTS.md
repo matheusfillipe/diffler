@@ -92,20 +92,29 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   `repo::open` picks between them by whether the discovered root has a `.jj`
   directory beside `.git`.
 - **jj support.** Colocated repos only: a `.jj` directory beside `.git`, what
-  `jj git init --colocate` makes and what plain `jj git init` makes by
-  default since jj 0.45. In a colocated repo git's HEAD sits on jj's `@-` and
-  the worktree matches `@`, so `JjVcs` delegates every read (diff, log,
-  blame, `read_at`, tree diffs) to `GitVcs` unchanged. Writes shell out to
-  `jj`: commit -> `jj commit -m`, extend/amend -> `jj squash` (a message
-  folds in as `-m` on the same call), reword -> `jj describe -r @- -m`
-  (touches only `@-`'s description, never the working copy), branch
-  create/delete -> `jj bookmark create -r @` / `jj bookmark delete`, checkout
-  -> `jj new <rev>` (not `jj edit`: checkout means keep working on top of a
-  branch, not edit its tip commit in place), discard -> `jj restore <path>`.
+  `jj git init` makes by default. In a colocated repo git's HEAD sits on
+  jj's `@-` and the worktree matches `@`, so `JjVcs` delegates every read
+  (diff, log, blame, `read_at`, tree diffs) to `GitVcs` unchanged. Writes
+  shell out to `jj`: commit -> `jj commit`, extend -> `jj squash -u` (a bare
+  squash opens an editor when both sides carry a description), amend ->
+  `jj squash` with the message, reword -> `jj describe -r @-` (touches only
+  `@-`'s description, never the working copy), branch create/delete ->
+  `jj bookmark create -r @` / `jj bookmark delete exact:`, checkout ->
+  `jj new <rev>` (not `jj edit`: checkout means keep working on top of a
+  branch, not edit its tip commit in place), discard -> `jj restore
+  root-file:<path>`. A message travels as `--message=<text>` and a path or
+  name as a quoted jj string literal after `--`, since a leading `-` reads as
+  a flag and git allows names (`fix(x)`, `u@v`) that parse as fileset or
+  revset syntax. Every call sets `JJ_EDITOR=false`, so a prompt jj opens
+  anyway fails at once instead of freezing the UI thread the write runs on.
   Staging, unstaging, hunk staging, and stash have no jj equivalent; each
   returns a `VcsError::Rejected` the UI shows as a status message instead of
-  running. `Vcs::status` reads `working_tree_diff` (one diff pass, `@-`
-  against the whole working copy) into the `staged` section rather than
+  running. Push and pull stay git-only and decline in a jj repo, naming
+  `jj git push`/`jj git fetch`, since the git CLI would move HEAD and
+  branches behind jj's back; a PR checkout fetches the head ref with git
+  and switches through `Vcs::checkout`. `Vcs::status` reads
+  `working_tree_diff` (one diff pass, `@-` against the whole working copy)
+  into the `staged` section rather than
   merging git's own untracked/unstaged/staged lists: jj's colocation
   snapshot marks a new file intent-to-add in the git index, and git2 then
   reports it once as added (tree vs index) and again as modified (index vs

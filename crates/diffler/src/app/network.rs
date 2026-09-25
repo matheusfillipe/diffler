@@ -2,6 +2,8 @@
 //! fail or destroy work, and turn a rejected push/pull into an actionable
 //! dialog instead of a dead error.
 
+use diffler_core::vcs::VcsKind;
+
 use super::{App, GitOp, Modal, PendingOp, RemotePurpose, fuzzy};
 
 impl App {
@@ -14,6 +16,9 @@ impl App {
     }
 
     pub(crate) fn push_set_upstream(&mut self) {
+        if self.declines_jj_network() {
+            return;
+        }
         let Some(branch) = self.head.branch.clone() else {
             self.error("HEAD is detached; nothing to push");
             return;
@@ -36,6 +41,9 @@ impl App {
     }
 
     pub(crate) fn pull(&mut self) {
+        if self.declines_jj_network() {
+            return;
+        }
         if self.head.upstream.is_some() {
             self.queue_network("pull", vec!["git".into(), "pull".into()]);
             return;
@@ -95,12 +103,25 @@ impl App {
     /// Queue a git op and, when it is a push, remember its argv so a rejection
     /// can retry with `--force-with-lease` against the same target.
     pub(crate) fn queue_network(&mut self, label: impl Into<String>, argv: Vec<String>) {
+        if self.declines_jj_network() {
+            return;
+        }
         let label = label.into();
         if argv.get(1).map(String::as_str) == Some("push") {
             self.last_push_argv = Some(argv.clone());
         }
         self.info(format!("running git {label}…"));
         self.pending_git = Some(GitOp { label, argv });
+    }
+
+    /// Push and pull run the git CLI, which in a jj repo would move git's
+    /// HEAD and branches behind jj's back.
+    pub(super) fn declines_jj_network(&mut self) -> bool {
+        let jj = self.review.vcs.vcs_kind() == VcsKind::Jj;
+        if jj {
+            self.error("run jj git push or jj git fetch in a shell to sync a jj repo");
+        }
+        jj
     }
 
     /// A failed push/pull: open the recovery dialog its error calls for.

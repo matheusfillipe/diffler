@@ -8,7 +8,7 @@ use std::path::Path;
 use diffler_core::model::FileDiff;
 use diffler_core::review::Review;
 use diffler_core::source::ReviewSource;
-use diffler_core::vcs::{BranchInfo, LogEntry, NetworkOp, Vcs, VcsError};
+use diffler_core::vcs::{BranchInfo, LogEntry, NetworkOp, Vcs, VcsError, VcsKind};
 
 use super::enrich::EnrichOutcome;
 use super::rowsel::RowSelect;
@@ -66,11 +66,9 @@ pub enum Section {
 impl Section {
     pub const ALL: [Self; 3] = [Self::Untracked, Self::Unstaged, Self::Staged];
 
-    /// jj has no index, so `Vcs::status` folds everything into `Staged` (see
-    /// `diffler_core::jj`); that section reads as the working copy, not as
-    /// "staged", since there is nothing else to compare it against.
-    pub fn title(self, kind: diffler_core::vcs::VcsKind) -> &'static str {
-        use diffler_core::vcs::VcsKind;
+    /// jj has no index, so its `Vcs::status` puts the whole working copy in
+    /// `Staged`.
+    pub fn title(self, kind: VcsKind) -> &'static str {
         match (self, kind) {
             (Self::Staged, VcsKind::Jj) => "Working copy (@)",
             (Self::Untracked, _) => "Untracked",
@@ -1275,7 +1273,8 @@ impl App {
         let Some((section, file, hunk)) = self.row_file(&row) else {
             return;
         };
-        if section == Section::Staged {
+        // jj's whole working copy sits in Staged, so we let its backend decline
+        if section == Section::Staged && self.review.vcs.vcs_kind() == VcsKind::Git {
             self.info("already staged");
             return;
         }
@@ -1318,7 +1317,8 @@ impl App {
     /// snapshot, and a file edited on disk since the last refresh is missing
     /// from it, which is what made this take two presses.
     fn stage_all(&mut self) {
-        if self.section_files(Section::Untracked).is_empty()
+        if self.review.vcs.vcs_kind() == VcsKind::Git
+            && self.section_files(Section::Untracked).is_empty()
             && self.section_files(Section::Unstaged).is_empty()
         {
             self.info("nothing to stage");

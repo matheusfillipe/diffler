@@ -49,7 +49,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use diffler_core::model::DiffModel;
 use diffler_core::review::Review;
 use diffler_core::source::ReviewSource;
-use diffler_core::vcs::{BranchInfo, HeadInfo, NetworkOp, Vcs, VcsError};
+use diffler_core::vcs::{BranchInfo, HeadInfo, NetworkOp, Vcs, VcsError, VcsKind};
 
 use crate::config::{Config, KeyPress, LoadedConfig};
 use crate::editor::EditorRequest;
@@ -1776,6 +1776,10 @@ impl App {
                 return;
             }
             if let Some(branch) = self.pending_pr_switch.take().filter(|_| ok) {
+                if self.review.vcs.vcs_kind() == VcsKind::Jj {
+                    self.checkout_branch(&branch);
+                    return;
+                }
                 self.pending_git = Some(GitOp {
                     label: format!("switch {branch}"),
                     argv: vec!["git".to_owned(), "switch".to_owned(), branch],
@@ -1915,7 +1919,9 @@ mod tests {
     use crossterm::event::KeyModifiers;
 
     use super::*;
-    use crate::test_support::{Fixture, ctrl_key, key, standard_fixture, two_hunk_fixture};
+    use crate::test_support::{
+        Fixture, ctrl_key, jj_fixture, key, standard_fixture, two_hunk_fixture,
+    };
     use diffler_core::session::Anchor;
 
     fn app() -> (Fixture, App) {
@@ -2786,6 +2792,43 @@ mod tests {
             KeyModifiers::NONE,
         )));
         assert_eq!(app.modal, None, "esc closes the branch picker");
+    }
+
+    #[test]
+    fn a_jj_repo_commits_its_whole_working_copy_through_the_editor() {
+        let fixture = jj_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.handle(key('c'));
+        app.handle(key('c'));
+        let Some(EditorRequest {
+            purpose: EditorPurpose::Commit { msg_path },
+            ..
+        }) = app.pending_editor.take()
+        else {
+            panic!("expected a commit request");
+        };
+        std::fs::write(&msg_path, "commit everything\n").unwrap();
+        app.editor_finished(EditorPurpose::Commit { msg_path }, Ok(true));
+        app.settle_refresh();
+        assert_eq!(app.head.subject, "commit everything");
+        assert_eq!(app.section_files(Section::Staged).len(), 0);
+    }
+
+    #[test]
+    fn a_jj_repo_declines_staging_a_file_and_pushing() {
+        let fixture = jj_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.handle(key('j'));
+        app.handle(key('s'));
+        let message = app.message.clone().expect("stage declined");
+        assert!(message.text.contains("no staging area"), "{}", message.text);
+
+        app.head.upstream = Some("origin/main".to_owned());
+        app.handle(key('P'));
+        app.handle(key('p'));
+        assert!(app.pending_git.is_none());
+        let message = app.message.expect("push declined");
+        assert!(message.text.contains("jj git push"), "{}", message.text);
     }
 
     #[test]
