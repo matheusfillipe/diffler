@@ -11,8 +11,9 @@ use diffler_core::model::{FileDiff, Hunk};
 
 use super::App;
 
-/// Emphasis ranges keyed by a line's (old, new) line numbers.
-type EmphasisByLine = HashMap<(Option<u32>, Option<u32>), Vec<Range<usize>>>;
+/// Emphasis ranges and the reformat-only flag, keyed by a line's (old, new)
+/// line numbers.
+type EmphasisByLine = HashMap<(Option<u32>, Option<u32>), (Vec<Range<usize>>, bool)>;
 
 /// Lines added to a file's context on each expand step.
 const STEP: u32 = 20;
@@ -117,16 +118,20 @@ pub(super) fn apply_context(
 fn carry_emphasis(old: &[Hunk], new: &mut [Hunk]) {
     let mut prior: EmphasisByLine = HashMap::new();
     for line in old.iter().flat_map(|h| &h.lines) {
-        if !line.emphasis.is_empty() {
-            prior.insert((line.old_no, line.new_no), line.emphasis.clone());
+        if !line.emphasis.is_empty() || line.reformat_only {
+            prior.insert(
+                (line.old_no, line.new_no),
+                (line.emphasis.clone(), line.reformat_only),
+            );
         }
     }
     if prior.is_empty() {
         return;
     }
     for line in new.iter_mut().flat_map(|h| &mut h.lines) {
-        if let Some(ranges) = prior.get(&(line.old_no, line.new_no)) {
+        if let Some((ranges, reformat_only)) = prior.get(&(line.old_no, line.new_no)) {
             line.emphasis.clone_from(ranges);
+            line.reformat_only = *reformat_only;
         }
     }
 }
@@ -179,6 +184,34 @@ mod tests {
 
         app.handle(key('-'));
         assert_eq!(context_count(&app), 6, "- collapses back to the default");
+    }
+
+    #[test]
+    fn expanding_keeps_the_structural_reformat_dimming() {
+        let fixture = Fixture::new();
+        fixture.write("a.rs", "fn f() {\n    let x = compute();\n}\n");
+        fixture.commit_all("base");
+        fixture.write("a.rs", "fn f() {\n        let x = compute();\n}\n");
+        let mut config = LoadedConfig::default();
+        config.config.diff.algorithm = diffler_core::diffalgo::DiffAlgorithm::Structural;
+        let review = fixture.review();
+        review.set_diff_algorithm(config.config.diff.algorithm, true);
+        let mut app = App::new(review, config);
+        app.review.refresh().expect("refresh");
+        app.open_working_tree_file("a.rs");
+        app.queue_enrich_selected();
+        app.enrich_now();
+        let dimmed = |app: &App| {
+            app.review.model().files[0]
+                .hunks
+                .iter()
+                .flat_map(|h| &h.lines)
+                .filter(|l| l.reformat_only)
+                .count()
+        };
+        assert_eq!(dimmed(&app), 2, "the reindented pair dims");
+        app.handle(key('+'));
+        assert_eq!(dimmed(&app), 2, "still dimmed after expanding");
     }
 
     #[test]

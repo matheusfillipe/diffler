@@ -236,11 +236,7 @@ pub trait Vcs: Send {
 
     /// Switch the line-diff algorithm every diff this instance computes from
     /// now on uses (config keys `diff.algorithm`, `diff.indent_heuristic`).
-    /// Live: a palette switch calls this on the review's own long-lived
-    /// backend so the change takes effect without reopening it.
     fn set_diff_algorithm(&self, algorithm: DiffAlgorithm, indent_heuristic: bool);
-    /// The algorithm currently in effect.
-    fn diff_algorithm(&self) -> (DiffAlgorithm, bool);
 }
 
 /// Three-dot diff of `rev` against the working tree: `merge-base(rev, HEAD)`

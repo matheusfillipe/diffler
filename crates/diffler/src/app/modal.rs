@@ -644,23 +644,16 @@ impl App {
         let Some(Modal::DiffAlgorithm { list }) = self.modal.as_mut() else {
             return;
         };
-        let names: Vec<String> = diffler_core::diffalgo::DiffAlgorithm::ALL
-            .iter()
-            .map(ToString::to_string)
-            .collect();
         match list.feed(key) {
             FuzzyKey::Submit => self.submit_diff_algorithm(),
             FuzzyKey::Cancel => self.modal = None,
-            FuzzyKey::Edited => list.rerank(&names),
+            FuzzyKey::Edited => list.rerank(&super::diff_algorithm_names()),
             _ => {}
         }
     }
 
     fn submit_diff_algorithm(&mut self) {
-        let names: Vec<String> = diffler_core::diffalgo::DiffAlgorithm::ALL
-            .iter()
-            .map(ToString::to_string)
-            .collect();
+        let names = super::diff_algorithm_names();
         let Some(Modal::DiffAlgorithm { list }) = &self.modal else {
             return;
         };

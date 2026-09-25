@@ -120,11 +120,6 @@ impl Review {
         self.vcs.set_diff_algorithm(algorithm, indent_heuristic);
     }
 
-    /// The algorithm currently in effect.
-    pub fn diff_algorithm(&self) -> (DiffAlgorithm, bool) {
-        self.vcs.diff_algorithm()
-    }
-
     /// The working-tree review diff, computed and cached on first access. A
     /// backend error yields an empty diff rather than panicking; the next
     /// [`Review::refresh`] gets another chance to compute it.

@@ -771,6 +771,14 @@ pub(crate) fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
+/// The rows of the diff algorithm picker, in `DiffAlgorithm::ALL` order.
+pub(crate) fn diff_algorithm_names() -> Vec<String> {
+    diffler_core::diffalgo::DiffAlgorithm::ALL
+        .iter()
+        .map(ToString::to_string)
+        .collect()
+}
+
 impl App {
     // a flat constructor: one init line per field of owned state
     #[allow(clippy::too_many_lines)]
@@ -1534,36 +1542,43 @@ impl App {
     }
 
     fn open_diff_algorithm_picker(&mut self) {
-        let names: Vec<String> = diffler_core::diffalgo::DiffAlgorithm::ALL
-            .iter()
-            .map(ToString::to_string)
-            .collect();
         let mut list = fuzzy::FuzzyList::default();
-        list.rerank(&names);
+        list.rerank(&diff_algorithm_names());
         self.modal = Some(Modal::DiffAlgorithm { list });
     }
 
-    /// Switch the active line-diff algorithm live: writes it back to config
-    /// (so a later background refresh keeps using it), updates the review's
-    /// own backend, drops the immutable per-source model cache the MCP
-    /// handlers serve (it would otherwise keep answering with the old
-    /// algorithm's hunks), and re-diffs whatever is open.
+    /// Switch the line-diff algorithm live: the config (which every refresh
+    /// worker reads), the review's own backend, and every model computed
+    /// under the old one.
     pub(crate) fn apply_diff_algorithm(&mut self, name: &str) {
         let Some(algorithm) = diffler_core::diffalgo::DiffAlgorithm::parse(name) else {
             return;
         };
-        let indent_heuristic = self.config.diff.indent_heuristic;
         self.config.diff.algorithm = algorithm;
-        self.review.set_diff_algorithm(algorithm, indent_heuristic);
+        self.review
+            .set_diff_algorithm(algorithm, self.config.diff.indent_heuristic);
         self.source_models.clear();
         self.rediff_open_view();
+        // a refresh already running diffs under the old algorithm, so we
+        // queue one more behind it
+        if self.refresh_state == RefreshState::Running {
+            self.queue_refresh();
+        }
         self.info(format!("diff algorithm: {algorithm}"));
     }
 
-    /// Re-diff whatever review is open under the session's current algorithm,
-    /// keeping the cursor through `RowRef`'s capture/restore, the way
-    /// `open_against_diff`/`open_pr_diff` already do for a live model swap.
+    /// Re-diff the status sections and the open review, keeping the cursor.
     fn rediff_open_view(&mut self) {
+        // capture before the model swap, or the position named would already
+        // read against the row it is moving to
+        let positions = self
+            .diff
+            .as_ref()
+            .map(|diff| diff.capture_positions(&self.review));
+        if let Err(err) = self.review.refresh() {
+            self.error(err.to_string());
+        }
+        self.status.clear_enriched();
         let Some(source) = self.diff.as_ref().map(|d| d.source.clone()) else {
             return;
         };
@@ -1571,62 +1586,43 @@ impl App {
             ReviewSource::Walkthrough { id } => self.walkthrough_about(id),
             other => other.clone(),
         };
-        let model = match &about {
-            ReviewSource::WorkingTree => {
-                if let Err(err) = self.review.refresh() {
-                    self.error(err.to_string());
-                }
-                None
+        let model = match self.pinned_model(&about) {
+            Ok(model) => model,
+            Err(err) => {
+                self.error(err.to_string());
+                return;
             }
-            ReviewSource::Commit { oid } => match self.review.vcs.commit_diff(oid) {
-                Ok(model) => Some(model),
-                Err(err) => {
-                    self.error(err.to_string());
-                    return;
-                }
-            },
-            ReviewSource::Range { oldest, newest } => {
-                match self.review.vcs.range_diff(oldest, newest) {
-                    Ok(model) => Some(model),
-                    Err(err) => {
-                        self.error(err.to_string());
-                        return;
-                    }
-                }
-            }
-            ReviewSource::Pr { number } => {
-                let Some((base, head)) = self.pr_ranges.get(number).cloned() else {
-                    return;
-                };
-                match self.review.vcs.tree_diff(&base, &head) {
-                    Ok(model) => Some(model),
-                    Err(err) => {
-                        self.error(err.to_string());
-                        return;
-                    }
-                }
-            }
-            ReviewSource::Against { rev } => {
-                match diffler_core::vcs::against_diff(self.review.vcs.as_ref(), rev) {
-                    Ok(model) => Some(model),
-                    Err(err) => {
-                        self.error(err.to_string());
-                        return;
-                    }
-                }
-            }
-            // a walkthrough's own `about` never names another walkthrough
-            ReviewSource::Walkthrough { .. } => None,
         };
-        let Some(diff) = self.diff.as_mut() else {
+        let (Some(diff), Some(positions)) = (self.diff.as_mut(), positions) else {
             return;
         };
-        let positions = diff.capture_positions(&self.review);
         diff.commit_model = model;
         diff.invalidate();
         diff.ensure_rows(&self.review);
         diff.restore_positions(&self.review, positions);
         self.queue_declared();
+    }
+
+    /// A fresh compute of the model a diff view keeps for `about`; `None` for
+    /// the working tree, which the view reads off the review itself.
+    fn pinned_model(
+        &self,
+        about: &ReviewSource,
+    ) -> Result<Option<diffler_core::model::DiffModel>, diffler_core::vcs::VcsError> {
+        let vcs = self.review.vcs.as_ref();
+        let model = match about {
+            ReviewSource::WorkingTree | ReviewSource::Walkthrough { .. } => return Ok(None),
+            ReviewSource::Commit { oid } => vcs.commit_diff(oid)?,
+            ReviewSource::Range { oldest, newest } => vcs.range_diff(oldest, newest)?,
+            ReviewSource::Pr { number } => {
+                let (base, head) = self.pr_ranges.get(number).ok_or_else(|| {
+                    diffler_core::vcs::VcsError::Rejected(format!("PR #{number} is not resolved"))
+                })?;
+                vcs.tree_diff(base, head)?
+            }
+            ReviewSource::Against { rev } => diffler_core::vcs::against_diff(vcs, rev)?,
+        };
+        Ok(Some(model))
     }
 
     pub fn info(&mut self, text: impl Into<String>) {

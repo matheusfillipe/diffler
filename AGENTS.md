@@ -179,23 +179,30 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   explicit construction argument, same as `context_lines`. Myers/minimal/
   patience are git2's own `DiffOptions` flags, applied at every
   `DiffOptions::new()` site through one `apply_git_algorithm` helper.
-  Histogram has no libgit2 implementation: `GitVcs::diff_to_model` re-derives
+  Histogram has no libgit2 implementation: `GitVcs::imara_hunks` re-derives
   a modified file's hunks through `diffalgo::histogram_hunks` (imara-diff,
   already linked in as `syndiff`'s own line-diff engine), mirroring git's own
-  hunk-merging rule for context. Structural is histogram plus reformat
-  detection: `syntax::intraline` reuses the AST diff it already computes for
-  intraline emphasis, and a paired deleted/added line with zero structural
-  difference (a pure reindent) is flagged `DiffLine::reformat_only` and
-  renders as one dimmed line instead of red/green. Hunk staging always
-  re-derives the target file's hunks the same way the open view did (through
-  the session's current algorithm), so the id the reviewer picked is
-  findable and unstage/stage reverses cleanly under every algorithm; under
-  histogram/structural the staged patch is written straight from the model's
-  `DiffLine`s (`render_hunk_patch_from_model`) since there is no `git2::Patch`
-  to read lines from. A live switch (`<c-a>` on the diff screen) updates the
-  config, the backend, and re-diffs whatever review is open, keeping the
-  cursor through `RowRef`'s capture/restore; the pane heading trails
-  `· <algorithm>` whenever it isn't the default.
+  hunk-merging rule and header numbering. It reads the worktree side raw, so
+  a file whose bytes hash to something other than what git compared (a clean
+  filter such as autocrlf) keeps git2's hunks. Those hunks carry no function
+  heading; only the hunk header row reads one. Structural is histogram plus
+  reformat detection: `syntax::intraline` reuses the AST diff it already
+  computes for intraline emphasis, and a paired deleted/added line that
+  differs in whitespace alone, with no token changed, is flagged
+  `DiffLine::reformat_only` and renders dimmed instead of red/green. Python,
+  YAML, Haskell, Make and Scala never get the flag, since layout is syntax
+  there. Hunk staging re-derives the target file's hunks through the same
+  `imara_hunks`, so the id the reviewer picked is findable; under
+  histogram/structural the staged patch copies each line's bytes from the
+  file's own text (`render_hunk_patch_from_model`), since the model's text
+  has its line endings stripped. Both renderers share `write_hunk`: libgit2
+  applies a hunk at its `+` start, so a hunk sent alone names its minus
+  side's position there. A live switch (`<c-a>` on the diff screen) updates
+  the config, the backend, the status sections and whatever review is open,
+  keeping the cursor through `RowRef`'s capture/restore; an enrichment
+  queued under the old algorithm is dropped on arrival, since a content hash
+  cannot tell the two apart. The pane heading trails `· <algorithm>`
+  whenever it isn't the default.
 - **Grammars.** `syntax::registry::REGISTRY` is one process-wide `LazyLock`
   holding every bundled grammar; a language compiles its highlight query on
   first use (~15ms) behind a `OnceLock`, on the enrichment thread. Registering
@@ -697,7 +704,8 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   `bulk_publish`, so the author is notified once; the verdict maps onto
   approve/unapprove, the only review state the REST API records.
 - **Non-goals.** Worktree/workspace management, agent orchestration,
-  structural diff, task tracking.
+  a difftastic-style structural layout (the structural algorithm keeps the
+  line-based layout), task tracking.
 
 ## Distribution
 

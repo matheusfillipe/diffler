@@ -324,8 +324,4 @@ impl Vcs for JjVcs {
     fn set_diff_algorithm(&self, algorithm: DiffAlgorithm, indent_heuristic: bool) {
         self.git.set_diff_algorithm(algorithm, indent_heuristic);
     }
-
-    fn diff_algorithm(&self) -> (DiffAlgorithm, bool) {
-        self.git.diff_algorithm()
-    }
 }

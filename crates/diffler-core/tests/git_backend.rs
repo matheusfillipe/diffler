@@ -1593,26 +1593,117 @@ mod diff_algorithm {
         }
     }
 
-    /// Staging under the structural/histogram model-based patch path must
-    /// still honour a file with no trailing newline, the case libgit2's own
-    /// `git2::Patch` line stream handles for the native algorithms.
-    #[test]
-    fn staging_a_file_without_trailing_newline_under_histogram() {
+    /// Stage hunk `pick` of `old` -> `new` alone and return the staged text,
+    /// after checking that unstaging the staged hunk empties the index again.
+    #[allow(clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
+    fn stage_alone(old: &str, new: &str, algorithm: DiffAlgorithm, pick: usize) -> String {
         let fx = Fixture::new();
-        fx.write("a.txt", "one\ntwo\n");
+        fx.write("a.txt", old);
         fx.commit_all("base");
-        fx.write("a.txt", "one\ntwo\nthree");
+        fx.write("a.txt", new);
+        let v = open(&fx, algorithm);
+        let picked = v.status().expect("status").unstaged.files[0].hunks[pick]
+            .id
+            .clone();
+        v.stage_hunk(Path::new("a.txt"), &picked)
+            .unwrap_or_else(|err| panic!("{algorithm}: stage hunk: {err}"));
+        let st = v.status().expect("status");
+        let staged = st.staged.files[0].new_text.clone().expect("text");
+        let back = st.staged.files[0].hunks[0].id.clone();
+        v.unstage_hunk(Path::new("a.txt"), &back)
+            .unwrap_or_else(|err| panic!("{algorithm}: unstage hunk: {err}"));
+        assert!(
+            v.status().expect("status").staged.files.is_empty(),
+            "{algorithm}: unstage restores the index"
+        );
+        staged
+    }
+
+    /// We send the picked hunk without the ones above it, and a periodic
+    /// file matches its lines at a shifted offset too, so a hunk placed by
+    /// its own `+` start would land two lines early without complaint.
+    #[test]
+    fn a_later_hunk_staged_alone_lands_where_it_is_shown() {
+        let pairs = "a\nb\n".repeat(15);
+        let old = format!("t1\nt2\n{pairs}");
+        let mut new = pairs;
+        new.replace_range(20..21, "A");
+        for algorithm in DiffAlgorithm::ALL {
+            assert_eq!(
+                stage_alone(&old, &new, algorithm, 1),
+                format!("t1\nt2\n{new}"),
+                "{algorithm}"
+            );
+        }
+    }
+
+    #[test]
+    fn staging_keeps_line_endings_byte_for_byte_under_every_algorithm() {
+        let cases = [
+            ("a\r\nb\r\nc\r\n", "a\r\nB\r\nc\r\n"),
+            ("a\r\nb\nc\r\n", "a\r\nB\nc\r\n"),
+            ("a\nb\nc", "a\nb\nC"),
+            ("a\nb\nc", "a\nb\nc\n"),
+            ("a\nb\nc\n", "a\nb\nc"),
+        ];
+        for algorithm in DiffAlgorithm::ALL {
+            for (old, new) in cases {
+                assert_eq!(stage_alone(old, new, algorithm, 0), new, "{algorithm}");
+            }
+        }
+    }
+
+    /// Histogram reads the worktree file raw, while git compares it through
+    /// its clean filter; autocrlf keeps git's own hunks and an LF index.
+    #[test]
+    fn histogram_keeps_gits_hunks_under_autocrlf() {
+        let fx = Fixture::new();
+        fx.repo
+            .config()
+            .expect("config")
+            .set_str("core.autocrlf", "true")
+            .expect("autocrlf");
+        fx.write("a.txt", "a\r\nb\r\nc\r\nd\r\n");
+        fx.commit_all("base");
+        fx.write("a.txt", "a\r\nB\r\nc\r\nd\r\n");
 
         let v = open(&fx, DiffAlgorithm::Histogram);
+        let hunks = &v.status().expect("status").unstaged.files[0].hunks;
+        let changed: Vec<_> = hunks[0]
+            .lines
+            .iter()
+            .filter(|l| l.kind != LineKind::Context)
+            .map(|l| l.text.as_str())
+            .collect();
+        assert_eq!(changed, ["b", "B"]);
+        v.stage_hunk(Path::new("a.txt"), &hunks[0].id)
+            .expect("stage hunk");
         let st = v.status().expect("status");
-        let id = st.unstaged.files[0].hunks[0].id.clone();
-        v.stage_hunk(Path::new("a.txt"), &id).expect("stage hunk");
+        assert_eq!(st.staged.files[0].new_text.as_deref(), Some("a\nB\nc\nd\n"));
+    }
 
-        let st = v.status().expect("status");
-        assert!(st.unstaged.files.is_empty());
+    #[test]
+    fn worktree_hunks_come_from_histogram_where_it_disagrees_with_myers() {
+        let old = "begin\nrepeat\nrepeat\nunique_anchor\nrepeat\nrepeat\nend\n";
+        let new = "begin\nunique_anchor\nrepeat\nrepeat\nrepeat\nrepeat\nend\n";
+        let fx = Fixture::new();
+        fx.write("a.txt", old);
+        fx.commit_all("base");
+        fx.write("a.txt", new);
+        let unstaged = |algorithm| {
+            open(&fx, algorithm)
+                .status()
+                .expect("status")
+                .unstaged
+                .files[0]
+                .hunks
+                .clone()
+        };
+        let histogram = unstaged(DiffAlgorithm::Histogram);
         assert_eq!(
-            st.staged.files[0].new_text.as_deref(),
-            Some("one\ntwo\nthree")
+            histogram,
+            diffler_core::diffalgo::histogram_hunks(old, new, "a.txt", 3, true)
         );
+        assert_ne!(histogram, unstaged(DiffAlgorithm::Myers));
     }
 }

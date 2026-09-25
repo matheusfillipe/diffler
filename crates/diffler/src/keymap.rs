@@ -295,7 +295,7 @@ impl Action {
             Self::CollapseContext => "collapse diff context",
             Self::ExpandWholeFile => "expand to the whole file",
             Self::SwitchTheme => "switch theme",
-            Self::SwitchDiffAlgorithm => "diff: switch algorithm",
+            Self::SwitchDiffAlgorithm => "switch the diff algorithm",
             Self::Comment => "comment the diff line",
             Self::VisualSelect => "select a range of rows",
             Self::Reply => "reply to the comment",

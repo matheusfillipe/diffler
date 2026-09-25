@@ -77,6 +77,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let search = app.search.as_ref();
     let highlighter = app.highlighter.as_ref();
     let human_author = app.author.as_str();
+    let algorithm = app.config.diff.algorithm;
     if let Some(diff) = app.diff.as_mut() {
         diff.ensure_rows(review);
         // the source is cloned out so the session's borrow is off the view,
@@ -104,7 +105,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             highlighter,
             human_author,
             rasters: &rasters,
-            algorithm: review.diff_algorithm().0,
+            algorithm,
         };
         draw_body(frame, body, &ctx, diff);
     }
@@ -2456,6 +2457,44 @@ mod tests {
             screen.contains("histogram"),
             "pane heading names the active algorithm: {screen}"
         );
+    }
+
+    /// The file's content hash is the same under both algorithms, so an
+    /// enrichment queued before the switch must not put the old hunks back,
+    /// on the diff pane or on the status sections the stage keys read.
+    #[test]
+    fn a_switch_rediffs_everything_and_outlives_an_enrichment_in_flight() {
+        use diffler_core::diffalgo::{DiffAlgorithm, histogram_hunks};
+        let old = "begin\nrepeat\nrepeat\nunique_anchor\nrepeat\nrepeat\nend\n";
+        let new = "begin\nunique_anchor\nrepeat\nrepeat\nrepeat\nrepeat\nend\n";
+        let fixture = crate::test_support::Fixture::new();
+        fixture.write("a.txt", old);
+        fixture.commit_all("base");
+        fixture.write("a.txt", new);
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_working_tree_diff(None);
+        app.queue_enrich_selected();
+
+        app.apply_diff_algorithm("histogram");
+        let expected = histogram_hunks(old, new, "a.txt", 3, true);
+        let ids = |hunks: &[diffler_core::model::Hunk]| -> Vec<_> {
+            hunks.iter().map(|h| h.id.clone()).collect()
+        };
+        app.enrich_now();
+        assert_eq!(
+            ids(&app.review.model().files[0].hunks),
+            ids(&expected),
+            "the stale job left the histogram hunks alone"
+        );
+        app.queue_enrich_selected();
+        app.enrich_now();
+        assert_eq!(ids(&app.review.model().files[0].hunks), ids(&expected));
+        assert_eq!(
+            ids(&app.review.status.unstaged.files[0].hunks),
+            ids(&expected),
+            "the status sections re-diffed too"
+        );
+        assert_eq!(app.config.diff.algorithm, DiffAlgorithm::Histogram);
     }
 
     /// A stop list is only readable when the reader knows whose order it is,

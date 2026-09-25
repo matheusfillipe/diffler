@@ -3,6 +3,7 @@
 //! large files) and used to run inside `draw`. They now run on the blocking
 //! pool; the pane renders plain until the result lands as an event.
 
+use diffler_core::diffalgo::DiffAlgorithm;
 use diffler_core::highlight::Highlighter;
 use diffler_core::model::{FileDiff, HashCache, Hunk};
 use diffler_core::pairing;
@@ -19,9 +20,8 @@ pub struct EnrichJob {
     pub new_text: Option<String>,
     pub hunks: Vec<Hunk>,
     pub semantic: bool,
-    /// The structural algorithm is active: mark reformat-only pairs when the
-    /// AST-diff engine runs, so the renderer can dim them.
-    pub structural: bool,
+    /// The algorithm that produced `hunks`.
+    pub algorithm: DiffAlgorithm,
 }
 
 /// The computed result, installed back into the caches if still current.
@@ -32,6 +32,7 @@ pub struct EnrichOutcome {
     pub hunks: Vec<Hunk>,
     pub highlights: FileHighlights,
     pub scope: FileScope,
+    pub algorithm: DiffAlgorithm,
 }
 
 /// Queue `file` for enrichment unless the caller's own cache says it's
@@ -46,7 +47,7 @@ pub(super) fn queue_if_stale(
     pending: &mut Vec<EnrichJob>,
     file: &FileDiff,
     semantic: bool,
-    structural: bool,
+    algorithm: DiffAlgorithm,
     ready: bool,
 ) {
     if ready {
@@ -63,7 +64,7 @@ pub(super) fn queue_if_stale(
         new_text: file.new_text.clone(),
         hunks: file.hunks.clone(),
         semantic,
-        structural,
+        algorithm,
     });
 }
 
@@ -79,7 +80,8 @@ pub fn run_enrich(highlighter: &Highlighter, job: EnrichJob) -> EnrichOutcome {
         hunks: job.hunks,
         hashes: HashCache::default(),
     };
-    if !(job.semantic && highlighter.syntactic_emphasis(&mut file, job.structural)) {
+    let structural = job.algorithm == DiffAlgorithm::Structural;
+    if !(job.semantic && highlighter.syntactic_emphasis(&mut file, structural)) {
         pairing::enrich_file(&mut file);
     }
     let highlight = |text: &Option<String>| {
@@ -106,6 +108,7 @@ pub fn run_enrich(highlighter: &Highlighter, job: EnrichJob) -> EnrichOutcome {
         hunks: file.hunks,
         highlights,
         scope,
+        algorithm: job.algorithm,
     }
 }
 
@@ -137,8 +140,7 @@ impl App {
     /// The walkthrough's own files, the ones its stops name and the diff does
     /// not carry, highlight like any other: they are few and deduped by hash.
     fn queue_enrich_context_files(&mut self) {
-        let structural =
-            self.config.diff.algorithm == diffler_core::diffalgo::DiffAlgorithm::Structural;
+        let algorithm = self.config.diff.algorithm;
         let Some(diff) = self.diff.as_ref() else {
             return;
         };
@@ -152,7 +154,7 @@ impl App {
                 &mut self.pending_enrich,
                 file,
                 false,
-                structural,
+                algorithm,
                 ready,
             );
         }
@@ -160,8 +162,7 @@ impl App {
 
     fn queue_enrich_file(&mut self, index: usize) {
         let semantic = self.config.ui.semantic_diff;
-        let structural =
-            self.config.diff.algorithm == diffler_core::diffalgo::DiffAlgorithm::Structural;
+        let algorithm = self.config.diff.algorithm;
         let Some(diff) = self.diff.as_ref() else {
             return;
         };
@@ -185,7 +186,7 @@ impl App {
             &mut self.pending_enrich,
             file,
             semantic,
-            structural,
+            algorithm,
             ready,
         );
     }
@@ -197,6 +198,12 @@ impl App {
     /// next frame re-queues against the new content.
     pub(crate) fn on_enriched(&mut self, outcome: EnrichOutcome) {
         self.enrich_inflight.remove(&outcome.hash);
+        // a job queued before an algorithm switch carries the old hunks, and
+        // the file's hash cannot tell them apart; we drop it so the next
+        // frame queues the file again
+        if outcome.algorithm != self.config.diff.algorithm {
+            return;
+        }
         self.install_status_enrichment(&outcome);
         let algorithm = self.config.diff.algorithm;
         let indent_heuristic = self.config.diff.indent_heuristic;

@@ -357,18 +357,12 @@ fn fuzzy_modal(app: &App) -> Option<popup::FuzzyModal> {
             &crate::theme::names(),
             " apply",
         )),
-        Some(Modal::DiffAlgorithm { list }) => {
-            let names: Vec<String> = diffler_core::diffalgo::DiffAlgorithm::ALL
-                .iter()
-                .map(ToString::to_string)
-                .collect();
-            Some(plain_list(
-                "Diff algorithm".to_owned(),
-                list,
-                &names,
-                " apply",
-            ))
-        }
+        Some(Modal::DiffAlgorithm { list }) => Some(plain_list(
+            "Diff algorithm".to_owned(),
+            list,
+            &crate::app::diff_algorithm_names(),
+            " apply",
+        )),
         Some(Modal::RemoteList { remotes, list, .. }) => {
             Some(plain_list("Remote".to_owned(), list, remotes, " select"))
         }

@@ -19,9 +19,8 @@ pub enum DiffAlgorithm {
     Minimal,
     Patience,
     Histogram,
-    /// The histogram line diff, plus: a paired deleted/added line whose
-    /// tokens are structurally identical (a pure reformat) renders as one
-    /// dimmed line instead of red/green.
+    /// The histogram line diff, plus: a paired deleted/added line that only
+    /// reformats the same tokens renders dimmed instead of red/green.
     Structural,
 }
 
@@ -202,12 +201,14 @@ fn build_hunk(
 
     let old_lines = lines.iter().filter(|l| l.kind != LineKind::Added).count() as u32;
     let new_lines = lines.iter().filter(|l| l.kind != LineKind::Deleted).count() as u32;
+    // git's header gives an empty side the line before the change
+    let start = |index: u32, len: u32| if len == 0 { index } else { index + 1 };
     let id = disambiguated_hunk_id(file_path, &lines, seen);
     Hunk {
         id,
-        old_start: lead_start + 1,
+        old_start: start(lead_start, old_lines),
         old_lines,
-        new_start: after_lead_start + 1,
+        new_start: start(after_lead_start, new_lines),
         new_lines,
         context: String::new(),
         lines,
@@ -298,6 +299,28 @@ mod tests {
         assert_eq!(hunks.len(), 1);
         let kinds: Vec<_> = hunks[0].lines.iter().map(|l| l.kind).collect();
         assert_eq!(kinds, vec![LineKind::Deleted, LineKind::Added]);
+    }
+
+    #[test]
+    fn an_empty_side_starts_at_the_line_before_like_git() {
+        let insert = histogram_hunks("a\nb\n", "a\nX\nb\n", "f.txt", 0, true);
+        assert_eq!(
+            (
+                insert[0].old_start,
+                insert[0].old_lines,
+                insert[0].new_start
+            ),
+            (1, 0, 2)
+        );
+        let delete = histogram_hunks("a\nX\nb\n", "a\nb\n", "f.txt", 0, true);
+        assert_eq!(
+            (
+                delete[0].old_start,
+                delete[0].new_start,
+                delete[0].new_lines
+            ),
+            (2, 1, 0)
+        );
     }
 
     #[test]

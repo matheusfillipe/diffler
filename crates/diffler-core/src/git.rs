@@ -110,37 +110,46 @@ impl GitVcs {
         opts
     }
 
-    /// Assemble a [`DiffModel`] from a computed git2 diff. `Myers`/`Minimal`/
-    /// `Patience` already produced the right hunks (their flags were baked
-    /// into the `DiffOptions` that built `diff`); `Histogram`/`Structural`
-    /// have no git2 equivalent, so every non-binary file with both sides
-    /// present gets its hunks re-derived through imara-diff instead. Rename
-    /// and binary detection, resolved on `diff` itself, are untouched either
-    /// way. Intra-line emphasis is a render-time concern: the TUI enriches
-    /// the file it is about to draw (see `crate::pairing::enrich_file`), so
-    /// every line here leaves `.emphasis` empty.
+    /// Intra-line emphasis is a render-time concern: the TUI enriches the
+    /// file it is about to draw (see `crate::pairing::enrich_file`), so the
+    /// backend leaves `.emphasis` empty.
     fn diff_to_model(&self, diff: &mut git2::Diff<'_>) -> Result<DiffModel, VcsError> {
         let mut files = Vec::new();
         for idx in 0..diff.deltas().len() {
-            if let Some(file) = build_file(&self.repo, diff, idx)? {
+            if let Some(file) = self.build_file(diff, idx)? {
                 files.push(file);
             }
         }
-        let algorithm = self.algorithm.get();
-        if algorithm.is_imara() {
-            let indent_heuristic = self.indent_heuristic.get();
-            for file in &mut files {
-                if file.binary {
-                    continue;
-                }
-                if let (Some(old), Some(new)) = (file.old_text.as_deref(), file.new_text.as_deref())
-                {
-                    file.hunks =
-                        histogram_hunks(old, new, &file.path, self.context_lines, indent_heuristic);
-                }
-            }
-        }
         Ok(DiffModel { files })
+    }
+
+    /// A modified text file's hunks under histogram/structural, which libgit2
+    /// cannot compute; `None` keeps git2's own. Model building and hunk
+    /// staging both go through here, so the ids they derive agree.
+    fn imara_hunks(
+        &self,
+        delta: &git2::DiffDelta<'_>,
+        old: Option<&str>,
+        new: Option<&str>,
+        path: &str,
+    ) -> Option<Vec<Hunk>> {
+        if !self.algorithm.get().is_imara() {
+            return None;
+        }
+        let (old, new) = (old?, new?);
+        // we read the worktree side raw, so when a clean filter (autocrlf,
+        // ident) makes git compare other bytes we keep git's own hunks
+        let hashed = git2::Oid::hash_object(git2::ObjectType::Blob, new.as_bytes()).ok()?;
+        if hashed != delta.new_file().id() {
+            return None;
+        }
+        Some(histogram_hunks(
+            old,
+            new,
+            path,
+            self.context_lines,
+            self.indent_heuristic.get(),
+        ))
     }
 
     fn walk_entries(
@@ -811,15 +820,11 @@ impl Vcs for GitVcs {
         self.algorithm.set(algorithm);
         self.indent_heuristic.set(indent_heuristic);
     }
-
-    fn diff_algorithm(&self) -> (DiffAlgorithm, bool) {
-        (self.algorithm.get(), self.indent_heuristic.get())
-    }
 }
 
 /// `DiffOptions` flags for the git2-native algorithms (myers is git2's
 /// default, so it sets nothing); `Histogram`/`Structural` have no git2 flag
-/// and are handled entirely by [`GitVcs::diff_to_model`] instead.
+/// and go through [`GitVcs::imara_hunks`] instead.
 fn apply_git_algorithm(
     opts: &mut git2::DiffOptions,
     algorithm: DiffAlgorithm,
@@ -840,15 +845,6 @@ fn apply_git_algorithm(
 impl GitVcs {
     /// Render one hunk of `rel` as a unified patch libgit2 can apply to the
     /// index. `reverse` flips the patch so applying it undoes a staged hunk.
-    /// Under `Histogram`/`Structural`, `diff`'s own git2-computed hunks don't
-    /// match what the reviewer sees (libgit2 has no histogram algorithm), so
-    /// a modified file's hunks are re-derived the same way the display model
-    /// is (`histogram_hunks`) and the patch is built from that model instead;
-    /// this is also what keeps the hunk id the reviewer picked findable.
-    /// Every other case (an add/delete/binary file, or a git2-native
-    /// algorithm) still renders straight from git2's own patch lines, so
-    /// original line endings and missing-trailing-newline markers survive
-    /// untouched.
     fn synthesize_patch(
         &self,
         diff: &git2::Diff<'_>,
@@ -858,40 +854,28 @@ impl GitVcs {
     ) -> Result<Vec<u8>, VcsError> {
         let rel = rel.to_string_lossy();
         for idx in 0..diff.deltas().len() {
-            let Some(delta) = diff.get_delta(idx) else {
-                continue;
-            };
-            if delta.flags().is_binary() || delta_new_path(&delta) != rel {
-                continue;
-            }
-            let algorithm = self.algorithm.get();
-            let old_text = blob_text(&self.repo, delta.old_file().id());
-            let new_text = new_side_text(&self.repo, &delta, &rel);
-            if algorithm.is_imara()
-                && let (Some(old), Some(new)) = (old_text.as_deref(), new_text.as_deref())
-            {
-                let hunks = histogram_hunks(
-                    old,
-                    new,
-                    &rel,
-                    self.context_lines,
-                    self.indent_heuristic.get(),
-                );
-                let Some(hunk) = hunks.into_iter().find(|h| h.id == *target) else {
-                    return Err(VcsError::Rejected("hunk not found (diff changed?)".into()));
-                };
-                return Ok(render_hunk_patch_from_model(
-                    &hunk,
-                    &rel,
-                    delta.status(),
-                    reverse,
-                    old,
-                    new,
-                ));
-            }
             let Some(patch) = git2::Patch::from_diff(diff, idx)? else {
                 continue;
             };
+            // the patch's delta, since loading it is what fills in the
+            // worktree side's id that `imara_hunks` checks against
+            let delta = patch.delta();
+            if delta.flags().is_binary() || delta_new_path(&delta) != rel {
+                continue;
+            }
+            if self.algorithm.get().is_imara() {
+                let old_text = blob_text(&self.repo, delta.old_file().id());
+                let new_text = new_side_text(&self.repo, &delta, &rel);
+                let (old, new) = (old_text.as_deref(), new_text.as_deref());
+                if let Some(hunks) = self.imara_hunks(&delta, old, new, &rel)
+                    && let (Some(old), Some(new)) = (old, new)
+                {
+                    if let Some(hunk) = hunks.iter().find(|h| h.id == *target) {
+                        return Ok(render_hunk_patch_from_model(hunk, &rel, reverse, old, new));
+                    }
+                    continue;
+                }
+            }
             let mut seen = HashMap::new();
             for h in 0..patch.num_hunks() {
                 let lines = hunk_model_lines(&patch, h)?;
@@ -899,9 +883,54 @@ impl GitVcs {
                     return render_hunk_patch(&patch, h, &rel, delta.status(), reverse);
                 }
             }
-            return Err(VcsError::Rejected("hunk not found (diff changed?)".into()));
         }
         Err(VcsError::Rejected("hunk not found (diff changed?)".into()))
+    }
+
+    fn build_file(
+        &self,
+        diff: &mut git2::Diff<'_>,
+        idx: usize,
+    ) -> Result<Option<FileDiff>, VcsError> {
+        let repo = &self.repo;
+        let Some(patch) = git2::Patch::from_diff(diff, idx)? else {
+            // binary or unreadable: fall back to delta metadata only
+            return Ok(build_binary_file(diff, idx));
+        };
+        let delta = patch.delta();
+        if delta.flags().is_binary() {
+            return Ok(build_binary_file(diff, idx));
+        }
+        let file_path = delta_new_path(&delta);
+        let status = map_status(delta.status());
+        let old_path = if status == FileStatus::Renamed {
+            delta
+                .old_file()
+                .path()
+                .map(|p| p.to_string_lossy().into_owned())
+        } else {
+            None
+        };
+
+        let old_text = blob_text(repo, delta.old_file().id());
+        let new_text = new_side_text(repo, &delta, &file_path);
+
+        let imara = self.imara_hunks(&delta, old_text.as_deref(), new_text.as_deref(), &file_path);
+        let hunks = match imara {
+            Some(hunks) => hunks,
+            None => patch_hunks(&patch, &file_path)?,
+        };
+
+        Ok(Some(FileDiff {
+            path: file_path,
+            old_path,
+            status,
+            binary: false,
+            old_text,
+            new_text,
+            hunks,
+            hashes: crate::model::HashCache::default(),
+        }))
     }
 }
 
@@ -931,145 +960,125 @@ fn render_hunk_patch(
         out.extend_from_slice(format!("--- a/{rel}\n+++ b/{rel}\n").as_bytes());
     }
     let (hunk, line_count) = patch.hunk(h)?;
-    let (old, new) = (
-        (hunk.old_start(), hunk.old_lines()),
-        (hunk.new_start(), hunk.new_lines()),
-    );
-    let ((minus_start, minus_lines), (plus_start, plus_lines)) =
-        if reverse { (new, old) } else { (old, new) };
-    out.extend_from_slice(
-        format!("@@ -{minus_start},{minus_lines} +{plus_start},{plus_lines} @@\n").as_bytes(),
-    );
+    let mut lines: Vec<(LineKind, Vec<u8>)> = Vec::with_capacity(line_count);
     for l in 0..line_count {
         let line = patch.line_in_hunk(h, l)?;
-        let origin = match (line.origin(), reverse) {
-            (' ', _) => Some(b' '),
-            ('+', false) | ('-', true) => Some(b'+'),
-            ('-', false) | ('+', true) => Some(b'-'),
+        let kind = match line.origin() {
+            ' ' => LineKind::Context,
+            '+' => LineKind::Added,
+            '-' => LineKind::Deleted,
             // EOF-newline markers already carry the full "\ No newline at
             // end of file" text, including the newline that terminates the
-            // preceding unterminated line, so they pass through unprefixed
-            ('=' | '>' | '<', _) => None,
+            // preceding unterminated line, so they ride along with that line
+            '=' | '>' | '<' => {
+                if let Some((_, text)) = lines.last_mut() {
+                    text.extend_from_slice(line.content());
+                }
+                continue;
+            }
             _ => continue,
         };
-        if let Some(origin) = origin {
-            out.push(origin);
-        }
-        out.extend_from_slice(line.content());
+        lines.push((kind, line.content().to_vec()));
     }
+    write_hunk(
+        &mut out,
+        (hunk.old_start(), hunk.old_lines()),
+        (hunk.new_start(), hunk.new_lines()),
+        &lines,
+        reverse,
+    );
     Ok(out)
 }
 
-/// [`render_hunk_patch`]'s counterpart for a hunk imara-diff computed:
-/// there is no `git2::Patch` to read lines from, so the patch text is built
-/// straight from the model's `DiffLine`s, and the "no newline at end of
-/// file" markers are derived from whether `old_text`/`new_text` themselves
-/// end in a newline (unified-diff patch lines are always themselves
-/// newline-terminated; the marker line is what signals the original had none).
+/// One hunk's `@@` header (`old`/`new` are start and count, git's way) and
+/// lines, sent to libgit2 alone. Each line's bytes arrive terminated, an
+/// EOF-newline marker included.
+fn write_hunk(
+    out: &mut Vec<u8>,
+    old: (u32, u32),
+    new: (u32, u32),
+    lines: &[(LineKind, Vec<u8>)],
+    reverse: bool,
+) {
+    let ((minus_start, minus_lines), (_, plus_lines)) =
+        if reverse { (new, old) } else { (old, new) };
+    // libgit2 applies a hunk at its `+` start, and we send this hunk without
+    // the ones before it, so we point that start at the minus side's
+    // position; git's header gives an empty side the line before the change
+    let plus_start = if minus_lines == 0 {
+        minus_start + 1
+    } else {
+        minus_start
+    };
+    out.extend_from_slice(
+        format!("@@ -{minus_start},{minus_lines} +{plus_start},{plus_lines} @@\n").as_bytes(),
+    );
+    // minus lines go first in a change run even under `reverse`: libgit2
+    // rejects a `+` line marked "No newline at end of file" before a `-` one
+    let (minus_kind, plus_kind) = if reverse {
+        (LineKind::Added, LineKind::Deleted)
+    } else {
+        (LineKind::Deleted, LineKind::Added)
+    };
+    let is_context = |kind: LineKind| kind == LineKind::Context;
+    for run in lines.chunk_by(|a, b| is_context(a.0) == is_context(b.0)) {
+        for (origin, kind) in [
+            (b' ', LineKind::Context),
+            (b'-', minus_kind),
+            (b'+', plus_kind),
+        ] {
+            for (_, text) in run.iter().filter(|(k, _)| *k == kind) {
+                out.push(origin);
+                out.extend_from_slice(text);
+            }
+        }
+    }
+}
+
+/// [`render_hunk_patch`] for a hunk of a modified file that imara-diff
+/// computed. Each line is copied from `old_text`/`new_text` byte for byte,
+/// its own terminator included, since the model's text has CR and LF
+/// stripped.
 fn render_hunk_patch_from_model(
     hunk: &Hunk,
     rel: &str,
-    status: git2::Delta,
     reverse: bool,
     old_text: &str,
     new_text: &str,
 ) -> Vec<u8> {
-    let added = matches!(status, git2::Delta::Added | git2::Delta::Untracked);
-    let deleted = status == git2::Delta::Deleted;
-    let mut out = Vec::new();
-    out.extend_from_slice(format!("diff --git a/{rel} b/{rel}\n").as_bytes());
-    if (added && !reverse) || (deleted && reverse) {
-        out.extend_from_slice(
-            format!("new file mode 100644\n--- /dev/null\n+++ b/{rel}\n").as_bytes(),
-        );
-    } else if (deleted && !reverse) || (added && reverse) {
-        out.extend_from_slice(
-            format!("deleted file mode 100644\n--- a/{rel}\n+++ /dev/null\n").as_bytes(),
-        );
-    } else {
-        out.extend_from_slice(format!("--- a/{rel}\n+++ b/{rel}\n").as_bytes());
-    }
-    let old = (hunk.old_start, hunk.old_lines);
-    let new = (hunk.new_start, hunk.new_lines);
-    let ((minus_start, minus_lines), (plus_start, plus_lines)) =
-        if reverse { (new, old) } else { (old, new) };
-    out.extend_from_slice(
-        format!("@@ -{minus_start},{minus_lines} +{plus_start},{plus_lines} @@\n").as_bytes(),
-    );
-
-    #[allow(clippy::cast_possible_truncation)]
-    let old_total = old_text.lines().count() as u32;
-    #[allow(clippy::cast_possible_truncation)]
-    let new_total = new_text.lines().count() as u32;
-    let old_no_eof_nl = !old_text.is_empty() && !old_text.ends_with('\n');
-    let new_no_eof_nl = !new_text.is_empty() && !new_text.ends_with('\n');
-
-    for line in &hunk.lines {
-        let out_origin: u8 = match (line.kind, reverse) {
-            (LineKind::Context, _) => b' ',
-            (LineKind::Added, false) | (LineKind::Deleted, true) => b'+',
-            (LineKind::Deleted, false) | (LineKind::Added, true) => b'-',
+    let old_raw: Vec<&str> = old_text.split_inclusive('\n').collect();
+    let new_raw: Vec<&str> = new_text.split_inclusive('\n').collect();
+    let raw = |line: &DiffLine| -> Vec<u8> {
+        let (side, number) = match line.kind {
+            LineKind::Added => (&new_raw, line.new_no),
+            LineKind::Deleted | LineKind::Context => (&old_raw, line.old_no),
         };
-        out.push(out_origin);
-        out.extend_from_slice(line.text.as_bytes());
-        out.push(b'\n');
-        let old_last = old_total > 0 && line.old_no == Some(old_total);
-        let new_last = new_total > 0 && line.new_no == Some(new_total);
-        let no_newline = match line.kind {
-            LineKind::Deleted => old_last && old_no_eof_nl,
-            LineKind::Added => new_last && new_no_eof_nl,
-            LineKind::Context => (old_last && old_no_eof_nl) || (new_last && new_no_eof_nl),
-        };
-        if no_newline {
-            out.extend_from_slice(b"\\ No newline at end of file\n");
+        let text = number
+            .and_then(|n| n.checked_sub(1))
+            .and_then(|i| side.get(i as usize))
+            .copied()
+            .unwrap_or_default();
+        let mut bytes = text.as_bytes().to_vec();
+        if !text.ends_with('\n') {
+            bytes.extend_from_slice(b"\n\\ No newline at end of file\n");
         }
-    }
+        bytes
+    };
+    let lines: Vec<(LineKind, Vec<u8>)> = hunk.lines.iter().map(|l| (l.kind, raw(l))).collect();
+
+    let mut out = format!("diff --git a/{rel} b/{rel}\n--- a/{rel}\n+++ b/{rel}\n").into_bytes();
+    write_hunk(
+        &mut out,
+        (hunk.old_start, hunk.old_lines),
+        (hunk.new_start, hunk.new_lines),
+        &lines,
+        reverse,
+    );
     out
 }
 
 fn short7(oid: &str) -> String {
     oid.get(..7).unwrap_or(oid).to_owned()
-}
-
-fn build_file(
-    repo: &git2::Repository,
-    diff: &mut git2::Diff<'_>,
-    idx: usize,
-) -> Result<Option<FileDiff>, VcsError> {
-    let Some(patch) = git2::Patch::from_diff(diff, idx)? else {
-        // binary or unreadable: fall back to delta metadata only
-        return Ok(build_binary_file(diff, idx));
-    };
-    let delta = patch.delta();
-    if delta.flags().is_binary() {
-        return Ok(build_binary_file(diff, idx));
-    }
-    let file_path = delta_new_path(&delta);
-    let status = map_status(delta.status());
-    let old_path = if status == FileStatus::Renamed {
-        delta
-            .old_file()
-            .path()
-            .map(|p| p.to_string_lossy().into_owned())
-    } else {
-        None
-    };
-
-    let old_text = blob_text(repo, delta.old_file().id());
-    let new_text = new_side_text(repo, &delta, &file_path);
-
-    let hunks = patch_hunks(&patch, &file_path)?;
-
-    Ok(Some(FileDiff {
-        path: file_path,
-        old_path,
-        status,
-        binary: false,
-        old_text,
-        new_text,
-        hunks,
-        hashes: crate::model::HashCache::default(),
-    }))
 }
 
 /// Re-diff a file's own old/new text at `context` lines of surrounding

@@ -848,8 +848,7 @@ impl App {
     /// only renders.
     pub(crate) fn queue_enrich_status_expanded(&mut self) {
         let semantic = self.config.ui.semantic_diff;
-        let structural =
-            self.config.diff.algorithm == diffler_core::diffalgo::DiffAlgorithm::Structural;
+        let algorithm = self.config.diff.algorithm;
         for section in Section::ALL {
             let index = section.index();
             let model = match section {
@@ -877,7 +876,7 @@ impl App {
                     &mut self.pending_enrich,
                     file,
                     semantic,
-                    structural,
+                    algorithm,
                     ready,
                 );
             }
