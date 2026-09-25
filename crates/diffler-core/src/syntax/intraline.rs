@@ -14,6 +14,11 @@ use crate::syntax::{MAX_PARSE_BYTES, line_bounds, parse, split_range_by_line};
 /// Emphasis byte ranges per line (one inner vec per source line).
 type LineEmphasis = Vec<Vec<Range<usize>>>;
 
+/// Languages whose indentation or layout is syntax: re-indenting a line there
+/// moves it between blocks, so the structural algorithm never calls it a
+/// reformat, whatever the AST diff reports.
+const LAYOUT_SIGNIFICANT: &[&str] = &["python", "yaml", "haskell", "make", "scala"];
+
 /// Bounds the AST-diff graph search so a huge, heavily rewritten file cannot
 /// stall the render thread; beyond it `diff_trees` returns `None` and the
 /// caller falls back to the textual engine. Well above any normal diff.
@@ -68,6 +73,10 @@ impl LanguageRegistry {
         let Some((old_emph, new_emph)) = emphasis else {
             return false;
         };
+        let mark_reformat_only = mark_reformat_only
+            && self
+                .for_path(&file.path)
+                .is_some_and(|entry| !LAYOUT_SIGNIFICANT.contains(&entry.name));
         for hunk in &mut file.hunks {
             for line in &mut hunk.lines {
                 let ranges = match (line.new_no, line.old_no) {
@@ -87,23 +96,25 @@ impl LanguageRegistry {
     }
 }
 
-/// Flag a paired deleted/added line as `reformat_only` when the AST diff
-/// found zero structural difference on either side: not "punctual" (the
-/// gating [`classify_line`] applies for emphasis), genuinely empty, meaning
-/// the two lines are the same tokens differently formatted.
+/// Flag a paired deleted/added line as `reformat_only` when the two differ in
+/// whitespace alone and the AST diff found no token changed on either side,
+/// which keeps a whitespace edit inside a string literal a real change.
 fn mark_reformat_pairs(hunk: &mut Hunk, old_emph: &LineEmphasis, new_emph: &LineEmphasis) {
+    let unchanged = |emph: &LineEmphasis, number: Option<u32>| {
+        number
+            .and_then(|n| n.checked_sub(1))
+            .and_then(|i| emph.get(i as usize))
+            .is_some_and(Vec::is_empty)
+    };
+    let squeezed = |text: &str| text.split_whitespace().collect::<String>();
     for (del_idx, add_idx) in crate::pairing::paired_run_indices(&hunk.lines) {
-        let del_empty = hunk
-            .lines
-            .get(del_idx)
-            .and_then(|l| l.old_no)
-            .is_some_and(|n| old_emph.get(n as usize - 1).is_some_and(Vec::is_empty));
-        let add_empty = hunk
-            .lines
-            .get(add_idx)
-            .and_then(|l| l.new_no)
-            .is_some_and(|n| new_emph.get(n as usize - 1).is_some_and(Vec::is_empty));
-        if del_empty && add_empty {
+        let (Some(del), Some(add)) = (hunk.lines.get(del_idx), hunk.lines.get(add_idx)) else {
+            continue;
+        };
+        if unchanged(old_emph, del.old_no)
+            && unchanged(new_emph, add.new_no)
+            && squeezed(&del.text) == squeezed(&add.text)
+        {
             if let Some(line) = hunk.lines.get_mut(del_idx) {
                 line.reformat_only = true;
             }
@@ -282,76 +293,70 @@ mod tests {
         );
     }
 
-    #[test]
-    fn structural_mode_marks_a_pure_reindent_pair_reformat_only() {
-        use crate::model::{DiffLine, FileDiff, FileStatus, Hunk, HunkId, LineKind};
-        let old_line = "    let x = compute();";
-        let new_line = "        let x = compute();";
-        let old_src = format!("fn f() {{\n{old_line}\n    use_it(x);\n}}\n");
-        let new_src = format!("fn f() {{\n{new_line}\n        use_it(x);\n}}\n");
-        let mut file = FileDiff {
-            path: "a.rs".into(),
+    /// The changed lines the structural algorithm flags reformat-only.
+    fn reformat_flagged(path: &str, old: &str, new: &str) -> Vec<String> {
+        let mut file = crate::model::FileDiff {
+            path: path.into(),
             old_path: None,
-            status: FileStatus::Modified,
+            status: crate::model::FileStatus::Modified,
             binary: false,
-            old_text: Some(old_src),
-            new_text: Some(new_src),
-            hunks: vec![Hunk {
-                id: HunkId("h".into()),
-                old_start: 2,
-                old_lines: 1,
-                new_start: 2,
-                new_lines: 1,
-                context: String::new(),
-                lines: vec![
-                    DiffLine::new(LineKind::Deleted, Some(2), None, old_line.to_owned()),
-                    DiffLine::new(LineKind::Added, None, Some(2), new_line.to_owned()),
-                ],
-            }],
+            old_text: Some(old.into()),
+            new_text: Some(new.into()),
+            hunks: crate::diffalgo::histogram_hunks(old, new, path, 3, true),
             hashes: crate::model::HashCache::default(),
         };
         assert!(LanguageRegistry::build().syntactic_emphasis(&mut file, true));
-        assert!(
-            file.hunks[0].lines[0].reformat_only,
-            "deleted side flagged reformat-only"
+        file.hunks
+            .iter()
+            .flat_map(|h| &h.lines)
+            .filter(|l| l.reformat_only)
+            .map(|l| l.text.clone())
+            .collect()
+    }
+
+    #[test]
+    fn structural_mode_marks_a_pure_reindent_pair_reformat_only() {
+        let flagged = reformat_flagged(
+            "a.rs",
+            "fn f() {\n    let x = compute();\n}\n",
+            "fn f() {\n        let x = compute();\n}\n",
         );
-        assert!(
-            file.hunks[0].lines[1].reformat_only,
-            "added side flagged reformat-only"
+        assert_eq!(
+            flagged,
+            ["    let x = compute();", "        let x = compute();"]
         );
     }
 
     #[test]
     fn structural_mode_leaves_a_real_change_unflagged() {
-        use crate::model::{DiffLine, FileDiff, FileStatus, Hunk, HunkId, LineKind};
-        let old_line = "    let x = 1;";
-        let new_line = "    let x = 2;";
-        let old_src = format!("fn f() {{\n{old_line}\n}}\n");
-        let new_src = format!("fn f() {{\n{new_line}\n}}\n");
-        let mut file = FileDiff {
-            path: "a.rs".into(),
-            old_path: None,
-            status: FileStatus::Modified,
-            binary: false,
-            old_text: Some(old_src),
-            new_text: Some(new_src),
-            hunks: vec![Hunk {
-                id: HunkId("h".into()),
-                old_start: 2,
-                old_lines: 1,
-                new_start: 2,
-                new_lines: 1,
-                context: String::new(),
-                lines: vec![
-                    DiffLine::new(LineKind::Deleted, Some(2), None, old_line.to_owned()),
-                    DiffLine::new(LineKind::Added, None, Some(2), new_line.to_owned()),
-                ],
-            }],
-            hashes: crate::model::HashCache::default(),
-        };
-        assert!(LanguageRegistry::build().syntactic_emphasis(&mut file, true));
-        assert!(!file.hunks[0].lines[0].reformat_only);
-        assert!(!file.hunks[0].lines[1].reformat_only);
+        let flagged = reformat_flagged(
+            "a.rs",
+            "fn f() {\n    let x = 1;\n}\n",
+            "fn f() {\n    let x = 2;\n}\n",
+        );
+        assert!(flagged.is_empty(), "{flagged:?}");
+    }
+
+    #[test]
+    fn structural_mode_keeps_whitespace_inside_a_string_a_change() {
+        let flagged = reformat_flagged(
+            "a.rs",
+            "fn f() {\n    let s = \"a b\";\n}\n",
+            "fn f() {\n    let s = \"a  b\";\n}\n",
+        );
+        assert!(flagged.is_empty(), "{flagged:?}");
+    }
+
+    #[test]
+    fn structural_mode_never_flags_a_reindent_where_layout_is_syntax() {
+        let python = reformat_flagged(
+            "a.py",
+            "x = 1\nif c:\n    pass\ny = 2\n",
+            "x = 1\nif c:\n    pass\n    y = 2\n",
+        );
+        assert!(python.is_empty(), "moving into the block: {python:?}");
+        let yaml = reformat_flagged("a.yaml", "a:\n  b: 1\nc: 2\n", "a:\n  b: 1\n  c: 2\n");
+        assert!(yaml.is_empty(), "nesting a key: {yaml:?}");
     }
 
     /// A block of wholly-new code where the AST diff matches stray tokens
