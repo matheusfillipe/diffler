@@ -30,30 +30,17 @@ def home(tmp_path):
 
 
 @pytest.fixture
-def spawn(repo, home):
+def spawn(request, home):
     """Spawn diffler on the fixture repo with an isolated environment.
-    Extra CLI args go through positionally; env vars via `env_extra`."""
+    Extra CLI args go through positionally; env vars via `env_extra`.
+    Indirect-parametrize with "jj_repo" to spawn on the colocated jj fixture
+    instead of the plain git one: @pytest.mark.parametrize("spawn", ["jj_repo"], indirect=True)."""
+    repo = request.getfixturevalue(getattr(request, "param", "repo"))
     children = []
 
     def _spawn(*args, env_extra=None):
         env = tui_env(home, **(env_extra or {}))
         tui = Tui([str(BIN), *args, str(repo)], cwd=str(repo), env=env)
-        children.append(tui)
-        return tui
-
-    yield _spawn
-    for tui in children:
-        tui.close()
-
-
-@pytest.fixture
-def jj_spawn(jj_repo, home):
-    """Like `spawn`, on the colocated jj fixture repo."""
-    children = []
-
-    def _spawn(*args, env_extra=None):
-        env = tui_env(home, **(env_extra or {}))
-        tui = Tui([str(BIN), *args, str(jj_repo)], cwd=str(jj_repo), env=env)
         children.append(tui)
         return tui
 

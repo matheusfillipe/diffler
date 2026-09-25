@@ -1,7 +1,10 @@
+import pytest
+
 # Status screen against a colocated jj repo through a real PTY: no staging
 # area, so the working copy reads as one section and the stage hint is gone.
-def test_status_screen_folds_into_one_working_copy_section(jj_spawn):
-    tui = jj_spawn("--no-mcp")
+@pytest.mark.parametrize("spawn", ["jj_repo"], indirect=True)
+def test_status_screen_folds_into_one_working_copy_section(spawn):
+    tui = spawn("--no-mcp")
     for expected in (
         "c commit",
         "b branch",
