@@ -213,7 +213,10 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   side's position there. A live switch (`<c-a>` on the diff screen) updates
   the config and the backend, then re-diffs the status sections and whatever
   review is open on the blocking pool (`queue_rediff`, token-guarded, answered
-  by `on_rediff_done`), keeping the cursor through `RowRef`'s capture/restore; an enrichment
+  by `on_rediff_done`). The re-diff holds the refresh slot while it runs, so
+  it and a watcher refresh land in the order they read the repo, and it
+  names the cursor's rows when it lands, keeping the cursor through
+  `RowRef`'s capture/restore; an enrichment
   queued under the old algorithm is dropped on arrival, since a content hash
   cannot tell the two apart. The pane heading trails `· <algorithm>`
   whenever it isn't the default.
