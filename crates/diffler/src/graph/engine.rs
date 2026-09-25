@@ -813,7 +813,7 @@ impl Grid {
     }
 
     /// Write `text` starting at `x`, advancing by each glyph's terminal width
-    /// (not by one cell) and stopping before `limit`, so a wide glyph never
+    /// and stopping before `limit`, so a wide glyph never
     /// spills into the following column of a border or a neighbouring label.
     fn put_run(&mut self, mut x: usize, y: usize, text: &str, limit: usize) {
         for ch in text.chars() {
