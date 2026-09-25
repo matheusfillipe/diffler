@@ -61,6 +61,10 @@ pub struct LangEntry {
     highlights: Cow<'static, str>,
     injections: Cow<'static, str>,
     tags_query: Option<Cow<'static, str>>,
+    /// This language's indentation or layout is syntax: re-indenting a line
+    /// there moves it between blocks, so the structural diff algorithm never
+    /// calls it a reformat, whatever the AST diff reports.
+    pub layout_significant: bool,
     /// Compiling a query costs ~15ms, so a grammar pays only once someone opens
     /// a file in it. Both stay `None` when the grammar's query fails to
     /// compile: the file renders plain instead of erroring.
@@ -138,6 +142,7 @@ impl LanguageRegistry {
             tree_sitter_python::HIGHLIGHTS_QUERY,
             Some(tree_sitter_python::TAGS_QUERY),
         );
+        r.layout_significant();
         r.add(
             "javascript",
             &["js", "jsx", "mjs", "cjs"],
@@ -262,6 +267,7 @@ impl LanguageRegistry {
             tree_sitter_yaml::HIGHLIGHTS_QUERY,
             None,
         );
+        r.layout_significant();
         // the grammar's own numeric patterns are guarded by Lua-style `%d`
         // predicates that tree-sitter's regex engine never matches, leaving
         // every number styled as a string; a later pattern wins, so this one
@@ -328,6 +334,7 @@ impl LanguageRegistry {
             tree_sitter_make::HIGHLIGHTS_QUERY,
             None,
         );
+        r.layout_significant();
         r.add(
             "lua",
             &["lua"],
@@ -363,6 +370,7 @@ impl LanguageRegistry {
             tree_sitter_scala::HIGHLIGHTS_QUERY,
             None,
         );
+        r.layout_significant();
         r.add(
             "elixir",
             &["ex", "exs"],
@@ -384,6 +392,7 @@ impl LanguageRegistry {
             tree_sitter_haskell::HIGHLIGHTS_QUERY,
             None,
         );
+        r.layout_significant();
         r.add(
             "dart",
             &["dart"],
@@ -455,12 +464,22 @@ impl LanguageRegistry {
             highlights: highlights.into(),
             injections: injections.into(),
             tags_query: tags.map(Cow::Borrowed),
+            layout_significant: false,
             config: OnceLock::new(),
             tags: OnceLock::new(),
         });
         self.by_name.insert(name, idx);
         for ext in extensions {
             self.by_ext.insert(ext, idx);
+        }
+    }
+
+    /// Flags the language just registered as layout-significant (see
+    /// [`LangEntry::layout_significant`]); called right after its `add`/
+    /// `register` so the flag travels with the entry, not a name elsewhere.
+    fn layout_significant(&mut self) {
+        if let Some(entry) = self.entries.last_mut() {
+            entry.layout_significant = true;
         }
     }
 

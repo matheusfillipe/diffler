@@ -14,11 +14,6 @@ use crate::syntax::{MAX_PARSE_BYTES, line_bounds, parse, split_range_by_line};
 /// Emphasis byte ranges per line (one inner vec per source line).
 type LineEmphasis = Vec<Vec<Range<usize>>>;
 
-/// Languages whose indentation or layout is syntax: re-indenting a line there
-/// moves it between blocks, so the structural algorithm never calls it a
-/// reformat, whatever the AST diff reports.
-const LAYOUT_SIGNIFICANT: &[&str] = &["python", "yaml", "haskell", "make", "scala"];
-
 /// Bounds the AST-diff graph search so a huge, heavily rewritten file cannot
 /// stall the render thread; beyond it `diff_trees` returns `None` and the
 /// caller falls back to the textual engine. Well above any normal diff.
@@ -76,7 +71,7 @@ impl LanguageRegistry {
         let mark_reformat_only = mark_reformat_only
             && self
                 .for_path(&file.path)
-                .is_some_and(|entry| !LAYOUT_SIGNIFICANT.contains(&entry.name));
+                .is_some_and(|entry| !entry.layout_significant);
         for hunk in &mut file.hunks {
             for line in &mut hunk.lines {
                 let ranges = match (line.new_no, line.old_no) {
