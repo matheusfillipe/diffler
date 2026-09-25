@@ -16,7 +16,7 @@ this review when `$ARGUMENTS` is empty:
 2. Read the diff with `get_diff`. It shows whichever review is open right
    now: the working tree, or the commit, range, or PR you're reviewing.
    `publish_walkthrough` records that same review, so the walkthrough
-   renders it too, not the working tree by default. A walkthrough works on a
+   renders it too. A walkthrough works on a
    clean tree too: with nothing changed, publish over the working tree and
    anchor each stop to the file as it stands, to explain existing code.
 3. Choose one stop per real decision, as few as the change needs: five is

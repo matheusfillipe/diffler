@@ -25,7 +25,7 @@ pub enum RepoError {
 
 /// Discover the repository containing `path` and return its working directory root.
 /// A `.jj` directory with no colocated `.git` is a distinct, more actionable
-/// failure than a plain "not a repository": jj found, git missing.
+/// failure than a plain "not a repository": we found a jj repo but no git one.
 pub fn discover(path: &Path) -> Result<PathBuf, RepoError> {
     let repo = match git2::Repository::discover(path) {
         Ok(repo) => repo,

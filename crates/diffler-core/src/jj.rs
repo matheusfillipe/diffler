@@ -5,11 +5,6 @@
 //! answer correctly through git2. Writes shell out to the `jj` CLI: jj owns
 //! the operation log and working-copy snapshot, and duplicating that through
 //! git2 would fight the real source of truth.
-//!
-//! jj has no index, so there is nothing to stage: [`Vcs::status`] puts the
-//! whole working copy in one section instead of splitting it three ways.
-//! Staging, unstaging, hunk staging, and stash have no jj equivalent and
-//! are refused.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -108,10 +103,10 @@ impl Vcs for JjVcs {
     }
 
     /// Built from `working_tree_diff` (`@-` vs the whole working copy in one
-    /// diff pass), not from merging git's own untracked/unstaged/staged
-    /// lists: jj's snapshot marks a new file intent-to-add in the colocated
-    /// index, which git2 then reports once as added (tree vs index) and
-    /// again as modified (index vs workdir), double-counting it.
+    /// diff pass): jj's snapshot marks a new file intent-to-add in the
+    /// colocated index, so merging git's own untracked/unstaged/staged lists
+    /// would double-count it, git2 reporting it once as added (tree vs
+    /// index) and again as modified (index vs workdir).
     fn status(&self) -> Result<StatusModel, VcsError> {
         Ok(StatusModel {
             untracked: DiffModel::default(),
@@ -276,9 +271,9 @@ impl Vcs for JjVcs {
         Ok(())
     }
 
-    /// `jj new <rev>` rather than `jj edit`: checkout means keep working on
-    /// top of the branch, not edit its tip commit in place, and `jj new`
-    /// never discards the change being left behind, only detaches it.
+    /// `jj new <rev>` keeps working on top of the branch; `jj edit` edits
+    /// its tip commit in place. `jj new` never discards the change being
+    /// left behind, only detaches it.
     fn checkout(&self, name: &str) -> Result<(), VcsError> {
         self.run(&["new", "--", &quoted(name)])?;
         Ok(())

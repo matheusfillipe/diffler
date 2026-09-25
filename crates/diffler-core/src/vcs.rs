@@ -112,7 +112,7 @@ pub trait Vcs: Send {
     fn head(&self) -> Result<HeadInfo, VcsError>;
     /// Whether this backend has a staging area at all: true for git; jj has
     /// none, so its whole working copy reads as [`StatusModel::staged`] and
-    /// the UI drops staging entirely rather than reinterpreting the section.
+    /// the UI drops staging entirely.
     fn has_index(&self) -> bool;
     /// Untracked / unstaged / staged sections as separate diff models.
     fn status(&self) -> Result<StatusModel, VcsError>;

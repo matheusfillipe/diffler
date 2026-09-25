@@ -14,6 +14,7 @@ crates/diffler-core/   pure logic, no terminal (errors via thiserror):
   jj.rs                JjVcs: composes the git2 backend for reads, shells out to `jj` for writes
   repo.rs              repository discovery and backend selection (git vs colocated jj)
   model.rs diff.rs     diff model, hunks
+  diffalgo.rs          selectable line-diff algorithms (myers/minimal/patience/histogram/structural)
   pairing.rs           similarity line-pairing + grapheme intraline emphasis
   syntax/              tree-sitter language registry + AST-diff intraline emphasis + scope index
   highlight.rs         syntect whole-file highlight
@@ -37,6 +38,7 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   mcp.rs               rmcp/axum MCP server
   watch.rs             notify filesystem watcher
   editor.rs clipboard.rs  $EDITOR suspend/restore, OSC52 yank
+  text.rs               display-width text shaping shared by the UI and the graph engine
 ```
 
 ## Commands (just; see `just --list`)
@@ -103,25 +105,29 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   `jj squash` with the message, reword -> `jj describe -r @-` (touches only
   `@-`'s description, never the working copy), branch create/delete ->
   `jj bookmark create -r @` / `jj bookmark delete exact:`, checkout ->
-  `jj new <rev>` (not `jj edit`: checkout means keep working on top of a
-  branch, not edit its tip commit in place), discard -> `jj restore
-  root-file:<path>`. A message travels as `--message=<text>` and a path or
-  name as a quoted jj string literal after `--`, since a leading `-` reads as
-  a flag and git allows names (`fix(x)`, `u@v`) that parse as fileset or
-  revset syntax. Every call sets `JJ_EDITOR=false`, so a prompt jj opens
-  anyway fails at once instead of freezing the UI thread the write runs on.
-  Staging, unstaging, hunk staging, and stash have no jj equivalent; each
-  returns a `VcsError::Rejected` the UI shows as a status message instead of
-  running. Push and pull stay git-only and decline in a jj repo, naming
-  `jj git push`/`jj git fetch`, since the git CLI would move HEAD and
-  branches behind jj's back; a PR checkout fetches the head ref with git
-  and switches through `Vcs::checkout`. `Vcs::status` reads
+  `jj new <rev>` (checkout keeps working on top of a branch; `jj edit`
+  edits its tip commit in place), discard -> `jj restore
+  root-file:<path>`. A message travels as `--message=<text>`; a name jj
+  would otherwise resolve as a revset or fileset expression (a checkout's
+  target, a deleted bookmark, a discarded path) travels as a quoted jj
+  string literal after `--`, since a leading `-` reads as a flag and git
+  allows names (`fix(x)`, `u@v`) that parse as fileset or revset syntax
+  there. A created bookmark's name is never resolved as an expression, so
+  it goes through unquoted. Every call sets `JJ_EDITOR=false`; a prompt jj
+  opens anyway then fails at once, keeping the write's UI thread
+  responsive. Staging, unstaging, hunk staging, and stash have no jj
+  equivalent; each returns a `VcsError::Rejected`, and the UI shows it as a
+  status message. In-app fetch runs `jj git fetch` (or, fetching every
+  remote, `jj git fetch --all-remotes`) through `network_argv`; push and
+  pull decline there, since the git CLI would move HEAD and branches behind
+  jj's back; a PR checkout fetches the head ref with git and switches
+  through `Vcs::checkout`. `Vcs::status` reads
   `working_tree_diff` (one diff pass, `@-` against the whole working copy)
-  into the `staged` section rather than
-  merging git's own untracked/unstaged/staged lists: jj's colocation
-  snapshot marks a new file intent-to-add in the git index, and git2 then
-  reports it once as added (tree vs index) and again as modified (index vs
-  workdir), double-counting it. The status screen folds to that one section
+  into the `staged` section: jj's colocation
+  snapshot marks a new file intent-to-add in the git index, so merging
+  git's own untracked/unstaged/staged lists would double-count it, git2
+  reporting it once as added (tree vs index) and again as modified (index
+  vs workdir). The status screen folds to that one section
   (titled "Working copy (@)") and its hint line drops `s stage`; nothing else
   about the screen forks for jj. `repo::discover` reports a jj repo with no
   `.git` at all (`jj git init --no-colocate`) as `RepoError::JjNotColocated`,
@@ -130,9 +136,9 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   and working-copy snapshot on every invocation, but the same command also
   moves the `.git/refs`/`.git/HEAD` it exports to, which carries the real
   signal. `head()` reads git HEAD as-is (often detached, since jj never
-  moves a bookmark for you) rather than resolving `@`'s own bookmark or
-  change id on every refresh, which would cost a `jj` subprocess call on the
-  UI thread for a cosmetic label.
+  moves a bookmark for you): resolving `@`'s own bookmark or change id on
+  every refresh would cost a `jj` subprocess call on the UI thread for a
+  cosmetic label, so `head()` skips it.
 - **Runtime.** One tokio runtime: MCP server (axum, `127.0.0.1:{port}/mcp`),
   notify watcher (debounce ~200ms → refresh), main task = the ratatui loop.
   `App` owns all state; workers (git, CI, editor, clipboard, refresh,
@@ -167,10 +173,11 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   `apply_refresh` swaps it into the open view (fingerprint-guarded, cursor and
   folds kept). Keys collapse `/` to `-`, so `feat/x` and `feat-x` share a
   review file.
-- **Diff pipeline.** git2 hunks → similarity line-pairing → grapheme intraline
-  emphasis → syntect whole-file highlight sliced onto diff lines → composite
-  (syntax-fg over diff-bg over emphasis-bg). GitHub-dark default theme;
-  progressive render (a plain first frame is fine).
+- **Diff pipeline.** Hunks (git2's own, or imara-diff's for histogram/
+  structural, see Diff algorithm below) → similarity line-pairing → grapheme
+  intraline emphasis → syntect whole-file highlight sliced onto diff lines →
+  composite (syntax-fg over diff-bg over emphasis-bg). GitHub-dark default
+  theme; progressive render (a plain first frame is fine).
 - **Diff algorithm.** `diffler_core::diffalgo::DiffAlgorithm` (myers, minimal,
   patience, histogram, structural) is the line-diff algorithm every source
   honours: `GitVcs` carries it (plus the indent heuristic) as a `Cell`, so a
@@ -189,9 +196,9 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   reformat detection: `syntax::intraline` reuses the AST diff it already
   computes for intraline emphasis, and a paired deleted/added line that
   differs in whitespace alone, with no token changed, is flagged
-  `DiffLine::reformat_only` and renders dimmed instead of red/green. Python,
-  YAML, Haskell, Make and Scala never get the flag, since layout is syntax
-  there. Hunk staging re-derives the target file's hunks through the same
+  `DiffLine::reformat_only`, which renders dimmed, leaving red/green for an
+  actual change. Python, YAML, Haskell, Make and Scala never get the flag,
+  since layout is syntax there. Hunk staging re-derives the target file's hunks through the same
   `imara_hunks`, so the id the reviewer picked is findable; under
   histogram/structural the staged patch copies each line's bytes from the
   file's own text (`render_hunk_patch_from_model`), since the model's text
@@ -414,7 +421,9 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   → `<repo>/.diffler/config.toml` → CLI flags; every flag has a config key).
   `diffler config --dump` prints the merged config with origins. `[diff]
   algorithm`/`indent_heuristic` set the line-diff algorithm (see Diff
-  algorithm, above).
+  algorithm, above); `[diff] default_folds` sets which diff-pane regions
+  start folded (see TUI, above). `[ui] show_agent_activity` toggles the
+  status bar's live agent indicator (see MCP, below).
 - **Walkthrough.** The agent that made a change is the only party who knows the
   order it should be read in, and a walkthrough is that order: one stop per
   real decision, as few as the change needs, opened by its own summary.
@@ -546,7 +555,7 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   names a `sequenceDiagram`, else a flowchart through `graph::mermaid` (the
   `flowchart` subset the layered engine can draw, simplified where it cannot,
   since an agent that gets a rejection it cannot fix is worse off than a
-  reader looking at a box where a diamond was). A text figure lays out to the
+  reader looking at a box where a `((circle))` was). A text figure lays out to the
   card's width, so a resize re-lays it out through the same width-keyed
   cache: a sequence diagram widens the gap before each message's right end
   until its label fits, left to right, while the width lasts, and elides the

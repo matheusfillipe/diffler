@@ -202,7 +202,9 @@ Vim-like: `j`/`k`/`gg`/`G` motions, `/` search, and
 | `\|` | side-by-side diff |
 | `t` | cycle the sidebar: file tree, review buckets (viewed files fold away, come back if they change), kinds (source, tests, docs, config, build, generated, assets), and the walkthrough when the review has one |
 | `V` | select a range: lines in the diff, rows anywhere else, or a run of commits on the status screen, which `<cr>` then reviews as one combined diff |
-| `o` | open the figure under the cursor as a full-screen graph you walk node by node |
+| `o` | open a flowchart under the cursor as a full-screen graph you walk node by node; on a sequence diagram or callstack row, `<cr>` jumps to its code |
+| `za` / `<tab>` | fold or open the diff region under the cursor; `zR` opens every fold in the file, `zM` resets them |
+| `<c-a>` | switch the diff algorithm live (myers, minimal, patience, histogram, structural) |
 | `Z` | send feedback to the agent |
 | `C` | comments sidebar: walk every comment, Enter jumps to it in the pane; `t` groups by file, author, or status (resolved folds away), or lists them flat |
 | `d` / `D` | delete the comment under the cursor / every local comment of the review |
@@ -227,7 +229,8 @@ and `l` (or the left/right arrows) focus the sidebar and the diff; `j`/`k`
 change the selected file from the sidebar or scroll the diff when focused there,
 and `<c-d>`/`<c-u>` page whichever pane has the keyboard;
 `J`/`K` or `<c-n>`/`<c-p>` step through files from either; `<tab>` (or `za`)
-folds the folder or section under the sidebar cursor.
+folds the folder or section under the sidebar cursor, or the region under the
+diff cursor.
 
 Diffs are compared on the syntax tree, so a reindented or rewrapped block
 highlights only the tokens that actually differ.
@@ -246,7 +249,9 @@ beautifully, and [lazygit](https://github.com/jesseduffield/lazygit) and
 diffler is review-first: comments live on diff lines, an agent reads and
 answers them over MCP while you watch, and the same threads work against real
 GitHub, GitLab and Forgejo pull requests, including ones whose branch you
-never checked out.
+never checked out. It works the same over a colocated jj repo
+(`jj git init --colocate`); push and pull decline there, naming
+`jj git push`/`jj git fetch` to run yourself.
 
 You may also want to check [tuicr](https://github.com/agavra/tuicr), the
 closest alternative.

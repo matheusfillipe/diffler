@@ -85,8 +85,8 @@ pub struct Node {
     /// it only earns an outline drawn around it and its siblings once they
     /// are laid out (see [`Model::subgraphs`]).
     pub subgraph: Option<String>,
-    /// A mermaid `{decision}` node: drawn with a distinct marker instead of a
-    /// plain box.
+    /// A mermaid `{decision}` node: drawn with a distinct marker (`◇`), since
+    /// the terminal grid cannot actually draw its diamond shape.
     pub decision: bool,
 }
 

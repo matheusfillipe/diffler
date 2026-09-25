@@ -180,9 +180,9 @@ def make_repo(root):
 
 def jj(repo, *args):
     """Run a jj command in `repo`, isolated from the developer's config. jj's
-    own per-user config lives beside the repo, not inside it: HOME pointed
-    at the repo itself would leave `.config/jj/` as untracked content in the
-    very tree diffler is reviewing."""
+    own per-user config lives beside the repo: pointing HOME at the repo
+    itself would leave `.config/jj/` as untracked content in the very tree
+    diffler is reviewing."""
     home = Path(repo).parent / "jjhome"
     home.mkdir(exist_ok=True)
     env = {

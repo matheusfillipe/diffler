@@ -2,13 +2,6 @@
 //! diff-like so an agent already knows the syntax. One frame per line: an
 //! optional `+`/`-` marker, two-space indentation per depth, the frame's
 //! label, and an optional ` @ <anchor>` naming the code it calls into.
-//!
-//! ```text
-//! main
-//!   handle_request
-//!   - legacy_auth @ src/auth.rs#legacy_auth
-//!   + new_auth @ src/auth.rs#new_auth
-//! ```
 
 use unicode_width::UnicodeWidthStr;
 
@@ -164,8 +157,9 @@ fn render(frames: &[Frame], row_nodes: Vec<Option<NodeId>>, max_width: usize) ->
             ancestor_last.clear();
         } else {
             // rails come from every ancestor strictly between the root and
-            // this frame's own parent; the parent's own connector merges
-            // into this frame's, not into the rail above it
+            // this frame's own parent; the loop above stops short of the
+            // immediate parent, whose own connector is drawn fresh for this
+            // frame
             ancestor_last.truncate(frame.depth - 1);
             for &last in &ancestor_last {
                 prefix.push_str(if last { "   " } else { "│  " });
@@ -234,10 +228,10 @@ mod tests {
         assert!(figure.text.lines[1].ends_with('…'));
     }
 
-    /// A CJK label is twice as wide on screen as it is long in characters: the
-    /// figure's own `width` and the row's `TextSpan::len` have to reflect
-    /// that, not the character count, or the card crops nothing and a
-    /// narrower card overflows.
+    /// A CJK label is twice as wide on screen as it is long in characters, so
+    /// the figure's own `width` and the row's `TextSpan::len` have to reflect
+    /// display width, or the card crops nothing and a narrower card
+    /// overflows.
     #[test]
     fn a_cjk_label_is_sized_and_elided_by_display_width() {
         let figure = parse("main\n  部署完成流程说明", 12).expect("parsed");
@@ -302,8 +296,8 @@ mod tests {
     #[test]
     fn a_grandchild_keeps_the_rail_under_an_open_sibling() {
         let figure = figure("main\n  first\n    inner\n  second");
-        // `first` is not the last child (`second` follows), so its own
-        // child's row carries a continuing rail, not a blank gap
+        // `first` has a sibling after it (`second`), so its own child's row
+        // carries a continuing rail down through it
         assert_eq!(figure.text.lines[2], "│  └─ inner");
         assert_eq!(figure.text.lines[3], "└─ second");
     }

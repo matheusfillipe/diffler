@@ -851,8 +851,9 @@ impl GitVcs {
             let Some(patch) = git2::Patch::from_diff(diff, idx)? else {
                 continue;
             };
-            // the patch's delta, since loading it is what fills in the
-            // worktree side's id that `imara_hunks` checks against
+            // we take `delta` from the patch: loading the patch is what
+            // fills in the worktree side's id that `imara_hunks` checks
+            // against
             let delta = patch.delta();
             if delta.flags().is_binary() || delta_new_path(&delta) != rel {
                 continue;

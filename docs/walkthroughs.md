@@ -60,8 +60,9 @@ agent is told what was simplified so it can adjust.
 A flowchart too wide for the card is redrawn top to bottom, and `o` opens it
 full screen, where `<cr>` on a node jumps to the code it names. A sequence
 diagram or a callstack tree draws to the card's width, eliding a label that
-does not fit, and `<cr>` on one of its rows jumps straight to the code its
-message or frame names.
+does not fit. `<cr>` on a callstack row jumps to the frame's own anchor; on a
+sequence diagram, only a message a `link <participant>: <label> @ <target>`
+statement anchors jumps to its code.
 
 ## Writing one, as an agent
 

@@ -743,7 +743,7 @@ pub struct App {
     /// view has since replaced is dropped.
     declared_token: u64,
     /// A re-diff the main loop should run off-thread (an algorithm switch),
-    /// on a fresh backend rather than the render loop's own.
+    /// on a fresh backend of its own, separate from the render loop's.
     pub pending_rediff: Option<RediffRequest>,
     /// Bumped per re-diff request, so a stale one landing after another
     /// switch (or after the open view moved on) is dropped.
@@ -1766,7 +1766,7 @@ impl App {
         match pinned {
             Ok(model) => self.finish_diff_swap(positions, model),
             // the pinned fetch failed: nothing here changed, so the view
-            // keeps showing what it already had rather than going blank
+            // keeps showing what it already had
             Err(err) => self.error(err.to_string()),
         }
         Flow::Continue

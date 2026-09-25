@@ -466,9 +466,9 @@ fn place_and_draw(model: &Model, ranks: &[(usize, usize)], zoom: Zoom) -> Layout
 /// The box label as its drawn lines: the node label's own `\n`-separated
 /// lines (mermaid's `<br>`), each elided to the zoom's max width (compact
 /// only) so overview boxes stay small, with the status glyph on the last one.
-/// A decision node's first line leads with `◇` instead of drawing as a plain
-/// box, so a branch reads apart from the flow around it without a shape the
-/// terminal grid cannot actually draw.
+/// A decision node's first line leads with `◇`, so a branch reads apart from
+/// the flow around it: the terminal grid cannot actually draw the diamond
+/// shape itself.
 fn label_lines(label: &str, status: NodeStatus, decision: bool, zoom: Zoom) -> Vec<String> {
     let mut lines: Vec<String> = label.split('\n').map(|line| elide(line, zoom)).collect();
     if lines.is_empty() {
@@ -796,8 +796,8 @@ impl Dir {
 
 impl Grid {
     /// Marks the trailing column of a two-cell-wide glyph, so [`Self::into_lines`]
-    /// can drop it rather than emit a real cell that would shift everything
-    /// after it one column to the right.
+    /// can drop it: emitting a real cell there would shift everything after
+    /// it one column to the right.
     const WIDE_CONT: char = '\u{e000}';
 
     fn new(width: usize, height: usize) -> Self {

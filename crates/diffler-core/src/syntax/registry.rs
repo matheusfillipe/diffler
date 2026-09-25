@@ -476,7 +476,7 @@ impl LanguageRegistry {
 
     /// Flags the language just registered as layout-significant (see
     /// [`LangEntry::layout_significant`]); called right after its `add`/
-    /// `register` so the flag travels with the entry, not a name elsewhere.
+    /// `register` so the flag travels with the entry itself.
     fn layout_significant(&mut self) {
         if let Some(entry) = self.entries.last_mut() {
             entry.layout_significant = true;

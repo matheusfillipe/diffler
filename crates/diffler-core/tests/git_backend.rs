@@ -1512,8 +1512,6 @@ mod diff_algorithm {
     #[test]
     fn patience_and_myers_disagree_on_a_classic_case() {
         let fx = Fixture::new();
-        // a unique anchor line moves past a run of repeated, non-unique
-        // lines: patience anchors on the unique line, myers does not
         fx.write(
             "a.txt",
             "begin\nrepeat\nrepeat\nunique_anchor\nrepeat\nrepeat\nend\n",

@@ -859,8 +859,8 @@ The fourth is the one this diff changes.
         assert!(text.contains("classDiagram"), "{text}");
     }
 
-    /// A `sequenceDiagram` fence is not the flowchart subset, but it draws
-    /// through its own layout rather than falling back like `classDiagram`.
+    /// A `sequenceDiagram` fence draws through its own layout; `classDiagram`
+    /// has none and falls back to prose.
     #[test]
     fn a_sequence_diagram_fence_becomes_a_figure() {
         let blocks = blocks("```mermaid\nsequenceDiagram\n  a->>b: hi\n```\n", 80);

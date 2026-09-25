@@ -456,8 +456,8 @@ struct PartialConfig {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct PartialDiff {
-    // raw strings so an unknown value warns and falls back (or, for a fold
-    // kind, is dropped) rather than failing the whole parse
+    // raw strings, so an unknown value warns and falls back (or, for a fold
+    // kind, is dropped), leaving the rest of the parse intact
     algorithm: Option<String>,
     indent_heuristic: Option<bool>,
     default_folds: Option<Vec<String>>,

@@ -4,7 +4,7 @@
 use unicode_width::UnicodeWidthChar;
 
 /// Truncate `s` to `max` display columns, trailing it with `…` when it does
-/// not fit. `max` counts terminal cells, not characters, so a wide glyph
+/// not fit. `max` counts terminal display-width cells, so a wide glyph
 /// (CJK, most emoji) counts twice and the cut never lands mid-glyph.
 pub fn elide(s: &str, max: usize) -> String {
     if max == 0 {
@@ -46,7 +46,8 @@ mod tests {
     #[test]
     fn a_wide_glyph_string_is_cut_by_display_width_not_char_count() {
         // "你好世界" is 4 chars but 8 terminal columns; a 5-column budget
-        // (4 for content, 1 for the ellipsis) fits two wide glyphs, not four
+        // (4 for content, 1 for the ellipsis) fits only two of the four wide
+        // glyphs
         assert_eq!(elide("你好世界", 5), "你好…");
     }
 

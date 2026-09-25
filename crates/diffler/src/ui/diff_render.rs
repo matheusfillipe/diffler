@@ -983,8 +983,8 @@ flowchart LR
         DiffLine::new(kind, old, new, text.to_owned())
     }
 
-    /// A reformat-only paired line dims instead of reading red/green, on both
-    /// the background and the rail, whichever side it is.
+    /// A reformat-only paired line dims, leaving red/green for an actual
+    /// change, on both the background and the rail, whichever side it is.
     #[test]
     fn reformat_only_lines_dim_instead_of_red_or_green() {
         let (theme, _) = Theme::from_name("github-dark");

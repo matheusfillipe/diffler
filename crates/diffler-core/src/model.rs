@@ -216,7 +216,7 @@ pub struct DiffLine {
     pub emphasis: Vec<Range<usize>>,
     /// True on a paired deleted/added line the structural algorithm found to
     /// be a pure reformat (identical token structure, e.g. reindentation):
-    /// the renderer dims it instead of the usual red/green.
+    /// the renderer dims it, leaving red/green for an actual change.
     pub reformat_only: bool,
 }
 

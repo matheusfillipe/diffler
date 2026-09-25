@@ -286,8 +286,9 @@ fn arrowhead_of(arrow: &str) -> Arrowhead {
     }
 }
 
-/// The arrow tokens a message line names, longest first so `-->>` is not
-/// mistaken for `->>` starting one character late.
+/// The arrow tokens a message line names. Order here does not matter:
+/// [`find_arrow`] breaks a tie by length, so `-->>` is never mistaken for
+/// `->>` starting one character late.
 const ARROWS: &[&str] = &["-->>", "--x", "--)", "->>", "-x", "-)", "-->", "->"];
 
 /// The earliest, longest arrow in `line`, split into `(from, arrow, rest)`.
@@ -463,8 +464,8 @@ struct Canvas {
 
 impl Canvas {
     /// Marks the trailing column of a two-cell-wide glyph, so [`Self::into_lines`]
-    /// can drop it rather than emit a real cell that would shift everything
-    /// after it one column to the right.
+    /// can drop it: emitting a real cell there would shift everything after
+    /// it one column to the right.
     const WIDE_CONT: char = '\u{e000}';
 
     fn new(width: usize, height: usize) -> Self {

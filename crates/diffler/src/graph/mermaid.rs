@@ -81,8 +81,8 @@ pub(crate) fn statements(src: &str) -> impl Iterator<Item = &str> {
         .filter(|line| !line.is_empty())
 }
 
-/// Whether a mermaid fence's first statement is a `sequenceDiagram` header
-/// rather than a `flowchart`/`graph` one.
+/// Whether a mermaid fence's first statement's header names `sequenceDiagram`,
+/// distinguishing it from a `flowchart`/`graph` header.
 pub(crate) fn is_sequence_header(first: &str) -> bool {
     first
         .split_whitespace()

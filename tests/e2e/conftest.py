@@ -33,8 +33,8 @@ def home(tmp_path):
 def spawn(request, home):
     """Spawn diffler on the fixture repo with an isolated environment.
     Extra CLI args go through positionally; env vars via `env_extra`.
-    Indirect-parametrize with "jj_repo" to spawn on the colocated jj fixture
-    instead of the plain git one: @pytest.mark.parametrize("spawn", ["jj_repo"], indirect=True)."""
+    Parametrize indirectly with "jj_repo" to spawn on the colocated jj
+    fixture: @pytest.mark.parametrize("spawn", ["jj_repo"], indirect=True)."""
     repo = request.getfixturevalue(getattr(request, "param", "repo"))
     children = []
 

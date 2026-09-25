@@ -21,7 +21,8 @@ pub enum DiffAlgorithm {
     Patience,
     Histogram,
     /// The histogram line diff, plus: a paired deleted/added line that only
-    /// reformats the same tokens renders dimmed instead of red/green.
+    /// reformats the same tokens renders dimmed, leaving red/green for an
+    /// actual change.
     Structural,
 }
 
@@ -49,8 +50,8 @@ impl DiffAlgorithm {
         Self::deserialize(de).ok()
     }
 
-    /// Whether this algorithm runs through imara-diff instead of git2, since
-    /// libgit2 has no histogram implementation.
+    /// Whether this algorithm needs imara-diff, since libgit2 has no
+    /// histogram implementation.
     pub const fn is_imara(self) -> bool {
         matches!(self, Self::Histogram | Self::Structural)
     }
@@ -409,7 +410,7 @@ mod tests {
     }
 
     // hunk_context fixtures below are checked against real `git diff
-    // --unified=0` output (see the finding this fixes), not guessed.
+    // --unified=0` output (see the finding this fixes).
 
     #[test]
     fn hunk_context_finds_the_enclosing_function() {

@@ -346,8 +346,8 @@ impl App {
 
     /// `<cr>` in the diff pane: on a figure row whose drawing names a
     /// resolved node (a callstack frame, a sequence message's receiving
-    /// participant), jump straight to that code; everywhere else, `<cr>`
-    /// still just moves the keyboard to the sidebar.
+    /// participant), jump straight to that code; anywhere else, `<cr>`
+    /// moves the keyboard to the sidebar.
     fn open_figure_jump_or_focus_list(&mut self) {
         match self.figure_jump_at_cursor() {
             Some((path, line, end)) => self.open_file(&path, Some((line, end)), false),

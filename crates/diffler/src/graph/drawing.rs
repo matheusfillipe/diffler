@@ -80,9 +80,9 @@ impl ParsedFigure {
     }
 }
 
-/// Whether a ` ```mermaid ` fence's first statement names a `sequenceDiagram`
-/// rather than a flowchart: what routes it to [`sequence::parse`] instead of
-/// [`mermaid::parse`], since the two share one fence language.
+/// Whether a ` ```mermaid ` fence's first statement names a `sequenceDiagram`,
+/// since the two share one fence language: a match routes the fence to
+/// [`sequence::parse`], and a flowchart to [`mermaid::parse`].
 fn is_sequence_diagram(src: &str) -> bool {
     mermaid::statements(src)
         .next()
@@ -166,9 +166,8 @@ pub fn figure(kind: FenceKind, src: &str, width: u16) -> Option<FigureResult> {
         ParsedFigure::Flowchart(figure) => {
             let mut view = GraphView::new();
             let fit = view.set_model_fit(figure.model, width);
-            // a card figure is a static picture, not something being
-            // navigated, so it never asked for the default selection
-            // `set_model` just gave it
+            // a card figure is a static picture, so it never asked for the
+            // default selection `set_model` just gave it
             view.clear_selection();
             return Some(FigureResult {
                 drawing: Drawing::Graph(Box::new(view)),

@@ -76,9 +76,9 @@ pub fn colocate_jj(root: &Path) {
 /// failure so a broken setup step fails at its call site. `HOME` points at a
 /// throwaway directory beside `root`, isolated from the developer's own jj
 /// config (`ui.editor`, `snapshot.auto-track`, signing, aliases): a test
-/// must not change behaviour depending on who runs it. Placed beside `root`
-/// rather than inside it, so `.config/jj/` never shows up as untracked
-/// content in the very tree the test is reviewing.
+/// must not change behaviour depending on who runs it. Placed beside `root`,
+/// so `.config/jj/` never shows up as untracked content in the very tree the
+/// test is reviewing.
 pub fn jj(root: &Path, args: &[&str]) -> String {
     let home = root.parent().expect("root has a parent").join("jjhome");
     std::fs::create_dir_all(&home).expect("jj home");

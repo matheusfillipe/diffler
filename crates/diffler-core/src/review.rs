@@ -62,9 +62,9 @@ pub struct Refreshed {
 /// The freshly fetched diff for a commit, range, or PR review source,
 /// straight from the backend: the one place each variant's vcs call is
 /// made, whether the caller reads it on the UI thread or off it.
-/// `pr_head` is the PR's own `(merge_base, head)`, resolved by the caller (a
-/// PR's range lives in app state, not the backend); `None` rejects an
-/// unresolved PR rather than silently reading it as unchanged.
+/// `pr_head` is the PR's own `(merge_base, head)`, resolved by the caller
+/// since a PR's range lives in app state; `None` rejects an unresolved PR,
+/// so it is never silently read as unchanged.
 /// `WorkingTree`, `Walkthrough`, and `Against` carry no pinned diff of their
 /// own and read back empty.
 pub fn pinned_diff(
