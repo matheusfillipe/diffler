@@ -261,7 +261,7 @@ impl DiffView {
                     let inside = span.is_some_and(|(start, end)| {
                         file.and_then(|file| file.hunks.get(*hunk))
                             .and_then(|h| h.lines.get(*line))
-                            .and_then(|dl| if on_old_side { dl.old_no } else { dl.new_no })
+                            .and_then(|dl| dl.number_on(on_old_side))
                             .is_some_and(|no| start <= no && no <= end)
                     });
                     if inside {

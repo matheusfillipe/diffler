@@ -782,10 +782,7 @@ fn find_line_in_hunk<'a>(
     file.hunks.iter().enumerate().find_map(|(index, hunk)| {
         hunk.lines
             .iter()
-            .find(|l| {
-                let no = if on_old_side { l.old_no } else { l.new_no };
-                no == Some(line)
-            })
+            .find(|l| l.number_on(on_old_side) == Some(line))
             .map(|found| (index, found))
     })
 }

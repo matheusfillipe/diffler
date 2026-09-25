@@ -305,14 +305,10 @@ fn anchor_target(file: &FileDiff, anchor: &Anchor) -> Option<(usize, usize)> {
     // range comments display under the end of their range
     let target = anchor.line_end.or(anchor.line)?;
     for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
-        let found = hunk.lines.iter().position(|l| {
-            let no = if anchor.on_old_side {
-                l.old_no
-            } else {
-                l.new_no
-            };
-            no == Some(target)
-        });
+        let found = hunk
+            .lines
+            .iter()
+            .position(|l| l.number_on(anchor.on_old_side) == Some(target));
         if let Some(line_idx) = found {
             return Some((hunk_idx, line_idx));
         }

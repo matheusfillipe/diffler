@@ -470,11 +470,7 @@ impl App {
             .and_then(|diff| diff.commit_model.as_ref())
             .unwrap_or_else(|| self.review.model());
         let row = model.find_line(&anchor.file, line, anchor.on_old_side)?;
-        if anchor.on_old_side {
-            row.new_no
-        } else {
-            row.old_no
-        }
+        row.number_on(!anchor.on_old_side)
     }
 
     /// Everything a submit would send. The confirmation and the posting read

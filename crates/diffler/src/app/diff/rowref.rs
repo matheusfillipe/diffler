@@ -3,7 +3,7 @@
 //! landing above it, a hunk changing shape. Mirrors
 //! [`crate::app::status::CursorAnchor`], the same idea for the status screen.
 
-use diffler_core::model::{DiffLine, DiffModel, HunkId};
+use diffler_core::model::{DiffModel, HunkId};
 use diffler_core::review::Review;
 use diffler_core::session::Session;
 
@@ -163,7 +163,7 @@ impl DiffView {
                         .hunks
                         .get(hunk)
                         .and_then(|hunk| hunk.lines.get(at))
-                        .is_some_and(|diff_line| side_no(diff_line, on_old_side) == Some(line))
+                        .is_some_and(|diff_line| diff_line.number_on(on_old_side) == Some(line))
                 })
         })
     }
@@ -208,7 +208,7 @@ impl DiffView {
                         .filter(|found| found.path == *file)
                         .and_then(|found| found.hunks.get(*hunk))
                         .and_then(|hunk| hunk.lines.get(*line_index))
-                        .is_some_and(|diff_line| side_no(diff_line, *on_old_side) == Some(*line))
+                        .is_some_and(|diff_line| diff_line.number_on(*on_old_side) == Some(*line))
                 })
                 .or_else(|| self.fold_row_hiding(&model, file, *line, *on_old_side)),
             RowRef::Stop(index) => {
@@ -241,15 +241,6 @@ impl DiffView {
             matches!(row, DiffRow::Comment { comment, line: 0, .. }
                 if session.comments.get(*comment).is_some_and(|c| c.id == id))
         })
-    }
-}
-
-/// The number `line` carries on the named side.
-fn side_no(line: &DiffLine, on_old_side: bool) -> Option<u32> {
-    if on_old_side {
-        line.old_no
-    } else {
-        line.new_no
     }
 }
 

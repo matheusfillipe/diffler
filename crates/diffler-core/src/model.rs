@@ -231,6 +231,12 @@ impl DiffLine {
             reformat_only: false,
         }
     }
+
+    /// The line number on the named side: `old_no` on the old side (where a
+    /// deletion lives), `new_no` everywhere else.
+    pub const fn number_on(&self, old_side: bool) -> Option<u32> {
+        if old_side { self.old_no } else { self.new_no }
+    }
 }
 
 /// Hash the hunk's content (kinds + text) into a stable id. `occurrence` is

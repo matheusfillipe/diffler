@@ -36,9 +36,7 @@ impl App {
         // deletions only exist on the old side; everything else anchors to
         // the new-side line number
         let on_old_side = line.new_no.is_none();
-        let number = |l: &diffler_core::model::DiffLine| {
-            if on_old_side { l.old_no } else { l.new_no }
-        };
+        let number = |l: &diffler_core::model::DiffLine| l.number_on(on_old_side);
 
         let Some((start, end)) = diff.selection() else {
             return Some(Anchor {

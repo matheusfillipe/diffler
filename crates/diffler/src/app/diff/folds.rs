@@ -340,8 +340,8 @@ fn hidden_scope(run: &[Entry<'_>], piece: &Piece<'_>, scope: &ScopeIndex) -> Opt
 
 fn in_comment(line: &DiffLine, spans: &[(bool, u32, u32)]) -> bool {
     spans.iter().any(|&(old_side, first, last)| {
-        let no = if old_side { line.old_no } else { line.new_no };
-        no.is_some_and(|no| first <= no && no <= last)
+        line.number_on(old_side)
+            .is_some_and(|no| first <= no && no <= last)
     })
 }
 
