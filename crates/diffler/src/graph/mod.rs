@@ -3,15 +3,20 @@
 //! setup, event loop, or network); the host builds a [`Model`] (from CI, …),
 //! pushes it into a [`GraphView`], renders it, and reacts to [`GraphAction`]s.
 
+mod callstack;
+mod drawing;
 mod engine;
 pub mod mermaid;
 mod model;
+mod sequence;
+mod text_figure;
 mod theme;
 mod view;
 
+pub use drawing::{Drawing, FenceKind, FigureResult, figure, validate_fence};
 pub use engine::{GraphEngine, Layered, Zoom};
 pub use mermaid::{Figure, MermaidError};
-pub use model::{Edge, Model, Node, NodeId, NodeStatus, RankDir};
+pub use model::{Edge, Model, Node, NodeId, NodeStatus, RankDir, Subgraph};
 pub use theme::GraphTheme;
 pub use view::{Dir, Fit, GraphAction, GraphView};
 
