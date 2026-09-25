@@ -223,7 +223,7 @@ pub trait Vcs: Send {
     fn stash_pop(&self) -> Result<(), VcsError>;
     /// Argv to run for a network op, e.g. `["git", "push"]`. The binary runs
     /// this in [`Vcs::workdir`] so the backend's own CLI handles credentials;
-    /// diffler never touches them. A future jj backend returns `["jj", …]`.
+    /// diffler never touches them. The jj backend returns `["jj", "git", …]`.
     fn network_argv(&self, op: NetworkOp) -> Vec<String>;
     /// Working directory to run [`Vcs::network_argv`] in.
     fn workdir(&self) -> Result<PathBuf, VcsError>;

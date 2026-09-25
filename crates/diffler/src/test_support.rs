@@ -104,42 +104,6 @@ impl Fixture {
     pub(crate) fn review(&self) -> Review {
         Review::open(&self.root).expect("review")
     }
-
-    /// Colocate the fixture's git repo with jj, so [`Fixture::review`] opens
-    /// the jj backend from here on. Run after the fixture's git history is
-    /// already committed (with the fixture's own fixed time): jj is only
-    /// introduced for its working-copy snapshot, so no jj-authored commit
-    /// timestamp ever enters a snapshot test.
-    pub(crate) fn colocate_jj(&self) {
-        jj(&self.root, &["git", "init", "--colocate"]);
-        jj(
-            &self.root,
-            &["config", "set", "--repo", "user.name", "reviewer"],
-        );
-        jj(
-            &self.root,
-            &[
-                "config",
-                "set",
-                "--repo",
-                "user.email",
-                "reviewer@example.com",
-            ],
-        );
-    }
-}
-
-fn jj(root: &Path, args: &[&str]) {
-    let output = std::process::Command::new("jj")
-        .current_dir(root)
-        .args(args)
-        .output()
-        .expect("run jj");
-    assert!(
-        output.status.success(),
-        "jj {args:?} failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
 }
 
 /// A `main` base commit, a `feature` branch one commit ahead of it, and an
@@ -272,12 +236,12 @@ pub(crate) fn standard_fixture() -> Fixture {
     fixture
 }
 
-/// [`standard_fixture`]'s three files (one modified, one staged, one
-/// untracked), colocated with jj: the status screen folds them into one
-/// working-copy section instead of three.
+/// [`standard_fixture`] colocated with jj, so [`Fixture::review`] opens the
+/// jj backend. We colocate only after the fixed-time git history exists, so
+/// no jj-authored timestamp reaches a snapshot.
 pub(crate) fn jj_fixture() -> Fixture {
     let fixture = standard_fixture();
-    fixture.colocate_jj();
+    diffler_core::test_git::colocate_jj(&fixture.root);
     fixture
 }
 

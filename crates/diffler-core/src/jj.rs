@@ -11,6 +11,7 @@
 //! Staging, unstaging, hunk staging, and stash have no jj equivalent and
 //! are refused.
 
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -40,24 +41,31 @@ impl JjVcs {
     /// Run a jj subcommand with the repo root as its working directory (jj
     /// resolves paths against the process cwd, not `-R`) and return trimmed
     /// stdout. A non-zero exit becomes a [`VcsError::Rejected`] carrying jj's
-    /// first line of stderr, which is always the `Error: ...` summary.
+    /// `Error: ...` summary line.
     fn run(&self, args: &[&str]) -> Result<String, VcsError> {
         let output = Command::new("jj")
             .current_dir(&self.root)
             .args(args)
+            // we pass every message as an argument, so an editor jj opens
+            // anyway would freeze the UI thread; we make it fail at once
+            .env("JJ_EDITOR", "false")
             .output()
-            .map_err(|_| {
-                VcsError::Rejected("jj not found on PATH; install jujutsu to use this repo".into())
+            .map_err(|err| match err.kind() {
+                io::ErrorKind::NotFound => {
+                    VcsError::Rejected("install jj (jujutsu) on PATH to change this repo".into())
+                }
+                _ => VcsError::Io(err),
             })?;
         if output.status.success() {
             return Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned());
         }
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let message = stderr
-            .lines()
-            .find(|line| !line.trim().is_empty())
+        let mut lines = stderr.lines().map(str::trim);
+        let message = lines
+            .clone()
+            .find(|line| line.starts_with("Error:"))
+            .or_else(|| lines.find(|line| !line.is_empty()))
             .unwrap_or("jj command failed")
-            .trim()
             .to_owned();
         Err(VcsError::Rejected(message))
     }
@@ -69,10 +77,15 @@ impl JjVcs {
     }
 }
 
-const NO_STAGING: &str =
-    "jj tracks the working copy directly; commit it with c c instead of staging";
-const NO_UNSTAGING: &str = "jj has no staging area to unstage from";
-const NO_STASH: &str = "jj has no stash; jj new starts a fresh change without losing this one";
+/// `s` as a jj string literal, so a path or bookmark name reaches jj's
+/// fileset and revset parsers as one symbol: `fix(x)` and `u@v` are valid
+/// git names that parse as expressions when passed bare.
+fn quoted(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+const NO_STAGING: &str = "commit the whole working copy; jj has no staging area";
+const NO_STASH: &str = "run jj new in a shell to set this change aside; jj has no stash";
 
 impl Vcs for JjVcs {
     fn vcs_kind(&self) -> VcsKind {
@@ -181,7 +194,7 @@ impl Vcs for JjVcs {
     }
 
     fn unstage_everything(&self) -> Result<(), VcsError> {
-        Err(VcsError::Rejected(NO_UNSTAGING.into()))
+        Err(VcsError::Rejected(NO_STAGING.into()))
     }
 
     fn stage_hunk(&self, _rel: &Path, _hunk: &HunkId) -> Result<(), VcsError> {
@@ -189,23 +202,26 @@ impl Vcs for JjVcs {
     }
 
     fn unstage(&self, _rel: &Path) -> Result<(), VcsError> {
-        Err(VcsError::Rejected(NO_UNSTAGING.into()))
+        Err(VcsError::Rejected(NO_STAGING.into()))
     }
 
     fn unstage_hunk(&self, _rel: &Path, _hunk: &HunkId) -> Result<(), VcsError> {
-        Err(VcsError::Rejected(NO_UNSTAGING.into()))
+        Err(VcsError::Rejected(NO_STAGING.into()))
     }
 
     fn discard(&self, rel: &Path) -> Result<(), VcsError> {
-        self.run(&["restore", &rel.to_string_lossy()])?;
+        let fileset = format!("root-file:{}", quoted(&rel.to_string_lossy()));
+        self.run(&["restore", "--", &fileset])?;
         Ok(())
     }
 
+    /// Messages go as `--message=<text>`: clap reads a separate value that
+    /// starts with `-` as a flag.
     fn commit(&self, message: &str) -> Result<String, VcsError> {
         if message.trim().is_empty() {
             return Err(VcsError::Rejected("empty commit message".into()));
         }
-        self.run(&["commit", "-m", message])?;
+        self.run(&["commit", &format!("--message={message}")])?;
         self.head_oid()
     }
 
@@ -214,10 +230,11 @@ impl Vcs for JjVcs {
     }
 
     /// `message: None` folds the working copy into its parent, keeping the
-    /// parent's description (`jj squash`, jj's own "extend"); `Some` with
-    /// `use_index` folds and sets the new description in the same squash;
-    /// `Some` without `use_index` reword the parent alone (`jj describe`),
-    /// leaving the working copy untouched.
+    /// parent's description (`jj squash -u`: a bare squash opens an editor
+    /// when both sides are described); `Some` with `use_index` folds and
+    /// sets the new description in the same squash; `Some` without
+    /// `use_index` rewords the parent alone (`jj describe`), leaving the
+    /// working copy untouched.
     fn amend(&self, message: Option<&str>, use_index: bool) -> Result<String, VcsError> {
         if let Some(message) = message
             && message.trim().is_empty()
@@ -225,9 +242,11 @@ impl Vcs for JjVcs {
             return Err(VcsError::Rejected("empty commit message".into()));
         }
         match message {
-            None => self.run(&["squash"])?,
-            Some(message) if use_index => self.run(&["squash", "-m", message])?,
-            Some(message) => self.run(&["describe", "-r", "@-", "-m", message])?,
+            None => self.run(&["squash", "--use-destination-message"])?,
+            Some(message) if use_index => self.run(&["squash", &format!("--message={message}")])?,
+            Some(message) => {
+                self.run(&["describe", "-r", "@-", &format!("--message={message}")])?
+            }
         };
         self.head_oid()
     }
@@ -235,12 +254,18 @@ impl Vcs for JjVcs {
     /// Labels the current change (`@`) with a bookmark; `checkout` is a
     /// no-op since `@` is already where the reader is standing.
     fn create_branch(&self, name: &str, _checkout: bool) -> Result<(), VcsError> {
-        self.run(&["bookmark", "create", name, "-r", "@"])?;
+        self.run(&["bookmark", "create", "-r", "@", "--", name])?;
         Ok(())
     }
 
+    /// `exact:`, since jj reads a bare name as a glob.
     fn delete_branch(&self, name: &str) -> Result<(), VcsError> {
-        self.run(&["bookmark", "delete", name])?;
+        self.run(&[
+            "bookmark",
+            "delete",
+            "--",
+            &format!("exact:{}", quoted(name)),
+        ])?;
         Ok(())
     }
 
@@ -248,7 +273,7 @@ impl Vcs for JjVcs {
     /// top of the branch, not edit its tip commit in place, and `jj new`
     /// never discards the change being left behind, only detaches it.
     fn checkout(&self, name: &str) -> Result<(), VcsError> {
-        self.run(&["new", name])?;
+        self.run(&["new", "--", &quoted(name)])?;
         Ok(())
     }
 

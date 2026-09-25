@@ -54,3 +54,36 @@ pub fn commit_all(repo: &git2::Repository, message: &str, sig: &git2::Signature<
     repo.commit(Some("HEAD"), sig, sig, message, &tree, &parents)
         .expect("commit");
 }
+
+/// Colocate the git repo at `root` with jj. jj keeps an identity apart from
+/// git's and warns on every write without one, so it gets the mock one here.
+pub fn colocate_jj(root: &Path) {
+    jj(root, &["git", "init", "--colocate"]);
+    jj(root, &["config", "set", "--repo", "user.name", "reviewer"]);
+    jj(
+        root,
+        &[
+            "config",
+            "set",
+            "--repo",
+            "user.email",
+            "reviewer@example.com",
+        ],
+    );
+}
+
+/// Run a jj subcommand in `root` and return its trimmed stdout, panicking on
+/// failure so a broken setup step fails at its call site.
+pub fn jj(root: &Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("jj")
+        .current_dir(root)
+        .args(args)
+        .output()
+        .expect("run jj");
+    assert!(
+        output.status.success(),
+        "jj {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}

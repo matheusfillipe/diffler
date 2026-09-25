@@ -141,10 +141,10 @@ mod tests {
     }
 
     #[test]
-    fn a_jj_write_still_surfaces_through_its_git_refs() {
-        // a colocated jj command rewrites .jj/ on every invocation but also
-        // moves the git refs it exports to, which is the real signal
-        assert!(relevant_in("/repo", ".git/refs/jj/keep/deadbeef"));
+    fn a_jj_write_still_surfaces_through_what_it_exports_to_git() {
+        assert!(relevant_in("/repo", ".git/HEAD"));
+        assert!(relevant_in("/repo", ".git/refs/heads/feature"));
+        assert!(relevant_in("/repo", ".git/index"));
     }
 
     #[test]

@@ -62,6 +62,16 @@ fn commit_commits_the_working_copy_and_returns_its_oid() {
 }
 
 #[test]
+fn a_message_starting_with_a_dash_is_kept_as_the_message() {
+    let fx = JjFixture::new();
+    fx.write("a.txt", "content\n");
+    vcs(&fx).commit("-v1 notes").expect("commit");
+    assert_eq!(vcs(&fx).head().expect("head").subject, "-v1 notes");
+    vcs(&fx).amend(Some("-v2"), false).expect("reword");
+    assert_eq!(vcs(&fx).head().expect("head").subject, "-v2");
+}
+
+#[test]
 fn commit_with_empty_message_is_rejected() {
     let fx = JjFixture::new();
     fx.write("a.txt", "content\n");
@@ -79,6 +89,17 @@ fn extend_folds_new_content_keeping_the_parent_message() {
     assert_eq!(head.oid7, oid.get(..7).expect("short"));
     assert_eq!(head.subject, "add a", "extend keeps the parent's message");
     assert!(vcs(&fx).read_at(&oid, "b.txt").expect("read").is_some());
+}
+
+#[test]
+fn extend_over_a_described_working_copy_keeps_the_parent_message() {
+    let fx = JjFixture::new();
+    fx.write("a.txt", "v1\n");
+    vcs(&fx).commit("add a").expect("commit");
+    fx.write("b.txt", "v1\n");
+    fx.jj(&["describe", "--message=wip"]);
+    vcs(&fx).amend(None, true).expect("extend");
+    assert_eq!(vcs(&fx).head().expect("head").subject, "add a");
 }
 
 #[test]
@@ -167,6 +188,35 @@ fn checkout_switches_the_working_copy_to_another_branch() {
         !fx.root().join("only_on_main.txt").exists(),
         "checkout moved the working copy back to main's content"
     );
+}
+
+#[test]
+fn branch_names_that_read_as_revset_syntax_are_checked_out_and_deleted() {
+    let fx = JjFixture::new();
+    fx.git.branch("u@v");
+    fx.write("later.txt", "x\n");
+    vcs(&fx).commit("add later").expect("commit");
+
+    vcs(&fx).checkout("u@v").expect("checkout");
+    assert!(!fx.root().join("later.txt").exists());
+    vcs(&fx).delete_branch("u@v").expect("delete");
+    let names: Vec<String> = vcs(&fx)
+        .branches()
+        .expect("branches")
+        .into_iter()
+        .map(|b| b.name)
+        .collect();
+    assert!(!names.contains(&"u@v".to_owned()), "{names:?}");
+}
+
+#[test]
+fn discard_takes_paths_that_read_as_fileset_syntax_or_flags() {
+    let fx = JjFixture::new();
+    for name in ["paren(x).txt", "-dash.txt", "sp ace.txt"] {
+        fx.write(name, "new\n");
+        vcs(&fx).discard(Path::new(name)).expect("discard");
+        assert!(!fx.root().join(name).exists(), "{name}");
+    }
 }
 
 #[test]
