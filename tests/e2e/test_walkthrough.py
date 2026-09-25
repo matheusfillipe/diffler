@@ -389,6 +389,7 @@ def test_a_stop_pinned_before_a_removal_still_shows_its_code(spawn, repo):
     tui.wait_for(" DIFF ")
     tui.wait_for("The middle line")
     tui.wait_for("kept-line-two")
+    back_to_status(tui)
 
 
 def test_a_sequence_diagram_and_a_callstack_both_draw_in_their_stops(spawn):
