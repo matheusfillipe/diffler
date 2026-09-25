@@ -56,13 +56,27 @@ impl FigureBlock {
     /// one more when it was redrawn or cropped to fit and has to say so. Row
     /// building and rendering both read it, so they cannot disagree.
     pub fn rows(&self) -> usize {
-        1 + self.view.height().clamp(1, FIGURE_MAX_ROWS) as usize
-            + usize::from(self.fit != Fit::AsDrawn)
+        1 + usize::from(self.drawn_rows()) + usize::from(self.fit != Fit::AsDrawn)
+    }
+
+    /// Rows of the drawing itself. A graph is cropped at [`FIGURE_MAX_ROWS`]
+    /// since `o` shows the rest full screen; a text figure has no full screen,
+    /// so it draws every row its own caps allow.
+    pub fn drawn_rows(&self) -> u16 {
+        match &self.view {
+            Drawing::Graph(view) => view.height().clamp(1, FIGURE_MAX_ROWS),
+            Drawing::Text(text) => text.height.max(1),
+        }
+    }
+
+    pub fn is_graph(&self) -> bool {
+        matches!(self.view, Drawing::Graph(_))
     }
 }
 
-/// Rows a figure may take before it is cropped. A chain drawn downward spends
-/// five rows a node, so this holds six of them; the pane scrolls past it.
+/// Rows a graph figure may take before it is cropped. A chain drawn downward
+/// spends five rows a node, so this holds six of them; the pane scrolls past
+/// it.
 pub const FIGURE_MAX_ROWS: u16 = 32;
 
 /// One comment body already split into blocks, so a `mermaid` fence is parsed
@@ -495,7 +509,7 @@ impl App {
             return;
         };
         let Some(model) = figure.view.model() else {
-            self.info("this figure has no full graph; <cr> on a row opens its code");
+            self.info("no full graph for this figure, <cr> on a row to jump to its code");
             return;
         };
         let mut view = GraphView::new();
@@ -959,9 +973,10 @@ flowchart LR
         assert_eq!(figure.fit, Fit::AsDrawn);
     }
 
-    /// A sequence diagram and a callstack tree are already vertical, so
-    /// there is no alternate direction to redraw: a card too narrow for one
-    /// just crops it, and a card wide enough draws it as is.
+    /// A sequence diagram or a callstack tree lays out to the card's width
+    /// and has no other direction to redraw in: it crops only when what it
+    /// cannot elide, a participant box or a tree's own indent, is wider than
+    /// the card.
     #[test]
     fn a_sequence_diagram_crops_when_too_wide_and_fits_when_not() {
         let body = "\
@@ -984,21 +999,23 @@ sequenceDiagram
     }
 
     #[test]
-    fn a_callstack_crops_when_too_wide_and_fits_when_not() {
+    fn a_callstack_elides_a_long_label_and_crops_only_a_deep_tree() {
         let long_label = "x".repeat(200);
         let body = format!("```callstack\nmain\n  {long_label}\n```\n");
-        let Some(Block::Figure(narrow)) = blocks(&body, 20).into_iter().next() else {
+        let Some(Block::Figure(elided)) = blocks(&body, 20).into_iter().next() else {
             panic!("a figure");
         };
-        assert_eq!(narrow.fit, Fit::Cropped);
+        assert_eq!(elided.fit, Fit::AsDrawn);
+        assert!(elided.view.width() <= 20);
 
-        let Some(Block::Figure(fits)) = blocks("```callstack\nmain\n  child\n```\n", 80)
-            .into_iter()
-            .next()
-        else {
+        let deep: String = (0..12)
+            .map(|depth| "  ".repeat(depth) + "frame\n")
+            .collect();
+        let body = format!("```callstack\n{deep}```\n");
+        let Some(Block::Figure(deep)) = blocks(&body, 20).into_iter().next() else {
             panic!("a figure");
         };
-        assert_eq!(fits.fit, Fit::AsDrawn);
+        assert_eq!(deep.fit, Fit::Cropped);
     }
 
     /// The reader is told which of the two happened: a missing file reads

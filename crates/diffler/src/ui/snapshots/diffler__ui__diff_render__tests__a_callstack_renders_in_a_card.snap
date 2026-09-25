@@ -1,9 +1,12 @@
 ---
 source: crates/diffler/src/ui/diff_render.rs
-expression: card_snapshot(&rows)
+expression: "figure_card(\"```callstack\nmain\n  serve @ src/server.rs#serve\n    handle_request @ src/http.rs#handle_request\n      - legacy_auth @ src/auth.rs#legacy_auth\n      + authenticate @ src/auth.rs#authenticate\n        + verify_token_signature_against_the_rotating_keyset_of_the_issuer @ src/jwt.rs#verify\n      respond\n```\n\")"
 ---
-"  ▌ figure 1                                                  "
-"  ▌ main                                                      "
-"  ▌ ├─ handle_request                                         "
-"  ▌ ├─ - legacy_auth                                          "
-"  ▌ └─ + new_auth                                             "
+"  ▌ figure 1                                                                      "
+"  ▌ main                                                                          "
+"  ▌ └─ serve                                                                      "
+"  ▌    └─ handle_request                                                          "
+"  ▌       ├─ - legacy_auth                                                        "
+"  ▌       ├─ + authenticate                                                       "
+"  ▌       │  └─ + verify_token_signature_against_the_rotating_keyset_of_the_iss…  "
+"  ▌       └─ respond                                                              "

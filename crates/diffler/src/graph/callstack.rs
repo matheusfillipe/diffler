@@ -11,7 +11,7 @@
 //! ```
 
 use crate::graph::model::NodeId;
-use crate::graph::text_figure::{SpanKind, TextFigure, TextSpan};
+use crate::graph::text_figure::{SpanKind, TextFigure, TextSpan, elide};
 
 /// Frames one tree may hold, mirroring [`crate::graph::mermaid::MAX_NODES`]:
 /// past this a terminal card cannot read it anyway, and the text the tree is
@@ -46,7 +46,9 @@ pub(crate) struct CallstackFigure {
     pub notes: Vec<String>,
 }
 
-pub(crate) fn parse(src: &str) -> Result<CallstackFigure, CallstackError> {
+/// Parse and draw a callstack tree, each label elided so its row fits
+/// `max_width` columns.
+pub(crate) fn parse(src: &str, max_width: usize) -> Result<CallstackFigure, CallstackError> {
     let mut frames = Vec::new();
     let mut notes = Vec::new();
     for raw in src.lines() {
@@ -65,13 +67,15 @@ pub(crate) fn parse(src: &str) -> Result<CallstackFigure, CallstackError> {
         frames.truncate(MAX_FRAMES);
         notes.push(format!("only the first {MAX_FRAMES} frames are drawn"));
     }
-    // a depth jumping more than one level past its predecessor (a typo, or a
-    // fence missing an ancestor) still attaches somewhere sane rather than
-    // stranding the tree walk
-    let mut previous_depth = 0usize;
+    // a fence indented as a whole (inside a list, say) still roots at its
+    // least indented frame, and a depth jumping more than one level past its
+    // predecessor still attaches somewhere sane
+    let base = frames.iter().map(|f| f.depth).min().unwrap_or(0);
+    let mut previous_depth: Option<usize> = None;
     for frame in &mut frames {
-        frame.depth = frame.depth.min(previous_depth + 1);
-        previous_depth = frame.depth;
+        let depth = (frame.depth - base) / 2;
+        frame.depth = previous_depth.map_or(0, |previous| depth.min(previous + 1));
+        previous_depth = Some(frame.depth);
     }
 
     let mut anchors = Vec::new();
@@ -88,7 +92,7 @@ pub(crate) fn parse(src: &str) -> Result<CallstackFigure, CallstackError> {
     }
 
     Ok(CallstackFigure {
-        text: render(&frames, row_nodes),
+        text: render(&frames, row_nodes, max_width),
         anchors,
         notes,
     })
@@ -96,10 +100,14 @@ pub(crate) fn parse(src: &str) -> Result<CallstackFigure, CallstackError> {
 
 /// `[<marker> ]<label>[ @ <anchor>]`, indented two spaces per depth. A marker
 /// is only recognized as `+ `/`- ` (with the trailing space): a label that
-/// merely starts with either character stays a label.
+/// merely starts with either character stays a label. The frame's `depth`
+/// here is its raw indent in columns, a tab counting as one level.
 fn parse_line(raw: &str) -> Option<Frame> {
-    let trimmed_start = raw.trim_start_matches(' ');
-    let depth = (raw.len() - trimmed_start.len()) / 2;
+    let trimmed_start = raw.trim_start_matches([' ', '\t']);
+    let indent: usize = raw[..raw.len() - trimmed_start.len()]
+        .chars()
+        .map(|c| if c == '\t' { 2 } else { 1 })
+        .sum();
     let (marker, rest) = if let Some(after) = trimmed_start.strip_prefix("+ ") {
         (Marker::Added, after)
     } else if let Some(after) = trimmed_start.strip_prefix("- ") {
@@ -107,7 +115,7 @@ fn parse_line(raw: &str) -> Option<Frame> {
     } else {
         (Marker::Unchanged, trimmed_start)
     };
-    let (label, anchor) = match rest.split_once(" @ ") {
+    let (label, anchor) = match rest.rsplit_once(" @ ") {
         Some((label, anchor)) => (label.trim(), Some(anchor.trim().to_owned())),
         None => (rest.trim(), None),
     };
@@ -115,7 +123,7 @@ fn parse_line(raw: &str) -> Option<Frame> {
         return None;
     }
     Some(Frame {
-        depth,
+        depth: indent,
         marker,
         label: label.to_owned(),
         anchor,
@@ -141,7 +149,7 @@ fn compute_last(frames: &[Frame]) -> Vec<bool> {
 
 /// Draw the tree with box-drawing connectors: `├─`/`└─` per frame, `│` for an
 /// ancestor level with more siblings still to come, blank where it does not.
-fn render(frames: &[Frame], row_nodes: Vec<Option<NodeId>>) -> TextFigure {
+fn render(frames: &[Frame], row_nodes: Vec<Option<NodeId>>, max_width: usize) -> TextFigure {
     let is_last = compute_last(frames);
     let mut ancestor_last: Vec<bool> = Vec::new();
     let mut lines = Vec::with_capacity(frames.len());
@@ -168,11 +176,12 @@ fn render(frames: &[Frame], row_nodes: Vec<Option<NodeId>>) -> TextFigure {
             Marker::Removed => "- ",
             Marker::Unchanged => "",
         };
-        let prefix_len = u16::try_from(prefix.chars().count()).unwrap_or(0);
-        let content_len = u16::try_from(marker_glyph.chars().count() + frame.label.chars().count())
-            .unwrap_or(u16::MAX);
+        let prefix_len = prefix.chars().count() + marker_glyph.len();
+        let label = elide(&frame.label, max_width.saturating_sub(prefix_len).max(1));
+        let content_len =
+            u16::try_from(marker_glyph.len() + label.chars().count()).unwrap_or(u16::MAX);
         spans.push(TextSpan {
-            x: prefix_len,
+            x: u16::try_from(prefix.chars().count()).unwrap_or(0),
             y: u16::try_from(index).unwrap_or(u16::MAX),
             len: content_len,
             kind: match frame.marker {
@@ -181,7 +190,7 @@ fn render(frames: &[Frame], row_nodes: Vec<Option<NodeId>>) -> TextFigure {
                 Marker::Unchanged => SpanKind::Fg,
             },
         });
-        lines.push(format!("{prefix}{marker_glyph}{}", frame.label));
+        lines.push(format!("{prefix}{marker_glyph}{label}"));
     }
 
     let width = lines
@@ -203,7 +212,36 @@ mod tests {
     use super::*;
 
     fn figure(src: &str) -> CallstackFigure {
-        parse(src).expect("parsed")
+        parse(src, usize::MAX).expect("parsed")
+    }
+
+    /// A fence indented as a whole roots at its least indented frame, and a
+    /// tab counts as one level.
+    #[test]
+    fn an_indented_fence_and_tabs_root_at_the_least_indented_frame() {
+        let figure = figure("    main\n      first\n\t\t\t\tsecond");
+        assert_eq!(figure.text.lines, ["main", "└─ first", "   └─ second"]);
+    }
+
+    #[test]
+    fn a_label_holding_an_at_sign_keeps_it_and_the_anchor_is_the_last_one() {
+        let figure = figure("main\n  on @ event @ src/ev.rs#on");
+        assert_eq!(figure.text.lines[1], "└─ on @ event");
+        assert_eq!(figure.anchors[0].1, "src/ev.rs#on");
+    }
+
+    #[test]
+    fn a_label_too_long_for_the_card_is_elided() {
+        let figure = parse(&format!("main\n  + {}", "x".repeat(80)), 20).expect("parsed");
+        assert_eq!(figure.text.lines[1].chars().count(), 20);
+        assert!(figure.text.lines[1].ends_with('…'));
+    }
+
+    #[test]
+    fn crlf_and_trailing_spaces_parse_like_plain_lines() {
+        let figure = figure("main  \r\n  child @ src/a.rs#child  \r\n");
+        assert_eq!(figure.text.lines, ["main", "└─ child"]);
+        assert_eq!(figure.anchors[0].1, "src/a.rs#child");
     }
 
     #[test]
@@ -254,8 +292,8 @@ mod tests {
 
     #[test]
     fn an_empty_callstack_is_an_error() {
-        assert_eq!(parse("").unwrap_err(), CallstackError::Empty);
-        assert_eq!(parse("   \n  \n").unwrap_err(), CallstackError::Empty);
+        assert_eq!(parse("", 80).unwrap_err(), CallstackError::Empty);
+        assert_eq!(parse("   \n  \n", 80).unwrap_err(), CallstackError::Empty);
     }
 
     #[test]

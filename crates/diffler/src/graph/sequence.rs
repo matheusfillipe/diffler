@@ -6,7 +6,7 @@
 //! simplified away and reported, never refused.
 
 use crate::graph::model::NodeId;
-use crate::graph::text_figure::{SpanKind, TextFigure, TextSpan};
+use crate::graph::text_figure::{SpanKind, TextFigure, TextSpan, elide};
 
 /// Participants a diagram may declare. Past this a terminal card cannot lay
 /// the lanes out readably anyway, and the source comes from an agent.
@@ -15,7 +15,6 @@ pub(crate) const MAX_PARTICIPANTS: usize = 12;
 pub(crate) const MAX_EVENTS: usize = 80;
 
 const LANE_GAP: usize = 3;
-const MIN_LANE: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum SequenceError {
@@ -96,6 +95,7 @@ struct Parsed {
     links: Vec<(String, String)>,
     notes: Vec<String>,
     autonumber: bool,
+    messages: usize,
     frame_depth: usize,
 }
 
@@ -117,8 +117,7 @@ impl Parsed {
         self.lanes.len() - 1
     }
 
-    fn declare(&mut self, rest: &str, actor: bool) {
-        let _ = actor;
+    fn declare(&mut self, rest: &str) {
         let (id, alias) = rest
             .split_once(" as ")
             .map_or((rest.trim(), None), |(id, alias)| {
@@ -152,8 +151,9 @@ impl Parsed {
         }
         let from = self.lane_of(from.trim());
         let to = self.lane_of(to);
+        self.messages += 1;
         let label = if self.autonumber {
-            format!("{}. {label}", self.events.len() + 1)
+            format!("{}. {label}", self.messages)
         } else {
             label
         };
@@ -203,8 +203,7 @@ impl Parsed {
             .map(str::trim_start)
             .unwrap_or_default();
         match head.as_str() {
-            "participant" => self.declare(rest, false),
-            "actor" => self.declare(rest, true),
+            "participant" | "actor" => self.declare(rest),
             "autonumber" => self.autonumber = true,
             "note" => self.note(rest),
             "link" => self.link(rest),
@@ -262,7 +261,7 @@ impl Parsed {
         let Some((id, rest)) = rest.split_once(':') else {
             return;
         };
-        let Some((_, target)) = rest.split_once(" @ ") else {
+        let Some((_, target)) = rest.rsplit_once(" @ ") else {
             return;
         };
         let target = target.trim();
@@ -305,7 +304,10 @@ fn find_arrow(line: &str) -> Option<(&str, &str, &str)> {
     Some((&line[..at], arrow, &line[at + arrow.len()..]))
 }
 
-pub(crate) fn parse(src: &str) -> Result<SequenceFigure, SequenceError> {
+/// Parse and lay out a `sequenceDiagram`, widening the lanes so message
+/// labels fit, as far as `max_width` columns allow; a label that still does
+/// not fit its lane is elided.
+pub(crate) fn parse(src: &str, max_width: usize) -> Result<SequenceFigure, SequenceError> {
     let mut lines = src
         .lines()
         .map(|line| line.split_once("%%").map_or(line, |(head, _)| head))
@@ -343,7 +345,7 @@ pub(crate) fn parse(src: &str) -> Result<SequenceFigure, SequenceError> {
     }
 
     let (anchors, links_by_lane) = resolve_links(&parsed.lanes, &parsed.links);
-    let text = render(&parsed.lanes, &parsed.events, &links_by_lane);
+    let text = render(&parsed.lanes, &parsed.events, &links_by_lane, max_width);
     Ok(SequenceFigure {
         text,
         anchors,
@@ -372,26 +374,86 @@ fn resolve_links(
     (anchors, by_lane)
 }
 
-struct LaneGeometry {
-    x: usize,
-    w: usize,
+fn box_label(lane: &Lane) -> String {
+    format!("[ {} ]", lane.label)
 }
 
-fn layout_lanes(lanes: &[Lane]) -> Vec<LaneGeometry> {
-    let mut x = 0usize;
-    lanes
+/// Columns a message label needs between its two lifelines: one blank on
+/// each side, plus the arrowhead's own cell.
+fn message_need(label: &str) -> usize {
+    label.chars().count() + 3
+}
+
+/// Columns a self message's `↺ label` needs from its own lifeline to the next.
+fn self_need(label: &str) -> usize {
+    label.chars().count() + 5
+}
+
+/// Each lane's lifeline column, and the canvas width. Lanes start packed as
+/// tight as their boxes allow; then, left to right, the gap before a
+/// message's right end grows until its label fits, while `max_width` lasts.
+fn lane_centers(lanes: &[Lane], events: &[Event], max_width: usize) -> (Vec<usize>, usize) {
+    let boxes: Vec<usize> = lanes.iter().map(|l| box_label(l).chars().count()).collect();
+    // `gaps[i]` is lane i's lifeline minus lane i-1's (minus the canvas edge
+    // for lane 0); the extra last entry is the canvas past the last lifeline
+    let mut gaps: Vec<usize> = boxes
         .iter()
-        .map(|lane| {
-            let w = lane.label.chars().count().max(MIN_LANE) + 2;
-            let geometry = LaneGeometry { x, w };
-            x += w + LANE_GAP;
-            geometry
+        .enumerate()
+        .map(
+            |(i, &w)| match i.checked_sub(1).and_then(|p| boxes.get(p)) {
+                Some(&prev) => prev - prev / 2 + LANE_GAP + w / 2,
+                None => w / 2,
+            },
+        )
+        .collect();
+    gaps.push(boxes.last().map_or(1, |&w| w - w / 2));
+    let mut budget = max_width.saturating_sub(gaps.iter().sum());
+    let mut needs: Vec<(usize, usize, usize)> = events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Message {
+                from, to, label, ..
+            } if from == to => Some((*from, from + 1, self_need(label))),
+            Event::Message {
+                from, to, label, ..
+            } => Some(((*from).min(*to), (*from).max(*to), message_need(label))),
+            _ => None,
         })
-        .collect()
-}
-
-fn center(geometry: &LaneGeometry) -> usize {
-    geometry.x + geometry.w / 2
+        .collect();
+    needs.sort_by_key(|&(_, right, _)| right);
+    for (left, right, need) in needs {
+        let have: usize = gaps.get(left + 1..=right).map_or(0, |g| g.iter().sum());
+        let grow = need.saturating_sub(have).min(budget);
+        if let Some(gap) = gaps.get_mut(right) {
+            *gap += grow;
+            budget -= grow;
+        }
+    }
+    // a note or a frame rule spans the whole canvas, so it can only widen the
+    // right margin
+    let banner = events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Note { label, .. }
+            | Event::FrameStart { label, .. }
+            | Event::FrameDivider { label, .. } => Some(label.chars().count() + 12),
+            Event::Message { .. } | Event::FrameEnd => None,
+        })
+        .max()
+        .unwrap_or(0);
+    let grow = banner.saturating_sub(gaps.iter().sum()).min(budget);
+    if let Some(tail) = gaps.last_mut() {
+        *tail += grow;
+    }
+    let centers = gaps
+        .iter()
+        .take(lanes.len())
+        .scan(0, |at, gap| {
+            *at += gap;
+            Some(*at)
+        })
+        .collect();
+    (centers, gaps.iter().sum())
 }
 
 /// A blank canvas as `width` columns of `' '` for every row, the base every
@@ -424,16 +486,9 @@ impl Canvas {
         at - x
     }
 
-    fn write_centered(&mut self, from: usize, to: usize, y: usize, text: &str) {
-        let span = to.saturating_sub(from).max(text.chars().count());
-        let elided = elide(text, span);
-        let pad = span.saturating_sub(elided.chars().count()) / 2;
-        self.write(from + pad, y, &elided);
-    }
-
-    fn lifelines(&mut self, y: usize, lanes: &[LaneGeometry]) {
-        for lane in lanes {
-            self.put(center(lane), y, '│');
+    fn lifelines(&mut self, y: usize, centers: &[usize]) {
+        for &x in centers {
+            self.put(x, y, '│');
         }
     }
 
@@ -443,19 +498,6 @@ impl Canvas {
             .map(|row| row.into_iter().collect::<String>().trim_end().to_owned())
             .collect()
     }
-}
-
-fn elide(text: &str, width: usize) -> String {
-    if width == 0 {
-        return String::new();
-    }
-    if text.chars().count() <= width {
-        return text.to_owned();
-    }
-    text.chars()
-        .take(width.saturating_sub(1))
-        .collect::<String>()
-        + "…"
 }
 
 /// Rows an event occupies: a cross-lane message is a label then an arrow, a
@@ -471,215 +513,161 @@ fn event_rows(event: &Event) -> usize {
     }
 }
 
-fn render(lanes: &[Lane], events: &[Event], links_by_lane: &[Option<NodeId>]) -> TextFigure {
-    let geometry = layout_lanes(lanes);
-    let width = geometry.last().map_or(0, |last| last.x + last.w).max(1);
-    let body_rows: usize = events.iter().map(event_rows).sum();
-    let mut canvas = Canvas::new(width, 1 + body_rows);
-    let mut spans = Vec::new();
-    let mut row_nodes: Vec<Option<NodeId>> = vec![None; 1 + body_rows];
-
-    for (lane, geo) in lanes.iter().zip(&geometry) {
-        let label = format!("[ {} ]", lane.label);
-        let from = centered_start(geo, label.chars().count());
-        let len = canvas.write(from, 0, &label);
-        spans.push(TextSpan {
-            x: u16::try_from(from).unwrap_or(0),
-            y: 0,
-            len: u16::try_from(len).unwrap_or(0),
-            kind: SpanKind::Fg,
-        });
-    }
-
-    let mut row = 1usize;
-    for event in events {
-        row = draw_event(
-            &mut canvas,
-            &geometry,
-            links_by_lane,
-            &mut row_nodes,
-            &mut spans,
-            event,
-            row,
-        );
-    }
-
-    TextFigure {
-        width: u16::try_from(canvas.width).unwrap_or(u16::MAX),
-        height: u16::try_from(canvas.rows.len()).unwrap_or(u16::MAX),
-        lines: canvas.into_lines(),
-        spans,
-        row_nodes,
-    }
+struct Draw<'a> {
+    canvas: Canvas,
+    centers: &'a [usize],
+    links_by_lane: &'a [Option<NodeId>],
+    row_nodes: Vec<Option<NodeId>>,
+    spans: Vec<TextSpan>,
 }
 
-/// The left column that centers `len` characters within `lane`.
-fn centered_start(lane: &LaneGeometry, len: usize) -> usize {
-    lane.x + lane.w.saturating_sub(len) / 2
-}
-
-// draws one event's row(s) onto `canvas`, returning the row index the next
-// event starts at; kept as one function since every branch shares the same
-// lane geometry and row bookkeeping, and splitting it would only pass that
-// context back and forth
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-fn draw_event(
-    canvas: &mut Canvas,
-    geometry: &[LaneGeometry],
+fn render(
+    lanes: &[Lane],
+    events: &[Event],
     links_by_lane: &[Option<NodeId>],
-    row_nodes: &mut [Option<NodeId>],
-    spans: &mut Vec<TextSpan>,
-    event: &Event,
-    row: usize,
-) -> usize {
-    match event {
-        Event::Message {
-            from, to, label, ..
-        } if from == to => {
-            canvas.lifelines(row, geometry);
-            if let Some(geo) = geometry.get(*from) {
-                let text = format!("↺ {label}");
-                let start = geo.x;
-                let len = canvas.write(
-                    start,
-                    row,
-                    &elide(&text, canvas.width.saturating_sub(start)),
-                );
-                spans.push(TextSpan {
-                    x: u16::try_from(start).unwrap_or(0),
-                    y: u16::try_from(row).unwrap_or(0),
-                    len: u16::try_from(len).unwrap_or(0),
-                    kind: SpanKind::Fg,
-                });
-            }
-            if let Some(Some(node)) = links_by_lane.get(*to)
-                && let Some(slot) = row_nodes.get_mut(row)
-            {
-                *slot = Some(node.clone());
-            }
-            row + 1
-        }
-        Event::Message {
-            from,
-            to,
-            label,
-            dashed,
-            arrowhead,
-        } => {
-            let (Some(a), Some(b)) = (geometry.get(*from), geometry.get(*to)) else {
-                return row;
-            };
-            let (left, right, forward) = if center(a) <= center(b) {
-                (a, b, true)
-            } else {
-                (b, a, false)
-            };
-            let label_row = row;
-            let arrow_row = row + 1;
-            canvas.lifelines(label_row, geometry);
-            canvas.write_centered(center(left), center(right), label_row, label);
-            spans.push(TextSpan {
-                x: u16::try_from(center(left)).unwrap_or(0),
-                y: u16::try_from(label_row).unwrap_or(0),
-                len: u16::try_from(center(right).saturating_sub(center(left))).unwrap_or(0),
-                kind: SpanKind::Fg,
-            });
-            canvas.lifelines(arrow_row, geometry);
-            let body = if *dashed { '╌' } else { '─' };
-            for x in center(left) + 1..center(right) {
-                canvas.put(x, arrow_row, body);
-            }
-            let head = match arrowhead {
-                Arrowhead::Solid => {
-                    if forward {
-                        '▸'
-                    } else {
-                        '◂'
-                    }
-                }
-                Arrowhead::Lost => 'x',
-                Arrowhead::Async => ')',
-            };
-            if forward {
-                canvas.put(center(right), arrow_row, head);
-            } else {
-                canvas.put(center(left), arrow_row, head);
-            }
-            if let Some(Some(node)) = links_by_lane.get(*to)
-                && let Some(slot) = row_nodes.get_mut(arrow_row)
-            {
-                *slot = Some(node.clone());
-            }
-            row + 2
-        }
-        Event::Note { first, last, label } => {
-            canvas.lifelines(row, geometry);
-            let (Some(a), Some(b)) = (geometry.get(*first), geometry.get(*last)) else {
-                return row + 1;
-            };
-            let text = format!("┤ {label} ├");
-            canvas.write_centered(a.x, b.x + b.w, row, &text);
-            spans.push(TextSpan {
-                x: u16::try_from(a.x).unwrap_or(0),
-                y: u16::try_from(row).unwrap_or(0),
-                len: u16::try_from(b.x + b.w - a.x).unwrap_or(0),
-                kind: SpanKind::Fg,
-            });
-            row + 1
-        }
-        Event::FrameStart { kind, label } => {
-            draw_frame_rule(canvas, spans, row, '┌', '┐', kind.word(), label);
-            row + 1
-        }
-        Event::FrameDivider { keyword, label } => {
-            draw_frame_rule(canvas, spans, row, '├', '┤', keyword, label);
-            row + 1
-        }
-        Event::FrameEnd => {
-            draw_frame_rule(canvas, spans, row, '└', '┘', "", "");
-            row + 1
-        }
+    max_width: usize,
+) -> TextFigure {
+    let (centers, width) = lane_centers(lanes, events, max_width);
+    let rows = 1 + events.iter().map(event_rows).sum::<usize>();
+    let mut draw = Draw {
+        canvas: Canvas::new(width, rows),
+        centers: &centers,
+        links_by_lane,
+        row_nodes: vec![None; rows],
+        spans: Vec::new(),
+    };
+    for (lane, &center) in lanes.iter().zip(&centers) {
+        let label = box_label(lane);
+        let start = center.saturating_sub(label.chars().count() / 2);
+        draw.text(start, 0, &label);
+    }
+    let mut row = 1;
+    for event in events {
+        draw.event(event, row);
+        row += event_rows(event);
+    }
+    TextFigure {
+        width: u16::try_from(draw.canvas.width).unwrap_or(u16::MAX),
+        height: u16::try_from(rows).unwrap_or(u16::MAX),
+        lines: draw.canvas.into_lines(),
+        spans: draw.spans,
+        row_nodes: draw.row_nodes,
     }
 }
 
-// a frame rule's own drawing: caps, the fill between, and its centered
-// label, which is enough distinct behavior to earn the extra parameter over
-// folding it into `draw_event` itself
-#[allow(clippy::too_many_arguments)]
-fn draw_frame_rule(
-    canvas: &mut Canvas,
-    spans: &mut Vec<TextSpan>,
-    row: usize,
-    left_cap: char,
-    right_cap: char,
-    kind: &str,
-    label: &str,
-) {
-    let width = canvas.width;
-    canvas.put(0, row, left_cap);
-    for x in 1..width.saturating_sub(1) {
-        canvas.put(x, row, '─');
+impl Draw<'_> {
+    fn center(&self, lane: usize) -> usize {
+        self.centers.get(lane).copied().unwrap_or(0)
     }
-    if width > 1 {
-        canvas.put(width - 1, row, right_cap);
-    }
-    let text = if kind.is_empty() && label.is_empty() {
-        String::new()
-    } else if kind.is_empty() {
-        format!(" {label} ")
-    } else if label.is_empty() {
-        format!(" {kind} ")
-    } else {
-        format!(" {kind}: {label} ")
-    };
-    if !text.is_empty() {
-        let len = canvas.write(2, row, &elide(&text, width.saturating_sub(4)));
-        spans.push(TextSpan {
-            x: 2,
-            y: u16::try_from(row).unwrap_or(0),
+
+    /// Write `text` in the foreground colour, the one thing on its row the
+    /// reader should read.
+    fn text(&mut self, x: usize, y: usize, text: &str) {
+        let len = self.canvas.write(x, y, text);
+        self.spans.push(TextSpan {
+            x: u16::try_from(x).unwrap_or(u16::MAX),
+            y: u16::try_from(y).unwrap_or(u16::MAX),
             len: u16::try_from(len).unwrap_or(0),
             kind: SpanKind::Fg,
         });
+    }
+
+    fn jump_to(&mut self, lane: usize, rows: std::ops::Range<usize>) {
+        let Some(Some(node)) = self.links_by_lane.get(lane) else {
+            return;
+        };
+        for row in rows {
+            if let Some(slot) = self.row_nodes.get_mut(row) {
+                *slot = Some(node.clone());
+            }
+        }
+    }
+
+    fn event(&mut self, event: &Event, row: usize) {
+        match event {
+            Event::Message {
+                from, to, label, ..
+            } if from == to => {
+                self.canvas.lifelines(row, self.centers);
+                let x = self.center(*from) + 2;
+                let room = self
+                    .centers
+                    .get(from + 1)
+                    .map_or(self.canvas.width, |next| next.saturating_sub(1))
+                    .saturating_sub(x);
+                self.text(x, row, &elide(&format!("↺ {label}"), room));
+                self.jump_to(*to, row..row + 1);
+            }
+            Event::Message {
+                from,
+                to,
+                label,
+                dashed,
+                arrowhead,
+            } => {
+                let forward = self.center(*from) <= self.center(*to);
+                let (left, right) = if forward {
+                    (self.center(*from), self.center(*to))
+                } else {
+                    (self.center(*to), self.center(*from))
+                };
+                self.canvas.lifelines(row, self.centers);
+                self.canvas.lifelines(row + 1, self.centers);
+                let room = right.saturating_sub(left + 3);
+                let label = elide(label, room);
+                let pad = room.saturating_sub(label.chars().count()) / 2;
+                self.text(left + 2 + pad, row, &label);
+                let body = if *dashed { '╌' } else { '─' };
+                for x in left + 1..right {
+                    self.canvas.put(x, row + 1, body);
+                }
+                let head = match (arrowhead, forward) {
+                    (Arrowhead::Solid, true) => '▸',
+                    (Arrowhead::Solid, false) => '◂',
+                    (Arrowhead::Async, true) => '▹',
+                    (Arrowhead::Async, false) => '◃',
+                    (Arrowhead::Lost, _) => '×',
+                };
+                let head_at = if forward { right - 1 } else { left + 1 };
+                self.canvas.put(head_at, row + 1, head);
+                self.jump_to(*to, row..row + 2);
+            }
+            Event::Note { first, last, label } => {
+                self.canvas.lifelines(row, self.centers);
+                let text = elide(&format!("┤ {label} ├"), self.canvas.width);
+                let len = text.chars().count();
+                let middle = usize::midpoint(self.center(*first), self.center(*last));
+                let start = middle
+                    .saturating_sub(len / 2)
+                    .min(self.canvas.width.saturating_sub(len));
+                self.text(start, row, &text);
+            }
+            Event::FrameStart { kind, label } => {
+                self.frame_rule(row, ('┌', '┐'), kind.word(), label);
+            }
+            Event::FrameDivider { keyword, label } => {
+                self.frame_rule(row, ('├', '┤'), keyword, label);
+            }
+            Event::FrameEnd => self.frame_rule(row, ('└', '┘'), "", ""),
+        }
+    }
+
+    fn frame_rule(&mut self, row: usize, (left, right): (char, char), kind: &str, label: &str) {
+        let width = self.canvas.width;
+        self.canvas.put(0, row, left);
+        for x in 1..width.saturating_sub(1) {
+            self.canvas.put(x, row, '─');
+        }
+        if width > 1 {
+            self.canvas.put(width - 1, row, right);
+        }
+        let text = match (kind.is_empty(), label.is_empty()) {
+            (true, true) => return,
+            (true, false) => format!(" {label} "),
+            (false, true) => format!(" {kind} "),
+            (false, false) => format!(" {kind}: {label} "),
+        };
+        self.text(2, row, &elide(&text, width.saturating_sub(4)));
     }
 }
 
@@ -688,7 +676,7 @@ mod tests {
     use super::*;
 
     fn figure(src: &str) -> SequenceFigure {
-        parse(src).expect("parsed")
+        parse(src, usize::MAX).expect("parsed")
     }
 
     #[test]
@@ -721,15 +709,16 @@ mod tests {
     }
 
     #[test]
-    fn a_lost_message_draws_an_x() {
+    fn a_lost_message_draws_a_cross() {
         let figure = figure("sequenceDiagram\n  A-x B: gone");
-        assert!(figure.text.lines.join("\n").contains('x'));
+        assert!(figure.text.lines.join("\n").contains('×'));
     }
 
     #[test]
-    fn a_self_message_draws_a_loop_glyph() {
-        let figure = figure("sequenceDiagram\n  A->>A: think");
-        assert!(figure.text.lines.join("\n").contains('↺'));
+    fn a_self_message_draws_a_loop_glyph_beside_its_lifeline() {
+        let figure = figure("sequenceDiagram\n  participant A\n  A->>A: think");
+        let row = &figure.text.lines[1];
+        assert!(row.contains("│ ↺ think"), "{row}");
     }
 
     #[test]
@@ -738,9 +727,14 @@ mod tests {
         assert!(figure.text.lines.join("\n").contains("greeting"));
     }
 
+    /// Only messages take a number: a note or a frame between two messages
+    /// never makes the count skip.
     #[test]
-    fn autonumber_prefixes_every_message() {
-        let figure = figure("sequenceDiagram\n  autonumber\n  A->>B: hi\n  B-->>A: hey");
+    fn autonumber_counts_messages_only() {
+        let figure = figure(
+            "sequenceDiagram\n  autonumber\n  A->>B: hi\n  Note over A: aside\n  \
+             alt ok\n    B-->>A: hey\n  end",
+        );
         let art = figure.text.lines.join("\n");
         assert!(art.contains("1. hi"), "{art}");
         assert!(art.contains("2. hey"), "{art}");
@@ -758,25 +752,42 @@ mod tests {
     }
 
     #[test]
+    fn end_without_a_frame_is_ignored() {
+        let figure = figure("sequenceDiagram\n  A->>B: hi\n  end\n  else nope");
+        assert_eq!(figure.text.lines.len(), 3, "{:?}", figure.text.lines);
+    }
+
+    #[test]
     fn ignored_directives_are_noted_not_drawn() {
         let figure = figure("sequenceDiagram\n  A->>B: hi\n  activate B\n  deactivate B");
         assert!(figure.notes.iter().any(|n| n.contains("activate")));
     }
 
     #[test]
-    fn a_link_attaches_to_the_receivers_message_row() {
+    fn a_link_attaches_to_both_rows_of_the_receivers_message() {
         let figure = figure("sequenceDiagram\n  A->>B: hi\n  link B: profile @ src/b.rs#B");
         assert_eq!(
             figure.anchors,
             [(NodeId::new("participant:B"), "src/b.rs#B".to_owned())]
         );
-        let jump_row = (1..figure.text.height).find(|&row| figure.text.node_at_row(row).is_some());
-        assert_eq!(jump_row, Some(2), "the arrow row, not the label row");
+        let rows: Vec<u16> = (0..figure.text.height)
+            .filter(|&row| figure.text.node_at_row(row).is_some())
+            .collect();
+        assert_eq!(rows, [1, 2], "the label row and the arrow row");
+    }
+
+    #[test]
+    fn a_link_label_may_hold_an_at_sign() {
+        let figure = figure("sequenceDiagram\n  A->>B: hi\n  link B: mail @ me @ src/b.rs#B");
+        assert_eq!(figure.anchors[0].1, "src/b.rs#B");
     }
 
     #[test]
     fn a_diagram_with_no_participants_is_an_error() {
-        assert_eq!(parse("sequenceDiagram").unwrap_err(), SequenceError::Empty);
+        assert_eq!(
+            parse("sequenceDiagram", usize::MAX).unwrap_err(),
+            SequenceError::Empty
+        );
     }
 
     #[test]
@@ -797,15 +808,28 @@ mod tests {
         assert!(figure.text.lines[0].contains("Unknown"));
     }
 
-    /// The canvas is sized from the participants' own lane widths, not from
-    /// message content, so a label far longer than the card just runs off
-    /// its edge rather than growing it; this only has to not panic.
+    /// Lanes widen to fit a label while the card has room, so nothing is
+    /// elided that did not have to be.
     #[test]
-    fn a_very_long_message_label_does_not_panic() {
+    fn lanes_widen_to_fit_a_label_the_card_has_room_for() {
+        let label = "POST /login {user, pass}";
+        let src = format!("sequenceDiagram\n  A->>B: {label}");
+        let wide = parse(&src, 80).expect("parsed");
+        assert!(wide.text.lines[1].contains(label), "{:?}", wide.text.lines);
+        assert!(wide.text.width <= 80);
+    }
+
+    /// A label wider than the card allows is elided to its lane, never
+    /// written across the next lifeline or past the canvas edge.
+    #[test]
+    fn a_label_too_long_for_the_card_is_elided_to_its_lane() {
         let long = "x".repeat(500);
-        let src = format!("sequenceDiagram\n  a->>b: {long}");
-        let figure = figure(&src);
-        assert!(figure.text.lines.join("\n").contains('x'));
+        let src = format!("sequenceDiagram\n  participant A\n  participant B\n  A->>B: {long}");
+        let figure = parse(&src, 40).expect("parsed");
+        assert!(figure.text.width <= 40, "{}", figure.text.width);
+        let label_row = &figure.text.lines[1];
+        assert!(label_row.contains('…'), "{label_row}");
+        assert_eq!(label_row.matches('│').count(), 2, "{label_row}");
     }
 
     #[test]
@@ -813,5 +837,12 @@ mod tests {
         let figure = figure("sequenceDiagram\n  participant Solo");
         assert!(figure.text.lines[0].contains("Solo"));
         assert_eq!(figure.text.lines.len(), 1, "just the header row");
+    }
+
+    #[test]
+    fn crlf_and_comment_lines_parse_like_plain_ones() {
+        let figure = figure("sequenceDiagram\r\n  %% a comment\r\n  A->>B: hi  \r\n");
+        assert_eq!(figure.text.lines.len(), 3, "{:?}", figure.text.lines);
+        assert!(figure.text.lines[1].contains("hi"));
     }
 }

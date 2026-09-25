@@ -11,7 +11,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthChar;
 
-use crate::app::walkthrough::{FIGURE_MAX_ROWS, FigureBlock};
+use crate::app::walkthrough::FigureBlock;
 use crate::app::{ScrollAlign, SplitSide};
 use crate::graph::Fit;
 use crate::theme::Theme;
@@ -707,8 +707,8 @@ pub(super) fn figure_lines(
     open_hint: Option<&str>,
 ) -> Vec<Line<'static>> {
     let mut rows = vec![figure_header(figure, ordinal, theme, bg)];
-    let height = figure.view.height().clamp(1, FIGURE_MAX_ROWS);
-    let area = ratatui::layout::Rect::new(0, 0, width.saturating_sub(2).max(1), height);
+    let area =
+        ratatui::layout::Rect::new(0, 0, width.saturating_sub(2).max(1), figure.drawn_rows());
     let mut buffer = ratatui::buffer::Buffer::empty(area);
     figure
         .view
@@ -731,7 +731,7 @@ pub(super) fn figure_lines(
         rows.push(Line::from(spans));
     }
     if figure.fit != Fit::AsDrawn {
-        rows.push(fit_notice(figure.fit, open_hint, theme, bg));
+        rows.push(fit_notice(figure, open_hint, theme, bg));
     }
     rows
 }
@@ -744,18 +744,25 @@ fn opaque(color: Color, bg: Color) -> Color {
 }
 
 /// The dim line under a figure the card had to help fit: redrawn top-down,
-/// or (rarer) still cropped even so. Names the key that opens it full-screen,
-/// when one is bound, so the reader knows what to do about it.
-fn fit_notice(fit: Fit, open_hint: Option<&str>, theme: &Theme, bg: Color) -> Line<'static> {
+/// or (rarer) still cropped even so. Names the key that opens a graph
+/// full-screen, when one is bound, so the reader knows what to do about it.
+fn fit_notice(
+    figure: &FigureBlock,
+    open_hint: Option<&str>,
+    theme: &Theme,
+    bg: Color,
+) -> Line<'static> {
     let (_, bar) = card_frame(theme, false, false, theme.accent);
-    let mut text = match fit {
+    let graph = figure.is_graph();
+    let mut text = match figure.fit {
         Fit::AsDrawn => String::new(),
         Fit::Redrawn => "too wide side to side; drawn top to bottom instead".to_owned(),
-        Fit::Cropped => {
+        Fit::Cropped if graph => {
             "too wide for this card even top to bottom; some of it is cropped".to_owned()
         }
+        Fit::Cropped => "too wide for this card; some of it is cropped".to_owned(),
     };
-    if let Some(key) = open_hint {
+    if let Some(key) = open_hint.filter(|_| graph) {
         use std::fmt::Write as _;
         let _ = write!(text, ", {key} open full graph");
     }
@@ -843,45 +850,92 @@ flowchart LR
         terminal.backend().to_string()
     }
 
-    #[test]
-    fn a_sequence_diagram_renders_in_a_card() {
+    /// A body's first figure drawn into an 80-column pane, laid out to the
+    /// card budget the pane gives it.
+    fn figure_card(body: &str) -> String {
+        use crate::app::composer::card_budget;
         use crate::app::walkthrough::{Block, blocks};
 
         let (theme, _) = Theme::from_name("github-dark");
-        let body = "\
-```mermaid
-sequenceDiagram
-  participant A
-  participant B
-  A->>B: hello
-  B-->>A: hi
-```
-";
-        let Some(Block::Figure(mut figure)) = blocks(body, 60).into_iter().next() else {
+        let Some(Block::Figure(mut figure)) = blocks(body, card_budget(80)).into_iter().next()
+        else {
             panic!("a figure");
         };
-        let rows = figure_lines(&mut figure, 1, 60, &theme, theme.bg, Some("o"));
-        insta::assert_snapshot!(card_snapshot(&rows));
+        card_snapshot(&figure_lines(
+            &mut figure,
+            1,
+            80,
+            &theme,
+            theme.bg,
+            Some("o"),
+        ))
+    }
+
+    #[test]
+    fn a_sequence_diagram_renders_in_a_card() {
+        insta::assert_snapshot!(figure_card(
+            "```mermaid
+sequenceDiagram
+  autonumber
+  participant UI as Browser
+  participant API
+  participant Auth as AuthService
+  participant DB
+  UI->>API: POST /login {user, pass}
+  API->>Auth: verify(credentials)
+  Note over Auth,DB: bcrypt compare happens here
+  Auth->>DB: SELECT hash FROM users WHERE name = ?
+  DB-->>Auth: row
+  alt password matches
+    Auth-->>API: token
+    API->>API: cache session
+    API-->>UI: 200 OK + cookie
+  else mismatch
+    Auth--xAPI: denied
+    API-->>UI: 401 Unauthorized
+  end
+  link Auth: verify @ src/auth.rs#verify
+```
+"
+        ));
     }
 
     #[test]
     fn a_callstack_renders_in_a_card() {
-        use crate::app::walkthrough::{Block, blocks};
-
-        let (theme, _) = Theme::from_name("github-dark");
-        let body = "\
-```callstack
+        insta::assert_snapshot!(figure_card(
+            "```callstack
 main
-  handle_request
-  - legacy_auth
-  + new_auth @ src/auth.rs#new_auth
+  serve @ src/server.rs#serve
+    handle_request @ src/http.rs#handle_request
+      - legacy_auth @ src/auth.rs#legacy_auth
+      + authenticate @ src/auth.rs#authenticate
+        + verify_token_signature_against_the_rotating_keyset_of_the_issuer @ src/jwt.rs#verify
+      respond
 ```
-";
-        let Some(Block::Figure(mut figure)) = blocks(body, 60).into_iter().next() else {
-            panic!("a figure");
-        };
-        let rows = figure_lines(&mut figure, 1, 60, &theme, theme.bg, Some("o"));
-        insta::assert_snapshot!(card_snapshot(&rows));
+"
+        ));
+    }
+
+    /// Two subgraphs and a decision, redrawn top-down to fit the card: both
+    /// outlines draw, an edge crossing one keeps its arrowhead, and a title
+    /// moves off the border an arrowhead pierces.
+    #[test]
+    fn a_flowchart_with_subgraphs_renders_in_a_card() {
+        insta::assert_snapshot!(figure_card(
+            "```mermaid
+flowchart LR
+  req[request] --> check{token valid?}
+  subgraph auth[Auth layer]
+    check -->|yes| load[load session]
+    check -->|no| reject[401]
+  end
+  subgraph data[Data layer]
+    load --> query[query db]
+    query --> render[render page]
+  end
+```
+"
+        ));
     }
 
     #[test]

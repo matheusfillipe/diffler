@@ -1,15 +1,17 @@
 //! Every kind of figure a walkthrough card can draw, behind one shape: a
-//! navigable flowchart, or a static laid-out-once sequence diagram or
-//! callstack tree. A ` ```mermaid ` fence picks between the first two by its
-//! own header line; a ` ```callstack ` fence is always the third.
+//! navigable flowchart, or a static sequence diagram or callstack tree laid
+//! out once to the card's width. A ` ```mermaid ` fence picks between the
+//! first two by its own header line; a ` ```callstack ` fence is always the
+//! third.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use crate::graph::callstack::{self, CallstackError, CallstackFigure};
 use crate::graph::mermaid::{self, MermaidError};
-use crate::graph::model::NodeId;
+use crate::graph::model::{Model, NodeId};
 use crate::graph::sequence::{self, SequenceError, SequenceFigure};
+use crate::graph::text_figure::TextFigure;
 use crate::graph::theme::GraphTheme;
 use crate::graph::view::{Fit, GraphView};
 
@@ -86,44 +88,43 @@ fn is_sequence_diagram(src: &str) -> bool {
         })
 }
 
-fn parse_fence(kind: FenceKind, src: &str) -> Result<ParsedFigure, FigureError> {
+fn parse_fence(kind: FenceKind, src: &str, width: usize) -> Result<ParsedFigure, FigureError> {
     match kind {
         FenceKind::Mermaid if is_sequence_diagram(src) => {
-            Ok(ParsedFigure::Sequence(sequence::parse(src)?))
+            Ok(ParsedFigure::Sequence(sequence::parse(src, width)?))
         }
         FenceKind::Mermaid => Ok(ParsedFigure::Flowchart(mermaid::parse(src)?)),
-        FenceKind::Callstack => Ok(ParsedFigure::Callstack(callstack::parse(src)?)),
+        FenceKind::Callstack => Ok(ParsedFigure::Callstack(callstack::parse(src, width)?)),
     }
 }
 
-/// A figure ready to draw in a card: a navigable graph, or a plain laid-out
-/// text figure (a sequence diagram or a callstack tree).
+/// A figure ready to draw in a card: a navigable graph, or a sequence
+/// diagram or callstack tree already laid out as text.
 #[derive(Debug)]
 pub enum Drawing {
     Graph(Box<GraphView>),
-    Sequence(crate::graph::text_figure::TextFigure),
-    Callstack(crate::graph::text_figure::TextFigure),
+    Text(TextFigure),
 }
 
 impl Drawing {
     pub fn height(&self) -> u16 {
         match self {
             Self::Graph(view) => view.height(),
-            Self::Sequence(text) | Self::Callstack(text) => text.height,
+            Self::Text(text) => text.height,
         }
     }
 
     pub fn width(&self) -> u16 {
         match self {
             Self::Graph(view) => view.width(),
-            Self::Sequence(text) | Self::Callstack(text) => text.width,
+            Self::Text(text) => text.width,
         }
     }
 
     pub fn render(&mut self, area: Rect, buf: &mut Buffer, theme: &GraphTheme) {
         match self {
             Self::Graph(view) => view.render(area, buf, theme),
-            Self::Sequence(text) | Self::Callstack(text) => text.render(area, buf, theme),
+            Self::Text(text) => text.render(area, buf, theme),
         }
     }
 
@@ -133,21 +134,16 @@ impl Drawing {
     pub fn node_at_row(&self, row: u16) -> Option<&NodeId> {
         match self {
             Self::Graph(_) => None,
-            Self::Sequence(text) | Self::Callstack(text) => text.node_at_row(row),
+            Self::Text(text) => text.node_at_row(row),
         }
     }
 
-    pub fn is_graph(&self) -> bool {
-        matches!(self, Self::Graph(_))
-    }
-
-    /// The underlying graph model, for a host that wants to hand it to a
-    /// fresh full-screen [`GraphView`]. `None` for a figure that is not a
-    /// navigable graph at all.
-    pub fn model(&self) -> Option<&crate::graph::model::Model> {
+    /// The graph model, for a host that opens it in a fresh full-screen
+    /// [`GraphView`]. `None` for a text figure, which has no full screen.
+    pub fn model(&self) -> Option<&Model> {
         match self {
             Self::Graph(view) => Some(view.model()),
-            Self::Sequence(_) | Self::Callstack(_) => None,
+            Self::Text(_) => None,
         }
     }
 }
@@ -163,9 +159,9 @@ pub struct FigureResult {
 /// Parse a fence's source into a card-ready [`FigureResult`] fit to `width`
 /// columns. `None` for a source this figure system cannot draw at all.
 pub fn figure(kind: FenceKind, src: &str, width: u16) -> Option<FigureResult> {
-    let parsed = parse_fence(kind, src).ok()?;
+    let parsed = parse_fence(kind, src, usize::from(width)).ok()?;
     let anchors = parsed.anchors().to_vec();
-    let (drawing, fit) = match parsed {
+    let drawing = match parsed {
         ParsedFigure::Flowchart(figure) => {
             let mut view = GraphView::new();
             let fit = view.set_model_fit(figure.model, width);
@@ -173,37 +169,34 @@ pub fn figure(kind: FenceKind, src: &str, width: u16) -> Option<FigureResult> {
             // navigated, so it never asked for the default selection
             // `set_model` just gave it
             view.clear_selection();
-            (Drawing::Graph(Box::new(view)), fit)
+            return Some(FigureResult {
+                drawing: Drawing::Graph(Box::new(view)),
+                anchors,
+                fit,
+            });
         }
-        ParsedFigure::Sequence(figure) => {
-            let fit = fit_of(figure.text.width, width);
-            (Drawing::Sequence(figure.text), fit)
-        }
-        ParsedFigure::Callstack(figure) => {
-            let fit = fit_of(figure.text.width, width);
-            (Drawing::Callstack(figure.text), fit)
-        }
+        ParsedFigure::Sequence(figure) => figure.text,
+        ParsedFigure::Callstack(figure) => figure.text,
     };
-    Some(FigureResult {
-        drawing,
-        anchors,
-        fit,
-    })
-}
-
-fn fit_of(drawn: u16, max_width: u16) -> Fit {
-    if drawn <= max_width {
+    let fit = if drawing.width <= width {
         Fit::AsDrawn
     } else {
         Fit::Cropped
-    }
+    };
+    Some(FigureResult {
+        drawing: Drawing::Text(drawing),
+        anchors,
+        fit,
+    })
 }
 
 /// Figures `src` would draw, and what drawing them simplified: what the MCP
 /// write path answers with, so an agent learns the subset without the
 /// reader ever seeing a broken figure.
 pub fn validate_fence(kind: FenceKind, at: usize, src: &str) -> (bool, Vec<String>) {
-    match parse_fence(kind, src) {
+    // nobody sees this drawing, so we lay it out at zero width and skip
+    // widening lanes for its labels
+    match parse_fence(kind, src, 0) {
         Ok(figure) => (
             true,
             figure
