@@ -23,7 +23,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use unicode_width::UnicodeWidthChar;
 
-use crate::app::{App, BranchAction, Modal, Screen, Severity, fuzzy};
+use crate::app::{AgentActivity, App, BranchAction, Modal, Screen, Severity, fuzzy};
 use crate::keymap::{Action, render_chord};
 use crate::theme::Theme;
 use crate::transient::TransientKind;
@@ -797,6 +797,24 @@ fn claim_lead_cell(spans: &mut Vec<Span<'static>>, theme: &Theme) {
     }
 }
 
+/// `agent · <focus>[ · <file>]`: the most recent MCP tool call or
+/// `report_activity` report, dropped once it ages out.
+fn agent_activity_spans(
+    activity: &AgentActivity,
+    theme: &Theme,
+    on_panel: impl Fn(Color) -> Style,
+) -> Vec<Span<'static>> {
+    let mut spans = vec![
+        Span::styled(" · ", on_panel(theme.dim)),
+        Span::styled("agent", on_panel(theme.purple)),
+        Span::styled(format!(" · {}", activity.focus), on_panel(theme.fg)),
+    ];
+    if let Some(file) = &activity.file {
+        spans.push(Span::styled(format!(" · {file}"), on_panel(theme.dim)));
+    }
+    spans
+}
+
 /// Bottom bar shared by every screen: mode chip, repo@branch, MCP state,
 /// viewed counts, and the transient message.
 pub(super) fn status_bar(app: &App, width: u16) -> Line<'static> {
@@ -853,6 +871,11 @@ pub(super) fn status_bar(app: &App, width: u16) -> Line<'static> {
     }
     if app.refresh_flash > 0 {
         spans.push(Span::styled(" · ↻", on_panel(theme.dim)));
+    }
+    if app.config.ui.show_agent_activity
+        && let Some(activity) = &app.agent_activity
+    {
+        spans.extend(agent_activity_spans(activity, theme, on_panel));
     }
     let (files, viewed) = app.viewed_counts();
     if files > 0 {
@@ -998,6 +1021,49 @@ mod tests {
         let bar = super::status_bar(&app, 80);
         let text: String = bar.spans.iter().map(|s| s.content.clone()).collect();
         assert!(text.contains(" PR #7 "), "{text}");
+    }
+
+    #[test]
+    fn the_status_bar_shows_the_agents_live_activity() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use ratatui::widgets::Paragraph;
+
+        use crate::app::App;
+        use crate::config::LoadedConfig;
+        use crate::test_support::standard_fixture;
+
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.set_agent_activity(
+            "writing the walkthrough",
+            Some("src/app/refresh.rs".to_owned()),
+        );
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 1)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                let bar = super::status_bar(&app, 80);
+                frame.render_widget(Paragraph::new(bar), frame.area());
+            })
+            .expect("draw");
+        insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn hiding_agent_activity_drops_it_from_the_status_bar() {
+        use crate::app::App;
+        use crate::config::LoadedConfig;
+        use crate::test_support::standard_fixture;
+
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.config.ui.show_agent_activity = false;
+        app.set_agent_activity("writing the walkthrough", None);
+
+        let bar = super::status_bar(&app, 80);
+        let text: String = bar.spans.iter().map(|s| s.content.clone()).collect();
+        assert!(!text.contains("agent"), "{text}");
     }
 
     #[test]

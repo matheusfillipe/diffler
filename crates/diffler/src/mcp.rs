@@ -119,6 +119,13 @@ pub enum McpRequestKind {
     GetWalkthrough {
         id: Option<String>,
     },
+    /// The agent's own words for what it's doing right now, overriding the
+    /// generic phrase `app/mcp.rs` would otherwise derive from the call
+    /// itself. Shown in the status bar until it or another call ages out.
+    ReportActivity {
+        focus: String,
+        file: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -462,6 +469,16 @@ pub struct PublishWalkthroughParams {
 pub struct GetWalkthroughParams {
     /// The walkthrough to fetch, from `review_status`. Omit for the newest.
     pub id: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ReportActivityParams {
+    /// Short plain phrase for what you're doing right now, e.g. "writing the
+    /// walkthrough" or "fixing the failing test". Trimmed and capped; keep it
+    /// to a few words.
+    pub focus: String,
+    /// The file this is about, if any.
+    pub file: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -849,12 +866,33 @@ impl DifflerMcp {
     }
 
     #[tool(
+        description = "Tell the human what you're doing right now: a short plain phrase (e.g. \"writing the walkthrough\") and the file it's about, if any. Shows live in the status bar. Every other tool call already reports something on its own, so call this when the generic phrase for that call wouldn't say enough, or you're about to spend a while on something no tool call names (reading code, thinking, writing tests)."
+    )]
+    async fn report_activity(
+        &self,
+        Parameters(params): Parameters<ReportActivityParams>,
+    ) -> Result<Json<OkResponse>, ErrorData> {
+        let kind = McpRequestKind::ReportActivity {
+            focus: params.focus,
+            file: params.file,
+        };
+        match self.request(kind).await? {
+            McpResponse::Ok => Ok(Json(OkResponse { ok: true })),
+            _ => Err(mismatch()),
+        }
+    }
+
+    #[tool(
         description = "Long-poll until the human sends feedback (comments, replies, or the send key). Returns the new epoch and all open/replied comments, or timed_out. A timed_out result means the human is still reviewing: call again with the epoch it returned to keep waiting. A comment on a walkthrough stop arrives as a reply on that stop's own comment, so its id names the stop."
     )]
     async fn wait_for_feedback(
         &self,
         Parameters(params): Parameters<WaitForFeedbackParams>,
     ) -> Result<Json<WaitForFeedbackResponse>, ErrorData> {
+        // fired directly, ahead of the request/reply round trip below: that
+        // round trip only completes once the human sends feedback, but the
+        // indicator has to read "waiting" for the whole poll, not just after
+        let _ = self.tx.send(AppEvent::McpWaiting);
         let mut rx = self.feedback_rx.clone();
         let since = params.since_epoch.unwrap_or_else(|| *rx.borrow());
         let timeout = Duration::from_secs(
@@ -1448,7 +1486,14 @@ mod tests {
         let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counted = requests.clone();
         tokio::spawn(async move {
-            while let Some(AppEvent::Mcp(request)) = rx.recv().await {
+            // `wait_for_feedback` also fires `McpWaiting` ahead of its own
+            // request, so a real consumer (and this stand-in for one) must
+            // shrug off event kinds it doesn't care about rather than treat
+            // one as the end of the stream
+            while let Some(event) = rx.recv().await {
+                let AppEvent::Mcp(request) = event else {
+                    continue;
+                };
                 counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let response = match request.kind {
                     McpRequestKind::Feedback => McpResponse::Feedback {

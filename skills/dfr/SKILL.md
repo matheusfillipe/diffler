@@ -31,6 +31,9 @@ Review the active review in diffler:
 8. Tell the human the comments are ready; run /df to keep answering their
    feedback on them afterward.
 
+Call `report_activity` with a short focus whenever you move to a new phase
+(reading, commenting, waiting), so the human sees what you are doing.
+
 ## Write every comment like this
 
 - Say what is wrong and why, in one or two short sentences. Lead with the

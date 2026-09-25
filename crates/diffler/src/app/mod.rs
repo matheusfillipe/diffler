@@ -366,6 +366,38 @@ const REFRESH_FLASH_TICKS: u8 = 4;
 const FALLBACK_REFRESH_TICKS: u32 = 20;
 /// How often (in 250ms ticks) the wall clock behind every rendered age moves.
 const CLOCK_TICKS: u32 = 40;
+/// How long the agent-activity indicator stays up after the last tool call
+/// or `report_activity`, in 250ms ticks (45s). An agent can go quiet for
+/// tens of seconds between calls (model latency, editing several files), so
+/// the indicator has to outlast an ordinary gap without flickering idle
+/// mid-turn, while still reading stale soon after the agent actually stops.
+const AGENT_ACTIVITY_TTL_TICKS: u32 = 180;
+/// Bound on a `report_activity` focus string, so an agent's free-text status
+/// stays a status line rather than a monologue.
+const AGENT_ACTIVITY_FOCUS_MAX_CHARS: usize = 160;
+
+/// `DIFFLER_ACTIVITY_TTL_MS` overrides [`AGENT_ACTIVITY_TTL_TICKS`] above, so
+/// a test doesn't have to sleep out 45 real seconds to see the indicator
+/// expire.
+fn agent_activity_ttl_ticks() -> u32 {
+    std::env::var("DIFFLER_ACTIVITY_TTL_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map_or(AGENT_ACTIVITY_TTL_TICKS, |ms| {
+            u32::try_from(ms / 250)
+                .unwrap_or(AGENT_ACTIVITY_TTL_TICKS)
+                .max(1)
+        })
+}
+
+/// The most recently active MCP connection's status, for the status-bar
+/// indicator. Several sessions may be connected; the app just keeps the
+/// latest one and lets an older report be overwritten.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentActivity {
+    pub focus: String,
+    pub file: Option<String>,
+}
 
 /// How much the CI poll slows while the terminal is unfocused. Focus regained
 /// polls at once, so the only cost of being wrong is a stale run list nobody
@@ -695,6 +727,11 @@ pub struct App {
     pub feedback_tx: tokio::sync::watch::Sender<u64>,
     /// Bound port of the embedded MCP server, if it started successfully.
     pub mcp_port: Option<u16>,
+    /// Live status of the most recently active MCP connection, shown in the
+    /// status bar. `None` once nothing has reported for `agent_activity_ttl_ticks`.
+    pub agent_activity: Option<AgentActivity>,
+    agent_activity_expires_at: u32,
+    agent_activity_ttl_ticks: u32,
     keymaps: Keymaps,
     transients: Transients,
     /// The open transient, if any. Set when a top-level prefix fires; cleared
@@ -859,6 +896,9 @@ impl App {
             refresh_flash: 0,
             feedback_tx: tokio::sync::watch::Sender::new(0),
             mcp_port: None,
+            agent_activity: None,
+            agent_activity_expires_at: 0,
+            agent_activity_ttl_ticks: agent_activity_ttl_ticks(),
             keymaps,
             transients,
             transient: None,
@@ -977,6 +1017,20 @@ impl App {
         (total, viewed)
     }
 
+    /// Record the agent's current focus for the status-bar indicator,
+    /// bounding it so a `report_activity` free-text report can't grow the
+    /// status bar or break the layout with an embedded newline.
+    pub(crate) fn set_agent_activity(&mut self, focus: impl Into<String>, file: Option<String>) {
+        let mut focus: String = focus.into();
+        focus.retain(|c| c != '\n' && c != '\r');
+        if focus.chars().count() > AGENT_ACTIVITY_FOCUS_MAX_CHARS {
+            focus = focus.chars().take(AGENT_ACTIVITY_FOCUS_MAX_CHARS).collect();
+        }
+        self.agent_activity = Some(AgentActivity { focus, file });
+        self.agent_activity_expires_at =
+            self.tick_count.wrapping_add(self.agent_activity_ttl_ticks);
+    }
+
     #[allow(clippy::too_many_lines)] // one arm per event; a flat match reads best
     pub fn handle(&mut self, event: AppEvent) -> Flow {
         match event {
@@ -1077,6 +1131,10 @@ impl App {
                     // a dropped receiver means the agent gave up mid-call
                     let _ = request.reply.send(response);
                 }
+                Flow::Continue
+            }
+            AppEvent::McpWaiting => {
+                self.set_agent_activity("waiting on you", None);
                 Flow::Continue
             }
             AppEvent::GitDone { label, ok, output } => {
@@ -1306,6 +1364,10 @@ impl App {
             let now = now_unix();
             changed |= now != self.now_unix && self.screen_shows_ages();
             self.now_unix = now;
+        }
+        if self.agent_activity.is_some() && self.tick_count >= self.agent_activity_expires_at {
+            self.agent_activity = None;
+            changed = true;
         }
         // re-poll the active CI screen on a relaxed cadence (250ms ticks);
         // saturating + clamp so a pathological config can't zero or overflow it.
@@ -3016,6 +3078,46 @@ mod tests {
         app.now_unix = now_unix();
         let quiet = (1..CLOCK_TICKS).all(|_| app.handle(AppEvent::Tick) == Flow::Idle);
         assert!(quiet, "idle output stays at zero between clock steps");
+    }
+
+    #[test]
+    fn agent_activity_expires_after_its_ttl_and_asks_for_a_draw() {
+        let (_fixture, mut app) = app();
+        app.set_agent_activity("reading the diff", None);
+        for _ in 0..app.agent_activity_ttl_ticks - 1 {
+            app.handle(AppEvent::Tick);
+            assert!(app.agent_activity.is_some(), "still fresh inside the ttl");
+        }
+        assert_eq!(
+            app.handle(AppEvent::Tick),
+            Flow::Continue,
+            "the tick that clears it must ask for a redraw"
+        );
+        assert!(app.agent_activity.is_none(), "expired once the ttl elapsed");
+    }
+
+    #[test]
+    fn a_fresh_report_pushes_the_expiry_back_out() {
+        let (_fixture, mut app) = app();
+        app.set_agent_activity("reading the diff", None);
+        for _ in 0..app.agent_activity_ttl_ticks / 2 {
+            app.handle(AppEvent::Tick);
+        }
+        app.set_agent_activity("writing a comment", None);
+        for _ in 0..app.agent_activity_ttl_ticks / 2 {
+            assert!(app.agent_activity.is_some(), "the new report reset the ttl");
+            app.handle(AppEvent::Tick);
+        }
+    }
+
+    #[test]
+    fn set_agent_activity_strips_newlines_and_caps_length() {
+        let (_fixture, mut app) = app();
+        let long = "x".repeat(500);
+        app.set_agent_activity(format!("line one\nline two {long}"), None);
+        let activity = app.agent_activity.as_ref().expect("activity set");
+        assert!(!activity.focus.contains('\n'), "{}", activity.focus);
+        assert!(activity.focus.chars().count() <= 160, "{}", activity.focus);
     }
 
     #[test]

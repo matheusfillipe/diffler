@@ -61,6 +61,11 @@ pub enum AppEvent {
     /// Agent tool call routed through the event channel so the app stays
     /// the single owner of the review state (`mcp` module).
     Mcp(McpRequest),
+    /// `wait_for_feedback` sends this itself when it starts blocking, ahead
+    /// of the request/reply round trip in `Mcp` above (which only completes
+    /// once the human sends feedback), so the agent-activity indicator reads
+    /// "waiting on you" for the whole poll rather than only after it resolves.
+    McpWaiting,
     /// A shelled-out network git op finished (`app::GitOp`). The result returns
     /// as an event so the run loop keeps drawing while the process runs.
     GitDone {

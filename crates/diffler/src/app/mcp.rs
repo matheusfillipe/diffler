@@ -31,6 +31,7 @@ enum CachedKind<'a> {
 
 impl App {
     pub(crate) fn handle_mcp(&mut self, kind: McpRequestKind) -> McpResponse {
+        self.record_mcp_activity(&kind);
         match kind {
             McpRequestKind::ReviewStatus => McpResponse::Status(self.review_status_response()),
             McpRequestKind::GetDiff { file } => {
@@ -71,7 +72,40 @@ impl App {
                 Ok(info) => McpResponse::Walkthrough(info),
                 Err(err) => McpResponse::Error(err),
             },
+            McpRequestKind::ReportActivity { .. } => McpResponse::Ok,
         }
+    }
+
+    /// Every tool call counts as agent activity: `report_activity` sets the
+    /// indicator to the agent's own words, and every other call maps itself
+    /// to a plain phrase, so a quiet stretch between calls never reads as
+    /// idle just because the agent didn't say anything extra.
+    fn record_mcp_activity(&mut self, kind: &McpRequestKind) {
+        let (focus, file): (String, Option<String>) = match kind {
+            McpRequestKind::ReportActivity { focus, file } => (focus.clone(), file.clone()),
+            McpRequestKind::ReviewStatus => ("checking the review".to_owned(), None),
+            McpRequestKind::GetDiff { file } => ("reading the diff".to_owned(), file.clone()),
+            McpRequestKind::GetComments { .. } => ("reading comments".to_owned(), None),
+            McpRequestKind::ListReviews => ("listing reviews".to_owned(), None),
+            McpRequestKind::ReplyComment { .. } => ("replying to a comment".to_owned(), None),
+            McpRequestKind::ProposeResolve { .. } => {
+                ("flagging a comment addressed".to_owned(), None)
+            }
+            McpRequestKind::MarkViewed { file } => {
+                ("marking a file viewed".to_owned(), Some(file.clone()))
+            }
+            McpRequestKind::AddComment { file, .. } => {
+                ("writing a comment".to_owned(), Some(file.clone()))
+            }
+            McpRequestKind::DeleteComment { .. } => ("deleting a comment".to_owned(), None),
+            McpRequestKind::EditComment { .. } => ("editing a comment".to_owned(), None),
+            McpRequestKind::Feedback => ("reading feedback".to_owned(), None),
+            McpRequestKind::PublishWalkthrough { .. } => {
+                ("publishing a walkthrough".to_owned(), None)
+            }
+            McpRequestKind::GetWalkthrough { .. } => ("reading the walkthrough".to_owned(), None),
+        };
+        self.set_agent_activity(focus, file);
     }
 
     fn review_status_response(&self) -> ReviewStatusResponse {
@@ -3303,5 +3337,42 @@ mod tests {
             session.comment(&dropped_note).is_none(),
             "a note nobody passed back is gone"
         );
+    }
+
+    #[test]
+    fn every_tool_call_maps_itself_to_an_activity_phrase() {
+        let (_fixture, mut app, _id) = app_with_comment();
+        assert!(app.agent_activity.is_none());
+
+        app.handle_mcp(McpRequestKind::GetDiff {
+            file: Some("src/lib.rs".to_owned()),
+        });
+        let activity = app.agent_activity.as_ref().expect("activity set");
+        assert_eq!(activity.focus, "reading the diff");
+        assert_eq!(activity.file.as_deref(), Some("src/lib.rs"));
+
+        app.handle_mcp(McpRequestKind::ListReviews);
+        let activity = app.agent_activity.as_ref().expect("activity set");
+        assert_eq!(activity.focus, "listing reviews");
+        assert_eq!(activity.file, None, "no call names a file for this one");
+    }
+
+    #[test]
+    fn report_activity_overrides_the_generic_phrase() {
+        let (_fixture, mut app, _id) = app_with_comment();
+        let response = app.handle_mcp(McpRequestKind::ReportActivity {
+            focus: "writing the walkthrough".to_owned(),
+            file: Some("src/app/refresh.rs".to_owned()),
+        });
+        assert_eq!(response, McpResponse::Ok);
+        let activity = app.agent_activity.as_ref().expect("activity set");
+        assert_eq!(activity.focus, "writing the walkthrough");
+        assert_eq!(activity.file.as_deref(), Some("src/app/refresh.rs"));
+
+        // a later call with no file report replaces the whole indicator,
+        // never merges: a stale file name would outlive the activity it was about
+        app.handle_mcp(McpRequestKind::ListReviews);
+        let activity = app.agent_activity.as_ref().expect("activity set");
+        assert_eq!(activity.file, None);
     }
 }

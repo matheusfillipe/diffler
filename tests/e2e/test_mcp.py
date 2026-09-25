@@ -110,6 +110,25 @@ def test_review_status_and_get_comments_round_trip(spawn, repo):
     assert comments[0]["status"] == "open"
 
 
+def test_report_activity_shows_in_the_status_bar_and_expires(spawn, repo):
+    # a short TTL so the test doesn't sleep out the real 45s default
+    tui = spawn(
+        "--port",
+        str(free_port()),
+        env_extra={"DIFFLER_ACTIVITY_TTL_MS": "1200"},
+    )
+    url = mcp_url(tui)
+
+    call_tool(
+        tui,
+        url,
+        "report_activity",
+        {"focus": "writing the walkthrough", "file": "app.txt"},
+    )
+    tui.wait_for("agent · writing the walkthrough · app.txt")
+    tui.wait_gone("agent · writing the walkthrough", timeout=5)
+
+
 def test_endpoint_file_publishes_the_bound_port(spawn, repo):
     tui = spawn("--port", str(free_port()))
     url = mcp_url(tui)

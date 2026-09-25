@@ -54,6 +54,10 @@ this review when `$ARGUMENTS` is empty:
    walkthrough with `publish_walkthrough` when asked to change it, and keep
    waiting.
 
+Call `report_activity` with a short focus whenever you move to a new phase
+(reading, drafting stops, publishing, waiting), so the human sees what you
+are doing.
+
 ## Write every stop like this
 
 The human reads the title in a sidebar about thirty characters wide and the

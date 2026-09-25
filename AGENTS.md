@@ -506,7 +506,8 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
 - **MCP (rmcp, streamable HTTP).** Tools: `review_status`, `get_diff`,
   `get_comments`, `list_reviews`, `reply_comment`, `propose_resolve`,
   `mark_viewed`, `add_comment`, `delete_comment`, `edit_comment`,
-  `wait_for_feedback`, `publish_walkthrough`, `get_walkthrough`. `add_comment`
+  `report_activity`, `wait_for_feedback`, `publish_walkthrough`,
+  `get_walkthrough`. `add_comment`
   writes a new comment on a line or an inclusive line range of the review the
   human is currently looking at, anchored exactly the way a human's own
   comment is; authored as the agent by default, or as the human when
@@ -522,6 +523,15 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   since a reply lives inside its comment and would otherwise disappear with
   it unseen; `edit_comment` never touches replies, so it carries no such
   refusal.
+  `report_activity` names the agent's own focus (and the file it's about, if
+  any) for the status bar's live indicator; every other tool call already
+  counts as activity on its own, mapped to a plain phrase (`app/mcp.rs`'s
+  `record_mcp_activity`) so a call that carries no report never reads as
+  idle, and `wait_for_feedback` marks the indicator waiting for the whole
+  poll rather than only once it resolves. The indicator drops once nothing
+  has been reported for `AGENT_ACTIVITY_TTL_TICKS` (45s at the tick rate),
+  ages in memory only, and shows whichever MCP session reported most
+  recently.
   Comments are tagged with their source. Agent triggering is the
   `wait_for_feedback` long-poll (MCP can't initiate agent turns); the human's
   "send" key unblocks it. `propose_resolve` only marks a comment Replied, and

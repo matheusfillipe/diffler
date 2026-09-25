@@ -133,6 +133,9 @@ pub struct UiConfig {
     /// block wrapping are not flagged. On by default; set false for the textual
     /// engine.
     pub semantic_diff: bool,
+    /// Show the connected agent's live activity in the status bar. On by
+    /// default.
+    pub show_agent_activity: bool,
 }
 
 impl Default for UiConfig {
@@ -145,6 +148,7 @@ impl Default for UiConfig {
             diff_file_layout: FileLayout::Tree,
             side_by_side: false,
             semantic_diff: true,
+            show_agent_activity: true,
         }
     }
 }

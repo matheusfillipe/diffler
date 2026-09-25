@@ -23,6 +23,9 @@ Check the diffler review and respond to the human's feedback:
    call itself fails, check `review_status`: diffler is closed only when that
    fails too, otherwise keep waiting.
 
+Call `report_activity` with a short focus whenever you move to a new phase
+(reading, replying, waiting), so the human sees what you are doing.
+
 ## Write every reply like this
 
 - Say what you changed and why, in two to four short sentences or bullets.

@@ -420,6 +420,18 @@ async fn wait_for_feedback_unblocks_on_the_send_key() {
 }
 
 #[tokio::test]
+async fn report_activity_is_callable_over_mcp() {
+    let harness = start(|_| {}).await;
+    let result = call(
+        &harness.client,
+        "report_activity",
+        json!({ "focus": "writing the walkthrough", "file": "src/lib.rs" }),
+    )
+    .await;
+    assert_eq!(structured(&result)["ok"], true);
+}
+
+#[tokio::test]
 async fn wait_for_feedback_times_out_without_feedback() {
     let harness = start(|_| {}).await;
     let result = call(

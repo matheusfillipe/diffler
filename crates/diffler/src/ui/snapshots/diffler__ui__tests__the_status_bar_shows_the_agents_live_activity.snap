@@ -1,0 +1,5 @@
+---
+source: crates/diffler/src/ui/mod.rs
+expression: terminal.backend()
+---
+" STATUS  fixture@main · mcp off · agent · writing the walkthrough · src/app/refr"
