@@ -18,8 +18,7 @@ this review when `$ARGUMENTS` is empty:
    `publish_walkthrough` records that same review, so the walkthrough
    renders it too, not the working tree by default. A walkthrough works on a
    clean tree too: with nothing changed, publish over the working tree and
-   anchor each stop to the file as it stands, to explain existing code
-   rather than a diff.
+   anchor each stop to the file as it stands, to explain existing code.
 3. Choose one stop per real decision, as few as the change needs: five is
    common, ten is a lot, and more means the change wants splitting. Order
    them as a reader should meet them. Each stop is a span (`path#symbol`
@@ -36,20 +35,32 @@ this review when `$ARGUMENTS` is empty:
    overview, and a map of the whole change belongs in the summary below, not
    a stop.
 4. Add a diagram when a shape beats a paragraph, in the kind that fits what
-   you are showing: a `mermaid` flowchart for a branch, a state, or data
-   moving through steps; a `mermaid sequenceDiagram` for who calls whom over
-   time, a participant anchored with `link <participant>: <label> @
-   <path#symbol>`; a `callstack` fence for the old-versus-new call path as one
-   tree, one frame per line, `+`/`-` for added/removed, two spaces of indent
-   per depth, an optional ` @ <path#symbol>` anchor on any frame. Several
-   fences in one body are fine, and a note can carry one of its own when a
-   different part of the region needs its own diagram.
+   you are showing. Several fences in one body are fine, and a note can carry
+   one of its own when a different part of the region needs its own diagram.
+   - A `mermaid` flowchart for a branch, a state, or data moving through
+     steps. `subgraph id[Title]` … `end` outlines a group of nodes.
+   - A `mermaid` `sequenceDiagram` for who calls whom over time:
+     `participant A as Label`, `A->>B: text` for a call, `B-->>A: text` for
+     its reply, `Note over A,B: text`, and `alt`/`else`/`end` for a branch.
+     `link B: label @ path#symbol` makes `<cr>` on any message to `B` open
+     that code.
+   - A `callstack` fence for how a call path changed, as one tree: one
+     frame per line, two spaces of indent per depth, `+ ` or `- ` right before
+     the label of an added or removed frame, and an optional ` @ path#symbol`
+     after it that `<cr>` opens:
+
+     ```callstack
+     handle_request @ src/http.rs#handle_request
+       - legacy_auth
+       + authenticate @ src/auth.rs#authenticate
+     ```
 5. Put what you left out in `skipped`.
 6. Write a `summary`: what the reader meets first. One short paragraph saying
    what the change does, plus one diagram of the simplest shape that explains
-   it (see step 4 for which kind fits), five to eight nodes, naming real
-   files or functions. It never lists the stops and never repeats their
-   titles: the stops are the detail, the summary is the shape.
+   it (step 4 says which kind fits), five to eight nodes, participants or
+   frames, naming real files or functions. It never lists the stops and
+   never repeats their titles: the stops are the detail, the summary is the
+   shape.
 7. Call `publish_walkthrough`, read its receipts, fix a refusal and
    republish. When you revise, pass each surviving stop's and note's `id`
    from `get_walkthrough` so it keeps its comment and the thread hanging off

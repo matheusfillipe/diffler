@@ -477,24 +477,34 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   parser every comment body uses, so headings, tables, lists and fenced code
   all work; a ` ```mermaid ` or ` ```callstack ` fence becomes a figure
   instead, static here and drawn once per frame into the card's rows, which
-  every agent comment gains and not only a stop. A figure is one of three
-  kinds behind `graph::Drawing`: `Graph`, a navigable flowchart; `Sequence`
-  and `Callstack`, laid out once at parse time into plain rows of styled text
-  (`graph::text_figure::TextFigure`) with no navigation of their own.
-  `graph::figure` picks between them: a ` ```callstack ` fence is always
-  `Callstack`; a ` ```mermaid ` fence is `Sequence` when its first line names
-  a `sequenceDiagram`, `Graph` otherwise, through `graph::mermaid` (the
+  every agent comment gains and not only a stop. A figure is a
+  `graph::Drawing`: `Graph`, a navigable flowchart, or `Text`, a sequence
+  diagram (`graph::sequence`) or callstack tree (`graph::callstack`) laid out
+  once at parse time into rows of styled text (`graph::text_figure`).
+  `graph::figure` picks between them: a ` ```callstack ` fence is always a
+  callstack; a ` ```mermaid ` fence is a sequence diagram when its first line
+  names a `sequenceDiagram`, else a flowchart through `graph::mermaid` (the
   `flowchart` subset the layered engine can draw, simplified where it cannot,
   since an agent that gets a rejection it cannot fix is worse off than a
-  reader looking at a box where a diamond was). A mermaid `subgraph` tags its
-  members with its outermost id rather than grouping them; once laid out,
-  the engine outlines a subgraph only when its members land contiguous with
-  no foreign node inside their margin, and the layout reserves that margin
-  only when the model carries at least one subgraph, so an ordinary
-  flowchart pays nothing for it. A `{decision}` node draws with a `◇` marker
-  instead of the "drawn as a box" note every other shape the engine cannot
-  render gets. What was simplified comes back in the tool's reply, so the
-  agent learns and the reader never sees a gap; only a mermaid diagram with
+  reader looking at a box where a diamond was). A text figure lays out to the
+  card's width, so a resize re-lays it out through the same width-keyed
+  cache: a sequence diagram widens the gap before each message's right end
+  until its label fits, left to right, while the width lasts, and elides the
+  label to its lane after that; a callstack elides each label to its row.
+  Neither is cropped at `FIGURE_MAX_ROWS`, since there is no full screen to
+  show the rest, and their own caps (`MAX_EVENTS`, `MAX_FRAMES`) bound them.
+  A mermaid `subgraph` tags its members with its outermost id, and a node
+  first named on an edge joins the first subgraph that lists it. Once laid
+  out, the engine outlines a subgraph only when its members land contiguous,
+  no foreign node inside their margin and no other outline overlapping; the
+  layout reserves that margin only when the model carries a subgraph, so an
+  ordinary flowchart pays nothing for it. Outlines draw before the edges, so
+  a crossing edge merges into a junction and keeps its arrowhead, and the
+  title goes on whichever border has room clear of an arrowhead. A
+  `{decision}` node draws with a `◇` marker and earns none of the "drawn as a
+  box" notes the other shapes the engine cannot render get. What was
+  simplified comes back in the tool's reply, so the agent learns and the
+  reader never sees a gap; only a mermaid diagram with
   no node-and-edge shape at all (and no `sequenceDiagram` header) fails, and
   its source stays in the body as prose. Parsed bodies are cached on
   `DiffView` keyed by comment id, or
@@ -502,12 +512,13 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   hash over the body and the wrap width, so a diagram is parsed when it
   changes and not per frame; the same key scheme carries into the per-frame
   figure rasteriser, so a summary's figure draws through the exact path a
-  stop's does. `o` opens a `Graph` figure full screen; `Sequence` and
-  `Callstack` have no full screen to open, so `o` on one says as much and
-  names `<cr>` instead: on a figure row whose drawing names a resolved node
-  (a callstack frame's own anchor, or a sequence message's receiving
-  participant, set by mermaid's own `link <participant>: <label> @ <target>`
-  statement), `<cr>` in the diff pane jumps straight to that code.
+  stop's does. `o` opens a `Graph` figure full screen; a `Text` figure has no
+  full screen to open, so `o` on one says as much and names `<cr>`: on a
+  figure row whose drawing names a resolved node (a callstack frame's own
+  anchor, or either row of a message to a participant that mermaid's own
+  `link <participant>: <label> @ <target>` statement anchors), `<cr>` in the
+  diff pane jumps straight to that code, through the same `resolved` map a
+  graph's `click` targets fill.
   A body is capped at 8KB and a walkthrough at 64KB, since parsing and layout
   run on the thread serving the TUI and the text comes from an agent; the
   summary counts toward the same two caps, `BodyTooLong` and `TotalTooLong`,
