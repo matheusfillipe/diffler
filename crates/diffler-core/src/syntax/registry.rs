@@ -622,3 +622,17 @@ impl Default for LanguageRegistry {
         Self::build()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn exactly_the_layout_languages_are_layout_significant() {
+        let flagged: Vec<_> = super::REGISTRY
+            .entries
+            .iter()
+            .filter(|entry| entry.layout_significant)
+            .map(|entry| entry.name)
+            .collect();
+        assert_eq!(flagged, ["python", "yaml", "make", "scala", "haskell"]);
+    }
+}
