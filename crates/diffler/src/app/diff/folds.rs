@@ -32,14 +32,22 @@ pub(crate) struct FoldRegion {
     pub starts_closed: bool,
     noun: &'static str,
     what: Option<String>,
+    /// Added or deleted lines the region hides, which its label names so a
+    /// folded change never reads as untouched code.
+    changed: usize,
 }
 
 impl FoldRegion {
     /// The fold row's text for `hidden` of this region's lines.
     pub(crate) fn label(&self, hidden: usize) -> String {
+        let changed = if self.changed > 0 && self.noun == "lines" {
+            format!(" · {} changed", self.changed)
+        } else {
+            String::new()
+        };
         match &self.what {
-            Some(what) => format!("⋯ {hidden} {} · {what}", self.noun),
-            None => format!("⋯ {hidden} {}", self.noun),
+            Some(what) => format!("⋯ {hidden} {} · {what}{changed}", self.noun),
+            None => format!("⋯ {hidden} {}{changed}", self.noun),
         }
     }
 }
@@ -79,6 +87,14 @@ impl Entry<'_> {
     fn new_row(&self) -> Option<usize> {
         self.diff.new_no.map(|no| no.saturating_sub(1) as usize)
     }
+}
+
+/// The new-side row entry `index` sits at. A deleted line has none of its
+/// own, so we place it at the nearest new-side row before it (else after it),
+/// which keeps both sides of a change inside the same definition.
+fn placed_row(run: &[Entry<'_>], index: usize) -> Option<usize> {
+    let before = run.get(..=index)?.iter().rev().find_map(Entry::new_row);
+    before.or_else(|| run.get(index..)?.iter().find_map(Entry::new_row))
 }
 
 /// A region before it is named: `start..end` of one run, and the test
@@ -269,7 +285,7 @@ fn pieces<'a>(
     rules: &FoldRules<'_>,
 ) -> Vec<Piece<'a>> {
     let covering = |index: usize| {
-        let row = run.get(index).and_then(Entry::new_row)?;
+        let row = placed_row(run, index)?;
         tests
             .iter()
             .position(|t| t.start_row <= row && row <= t.end_row)
@@ -398,6 +414,10 @@ fn region(
             FoldKind::Tests | FoldKind::Context => "lines",
         },
         what,
+        changed: hidden
+            .iter()
+            .filter(|e| e.diff.kind != LineKind::Context)
+            .count(),
     }
 }
 
@@ -677,6 +697,10 @@ mod tests {
                 DiffLine::new(*kind, old_no, new_no, (*text).to_owned())
             })
             .collect::<Vec<_>>();
+        model_from(lines)
+    }
+
+    fn model_from(lines: Vec<DiffLine>) -> DiffModel {
         let count = lines.len() as u32;
         DiffModel {
             files: vec![FileDiff {
@@ -799,6 +823,43 @@ mod tests {
             "`mod tests {{` is the module's own header and stays visible"
         );
         assert_eq!(regions[0].label(4), "⋯ 4 lines · mod tests");
+    }
+
+    #[test]
+    fn a_change_inside_a_test_folds_both_its_sides_and_says_so() {
+        let src = "#[cfg(test)]\nmod tests {\n    fn test_a() {\n        let x = 1;\n        assert_eq!(x, 20);\n        let y = 2;\n    }\n}\n";
+        let scope = REGISTRY.scope_index("f.rs", src);
+        let mut lines = Vec::new();
+        for (row, text) in src.lines().enumerate() {
+            let no = Some(row as u32 + 1);
+            if text.contains("20") {
+                lines.push(DiffLine::new(
+                    LineKind::Deleted,
+                    no,
+                    None,
+                    text.replace("20", "2"),
+                ));
+                lines.push(DiffLine::new(LineKind::Added, None, no, text.to_owned()));
+            } else {
+                lines.push(DiffLine::new(LineKind::Context, no, no, text.to_owned()));
+            }
+        }
+        let model = model_from(lines);
+        let enabled = [FoldKind::Tests].into();
+        let regions = compute_regions(&rows_of(&model), &model, &rules(&enabled, Some(&scope)));
+        assert_eq!(regions.len(), 1, "one test region, unbroken: {regions:?}");
+        let deleted = model.files[0].hunks[0]
+            .lines
+            .iter()
+            .position(|l| l.kind == LineKind::Deleted)
+            .expect("a deleted line");
+        assert!(regions[0].lines.contains(&(0, deleted)));
+        assert!(regions[0].lines.contains(&(0, deleted + 1)));
+        assert!(
+            regions[0].label(6).ends_with("· 2 changed"),
+            "{}",
+            regions[0].label(6)
+        );
     }
 
     #[test]

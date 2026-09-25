@@ -300,9 +300,12 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   The diff pane folds too (`app/diff/folds.rs`), apart from the sidebar's
   folds: a fold row stands for a run of lines and names what it hides from
   the scope index, `⋯ 4 lines · fn b`, or `⋯ N lines` where the file has
-  none. Four rules pick the regions, each listed in `[diff] default_folds`:
-  `tests` (a test function's body or a whole `test`/`tests` module, its
-  signature line kept; a name only containing the word, `latest`, is no
+  none, and counts the changes it holds, `· 2 changed`, so a folded test
+  never reads as untouched. Four rules pick the regions, each listed in
+  `[diff] default_folds`: `tests` (a test function's body or a whole
+  `test`/`tests` module, its signature line kept, a deleted line placed at
+  its neighbours' row so both sides of a change fold together; a name only
+  containing the word, `latest`, is no
   test), `deleted-bodies` (12+ deleted lines nothing replaces, whole),
   `removed-runs` (the middle of 5-11 such lines), `context` (5+ unchanged
   lines, minus a changed scope's signature or closing line at either edge).
