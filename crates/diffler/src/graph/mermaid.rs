@@ -6,7 +6,7 @@
 //! or class diagram) comes back as an error. The notes travel to the author, so
 //! it learns what was dropped without the reader ever seeing a broken figure.
 
-use crate::graph::model::{Edge, Model, Node, NodeId, NodeStatus, RankDir};
+use crate::graph::model::{Edge, Model, Node, NodeId, NodeStatus, RankDir, Subgraph};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Figure {
@@ -104,6 +104,10 @@ struct Parsed {
     clicks: Vec<(NodeId, String)>,
     anchors: Vec<(NodeId, String)>,
     notes: Vec<String>,
+    /// Nested `subgraph`/`end` blocks, outermost first: only the outermost
+    /// earns an outline, so a node inside a deeper one is still tagged with
+    /// its outermost ancestor's id, never its own.
+    subgraph_stack: Vec<String>,
 }
 
 impl Parsed {
@@ -120,13 +124,48 @@ impl Parsed {
             .unwrap_or_default()
             .to_ascii_lowercase();
         match head.as_str() {
-            "end" => {}
-            "subgraph" => self.note_once("subgraphs are flattened".to_owned()),
+            "end" => {
+                self.subgraph_stack.pop();
+            }
+            "subgraph" => self.subgraph(line),
             "click" => self.click(line),
             other if IGNORED.contains(&other) => {
                 self.note_once(format!("`{other}` is ignored"));
             }
             _ => self.chain(line),
+        }
+    }
+
+    /// `subgraph <id>[<title>]` or bare `subgraph <title>`: pushes a level
+    /// onto the nesting stack so every node declared until the matching `end`
+    /// tags itself with the outermost one. A subgraph draws an outline once
+    /// laid out only when its members land contiguous; a nested one is
+    /// noted, since only the outermost is ever drawn.
+    fn subgraph(&mut self, line: &str) {
+        self.note_once(
+            "a subgraph outlines its members once laid out only when they land \
+             contiguous; otherwise it flattens"
+                .to_owned(),
+        );
+        if !self.subgraph_stack.is_empty() {
+            self.note_once("nested subgraphs draw only the outermost".to_owned());
+        }
+        let rest = line
+            .split_once(char::is_whitespace)
+            .map_or("", |(_, rest)| rest.trim());
+        let (id, title) = subgraph_header(rest);
+        if self.subgraph_stack.is_empty() && !id.is_empty() {
+            if !self.model.subgraphs.iter().any(|s| s.id == id) {
+                self.model.subgraphs.push(Subgraph {
+                    id: id.clone(),
+                    title,
+                });
+            }
+            self.subgraph_stack.push(id);
+        } else {
+            // a nested level still pushes, so its own `end` pairs correctly,
+            // but names no id: nodes inside stay tagged with the outer one
+            self.subgraph_stack.push(String::new());
         }
     }
 
@@ -212,16 +251,25 @@ impl Parsed {
     /// `None` for a spec that holds no id at all.
     fn declare(&mut self, spec: &str) -> Option<NodeId> {
         let (id, label, shape) = node_spec(spec)?;
-        if let Some(shape) = shape {
+        // `{ }` gets its own diamond-like marker instead of drawing as a plain
+        // box, so it earns no "drawn as a box" note the way every other shape
+        // we cannot draw literally does
+        let decision = shape == Some("{ }");
+        if let Some(shape) = shape
+            && !decision
+        {
             self.note_once(format!("`{shape}` shapes are drawn as boxes"));
         }
         let id = NodeId::new(id);
         match self.model.index_of(&id) {
             Some(at) => {
-                if let (Some(label), Some(node)) = (label, self.model.nodes.get_mut(at))
-                    && node.label == node.id.0
-                {
-                    node.label = label;
+                if let Some(node) = self.model.nodes.get_mut(at) {
+                    if let Some(label) = label
+                        && node.label == node.id.0
+                    {
+                        node.label = label;
+                    }
+                    node.decision |= decision;
                 }
             }
             None => self.model.nodes.push(Node {
@@ -230,9 +278,30 @@ impl Parsed {
                 status: NodeStatus::Neutral,
                 group: None,
                 foldable: None,
+                subgraph: self
+                    .subgraph_stack
+                    .first()
+                    .filter(|s| !s.is_empty())
+                    .cloned(),
+                decision,
             }),
         }
         Some(id)
+    }
+}
+
+/// `subgraph id[Title]`, `subgraph id["Title with spaces"]`, or a bare
+/// `subgraph Title`, which doubles as its own id.
+fn subgraph_header(rest: &str) -> (String, String) {
+    let rest = rest.trim();
+    if let Some(open) = rest.find('[') {
+        let id = rest[..open].trim().to_owned();
+        let inner = rest[open + 1..].trim_end_matches(']').trim();
+        let title = quoted(inner).unwrap_or_else(|| inner.to_owned());
+        let id = if id.is_empty() { title.clone() } else { id };
+        (id, title)
+    } else {
+        (rest.to_owned(), rest.to_owned())
     }
 }
 
@@ -572,13 +641,17 @@ mod tests {
     fn shapes_we_cannot_draw_become_boxes_and_say_so() {
         let figure = figure("flowchart TD\n  a{is it set?} --> b((done))");
         assert_eq!(labels(&figure), ["is it set?", "done"]);
-        assert_eq!(
-            figure.notes,
-            [
-                "`{ }` shapes are drawn as boxes",
-                "`(( ))` shapes are drawn as boxes"
-            ]
-        );
+        assert_eq!(figure.notes, ["`(( ))` shapes are drawn as boxes"]);
+    }
+
+    /// A `{decision}` node gets its own marker and earns no "drawn as a box"
+    /// note, unlike every other shape the layered engine cannot draw.
+    #[test]
+    fn a_decision_shape_is_marked_not_noted() {
+        let figure = figure("flowchart TD\n  a{is it set?} --> b[done]");
+        assert!(figure.model.nodes[0].decision);
+        assert!(!figure.model.nodes[1].decision);
+        assert!(figure.notes.is_empty(), "{:?}", figure.notes);
     }
 
     #[test]
@@ -600,7 +673,29 @@ mod tests {
         );
         assert_eq!(labels(&figure), ["read", "lex", "emit"]);
         assert_eq!(edges(&figure).len(), 2);
-        assert_eq!(figure.notes, ["subgraphs are flattened"]);
+        assert_eq!(figure.model.subgraphs.len(), 1);
+        assert_eq!(figure.model.subgraphs[0].id, "parse");
+        assert_eq!(figure.model.nodes[0].subgraph.as_deref(), Some("parse"));
+        assert_eq!(figure.model.nodes[1].subgraph.as_deref(), Some("parse"));
+        assert_eq!(figure.model.nodes[2].subgraph, None);
+    }
+
+    #[test]
+    fn a_subgraph_with_a_bracketed_title_keeps_its_own_id() {
+        let figure = figure("flowchart TD\n  subgraph p[Parse Stage]\n    a --> b\n  end");
+        assert_eq!(figure.model.subgraphs[0].id, "p");
+        assert_eq!(figure.model.subgraphs[0].title, "Parse Stage");
+    }
+
+    #[test]
+    fn a_nested_subgraph_tags_the_outermost_and_says_so() {
+        let figure = figure(
+            "flowchart TD\n  subgraph outer\n    subgraph inner\n      a --> b\n    end\n  end",
+        );
+        assert_eq!(figure.model.subgraphs.len(), 1);
+        assert_eq!(figure.model.subgraphs[0].id, "outer");
+        assert_eq!(figure.model.nodes[0].subgraph.as_deref(), Some("outer"));
+        assert!(figure.notes.iter().any(|n| n.contains("outermost")));
     }
 
     #[test]

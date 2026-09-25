@@ -80,6 +80,14 @@ pub struct Node {
     /// root node is foldable (it takes the collapse shortcut); external edges
     /// connect to the root, and its members branch off it.
     pub foldable: Option<String>,
+    /// The id of the outermost mermaid `subgraph` this node was declared
+    /// inside, if any. Purely cosmetic: it neither ranks nor groups the node,
+    /// it only earns an outline drawn around it and its siblings once they
+    /// are laid out (see [`Model::subgraphs`]).
+    pub subgraph: Option<String>,
+    /// A mermaid `{decision}` node: drawn with a distinct marker instead of a
+    /// plain box.
+    pub decision: bool,
 }
 
 impl Node {
@@ -91,6 +99,8 @@ impl Node {
             status,
             group: None,
             foldable: None,
+            subgraph: None,
+            decision: false,
         }
     }
 
@@ -116,11 +126,21 @@ pub struct Edge {
     pub label: Option<String>,
 }
 
+/// A mermaid `subgraph`, flattened into the ordinary node/edge flow but drawn
+/// with an outline around its members when, once laid out, they land
+/// contiguous with no foreign node inside their bounding box.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Subgraph {
+    pub id: String,
+    pub title: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Model {
     pub rankdir: RankDir,
     pub nodes: Vec<Node>,
     pub edges: Vec<Edge>,
+    pub subgraphs: Vec<Subgraph>,
 }
 
 impl Model {
@@ -129,6 +149,7 @@ impl Model {
             rankdir,
             nodes: Vec::new(),
             edges: Vec::new(),
+            subgraphs: Vec::new(),
         }
     }
 
@@ -189,6 +210,7 @@ impl Model {
             .filter(|e| !hidden.contains(&e.from) && !hidden.contains(&e.to))
             .cloned()
             .collect();
+        out.subgraphs.clone_from(&self.subgraphs);
         out
     }
 

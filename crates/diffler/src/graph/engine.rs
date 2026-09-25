@@ -286,7 +286,7 @@ fn place_and_draw(model: &Model, ranks: &[(usize, usize)], zoom: Zoom) -> Layout
     let text: Vec<Vec<String>> = model
         .nodes
         .iter()
-        .map(|n| label_lines(&n.label, n.status, zoom))
+        .map(|n| label_lines(&n.label, n.status, n.decision, zoom))
         .collect();
     let line_width = |lines: &[String]| lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
     // members per group root, in model order
@@ -401,8 +401,10 @@ fn place_and_draw(model: &Model, ranks: &[(usize, usize)], zoom: Zoom) -> Layout
     let total_primary =
         rank_pos.last().copied().unwrap_or(0) + rank_extent.last().copied().unwrap_or(0);
 
+    let margin = subgraph_margin(model, &mut node_box);
+
     // two extra cells past the cross axis carry the return rail for back edges
-    let (grid_w, grid_h) = axis.xy(total_primary, total_secondary + 2);
+    let (grid_w, grid_h) = axis.xy(total_primary + 2 * margin, total_secondary + 2 + 2 * margin);
     let mut grid = Grid::new(grid_w, grid_h);
     route_edges(
         &mut grid,
@@ -412,7 +414,7 @@ fn place_and_draw(model: &Model, ranks: &[(usize, usize)], zoom: Zoom) -> Layout
         &rank_extent,
         &node_box,
         &size,
-        total_secondary,
+        total_secondary + margin,
     );
 
     let mut placements = Vec::with_capacity(model.nodes.len());
@@ -443,6 +445,7 @@ fn place_and_draw(model: &Model, ranks: &[(usize, usize)], zoom: Zoom) -> Layout
             member: node.group.is_some(),
         });
     }
+    draw_subgraph_outlines(&mut grid, model, &node_box, &size);
 
     Layout {
         lines: grid.into_lines(),
@@ -455,10 +458,16 @@ fn place_and_draw(model: &Model, ranks: &[(usize, usize)], zoom: Zoom) -> Layout
 /// The box label as its drawn lines: the node label's own `\n`-separated
 /// lines (mermaid's `<br>`), each elided to the zoom's max width (compact
 /// only) so overview boxes stay small, with the status glyph on the last one.
-fn label_lines(label: &str, status: NodeStatus, zoom: Zoom) -> Vec<String> {
+/// A decision node's first line leads with `◇` instead of drawing as a plain
+/// box, so a branch reads apart from the flow around it without a shape the
+/// terminal grid cannot actually draw.
+fn label_lines(label: &str, status: NodeStatus, decision: bool, zoom: Zoom) -> Vec<String> {
     let mut lines: Vec<String> = label.split('\n').map(|line| elide(line, zoom)).collect();
     if lines.is_empty() {
         lines.push(String::new());
+    }
+    if decision && let Some(first) = lines.first_mut() {
+        *first = format!("◇ {first}");
     }
     let glyph = status.glyph();
     if !glyph.is_empty()
@@ -490,6 +499,76 @@ fn box_height(lines: usize, box_h: usize) -> usize {
     let overhead = box_h.saturating_sub(1);
     let overhead = if lines > 1 { overhead.max(2) } else { overhead };
     lines.max(1) + overhead
+}
+
+/// A subgraph outline needs a cell of margin outside its members, which the
+/// layout otherwise reserves nowhere: shifting the whole graph by one cell
+/// gives every edge that margin, at no cost to a diagram with no subgraph at
+/// all. Returns the margin applied (0 or 1), for the caller to grow the grid
+/// and the back-edge rail to match.
+fn subgraph_margin(model: &Model, node_box: &mut [(usize, usize)]) -> usize {
+    let margin = usize::from(!model.subgraphs.is_empty());
+    if margin > 0 {
+        for slot in node_box.iter_mut() {
+            slot.0 += margin;
+            slot.1 += margin;
+        }
+    }
+    margin
+}
+
+/// Outline each subgraph whose members land contiguous: their bounding box,
+/// margined by one cell, holds no other node's box. A subgraph whose members
+/// scattered across the layout gets no outline; its nodes already sit exactly
+/// where ordinary ranking put them, so "flattened" costs nothing further to
+/// draw.
+fn draw_subgraph_outlines(
+    grid: &mut Grid,
+    model: &Model,
+    node_box: &[(usize, usize)],
+    size: &[(usize, usize)],
+) {
+    for subgraph in &model.subgraphs {
+        let members: Vec<usize> = model
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.subgraph.as_deref() == Some(subgraph.id.as_str()))
+            .map(|(index, _)| index)
+            .collect();
+        if members.is_empty() {
+            continue;
+        }
+        let (mut min_x, mut min_y, mut max_x, mut max_y) = (usize::MAX, usize::MAX, 0, 0);
+        for &index in &members {
+            let (x, y) = node_box.get(index).copied().unwrap_or_default();
+            let (w, h) = size.get(index).copied().unwrap_or_default();
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x + w);
+            max_y = max_y.max(y + h);
+        }
+        let (bx, by) = (min_x.saturating_sub(1), min_y.saturating_sub(1));
+        let (bw, bh) = (max_x - min_x + 2, max_y - min_y + 2);
+        let foreign_inside = model.nodes.iter().enumerate().any(|(index, _)| {
+            if members.contains(&index) {
+                return false;
+            }
+            let (x, y) = node_box.get(index).copied().unwrap_or_default();
+            let (w, h) = size.get(index).copied().unwrap_or_default();
+            rects_overlap((bx, by, bw, bh), (x, y, w, h))
+        });
+        if foreign_inside {
+            continue;
+        }
+        grid.draw_cluster(bx, by, bw, bh, &subgraph.title);
+    }
+}
+
+fn rects_overlap(a: (usize, usize, usize, usize), b: (usize, usize, usize, usize)) -> bool {
+    let (ax, ay, aw, ah) = a;
+    let (bx, by, bw, bh) = b;
+    ax < bx + bw && bx < ax + aw && ay < by + bh && by < ay + ah
 }
 
 fn status_word(status: NodeStatus) -> &'static str {
@@ -1226,6 +1305,60 @@ mod tests {
             "an unrecognized glyph carries no lines"
         );
         assert_eq!(mask_to_char(0), ' ', "no lines draws a blank cell");
+    }
+
+    #[test]
+    fn a_decision_node_gets_a_marker_and_no_note() {
+        use crate::graph::model::{Node, RankDir};
+        let mut model = Model::new(RankDir::LeftRight);
+        let mut decision = Node::leaf("d", NodeStatus::Neutral);
+        decision.decision = true;
+        decision.label = "is it set?".to_owned();
+        model.nodes = vec![decision];
+        let layout = Layered.lay_out(&model, Zoom::Normal);
+        assert!(layout.lines.join("\n").contains("◇ is it set?"));
+    }
+
+    #[test]
+    fn contiguous_subgraph_members_draw_an_outline() {
+        use crate::graph::model::{Edge, Node, RankDir, Subgraph};
+        let mut model = Model::new(RankDir::LeftRight);
+        let mut a = Node::leaf("a", NodeStatus::Neutral);
+        a.subgraph = Some("parse".to_owned());
+        let mut b = Node::leaf("b", NodeStatus::Neutral);
+        b.subgraph = Some("parse".to_owned());
+        model.nodes = vec![a, b];
+        model.edges = vec![Edge {
+            from: NodeId::new("a"),
+            to: NodeId::new("b"),
+            label: None,
+        }];
+        model.subgraphs = vec![Subgraph {
+            id: "parse".to_owned(),
+            title: "parse".to_owned(),
+        }];
+        let layout = Layered.lay_out(&model, Zoom::Normal);
+        let art = layout.lines.join("\n");
+        assert!(art.contains("parse"), "the subgraph title is drawn: {art}");
+    }
+
+    /// A member scattered onto the same rank as a foreign node draws no
+    /// outline: the two boxes sit right beside each other, so any box around
+    /// one member would also enclose the stranger.
+    #[test]
+    fn a_scattered_subgraph_draws_no_outline() {
+        use crate::graph::model::{Node, RankDir, Subgraph};
+        let mut model = Model::new(RankDir::LeftRight);
+        let mut a = Node::leaf("a", NodeStatus::Neutral);
+        a.subgraph = Some("parse".to_owned());
+        let stranger = Node::leaf("stranger", NodeStatus::Neutral);
+        model.nodes = vec![a, stranger];
+        model.subgraphs = vec![Subgraph {
+            id: "parse".to_owned(),
+            title: "unique-subgraph-title".to_owned(),
+        }];
+        let layout = Layered.lay_out(&model, Zoom::Normal);
+        assert!(!layout.lines.join("\n").contains("unique-subgraph-title"));
     }
 
     #[test]

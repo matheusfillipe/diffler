@@ -199,6 +199,8 @@ pub fn to_model(detail: &RunDetail) -> Model {
             status: node_status(job.status),
             group: None,
             foldable: (!job.legs.is_empty()).then(|| job.id.0.clone()),
+            subgraph: None,
+            decision: false,
         });
         for (i, leg) in job.legs.iter().enumerate() {
             model.nodes.push(Node {
@@ -207,6 +209,8 @@ pub fn to_model(detail: &RunDetail) -> Model {
                 status: node_status(leg.status),
                 group: Some(job.id.0.clone()),
                 foldable: None,
+                subgraph: None,
+                decision: false,
             });
         }
     }
