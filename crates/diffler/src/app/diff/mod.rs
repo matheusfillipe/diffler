@@ -4,6 +4,7 @@
 //! materializes the visible slice.
 
 mod comments;
+mod folds;
 mod nav;
 mod open;
 mod review;
@@ -37,7 +38,7 @@ use slide::stop_file_index;
 pub(crate) use slide::{Slide, stop_row_offset};
 
 use crate::app::walkthrough::FigureCache;
-use crate::config::FileLayout;
+use crate::config::{FileLayout, FoldKind};
 use crate::tree::{self, Bucket, TreeNode, TreeRow};
 
 /// Which pane has the keyboard: the file sidebar or the diff body.
@@ -241,6 +242,18 @@ pub struct DiffView {
     /// landed file's hunks in here too, since the merge is a snapshot taken
     /// before enrichment runs.
     pub(crate) merged_model: Option<DiffModel>,
+    /// The `[diff] default_folds` rules, pinned at open.
+    fold_kinds: HashSet<FoldKind>,
+    /// Fold-worthy regions of the selected file's rows, rebuilt with them.
+    pub(crate) regions: Vec<folds::FoldRegion>,
+    /// What each unified `DiffRow::Fold` row stands for.
+    pub(crate) fold_groups: Vec<folds::FoldGroup>,
+    /// Whether the reader closed (`true`) or opened a region, by file path
+    /// then region key.
+    fold_overrides: HashMap<String, HashMap<String, bool>>,
+    /// The selected file's path as of the last row rebuild, so a fold verb
+    /// can key into `fold_overrides` without needing the review in hand.
+    rows_path: String,
 }
 
 impl DiffView {
@@ -251,6 +264,7 @@ impl DiffView {
         layout: FileLayout,
         rules: Rules,
         side_by_side: bool,
+        default_folds: &[FoldKind],
     ) -> Self {
         let mut view = Self {
             composer: None,
@@ -301,6 +315,11 @@ impl DiffView {
             context: HashMap::new(),
             context_files: Vec::new(),
             merged_model: None,
+            fold_kinds: default_folds.iter().copied().collect(),
+            regions: Vec::new(),
+            fold_groups: Vec::new(),
+            fold_overrides: HashMap::new(),
+            rows_path: String::new(),
         };
         view.ensure_rows(review);
         view
@@ -427,6 +446,22 @@ impl DiffView {
             ),
             // the summary card is unified-only: split_rows never carries one
             DiffRow::Summary { .. } => (0, None),
+            // split mode merges nothing, so one unified fold row can stand for
+            // several split ones; land on the first
+            DiffRow::Fold { group, .. } => {
+                let keys = self.fold_groups.get(group).map(|g| g.keys.as_slice());
+                (
+                    split
+                        .iter()
+                        .position(|r| {
+                            matches!(r, SplitRow::Fold { region, .. } if keys.is_some_and(|keys| {
+                                self.regions.get(*region).is_some_and(|r| keys.contains(&r.key))
+                            }))
+                        })
+                        .unwrap_or(0),
+                    None,
+                )
+            }
         }
     }
 
@@ -498,9 +533,18 @@ impl DiffView {
         } else {
             (rows, copy)
         };
+        let path = model
+            .files
+            .get(self.selected)
+            .map(|f| f.path.clone())
+            .unwrap_or_default();
+        let regions = self.fold_regions(model, session, &rows, &path);
+        let no_overrides = HashMap::new();
+        let overrides = self.fold_overrides.get(&path).unwrap_or(&no_overrides);
+        let (rows, copy, fold_groups) = folds::apply(&rows, &copy, model, &regions, overrides);
         self.rows = rows;
         self.row_copy = copy;
-        self.split_rows = build_split_rows(
+        let split_rows = build_split_rows(
             model,
             session,
             self.selected,
@@ -509,6 +553,10 @@ impl DiffView {
             &self.figures,
             &self.unresolved_anchors,
         );
+        self.split_rows = folds::apply_split(split_rows, &regions, overrides);
+        self.regions = regions;
+        self.fold_groups = fold_groups;
+        self.rows_path = path;
         // the file list may have shifted (refresh) or folds may hide the old
         // cursor row: keep the tree cursor on the pane's file. A pure wrap
         // re-flow changes neither, and must not move a browsing cursor. Read
@@ -871,6 +919,156 @@ impl DiffView {
             FileLayout::Tree | FileLayout::List => FileLayout::Review,
         };
         self.layout
+    }
+
+    /// The fold regions of `rows`, the selected file's, with what decides
+    /// which of them start closed.
+    fn fold_regions(
+        &self,
+        model: &DiffModel,
+        session: &Session,
+        rows: &[DiffRow],
+        path: &str,
+    ) -> Vec<folds::FoldRegion> {
+        let drafted = self.composer.as_ref().and_then(Composer::anchor);
+        let comment_spans: Vec<(bool, u32, u32)> = session
+            .comments
+            .iter()
+            .map(|comment| &comment.anchor)
+            .chain(drafted)
+            .filter(|anchor| anchor.file == path)
+            .filter_map(|anchor| {
+                let (first, last) = anchor.span()?;
+                Some((anchor.on_old_side, first, last))
+            })
+            .collect();
+        let rules = folds::FoldRules {
+            scope: self.scopes.get(path).map(|scope| &scope.index),
+            enabled: &self.fold_kinds,
+            defaults: self.layout != FileLayout::Walkthrough,
+            context_expanded: self.context.contains_key(path),
+            comment_spans: &comment_spans,
+        };
+        folds::compute_regions(rows, model, &rules)
+    }
+
+    /// Whether the rows on screen are `path`'s.
+    pub(crate) fn rows_show(&self, path: &str) -> bool {
+        self.rows_path == path
+    }
+
+    /// Open every region the fold row `group` stands for.
+    fn open_fold_group(&mut self, group: usize) -> bool {
+        let Some(keys) = self.fold_groups.get(group).map(|g| g.keys.clone()) else {
+            return false;
+        };
+        let overrides = self
+            .fold_overrides
+            .entry(self.rows_path.clone())
+            .or_default();
+        for key in keys {
+            overrides.insert(key, false);
+        }
+        self.mark_rows_dirty();
+        true
+    }
+
+    /// Seat the cursor on line `line` of hunk `hunk`, opening the fold that
+    /// hides it first. Every motion that can land inside a fold goes through
+    /// here, so its target is on screen. Returns the row it landed on.
+    pub(crate) fn reveal_line(
+        &mut self,
+        review: &Review,
+        (hunk, line): (usize, usize),
+    ) -> Option<usize> {
+        let hiding = self
+            .fold_groups
+            .iter()
+            .position(|group| group.lines.contains(&(hunk, line)));
+        if let Some(group) = hiding {
+            self.open_fold_group(group);
+            self.ensure_rows(review);
+        }
+        let at = self.rows.iter().position(
+            |row| matches!(*row, DiffRow::Line { hunk: h, line: l, .. } if h == hunk && l == line),
+        )?;
+        self.cursor = at;
+        Some(at)
+    }
+
+    /// The lines the fold row `group` hides, with their text.
+    pub(crate) fn fold_lines<'a>(
+        &self,
+        file: &'a FileDiff,
+        group: usize,
+    ) -> Vec<((usize, usize), &'a str)> {
+        self.fold_groups
+            .get(group)
+            .map_or(&[][..], |g| g.lines.as_slice())
+            .iter()
+            .filter_map(|&(hunk, line)| {
+                let text = file.hunks.get(hunk)?.lines.get(line)?.text.as_str();
+                Some(((hunk, line), text))
+            })
+            .collect()
+    }
+
+    /// The code a fold row hides, one line per line, for search to match.
+    pub(crate) fn fold_text(&self, file: &FileDiff, group: usize) -> String {
+        let lines = self.fold_lines(file, group);
+        let texts: Vec<&str> = lines.iter().map(|(_, text)| *text).collect();
+        texts.join("\n")
+    }
+
+    /// `za`/`<tab>`: open the fold under the cursor, or close the region it
+    /// sits inside. `false` when the cursor addresses no fold-eligible row.
+    pub(crate) fn toggle_fold_at_cursor(&mut self) -> bool {
+        match self.rows.get(self.cursor).copied() {
+            Some(DiffRow::Fold { group, .. }) => self.open_fold_group(group),
+            Some(DiffRow::Line { hunk, line, .. }) => {
+                let Some(region) = self
+                    .regions
+                    .iter()
+                    .find(|region| region.lines.contains(&(hunk, line)))
+                else {
+                    return false;
+                };
+                let key = region.key.clone();
+                self.fold_overrides
+                    .entry(self.rows_path.clone())
+                    .or_default()
+                    .insert(key, true);
+                self.mark_rows_dirty();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// `zR`: open every fold of the file on screen. `false` when it has none.
+    pub(crate) fn open_all_folds(&mut self) -> bool {
+        if self.regions.is_empty() {
+            return false;
+        }
+        let entry = self
+            .fold_overrides
+            .entry(self.rows_path.clone())
+            .or_default();
+        for region in &self.regions {
+            entry.insert(region.key.clone(), false);
+        }
+        self.mark_rows_dirty();
+        true
+    }
+
+    /// `zM`: drop every manual override on the file on screen, reverting it
+    /// to its default folds. `false` when there was nothing to revert.
+    pub(crate) fn reset_folds(&mut self) -> bool {
+        let dropped = self.fold_overrides.remove(&self.rows_path).is_some();
+        if dropped {
+            self.mark_rows_dirty();
+        }
+        dropped
     }
 }
 

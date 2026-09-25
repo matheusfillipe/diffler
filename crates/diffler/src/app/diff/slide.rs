@@ -273,7 +273,10 @@ impl DiffView {
                     mark(&mut keep, index);
                 }
                 DiffRow::Composer { .. } => mark(&mut keep, index),
-                DiffRow::Comment { .. } | DiffRow::Hunk { .. } | DiffRow::Summary { .. } => {}
+                DiffRow::Comment { .. }
+                | DiffRow::Hunk { .. }
+                | DiffRow::Summary { .. }
+                | DiffRow::Fold { .. } => {}
             }
         }
         for (index, row) in rows.iter().enumerate() {

@@ -14,16 +14,41 @@ pub struct ScopeIndex {
     defs: Vec<Def>,
 }
 
+/// What a definition is, read off its tags-query capture (`definition.module`,
+/// `definition.function`, …), every kind but those two as `Other`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DefKind {
+    Module,
+    Function,
+    Other,
+}
+
+impl DefKind {
+    fn from_capture(name: &str) -> Self {
+        match name {
+            "definition.module" => Self::Module,
+            "definition.function" | "definition.method" => Self::Function,
+            _ => Self::Other,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
-struct Def {
-    start_row: usize,
-    end_row: usize,
-    name: String,
+pub struct Def {
+    pub start_row: usize,
+    pub end_row: usize,
+    pub name: String,
+    pub kind: DefKind,
 }
 
 impl ScopeIndex {
     pub fn is_empty(&self) -> bool {
         self.defs.is_empty()
+    }
+
+    /// Every definition this file's tags query found, in no particular order.
+    pub fn defs(&self) -> &[Def] {
+        &self.defs
     }
 
     /// 0-based start rows of every definition, sorted and deduped: the jump
@@ -86,21 +111,26 @@ impl LanguageRegistry {
         let mut matches = cursor.matches(query, tree.root_node(), bytes);
         let mut defs = Vec::new();
         while let Some(m) = matches.next() {
-            let mut span: Option<(usize, usize)> = None;
+            let mut span: Option<(usize, usize, DefKind)> = None;
             let mut name: Option<String> = None;
             for cap in m.captures {
                 let cname = names.get(cap.index as usize).copied().unwrap_or("");
                 if cname.starts_with("definition.") {
-                    span = Some((cap.node.start_position().row, cap.node.end_position().row));
+                    span = Some((
+                        cap.node.start_position().row,
+                        cap.node.end_position().row,
+                        DefKind::from_capture(cname),
+                    ));
                 } else if cname == "name" {
                     name = cap.node.utf8_text(bytes).ok().map(str::to_owned);
                 }
             }
-            if let (Some((start_row, end_row)), Some(name)) = (span, name) {
+            if let (Some((start_row, end_row, kind)), Some(name)) = (span, name) {
                 defs.push(Def {
                     start_row,
                     end_row,
                     name,
+                    kind,
                 });
             }
         }

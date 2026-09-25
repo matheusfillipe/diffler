@@ -33,10 +33,12 @@ enum WalkthroughSidebarRow {
 
 impl App {
     pub(crate) fn dispatch_diff(&mut self, action: Action) {
-        // a file or focus change moves search onto different rows, so drop it
-        let scope = self.diff.as_ref().map(|d| (d.selected, d.focus));
+        // a file or focus change, or a fold opening or closing, moves search
+        // onto different rows, so drop it
+        let scope = |diff: &DiffView| (diff.selected, diff.focus, diff.rows.len());
+        let before = self.diff.as_ref().map(scope);
         self.dispatch_diff_inner(action);
-        if self.search.is_some() && self.diff.as_ref().map(|d| (d.selected, d.focus)) != scope {
+        if self.search.is_some() && self.diff.as_ref().map(scope) != before {
             self.search = None;
         }
     }
@@ -272,8 +274,9 @@ impl App {
             Action::CopyAllFeedback => self.copy_feedback(false),
             Action::OpenEditor => self.editor_at_diff_cursor(),
             Action::OpenFigureGraph => self.open_figure_graph_at_cursor(),
-            // folding is a sidebar concern; in the pane za is a no-op
-            Action::ToggleFold => {}
+            Action::ToggleFold => self.diff_toggle_fold(),
+            Action::OpenAllFolds => self.diff_open_all_folds(),
+            Action::ResetFolds => self.diff_reset_folds(),
             other => {
                 self.info(format!("{} is not implemented yet", other.name()));
             }
@@ -290,6 +293,48 @@ impl App {
             "side-by-side"
         } else {
             "unified"
+        });
+    }
+
+    /// `za`/`<tab>` in the diff pane: open the fold under the cursor, or
+    /// close whatever region it sits inside.
+    fn diff_toggle_fold(&mut self) {
+        let toggled = self
+            .diff
+            .as_mut()
+            .is_some_and(DiffView::toggle_fold_at_cursor);
+        if !toggled {
+            self.info("nothing to fold here");
+            return;
+        }
+        if let Some(diff) = self.diff.as_mut() {
+            diff.ensure_rows(&self.review);
+        }
+    }
+
+    /// `zR`: open every fold of the file on screen.
+    fn diff_open_all_folds(&mut self) {
+        let opened = self.diff.as_mut().is_some_and(DiffView::open_all_folds);
+        if let Some(diff) = self.diff.as_mut() {
+            diff.ensure_rows(&self.review);
+        }
+        self.info(if opened {
+            "opened every fold"
+        } else {
+            "nothing to unfold here"
+        });
+    }
+
+    /// `zM`: put the file on screen back to its default folds.
+    fn diff_reset_folds(&mut self) {
+        let reset = self.diff.as_mut().is_some_and(DiffView::reset_folds);
+        if let Some(diff) = self.diff.as_mut() {
+            diff.ensure_rows(&self.review);
+        }
+        self.info(if reset {
+            "restored the default folds"
+        } else {
+            "already showing the default folds"
         });
     }
 
@@ -365,7 +410,8 @@ impl App {
     }
 
     /// Double-click: open the sidebar file / toggle its dir fold (like `<cr>`),
-    /// or add a comment on the clicked diff line (like `c`).
+    /// open the clicked fold (like `za`), or add a comment on the clicked
+    /// diff line (like `c`).
     fn diff_activate_at(&mut self, col: u16, row: u16) {
         if let Some(index) = self.diff_sidebar_row_at(col, row) {
             self.diff_tree_to(index);
@@ -373,12 +419,18 @@ impl App {
             return;
         }
         if let Some(index) = self.diff_pane_row_at(col, row) {
+            let mut on_fold = false;
             if let Some(diff) = self.diff.as_mut() {
                 diff.cursor = index;
                 diff.visual_anchor = None;
+                on_fold = matches!(diff.rows.get(index), Some(DiffRow::Fold { .. }));
             }
             self.diff_focus(Pane::Diff);
-            self.comment_at_cursor();
+            if on_fold {
+                self.diff_toggle_fold();
+            } else {
+                self.comment_at_cursor();
+            }
         }
     }
 
@@ -747,7 +799,7 @@ impl App {
                 return Some((file.path.clone(), None));
             }
             match diff.rows.get(diff.cursor) {
-                Some(DiffRow::Hunk { file, .. }) => {
+                Some(DiffRow::Hunk { file, .. } | DiffRow::Fold { file, .. }) => {
                     Some((model.files.get(*file)?.path.clone(), None))
                 }
                 Some(DiffRow::Line { file, hunk, line }) => {
@@ -920,8 +972,9 @@ impl App {
             .map(|c| c.id.clone())
     }
 
-    /// Jump to the next/previous definition start visible in the diff, using
-    /// the tree-sitter scope index the breadcrumb already maintains.
+    /// Jump to the next/previous definition start in the diff, one a fold
+    /// hides included, using the tree-sitter scope index the breadcrumb
+    /// already maintains.
     fn diff_jump_function(&mut self, forward: bool) {
         let Some(diff) = self.diff.as_ref() else {
             return;
@@ -943,29 +996,49 @@ impl App {
             self.info("no definitions in this file");
             return;
         }
-        let model = diff
-            .commit_model
-            .clone()
-            .unwrap_or_else(|| self.review.model().clone());
-        let file = model.files.iter().position(|f| f.path == path);
-        self.diff_jump(forward, |row| {
-            let DiffRow::Line {
-                file: f,
-                hunk,
-                line,
-            } = row
-            else {
-                return false;
-            };
-            Some(*f) == file
-                && model
-                    .files
-                    .get(*f)
-                    .and_then(|fd| fd.hunks.get(*hunk))
-                    .and_then(|h| h.lines.get(*line))
-                    .and_then(|l| l.new_no)
-                    .is_some_and(|no| starts.contains(&no))
+        let model = diff.model_for_rows(&self.review);
+        let Some(file) = model.files.get(diff.selected) else {
+            return;
+        };
+        let target = self.diff_step_to_line(forward, |(hunk, line)| {
+            file.hunks
+                .get(hunk)
+                .and_then(|h| h.lines.get(line))
+                .and_then(|l| l.new_no)
+                .is_some_and(|no| starts.contains(&no))
         });
+        if let Some(target) = target
+            && let Some(diff) = self.diff.as_mut()
+        {
+            diff.reveal_line(&self.review, target);
+        }
+    }
+
+    /// The next line `is_target` accepts from the cursor, visible or inside a
+    /// fold, as its `(hunk, line)`.
+    fn diff_step_to_line(
+        &self,
+        forward: bool,
+        is_target: impl Fn((usize, usize)) -> bool,
+    ) -> Option<(usize, usize)> {
+        let diff = self.diff.as_ref()?;
+        let hidden = |group: usize| {
+            let mut lines = diff.fold_groups.get(group)?.lines.iter().copied();
+            if forward {
+                lines.find(|&line| is_target(line))
+            } else {
+                lines.rfind(|&line| is_target(line))
+            }
+        };
+        let target = |row: &DiffRow| match *row {
+            DiffRow::Line { hunk, line, .. } => is_target((hunk, line)).then_some((hunk, line)),
+            DiffRow::Fold { group, .. } => hidden(group),
+            _ => None,
+        };
+        let row = crate::app::step_to(&diff.rows, diff.cursor, forward, |row| {
+            target(row).is_some()
+        })?;
+        diff.rows.get(row).and_then(target)
     }
 
     fn diff_jump(&mut self, forward: bool, target: impl Fn(&DiffRow) -> bool) {

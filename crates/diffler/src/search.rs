@@ -65,12 +65,19 @@ impl Search {
     /// at or after `origin_row`. Re-run whenever the rows change so highlights
     /// track the live content.
     pub fn recompute(&mut self, rows: &[(usize, String)]) {
+        self.reseat(rows, self.origin_row, true);
+    }
+
+    /// Recompute matches against `rows`, the active one the first at or after
+    /// row `at` (`forward`) or the last at or before it.
+    pub fn reseat(&mut self, rows: &[(usize, String)], at: usize, forward: bool) {
         self.matches = find_matches(rows, &self.query);
-        self.current = self
-            .matches
-            .iter()
-            .position(|m| m.row >= self.origin_row)
-            .unwrap_or(0);
+        let found = if forward {
+            self.matches.iter().position(|m| m.row >= at)
+        } else {
+            self.matches.iter().rposition(|m| m.row <= at)
+        };
+        self.current = found.unwrap_or(0);
     }
 
     pub fn commit(&mut self) -> Option<usize> {

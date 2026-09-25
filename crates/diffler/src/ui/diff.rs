@@ -32,7 +32,7 @@ use crate::tree::{Bucket, TreeNode};
 use crate::ui::Hint;
 use crate::ui::diff_render::{
     LineFlags, PairSelection, align_scroll, card_frame, cursor_band, diff_line_height,
-    file_gutter_width, hunk_header, line_syntax, render_diff_line, render_split_pair,
+    file_gutter_width, fold_row, hunk_header, line_syntax, render_diff_line, render_split_pair,
     split_pair_height,
 };
 use crate::ui::{diffstat_spans, proportion_bar, status_bar, status_color};
@@ -1219,6 +1219,19 @@ fn split_row_lines(
             )],
             None => vec![Line::default()],
         },
+        SplitRow::Fold { region, lines } => {
+            let label = diff
+                .regions
+                .get(region)
+                .map_or_else(String::new, |r| r.label(lines));
+            vec![fold_row(
+                ctx.theme,
+                &label,
+                width,
+                state.selected,
+                state.focused,
+            )]
+        }
     }
 }
 
@@ -1659,6 +1672,19 @@ fn row_lines(
             )],
             None => vec![Line::default()],
         },
+        DiffRow::Fold { group, .. } => {
+            let label = diff
+                .fold_groups
+                .get(*group)
+                .map_or_else(String::new, |g| g.label.clone());
+            vec![fold_row(
+                ctx.theme,
+                &label,
+                width,
+                state.selected,
+                state.focused,
+            )]
+        }
     }
 }
 
@@ -3984,6 +4010,21 @@ flowchart LR
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         app.open_working_tree_file("notes.txt");
         app.handle(key('='));
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn a_fold_row_names_the_function_it_hides() {
+        let base = "fn a() {\n    one();\n}\nfn b() {\n    two();\n    three();\n}\nfn c() {\n    four();\n}\n";
+        let fixture = Fixture::new();
+        fixture.write("f.rs", base);
+        fixture.commit_all("base");
+        fixture.write(
+            "f.rs",
+            &base.replace("one()", "ONE()").replace("four()", "FOUR()"),
+        );
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_working_tree_file("f.rs");
         insta::assert_snapshot!(render(&mut app).backend());
     }
 

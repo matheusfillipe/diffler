@@ -280,6 +280,32 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   sidebar's order, since the diff's file order is a different order on screen.
   The status screen keeps the flat magit list. OSC52 clipboard works over
   ssh/tmux.
+  The diff pane folds too (`app/diff/folds.rs`), apart from the sidebar's
+  folds: a fold row stands for a run of lines and names what it hides from
+  the scope index, `⋯ 4 lines · fn b`, or `⋯ N lines` where the file has
+  none. Four rules pick the regions, each listed in `[diff] default_folds`:
+  `tests` (a test function's body or a whole `test`/`tests` module, its
+  signature line kept; a name only containing the word, `latest`, is no
+  test), `deleted-bodies` (12+ deleted lines nothing replaces, whole),
+  `removed-runs` (the middle of 5-11 such lines), `context` (5+ unchanged
+  lines, minus a changed scope's signature or closing line at either edge).
+  A region starts open where it holds a commented line, where the reader
+  widened the file's context with `+`/`=` (they asked to see it), and on a
+  walkthrough slide. `za`/`<tab>` opens a fold row or closes the region under
+  the cursor, `zR` opens every region of the file, `zM` drops the reader's
+  overrides. A region is keyed by its rule and first non-blank line, plus an
+  occurrence count for two that open on the same text, never by row or line
+  count, so an opened fold stays open while the agent edits around it.
+  Comment and composer rows never break a region, so adding one keeps its
+  key; a closed region around one draws as two fold rows with the card
+  between. Two closed regions at most two unchanged rows apart merge into
+  one row; side-by-side folds each region alone, and a pair only when every
+  line it shows is folded. Motions that can land on a hidden line open its
+  fold through `DiffView::reveal_line`: `(`/`)`, and a committed search, which
+  matches a fold row on the code it hides; the cursor closing a fold over
+  itself lands on the fold row (`RowRef::Line` falls back to it). Regions
+  compute in `ensure_rows`, never per frame (~0.2ms of a 0.7ms rebuild on a
+  5k-row file).
 - **Kinds sidebar.** `classify::Rules` buckets a path into one fixed set,
   Source / Tests / Docs / Config / Build & CI / Generated / Assets / Other:
   the reader's `[classify]` globs, then what the repo declares, then the

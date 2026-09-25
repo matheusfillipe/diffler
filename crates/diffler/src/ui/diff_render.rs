@@ -183,6 +183,27 @@ pub fn hunk_header(
     ])
 }
 
+/// A fold row: one dim line naming what it hides, shaped like a hunk header.
+pub fn fold_row(
+    theme: &Theme,
+    label: &str,
+    width: u16,
+    selected: bool,
+    focused: bool,
+) -> Line<'static> {
+    let bg = if selected {
+        cursor_band(theme, theme.panel, focused)
+    } else {
+        theme.panel
+    };
+    let text = format!(" {label}");
+    let pad = (width as usize).saturating_sub(text.chars().count());
+    Line::from(vec![
+        Span::styled(text, Style::new().fg(theme.dim).bg(bg)),
+        Span::styled(" ".repeat(pad), Style::new().bg(bg)),
+    ])
+}
+
 /// Columns a diff line's rail + gutter numbers occupy before the text.
 fn prefix_width(gutter: usize) -> usize {
     1 + gutter * 2 + 2

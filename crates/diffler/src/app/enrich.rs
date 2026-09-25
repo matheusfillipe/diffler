@@ -240,7 +240,9 @@ impl App {
         {
             cached.hunks = hunks;
         }
-        if reshaped {
+        // fold detection and labels read the scope index that just landed,
+        // so the file on screen rebuilds with it
+        if reshaped || diff.rows_show(&outcome.path) {
             diff.mark_rows_dirty();
         }
     }

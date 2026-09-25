@@ -45,6 +45,12 @@ pub enum DiffRow {
     Summary {
         line: usize,
     },
+    /// A collapsed run of `Line` rows. `group` indexes the view's own
+    /// `fold_groups`, which names the regions it stands for.
+    Fold {
+        file: usize,
+        group: usize,
+    },
 }
 
 /// One display line of a comment block. Body and reply text carry markdown
@@ -100,7 +106,7 @@ fn md_spans_text(spans: &[MdSpan]) -> String {
 
 /// The marker and text of one diff line, exactly as a plain-text buffer would
 /// hold it: `+`/`-`/` ` then the line's own text, gutter numbers left out.
-fn line_row_text(line: &diffler_core::model::DiffLine) -> String {
+pub(super) fn line_row_text(line: &diffler_core::model::DiffLine) -> String {
     let marker = match line.kind {
         LineKind::Added => '+',
         LineKind::Deleted => '-',
@@ -536,6 +542,12 @@ pub enum SplitRow {
     },
     Composer {
         line: usize,
+    },
+    /// The side-by-side counterpart of [`DiffRow::Fold`], one full-width row
+    /// hiding `lines` of the view's own `regions[region]`.
+    Fold {
+        region: usize,
+        lines: usize,
     },
 }
 

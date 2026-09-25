@@ -28,6 +28,8 @@ pub enum Action {
     UnviewAll,
     CycleSidebarMode,
     ToggleFold,
+    OpenAllFolds,
+    ResetFolds,
     ToggleSideBySide,
     Stage,
     Unstage,
@@ -116,6 +118,7 @@ pub enum Action {
 
 impl Action {
     /// Config-facing identifier: `snake_case` of the variant name.
+    #[allow(clippy::too_many_lines)] // one arm per action, straight-line by design
     pub fn name(self) -> &'static str {
         match self {
             Self::MoveDown => "move_down",
@@ -134,6 +137,8 @@ impl Action {
             Self::UnviewAll => "unview_all",
             Self::CycleSidebarMode => "cycle_sidebar_mode",
             Self::ToggleFold => "toggle_fold",
+            Self::OpenAllFolds => "open_all_folds",
+            Self::ResetFolds => "reset_folds",
             Self::ToggleSideBySide => "toggle_side_by_side",
             Self::Stage => "stage",
             Self::Unstage => "unstage",
@@ -219,6 +224,7 @@ impl Action {
     }
 
     /// Human wording shared by the help popup and the command palette.
+    #[allow(clippy::too_many_lines)] // one arm per action, straight-line by design
     pub fn label(self) -> &'static str {
         match self {
             Self::MoveDown => "move down",
@@ -237,6 +243,8 @@ impl Action {
             Self::UnviewAll => "clear all viewed marks",
             Self::CycleSidebarMode => "cycle sidebar: tree, review buckets",
             Self::ToggleFold => "fold / unfold",
+            Self::OpenAllFolds => "open every fold in this file",
+            Self::ResetFolds => "reset this file to its default folds",
             Self::ToggleSideBySide => "toggle side-by-side diff",
             Self::Stage => "stage file or hunk",
             Self::Unstage => "unstage file or hunk",
@@ -321,7 +329,7 @@ impl Action {
         }
     }
 
-    pub(crate) const ALL: [Self; 97] = [
+    pub(crate) const ALL: [Self; 99] = [
         Self::CenterCursor,
         Self::CursorTop,
         Self::CursorBottom,
@@ -358,6 +366,8 @@ impl Action {
         Self::UnviewAll,
         Self::CycleSidebarMode,
         Self::ToggleFold,
+        Self::OpenAllFolds,
+        Self::ResetFolds,
         Self::ToggleSideBySide,
         Self::Stage,
         Self::Unstage,
@@ -549,6 +559,8 @@ const DIFF_DEFAULTS: &[(&str, Action)] = &[
     ("zb", Action::CursorBottom),
     ("za", Action::ToggleFold),
     ("<tab>", Action::ToggleFold),
+    ("zR", Action::OpenAllFolds),
+    ("zM", Action::ResetFolds),
     ("+", Action::ExpandContext),
     ("-", Action::CollapseContext),
     ("=", Action::ExpandWholeFile),

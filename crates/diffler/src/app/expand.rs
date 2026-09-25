@@ -79,6 +79,7 @@ impl App {
             .is_some_and(|file| apply_context(file, context, algorithm, indent_heuristic));
         if changed && let Some(diff) = self.diff.as_mut() {
             diff.mark_rows_dirty();
+            diff.ensure_rows(&self.review);
         }
     }
 

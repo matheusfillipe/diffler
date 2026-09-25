@@ -3,7 +3,7 @@
 //! landing above it, a hunk changing shape. Mirrors
 //! [`crate::app::status::CursorAnchor`], the same idea for the status screen.
 
-use diffler_core::model::HunkId;
+use diffler_core::model::{DiffLine, DiffModel, HunkId};
 use diffler_core::review::Review;
 use diffler_core::session::Session;
 
@@ -33,6 +33,12 @@ pub(crate) enum RowRef {
     /// the reader is typing.
     Composer(usize),
     Summary,
+    /// A fold row, by the first region it stands for and which of that
+    /// region's fold rows it is, since a comment inside one splits it in two.
+    Fold {
+        key: String,
+        nth: usize,
+    },
 }
 
 /// The cursor, the visual selection anchor, and the banded span, each named
@@ -117,7 +123,49 @@ impl DiffView {
             }
             DiffRow::Composer { line } => Some(RowRef::Composer(line)),
             DiffRow::Summary { .. } => Some(RowRef::Summary),
+            DiffRow::Fold { group, .. } => {
+                let key = self.fold_groups.get(group)?.keys.first()?.clone();
+                let nth = self
+                    .rows
+                    .get(..row)?
+                    .iter()
+                    .filter(|earlier| self.fold_row_leads_with(earlier, &key))
+                    .count();
+                Some(RowRef::Fold { key, nth })
+            }
         }
+    }
+
+    fn fold_row_leads_with(&self, row: &DiffRow, key: &str) -> bool {
+        matches!(row, DiffRow::Fold { group, .. }
+            if self.fold_groups.get(*group).and_then(|g| g.keys.first()).is_some_and(|k| k == key))
+    }
+
+    /// The fold row hiding line `line` of `file` on the given side.
+    fn fold_row_hiding(
+        &self,
+        model: &DiffModel,
+        file: &str,
+        line: u32,
+        on_old_side: bool,
+    ) -> Option<usize> {
+        self.rows.iter().position(|row| {
+            let DiffRow::Fold { file: index, group } = *row else {
+                return false;
+            };
+            let (Some(found), Some(fold)) = (model.files.get(index), self.fold_groups.get(group))
+            else {
+                return false;
+            };
+            found.path == file
+                && fold.lines.iter().any(|&(hunk, at)| {
+                    found
+                        .hunks
+                        .get(hunk)
+                        .and_then(|hunk| hunk.lines.get(at))
+                        .is_some_and(|diff_line| side_no(diff_line, on_old_side) == Some(line))
+                })
+        })
     }
 
     /// The row now holding `target`, or `None` when the thing it names is
@@ -136,34 +184,33 @@ impl DiffView {
                     .and_then(|file| file.hunks.get(*hunk))
                     .is_some_and(|found| found.id == *id)
             }),
+            // a line a fold now hides is found as that fold's row, so closing
+            // a fold under the cursor leaves the cursor on it
             RowRef::Line {
                 file,
                 line,
                 on_old_side,
-            } => self.rows.iter().position(|row| {
-                let DiffRow::Line {
-                    file: file_index,
-                    hunk,
-                    line: line_index,
-                } = row
-                else {
-                    return false;
-                };
-                model
-                    .files
-                    .get(*file_index)
-                    .filter(|found| found.path == *file)
-                    .and_then(|found| found.hunks.get(*hunk))
-                    .and_then(|hunk| hunk.lines.get(*line_index))
-                    .is_some_and(|diff_line| {
-                        let no = if *on_old_side {
-                            diff_line.old_no
-                        } else {
-                            diff_line.new_no
-                        };
-                        no == Some(*line)
-                    })
-            }),
+            } => self
+                .rows
+                .iter()
+                .position(|row| {
+                    let DiffRow::Line {
+                        file: file_index,
+                        hunk,
+                        line: line_index,
+                    } = row
+                    else {
+                        return false;
+                    };
+                    model
+                        .files
+                        .get(*file_index)
+                        .filter(|found| found.path == *file)
+                        .and_then(|found| found.hunks.get(*hunk))
+                        .and_then(|hunk| hunk.lines.get(*line_index))
+                        .is_some_and(|diff_line| side_no(diff_line, *on_old_side) == Some(*line))
+                })
+                .or_else(|| self.fold_row_hiding(&model, file, *line, *on_old_side)),
             RowRef::Stop(index) => {
                 let id = self.active_walkthrough(session)?.stops.get(*index)?;
                 Self::find_comment_row(&self.rows, session, id)
@@ -177,6 +224,13 @@ impl DiffView {
                 .rows
                 .iter()
                 .position(|row| matches!(row, DiffRow::Summary { line: 0 })),
+            RowRef::Fold { key, nth } => self
+                .rows
+                .iter()
+                .enumerate()
+                .filter(|(_, row)| self.fold_row_leads_with(row, key))
+                .nth(*nth)
+                .map(|(index, _)| index),
         }
     }
 
@@ -187,6 +241,15 @@ impl DiffView {
             matches!(row, DiffRow::Comment { comment, line: 0, .. }
                 if session.comments.get(*comment).is_some_and(|c| c.id == id))
         })
+    }
+}
+
+/// The number `line` carries on the named side.
+fn side_no(line: &DiffLine, on_old_side: bool) -> Option<u32> {
+    if on_old_side {
+        line.old_no
+    } else {
+        line.new_no
     }
 }
 

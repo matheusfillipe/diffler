@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use crossterm::event::KeyCode;
 use diffler_core::classify::{Kind, Rules};
 use diffler_core::diffalgo::DiffAlgorithm;
+use serde::de::IntoDeserializer as _;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -31,16 +32,18 @@ pub struct Config {
     pub keys: KeysConfig,
 }
 
-/// The line-diff algorithm and its tuning, session-wide. `algorithm` is also
-/// switchable live from the diff screen's algorithm picker; that switch
-/// writes back here too, so a later background refresh keeps using it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// How the diff is computed and shown. `algorithm` is also switchable live
+/// from the diff screen's algorithm picker; that switch writes back here
+/// too, so a later background refresh keeps using it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DiffConfig {
     pub algorithm: DiffAlgorithm,
     /// A heuristic that shifts ambiguous hunk boundaries to indentation, the
     /// way modern git does by default. On by default.
     pub indent_heuristic: bool,
+    /// The rules whose regions start folded in the diff pane.
+    pub default_folds: Vec<FoldKind>,
 }
 
 impl Default for DiffConfig {
@@ -48,7 +51,33 @@ impl Default for DiffConfig {
         Self {
             algorithm: DiffAlgorithm::default(),
             indent_heuristic: diffler_core::git::DEFAULT_INDENT_HEURISTIC,
+            default_folds: FoldKind::ALL.to_vec(),
         }
+    }
+}
+
+/// A rule that picks out a region of the diff pane to start folded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FoldKind {
+    Tests,
+    DeletedBodies,
+    RemovedRuns,
+    Context,
+}
+
+impl FoldKind {
+    pub const ALL: [Self; 4] = [
+        Self::Tests,
+        Self::DeletedBodies,
+        Self::RemovedRuns,
+        Self::Context,
+    ];
+
+    fn from_name(name: &str) -> Option<Self> {
+        let de: serde::de::value::StrDeserializer<'_, serde::de::value::Error> =
+            name.into_deserializer();
+        Self::deserialize(de).ok()
     }
 }
 
@@ -415,10 +444,11 @@ struct PartialConfig {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct PartialDiff {
-    // read as a raw string so an unknown value warns and falls back, like
-    // the file-layout keys
+    // raw strings so an unknown value warns and falls back (or, for a fold
+    // kind, is dropped) rather than failing the whole parse
     algorithm: Option<String>,
     indent_heuristic: Option<bool>,
+    default_folds: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -708,6 +738,20 @@ fn apply_layer(
         *target = globs;
     }
 
+    if let Some(names) = layer.diff.default_folds {
+        let mut kinds = Vec::new();
+        for name in names {
+            match FoldKind::from_name(&name) {
+                Some(kind) => kinds.push(kind),
+                None => warnings.push(format!(
+                    "unknown diff.default_folds entry \"{name}\", ignoring"
+                )),
+            }
+        }
+        config.diff.default_folds = kinds;
+        origins.insert("diff.default_folds".to_owned(), origin.clone());
+    }
+
     let key_sections = [
         (layer.keys.status, &mut config.keys.status, "status"),
         (layer.keys.diff, &mut config.keys.diff, "diff"),
@@ -760,7 +804,7 @@ fn apply_cli(cli: &CliOverrides, config: &mut Config, origins: &mut BTreeMap<Str
 
 /// Scalar keys always listed in the `--dump` origins block; `keys.*` entries
 /// are appended dynamically since their names come from the user.
-const SCALAR_KEYS: [&str; 18] = [
+const SCALAR_KEYS: [&str; 19] = [
     "ui.theme",
     "ui.context_lines",
     "ui.recent_commits",
@@ -771,6 +815,7 @@ const SCALAR_KEYS: [&str; 18] = [
     "ui.show_agent_activity",
     "diff.algorithm",
     "diff.indent_heuristic",
+    "diff.default_folds",
     "mcp.enabled",
     "mcp.port",
     "editor.command",
@@ -1037,6 +1082,26 @@ mod tests {
         assert_eq!(loaded.origins["mcp.port"], Origin::Cli);
         assert_eq!(loaded.origins["mcp.enabled"], Origin::Cli);
         assert!(!loaded.origins.contains_key("ui.recent_commits"));
+    }
+
+    #[test]
+    fn default_folds_takes_an_empty_list_and_drops_unknown_kinds() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let project = dir.path().join("project.toml");
+        fs::write(
+            &global,
+            "[diff]\ndefault_folds = [\"context\", \"bogus\"]\n",
+        )
+        .unwrap();
+        fs::write(&project, "[diff]\ndefault_folds = []\n").unwrap();
+
+        let loaded = load_layers(Some(&global), None, &CliOverrides::default()).unwrap();
+        assert_eq!(loaded.config.diff.default_folds, [FoldKind::Context]);
+        assert!(loaded.warnings.iter().any(|w| w.contains("bogus")));
+
+        let loaded = load_layers(Some(&global), Some(&project), &CliOverrides::default()).unwrap();
+        assert!(loaded.config.diff.default_folds.is_empty());
     }
 
     #[test]

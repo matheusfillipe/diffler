@@ -3,9 +3,9 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use diffler_core::model::DiffModel;
 
-use super::{App, Flow, Pane, Screen, diff_row_text, tree_row_label};
+use super::{App, DiffRow, Flow, Pane, Screen, diff_row_text, tree_row_label};
 use crate::graph::GraphView;
-use crate::search::Search;
+use crate::search::{Search, find_matches};
 
 impl App {
     pub(super) fn search_start(&mut self) {
@@ -66,6 +66,7 @@ impl App {
         };
         if let Some(row) = row {
             self.focus_searched_row(row);
+            self.open_searched_fold(forward);
         }
     }
 
@@ -79,6 +80,55 @@ impl App {
         }
         if let Some(row) = search.commit() {
             self.focus_searched_row(row);
+            self.open_searched_fold(true);
+        }
+    }
+
+    /// A committed search that lands on a diff fold row opens it and moves
+    /// onto the hidden line that matched. While the query is still being
+    /// typed we leave folds shut, so each keystroke never opens another one.
+    fn open_searched_fold(&mut self, forward: bool) {
+        if self.screen() != Screen::Diff {
+            return;
+        }
+        let Some(query) = self.search.as_ref().map(|s| s.query().to_owned()) else {
+            return;
+        };
+        let Some(diff) = self.diff.as_ref().filter(|diff| diff.focus == Pane::Diff) else {
+            return;
+        };
+        let Some(DiffRow::Fold { group, .. }) = diff.rows().get(diff.cursor).copied() else {
+            return;
+        };
+        let model = diff.model_for_rows(&self.review);
+        let Some(file) = model.files.get(diff.selected) else {
+            return;
+        };
+        let lines = diff.fold_lines(file, group);
+        let texts: Vec<(usize, String)> = lines
+            .iter()
+            .enumerate()
+            .map(|(index, (_, text))| (index, (*text).to_owned()))
+            .collect();
+        let matched = find_matches(&texts, &query);
+        let hit = if forward {
+            matched.first()
+        } else {
+            matched.last()
+        };
+        let Some(target) = hit.and_then(|m| lines.get(m.row)).map(|(line, _)| *line) else {
+            return;
+        };
+        let Some(at) = self
+            .diff
+            .as_mut()
+            .and_then(|diff| diff.reveal_line(&self.review, target))
+        else {
+            return;
+        };
+        let rows = self.diff_search_rows();
+        if let Some(search) = self.search.as_mut() {
+            search.reseat(&rows, at, forward);
         }
     }
 
@@ -185,12 +235,21 @@ impl App {
                     })
                     .collect()
             }
+            // a fold row matches on the code it hides, so a search reaches it
             Pane::Diff => {
                 let file = model.files.get(diff.selected);
                 diff.rows()
                     .iter()
                     .enumerate()
-                    .filter_map(|(i, row)| diff_row_text(file, row).map(|t| (i, t)))
+                    .filter_map(|(i, row)| {
+                        match *row {
+                            DiffRow::Fold { group, .. } => {
+                                file.map(|file| diff.fold_text(file, group))
+                            }
+                            _ => diff_row_text(file, row),
+                        }
+                        .map(|text| (i, text))
+                    })
                     .collect()
             }
         }
