@@ -150,6 +150,16 @@ const fn band_strength(full: u16, focused: bool) -> u16 {
     }
 }
 
+/// A dim band-line: `text` at the left, padded to `width` in `bg`. The shape
+/// [`hunk_header`] and [`fold_row`] both draw a labeled separator row in.
+fn band_line(theme: &Theme, text: String, bg: Color, width: u16) -> Line<'static> {
+    let pad = (width as usize).saturating_sub(text.chars().count());
+    Line::from(vec![
+        Span::styled(text, Style::new().fg(theme.dim).bg(bg)),
+        Span::styled(" ".repeat(pad), Style::new().bg(bg)),
+    ])
+}
+
 /// GitHub-style section separator: a dim full-width band carrying git's
 /// enclosing-section context (the `@@` line numbers are dropped as redundant
 /// with the gutter). When git names no section the band alone reads as the
@@ -176,11 +186,7 @@ pub fn hunk_header(
     } else {
         format!(" {ranges} {}", hunk.context)
     };
-    let pad = (width as usize).saturating_sub(text.chars().count());
-    Line::from(vec![
-        Span::styled(text, Style::new().fg(theme.dim).bg(bg)),
-        Span::styled(" ".repeat(pad), Style::new().bg(bg)),
-    ])
+    band_line(theme, text, bg, width)
 }
 
 /// A fold row: one dim line naming what it hides, shaped like a hunk header.
@@ -196,12 +202,7 @@ pub fn fold_row(
     } else {
         theme.panel
     };
-    let text = format!(" {label}");
-    let pad = (width as usize).saturating_sub(text.chars().count());
-    Line::from(vec![
-        Span::styled(text, Style::new().fg(theme.dim).bg(bg)),
-        Span::styled(" ".repeat(pad), Style::new().bg(bg)),
-    ])
+    band_line(theme, format!(" {label}"), bg, width)
 }
 
 /// Columns a diff line's rail + gutter numbers occupy before the text.
