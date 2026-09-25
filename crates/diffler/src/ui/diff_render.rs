@@ -9,7 +9,7 @@ use diffler_core::highlight::StyledRange;
 use diffler_core::model::{DiffLine, FileDiff, Hunk, LineKind};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::walkthrough::FigureBlock;
 use crate::app::{ScrollAlign, SplitSide};
@@ -150,12 +150,28 @@ const fn band_strength(full: u16, focused: bool) -> u16 {
     }
 }
 
-/// A dim band-line: `text` at the left, padded to `width` in `bg`. The shape
-/// [`hunk_header`] and [`fold_row`] both draw a labeled separator row in.
-fn band_line(theme: &Theme, text: String, bg: Color, width: u16) -> Line<'static> {
-    let pad = (width as usize).saturating_sub(text.chars().count());
+/// A dim labeled separator band: `text` at the left, padded to `width`.
+/// [`hunk_header`] and [`fold_row`] both draw through it, so the two
+/// separators read as one kind of row. Several themes put their cursor band
+/// within a few shades of this one, so a selected band also takes the accent
+/// on its text, the way a sidebar header under the cursor does.
+fn band_line(
+    theme: &Theme,
+    text: &str,
+    width: u16,
+    selected: bool,
+    focused: bool,
+) -> Line<'static> {
+    let band = crate::theme::blend(theme.panel, theme.border, HUNK_BAND);
+    let (bg, fg) = if selected {
+        (cursor_band(theme, band, focused), theme.accent)
+    } else {
+        (band, theme.dim)
+    };
+    let text = crate::text::elide(text, width as usize);
+    let pad = (width as usize).saturating_sub(text.width());
     Line::from(vec![
-        Span::styled(text, Style::new().fg(theme.dim).bg(bg)),
+        Span::styled(text, Style::new().fg(super::readable_on(fg, bg)).bg(bg)),
         Span::styled(" ".repeat(pad), Style::new().bg(bg)),
     ])
 }
@@ -171,12 +187,6 @@ pub fn hunk_header(
     selected: bool,
     focused: bool,
 ) -> Line<'static> {
-    let band = crate::theme::blend(theme.panel, theme.border, HUNK_BAND);
-    let bg = if selected {
-        cursor_band(theme, band, focused)
-    } else {
-        band
-    };
     let ranges = format!(
         "@@ -{},{} +{},{} @@",
         hunk.old_start, hunk.old_lines, hunk.new_start, hunk.new_lines
@@ -186,10 +196,10 @@ pub fn hunk_header(
     } else {
         format!(" {ranges} {}", hunk.context)
     };
-    band_line(theme, text, bg, width)
+    band_line(theme, &text, width, selected, focused)
 }
 
-/// A fold row: one dim line naming what it hides, shaped like a hunk header.
+/// A fold row: the hunk header's band, naming what it hides.
 pub fn fold_row(
     theme: &Theme,
     label: &str,
@@ -197,12 +207,7 @@ pub fn fold_row(
     selected: bool,
     focused: bool,
 ) -> Line<'static> {
-    let bg = if selected {
-        cursor_band(theme, theme.panel, focused)
-    } else {
-        theme.panel
-    };
-    band_line(theme, format!(" {label}"), bg, width)
+    band_line(theme, &format!(" {label}"), width, selected, focused)
 }
 
 /// Columns a diff line's rail + gutter numbers occupy before the text.
@@ -287,7 +292,12 @@ pub fn render_diff_line(
             ),
             Span::styled(
                 if first {
-                    format!("{} {} ", number(line.old_no), number(line.new_no))
+                    format!(
+                        "{} {}{}",
+                        number(line.old_no),
+                        number(line.new_no),
+                        gutter_mark(line)
+                    )
                 } else {
                     " ".repeat(gutter * 2 + 2)
                 },
@@ -295,15 +305,7 @@ pub fn render_diff_line(
             ),
         ]
     };
-    let content = composite_spans(
-        theme,
-        &line.text,
-        &line.emphasis,
-        syntax,
-        base_bg,
-        emph_bg,
-        search,
-    );
+    let content = line_content(theme, line, syntax, base_bg, emph_bg, search);
     wrapped_rows(content, prefix, prefix_width(gutter), width, base_bg)
 }
 
@@ -390,26 +392,63 @@ fn line_backgrounds(
             LineKind::Context => (theme.panel, theme.panel),
         }
     };
-    let base_bg = match (selected, line.kind) {
-        (true, LineKind::Context) => cursor_band(theme, theme.panel, focused),
-        (true, _) => crate::theme::blend(line_bg, emph_bg, band_strength(SELECTION_LIFT, focused)),
-        (false, _) if annotated => theme.annotated,
-        (false, _) => line_bg,
+    let reads_as_context = line.kind == LineKind::Context || line.reformat_only;
+    let base_bg = match selected {
+        true if reads_as_context => cursor_band(theme, theme.panel, focused),
+        true => crate::theme::blend(line_bg, emph_bg, band_strength(SELECTION_LIFT, focused)),
+        false if annotated => theme.annotated,
+        false => line_bg,
     };
     (base_bg, emph_bg)
 }
 
-/// The reserved leading cell: a bar on a changed line, blank on context.
+/// The reserved leading cell: a bar on a changed line, blank on context and
+/// on a reformat-only line, which is unchanged in substance.
 /// [`rail_color`] already tints it, so the kind of a line reads from the
 /// margin even where the background tint is washed out.
 fn rail(line: &DiffLine) -> &'static str {
-    if line.reformat_only {
-        return "┊";
-    }
     match line.kind {
+        _ if line.reformat_only => " ",
         LineKind::Added | LineKind::Deleted => "▌",
         LineKind::Context => " ",
     }
+}
+
+/// The cell between the gutter numbers and the text: `≈` on a reformat-only
+/// line, so the reader can tell a dimmed layout change from a context line.
+fn gutter_mark(line: &DiffLine) -> &'static str {
+    if line.reformat_only { "≈" } else { " " }
+}
+
+/// A line's text composited for the pane. A reformat-only line keeps no
+/// syntax colour and dims its text, the way outdated and stale things dim.
+fn line_content(
+    theme: &Theme,
+    line: &DiffLine,
+    syntax: Option<&[StyledRange]>,
+    base_bg: Color,
+    emph_bg: Color,
+    search: &[(Range<usize>, bool)],
+) -> Vec<Span<'static>> {
+    if !line.reformat_only {
+        return composite_spans(
+            theme,
+            &line.text,
+            &line.emphasis,
+            syntax,
+            base_bg,
+            emph_bg,
+            search,
+        );
+    }
+    let dim = super::readable_on(theme.dim, base_bg);
+    composite_spans(theme, &line.text, &[], None, base_bg, emph_bg, search)
+        .into_iter()
+        .map(|span| {
+            let style = span.style.fg(dim);
+            span.style(style)
+        })
+        .collect()
 }
 
 /// The rail's tint: the line's kind, or the accent on the row under the
@@ -417,9 +456,6 @@ fn rail(line: &DiffLine) -> &'static str {
 fn rail_color(theme: &Theme, line: &DiffLine, selected: bool) -> Color {
     if selected {
         return theme.accent;
-    }
-    if line.reformat_only {
-        return theme.dim;
     }
     match line.kind {
         LineKind::Added => theme.added,
@@ -571,7 +607,7 @@ fn side_rows(
             ),
             Span::styled(
                 if first {
-                    format!("{number} ")
+                    format!("{number}{}", gutter_mark(line))
                 } else {
                     " ".repeat(gutter + 1)
                 },
@@ -579,15 +615,7 @@ fn side_rows(
             ),
         ]
     };
-    let content = composite_spans(
-        theme,
-        &line.text,
-        &line.emphasis,
-        syntax,
-        base_bg,
-        emph_bg,
-        &[],
-    );
+    let content = line_content(theme, line, syntax, base_bg, emph_bg, &[]);
     let budget = col_width.saturating_sub(split_prefix_width(gutter)).max(1);
     wrap_spans(content, budget)
         .into_iter()
@@ -750,8 +778,16 @@ pub(super) fn figure_lines(
     let (_, bar) = card_frame(theme, false, false, theme.accent);
     for y in 0..area.height {
         let mut spans = vec![bar.clone()];
+        let mut covered = 0;
         for x in 0..area.width {
             let cell = &buffer[(x, y)];
+            // the cells a wide glyph spans stay in the buffer as blanks, so we
+            // skip them or every CJK label would widen its row
+            if covered > 0 {
+                covered -= 1;
+                continue;
+            }
+            covered = cell.symbol().width().saturating_sub(1);
             spans.push(Span::styled(
                 cell.symbol().to_owned(),
                 Style::new()
@@ -763,7 +799,7 @@ pub(super) fn figure_lines(
         rows.push(Line::from(spans));
     }
     if figure.fit != Fit::AsDrawn {
-        rows.push(fit_notice(figure, open_hint, theme, bg));
+        rows.push(fit_notice(figure, open_hint, width, theme, bg));
     }
     rows
 }
@@ -776,31 +812,35 @@ fn opaque(color: Color, bg: Color) -> Color {
 }
 
 /// The dim line under a figure the card had to help fit: redrawn top-down,
-/// or (rarer) still cropped even so. Names the key that opens a graph
-/// full-screen, when one is bound, so the reader knows what to do about it.
+/// or (rarer) still cropped even so. Leads with the key that opens a graph
+/// full-screen, when one is bound, so a narrow card elides the explanation
+/// and keeps what the reader can do about it.
 fn fit_notice(
     figure: &FigureBlock,
     open_hint: Option<&str>,
+    width: u16,
     theme: &Theme,
     bg: Color,
 ) -> Line<'static> {
     let (_, bar) = card_frame(theme, false, false, theme.accent);
     let graph = figure.is_graph();
-    let mut text = match figure.fit {
-        Fit::AsDrawn => String::new(),
-        Fit::Redrawn => "too wide side to side; drawn top to bottom instead".to_owned(),
-        Fit::Cropped if graph => {
-            "too wide for this card even top to bottom; some of it is cropped".to_owned()
-        }
-        Fit::Cropped => "too wide for this card; some of it is cropped".to_owned(),
+    let why = match figure.fit {
+        Fit::AsDrawn => "",
+        Fit::Redrawn => "too wide side to side, drawn top to bottom",
+        Fit::Cropped if graph => "too wide even top to bottom, some of it is cropped",
+        Fit::Cropped => "too wide for this card, some of it is cropped",
     };
-    if let Some(key) = open_hint.filter(|_| graph) {
-        use std::fmt::Write as _;
-        let _ = write!(text, ", {key} open full graph");
-    }
+    let text = match open_hint.filter(|_| graph) {
+        Some(key) => format!("{key} open full graph · {why}"),
+        None => why.to_owned(),
+    };
+    let room = (width as usize).saturating_sub(bar.width());
     Line::from(vec![
         bar,
-        Span::styled(text, Style::new().fg(theme.dim).bg(bg)),
+        Span::styled(
+            crate::text::elide(&text, room),
+            Style::new().fg(theme.dim).bg(bg),
+        ),
     ])
 }
 
@@ -857,8 +897,12 @@ flowchart LR
         let rows = figure_lines(&mut wide, 1, 40, &theme, theme.bg, Some("o"));
         assert_eq!(rows.len(), wide.rows(), "row count matches what was drawn");
         let notice = rows.last().expect("a notice row").to_string();
-        assert!(notice.contains("top to bottom"), "{notice}");
-        assert!(notice.contains("o open full graph"), "{notice}");
+        assert!(notice.contains("o open full graph · too wide"), "{notice}");
+        assert!(
+            notice.trim_end().ends_with('…'),
+            "a narrow card elides: {notice}"
+        );
+        assert_eq!(rows.last().map(Line::width), Some(40), "{notice}");
 
         let fits_body = "```mermaid\nflowchart LR\n  a[a] --> b[b]\n```\n";
         let Some(Block::Figure(mut fits)) = blocks(fits_body, 80).into_iter().next() else {
@@ -948,6 +992,28 @@ main
         ));
     }
 
+    /// A wide glyph spans two buffer cells, and the copy out of the figure's
+    /// buffer has to take it once, or every CJK label widens its row.
+    #[test]
+    fn a_figure_with_wide_labels_keeps_its_rows_at_the_card_width() {
+        let card = figure_card(
+            "```callstack
+main
+  serve
+    - 旧的认证
+    + 验证令牌签名
+```
+",
+        );
+        insta::assert_snapshot!(card);
+        let box_line = |line: &str| line.chars().filter(|c| *c == '└' || *c == '├').count();
+        assert!(
+            card.lines()
+                .any(|line| box_line(line) > 0 && line.contains("验证令牌签名"))
+        );
+        assert!(!card.contains("验 证"), "{card}");
+    }
+
     /// Two subgraphs and a decision, redrawn top-down to fit the card: both
     /// outlines draw, an edge crossing one keeps its arrowhead, and a title
     /// moves off the border an arrowhead pierces.
@@ -983,27 +1049,31 @@ flowchart LR
         DiffLine::new(kind, old, new, text.to_owned())
     }
 
-    /// A reformat-only paired line dims, leaving red/green for an actual
-    /// change, on both the background and the rail, whichever side it is.
+    /// A reformat-only paired line reads as context with its text dimmed and
+    /// a `≈` between the gutter and the text, whichever side it is. Under the
+    /// cursor it takes the context band.
     #[test]
     fn reformat_only_lines_dim_instead_of_red_or_green() {
         let (theme, _) = Theme::from_name("github-dark");
         for kind in [LineKind::Deleted, LineKind::Added] {
-            let plain = line(kind, Some(1), Some(1), "x");
-            let mut reformat = plain.clone();
+            let mut reformat = line(kind, Some(1), Some(1), "x");
             reformat.reformat_only = true;
 
-            let (plain_bg, _) = line_backgrounds(&theme, &plain, false, true, false);
-            let (reformat_bg, _) = line_backgrounds(&theme, &reformat, false, true, false);
-            assert_ne!(plain_bg, reformat_bg, "{kind:?} background dims");
-            assert_eq!(reformat_bg, theme.panel);
+            let (bg, _) = line_backgrounds(&theme, &reformat, false, true, false);
+            assert_eq!(bg, theme.panel, "{kind:?} reads as context");
+            let (lit, _) = line_backgrounds(&theme, &reformat, true, true, false);
+            assert_eq!(lit, theme.cursor_line, "{kind:?} takes the context band");
 
-            assert_ne!(rail(&plain), rail(&reformat));
-            assert_ne!(
-                rail_color(&theme, &plain, false),
-                rail_color(&theme, &reformat, false)
-            );
-            assert_eq!(rail_color(&theme, &reformat, false), theme.dim);
+            let rendered = render_diff_line(&theme, &reformat, None, 4, 40, focused_flags(), &[]);
+            let text: String = rendered[0]
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect();
+            assert!(text.starts_with(' '), "no rail: {text:?}");
+            assert!(text.contains("≈x"), "{text:?}");
+            let body = rendered[0].spans.iter().find(|s| s.content == "x");
+            assert_eq!(body.and_then(|s| s.style.fg), Some(theme.dim));
         }
     }
 

@@ -4029,6 +4029,97 @@ flowchart LR
         insta::assert_snapshot!(render(&mut app).backend());
     }
 
+    /// A commented line keeps its region open until the reader closes it;
+    /// closed, the region folds as two rows with the card between them.
+    #[test]
+    fn a_closed_region_around_a_comment_folds_on_both_sides_of_its_card() {
+        let base = "fn d() {\n    six();\n    seven();\n    eight();\n    nine();\n    ten();\n    eleven();\n    twelve();\n}\n";
+        let fixture = Fixture::new();
+        fixture.write("f.rs", base);
+        fixture.commit_all("base");
+        fixture.write(
+            "f.rs",
+            &base
+                .replace("six()", "SIX()")
+                .replace("twelve()", "TWELVE()"),
+        );
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.review
+            .session_for_mut(&diffler_core::source::ReviewSource::WorkingTree)
+            .add_comment(
+                diffler_core::session::Anchor {
+                    file: "f.rs".into(),
+                    line: Some(5),
+                    line_end: None,
+                    on_old_side: false,
+                    line_text: Some("    nine();".into()),
+                },
+                "reviewer",
+                "is nine still called?",
+            );
+        app.open_working_tree_file("f.rs");
+        let _ = render(&mut app);
+        let diff = app.diff.as_mut().expect("diff");
+        diff.focus = Pane::Diff;
+        diff.cursor = diff
+            .rows()
+            .iter()
+            .position(|row| matches!(row, DiffRow::Comment { .. }))
+            .expect("the comment's card")
+            - 1;
+        app.handle(key('z'));
+        app.handle(key('a'));
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    /// A fold row sits on the hunk header's band, and under the cursor both
+    /// take the accent: several themes put the cursor band within a shade of
+    /// the hunk band.
+    #[test]
+    fn a_fold_row_shares_the_hunk_band_and_lights_its_text_under_the_cursor() {
+        use crate::ui::diff_render::{fold_row, hunk_header};
+        for name in crate::theme::NAMES {
+            let theme = Theme::from_name(name).0;
+            let hunk = diffler_core::model::Hunk {
+                id: diffler_core::model::HunkId("h".into()),
+                old_start: 1,
+                old_lines: 1,
+                new_start: 1,
+                new_lines: 1,
+                context: String::new(),
+                lines: Vec::new(),
+            };
+            let bg = |line: &ratatui::text::Line<'_>| line.spans[0].style.bg;
+            let fg = |line: &ratatui::text::Line<'_>| line.spans[0].style.fg;
+            let fold = fold_row(&theme, "⋯ 4 lines · fn b", 40, false, true);
+            assert_eq!(bg(&fold), bg(&hunk_header(&theme, &hunk, 40, false, true)));
+            let lit = fold_row(&theme, "⋯ 4 lines · fn b", 40, true, true);
+            assert_eq!(fg(&lit), Some(theme.accent), "{name}");
+            assert_eq!(lit.width(), 40, "{name}");
+        }
+    }
+
+    /// Structural mode draws a whitespace-only pair as context with its text
+    /// dimmed and a `≈` beside the gutter, no rail; the real edit keeps its own.
+    #[test]
+    fn a_reformat_only_pair_reads_as_dimmed_context() {
+        let fixture = Fixture::new();
+        fixture.write(
+            "src/main.rs",
+            "fn main() {\n    let total=add(1,2);\n    let label = name(total);\n}\n",
+        );
+        fixture.commit_all("base");
+        fixture.write(
+            "src/main.rs",
+            "fn main() {\n    let total = add(1, 2);\n    let label = title(total);\n}\n",
+        );
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_working_tree_file("src/main.rs");
+        app.apply_diff_algorithm("structural");
+        app.settle_rediff();
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
     #[test]
     fn expansion_reflows_rows_after_a_refresh_re_enriches() {
         use std::fmt::Write as _;

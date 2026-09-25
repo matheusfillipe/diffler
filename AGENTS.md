@@ -199,9 +199,11 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   reformat detection: `syntax::intraline` reuses the AST diff it already
   computes for intraline emphasis, and a paired deleted/added line that
   differs in whitespace alone, with no token changed, is flagged
-  `DiffLine::reformat_only`, which renders dimmed, leaving red/green for an
-  actual change. Python, YAML, Haskell, Make and Scala never get the flag,
-  since layout is syntax there. Hunk staging re-derives the target file's hunks through the same
+  `DiffLine::reformat_only` and renders as a context line: dimmed text and a
+  `≈` between the gutter numbers and the text, so red, green and the rail
+  stay for real changes. Python, YAML, Haskell, Make and Scala never get the
+  flag, since layout is syntax there. Hunk staging re-derives the target
+  file's hunks through the same
   `imara_hunks`, so the id the reviewer picked is findable; under
   histogram/structural the staged patch copies each line's bytes from the
   file's own text (`render_hunk_patch_from_model`), since the model's text

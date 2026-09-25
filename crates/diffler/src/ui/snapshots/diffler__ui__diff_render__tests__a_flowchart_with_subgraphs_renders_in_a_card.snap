@@ -32,4 +32,4 @@ expression: "figure_card(\"```mermaid\nflowchart LR\n  req[request] --> check{to
 "  ▌        ││ render page ││                                                      "
 "  ▌        │╰─────────────╯│                                                      "
 "  ▌        ╰─ Data layer ──╯                                                      "
-"  ▌ too wide side to side; drawn top to bottom instead, o open full graph         "
+"  ▌ o open full graph · too wide side to side, drawn top to bottom                "

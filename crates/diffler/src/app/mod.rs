@@ -854,6 +854,14 @@ impl ChoiceKind {
         }
     }
 
+    /// The row naming what is in effect now.
+    pub fn current(self, app: &App) -> String {
+        match self {
+            Self::Theme => app.config.ui.theme.clone(),
+            Self::DiffAlgorithm => app.config.diff.algorithm.to_string(),
+        }
+    }
+
     fn apply(self, app: &mut App, name: &str) {
         match self {
             Self::Theme => app.apply_theme(name),
@@ -1604,8 +1612,15 @@ impl App {
     }
 
     fn open_choice_picker(&mut self, kind: ChoiceKind) {
+        let names = kind.names();
+        let current = kind.current(self);
         let mut list = fuzzy::FuzzyList::default();
-        list.rerank(&kind.names());
+        list.rerank(&names);
+        list.selected = list
+            .matches
+            .iter()
+            .position(|&index| names.get(index) == Some(&current))
+            .unwrap_or(0);
         self.modal = Some(Modal::Choice { kind, list });
     }
 
@@ -1615,6 +1630,7 @@ impl App {
         let (theme, _) = Theme::from_name(name);
         self.highlighter = Arc::new(diffler_core::highlight::Highlighter::new(theme.syntax));
         self.theme = theme;
+        name.clone_into(&mut self.config.ui.theme);
         if let Some(diff) = self.diff.as_mut() {
             diff.highlights.clear();
             diff.clear_enriched();

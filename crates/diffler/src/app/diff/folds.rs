@@ -306,18 +306,8 @@ fn pieces<'a>(
 fn hidden_scope(run: &[Entry<'_>], piece: &Piece<'_>, scope: &ScopeIndex) -> Option<String> {
     let hidden = run.get(piece.start..piece.end)?;
     let rows: Vec<usize> = hidden.iter().filter_map(Entry::new_row).collect();
-    let (first, last) = if let (Some(&first), Some(&last)) = (rows.first(), rows.last()) {
-        (first, last)
-    } else {
-        // deletions carry no new-side row, so we place them at the line
-        // before them, or after them at the top of a hunk
-        let before = run
-            .get(..piece.start)?
-            .iter()
-            .rev()
-            .find_map(Entry::new_row);
-        let at = before.or_else(|| run.get(piece.end..)?.iter().find_map(Entry::new_row))?;
-        (at, at)
+    let (Some(&first), Some(&last)) = (rows.first(), rows.last()) else {
+        return deletion_scope(run, piece, scope);
     };
     let starts: Vec<&Def> = scope
         .defs()
@@ -334,6 +324,28 @@ fn hidden_scope(run: &[Entry<'_>], piece: &Piece<'_>, scope: &ScopeIndex) -> Opt
         .defs()
         .iter()
         .filter(|d| d.start_row <= first && last <= d.end_row)
+        .max_by_key(|d| d.start_row)
+        .map(def_name)
+}
+
+/// The innermost definition a pure deletion sits inside. Deleted lines carry
+/// no new-side row, so we place them between the new-side rows around them: a
+/// deletion right after a definition's closing line is outside it.
+fn deletion_scope(run: &[Entry<'_>], piece: &Piece<'_>, scope: &ScopeIndex) -> Option<String> {
+    let before = run
+        .get(..piece.start)?
+        .iter()
+        .rev()
+        .find_map(Entry::new_row);
+    let after = run.get(piece.end..)?.iter().find_map(Entry::new_row);
+    scope
+        .defs()
+        .iter()
+        .filter(|d| match (before, after) {
+            (Some(row), _) => d.start_row <= row && row < d.end_row,
+            (None, Some(row)) => d.start_row < row && row <= d.end_row,
+            (None, None) => false,
+        })
         .max_by_key(|d| d.start_row)
         .map(def_name)
 }
@@ -806,6 +818,38 @@ mod tests {
             "the changed function's signature stays visible"
         );
         assert_eq!(regions[0].label(5), "⋯ 5 lines · fn outer");
+    }
+
+    #[test]
+    fn a_deletion_after_a_closing_brace_is_not_named_after_that_function() {
+        let src = "fn c() {\n    five();\n}\nfn d() {\n    six();\n}\n";
+        let scope = REGISTRY.scope_index("f.rs", src);
+        let mut model = model_of(&[(LineKind::Context, ""); 18]);
+        let lines = &mut model.files[0].hunks[0].lines;
+        let mut new_no = 0;
+        for (i, line) in lines.iter_mut().enumerate() {
+            let deleted = (3..15).contains(&i);
+            if !deleted {
+                new_no += 1;
+            }
+            *line = DiffLine::new(
+                if deleted {
+                    LineKind::Deleted
+                } else {
+                    LineKind::Context
+                },
+                Some(i as u32 + 1),
+                (!deleted).then_some(new_no),
+                src.lines()
+                    .nth(new_no as usize - 1)
+                    .unwrap_or("")
+                    .to_owned(),
+            );
+        }
+        let enabled = [FoldKind::DeletedBodies].into();
+        let regions = compute_regions(&rows_of(&model), &model, &rules(&enabled, Some(&scope)));
+        assert_eq!(regions.len(), 1, "{regions:?}");
+        assert_eq!(regions[0].label(12), "⋯ 12 deleted lines");
     }
 
     #[test]

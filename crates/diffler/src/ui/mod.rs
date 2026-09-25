@@ -350,12 +350,15 @@ fn fuzzy_modal(app: &App) -> Option<popup::FuzzyModal> {
                 footer: footer_for(list, "", " run"),
             })
         }
-        Some(Modal::Choice { kind, list }) => Some(plain_list(
-            kind.title().to_owned(),
-            list,
-            &kind.names(),
-            " apply",
-        )),
+        Some(Modal::Choice { kind, list }) => {
+            let current = kind.current(app);
+            let labels: Vec<String> = kind
+                .names()
+                .into_iter()
+                .map(|name| format!("{} {name}", if name == current { "*" } else { " " }))
+                .collect();
+            Some(plain_list(kind.title().to_owned(), list, &labels, " apply"))
+        }
         Some(Modal::RemoteList { remotes, list, .. }) => {
             Some(plain_list("Remote".to_owned(), list, remotes, " select"))
         }
@@ -442,7 +445,17 @@ pub(super) fn diffstat_spans(
 
 /// Linguist's hue, lifted until it reads on this theme's background.
 pub(super) fn language_color(theme: &Theme, color: language::Rgb) -> Color {
-    let (r, g, b) = language::readable_on(color, rgb_of(theme.bg));
+    let (r, g, b) = color;
+    readable_on(Color::Rgb(r, g, b), theme.bg)
+}
+
+/// `fg` lifted until it clears the UI's 3:1 contrast on `bg`, for text drawn
+/// over a blended surface no theme tuned its own palette for.
+pub(super) fn readable_on(fg: Color, bg: Color) -> Color {
+    let Color::Rgb(r, g, b) = fg else {
+        return fg;
+    };
+    let (r, g, b) = language::readable_on((r, g, b), rgb_of(bg));
     Color::Rgb(r, g, b)
 }
 
@@ -791,25 +804,29 @@ fn claim_lead_cell(spans: &mut Vec<Span<'static>>, theme: &Theme) {
 }
 
 /// `agent · <focus>[ · <file>]` in at most `room` cells: the file goes first,
-/// then the focus elides, so the indicator never pushes the bar's own
-/// content off screen.
+/// then the focus elides, then only `agent` is left, so the indicator never
+/// pushes the bar's own content off screen.
 fn agent_activity_spans(
     activity: &AgentActivity,
     theme: &Theme,
     on_panel: impl Fn(Color) -> Style,
     room: usize,
 ) -> Vec<Span<'static>> {
+    const MIN_FOCUS: usize = 4;
     let lead = " · agent".width();
-    let focus = format!(" · {}", activity.focus);
-    let left = room.saturating_sub(lead);
-    if left <= " · ".width() {
+    if room < lead {
         return Vec::new();
     }
     let mut spans = vec![
         Span::styled(" · ", on_panel(theme.dim)),
         Span::styled("agent", on_panel(theme.purple)),
-        Span::styled(elide(&focus, left), on_panel(theme.fg)),
     ];
+    let focus = format!(" · {}", activity.focus);
+    let left = room - lead;
+    if left < " · ".width() + MIN_FOCUS {
+        return spans;
+    }
+    spans.push(Span::styled(elide(&focus, left), on_panel(theme.fg)));
     if let Some(file) = &activity.file {
         let file = format!(" · {file}");
         if focus.width() + file.width() <= left {
@@ -1083,6 +1100,22 @@ mod tests {
         assert!(text.ends_with("push failed "), "{text}");
         assert!(text.contains("agent · rea…"), "{text}");
         assert!(!text.contains("refresh.rs"), "{text}");
+    }
+
+    #[test]
+    fn a_bar_too_narrow_for_the_focus_keeps_just_the_agent() {
+        use crate::app::App;
+        use crate::config::LoadedConfig;
+        use crate::test_support::standard_fixture;
+
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_working_tree_diff(None);
+        app.set_agent_activity("writing the walkthrough", Some("src/lib.rs"));
+
+        let bar = super::status_bar(&app, 60);
+        let text: String = bar.spans.iter().map(|s| s.content.clone()).collect();
+        assert!(text.ends_with("· agent"), "{text}");
     }
 
     #[test]

@@ -1,0 +1,9 @@
+---
+source: crates/diffler/src/ui/diff_render.rs
+expression: card
+---
+"  ▌ figure 1                                                                      "
+"  ▌ main                                                                          "
+"  ▌ └─ serve                                                                      "
+"  ▌    ├─ - 旧的认证                                                              " Hidden by multi-width symbols: [(13, " "), (15, " "), (17, " "), (19, " ")]
+"  ▌    └─ + 验证令牌签名                                                          " Hidden by multi-width symbols: [(13, " "), (15, " "), (17, " "), (19, " "), (21, " "), (23, " ")]
