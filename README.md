@@ -249,9 +249,10 @@ beautifully, and [lazygit](https://github.com/jesseduffield/lazygit) and
 diffler is review-first: comments live on diff lines, an agent reads and
 answers them over MCP while you watch, and the same threads work against real
 GitHub, GitLab and Forgejo pull requests, including ones whose branch you
-never checked out. It works the same over a colocated jj repo
-(`jj git init --colocate`); push and pull decline there, naming
-`jj git push`/`jj git fetch` to run yourself.
+never checked out. It also runs in a colocated jj repo
+(`jj git init --colocate`), where commits go through jj, staging declines
+because jj has no index, and push and pull decline naming `jj git push`/`jj
+git fetch` to run yourself.
 
 You may also want to check [tuicr](https://github.com/agavra/tuicr), the
 closest alternative.
