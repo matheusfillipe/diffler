@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 
 use imara_diff::{Algorithm, Diff, InternedInput};
+use serde::de::IntoDeserializer as _;
 use serde::{Deserialize, Serialize};
 
 use crate::model::{DiffLine, Hunk, HunkId, LineKind, disambiguated_hunk_id};
@@ -33,18 +34,19 @@ impl DiffAlgorithm {
         Self::Structural,
     ];
 
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Myers => "myers",
-            Self::Minimal => "minimal",
-            Self::Patience => "patience",
-            Self::Histogram => "histogram",
-            Self::Structural => "structural",
-        }
+    /// The config/display name, exactly the string `#[serde(rename_all)]`
+    /// gives this variant, so it can never drift from [`Self::parse`].
+    pub fn as_str(self) -> String {
+        serde_json::to_value(self)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_default()
     }
 
     pub fn parse(value: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|a| a.as_str() == value)
+        let de: serde::de::value::StrDeserializer<'_, serde::de::value::Error> =
+            value.into_deserializer();
+        Self::deserialize(de).ok()
     }
 
     /// Whether this algorithm runs through imara-diff instead of git2, since
@@ -56,7 +58,7 @@ impl DiffAlgorithm {
 
 impl std::fmt::Display for DiffAlgorithm {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
+        f.write_str(&self.as_str())
     }
 }
 
@@ -113,6 +115,49 @@ fn line_text(input: &InternedInput<&str>, token: imara_diff::Token) -> String {
     input.interner[token]
         .trim_end_matches(['\n', '\r'])
         .to_owned()
+}
+
+fn leading_whitespace(line: &str) -> usize {
+    line.chars().take_while(|c| c.is_whitespace()).count()
+}
+
+fn looks_like_a_definition(line: &str) -> bool {
+    line.trim_start()
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_' || c == '$')
+}
+
+/// git's generic funcname heuristic (used when no per-language driver
+/// applies): scanning the old side upward from `start_row`, the nearest line
+/// whose indentation keeps dropping and that starts with a letter, `_` or
+/// `$`, stopping once indentation reaches zero or the file start.
+fn nearest_function_context(input: &InternedInput<&str>, start_row: u32) -> String {
+    let mut min_indent = input
+        .before
+        .get(start_row as usize)
+        .map_or(usize::MAX, |&token| {
+            leading_whitespace(&line_text(input, token))
+        });
+    let mut best = String::new();
+    for idx in (0..start_row).rev() {
+        let Some(&token) = input.before.get(idx as usize) else {
+            continue;
+        };
+        let text = line_text(input, token);
+        if !looks_like_a_definition(&text) {
+            continue;
+        }
+        let indent = leading_whitespace(&text);
+        if indent < min_indent {
+            min_indent = indent;
+            best = text;
+            if min_indent == 0 {
+                break;
+            }
+        }
+    }
+    best
 }
 
 /// Append context lines for the unchanged old-side span `old_from..old_to`,
@@ -210,7 +255,7 @@ fn build_hunk(
         old_lines,
         new_start: start(after_lead_start, new_lines),
         new_lines,
-        context: String::new(),
+        context: nearest_function_context(input, first.before.start),
         lines,
     }
 }
@@ -222,7 +267,7 @@ mod tests {
     #[test]
     fn algorithm_names_round_trip() {
         for algo in DiffAlgorithm::ALL {
-            assert_eq!(DiffAlgorithm::parse(algo.as_str()), Some(algo));
+            assert_eq!(DiffAlgorithm::parse(&algo.as_str()), Some(algo));
         }
         assert_eq!(DiffAlgorithm::parse("bogus"), None);
     }
@@ -330,5 +375,51 @@ mod tests {
         let first = histogram_hunks(old, new, "f.txt", 1, true);
         let second = histogram_hunks(old, new, "f.txt", 1, true);
         assert_eq!(first[0].id, second[0].id);
+    }
+
+    // hunk_context fixtures below are checked against real `git diff
+    // --unified=0` output (see the finding this fixes), not guessed.
+
+    #[test]
+    fn hunk_context_finds_the_enclosing_function() {
+        let old = "def parse_config():\n    a = 1\n    b = 2\n    c = 3\n";
+        let new = "def parse_config():\n    a = 1\n    b = 20\n    c = 3\n";
+        let hunks = histogram_hunks(old, new, "f.py", 0, true);
+        assert_eq!(hunks[0].context, "def parse_config():");
+    }
+
+    #[test]
+    fn hunk_context_skips_a_same_indent_sibling() {
+        // `a = 1` sits right above the change at the same indentation as `b = 2`
+        // and starts with a letter too, but git skips it for the def above it.
+        let old = "def parse_config():\n    a = 1\n    b = 2\n";
+        let new = "def parse_config():\n    a = 1\n    b = 20\n";
+        let hunks = histogram_hunks(old, new, "f.py", 0, true);
+        assert_eq!(hunks[0].context, "def parse_config():");
+    }
+
+    #[test]
+    fn hunk_context_climbs_to_the_outermost_scope() {
+        let old = "class Foo:\n    def bar():\n        a = 1\n        b = 2\n";
+        let new = "class Foo:\n    def bar():\n        a = 1\n        b = 20\n";
+        let hunks = histogram_hunks(old, new, "f.py", 0, true);
+        assert_eq!(hunks[0].context, "class Foo:");
+    }
+
+    #[test]
+    fn hunk_context_prefers_the_nearest_top_level_definition() {
+        let old =
+            "def first():\n    pass\n\ndef second():\n    if true:\n        x = 1\n        y = 2\n";
+        let new = "def first():\n    pass\n\ndef second():\n    if true:\n        x = 1\n        y = 20\n";
+        let hunks = histogram_hunks(old, new, "f.py", 0, true);
+        assert_eq!(hunks[0].context, "def second():");
+    }
+
+    #[test]
+    fn hunk_context_for_an_insertion_reads_the_enclosing_function() {
+        let old = "def outer():\n    a = 1\n    b = 2\n";
+        let new = "def outer():\n    a = 1\n    newline = 99\n    b = 2\n";
+        let hunks = histogram_hunks(old, new, "f.py", 0, true);
+        assert_eq!(hunks[0].context, "def outer():");
     }
 }
