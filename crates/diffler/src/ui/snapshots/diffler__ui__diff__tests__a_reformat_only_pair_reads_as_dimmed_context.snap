@@ -6,7 +6,7 @@ expression: render(&mut app).backend()
 " Files                           Diff · structural                                                                      "
 " ▾ src                    +2 -2  modified  src/main.rs                                                       +2 -2 █████"
 "▌  ● main.rs              +2 -2  main                                                                                   "
-"                                 @@ -1,4 +1,4 @@ fn main() {                                                            "
+"                                 @@ -1,4 +1,4 @@                                                                        "
 "                                    1    1 fn main() {                                                                  "
 "                                    2     ≈    let total=add(1,2);                                                      "
 "                                ▌   3          let label = name(total);                                                 "

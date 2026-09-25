@@ -154,9 +154,20 @@ pub fn histogram_hunks(
     }
 
     let mut seen: HashMap<HunkId, usize> = HashMap::new();
+    let mut heading = FuncHeading::default();
     groups
         .into_iter()
-        .map(|group| build_hunk(&group, &input, file_path, context, before_len, &mut seen))
+        .map(|group| {
+            build_hunk(
+                &group,
+                &input,
+                file_path,
+                context,
+                before_len,
+                &mut seen,
+                &mut heading,
+            )
+        })
         .collect()
 }
 
@@ -166,47 +177,38 @@ fn line_text(input: &InternedInput<&str>, token: imara_diff::Token) -> String {
         .to_owned()
 }
 
-fn leading_whitespace(line: &str) -> usize {
-    line.chars().take_while(|c| c.is_whitespace()).count()
+/// The hunk heading git2 gives the other algorithms, from libgit2's default
+/// funcname rule: the nearest old-side line above the hunk's first row that
+/// opens with an ASCII letter, `_` or `$`, right-trimmed and cut to 80 bytes.
+/// Hunks arrive in file order, so each one scans only the rows since the
+/// previous hunk's first row and keeps that hunk's heading when none match.
+#[derive(Default)]
+struct FuncHeading {
+    scanned: u32,
+    text: String,
 }
 
-fn looks_like_a_definition(line: &str) -> bool {
-    line.trim_start()
-        .chars()
-        .next()
-        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_' || c == '$')
-}
+impl FuncHeading {
+    const MAX_BYTES: usize = 80;
 
-/// git's generic funcname heuristic (used when no per-language driver
-/// applies): scanning the old side upward from `start_row`, the nearest line
-/// whose indentation keeps dropping and that starts with a letter, `_` or
-/// `$`, stopping once indentation reaches zero or the file start.
-fn nearest_function_context(input: &InternedInput<&str>, start_row: u32) -> String {
-    let mut min_indent = input
-        .before
-        .get(start_row as usize)
-        .map_or(usize::MAX, |&token| {
-            leading_whitespace(&line_text(input, token))
-        });
-    let mut best = String::new();
-    for idx in (0..start_row).rev() {
-        let Some(&token) = input.before.get(idx as usize) else {
-            continue;
-        };
-        let text = line_text(input, token);
-        if !looks_like_a_definition(&text) {
-            continue;
-        }
-        let indent = leading_whitespace(&text);
-        if indent < min_indent {
-            min_indent = indent;
-            best = text;
-            if min_indent == 0 {
-                break;
+    fn above(&mut self, input: &InternedInput<&str>, row: u32) -> String {
+        let found = (self.scanned..row)
+            .rev()
+            .filter_map(|idx| input.before.get(idx as usize))
+            .map(|&token| input.interner[token].trim_end())
+            .find(|line| {
+                line.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_' || c == '$')
+            });
+        if let Some(line) = found {
+            let mut end = line.len().min(Self::MAX_BYTES);
+            while !line.is_char_boundary(end) {
+                end -= 1;
             }
+            line[..end].trim_end().clone_into(&mut self.text);
         }
+        self.scanned = self.scanned.max(row);
+        self.text.clone()
     }
-    best
 }
 
 /// Append context lines for the unchanged old-side span `old_from..old_to`,
@@ -240,6 +242,7 @@ fn build_hunk(
     context: u32,
     before_len: u32,
     seen: &mut HashMap<HunkId, usize>,
+    heading: &mut FuncHeading,
 ) -> Hunk {
     let first = group.first().unwrap_or(&imara_diff::Hunk::NONE);
     let last = group.last().unwrap_or(&imara_diff::Hunk::NONE);
@@ -304,7 +307,7 @@ fn build_hunk(
         old_lines,
         new_start: start(after_lead_start, new_lines),
         new_lines,
-        context: nearest_function_context(input, first.before.start),
+        context: heading.above(input, lead_start),
         lines,
     }
 }
@@ -433,8 +436,7 @@ mod tests {
         assert_eq!(first[0].id, second[0].id);
     }
 
-    // hunk_context fixtures below are checked against real `git diff
-    // --unified=0` output (see the finding this fixes).
+    // the hunk_context expectations below match `git diff` on the same input
 
     #[test]
     fn hunk_context_finds_the_enclosing_function() {
@@ -477,5 +479,43 @@ mod tests {
         let new = "def outer():\n    a = 1\n    newline = 99\n    b = 2\n";
         let hunks = histogram_hunks(old, new, "f.py", 0, true);
         assert_eq!(hunks[0].context, "def outer():");
+    }
+
+    #[test]
+    fn hunk_context_for_a_top_level_change_names_the_definition_above() {
+        let old = "fn top() {\n    1;\n}\n\nfn next() {\n    2;\n}\n";
+        let new = "fn top() {\n    1;\n}\n\nfn renamed() {\n    2;\n}\n";
+        let hunks = histogram_hunks(old, new, "f.rs", 0, true);
+        assert_eq!(hunks[0].context, "fn top() {");
+    }
+
+    #[test]
+    fn hunk_context_reads_above_the_leading_context_lines() {
+        let old = "fn a() {\n    1;\n    2;\n}\n";
+        let new = "fn a() {\n    10;\n    2;\n}\n";
+        let hunks = histogram_hunks(old, new, "f.rs", 3, true);
+        assert_eq!(hunks[0].context, "", "the definition is a context line");
+    }
+
+    #[test]
+    fn a_later_hunk_keeps_the_heading_when_no_definition_lies_between() {
+        let mut old = String::from("fn only() {\n");
+        old.extend((0..20).map(|i| format!("    line{i};\n")));
+        old.push_str("}\n");
+        let new = old
+            .replace("line2;", "LINE2;")
+            .replace("line17;", "LINE17;");
+        let hunks = histogram_hunks(&old, &new, "f.rs", 1, true);
+        let contexts: Vec<_> = hunks.iter().map(|h| h.context.as_str()).collect();
+        assert_eq!(contexts, ["fn only() {", "fn only() {"]);
+    }
+
+    #[test]
+    fn hunk_context_is_cut_to_git_s_80_bytes_on_a_char_boundary() {
+        let name = "é".repeat(60);
+        let old = format!("fn {name}() {{\n    a;\n    b;\n}}\n");
+        let new = old.replace("    b;", "    B;");
+        let hunks = histogram_hunks(&old, &new, "f.rs", 0, true);
+        assert_eq!(hunks[0].context, format!("fn {}", "é".repeat(38)));
     }
 }

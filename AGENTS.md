@@ -193,9 +193,10 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   hunk-merging rule and header numbering. It reads the worktree side raw, so
   a file whose bytes hash to something other than what git compared (a clean
   filter such as autocrlf) keeps git2's hunks. Their function heading comes
-  from git's own default funcname rule, applied by `nearest_function_context`:
-  the nearest line above the hunk on the old side that opens at a shallower
-  indent with a letter, `_` or `$`. Structural is histogram plus
+  from libgit2's own default funcname rule, applied by `FuncHeading`: the
+  nearest old-side line above the hunk's first row that opens in column one
+  with a letter, `_` or `$`, cut to 80 bytes, so switching algorithm keeps
+  the heading a hunk had under git2. Structural is histogram plus
   reformat detection: `syntax::intraline` reuses the AST diff it already
   computes for intraline emphasis, and a paired deleted/added line that
   differs in whitespace alone, with no token changed, is flagged
