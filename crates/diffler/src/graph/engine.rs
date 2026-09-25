@@ -10,6 +10,7 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 use crate::graph::model::{Model, NodeId, NodeStatus, RankDir};
+use crate::graph::text_figure;
 
 /// An owned node rectangle in layout-grid cells, plus what the view needs to
 /// color it.
@@ -406,6 +407,9 @@ fn place_and_draw(model: &Model, ranks: &[(usize, usize)], zoom: Zoom) -> Layout
     // two extra cells past the cross axis carry the return rail for back edges
     let (grid_w, grid_h) = axis.xy(total_primary + 2 * margin, total_secondary + 2 + 2 * margin);
     let mut grid = Grid::new(grid_w, grid_h);
+    // we draw outlines first so an edge crossing one merges into a junction
+    // and keeps its arrowhead
+    let outlines = draw_subgraph_outlines(&mut grid, model, &node_box, &size);
     route_edges(
         &mut grid,
         axis,
@@ -416,6 +420,9 @@ fn place_and_draw(model: &Model, ranks: &[(usize, usize)], zoom: Zoom) -> Layout
         &size,
         total_secondary + margin,
     );
+    for (rect, title) in outlines {
+        grid.set_title(rect, title);
+    }
 
     let mut placements = Vec::with_capacity(model.nodes.len());
     for (index, node) in model.nodes.iter().enumerate() {
@@ -445,7 +452,6 @@ fn place_and_draw(model: &Model, ranks: &[(usize, usize)], zoom: Zoom) -> Layout
             member: node.group.is_some(),
         });
     }
-    draw_subgraph_outlines(&mut grid, model, &node_box, &size);
 
     Layout {
         lines: grid.into_lines(),
@@ -517,17 +523,23 @@ fn subgraph_margin(model: &Model, node_box: &mut [(usize, usize)]) -> usize {
     margin
 }
 
+/// A drawn subgraph outline, `(x, y, w, h)`, and the title still to set into
+/// its top border.
+type Outline<'a> = ((usize, usize, usize, usize), &'a str);
+
 /// Outline each subgraph whose members land contiguous: their bounding box,
-/// margined by one cell, holds no other node's box. A subgraph whose members
-/// scattered across the layout gets no outline; its nodes already sit exactly
-/// where ordinary ranking put them, so "flattened" costs nothing further to
-/// draw.
-fn draw_subgraph_outlines(
+/// margined by one cell, holds no other node's box and meets no outline
+/// already drawn. A subgraph whose members scattered across the layout gets
+/// no outline; its nodes already sit exactly where ordinary ranking put them,
+/// so "flattened" costs nothing further to draw. The titles come back
+/// unwritten, for [`Grid::set_title`] once the edges are down.
+fn draw_subgraph_outlines<'a>(
     grid: &mut Grid,
-    model: &Model,
+    model: &'a Model,
     node_box: &[(usize, usize)],
     size: &[(usize, usize)],
-) {
+) -> Vec<Outline<'a>> {
+    let mut drawn: Vec<Outline<'a>> = Vec::new();
     for subgraph in &model.subgraphs {
         let members: Vec<usize> = model
             .nodes
@@ -558,11 +570,14 @@ fn draw_subgraph_outlines(
             let (w, h) = size.get(index).copied().unwrap_or_default();
             rects_overlap((bx, by, bw, bh), (x, y, w, h))
         });
-        if foreign_inside {
+        let rect = (bx, by, bw, bh);
+        if foreign_inside || drawn.iter().any(|(other, _)| rects_overlap(rect, *other)) {
             continue;
         }
-        grid.draw_cluster(bx, by, bw, bh, &subgraph.title);
+        grid.draw_cluster(bx, by, bw, bh, "");
+        drawn.push((rect, &subgraph.title));
     }
+    drawn
 }
 
 fn rects_overlap(a: (usize, usize, usize, usize), b: (usize, usize, usize, usize)) -> bool {
@@ -885,11 +900,38 @@ impl Grid {
             self.put(x, row, '│');
             self.put(x + w - 1, row, '│');
         }
-        for (i, ch) in format!(" {title} ").chars().enumerate() {
-            if x + 2 + i < x + w - 1 {
-                self.put(x + 2 + i, y, ch);
+        self.set_title((x, y, w, h), title);
+    }
+
+    /// Set `title` into the border of the outline `(x, y, w, h)`: the top
+    /// border's leftmost run with room for it, else the bottom's. A run may
+    /// cover an edge crossing the border but never an arrowhead, so the
+    /// reader still sees where every edge lands. A title too long for the
+    /// border is elided to it.
+    fn set_title(&mut self, (x, y, w, h): (usize, usize, usize, usize), title: &str) {
+        if title.is_empty() || w < 4 {
+            return;
+        }
+        let (from, to) = (x + 2, x + w - 1);
+        let text = text_figure::elide(&format!(" {title} "), to - from);
+        let len = text.chars().count();
+        for row in [y, y + h.saturating_sub(1)] {
+            if let Some(start) = (from..to).find(|&start| self.border_run(start, row, to) >= len) {
+                for (i, ch) in text.chars().enumerate() {
+                    self.put(start + i, row, ch);
+                }
+                return;
             }
         }
+    }
+
+    /// Cells on row `y` from `x` up to `to` that are border line or an edge
+    /// crossing it.
+    fn border_run(&self, x: usize, y: usize, to: usize) -> usize {
+        let row = self.cells.get(y).map_or(&[][..], Vec::as_slice);
+        row.get(x..to.min(row.len())).map_or(0, |cells| {
+            cells.iter().take_while(|&&c| c == '─' || c == '┼').count()
+        })
     }
 
     /// Center `text` within the box interior (`w - 2`) on row `y`.

@@ -2,8 +2,9 @@
 //!
 //! Best effort by design: agents reach for mermaid without being taught it, so
 //! anything the layered engine cannot draw is simplified and reported rather
-//! than refused. Only a diagram with no node-and-edge shape at all (a sequence
-//! or class diagram) comes back as an error. The notes travel to the author, so
+//! than refused. Only a diagram with no node-and-edge shape at all (a class or
+//! state diagram) comes back as an error; a `sequenceDiagram` never reaches
+//! this parser, [`crate::graph::sequence`] draws it. The notes travel to the author, so
 //! it learns what was dropped without the reader ever seeing a broken figure.
 
 use crate::graph::model::{Edge, Model, Node, NodeId, NodeStatus, RankDir, Subgraph};
@@ -19,7 +20,9 @@ pub struct Figure {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum MermaidError {
-    #[error("{0} diagrams cannot be drawn; use `flowchart LR` or `flowchart TD`")]
+    #[error(
+        "{0} diagrams cannot be drawn; use `flowchart LR`, `flowchart TD` or `sequenceDiagram`"
+    )]
     Unsupported(String),
     #[error("the diagram declares no nodes")]
     Empty,
@@ -138,15 +141,9 @@ impl Parsed {
 
     /// `subgraph <id>[<title>]` or bare `subgraph <title>`: pushes a level
     /// onto the nesting stack so every node declared until the matching `end`
-    /// tags itself with the outermost one. A subgraph draws an outline once
-    /// laid out only when its members land contiguous; a nested one is
-    /// noted, since only the outermost is ever drawn.
+    /// tags itself with the outermost one. A nested one is noted, since only
+    /// the outermost is ever drawn.
     fn subgraph(&mut self, line: &str) {
-        self.note_once(
-            "a subgraph outlines its members once laid out only when they land \
-             contiguous; otherwise it flattens"
-                .to_owned(),
-        );
         if !self.subgraph_stack.is_empty() {
             self.note_once("nested subgraphs draw only the outermost".to_owned());
         }
@@ -251,9 +248,7 @@ impl Parsed {
     /// `None` for a spec that holds no id at all.
     fn declare(&mut self, spec: &str) -> Option<NodeId> {
         let (id, label, shape) = node_spec(spec)?;
-        // `{ }` gets its own diamond-like marker instead of drawing as a plain
-        // box, so it earns no "drawn as a box" note the way every other shape
-        // we cannot draw literally does
+        // `{ }` draws with its own marker, so it earns no "drawn as a box" note
         let decision = shape == Some("{ }");
         if let Some(shape) = shape
             && !decision
@@ -261,6 +256,11 @@ impl Parsed {
             self.note_once(format!("`{shape}` shapes are drawn as boxes"));
         }
         let id = NodeId::new(id);
+        let subgraph = self
+            .subgraph_stack
+            .first()
+            .filter(|s| !s.is_empty())
+            .cloned();
         match self.model.index_of(&id) {
             Some(at) => {
                 if let Some(node) = self.model.nodes.get_mut(at) {
@@ -270,6 +270,11 @@ impl Parsed {
                         node.label = label;
                     }
                     node.decision |= decision;
+                    // mermaid places a node inside the first subgraph that
+                    // mentions it, even one first named on an edge above it
+                    if node.subgraph.is_none() {
+                        node.subgraph = subgraph;
+                    }
                 }
             }
             None => self.model.nodes.push(Node {
@@ -278,11 +283,7 @@ impl Parsed {
                 status: NodeStatus::Neutral,
                 group: None,
                 foldable: None,
-                subgraph: self
-                    .subgraph_stack
-                    .first()
-                    .filter(|s| !s.is_empty())
-                    .cloned(),
+                subgraph,
                 decision,
             }),
         }
@@ -685,6 +686,16 @@ mod tests {
         let figure = figure("flowchart TD\n  subgraph p[Parse Stage]\n    a --> b\n  end");
         assert_eq!(figure.model.subgraphs[0].id, "p");
         assert_eq!(figure.model.subgraphs[0].title, "Parse Stage");
+    }
+
+    #[test]
+    fn a_node_named_on_an_edge_joins_the_first_subgraph_that_lists_it() {
+        let figure = figure(
+            "flowchart TD\n  a --> b\n  subgraph s[S]\n    b\n    c\n  end\n  subgraph t[T]\n    b\n  end",
+        );
+        assert_eq!(figure.model.nodes[0].subgraph, None);
+        assert_eq!(figure.model.nodes[1].subgraph.as_deref(), Some("s"));
+        assert!(figure.notes.is_empty(), "{:?}", figure.notes);
     }
 
     #[test]

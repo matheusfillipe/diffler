@@ -1,6 +1,6 @@
-//! A card figure that draws as plain rows of styled text rather than a
-//! navigable node graph: a sequence diagram's lanes, a callstack's tree. Both
-//! lay themselves out once, at parse time, into this shared shape, so the
+//! A card figure that draws as plain rows of styled text: a sequence
+//! diagram's lanes, a callstack's tree. Both lay themselves out once, at
+//! parse time, to the card's width, into this shared shape, so the
 //! card renderer and the `<cr>` jump the diff pane gives a figure row treat
 //! every kind alike.
 
@@ -42,6 +42,18 @@ pub struct TextFigure {
     /// One entry per row: the node a `<cr>` on that row jumps to, when it
     /// resolved an anchor. `None` for a row with nothing to jump to.
     pub row_nodes: Vec<Option<NodeId>>,
+}
+
+/// `text` cut to `width` columns, its last kept cell an ellipsis when it had
+/// to be cut at all.
+pub(crate) fn elide(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_owned();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    text.chars().take(width - 1).collect::<String>() + "…"
 }
 
 impl TextFigure {
