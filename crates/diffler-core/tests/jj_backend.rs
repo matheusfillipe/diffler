@@ -7,7 +7,7 @@ use std::path::Path;
 
 use common::JjFixture;
 use diffler_core::jj::JjVcs;
-use diffler_core::vcs::{NetworkOp, Vcs, VcsError, VcsKind};
+use diffler_core::vcs::{NetworkOp, Vcs, VcsError};
 
 #[allow(clippy::expect_used)]
 fn vcs(fx: &JjFixture) -> JjVcs {
@@ -15,9 +15,11 @@ fn vcs(fx: &JjFixture) -> JjVcs {
 }
 
 #[test]
-fn vcs_kind_is_jj() {
+fn jj_has_no_index_or_native_git_checkout() {
     let fx = JjFixture::new();
-    assert_eq!(vcs(&fx).vcs_kind(), VcsKind::Jj);
+    let vcs = vcs(&fx);
+    assert!(!vcs.has_index());
+    assert!(!vcs.native_git_checkout());
 }
 
 #[test]
@@ -262,11 +264,38 @@ fn staging_verbs_are_declined() {
 fn network_argv_maps_each_op_to_the_jj_cli() {
     let fx = JjFixture::new();
     let v = vcs(&fx);
-    assert_eq!(v.network_argv(NetworkOp::Fetch), ["jj", "git", "fetch"]);
     assert_eq!(
-        v.network_argv(NetworkOp::FetchAll),
+        v.network_argv(NetworkOp::Fetch).expect("fetch"),
+        ["jj", "git", "fetch"]
+    );
+    assert_eq!(
+        v.network_argv(NetworkOp::FetchAll).expect("fetch --all"),
         ["jj", "git", "fetch", "--all-remotes"]
     );
+}
+
+#[test]
+fn network_argv_rejects_every_push_and_pull_variant() {
+    let fx = JjFixture::new();
+    let v = vcs(&fx);
+    for op in [
+        NetworkOp::Push,
+        NetworkOp::PushSetUpstream {
+            remote: "origin".into(),
+        },
+        NetworkOp::Pull,
+        NetworkOp::PullFrom {
+            remote: "origin".into(),
+            branch: "main".into(),
+        },
+        NetworkOp::PullRebase,
+        NetworkOp::PullMerge,
+    ] {
+        assert!(
+            matches!(v.network_argv(op), Err(VcsError::Rejected(_))),
+            "push/pull must decline in a jj repo"
+        );
+    }
 }
 
 #[test]
@@ -311,5 +340,5 @@ fn repo_open_picks_the_jj_backend_for_a_colocated_root() {
     let fx = JjFixture::new();
     let root = diffler_core::repo::discover(fx.root()).expect("discover");
     let opened = diffler_core::repo::open(&root).expect("open");
-    assert_eq!(opened.vcs_kind(), VcsKind::Jj);
+    assert!(!opened.has_index(), "the jj backend was picked, not git's");
 }

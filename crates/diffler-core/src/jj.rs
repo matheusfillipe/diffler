@@ -19,7 +19,7 @@ use crate::diffalgo::{DiffAlgorithm, DiffSettings};
 use crate::git::GitVcs;
 use crate::model::{DiffModel, HunkId};
 use crate::vcs::{
-    BlameSpan, BranchInfo, HeadInfo, LogEntry, NetworkOp, StatusModel, Vcs, VcsError, VcsKind,
+    BlameSpan, BranchInfo, HeadInfo, LogEntry, NetworkOp, StatusModel, Vcs, VcsError,
 };
 
 pub struct JjVcs {
@@ -88,10 +88,15 @@ fn quoted(s: &str) -> String {
 
 const NO_STAGING: &str = "commit the whole working copy; jj has no staging area";
 const NO_STASH: &str = "run jj new in a shell to set this change aside; jj has no stash";
+const NO_PUSH_PULL: &str = "run jj git push or jj git fetch in a shell to sync a jj repo";
 
 impl Vcs for JjVcs {
-    fn vcs_kind(&self) -> VcsKind {
-        VcsKind::Jj
+    fn has_index(&self) -> bool {
+        false
+    }
+
+    fn native_git_checkout(&self) -> bool {
+        false
     }
 
     fn git_dir(&self) -> Result<PathBuf, VcsError> {
@@ -287,15 +292,21 @@ impl Vcs for JjVcs {
         Err(VcsError::Rejected(NO_STASH.into()))
     }
 
-    fn network_argv(&self, op: NetworkOp) -> Vec<String> {
+    fn network_argv(&self, op: NetworkOp) -> Result<Vec<String>, VcsError> {
         let args: &[&str] = match op {
             NetworkOp::Fetch => &["git", "fetch"],
             NetworkOp::FetchAll => &["git", "fetch", "--all-remotes"],
+            NetworkOp::Push
+            | NetworkOp::PushSetUpstream { .. }
+            | NetworkOp::Pull
+            | NetworkOp::PullFrom { .. }
+            | NetworkOp::PullRebase
+            | NetworkOp::PullMerge => return Err(VcsError::Rejected(NO_PUSH_PULL.into())),
         };
-        std::iter::once("jj")
+        Ok(std::iter::once("jj")
             .chain(args.iter().copied())
             .map(str::to_owned)
-            .collect()
+            .collect())
     }
 
     fn workdir(&self) -> Result<PathBuf, VcsError> {

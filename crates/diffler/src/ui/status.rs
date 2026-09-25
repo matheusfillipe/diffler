@@ -4,7 +4,7 @@
 use crate::app::rowsel::RowSelect;
 use diffler_core::model::FileDiff;
 use diffler_core::stats::LanguageChurn;
-use diffler_core::vcs::{LogEntry, VcsKind};
+use diffler_core::vcs::LogEntry;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -47,9 +47,10 @@ const JJ_HINTS: &[Hint] = &[
 ];
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
-    let hints = match app.review.vcs.vcs_kind() {
-        VcsKind::Git => GIT_HINTS,
-        VcsKind::Jj => JJ_HINTS,
+    let hints = if app.review.vcs.has_index() {
+        GIT_HINTS
+    } else {
+        JJ_HINTS
     };
     let (body_area, bar) = super::screen_chrome(frame, app, hints);
     app.status.viewport = body_area.height;
@@ -371,7 +372,7 @@ fn row_line(
         Row::SectionHeader { section, count } => {
             let mut spans = header_spans(
                 theme,
-                section.title(app.review.vcs.vcs_kind()),
+                section.title(app.review.vcs.has_index()),
                 Some(*count),
                 app.is_folded(*section),
                 search,

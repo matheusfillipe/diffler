@@ -8,7 +8,7 @@ use std::path::Path;
 use diffler_core::model::FileDiff;
 use diffler_core::review::Review;
 use diffler_core::source::ReviewSource;
-use diffler_core::vcs::{BranchInfo, LogEntry, NetworkOp, Vcs, VcsError, VcsKind};
+use diffler_core::vcs::{BranchInfo, LogEntry, NetworkOp, Vcs, VcsError};
 
 use super::enrich::EnrichOutcome;
 use super::rowsel::RowSelect;
@@ -68,12 +68,12 @@ impl Section {
 
     /// jj has no index, so its `Vcs::status` puts the whole working copy in
     /// `Staged`.
-    pub fn title(self, kind: VcsKind) -> &'static str {
-        match (self, kind) {
-            (Self::Staged, VcsKind::Jj) => "Working copy (@)",
+    pub fn title(self, has_index: bool) -> &'static str {
+        match (self, has_index) {
+            (Self::Staged, false) => "Working copy (@)",
             (Self::Untracked, _) => "Untracked",
             (Self::Unstaged, _) => "Unstaged changes",
-            (Self::Staged, VcsKind::Git) => "Staged changes",
+            (Self::Staged, true) => "Staged changes",
         }
     }
 
@@ -784,7 +784,7 @@ impl App {
     fn status_row_label(&self, row: &Row) -> Option<String> {
         Some(match row {
             Row::SectionHeader { section, .. } => {
-                section.title(self.review.vcs.vcs_kind()).to_owned()
+                section.title(self.review.vcs.has_index()).to_owned()
             }
             Row::UnpushedHeader { .. } => UNPUSHED_TITLE.to_owned(),
             Row::Unpushed { index } => self.status.unpushed_commits().get(*index)?.subject.clone(),
@@ -1276,7 +1276,7 @@ impl App {
             return;
         };
         // jj's whole working copy sits in Staged, so we let its backend decline
-        if section == Section::Staged && self.review.vcs.vcs_kind() == VcsKind::Git {
+        if section == Section::Staged && self.review.vcs.has_index() {
             self.info("already staged");
             return;
         }
@@ -1319,7 +1319,7 @@ impl App {
     /// snapshot, and a file edited on disk since the last refresh is missing
     /// from it, which is what made this take two presses.
     fn stage_all(&mut self) {
-        if self.review.vcs.vcs_kind() == VcsKind::Git
+        if self.review.vcs.has_index()
             && self.section_files(Section::Untracked).is_empty()
             && self.section_files(Section::Unstaged).is_empty()
         {

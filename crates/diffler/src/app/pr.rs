@@ -4,7 +4,6 @@
 
 use diffler_core::session::{Anchor, Comment, CommentStatus, Reply};
 use diffler_core::source::ReviewSource;
-use diffler_core::vcs::VcsKind;
 
 use super::App;
 use crate::ci::{PrComment, ReviewVerdict};
@@ -261,7 +260,7 @@ impl App {
 
     pub(crate) fn checkout_pr(&mut self, pr: &crate::ci::PullRequest) {
         // `gh pr checkout` runs git's own checkout, which jj would not see
-        let github = self.review.vcs.vcs_kind() == VcsKind::Git
+        let github = self.review.vcs.native_git_checkout()
             && self
                 .ci_remotes()
                 .first()

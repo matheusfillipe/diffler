@@ -1204,10 +1204,46 @@ fn network_argv_maps_each_op_to_the_git_cli() {
     fx.write("a.txt", "x\n");
     fx.commit_all("base");
     let v = vcs(&fx);
-    assert_eq!(v.network_argv(NetworkOp::Fetch), ["git", "fetch"]);
     assert_eq!(
-        v.network_argv(NetworkOp::FetchAll),
+        v.network_argv(NetworkOp::Fetch).expect("fetch"),
+        ["git", "fetch"]
+    );
+    assert_eq!(
+        v.network_argv(NetworkOp::FetchAll).expect("fetch --all"),
         ["git", "fetch", "--all"]
+    );
+    assert_eq!(
+        v.network_argv(NetworkOp::Push).expect("push"),
+        ["git", "push"]
+    );
+    assert_eq!(
+        v.network_argv(NetworkOp::PushSetUpstream {
+            remote: "origin".into()
+        })
+        .expect("push -u"),
+        ["git", "push", "-u", "origin", "HEAD"]
+    );
+    assert_eq!(
+        v.network_argv(NetworkOp::Pull).expect("pull"),
+        ["git", "pull"]
+    );
+    assert_eq!(
+        v.network_argv(NetworkOp::PullFrom {
+            remote: "origin".into(),
+            branch: "main".into()
+        })
+        .expect("pull from"),
+        ["git", "pull", "origin", "main"]
+    );
+    assert_eq!(
+        v.network_argv(NetworkOp::PullRebase)
+            .expect("pull --rebase"),
+        ["git", "pull", "--rebase"]
+    );
+    assert_eq!(
+        v.network_argv(NetworkOp::PullMerge)
+            .expect("pull --no-rebase"),
+        ["git", "pull", "--no-rebase"]
     );
 }
 

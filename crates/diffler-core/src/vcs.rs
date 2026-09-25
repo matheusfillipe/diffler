@@ -68,10 +68,16 @@ pub struct BranchInfo {
 /// A network operation the binary runs by shelling out to the backend's CLI,
 /// so the user's existing auth (SSH agent, credential helper, tokens) applies
 /// without diffler holding any credentials.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetworkOp {
     Fetch,
     FetchAll,
+    Push,
+    PushSetUpstream { remote: String },
+    Pull,
+    PullFrom { remote: String, branch: String },
+    PullRebase,
+    PullMerge,
 }
 
 /// A run of consecutive lines a single commit last touched.
@@ -97,24 +103,17 @@ pub struct StatusModel {
     pub staged: DiffModel,
 }
 
-/// Which backend a [`Vcs`] is talking to, for the handful of UI decisions
-/// that differ by backend (jj has no staging area, so the status screen
-/// collapses to one section and hides the staging hints).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VcsKind {
-    Git,
-    Jj,
-}
-
 pub trait Vcs: Send {
-    /// Which backend this is, for the few UI decisions that differ by kind.
-    fn vcs_kind(&self) -> VcsKind;
     /// Resolved repository metadata directory. In a plain repo this is
     /// `<root>/.git`; in a linked worktree `<root>/.git` is a gitlink file
     /// and this resolves to the external gitdir it points at.
     fn git_dir(&self) -> Result<PathBuf, VcsError>;
     /// Current branch, commit, and upstream.
     fn head(&self) -> Result<HeadInfo, VcsError>;
+    /// Whether this backend has a staging area at all: true for git; jj has
+    /// none, so its whole working copy reads as [`StatusModel::staged`] and
+    /// the UI drops staging entirely rather than reinterpreting the section.
+    fn has_index(&self) -> bool;
     /// Untracked / unstaged / staged sections as separate diff models.
     fn status(&self) -> Result<StatusModel, VcsError>;
     /// HEAD vs workdir+index including untracked files: the review view.
@@ -215,6 +214,11 @@ pub trait Vcs: Send {
     /// Refused for the currently checked-out branch.
     fn delete_branch(&self, name: &str) -> Result<(), VcsError>;
     fn checkout(&self, name: &str) -> Result<(), VcsError>;
+    /// Whether a raw `git`/forge CLI command (`git switch`, `gh pr checkout`)
+    /// may check out a branch directly: true for plain git; jj's own
+    /// operation log and working-copy snapshot would never see a write made
+    /// this way, so a checkout there must go through [`Vcs::checkout`] instead.
+    fn native_git_checkout(&self) -> bool;
     /// Stash tracked changes (staged + unstaged), reverting the worktree to
     /// HEAD; untracked files are left in place, matching `git stash`. `message`
     /// `None` lets the backend label it. Local-only: no network.
@@ -224,8 +228,10 @@ pub trait Vcs: Send {
     fn stash_pop(&self) -> Result<(), VcsError>;
     /// Argv to run for a network op, e.g. `["git", "push"]`. The binary runs
     /// this in [`Vcs::workdir`] so the backend's own CLI handles credentials;
-    /// diffler never touches them. The jj backend returns `["jj", "git", …]`.
-    fn network_argv(&self, op: NetworkOp) -> Vec<String>;
+    /// diffler never touches them. The jj backend returns `["jj", "git", …]`
+    /// for a fetch; push and pull would move git's refs behind jj's back, so
+    /// it rejects every push/pull variant instead.
+    fn network_argv(&self, op: NetworkOp) -> Result<Vec<String>, VcsError>;
     /// Working directory to run [`Vcs::network_argv`] in.
     fn workdir(&self) -> Result<PathBuf, VcsError>;
     /// URL of the named remote (e.g. `origin`), if it exists. Used to detect the

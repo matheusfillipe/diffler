@@ -2,14 +2,14 @@
 //! fail or destroy work, and turn a rejected push/pull into an actionable
 //! dialog instead of a dead error.
 
-use diffler_core::vcs::VcsKind;
+use diffler_core::vcs::NetworkOp;
 
 use super::{App, GitOp, Modal, PendingOp, RemotePurpose, fuzzy};
 
 impl App {
     pub(crate) fn push(&mut self) {
         if self.head.upstream.is_some() {
-            self.queue_network("push", vec!["git".into(), "push".into()]);
+            self.queue_network_op("push", NetworkOp::Push);
         } else {
             self.push_set_upstream();
         }
@@ -26,8 +26,17 @@ impl App {
         let remotes = self.review.vcs.remotes().unwrap_or_default();
         match remotes.as_slice() {
             [] => self.info("no remote configured"),
-            [remote] => {
-                let argv = push_upstream_argv(remote);
+            [remote] => self.confirm_push_upstream(&branch, remote),
+            _ => self.open_remote_list(remotes, RemotePurpose::SetUpstreamPush),
+        }
+    }
+
+    fn confirm_push_upstream(&mut self, branch: &str, remote: &str) {
+        let op = NetworkOp::PushSetUpstream {
+            remote: remote.to_owned(),
+        };
+        match self.review.vcs.network_argv(op) {
+            Ok(argv) => {
                 self.modal = Some(Modal::Confirm {
                     message: format!("Push {branch} to {remote} and set it as upstream?"),
                     on_confirm: PendingOp::RunGit {
@@ -36,7 +45,7 @@ impl App {
                     },
                 });
             }
-            _ => self.open_remote_list(remotes, RemotePurpose::SetUpstreamPush),
+            Err(err) => self.error(err.to_string()),
         }
     }
 
@@ -45,7 +54,7 @@ impl App {
             return;
         }
         if self.head.upstream.is_some() {
-            self.queue_network("pull", vec!["git".into(), "pull".into()]);
+            self.queue_network_op("pull", NetworkOp::Pull);
             return;
         }
         let remotes = self.review.vcs.remotes().unwrap_or_default();
@@ -61,9 +70,12 @@ impl App {
             self.error("HEAD is detached; nothing to pull");
             return;
         };
-        self.queue_network(
+        self.queue_network_op(
             "pull",
-            vec!["git".into(), "pull".into(), remote.into(), branch],
+            NetworkOp::PullFrom {
+                remote: remote.to_owned(),
+                branch,
+            },
         );
     }
 
@@ -80,32 +92,37 @@ impl App {
     pub(super) fn remote_chosen(&mut self, remote: &str, purpose: RemotePurpose) {
         match purpose {
             RemotePurpose::SetUpstreamPush => {
-                self.queue_network("push -u", push_upstream_argv(remote));
+                self.queue_network_op(
+                    "push -u",
+                    NetworkOp::PushSetUpstream {
+                        remote: remote.to_owned(),
+                    },
+                );
             }
             RemotePurpose::Pull => self.pull_from(remote),
         }
     }
 
     pub(super) fn pull_rebase(&mut self) {
-        self.queue_network(
-            "pull --rebase",
-            vec!["git".into(), "pull".into(), "--rebase".into()],
-        );
+        self.queue_network_op("pull --rebase", NetworkOp::PullRebase);
     }
 
     pub(super) fn pull_merge(&mut self) {
-        self.queue_network(
-            "pull",
-            vec!["git".into(), "pull".into(), "--no-rebase".into()],
-        );
+        self.queue_network_op("pull", NetworkOp::PullMerge);
+    }
+
+    /// Resolve `op`'s argv through the backend and queue it, showing its
+    /// decline (jj refuses every push/pull) as an error instead.
+    pub(crate) fn queue_network_op(&mut self, label: impl Into<String>, op: NetworkOp) {
+        match self.review.vcs.network_argv(op) {
+            Ok(argv) => self.queue_network(label, argv),
+            Err(err) => self.error(err.to_string()),
+        }
     }
 
     /// Queue a git op and, when it is a push, remember its argv so a rejection
     /// can retry with `--force-with-lease` against the same target.
     pub(crate) fn queue_network(&mut self, label: impl Into<String>, argv: Vec<String>) {
-        if self.declines_jj_network() {
-            return;
-        }
         let label = label.into();
         if argv.get(1).map(String::as_str) == Some("push") {
             self.last_push_argv = Some(argv.clone());
@@ -115,13 +132,18 @@ impl App {
     }
 
     /// Push and pull run the git CLI, which in a jj repo would move git's
-    /// HEAD and branches behind jj's back.
+    /// HEAD and branches behind jj's back. Every push/pull variant declines
+    /// identically, so probing with a bare `Push` answers for all of them,
+    /// before a caller that must not show a confirm dialog or remote picker
+    /// for a repo that will only reject it ever resolves one.
     pub(super) fn declines_jj_network(&mut self) -> bool {
-        let jj = self.review.vcs.vcs_kind() == VcsKind::Jj;
-        if jj {
-            self.error("run jj git push or jj git fetch in a shell to sync a jj repo");
+        match self.review.vcs.network_argv(NetworkOp::Push) {
+            Ok(_) => false,
+            Err(err) => {
+                self.error(err.to_string());
+                true
+            }
         }
-        jj
     }
 
     /// A failed push/pull: open the recovery dialog its error calls for.
@@ -182,16 +204,6 @@ impl App {
         }
         false
     }
-}
-
-pub(super) fn push_upstream_argv(remote: &str) -> Vec<String> {
-    vec![
-        "git".into(),
-        "push".into(),
-        "-u".into(),
-        remote.into(),
-        "HEAD".into(),
-    ]
 }
 
 fn with_force_lease(mut argv: Vec<String>) -> Vec<String> {

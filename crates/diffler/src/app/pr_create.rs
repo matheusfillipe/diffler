@@ -2,7 +2,7 @@
 //! forge will accept, fill the fields from the commits the branch carries,
 //! and let the human correct any of it before it goes out.
 
-use diffler_core::vcs::LogEntry;
+use diffler_core::vcs::{LogEntry, NetworkOp};
 
 use super::App;
 use crate::ci::NewPullRequest;
@@ -216,10 +216,7 @@ impl App {
         // ahead of a dialog stays armed when the dialog is declined, and the
         // next push of any kind would then open a pull request nobody asked for
         self.pending_pr_create = Some(Box::new(request));
-        self.queue_network(
-            Self::PR_CREATE_PUSH,
-            super::network::push_upstream_argv(&remote),
-        );
+        self.queue_network_op(Self::PR_CREATE_PUSH, NetworkOp::PushSetUpstream { remote });
     }
 
     pub(crate) fn queue_pr_create(&mut self, request: NewPullRequest) {

@@ -50,7 +50,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use diffler_core::model::DiffModel;
 use diffler_core::review::Review;
 use diffler_core::source::ReviewSource;
-use diffler_core::vcs::{BranchInfo, HeadInfo, NetworkOp, Vcs, VcsError, VcsKind};
+use diffler_core::vcs::{BranchInfo, HeadInfo, NetworkOp, Vcs, VcsError};
 
 use crate::config::{Config, KeyPress, LoadedConfig};
 use crate::editor::EditorRequest;
@@ -1974,7 +1974,13 @@ impl App {
     // --- branch transient flows ---
 
     pub(crate) fn request_network(&mut self, op: NetworkOp, label: &str) {
-        let argv = self.review.vcs.network_argv(op);
+        let argv = match self.review.vcs.network_argv(op) {
+            Ok(argv) => argv,
+            Err(err) => {
+                self.error(err.to_string());
+                return;
+            }
+        };
         let program = argv.first().map_or("git", String::as_str).to_owned();
         self.pending_git = Some(GitOp {
             label: label.to_owned(),
@@ -2042,7 +2048,7 @@ impl App {
                 return;
             }
             if let Some(branch) = self.pending_pr_switch.take().filter(|_| ok) {
-                if self.review.vcs.vcs_kind() == VcsKind::Jj {
+                if !self.review.vcs.native_git_checkout() {
                     self.checkout_branch(&branch);
                     return;
                 }

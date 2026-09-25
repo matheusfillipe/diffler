@@ -11,7 +11,7 @@ use crate::model::{
     DiffLine, DiffModel, FileDiff, FileStatus, Hunk, HunkId, LineKind, disambiguated_hunk_id,
 };
 use crate::vcs::{
-    BlameSpan, BranchInfo, HeadInfo, LogEntry, NetworkOp, StatusModel, Vcs, VcsError, VcsKind,
+    BlameSpan, BranchInfo, HeadInfo, LogEntry, NetworkOp, StatusModel, Vcs, VcsError,
 };
 
 /// git's own default amount of context around hunks.
@@ -171,8 +171,12 @@ impl GitVcs {
 }
 
 impl Vcs for GitVcs {
-    fn vcs_kind(&self) -> VcsKind {
-        VcsKind::Git
+    fn has_index(&self) -> bool {
+        true
+    }
+
+    fn native_git_checkout(&self) -> bool {
+        true
     }
 
     fn git_dir(&self) -> Result<PathBuf, VcsError> {
@@ -764,17 +768,22 @@ impl Vcs for GitVcs {
         }
     }
 
-    fn network_argv(&self, op: NetworkOp) -> Vec<String> {
+    fn network_argv(&self, op: NetworkOp) -> Result<Vec<String>, VcsError> {
         // shelling to `git` (not git2) so the user's credential helper, SSH
         // agent, and config drive auth
-        let args: &[&str] = match op {
-            NetworkOp::Fetch => &["fetch"],
-            NetworkOp::FetchAll => &["fetch", "--all"],
+        let args: Vec<String> = match op {
+            NetworkOp::Fetch => vec!["fetch".into()],
+            NetworkOp::FetchAll => vec!["fetch".into(), "--all".into()],
+            NetworkOp::Push => vec!["push".into()],
+            NetworkOp::PushSetUpstream { remote } => {
+                vec!["push".into(), "-u".into(), remote, "HEAD".into()]
+            }
+            NetworkOp::Pull => vec!["pull".into()],
+            NetworkOp::PullFrom { remote, branch } => vec!["pull".into(), remote, branch],
+            NetworkOp::PullRebase => vec!["pull".into(), "--rebase".into()],
+            NetworkOp::PullMerge => vec!["pull".into(), "--no-rebase".into()],
         };
-        std::iter::once("git")
-            .chain(args.iter().copied())
-            .map(str::to_owned)
-            .collect()
+        Ok(std::iter::once("git".to_owned()).chain(args).collect())
     }
 
     fn workdir(&self) -> Result<PathBuf, VcsError> {
