@@ -16,7 +16,10 @@ this review when `$ARGUMENTS` is empty:
 2. Read the diff with `get_diff`. It shows whichever review is open right
    now: the working tree, or the commit, range, or PR you're reviewing.
    `publish_walkthrough` records that same review, so the walkthrough
-   renders it too, not the working tree by default.
+   renders it too, not the working tree by default. A walkthrough works on a
+   clean tree too: with nothing changed, publish over the working tree and
+   anchor each stop to the file as it stands, to explain existing code
+   rather than a diff.
 3. Choose one stop per real decision, as few as the change needs: five is
    common, ten is a lot, and more means the change wants splitting. Order
    them as a reader should meet them. Each stop is a span (`path#symbol`
@@ -32,16 +35,21 @@ this review when `$ARGUMENTS` is empty:
    it will say, and no closing stop that repeats them: the title is the
    overview, and a map of the whole change belongs in the summary below, not
    a stop.
-4. Add a `mermaid` flowchart whenever a stop describes a flow, a sequence of
-   calls, or a branch with more than two outcomes. A shape beats a paragraph.
-   Several fences in one body are fine, and a note can carry one of its own
-   when a different part of the region needs its own diagram.
+4. Add a diagram when a shape beats a paragraph, in the kind that fits what
+   you are showing: a `mermaid` flowchart for a branch, a state, or data
+   moving through steps; a `mermaid sequenceDiagram` for who calls whom over
+   time, a participant anchored with `link <participant>: <label> @
+   <path#symbol>`; a `callstack` fence for the old-versus-new call path as one
+   tree, one frame per line, `+`/`-` for added/removed, two spaces of indent
+   per depth, an optional ` @ <path#symbol>` anchor on any frame. Several
+   fences in one body are fine, and a note can carry one of its own when a
+   different part of the region needs its own diagram.
 5. Put what you left out in `skipped`.
 6. Write a `summary`: what the reader meets first. One short paragraph saying
-   what the change does, plus one `mermaid` flowchart of the simplest shape
-   that explains it, five to eight nodes, naming real files or functions. It
-   never lists the stops and never repeats their titles: the stops are the
-   detail, the summary is the shape.
+   what the change does, plus one diagram of the simplest shape that explains
+   it (see step 4 for which kind fits), five to eight nodes, naming real
+   files or functions. It never lists the stops and never repeats their
+   titles: the stops are the detail, the summary is the shape.
 7. Call `publish_walkthrough`, read its receipts, fix a refusal and
    republish. When you revise, pass each surviving stop's and note's `id`
    from `get_walkthrough` so it keeps its comment and the thread hanging off

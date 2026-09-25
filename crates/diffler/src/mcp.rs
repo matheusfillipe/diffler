@@ -458,10 +458,16 @@ pub struct PublishWalkthroughParams {
     /// One line on what you left out and why.
     pub skipped: Option<String>,
     /// What the reader meets first: one short paragraph saying what the
-    /// change does, plus one `mermaid` flowchart of the simplest shape that
-    /// explains it, five to eight nodes, naming real files or functions.
-    /// Never a list of the stops or a repeat of their titles. Omit for a
-    /// walkthrough with no summary.
+    /// change does, plus one diagram of the simplest shape that explains it,
+    /// five to eight nodes, naming real files or functions. Pick the shape
+    /// for what you are showing: a mermaid `flowchart` for a branch, a
+    /// state, or data moving through steps; a mermaid `sequenceDiagram` for
+    /// who calls whom over time, anchored with `link <participant>: <label>
+    /// @ <path#symbol|path:line>`; a `callstack` fence for the old-versus-new
+    /// call path as one tree, one frame per line, `+`/`-` for added/removed,
+    /// two spaces of indent per depth, an optional ` @ <path#symbol>` anchor
+    /// on any frame. Never a list of the stops or a repeat of their titles.
+    /// Omit for a walkthrough with no summary.
     pub summary: Option<String>,
 }
 

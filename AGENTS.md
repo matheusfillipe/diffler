@@ -28,7 +28,10 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   app/composer.rs      in-place comment editor (app/text_edit.rs is its key set)
   ci/                  forge seam: CI acquisition + PR review (ForgeProvider trait; gh/glab/Forgejo REST)
   graph/               navigable orthogonal node-graph ratatui component
-                       (mermaid.rs parses the flowchart subset an agent writes)
+                       (mermaid.rs parses the flowchart subset an agent writes;
+                       sequence.rs and callstack.rs are the other two figure
+                       kinds a walkthrough card can draw, drawing.rs picks
+                       between all three by a fence's own language and header)
   keymap.rs config.rs  configurable keybindings, layered TOML config
   theme.rs transient.rs  rendering theme, popup/modal model
   mcp.rs               rmcp/axum MCP server
@@ -472,19 +475,39 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   nothing under it resolves.
   Bodies render through `app::markdown`, the same
   parser every comment body uses, so headings, tables, lists and fenced code
-  all work; a `mermaid` fence becomes a figure instead, static here and drawn
-  once per frame into the card's rows, which every agent comment gains and not
-  only a stop. Parsed bodies are cached on `DiffView` keyed by comment id, or
+  all work; a ` ```mermaid ` or ` ```callstack ` fence becomes a figure
+  instead, static here and drawn once per frame into the card's rows, which
+  every agent comment gains and not only a stop. A figure is one of three
+  kinds behind `graph::Drawing`: `Graph`, a navigable flowchart; `Sequence`
+  and `Callstack`, laid out once at parse time into plain rows of styled text
+  (`graph::text_figure::TextFigure`) with no navigation of their own.
+  `graph::figure` picks between them: a ` ```callstack ` fence is always
+  `Callstack`; a ` ```mermaid ` fence is `Sequence` when its first line names
+  a `sequenceDiagram`, `Graph` otherwise, through `graph::mermaid` (the
+  `flowchart` subset the layered engine can draw, simplified where it cannot,
+  since an agent that gets a rejection it cannot fix is worse off than a
+  reader looking at a box where a diamond was). A mermaid `subgraph` tags its
+  members with its outermost id rather than grouping them; once laid out,
+  the engine outlines a subgraph only when its members land contiguous with
+  no foreign node inside their margin, and the layout reserves that margin
+  only when the model carries at least one subgraph, so an ordinary
+  flowchart pays nothing for it. A `{decision}` node draws with a `◇` marker
+  instead of the "drawn as a box" note every other shape the engine cannot
+  render gets. What was simplified comes back in the tool's reply, so the
+  agent learns and the reader never sees a gap; only a mermaid diagram with
+  no node-and-edge shape at all (and no `sequenceDiagram` header) fails, and
+  its source stays in the body as prose. Parsed bodies are cached on
+  `DiffView` keyed by comment id, or
   by `summary_figure_key(&walkthrough.id)` for the summary's own body, and a
   hash over the body and the wrap width, so a diagram is parsed when it
   changes and not per frame; the same key scheme carries into the per-frame
   figure rasteriser, so a summary's figure draws through the exact path a
-  stop's does. `graph::mermaid` takes the `flowchart`
-  subset the layered engine can draw and simplifies the rest, since an agent
-  that gets a rejection it cannot fix is worse off than a reader looking at a
-  box where a diamond was; what was simplified comes back in the tool's reply,
-  so the agent learns and the reader never sees a gap. Only a diagram with no
-  node-and-edge shape at all fails, and its source stays in the body as prose.
+  stop's does. `o` opens a `Graph` figure full screen; `Sequence` and
+  `Callstack` have no full screen to open, so `o` on one says as much and
+  names `<cr>` instead: on a figure row whose drawing names a resolved node
+  (a callstack frame's own anchor, or a sequence message's receiving
+  participant, set by mermaid's own `link <participant>: <label> @ <target>`
+  statement), `<cr>` in the diff pane jumps straight to that code.
   A body is capped at 8KB and a walkthrough at 64KB, since parsing and layout
   run on the thread serving the TUI and the text comes from an agent; the
   summary counts toward the same two caps, `BodyTooLong` and `TotalTooLong`,
