@@ -6,6 +6,7 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 
 use crate::graph::model::NodeId;
 use crate::graph::theme::GraphTheme;
@@ -46,15 +47,7 @@ pub struct TextFigure {
 
 /// `text` cut to `width` columns, its last kept cell an ellipsis when it had
 /// to be cut at all.
-pub(crate) fn elide(text: &str, width: usize) -> String {
-    if text.chars().count() <= width {
-        return text.to_owned();
-    }
-    if width == 0 {
-        return String::new();
-    }
-    text.chars().take(width - 1).collect::<String>() + "…"
-}
+pub(crate) use crate::text::elide;
 
 impl TextFigure {
     pub fn node_at_row(&self, row: u16) -> Option<&NodeId> {
@@ -62,22 +55,13 @@ impl TextFigure {
     }
 
     pub fn render(&self, area: Rect, buf: &mut Buffer, theme: &GraphTheme) {
+        let style = Style::new().fg(theme.dim).bg(theme.bg);
         for (y, line) in self.lines.iter().enumerate() {
             let Ok(y) = u16::try_from(y) else { break };
             if y >= area.height {
                 break;
             }
-            for (x, ch) in line.chars().enumerate() {
-                let Ok(x) = u16::try_from(x) else { break };
-                if x >= area.width {
-                    break;
-                }
-                if let Some(cell) = buf.cell_mut((area.x + x, area.y + y)) {
-                    cell.set_char(ch);
-                    cell.set_fg(theme.dim);
-                    cell.set_bg(theme.bg);
-                }
-            }
+            buf.set_stringn(area.x, area.y + y, line, usize::from(area.width), style);
         }
         for span in &self.spans {
             if span.y >= area.height {

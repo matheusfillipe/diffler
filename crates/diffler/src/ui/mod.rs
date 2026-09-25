@@ -21,7 +21,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{AgentActivity, App, BranchAction, Modal, Screen, Severity, fuzzy};
 use crate::keymap::{Action, render_chord};
@@ -692,17 +692,10 @@ pub(super) fn scroll_to_span(
     scroll.min(highest).max(lowest).min(last)
 }
 
-/// Truncate to `max` graphemes with an ellipsis. Shared by the runs list and
-/// the status screen's inline CI section, which both fit run metadata into
-/// fixed-width columns.
-pub(super) fn elide(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_owned()
-    } else {
-        let kept: String = s.chars().take(max.saturating_sub(1)).collect();
-        format!("{kept}…")
-    }
-}
+/// Truncate to `max` display columns with an ellipsis. Shared by the runs
+/// list and the status screen's inline CI section, which both fit run
+/// metadata into fixed-width columns.
+pub(super) use crate::text::elide;
 
 /// A list row under the cursor: the band across its full width, and its
 /// leading cell given over to the accent bar. The flat lists share this so the
@@ -806,10 +799,10 @@ fn agent_activity_spans(
     on_panel: impl Fn(Color) -> Style,
     room: usize,
 ) -> Vec<Span<'static>> {
-    let lead = " · agent".chars().count();
+    let lead = " · agent".width();
     let focus = format!(" · {}", activity.focus);
     let left = room.saturating_sub(lead);
-    if left <= " · ".chars().count() {
+    if left <= " · ".width() {
         return Vec::new();
     }
     let mut spans = vec![
@@ -819,7 +812,7 @@ fn agent_activity_spans(
     ];
     if let Some(file) = &activity.file {
         let file = format!(" · {file}");
-        if focus.chars().count() + file.chars().count() <= left {
+        if focus.width() + file.width() <= left {
             spans.push(Span::styled(file, on_panel(theme.dim)));
         }
     }
@@ -930,14 +923,14 @@ pub(super) fn status_bar(app: &App, width: u16) -> Line<'static> {
         let used: usize = spans.iter().chain(&tail).map(Span::width).sum();
         let reserved = message
             .as_ref()
-            .map_or(0, |message| message.content.len() + 2);
+            .map_or(0, |message| message.content.width() + 2);
         let room = (width as usize).saturating_sub(used + reserved);
         spans.extend(agent_activity_spans(activity, theme, on_panel, room));
     }
     spans.extend(tail);
     if let Some(message) = message {
         let used: usize = spans.iter().map(Span::width).sum();
-        let pad = (width as usize).saturating_sub(used + message.content.len());
+        let pad = (width as usize).saturating_sub(used + message.content.width());
         let pad = if pad > 0 { pad } else { 2 };
         spans.push(Span::styled(" ".repeat(pad), on_panel(theme.fg)));
         spans.push(message);
@@ -1090,6 +1083,21 @@ mod tests {
         assert!(text.ends_with("push failed "), "{text}");
         assert!(text.contains("agent · rea…"), "{text}");
         assert!(!text.contains("refresh.rs"), "{text}");
+    }
+
+    #[test]
+    fn a_wide_glyph_focus_still_keeps_the_bar_at_its_own_width() {
+        use crate::app::App;
+        use crate::config::LoadedConfig;
+        use crate::test_support::standard_fixture;
+
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.set_agent_activity(&"读写".repeat(20), Some("src/app/refresh.rs"));
+        app.error("push failed");
+
+        let bar = super::status_bar(&app, 80);
+        assert_eq!(bar.width(), 80);
     }
 
     #[test]

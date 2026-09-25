@@ -5,6 +5,8 @@
 //! flowchart: `activate`/`deactivate`/`rect`/`box`/`create`/`destroy` are
 //! simplified away and reported, never refused.
 
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
 use crate::graph::model::NodeId;
 use crate::graph::text_figure::{SpanKind, TextFigure, TextSpan, elide};
 
@@ -381,19 +383,19 @@ fn box_label(lane: &Lane) -> String {
 /// Columns a message label needs between its two lifelines: one blank on
 /// each side, plus the arrowhead's own cell.
 fn message_need(label: &str) -> usize {
-    label.chars().count() + 3
+    label.width() + 3
 }
 
 /// Columns a self message's `↺ label` needs from its own lifeline to the next.
 fn self_need(label: &str) -> usize {
-    label.chars().count() + 5
+    label.width() + 5
 }
 
 /// Each lane's lifeline column, and the canvas width. Lanes start packed as
 /// tight as their boxes allow; then, left to right, the gap before a
 /// message's right end grows until its label fits, while `max_width` lasts.
 fn lane_centers(lanes: &[Lane], events: &[Event], max_width: usize) -> (Vec<usize>, usize) {
-    let boxes: Vec<usize> = lanes.iter().map(|l| box_label(l).chars().count()).collect();
+    let boxes: Vec<usize> = lanes.iter().map(|l| box_label(l).width()).collect();
     // `gaps[i]` is lane i's lifeline minus lane i-1's (minus the canvas edge
     // for lane 0); the extra last entry is the canvas past the last lifeline
     let mut gaps: Vec<usize> = boxes
@@ -436,7 +438,7 @@ fn lane_centers(lanes: &[Lane], events: &[Event], max_width: usize) -> (Vec<usiz
         .filter_map(|event| match event {
             Event::Note { label, .. }
             | Event::FrameStart { label, .. }
-            | Event::FrameDivider { label, .. } => Some(label.chars().count() + 12),
+            | Event::FrameDivider { label, .. } => Some(label.width() + 12),
             Event::Message { .. } | Event::FrameEnd => None,
         })
         .max()
@@ -464,6 +466,11 @@ struct Canvas {
 }
 
 impl Canvas {
+    /// Marks the trailing column of a two-cell-wide glyph, so [`Self::into_lines`]
+    /// can drop it rather than emit a real cell that would shift everything
+    /// after it one column to the right.
+    const WIDE_CONT: char = '\u{e000}';
+
     fn new(width: usize, height: usize) -> Self {
         Self {
             rows: vec![vec![' '; width]; height],
@@ -477,11 +484,18 @@ impl Canvas {
         }
     }
 
+    /// Write `text` starting at `x`, advancing by each glyph's terminal
+    /// width, and return the display columns it took: a wide glyph occupies
+    /// two columns and marks the second so it is never overwritten.
     fn write(&mut self, x: usize, y: usize, text: &str) -> usize {
         let mut at = x;
         for ch in text.chars() {
+            let w = ch.width().unwrap_or(0);
             self.put(at, y, ch);
-            at += 1;
+            if w == 2 {
+                self.put(at + 1, y, Self::WIDE_CONT);
+            }
+            at += w.max(1);
         }
         at - x
     }
@@ -495,7 +509,13 @@ impl Canvas {
     fn into_lines(self) -> Vec<String> {
         self.rows
             .into_iter()
-            .map(|row| row.into_iter().collect::<String>().trim_end().to_owned())
+            .map(|row| {
+                row.into_iter()
+                    .filter(|&c| c != Self::WIDE_CONT)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
             .collect()
     }
 }
@@ -538,7 +558,7 @@ fn render(
     };
     for (lane, &center) in lanes.iter().zip(&centers) {
         let label = box_label(lane);
-        let start = center.saturating_sub(label.chars().count() / 2);
+        let start = center.saturating_sub(label.width() / 2);
         draw.text(start, 0, &label);
     }
     let mut row = 1;
@@ -615,7 +635,7 @@ impl Draw<'_> {
                 self.canvas.lifelines(row + 1, self.centers);
                 let room = right.saturating_sub(left + 3);
                 let label = elide(label, room);
-                let pad = room.saturating_sub(label.chars().count()) / 2;
+                let pad = room.saturating_sub(label.width()) / 2;
                 self.text(left + 2 + pad, row, &label);
                 let body = if *dashed { '╌' } else { '─' };
                 for x in left + 1..right {
@@ -635,7 +655,7 @@ impl Draw<'_> {
             Event::Note { first, last, label } => {
                 self.canvas.lifelines(row, self.centers);
                 let text = elide(&format!("┤ {label} ├"), self.canvas.width);
-                let len = text.chars().count();
+                let len = text.width();
                 let middle = usize::midpoint(self.center(*first), self.center(*last));
                 let start = middle
                     .saturating_sub(len / 2)
@@ -844,5 +864,24 @@ mod tests {
         let figure = figure("sequenceDiagram\r\n  %% a comment\r\n  A->>B: hi  \r\n");
         assert_eq!(figure.text.lines.len(), 3, "{:?}", figure.text.lines);
         assert!(figure.text.lines[1].contains("hi"));
+    }
+
+    /// CJK participant names and message labels are twice as wide on screen
+    /// as their character count, so lane placement and the figure's own
+    /// `width` have to be sized in cells or a row overflows its own canvas
+    /// and the next figure's lifelines misalign under it.
+    #[test]
+    fn cjk_participants_and_labels_stay_within_the_figures_own_width() {
+        let figure = figure(
+            "sequenceDiagram\n  participant 客户端\n  participant 服务器\n  客户端->>服务器: 请求登录",
+        );
+        for line in &figure.text.lines {
+            assert!(
+                line.width() <= usize::from(figure.text.width),
+                "row {line:?} is {} cells wide, over the figure's own {} column budget",
+                line.width(),
+                figure.text.width
+            );
+        }
     }
 }

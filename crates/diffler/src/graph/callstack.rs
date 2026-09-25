@@ -10,6 +10,8 @@
 //!   + new_auth @ src/auth.rs#new_auth
 //! ```
 
+use unicode_width::UnicodeWidthStr;
+
 use crate::graph::model::NodeId;
 use crate::graph::text_figure::{SpanKind, TextFigure, TextSpan, elide};
 
@@ -176,12 +178,11 @@ fn render(frames: &[Frame], row_nodes: Vec<Option<NodeId>>, max_width: usize) ->
             Marker::Removed => "- ",
             Marker::Unchanged => "",
         };
-        let prefix_len = prefix.chars().count() + marker_glyph.len();
+        let prefix_len = prefix.width() + marker_glyph.width();
         let label = elide(&frame.label, max_width.saturating_sub(prefix_len).max(1));
-        let content_len =
-            u16::try_from(marker_glyph.len() + label.chars().count()).unwrap_or(u16::MAX);
+        let content_len = u16::try_from(marker_glyph.width() + label.width()).unwrap_or(u16::MAX);
         spans.push(TextSpan {
-            x: u16::try_from(prefix.chars().count()).unwrap_or(0),
+            x: u16::try_from(prefix.width()).unwrap_or(0),
             y: u16::try_from(index).unwrap_or(u16::MAX),
             len: content_len,
             kind: match frame.marker {
@@ -193,11 +194,7 @@ fn render(frames: &[Frame], row_nodes: Vec<Option<NodeId>>, max_width: usize) ->
         lines.push(format!("{prefix}{marker_glyph}{label}"));
     }
 
-    let width = lines
-        .iter()
-        .map(|line| line.chars().count())
-        .max()
-        .unwrap_or(0);
+    let width = lines.iter().map(|line| line.width()).max().unwrap_or(0);
     TextFigure {
         width: u16::try_from(width).unwrap_or(u16::MAX),
         height: u16::try_from(lines.len()).unwrap_or(u16::MAX),
@@ -235,6 +232,27 @@ mod tests {
         let figure = parse(&format!("main\n  + {}", "x".repeat(80)), 20).expect("parsed");
         assert_eq!(figure.text.lines[1].chars().count(), 20);
         assert!(figure.text.lines[1].ends_with('…'));
+    }
+
+    /// A CJK label is twice as wide on screen as it is long in characters: the
+    /// figure's own `width` and the row's `TextSpan::len` have to reflect
+    /// that, not the character count, or the card crops nothing and a
+    /// narrower card overflows.
+    #[test]
+    fn a_cjk_label_is_sized_and_elided_by_display_width() {
+        let figure = parse("main\n  部署完成流程说明", 12).expect("parsed");
+        let row = &figure.text.lines[1];
+        assert!(row.ends_with('…'), "{row}");
+        assert_eq!(
+            figure.text.width, 12,
+            "the figure reports its true cell width"
+        );
+        let span = figure.text.spans[1];
+        assert_eq!(
+            usize::from(span.x) + usize::from(span.len),
+            row.width(),
+            "the span covers exactly the row's own display width"
+        );
     }
 
     #[test]

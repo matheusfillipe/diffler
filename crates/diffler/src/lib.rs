@@ -15,6 +15,7 @@ pub mod proc;
 pub mod search;
 #[cfg(test)]
 mod test_support;
+pub mod text;
 pub mod theme;
 pub mod transient;
 pub mod tree;

@@ -9,6 +9,8 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
 use crate::graph::model::{Model, NodeId, NodeStatus, RankDir};
 use crate::graph::text_figure;
 
@@ -289,7 +291,7 @@ fn place_and_draw(model: &Model, ranks: &[(usize, usize)], zoom: Zoom) -> Layout
         .iter()
         .map(|n| label_lines(&n.label, n.status, n.decision, zoom))
         .collect();
-    let line_width = |lines: &[String]| lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+    let line_width = |lines: &[String]| lines.iter().map(|l| l.width()).max().unwrap_or(0);
     // members per group root, in model order
     let mut members: std::collections::HashMap<String, Vec<usize>> =
         std::collections::HashMap::new();
@@ -486,13 +488,10 @@ fn label_lines(label: &str, status: NodeStatus, decision: bool, zoom: Zoom) -> V
 }
 
 fn elide(line: &str, zoom: Zoom) -> String {
-    let Some(max) = zoom.label_max() else {
-        return line.to_owned();
-    };
-    if line.chars().count() <= max {
-        return line.to_owned();
+    match zoom.label_max() {
+        Some(max) => text_figure::elide(line, max),
+        None => line.to_owned(),
     }
-    line.chars().take(max.saturating_sub(1)).collect::<String>() + "…"
 }
 
 /// A box's total row count for `lines` content rows, given the zoom's
@@ -796,6 +795,11 @@ impl Dir {
 }
 
 impl Grid {
+    /// Marks the trailing column of a two-cell-wide glyph, so [`Self::into_lines`]
+    /// can drop it rather than emit a real cell that would shift everything
+    /// after it one column to the right.
+    const WIDE_CONT: char = '\u{e000}';
+
     fn new(width: usize, height: usize) -> Self {
         Self {
             cells: vec![vec![' '; width]; height],
@@ -805,6 +809,26 @@ impl Grid {
     fn put(&mut self, x: usize, y: usize, ch: char) {
         if let Some(cell) = self.cells.get_mut(y).and_then(|row| row.get_mut(x)) {
             *cell = ch;
+        }
+    }
+
+    /// Write `text` starting at `x`, advancing by each glyph's terminal width
+    /// (not by one cell) and stopping before `limit`, so a wide glyph never
+    /// spills into the following column of a border or a neighbouring label.
+    fn put_run(&mut self, mut x: usize, y: usize, text: &str, limit: usize) {
+        for ch in text.chars() {
+            let w = ch.width().unwrap_or(0);
+            if w == 0 {
+                continue;
+            }
+            if x + w > limit {
+                break;
+            }
+            self.put(x, y, ch);
+            if w == 2 {
+                self.put(x + 1, y, Self::WIDE_CONT);
+            }
+            x += w;
         }
     }
 
@@ -914,12 +938,10 @@ impl Grid {
         }
         let (from, to) = (x + 2, x + w - 1);
         let text = text_figure::elide(&format!(" {title} "), to - from);
-        let len = text.chars().count();
+        let len = text.width();
         for row in [y, y + h.saturating_sub(1)] {
             if let Some(start) = (from..to).find(|&start| self.border_run(start, row, to) >= len) {
-                for (i, ch) in text.chars().enumerate() {
-                    self.put(start + i, row, ch);
-                }
+                self.put_run(start, row, &text, start + len);
                 return;
             }
         }
@@ -936,19 +958,20 @@ impl Grid {
 
     /// Center `text` within the box interior (`w - 2`) on row `y`.
     fn write_centered(&mut self, x: usize, y: usize, w: usize, text: &str) {
-        let chars: Vec<char> = text.chars().collect();
-        let pad = (w.saturating_sub(2)).saturating_sub(chars.len()) / 2;
-        for (i, ch) in chars.iter().enumerate() {
-            if 1 + pad + i < w - 1 {
-                self.put(x + 1 + pad + i, y, *ch);
-            }
-        }
+        let pad = (w.saturating_sub(2)).saturating_sub(text.width()) / 2;
+        self.put_run(x + 1 + pad, y, text, x + w - 1);
     }
 
     fn into_lines(self) -> Vec<String> {
         self.cells
             .into_iter()
-            .map(|row| row.into_iter().collect::<String>().trim_end().to_owned())
+            .map(|row| {
+                row.into_iter()
+                    .filter(|&c| c != Self::WIDE_CONT)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
             .collect()
     }
 }
