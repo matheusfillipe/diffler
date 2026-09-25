@@ -389,4 +389,41 @@ def test_a_stop_pinned_before_a_removal_still_shows_its_code(spawn, repo):
     tui.wait_for(" DIFF ")
     tui.wait_for("The middle line")
     tui.wait_for("kept-line-two")
+
+
+def test_a_sequence_diagram_and_a_callstack_both_draw_in_their_stops(spawn):
+    tui = spawn("--port", str(free_port()))
+    url = mcp_url(tui)
+    stops = [
+        {
+            "title": "Call flow",
+            "anchor": "notes.txt:1",
+            "body": (
+                "```mermaid\nsequenceDiagram\n"
+                "  participant Client\n  participant Server\n"
+                "  Client->>Server: request\n  Server-->>Client: response\n```\n"
+            ),
+        },
+        {
+            "title": "Auth swap",
+            "anchor": "app.txt:2",
+            "body": (
+                "```callstack\nmain\n  handle_request\n"
+                "  - legacy_auth\n  + new_auth\n```\n"
+            ),
+        },
+    ]
+    publish(tui, url, stops=stops, title="Diagram kinds")
+
+    tui.wait_for("Walkthroughs")
+    tui.send("\t")
+    tui.send("j")
+    tui.send("\r")
+    tui.wait_for(" DIFF ")
+    tui.wait_for("Client")
+    tui.wait_for("Server")
+
+    tui.send("j")  # onto the second stop
+    tui.wait_for("new_auth")
+    tui.wait_for("legacy_auth")
     back_to_status(tui)
