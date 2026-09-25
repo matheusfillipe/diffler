@@ -1,0 +1,9 @@
+---
+source: crates/diffler/src/ui/diff_render.rs
+expression: card_snapshot(&rows)
+---
+"  ▌ figure 1                                                  "
+"  ▌ main                                                      "
+"  ▌ ├─ handle_request                                         "
+"  ▌ ├─ - legacy_auth                                          "
+"  ▌ └─ + new_auth                                             "

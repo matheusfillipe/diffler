@@ -830,6 +830,60 @@ flowchart LR
         assert_eq!(rows.len(), fits.rows(), "no notice row added");
     }
 
+    fn card_snapshot(rows: &[Line<'static>]) -> String {
+        let width = rows.iter().map(Line::width).max().unwrap_or(0);
+        let height = u16::try_from(rows.len()).unwrap_or(u16::MAX);
+        let backend = TestBackend::new(u16::try_from(width).unwrap_or(u16::MAX), height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                frame.render_widget(Paragraph::new(rows.to_vec()), frame.area());
+            })
+            .expect("draw");
+        terminal.backend().to_string()
+    }
+
+    #[test]
+    fn a_sequence_diagram_renders_in_a_card() {
+        use crate::app::walkthrough::{Block, blocks};
+
+        let (theme, _) = Theme::from_name("github-dark");
+        let body = "\
+```mermaid
+sequenceDiagram
+  participant A
+  participant B
+  A->>B: hello
+  B-->>A: hi
+```
+";
+        let Some(Block::Figure(mut figure)) = blocks(body, 60).into_iter().next() else {
+            panic!("a figure");
+        };
+        let rows = figure_lines(&mut figure, 1, 60, &theme, theme.bg, Some("o"));
+        insta::assert_snapshot!(card_snapshot(&rows));
+    }
+
+    #[test]
+    fn a_callstack_renders_in_a_card() {
+        use crate::app::walkthrough::{Block, blocks};
+
+        let (theme, _) = Theme::from_name("github-dark");
+        let body = "\
+```callstack
+main
+  handle_request
+  - legacy_auth
+  + new_auth @ src/auth.rs#new_auth
+```
+";
+        let Some(Block::Figure(mut figure)) = blocks(body, 60).into_iter().next() else {
+            panic!("a figure");
+        };
+        let rows = figure_lines(&mut figure, 1, 60, &theme, theme.bg, Some("o"));
+        insta::assert_snapshot!(card_snapshot(&rows));
+    }
+
     #[test]
     fn align_scroll_positions_the_cursor_row() {
         assert_eq!(align_scroll(ScrollAlign::Top, 20, 1, 10), 20);

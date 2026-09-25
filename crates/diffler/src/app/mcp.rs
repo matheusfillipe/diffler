@@ -2822,7 +2822,33 @@ mod tests {
     }
 
     #[test]
-    fn a_sequence_diagram_fence_yields_a_figure_dropped_receipt() {
+    fn a_class_diagram_fence_yields_a_figure_dropped_receipt() {
+        let (_fixture, mut app, _id) = app_with_comment();
+        let body = "```mermaid\nclassDiagram\n  Animal <|-- Dog\n```\n";
+        let response = app.handle_mcp(McpRequestKind::PublishWalkthrough {
+            id: None,
+            title: "tour".to_owned(),
+            stops: vec![stop("a figure", None, body)],
+            skipped: None,
+            summary: None,
+        });
+        let McpResponse::WalkthroughPublished(published) = response else {
+            panic!("expected a published walkthrough: {response:?}");
+        };
+        assert!(
+            published
+                .receipts
+                .iter()
+                .any(|r| r.code == "figure_dropped"),
+            "{:?}",
+            published.receipts
+        );
+    }
+
+    /// A `sequenceDiagram` fence is not dropped: it has its own layout, so
+    /// publishing one carries no `figure_dropped` receipt.
+    #[test]
+    fn a_sequence_diagram_fence_publishes_with_no_dropped_receipt() {
         let (_fixture, mut app, _id) = app_with_comment();
         let body = "```mermaid\nsequenceDiagram\n  a->>b: hi\n```\n";
         let response = app.handle_mcp(McpRequestKind::PublishWalkthrough {
@@ -2836,7 +2862,7 @@ mod tests {
             panic!("expected a published walkthrough: {response:?}");
         };
         assert!(
-            published
+            !published
                 .receipts
                 .iter()
                 .any(|r| r.code == "figure_dropped"),

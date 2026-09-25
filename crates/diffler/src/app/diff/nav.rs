@@ -246,7 +246,7 @@ impl App {
             Action::ExpandContext => self.expand_context(),
             Action::CollapseContext => self.collapse_context(),
             Action::ExpandWholeFile => self.expand_whole_file(),
-            Action::Open => self.diff_focus(Pane::List),
+            Action::Open => self.open_figure_jump_or_focus_list(),
             // side-by-side is a read-only view; commenting and selection stay
             // in the unified pane, reachable by toggling back with `|`
             Action::Comment
@@ -296,6 +296,17 @@ impl App {
     fn diff_focus(&mut self, pane: Pane) {
         if let Some(diff) = self.diff.as_mut() {
             diff.focus = pane;
+        }
+    }
+
+    /// `<cr>` in the diff pane: on a figure row whose drawing names a
+    /// resolved node (a callstack frame, a sequence message's receiving
+    /// participant), jump straight to that code; everywhere else, `<cr>`
+    /// still just moves the keyboard to the sidebar.
+    fn open_figure_jump_or_focus_list(&mut self) {
+        match self.figure_jump_at_cursor() {
+            Some((path, line, end)) => self.open_file(&path, Some((line, end)), false),
+            None => self.diff_focus(Pane::List),
         }
     }
 

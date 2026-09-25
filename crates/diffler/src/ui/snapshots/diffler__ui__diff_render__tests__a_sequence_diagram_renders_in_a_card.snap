@@ -1,0 +1,10 @@
+---
+source: crates/diffler/src/ui/diff_render.rs
+expression: card_snapshot(&rows)
+---
+"  ▌ figure 1                                                  "
+"  ▌   [ A ]        [ B ]                                      "
+"  ▌      │   hello    │                                       "
+"  ▌      │────────────▸                                       "
+"  ▌      │    hi      │                                       "
+"  ▌      ◂╌╌╌╌╌╌╌╌╌╌╌╌│                                       "

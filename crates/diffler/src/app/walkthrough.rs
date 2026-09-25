@@ -19,7 +19,7 @@ use crate::app::{
     App, CommentLine, DiffRow, Flow, Modal, PendingOp, Screen, blocks_of, comment_display,
     summary_display,
 };
-use crate::graph::{Fit, GraphView, NodeId};
+use crate::graph::{Drawing, FenceKind, Fit, GraphView, NodeId};
 
 /// One element of a stop's body, in reading order.
 #[derive(Debug)]
@@ -30,7 +30,7 @@ pub enum Block {
 
 #[derive(Debug)]
 pub struct FigureBlock {
-    pub view: GraphView,
+    pub view: Drawing,
     /// What each node's `click` named, before any file was read.
     pub targets: Vec<(NodeId, Target)>,
     /// Where each node's target landed, once resolved. A node absent from the
@@ -81,7 +81,7 @@ pub type FigureCache = std::collections::HashMap<String, CachedBody>;
 
 /// Whether a body holds a diagram at all, which is what earns it a cache entry.
 pub fn has_figure(body: &str) -> bool {
-    body.lines().any(is_mermaid_fence)
+    body.lines().any(|line| FenceKind::of(line).is_some())
 }
 
 /// Key `ensure_figures`/`rasterize_figures` cache the walkthrough's own
@@ -110,39 +110,42 @@ pub struct WalkthroughRequest {
     pub read_rev: Option<String>,
 }
 
-/// One run of a stop body: prose, or the source of a mermaid fence.
+/// One run of a stop body: prose, or the source of a diagram fence.
 enum Chunk {
     Prose(String),
-    Mermaid(String),
+    Diagram(FenceKind, String),
 }
 
-/// Split a body on ` ```mermaid ` fences. Every other fence stays prose, so a
-/// code sample in a stop still renders as code.
+/// Split a body on ` ```mermaid ` and ` ```callstack ` fences. Every other
+/// fence stays prose, so a code sample in a stop still renders as code.
 fn chunks(body: &str) -> Vec<Chunk> {
     let mut chunks = Vec::new();
     let mut prose = String::new();
-    let mut fence: Option<String> = None;
+    let mut fence: Option<(FenceKind, String)> = None;
     for line in body.lines() {
-        match fence.as_mut() {
-            Some(collected) => {
+        match fence.take() {
+            Some((kind, mut collected)) => {
                 if line.trim_start().starts_with("```") {
                     chunks.push(Chunk::Prose(std::mem::take(&mut prose)));
-                    chunks.push(Chunk::Mermaid(std::mem::take(collected)));
-                    fence = None;
+                    chunks.push(Chunk::Diagram(kind, collected));
                 } else {
                     collected.push_str(line);
                     collected.push('\n');
+                    fence = Some((kind, collected));
                 }
             }
-            None if is_mermaid_fence(line) => fence = Some(String::new()),
             None => {
-                prose.push_str(line);
-                prose.push('\n');
+                if let Some(kind) = FenceKind::of(line) {
+                    fence = Some((kind, String::new()));
+                } else {
+                    prose.push_str(line);
+                    prose.push('\n');
+                }
             }
         }
     }
     // an unterminated fence is prose: its source is more use than a gap
-    if let Some(unterminated) = fence {
+    if let Some((_, unterminated)) = fence {
         prose.push_str(&unterminated);
     }
     chunks.push(Chunk::Prose(prose));
@@ -155,13 +158,14 @@ pub fn blocks(body: &str, width: usize) -> Vec<Block> {
     for chunk in chunks(body) {
         match chunk {
             Chunk::Prose(text) => prose.push_str(&text),
-            Chunk::Mermaid(src) => {
-                if let Some(figure) = figure_block(&src, width) {
+            Chunk::Diagram(kind, src) => {
+                if let Some(figure) = figure_block(kind, &src, width) {
                     push_prose(&mut blocks, &mut prose, width);
                     blocks.push(figure);
                 } else {
                     // a diagram we cannot draw still has to reach the reader
-                    prose.push_str("```\n");
+                    use std::fmt::Write as _;
+                    let _ = writeln!(prose, "```{}", fence_lang(kind));
                     prose.push_str(&src);
                     prose.push_str("```\n");
                 }
@@ -172,40 +176,34 @@ pub fn blocks(body: &str, width: usize) -> Vec<Block> {
     blocks
 }
 
+fn fence_lang(kind: FenceKind) -> &'static str {
+    match kind {
+        FenceKind::Mermaid => "mermaid",
+        FenceKind::Callstack => "callstack",
+    }
+}
+
 /// Figures a body would draw, and what drawing them simplified. What the MCP
 /// write path answers with, so an agent learns the subset without the reader
 /// ever seeing a broken figure.
 pub fn validate(body: &str) -> (usize, Vec<String>) {
     let mut figures = 0;
     let mut notes = Vec::new();
-    for (index, src) in chunks(body)
+    for (index, (kind, src)) in chunks(body)
         .iter()
         .filter_map(|chunk| match chunk {
-            Chunk::Mermaid(src) => Some(src),
+            Chunk::Diagram(kind, src) => Some((*kind, src)),
             Chunk::Prose(_) => None,
         })
         .enumerate()
     {
-        let at = index + 1;
-        match crate::graph::mermaid::parse(src) {
-            Ok(figure) => {
-                figures += 1;
-                notes.extend(
-                    figure
-                        .notes
-                        .iter()
-                        .map(|note| format!("diagram {at}: {note}")),
-                );
-            }
-            Err(err) => notes.push(format!("diagram {at}: {err}; left as source")),
+        let (ok, chunk_notes) = crate::graph::validate_fence(kind, index + 1, src);
+        if ok {
+            figures += 1;
         }
+        notes.extend(chunk_notes);
     }
     (figures, notes)
-}
-
-fn is_mermaid_fence(line: &str) -> bool {
-    let rest = line.trim_start().strip_prefix("```").unwrap_or_default();
-    rest.trim().eq_ignore_ascii_case("mermaid")
 }
 
 fn push_prose(blocks: &mut Vec<Block>, prose: &mut String, width: usize) {
@@ -223,28 +221,24 @@ fn push_prose(blocks: &mut Vec<Block>, prose: &mut String, width: usize) {
     prose.clear();
 }
 
-/// Lay a `mermaid` fence's figure out to fit `width` columns: the direction
-/// its author drew if that fits, top-down if it does not (a chain always
-/// fits a card's width running downward), cropped as a last resort.
-fn figure_block(src: &str, width: usize) -> Option<Block> {
-    let figure = crate::graph::mermaid::parse(src).ok()?;
-    let targets: Vec<(NodeId, Target)> = figure
+/// Lay a fence's figure out to fit `width` columns: a flowchart draws the
+/// direction its author chose if that fits, top-down if it does not (a chain
+/// always fits a card's width running downward), cropped as a last resort; a
+/// sequence diagram or callstack tree, already vertical, only ever crops.
+fn figure_block(kind: FenceKind, src: &str, width: usize) -> Option<Block> {
+    let result = crate::graph::figure(kind, src, u16::try_from(width).unwrap_or(u16::MAX))?;
+    let targets: Vec<(NodeId, Target)> = result
         .anchors
         .iter()
         .map(|(id, raw)| (id.clone(), Target::parse(raw)))
         .collect();
-    let mut view = GraphView::new();
-    let fit = view.set_model_fit(figure.model, u16::try_from(width).unwrap_or(u16::MAX));
-    // a card figure is a static picture, not something being navigated, so
-    // it never asked for the default selection `set_model` just gave it
-    view.clear_selection();
     let resolved_yet = targets.is_empty();
     Some(Block::Figure(Box::new(FigureBlock {
-        view,
+        view: result.drawing,
         targets,
         resolved: HashMap::new(),
         resolved_yet,
-        fit,
+        fit: result.fit,
     })))
 }
 
@@ -448,9 +442,10 @@ impl App {
         }
     }
 
-    /// The figure-cache key and block index of the figure the cursor's row
-    /// belongs to, whether it sits under a comment's card or the summary's.
-    fn figure_at_cursor(&self) -> Option<(String, usize)> {
+    /// The figure-cache key, block index, and figure-internal row of the
+    /// figure row under the cursor, whether it sits under a comment's card
+    /// or the summary's. Row 0 is always that figure's own header.
+    fn figure_row_at_cursor(&self) -> Option<(String, usize, usize)> {
         let diff = self.diff.as_ref()?;
         let row = diff.rows().get(diff.cursor)?;
         let session = self.review.session_for(&diff.source);
@@ -461,7 +456,7 @@ impl App {
                 let unresolved = diff.unresolved_anchors.get(&comment.id).copied();
                 let lines = comment_display(comment, diff.wrap_width, None, blocks, unresolved);
                 match lines.get(line)? {
-                    CommentLine::Figure { block, .. } => Some((comment.id.clone(), *block)),
+                    CommentLine::Figure { block, row } => Some((comment.id.clone(), *block, *row)),
                     _ => None,
                 }
             }
@@ -472,7 +467,7 @@ impl App {
                 let blocks = blocks_of(&diff.figures, &key);
                 let lines = summary_display(body, diff.wrap_width, None, blocks);
                 match lines.get(line)? {
-                    CommentLine::Figure { block, .. } => Some((key, *block)),
+                    CommentLine::Figure { block, row } => Some((key, *block, *row)),
                     _ => None,
                 }
             }
@@ -484,9 +479,11 @@ impl App {
     /// the Graph screen, its default selection restored (a card figure
     /// clears its own) and every resolved `click` anchor ready for `<cr>`.
     /// `q`/back pops back to this same slide and cursor, since nothing here
-    /// touches the diff view's own state.
+    /// touches the diff view's own state. A sequence diagram or a callstack
+    /// tree has no full-screen graph to open; `<cr>` on its own row reaches
+    /// the code directly instead.
     pub(crate) fn open_figure_graph_at_cursor(&mut self) {
-        let Some((key, block)) = self.figure_at_cursor() else {
+        let Some((key, block, _row)) = self.figure_row_at_cursor() else {
             self.info("no figure under the cursor");
             return;
         };
@@ -497,11 +494,34 @@ impl App {
         else {
             return;
         };
+        let Some(model) = figure.view.model() else {
+            self.info("this figure has no full graph; <cr> on a row opens its code");
+            return;
+        };
         let mut view = GraphView::new();
-        view.set_model(figure.view.model().clone());
+        view.set_model(model.clone());
         self.figure_graph_anchors = Some(figure_anchor_targets(figure));
         self.graph = Some(view);
         self.push_screen(Screen::Graph);
+    }
+
+    /// `<cr>` in the diff pane, when the cursor sits on a figure row that
+    /// names a resolved node: the file and rows to seat the reader on. A
+    /// callstack frame carries its own anchor; a sequence message resolves
+    /// its receiving participant's.
+    pub(crate) fn figure_jump_at_cursor(&self) -> Option<(String, u32, u32)> {
+        let (key, block, row) = self.figure_row_at_cursor()?;
+        let diff = self.diff.as_ref()?;
+        let Block::Figure(figure) = diff.figures.get(&key)?.blocks.get(block)? else {
+            return None;
+        };
+        let drawing_row = u16::try_from(row.checked_sub(1)?).ok()?;
+        let node = figure.view.node_at_row(drawing_row)?;
+        let (_, target) = figure.targets.iter().find(|(id, _)| id == node)?;
+        match figure.resolved.get(node) {
+            Some(Located::Found { line, end }) => Some((target.path().to_owned(), *line, *end)),
+            _ => None,
+        }
     }
 
     /// Notice the open source's walkthrough being revised under a reader, so
@@ -826,10 +846,21 @@ The fourth is the one this diff changes.
     /// A diagram we cannot draw still has to reach the reader, as its source.
     #[test]
     fn an_unusable_diagram_falls_back_to_its_source() {
-        let blocks = blocks("```mermaid\nsequenceDiagram\n  a->>b: hi\n```\n", 80);
+        let blocks = blocks("```mermaid\nclassDiagram\n  Animal <|-- Dog\n```\n", 80);
         assert_eq!(blocks.len(), 1);
         let text = text_of(&blocks);
-        assert!(text.contains("sequenceDiagram"), "{text}");
+        assert!(text.contains("classDiagram"), "{text}");
+    }
+
+    /// A `sequenceDiagram` fence is not the flowchart subset, but it draws
+    /// through its own layout rather than falling back like `classDiagram`.
+    #[test]
+    fn a_sequence_diagram_fence_becomes_a_figure() {
+        let blocks = blocks("```mermaid\nsequenceDiagram\n  a->>b: hi\n```\n", 80);
+        assert!(
+            matches!(blocks.first(), Some(Block::Figure(_))),
+            "{blocks:?}"
+        );
     }
 
     fn text_of(blocks: &[Block]) -> String {
@@ -861,12 +892,12 @@ The fourth is the one this diff changes.
     #[test]
     fn validate_reports_what_it_simplified() {
         let (figures, notes) =
-            validate("```mermaid\nflowchart LR\n  a{choose} --> b\n  style a fill:#f00\n```\n");
+            validate("```mermaid\nflowchart LR\n  a((choose)) --> b\n  style a fill:#f00\n```\n");
         assert_eq!(figures, 1);
         assert_eq!(
             notes,
             [
-                "diagram 1: `{ }` shapes are drawn as boxes",
+                "diagram 1: `(( ))` shapes are drawn as boxes",
                 "diagram 1: `style` is ignored",
             ]
         );
@@ -876,11 +907,18 @@ The fourth is the one this diff changes.
     /// the note has to say what to do instead.
     #[test]
     fn validate_names_a_diagram_it_cannot_draw() {
-        let (figures, notes) = validate("```mermaid\nsequenceDiagram\n  a->>b: hi\n```\n");
+        let (figures, notes) = validate("```mermaid\nclassDiagram\n  Animal <|-- Dog\n```\n");
         assert_eq!(figures, 0);
         assert_eq!(notes.len(), 1);
         assert!(notes[0].contains("flowchart LR"), "{notes:?}");
         assert!(notes[0].contains("left as source"), "{notes:?}");
+    }
+
+    #[test]
+    fn validate_reports_a_callstack_fence_too() {
+        let (figures, notes) = validate("```callstack\nmain\n  child\n```\n");
+        assert_eq!(figures, 1);
+        assert!(notes.is_empty(), "{notes:?}");
     }
 
     /// A five-node `flowchart LR` with long labels overflows a narrow card
@@ -919,6 +957,48 @@ flowchart LR
             panic!("a figure: {blocks:?}");
         };
         assert_eq!(figure.fit, Fit::AsDrawn);
+    }
+
+    /// A sequence diagram and a callstack tree are already vertical, so
+    /// there is no alternate direction to redraw: a card too narrow for one
+    /// just crops it, and a card wide enough draws it as is.
+    #[test]
+    fn a_sequence_diagram_crops_when_too_wide_and_fits_when_not() {
+        let body = "\
+```mermaid
+sequenceDiagram
+  participant AVeryLongParticipantNameHere
+  participant AnotherVeryLongParticipantName
+  AVeryLongParticipantNameHere->>AnotherVeryLongParticipantName: a fairly long message
+```
+";
+        let Some(Block::Figure(narrow)) = blocks(body, 20).into_iter().next() else {
+            panic!("a figure");
+        };
+        assert_eq!(narrow.fit, Fit::Cropped);
+
+        let Some(Block::Figure(wide)) = blocks(body, 200).into_iter().next() else {
+            panic!("a figure");
+        };
+        assert_eq!(wide.fit, Fit::AsDrawn);
+    }
+
+    #[test]
+    fn a_callstack_crops_when_too_wide_and_fits_when_not() {
+        let long_label = "x".repeat(200);
+        let body = format!("```callstack\nmain\n  {long_label}\n```\n");
+        let Some(Block::Figure(narrow)) = blocks(&body, 20).into_iter().next() else {
+            panic!("a figure");
+        };
+        assert_eq!(narrow.fit, Fit::Cropped);
+
+        let Some(Block::Figure(fits)) = blocks("```callstack\nmain\n  child\n```\n", 80)
+            .into_iter()
+            .next()
+        else {
+            panic!("a figure");
+        };
+        assert_eq!(fits.fit, Fit::AsDrawn);
     }
 
     /// The reader is told which of the two happened: a missing file reads
@@ -1129,6 +1209,63 @@ flowchart LR
         assert_eq!(diff.slide, slide_before, "the same slide is still open");
     }
 
+    /// A callstack frame naming a symbol the file no longer defines counts
+    /// as stale, the same as a flowchart node's `click` would.
+    #[test]
+    fn a_callstack_frame_with_a_gone_symbol_counts_as_stale() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let body = "```callstack\nmain\n  gone @ src/lib.rs#not_a_real_symbol\n```\n";
+        seat_walkthrough(
+            &mut app,
+            "Callstack tour",
+            &[("Call path", Some("src/lib.rs:1"), body)],
+        );
+        app.open_walkthrough_diff("w1");
+        resolve(&mut app);
+        let diff = app.diff.as_ref().expect("diff view");
+        let Some(Block::Figure(figure)) = diff
+            .figures
+            .get("stop-0")
+            .expect("the diagram is cached")
+            .blocks
+            .iter()
+            .find(|block| matches!(block, Block::Figure(_)))
+        else {
+            panic!("a figure");
+        };
+        assert_eq!(figure.stale(), 1);
+    }
+
+    /// A callstack (or sequence) figure has no full-screen graph: `o` on it
+    /// stays put and tells the reader `<cr>` is the way to its code instead.
+    #[test]
+    fn o_on_a_non_graph_figure_shows_an_info_message_and_opens_nothing() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let body = "```callstack\nmain\n  child\n```\n";
+        seat_walkthrough(
+            &mut app,
+            "Callstack tour",
+            &[("Call path", Some("src/lib.rs:1"), body)],
+        );
+        app.open_walkthrough_diff("w1");
+        resolve(&mut app);
+        app.seat_stop(0);
+        app.diff.as_mut().expect("diff view").cursor = figure_row(&app);
+
+        app.open_figure_graph_at_cursor();
+
+        assert_eq!(app.screen(), Screen::Diff, "no full-screen graph to open");
+        assert!(
+            app.message
+                .as_ref()
+                .is_some_and(|m| m.text.contains("<cr>")),
+            "{:?}",
+            app.message
+        );
+    }
+
     /// `<cr>` on a node with a resolved `click` anchor seats the reader on
     /// that file and line, the same jump a stop's own anchor gets; a node
     /// with no anchor does nothing.
@@ -1153,6 +1290,47 @@ flowchart LR
             app.pending_file.is_none(),
             "c has no anchor, so <cr> does nothing"
         );
+    }
+
+    /// A callstack fence has no full-screen graph to open with `o`; instead
+    /// `<cr>` on its own anchored frame row resolves straight to the code.
+    #[test]
+    fn cr_on_a_callstack_frame_jumps_to_its_anchor() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let body = "```callstack\nmain\n  handle_request @ src/lib.rs#answer\n```\n";
+        seat_walkthrough(
+            &mut app,
+            "Callstack tour",
+            &[("Call path", Some("src/lib.rs:1"), body)],
+        );
+        app.open_walkthrough_diff("w1");
+        resolve(&mut app);
+        app.seat_stop(0);
+
+        let total_rows = app.diff.as_ref().expect("diff view").rows().len();
+        let jump = (0..total_rows).find_map(|row| {
+            app.diff.as_mut().expect("diff view").cursor = row;
+            app.figure_jump_at_cursor()
+        });
+        let (path, line, end) = jump.expect("a jumpable figure row");
+        assert_eq!(path, "src/lib.rs");
+        assert_eq!((line, end), (1, 3));
+    }
+
+    /// A stop with only a flowchart figure carries no callstack/sequence
+    /// row at all: every cursor position on it declines the jump.
+    #[test]
+    fn cr_finds_no_jump_when_no_figure_row_names_an_anchor() {
+        let fixture = standard_fixture();
+        let mut app = app_with_walkthrough(&fixture);
+        resolve(&mut app);
+        app.seat_stop(1);
+        let total_rows = app.diff.as_ref().expect("diff view").rows().len();
+        for row in 0..total_rows {
+            app.diff.as_mut().expect("diff view").cursor = row;
+            assert!(app.figure_jump_at_cursor().is_none(), "row {row}");
+        }
     }
 
     /// Resolution lands after the reader is already standing on a stop, so
