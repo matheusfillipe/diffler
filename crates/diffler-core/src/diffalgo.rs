@@ -7,13 +7,11 @@
 use std::collections::HashMap;
 
 use imara_diff::{Algorithm, Diff, InternedInput};
-use serde::de::IntoDeserializer as _;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::model::{DiffLine, Hunk, HunkId, LineKind, disambiguated_hunk_id};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DiffAlgorithm {
     #[default]
     Myers,
@@ -35,19 +33,20 @@ impl DiffAlgorithm {
         Self::Structural,
     ];
 
-    /// The config/display name, exactly the string `#[serde(rename_all)]`
-    /// gives this variant, so it can never drift from [`Self::parse`].
-    pub fn as_str(self) -> String {
-        serde_json::to_value(self)
-            .ok()
-            .and_then(|v| v.as_str().map(str::to_owned))
-            .unwrap_or_default()
+    /// The config and display name, the one spelling serde and [`Self::parse`]
+    /// both read.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Myers => "myers",
+            Self::Minimal => "minimal",
+            Self::Patience => "patience",
+            Self::Histogram => "histogram",
+            Self::Structural => "structural",
+        }
     }
 
     pub fn parse(value: &str) -> Option<Self> {
-        let de: serde::de::value::StrDeserializer<'_, serde::de::value::Error> =
-            value.into_deserializer();
-        Self::deserialize(de).ok()
+        Self::ALL.into_iter().find(|a| a.as_str() == value)
     }
 
     /// Whether this algorithm needs imara-diff, since libgit2 has no
@@ -59,7 +58,25 @@ impl DiffAlgorithm {
 
 impl std::fmt::Display for DiffAlgorithm {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.as_str())
+        f.write_str(self.as_str())
+    }
+}
+
+impl Serialize for DiffAlgorithm {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for DiffAlgorithm {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let name = String::deserialize(deserializer)?;
+        Self::parse(&name).ok_or_else(|| {
+            let names = Self::ALL.map(Self::as_str).join(", ");
+            serde::de::Error::custom(format!(
+                "unknown diff algorithm `{name}`, expected one of {names}"
+            ))
+        })
     }
 }
 
@@ -299,9 +316,16 @@ mod tests {
     #[test]
     fn algorithm_names_round_trip() {
         for algo in DiffAlgorithm::ALL {
-            assert_eq!(DiffAlgorithm::parse(&algo.as_str()), Some(algo));
+            assert_eq!(DiffAlgorithm::parse(algo.as_str()), Some(algo));
+            let json = serde_json::to_string(&algo).expect("serialize");
+            assert_eq!(json, format!("\"{}\"", algo.as_str()));
+            assert_eq!(
+                serde_json::from_str::<DiffAlgorithm>(&json).expect("deserialize"),
+                algo
+            );
         }
         assert_eq!(DiffAlgorithm::parse("bogus"), None);
+        assert!(serde_json::from_str::<DiffAlgorithm>("\"bogus\"").is_err());
     }
 
     #[test]
