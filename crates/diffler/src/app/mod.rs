@@ -32,7 +32,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-pub use diff::RowPositions;
+pub(crate) use diff::RowPositions;
 #[cfg(test)]
 pub(crate) use diff::merge_count;
 pub use diff::{
@@ -1177,12 +1177,7 @@ impl App {
                 self.on_refresh_done(*result);
                 Flow::Continue
             }
-            AppEvent::RediffDone {
-                result,
-                about,
-                positions,
-                token,
-            } => self.on_rediff_done(*result, about.as_ref(), positions, token),
+            AppEvent::RediffDone { result, request } => self.on_rediff_done(*result, &request),
             AppEvent::Enriched(outcome) => {
                 self.on_enriched(*outcome);
                 Flow::Continue
@@ -1653,35 +1648,18 @@ impl App {
             .set_diff_algorithm(algorithm, self.config.diff.indent_heuristic);
         self.source_models.clear();
         self.queue_rediff();
-        // a refresh already running diffs under the old algorithm, so we
-        // queue one more behind it
-        if self.refresh_state == RefreshState::Running {
-            self.queue_refresh();
-        }
         self.info(format!("diff algorithm: {algorithm}"));
     }
 
     /// Queue an off-thread re-diff of the status sections, the working tree,
     /// and whatever the open diff view is showing (a three-dot review or a
-    /// pinned commit/range/PR), on a fresh backend under the settings
-    /// current when this is called (an algorithm switch). The cursor and
-    /// folds ride along as `RowPositions`, captured now while rows and
-    /// review still agree, and resolved back once [`Self::on_rediff_done`]
-    /// rebuilds against the landed result.
+    /// pinned commit/range/PR), under the settings current when it starts.
     fn queue_rediff(&mut self) {
-        let positions = self
-            .diff
-            .as_ref()
-            .map(|diff| diff.capture_positions(&self.review));
         let about = self
             .diff
             .as_ref()
             .map(|diff| diff.source.clone())
             .map(|source| self.resolve_about(&source));
-        let against = match &about {
-            Some(ReviewSource::Against { rev }) => Some(rev.clone()),
-            _ => None,
-        };
         let pr_head = match &about {
             Some(ReviewSource::Pr { number }) => self.pr_ranges.get(number).cloned(),
             _ => None,
@@ -1689,11 +1667,28 @@ impl App {
         self.rediff_token += 1;
         self.pending_rediff = Some(RediffRequest {
             about,
-            against,
             pr_head,
-            positions,
             token: self.rediff_token,
         });
+    }
+
+    /// Take the queued re-diff once no refresh is running, holding the
+    /// refresh slot until [`Self::on_rediff_done`]: a re-diff and a refresh
+    /// then land in the order they snapshot the repo, so neither installs
+    /// an older working tree over a newer one.
+    pub fn start_rediff(&mut self) -> Option<RediffRequest> {
+        if matches!(
+            self.refresh_state,
+            RefreshState::Running | RefreshState::RunningQueued
+        ) {
+            return None;
+        }
+        let request = self.pending_rediff.take()?;
+        self.refresh_state = match self.refresh_state {
+            RefreshState::Queued => RefreshState::RunningQueued,
+            _ => RefreshState::Running,
+        };
+        Some(request)
     }
 
     /// Run the queued re-diff inline, mirroring `dispatch_rediff` in the
@@ -1701,90 +1696,74 @@ impl App {
     /// settle, so a test that expects state to move has to have asked for it.
     #[cfg(test)]
     pub(crate) fn settle_rediff(&mut self) {
-        let Some(request) = self.pending_rediff.take() else {
+        let Some(request) = self.start_rediff() else {
             return;
         };
-        let pr_head = request
-            .pr_head
-            .as_ref()
-            .map(|(base, head)| (base.as_str(), head.as_str()));
-        let pinned = request
-            .about
-            .as_ref()
-            .filter(|about| {
-                matches!(
-                    about,
-                    ReviewSource::Commit { .. }
-                        | ReviewSource::Range { .. }
-                        | ReviewSource::Pr { .. }
-                )
-            })
-            .map(|source| (source, pr_head));
-        let result = Review::compute_refresh(
-            &self.review.repo_root,
-            &self.config.diff_settings(),
-            request.against.as_deref(),
-            pinned,
-        )
-        .map_err(|err| err.to_string());
-        self.on_rediff_done(
-            result,
-            request.about.as_ref(),
-            request.positions,
-            request.token,
-        );
+        let result = request.run(&self.review.repo_root, &self.config.diff_settings());
+        self.on_rediff_done(result, &request);
     }
 
     /// Apply a landed [`Self::queue_rediff`] result: install the recomputed
-    /// status and working diff unconditionally (an algorithm switch always
-    /// changes the hunks), then, only if the diff view still shows the same
-    /// source it did when the switch was made, swap in its recomputed model
-    /// too.
+    /// status and working diff (an algorithm switch changes hunks the content
+    /// fingerprint cannot see), then rebuild the open view, swapping in its
+    /// recomputed model when it still shows the source the request named.
     pub(crate) fn on_rediff_done(
         &mut self,
         result: Result<diffler_core::review::Refreshed, String>,
-        about: Option<&ReviewSource>,
-        positions: Option<RowPositions>,
-        token: u64,
+        request: &RediffRequest,
     ) -> Flow {
-        if token != self.rediff_token {
+        self.refresh_state = self.refresh_state.finish();
+        if request.token != self.rediff_token {
             return Flow::Idle;
         }
-        let refreshed = match result {
+        let diffler_core::review::Refreshed {
+            status,
+            model,
+            against,
+            pinned,
+        } = match result {
             Ok(refreshed) => refreshed,
             Err(message) => {
                 self.error(message);
                 return Flow::Continue;
             }
         };
-        self.review
-            .install_refresh(refreshed.status, refreshed.model);
+        // we name the cursor's rows now, while they and the models they were
+        // built on still agree
+        let positions = self
+            .diff
+            .as_ref()
+            .map(|diff| diff.capture_positions(&self.review));
+        self.review.install_refresh(status, model);
         self.status.clear_enriched();
-        let current_about = self
+        let Some(positions) = positions else {
+            return Flow::Continue;
+        };
+        let rediffed = match &request.about {
+            Some(ReviewSource::Against { .. }) => against.map(|(_, result)| result),
+            Some(ReviewSource::Pr { number })
+                if self.pr_ranges.get(number) != request.pr_head.as_ref() =>
+            {
+                None
+            }
+            Some(
+                ReviewSource::Commit { .. } | ReviewSource::Range { .. } | ReviewSource::Pr { .. },
+            ) => pinned,
+            _ => None,
+        };
+        let current = self
             .diff
             .as_ref()
             .map(|diff| diff.source.clone())
             .map(|source| self.resolve_about(&source));
-        let Some(positions) = positions.filter(|_| current_about.as_ref() == about) else {
-            return Flow::Continue;
+        let rediffed = rediffed
+            .filter(|_| current == request.about)
+            .and_then(|result| result.map_err(|err| self.error(err.to_string())).ok());
+        let model = match rediffed {
+            Some(model) => Some(model),
+            None => self.diff.as_mut().and_then(|diff| diff.commit_model.take()),
         };
-        let pinned = match about {
-            // `None` here is the correct, live-reading value for the working
-            // tree; rows still need rebuilding against the model just installed
-            Some(ReviewSource::WorkingTree | ReviewSource::Walkthrough { .. }) | None => Ok(None),
-            Some(ReviewSource::Against { .. }) => {
-                refreshed.against.map_or(Ok(None), |(_, r)| r.map(Some))
-            }
-            Some(
-                ReviewSource::Commit { .. } | ReviewSource::Range { .. } | ReviewSource::Pr { .. },
-            ) => refreshed.pinned.map_or(Ok(None), |r| r.map(Some)),
-        };
-        match pinned {
-            Ok(model) => self.finish_diff_swap(positions, model),
-            // the pinned fetch failed: nothing here changed, so the view
-            // keeps showing what it already had
-            Err(err) => self.error(err.to_string()),
-        }
+        self.finish_diff_swap(positions, model);
         Flow::Continue
     }
 
@@ -3417,6 +3396,25 @@ mod tests {
         app.now_unix = now_unix();
         let quiet = (1..CLOCK_TICKS).all(|_| app.handle(AppEvent::Tick) == Flow::Idle);
         assert!(quiet, "idle output stays at zero between clock steps");
+    }
+
+    /// A re-diff and a refresh share one slot, so the later snapshot always
+    /// lands last; a superseded re-diff still hands the slot back.
+    #[test]
+    fn a_rediff_waits_for_a_running_refresh_and_frees_the_slot_when_stale() {
+        let (_fixture, mut app) = app();
+        app.refresh_state = RefreshState::Running;
+        app.apply_diff_algorithm("histogram");
+        assert!(app.start_rediff().is_none(), "held behind the refresh");
+
+        app.refresh_state = RefreshState::Idle;
+        let first = app.start_rediff().expect("slot free");
+        assert_eq!(app.refresh_state, RefreshState::Running);
+        app.apply_diff_algorithm("patience");
+        app.queue_refresh();
+        let result = first.run(&app.review.repo_root, &app.config.diff_settings());
+        assert_eq!(app.on_rediff_done(result, &first), Flow::Idle);
+        assert_eq!(app.refresh_state, RefreshState::Queued);
     }
 
     #[test]

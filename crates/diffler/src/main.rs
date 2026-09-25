@@ -413,45 +413,21 @@ fn dispatch_workers(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     dispatch_rediff(app, tx);
 }
 
-/// Start the off-thread re-diff an algorithm switch queued: a fresh backend,
-/// not the render loop's own, since re-diffing every hunk under a new
-/// algorithm is exactly the heavy work the blocking pool exists for.
+/// Start the off-thread re-diff an algorithm switch queued, on a fresh backend
+/// in the blocking pool. It takes the refresh slot, so it never runs beside a
+/// refresh and whichever lands last carries the newest snapshot.
 fn dispatch_rediff(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
-    let Some(request) = app.pending_rediff.take() else {
+    let Some(request) = app.start_rediff() else {
         return;
     };
     let root = app.review.repo_root.clone();
     let settings = app.config.diff_settings();
     let tx = tx.clone();
     tokio::task::spawn_blocking(move || {
-        let pr_head = request
-            .pr_head
-            .as_ref()
-            .map(|(base, head)| (base.as_str(), head.as_str()));
-        let pinned = request
-            .about
-            .as_ref()
-            .filter(|about| {
-                matches!(
-                    about,
-                    diffler_core::source::ReviewSource::Commit { .. }
-                        | diffler_core::source::ReviewSource::Range { .. }
-                        | diffler_core::source::ReviewSource::Pr { .. }
-                )
-            })
-            .map(|source| (source, pr_head));
-        let result = diffler_core::review::Review::compute_refresh(
-            &root,
-            &settings,
-            request.against.as_deref(),
-            pinned,
-        )
-        .map_err(|err| err.to_string());
+        let result = request.run(&root, &settings);
         let _ = tx.send(AppEvent::RediffDone {
             result: Box::new(result),
-            about: request.about,
-            positions: request.positions,
-            token: request.token,
+            request,
         });
     });
 }

@@ -28,7 +28,7 @@ use super::composer::{Composer, ComposerKind};
 use super::rowsel::{RowSelect, RowText};
 use super::{App, Flow};
 pub use comments::{CommentFacts, CommentGrouping, CommentPaneRow, group_comment_rows};
-pub use rowref::RowPositions;
+pub(crate) use rowref::RowPositions;
 pub use rows::{
     CommentLine, DiffRow, RowCopy, SplitRow, SplitSide, blocks_of, comment_display, summary_display,
 };
@@ -1171,12 +1171,43 @@ pub struct RediffRequest {
     /// The open diff's resolved source (a walkthrough already resolved to
     /// whatever it is about); `None` when no diff is open.
     pub about: Option<ReviewSource>,
-    pub against: Option<String>,
+    /// The PR's `(merge_base, head)` when `about` is one, so a landing result
+    /// for a head that has since moved is dropped.
     pub pr_head: Option<(String, String)>,
-    pub positions: Option<RowPositions>,
-    /// The request this answers; a stale one, or one landing after the open
-    /// view moved to another source, is dropped on arrival.
+    /// The request this answers; a stale one is dropped on arrival.
     pub token: u64,
+}
+
+impl RediffRequest {
+    /// The re-diff itself, on a fresh backend: status, the working tree, and
+    /// `about`'s own model when it is a three-dot review or a pinned source.
+    pub fn run(
+        &self,
+        repo_root: &std::path::Path,
+        settings: &diffler_core::diffalgo::DiffSettings,
+    ) -> Result<diffler_core::review::Refreshed, String> {
+        let against = match &self.about {
+            Some(ReviewSource::Against { rev }) => Some(rev.as_str()),
+            _ => None,
+        };
+        let pr_head = self
+            .pr_head
+            .as_ref()
+            .map(|(base, head)| (base.as_str(), head.as_str()));
+        let pinned = self
+            .about
+            .as_ref()
+            .filter(|about| {
+                matches!(
+                    about,
+                    ReviewSource::Commit { .. }
+                        | ReviewSource::Range { .. }
+                        | ReviewSource::Pr { .. }
+                )
+            })
+            .map(|source| (source, pr_head));
+        Review::compute_refresh(repo_root, settings, against, pinned).map_err(|err| err.to_string())
+    }
 }
 
 /// Paths whose git attributes a worker should read, for the kinds sidebar.

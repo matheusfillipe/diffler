@@ -63,10 +63,7 @@ pub enum AppEvent {
     /// when the switch was made.
     RediffDone {
         result: Box<Result<diffler_core::review::Refreshed, String>>,
-        about: Option<diffler_core::source::ReviewSource>,
-        positions: Option<crate::app::RowPositions>,
-        /// The request this answers; a stale one is dropped on arrival.
-        token: u64,
+        request: crate::app::RediffRequest,
     },
     /// Agent tool call routed through the event channel so the app stays
     /// the single owner of the review state (`mcp` module).

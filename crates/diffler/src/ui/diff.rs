@@ -2524,6 +2524,72 @@ mod tests {
         assert_eq!(app.config.diff.algorithm, DiffAlgorithm::Histogram);
     }
 
+    /// The reader keeps moving while the re-diff runs, so the cursor it lands
+    /// on is the one they left, not the one they had when they switched.
+    #[test]
+    fn a_rediff_keeps_the_cursor_moved_while_it_ran() {
+        use crate::app::rowsel::RowText as _;
+        use std::fmt::Write as _;
+        let fixture = Fixture::new();
+        let mut base = String::new();
+        for i in 1..=40 {
+            let _ = writeln!(base, "line {i}");
+        }
+        fixture.write("a.txt", &base);
+        fixture.commit_all("base");
+        let edited = base
+            .replace("line 5\n", "LINE FIVE\n")
+            .replace("line 35\n", "LINE THIRTY-FIVE\n");
+        fixture.write("a.txt", &edited);
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_working_tree_file("a.txt");
+        let _ = render(&mut app);
+
+        app.apply_diff_algorithm("histogram");
+        let diff = app.diff.as_mut().unwrap();
+        let target = (0..diff.rows().len())
+            .find(|&row| diff.row_text(row) == " line 36")
+            .unwrap();
+        diff.cursor = target;
+        app.settle_rediff();
+
+        let diff = app.diff.as_ref().unwrap();
+        assert_eq!(diff.row_text(diff.cursor), " line 36");
+    }
+
+    /// A view opened while the re-diff runs is built on the old hunks, so the
+    /// landing result rebuilds it too.
+    #[test]
+    fn a_view_opened_during_a_rediff_rebuilds_when_it_lands() {
+        let old = "begin\nrepeat\nrepeat\nunique_anchor\nrepeat\nrepeat\nend\n";
+        let new = "begin\nunique_anchor\nrepeat\nrepeat\nrepeat\nrepeat\nend\n";
+        let fixture = Fixture::new();
+        fixture.write("a.txt", old);
+        fixture.commit_all("base");
+        fixture.write("a.txt", new);
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let rows = |app: &mut App| {
+            use crate::app::rowsel::RowText as _;
+            let _ = render(app);
+            let diff = app.diff.as_ref().unwrap();
+            (0..diff.rows().len())
+                .map(|row| diff.row_text(row))
+                .collect::<Vec<_>>()
+        };
+
+        let _ = app.review.model();
+        app.apply_diff_algorithm("histogram");
+        app.open_working_tree_diff(None);
+        let stale = rows(&mut app);
+        app.settle_rediff();
+        let landed = rows(&mut app);
+        app.diff = None;
+        app.open_working_tree_diff(None);
+        let fresh = rows(&mut app);
+        assert_ne!(stale, fresh, "the two algorithms draw different rows");
+        assert_eq!(landed, fresh);
+    }
+
     /// A stop list is only readable when the reader knows whose order it is,
     /// so the pane heading carries the walkthrough's name instead of "Files".
     #[test]
