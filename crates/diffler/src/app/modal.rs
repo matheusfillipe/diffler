@@ -43,8 +43,7 @@ impl App {
             Some(Modal::RevList { .. }) => self.handle_rev_list_key(key),
             Some(Modal::Palette { .. }) => return self.handle_palette_key(key),
             Some(Modal::FilePicker { .. }) => return self.handle_file_picker_key(key),
-            Some(Modal::Themes { .. }) => self.handle_theme_key(key),
-            Some(Modal::DiffAlgorithm { .. }) => self.handle_diff_algorithm_key(key),
+            Some(Modal::Choice { .. }) => self.handle_choice_key(key),
             Some(Modal::RemoteList { .. }) => self.handle_remote_list_key(key),
             Some(Modal::PullDiverged { .. }) => self.handle_pull_diverged_key(key),
             Some(Modal::Help) => match key.code {
@@ -615,53 +614,31 @@ impl App {
         Flow::Continue
     }
 
-    pub(super) fn handle_theme_key(&mut self, key: &KeyEvent) {
-        let Some(Modal::Themes { list }) = self.modal.as_mut() else {
+    pub(super) fn handle_choice_key(&mut self, key: &KeyEvent) {
+        let Some(Modal::Choice { kind, list }) = self.modal.as_mut() else {
             return;
         };
+        let kind = *kind;
         match list.feed(key) {
-            FuzzyKey::Submit => self.submit_theme(),
+            FuzzyKey::Submit => self.submit_choice(),
             FuzzyKey::Cancel => self.modal = None,
-            FuzzyKey::Edited => list.rerank(&crate::theme::names()),
+            FuzzyKey::Edited => list.rerank(&kind.names()),
             _ => {}
         }
     }
 
-    fn submit_theme(&mut self) {
+    fn submit_choice(&mut self) {
         // a query matching nothing keeps the dialog open, like fzf
-        let names = crate::theme::names();
-        let Some(Modal::Themes { list }) = &self.modal else {
+        let Some(Modal::Choice { kind, list }) = &self.modal else {
             return;
         };
+        let kind = *kind;
+        let names = kind.names();
         let Some(name) = selected(list, &names).cloned() else {
             return;
         };
         self.modal = None;
-        self.apply_theme(&name);
-    }
-
-    pub(super) fn handle_diff_algorithm_key(&mut self, key: &KeyEvent) {
-        let Some(Modal::DiffAlgorithm { list }) = self.modal.as_mut() else {
-            return;
-        };
-        match list.feed(key) {
-            FuzzyKey::Submit => self.submit_diff_algorithm(),
-            FuzzyKey::Cancel => self.modal = None,
-            FuzzyKey::Edited => list.rerank(&super::diff_algorithm_names()),
-            _ => {}
-        }
-    }
-
-    fn submit_diff_algorithm(&mut self) {
-        let names = super::diff_algorithm_names();
-        let Some(Modal::DiffAlgorithm { list }) = &self.modal else {
-            return;
-        };
-        let Some(name) = selected(list, &names).cloned() else {
-            return;
-        };
-        self.modal = None;
-        self.apply_diff_algorithm(&name);
+        kind.apply(self, &name);
     }
 
     pub(super) fn handle_remote_list_key(&mut self, key: &KeyEvent) {
@@ -786,7 +763,7 @@ impl App {
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-    use super::super::{App, BranchAction, Modal, Pane, Screen};
+    use super::super::{App, BranchAction, ChoiceKind, Modal, Pane, Screen};
     use crate::config::LoadedConfig;
     use crate::test_support::standard_fixture;
     use diffler_core::session::Anchor;
@@ -995,7 +972,13 @@ mod tests {
         assert_eq!(app.theme, Theme::github_dark());
         press(&mut app, KeyCode::Char('T'));
         assert!(
-            matches!(app.modal, Some(Modal::Themes { .. })),
+            matches!(
+                app.modal,
+                Some(Modal::Choice {
+                    kind: ChoiceKind::Theme,
+                    ..
+                })
+            ),
             "T opens the theme picker"
         );
         press(&mut app, KeyCode::Tab);

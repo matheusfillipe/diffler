@@ -213,8 +213,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) -> Option<popup::ListHits> {
             | Modal::PrBase { .. }
             | Modal::RevList { .. }
             | Modal::Palette { .. }
-            | Modal::Themes { .. }
-            | Modal::DiffAlgorithm { .. }
+            | Modal::Choice { .. }
             | Modal::FilePicker { .. }
             | Modal::RemoteList { .. },
         ) => fuzzy_modal(app).map(|modal| modal.render(frame, &app.theme)),
@@ -351,16 +350,10 @@ fn fuzzy_modal(app: &App) -> Option<popup::FuzzyModal> {
                 footer: footer_for(list, "", " run"),
             })
         }
-        Some(Modal::Themes { list }) => Some(plain_list(
-            "Theme".to_owned(),
+        Some(Modal::Choice { kind, list }) => Some(plain_list(
+            kind.title().to_owned(),
             list,
-            &crate::theme::names(),
-            " apply",
-        )),
-        Some(Modal::DiffAlgorithm { list }) => Some(plain_list(
-            "Diff algorithm".to_owned(),
-            list,
-            &crate::app::diff_algorithm_names(),
+            &kind.names(),
             " apply",
         )),
         Some(Modal::RemoteList { remotes, list, .. }) => {

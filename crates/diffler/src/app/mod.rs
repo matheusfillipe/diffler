@@ -204,11 +204,12 @@ pub enum Modal {
     },
     /// Fuzzy command palette over everything executable on this screen.
     Palette { list: fuzzy::FuzzyList },
-    /// Fuzzy picker over the built-in themes; applies the pick live.
-    Themes { list: fuzzy::FuzzyList },
-    /// Fuzzy picker over the line-diff algorithms; applies the pick live and
-    /// re-diffs the open view.
-    DiffAlgorithm { list: fuzzy::FuzzyList },
+    /// Fuzzy picker over a fixed named choice set (a theme, a line-diff
+    /// algorithm); applies the pick live.
+    Choice {
+        kind: ChoiceKind,
+        list: fuzzy::FuzzyList,
+    },
     /// Remote picker feeding `purpose` with the selected remote name.
     RemoteList {
         remotes: Vec<String>,
@@ -253,8 +254,7 @@ impl Modal {
             | Self::PrBase { list, .. }
             | Self::RevList { list, .. }
             | Self::Palette { list }
-            | Self::Themes { list }
-            | Self::DiffAlgorithm { list }
+            | Self::Choice { list, .. }
             | Self::FilePicker { list, .. }
             | Self::RemoteList { list, .. } => Some(list),
             Self::Confirm { .. }
@@ -777,6 +777,37 @@ pub(crate) fn diff_algorithm_names() -> Vec<String> {
         .iter()
         .map(ToString::to_string)
         .collect()
+}
+
+/// A named choice set [`Modal::Choice`] can pick from: what titles the
+/// dialog, what rows it offers, and what applying a pick does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChoiceKind {
+    Theme,
+    DiffAlgorithm,
+}
+
+impl ChoiceKind {
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Theme => "Theme",
+            Self::DiffAlgorithm => "Diff algorithm",
+        }
+    }
+
+    pub fn names(self) -> Vec<String> {
+        match self {
+            Self::Theme => crate::theme::names(),
+            Self::DiffAlgorithm => diff_algorithm_names(),
+        }
+    }
+
+    fn apply(self, app: &mut App, name: &str) {
+        match self {
+            Self::Theme => app.apply_theme(name),
+            Self::DiffAlgorithm => app.apply_diff_algorithm(name),
+        }
+    }
 }
 
 impl App {
@@ -1455,8 +1486,8 @@ impl App {
             Action::OpenPrs => self.open_prs(),
             Action::CreatePr => self.create_pr_start(),
             Action::CommentsOverview => self.toggle_comments_sidebar(),
-            Action::SwitchTheme => self.open_theme_picker(),
-            Action::SwitchDiffAlgorithm => self.open_diff_algorithm_picker(),
+            Action::SwitchTheme => self.open_choice_picker(ChoiceKind::Theme),
+            Action::SwitchDiffAlgorithm => self.open_choice_picker(ChoiceKind::DiffAlgorithm),
             Action::OpenFilePicker => self.open_file_picker(),
             Action::Blame => self.blame_focused(),
             Action::OpenStats => self.open_stats(),
@@ -1520,10 +1551,10 @@ impl App {
         Flow::Continue
     }
 
-    fn open_theme_picker(&mut self) {
+    fn open_choice_picker(&mut self, kind: ChoiceKind) {
         let mut list = fuzzy::FuzzyList::default();
-        list.rerank(&crate::theme::names());
-        self.modal = Some(Modal::Themes { list });
+        list.rerank(&kind.names());
+        self.modal = Some(Modal::Choice { kind, list });
     }
 
     /// Swap the active theme live: re-pin the syntax highlighter and drop the
@@ -1539,12 +1570,6 @@ impl App {
         }
         self.queue_enrich_selected();
         self.info(format!("theme: {name}"));
-    }
-
-    fn open_diff_algorithm_picker(&mut self) {
-        let mut list = fuzzy::FuzzyList::default();
-        list.rerank(&diff_algorithm_names());
-        self.modal = Some(Modal::DiffAlgorithm { list });
     }
 
     /// Switch the line-diff algorithm live: the config (which every refresh
