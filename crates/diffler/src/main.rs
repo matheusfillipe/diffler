@@ -66,12 +66,7 @@ async fn main() -> color_eyre::Result<()> {
                 Ok(root) => root,
                 Err(err) => exit_without_repo(&err, &cli.path),
             };
-            let review = Review::open_with_options(
-                &root,
-                loaded.config.ui.context_lines,
-                loaded.config.diff.algorithm,
-                loaded.config.diff.indent_heuristic,
-            )?;
+            let review = Review::open_with_settings(&root, &loaded.config.diff_settings())?;
             let app = App::new(review, loaded);
             let terminal = ratatui::init();
             set_mouse_capture(true);
@@ -290,20 +285,13 @@ fn dispatch_refresh(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     }
     app.refresh_state = app::RefreshState::Running;
     let root = app.review.repo_root.clone();
-    let context = app.config.ui.context_lines;
-    let algorithm = app.config.diff.algorithm;
-    let indent_heuristic = app.config.diff.indent_heuristic;
+    let settings = app.config.diff_settings();
     let against = app.against_rev().map(str::to_owned);
     let tx = tx.clone();
     tokio::task::spawn_blocking(move || {
-        let result = diffler_core::review::Review::compute_refresh(
-            &root,
-            context,
-            algorithm,
-            indent_heuristic,
-            against.as_deref(),
-        )
-        .map_err(|err| err.to_string());
+        let result =
+            diffler_core::review::Review::compute_refresh(&root, &settings, against.as_deref())
+                .map_err(|err| err.to_string());
         let _ = tx.send(AppEvent::RefreshDone(Box::new(result)));
     });
 }

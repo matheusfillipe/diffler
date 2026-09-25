@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::diffalgo::{DiffAlgorithm, histogram_hunks};
+use crate::diffalgo::{DiffAlgorithm, DiffSettings, histogram_hunks};
 use crate::model::{
     DiffLine, DiffModel, FileDiff, FileStatus, Hunk, HunkId, LineKind, disambiguated_hunk_id,
 };
@@ -31,38 +31,23 @@ pub struct GitVcs {
 }
 
 impl GitVcs {
+    /// Open at [`DiffSettings::default`].
     pub fn open(root: &Path) -> Result<Self, VcsError> {
-        Self::open_with_context(root, DEFAULT_CONTEXT_LINES)
-    }
-
-    /// Open with a custom number of context lines around diff hunks, the
-    /// default algorithm (myers) and indent heuristic on.
-    pub fn open_with_context(root: &Path, context_lines: u32) -> Result<Self, VcsError> {
-        Self::open_with_options(
-            root,
-            context_lines,
-            DiffAlgorithm::default(),
-            DEFAULT_INDENT_HEURISTIC,
-        )
+        Self::open_with_settings(root, &DiffSettings::default())
     }
 
     /// Open with a custom context, line-diff algorithm and indent heuristic
     /// (config keys `ui.context_lines`, `diff.algorithm`, `diff.indent_heuristic`).
-    pub fn open_with_options(
-        root: &Path,
-        context_lines: u32,
-        algorithm: DiffAlgorithm,
-        indent_heuristic: bool,
-    ) -> Result<Self, VcsError> {
+    pub fn open_with_settings(root: &Path, settings: &DiffSettings) -> Result<Self, VcsError> {
         let repo = git2::Repository::open(root)?;
         if repo.workdir().is_none() {
             return Err(VcsError::NoWorkdir);
         }
         Ok(Self {
             repo,
-            context_lines,
-            algorithm: Cell::new(algorithm),
-            indent_heuristic: Cell::new(indent_heuristic),
+            context_lines: settings.context_lines,
+            algorithm: Cell::new(settings.algorithm),
+            indent_heuristic: Cell::new(settings.indent_heuristic),
         })
     }
 

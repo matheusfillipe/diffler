@@ -62,6 +62,37 @@ impl std::fmt::Display for DiffAlgorithm {
     }
 }
 
+/// The line-diff context, algorithm and indent heuristic every diff source
+/// honours, threaded through construction so the review's long-lived backend
+/// and every worker that opens a fresh one read the same values and can
+/// never drift apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiffSettings {
+    pub context_lines: u32,
+    pub algorithm: DiffAlgorithm,
+    pub indent_heuristic: bool,
+}
+
+impl Default for DiffSettings {
+    fn default() -> Self {
+        Self {
+            context_lines: crate::git::DEFAULT_CONTEXT_LINES,
+            algorithm: DiffAlgorithm::default(),
+            indent_heuristic: crate::git::DEFAULT_INDENT_HEURISTIC,
+        }
+    }
+}
+
+impl DiffSettings {
+    /// [`Self::default`] with a custom number of context lines.
+    pub fn with_context(context_lines: u32) -> Self {
+        Self {
+            context_lines,
+            ..Self::default()
+        }
+    }
+}
+
 /// Line hunks of `old` vs `new` computed by imara-diff's histogram algorithm,
 /// grouped with `context` unchanged lines around each change the way git
 /// itself merges nearby hunks together (mirrors imara-diff's own

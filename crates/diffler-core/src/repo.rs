@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
-use crate::diffalgo::DiffAlgorithm;
+use crate::diffalgo::DiffSettings;
 use crate::git::GitVcs;
 use crate::jj::JjVcs;
 use crate::vcs::{Vcs, VcsError};
@@ -59,40 +59,20 @@ fn find_uncolocated_jj(path: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Open the right backend for `root`, as [`discover`] resolved it: [`JjVcs`]
-/// when a `.jj` directory sits beside `.git` (a colocated jj repo), plain
-/// [`GitVcs`] otherwise.
-pub fn open(root: &Path, context_lines: u32) -> Result<Box<dyn Vcs>, VcsError> {
-    open_with_options(
-        root,
-        context_lines,
-        DiffAlgorithm::default(),
-        crate::git::DEFAULT_INDENT_HEURISTIC,
-    )
+/// Open the right backend for `root`, as [`discover`] resolved it, at
+/// [`DiffSettings::default`]: [`JjVcs`] when a `.jj` directory sits beside
+/// `.git` (a colocated jj repo), plain [`GitVcs`] otherwise.
+pub fn open(root: &Path) -> Result<Box<dyn Vcs>, VcsError> {
+    open_with_settings(root, &DiffSettings::default())
 }
 
-/// [`open`] with the line-diff algorithm and indent heuristic the review
-/// diffs with.
-pub fn open_with_options(
-    root: &Path,
-    context_lines: u32,
-    algorithm: DiffAlgorithm,
-    indent_heuristic: bool,
-) -> Result<Box<dyn Vcs>, VcsError> {
+/// [`open`] with the line-diff context, algorithm and indent heuristic the
+/// review diffs with.
+pub fn open_with_settings(root: &Path, settings: &DiffSettings) -> Result<Box<dyn Vcs>, VcsError> {
     if root.join(".jj").is_dir() {
-        Ok(Box::new(JjVcs::open_with_options(
-            root,
-            context_lines,
-            algorithm,
-            indent_heuristic,
-        )?))
+        Ok(Box::new(JjVcs::open_with_settings(root, settings)?))
     } else {
-        Ok(Box::new(GitVcs::open_with_options(
-            root,
-            context_lines,
-            algorithm,
-            indent_heuristic,
-        )?))
+        Ok(Box::new(GitVcs::open_with_settings(root, settings)?))
     }
 }
 

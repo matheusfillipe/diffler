@@ -5,6 +5,7 @@ use std::path::Path;
 
 use common::Fixture;
 use diffler_core::classify::Kind;
+use diffler_core::diffalgo::DiffSettings;
 use diffler_core::git::GitVcs;
 use diffler_core::model::{FileStatus, LineKind};
 use diffler_core::vcs::{NetworkOp, Vcs, VcsError};
@@ -82,7 +83,8 @@ fn context_lines_shrink_hunk_context() {
     fx.write("a.txt", &base.replace("line 10\n", "LINE TEN\n"));
 
     let context = |lines: u32| -> usize {
-        let v = GitVcs::open_with_context(fx.root(), lines).expect("open");
+        let v = GitVcs::open_with_settings(fx.root(), &DiffSettings::with_context(lines))
+            .expect("open");
         let model = v.working_tree_diff().expect("diff");
         model.files[0].hunks[0]
             .lines
@@ -214,7 +216,7 @@ fn two_hunks_with_identical_content_get_distinct_ids() {
     // lines between the two hunks that their content is byte-identical
     fx.write("a.txt", &base.replace("dup\n", "changed\n"));
 
-    let model = GitVcs::open_with_context(fx.root(), 0)
+    let model = GitVcs::open_with_settings(fx.root(), &DiffSettings::with_context(0))
         .expect("open")
         .working_tree_diff()
         .expect("diff");
@@ -1449,7 +1451,7 @@ mod diff_algorithm {
     use std::fmt::Write as _;
     use std::path::Path;
 
-    use diffler_core::diffalgo::DiffAlgorithm;
+    use diffler_core::diffalgo::{DiffAlgorithm, DiffSettings};
     use diffler_core::git::GitVcs;
     use diffler_core::model::LineKind;
     use diffler_core::vcs::Vcs;
@@ -1459,11 +1461,12 @@ mod diff_algorithm {
     // helper fns run outside #[test] fns, where clippy's test allowances don't reach
     #[allow(clippy::expect_used)]
     fn open(fx: &Fixture, algorithm: DiffAlgorithm) -> GitVcs {
-        GitVcs::open_with_options(
+        GitVcs::open_with_settings(
             fx.root(),
-            diffler_core::git::DEFAULT_CONTEXT_LINES,
-            algorithm,
-            true,
+            &DiffSettings {
+                algorithm,
+                ..DiffSettings::default()
+            },
         )
         .expect("open")
     }

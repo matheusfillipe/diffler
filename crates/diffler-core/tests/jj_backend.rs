@@ -310,7 +310,6 @@ fn opening_a_non_colocated_jj_repo_is_reported_by_discover() {
 fn repo_open_picks_the_jj_backend_for_a_colocated_root() {
     let fx = JjFixture::new();
     let root = diffler_core::repo::discover(fx.root()).expect("discover");
-    let opened =
-        diffler_core::repo::open(&root, diffler_core::git::DEFAULT_CONTEXT_LINES).expect("open");
+    let opened = diffler_core::repo::open(&root).expect("open");
     assert_eq!(opened.vcs_kind(), VcsKind::Jj);
 }

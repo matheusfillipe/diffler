@@ -15,7 +15,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::diffalgo::DiffAlgorithm;
+use crate::diffalgo::{DiffAlgorithm, DiffSettings};
 use crate::git::GitVcs;
 use crate::model::{DiffModel, HunkId};
 use crate::vcs::{
@@ -28,25 +28,14 @@ pub struct JjVcs {
 }
 
 impl JjVcs {
+    /// Open at [`DiffSettings::default`].
     pub fn open(root: &Path) -> Result<Self, VcsError> {
-        Self::open_with_context(root, crate::git::DEFAULT_CONTEXT_LINES)
+        Self::open_with_settings(root, &DiffSettings::default())
     }
 
-    pub fn open_with_context(root: &Path, context_lines: u32) -> Result<Self, VcsError> {
+    pub fn open_with_settings(root: &Path, settings: &DiffSettings) -> Result<Self, VcsError> {
         Ok(Self {
-            git: GitVcs::open_with_context(root, context_lines)?,
-            root: root.to_path_buf(),
-        })
-    }
-
-    pub fn open_with_options(
-        root: &Path,
-        context_lines: u32,
-        algorithm: DiffAlgorithm,
-        indent_heuristic: bool,
-    ) -> Result<Self, VcsError> {
-        Ok(Self {
-            git: GitVcs::open_with_options(root, context_lines, algorithm, indent_heuristic)?,
+            git: GitVcs::open_with_settings(root, settings)?,
             root: root.to_path_buf(),
         })
     }

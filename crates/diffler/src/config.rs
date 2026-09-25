@@ -32,6 +32,18 @@ pub struct Config {
     pub keys: KeysConfig,
 }
 
+impl Config {
+    /// The line-diff context, algorithm and indent heuristic a backend opens
+    /// with, so every caller reads the same three config keys the same way.
+    pub fn diff_settings(&self) -> diffler_core::diffalgo::DiffSettings {
+        diffler_core::diffalgo::DiffSettings {
+            context_lines: self.ui.context_lines,
+            algorithm: self.diff.algorithm,
+            indent_heuristic: self.diff.indent_heuristic,
+        }
+    }
+}
+
 /// How the diff is computed and shown. `algorithm` is also switchable live
 /// from the diff screen's algorithm picker; that switch writes back here
 /// too, so a later background refresh keeps using it.

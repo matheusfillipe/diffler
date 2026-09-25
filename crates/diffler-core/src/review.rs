@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
-use crate::diffalgo::DiffAlgorithm;
+use crate::diffalgo::{DiffAlgorithm, DiffSettings};
 use crate::model::DiffModel;
 use crate::repo;
 use crate::session::Session;
@@ -73,34 +73,21 @@ pub struct Review {
 }
 
 impl Review {
-    /// Open the git backend, load the persisted session (if any), and compute
-    /// the status sections. The working-tree review diff is deferred until
-    /// first [`Review::model`] access. Diffs carry git's default hunk context.
+    /// Open the git backend at [`DiffSettings::default`], load the persisted
+    /// session (if any), and compute the status sections. The working-tree
+    /// review diff is deferred until first [`Review::model`] access.
     pub fn open(repo_root: &Path) -> Result<Self, ReviewError> {
-        Self::open_with_context(repo_root, crate::git::DEFAULT_CONTEXT_LINES)
-    }
-
-    /// Like [`Review::open`] with a custom number of context lines around
-    /// diff hunks (config key `ui.context_lines`).
-    pub fn open_with_context(repo_root: &Path, context_lines: u32) -> Result<Self, ReviewError> {
-        Self::open_with_options(
-            repo_root,
-            context_lines,
-            DiffAlgorithm::default(),
-            crate::git::DEFAULT_INDENT_HEURISTIC,
-        )
+        Self::open_with_settings(repo_root, &DiffSettings::default())
     }
 
     /// Like [`Review::open`] with a custom context, line-diff algorithm and
     /// indent heuristic (config keys `ui.context_lines`, `diff.algorithm`,
     /// `diff.indent_heuristic`).
-    pub fn open_with_options(
+    pub fn open_with_settings(
         repo_root: &Path,
-        context_lines: u32,
-        algorithm: DiffAlgorithm,
-        indent_heuristic: bool,
+        settings: &DiffSettings,
     ) -> Result<Self, ReviewError> {
-        let vcs = repo::open_with_options(repo_root, context_lines, algorithm, indent_heuristic)?;
+        let vcs = repo::open_with_settings(repo_root, settings)?;
         let status = vcs.status()?;
         let session = store::load(repo_root)?;
         Ok(Self {
@@ -152,12 +139,10 @@ impl Review {
     /// it tracks edits and cannot be pinned like a commit's diff.
     pub fn compute_refresh(
         repo_root: &Path,
-        context_lines: u32,
-        algorithm: DiffAlgorithm,
-        indent_heuristic: bool,
+        settings: &DiffSettings,
         against: Option<&str>,
     ) -> Result<Refreshed, ReviewError> {
-        let vcs = repo::open_with_options(repo_root, context_lines, algorithm, indent_heuristic)?;
+        let vcs = repo::open_with_settings(repo_root, settings)?;
         let status = vcs.status()?;
         let model = vcs.working_tree_diff()?;
         let against =
@@ -177,7 +162,7 @@ impl Review {
         repo_root: &Path,
         paths: &[String],
     ) -> Result<HashMap<String, crate::classify::Kind>, ReviewError> {
-        let vcs = repo::open(repo_root, crate::git::DEFAULT_CONTEXT_LINES)?;
+        let vcs = repo::open(repo_root)?;
         Ok(paths
             .iter()
             .filter_map(|path| {
@@ -203,7 +188,7 @@ impl Review {
         rev: Option<&str>,
         files: &[String],
     ) -> WalkthroughFiles {
-        let vcs = repo::open(repo_root, crate::git::DEFAULT_CONTEXT_LINES).ok();
+        let vcs = repo::open(repo_root).ok();
         let pin_broken = match (rev, vcs.as_ref()) {
             (Some(rev), Some(vcs)) => vcs.resolve(rev).is_err(),
             (Some(_), None) => true,
@@ -230,7 +215,7 @@ impl Review {
     /// A file git cannot blame (untracked, or newly staged) still loads: it
     /// comes back with text and no spans.
     pub fn compute_file(repo_root: &Path, rel: &str) -> Result<FileSnapshot, ReviewError> {
-        let vcs = repo::open(repo_root, crate::git::DEFAULT_CONTEXT_LINES)?;
+        let vcs = repo::open(repo_root)?;
         let path = Path::new(rel);
         let content = std::fs::read_to_string(repo_root.join(path)).map_err(VcsError::from)?;
         Ok(FileSnapshot {

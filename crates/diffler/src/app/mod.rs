@@ -819,6 +819,9 @@ impl App {
             warnings: mut startup_warnings,
             ..
         } = loaded;
+        // whatever settings the review's backend opened with, config is the
+        // source of truth: push it in now so the two can never diverge
+        review.set_diff_algorithm(config.diff.algorithm, config.diff.indent_heuristic);
         let (theme, theme_warning) = Theme::from_name(&config.ui.theme);
         startup_warnings.extend(theme_warning);
         let highlighter = Arc::new(diffler_core::highlight::Highlighter::new(theme.syntax));
@@ -1703,9 +1706,7 @@ impl App {
         let against = self.against_rev().map(str::to_owned);
         let result = Review::compute_refresh(
             &self.review.repo_root,
-            self.config.ui.context_lines,
-            self.config.diff.algorithm,
-            self.config.diff.indent_heuristic,
+            &self.config.diff_settings(),
             against.as_deref(),
         )
         .map_err(|err| err.to_string());

@@ -195,9 +195,7 @@ mod tests {
         fixture.write("a.rs", "fn f() {\n        let x = compute();\n}\n");
         let mut config = LoadedConfig::default();
         config.config.diff.algorithm = diffler_core::diffalgo::DiffAlgorithm::Structural;
-        let review = fixture.review();
-        review.set_diff_algorithm(config.config.diff.algorithm, true);
-        let mut app = App::new(review, config);
+        let mut app = App::new(fixture.review(), config);
         app.review.refresh().expect("refresh");
         app.open_working_tree_file("a.rs");
         app.queue_enrich_selected();
