@@ -3,7 +3,7 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use diffler_core::model::DiffModel;
 
-use super::{App, DiffRow, Flow, Pane, Screen, diff_row_text, tree_row_label};
+use super::{App, DiffRow, Flow, Pane, Screen, tree_row_label};
 use crate::graph::GraphView;
 use crate::search::{Search, find_matches};
 
@@ -108,7 +108,7 @@ impl App {
         let texts: Vec<(usize, String)> = lines
             .iter()
             .enumerate()
-            .map(|(index, (_, text))| (index, (*text).to_owned()))
+            .map(|(index, (_, diff_line))| (index, diff_line.text.clone()))
             .collect();
         let matched = find_matches(&texts, &query);
         let hit = if forward {
@@ -241,15 +241,7 @@ impl App {
                 diff.rows()
                     .iter()
                     .enumerate()
-                    .filter_map(|(i, row)| {
-                        match *row {
-                            DiffRow::Fold { group, .. } => {
-                                file.map(|file| diff.fold_text(file, group))
-                            }
-                            _ => diff_row_text(file, row),
-                        }
-                        .map(|text| (i, text))
-                    })
+                    .filter_map(|(i, row)| diff.row_search_text(file, row).map(|text| (i, text)))
                     .collect()
             }
         }

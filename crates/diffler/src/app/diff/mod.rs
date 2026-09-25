@@ -17,7 +17,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use diffler_core::classify::{Kind, Rules};
 use diffler_core::highlight::StyledRange;
-use diffler_core::model::{DiffModel, FileDiff};
+use diffler_core::model::{DiffLine, DiffModel, FileDiff};
 use diffler_core::review::Review;
 use diffler_core::session::Session;
 use diffler_core::source::ReviewSource;
@@ -996,28 +996,40 @@ impl DiffView {
         Some(at)
     }
 
-    /// The lines the fold row `group` hides, with their text.
+    /// The lines the fold row `group` hides, with their own model data.
     pub(crate) fn fold_lines<'a>(
         &self,
         file: &'a FileDiff,
         group: usize,
-    ) -> Vec<((usize, usize), &'a str)> {
-        self.fold_groups
+    ) -> Vec<((usize, usize), &'a DiffLine)> {
+        let lines = self
+            .fold_groups
             .get(group)
-            .map_or(&[][..], |g| g.lines.as_slice())
-            .iter()
-            .filter_map(|&(hunk, line)| {
-                let text = file.hunks.get(hunk)?.lines.get(line)?.text.as_str();
-                Some(((hunk, line), text))
-            })
-            .collect()
+            .map_or(&[][..], |g| g.lines.as_slice());
+        folds::resolve_hidden(file, lines)
     }
 
-    /// The code a fold row hides, one line per line, for search to match.
+    /// The code a fold row hides, one line per line and bare (no diff
+    /// marker), for search to match.
     pub(crate) fn fold_text(&self, file: &FileDiff, group: usize) -> String {
-        let lines = self.fold_lines(file, group);
-        let texts: Vec<&str> = lines.iter().map(|(_, text)| *text).collect();
-        texts.join("\n")
+        self.fold_lines(file, group)
+            .iter()
+            .map(|(_, diff_line)| diff_line.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The text a `/` search matches against: a diff line's own text, or a
+    /// fold row's hidden lines. `None` for a row search does not reach (a
+    /// hunk header, a comment, the composer).
+    pub(crate) fn row_search_text(&self, file: Option<&FileDiff>, row: &DiffRow) -> Option<String> {
+        match *row {
+            DiffRow::Line { hunk, line, .. } => {
+                Some(file?.hunks.get(hunk)?.lines.get(line)?.text.clone())
+            }
+            DiffRow::Fold { group, .. } => Some(self.fold_text(file?, group)),
+            _ => None,
+        }
     }
 
     /// `za`/`<tab>`: open the fold under the cursor, or close the region it

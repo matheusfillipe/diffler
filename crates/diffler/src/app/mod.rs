@@ -1972,15 +1972,6 @@ fn tree_row_label(node: &crate::tree::TreeNode) -> String {
     }
 }
 
-fn diff_row_text(file: Option<&diffler_core::model::FileDiff>, row: &DiffRow) -> Option<String> {
-    match *row {
-        DiffRow::Line { hunk, line, .. } => {
-            Some(file?.hunks.get(hunk)?.lines.get(line)?.text.clone())
-        }
-        _ => None,
-    }
-}
-
 /// Byte offset of the `chars`-th character, for editing the input buffer.
 fn byte_index(buffer: &str, chars: usize) -> usize {
     buffer

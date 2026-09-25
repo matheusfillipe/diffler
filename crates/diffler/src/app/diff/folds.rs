@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use diffler_core::model::{DiffLine, DiffModel, LineKind};
+use diffler_core::model::{DiffLine, DiffModel, FileDiff, LineKind};
 use diffler_core::syntax::{Def, DefKind, ScopeIndex};
 
 use super::rows::line_row_text;
@@ -512,19 +512,28 @@ fn hidden_lines(rows: &[DiffRow], span: &Span) -> Vec<(usize, usize)> {
         .collect()
 }
 
+/// The `DiffLine`s a fold row's own `(hunk, line)` pairs point to, resolved
+/// against `file` and paired with their own position, so a yank, a search
+/// match, and a search jump can each read the one thing a fold row hides.
+pub(crate) fn resolve_hidden<'a>(
+    file: &'a FileDiff,
+    lines: &[(usize, usize)],
+) -> Vec<((usize, usize), &'a DiffLine)> {
+    lines
+        .iter()
+        .filter_map(|&(hunk, line)| {
+            let diff_line = file.hunks.get(hunk)?.lines.get(line)?;
+            Some(((hunk, line), diff_line))
+        })
+        .collect()
+}
+
 /// The hidden lines as a plain-text buffer holds them, so a yank over a fold
 /// row copies the code it stands for.
-fn hidden_copy(rows: &[DiffRow], model: &DiffModel, span: &Span) -> String {
-    rows.get(span.start..span.end)
-        .unwrap_or_default()
+fn hidden_copy(file: &FileDiff, lines: &[(usize, usize)]) -> String {
+    resolve_hidden(file, lines)
         .iter()
-        .filter_map(|row| {
-            let DiffRow::Line { file, hunk, line } = *row else {
-                return None;
-            };
-            let line = model.files.get(file)?.hunks.get(hunk)?.lines.get(line)?;
-            Some(line_row_text(line))
-        })
+        .map(|(_, diff_line)| line_row_text(diff_line))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -552,15 +561,19 @@ pub(crate) fn apply(
                     .map_or_else(String::new, |r| r.label(lines.len())),
                 many => format!("⋯ {} lines · {} folded regions", lines.len(), many.len()),
             };
-            let file = match rows.get(span.start) {
+            let file_index = match rows.get(span.start) {
                 Some(DiffRow::Line { file, .. }) => *file,
                 _ => 0,
             };
             out_rows.push(DiffRow::Fold {
-                file,
+                file: file_index,
                 group: groups.len(),
             });
-            out_copy.push(RowCopy::Text(hidden_copy(rows, model, &span)));
+            let copy_text = model
+                .files
+                .get(file_index)
+                .map_or_else(String::new, |file| hidden_copy(file, &lines));
+            out_copy.push(RowCopy::Text(copy_text));
             groups.push(FoldGroup {
                 keys: span
                     .regions
@@ -631,7 +644,7 @@ pub(crate) fn apply_split(
 
 #[cfg(test)]
 mod tests {
-    use diffler_core::model::{FileDiff, HashCache, Hunk, HunkId};
+    use diffler_core::model::{HashCache, Hunk, HunkId};
     use diffler_core::syntax::registry::REGISTRY;
 
     use super::*;
