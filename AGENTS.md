@@ -219,7 +219,10 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   `RowRef`'s capture/restore; an enrichment
   queued under the old algorithm is dropped on arrival, since a content hash
   cannot tell the two apart. The pane heading trails `· <algorithm>`
-  whenever it isn't the default.
+  whenever it isn't the default. Once the re-diff lands, the status line says
+  how many files' hunks changed (compared by hunk id), or that the hunks came
+  out the same, since most diffs do under every algorithm and a silent switch
+  reads as a broken one.
 - **Grammars.** `syntax::registry::REGISTRY` is one process-wide `LazyLock`
   holding every bundled grammar; a language compiles its highlight query on
   first use (~15ms) behind a `OnceLock`, on the enrichment thread. Registering
@@ -311,9 +314,13 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   lines, minus a changed scope's signature or closing line at either edge).
   A region starts open where it holds a commented line, where the reader
   widened the file's context with `+`/`=` (they asked to see it), and on a
-  walkthrough slide. `za`/`<tab>` opens a fold row or closes the region under
-  the cursor, `zR` opens every region of the file, `zM` drops the reader's
-  overrides. A region is keyed by its rule and first non-blank line, plus an
+  walkthrough slide. Beside the rules' regions, every definition the diff
+  shows (its body, signature kept) and every hunk is a region that starts
+  open, so `za`/`<tab>` works on any line: it opens a fold row, or closes the
+  innermost region under the cursor (a rule's region, else the enclosing
+  definition, else the hunk), and a larger closed region takes its lines
+  from a smaller one. `zR` opens every region of the file, `zM` drops the
+  reader's overrides. A region is keyed by its rule and first non-blank line, plus an
   occurrence count for two that open on the same text, never by row or line
   count, so an opened fold stays open while the agent edits around it.
   Comment and composer rows never break a region, so adding one keeps its
