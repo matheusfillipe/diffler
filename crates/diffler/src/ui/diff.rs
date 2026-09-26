@@ -1219,11 +1219,13 @@ fn split_row_lines(
             )],
             None => vec![Line::default()],
         },
-        SplitRow::Fold { region, lines } => {
+        SplitRow::Fold { hunk } => {
             let label = diff
-                .regions
-                .get(region)
-                .map_or_else(String::new, |r| r.label(lines));
+                .fold_groups
+                .iter()
+                .find(|group| group.hunk == hunk)
+                .map(|group| group.label.clone())
+                .unwrap_or_default();
             vec![fold_row(
                 ctx.theme,
                 &label,
@@ -4115,59 +4117,28 @@ flowchart LR
         insta::assert_snapshot!(render(&mut app).backend());
     }
 
+    /// A folded hunk reads as its own header, naming what it hides, and the
+    /// open hunk beside it is untouched.
     #[test]
-    fn a_fold_row_names_the_function_it_hides() {
-        let base = "fn a() {\n    one();\n}\nfn b() {\n    two();\n    three();\n}\nfn c() {\n    four();\n}\n";
+    fn a_folded_hunk_reads_as_its_header_naming_what_it_hides() {
+        let base: String = (1..=30)
+            .flat_map(|i| ["fn f", &i.to_string(), "() {}\n"].map(str::to_owned))
+            .collect();
         let fixture = Fixture::new();
-        fixture.write("f.rs", base);
-        fixture.commit_all("base");
-        fixture.write(
-            "f.rs",
-            &base.replace("one()", "ONE()").replace("four()", "FOUR()"),
-        );
-        let mut app = App::new(fixture.review(), LoadedConfig::default());
-        app.open_working_tree_file("f.rs");
-        insta::assert_snapshot!(render(&mut app).backend());
-    }
-
-    /// A commented line keeps its region open until the reader closes it;
-    /// closed, the region folds as two rows with the card between them.
-    #[test]
-    fn a_closed_region_around_a_comment_folds_on_both_sides_of_its_card() {
-        let base = "fn d() {\n    six();\n    seven();\n    eight();\n    nine();\n    ten();\n    eleven();\n    twelve();\n}\n";
-        let fixture = Fixture::new();
-        fixture.write("f.rs", base);
+        fixture.write("f.rs", &base);
         fixture.commit_all("base");
         fixture.write(
             "f.rs",
             &base
-                .replace("six()", "SIX()")
-                .replace("twelve()", "TWELVE()"),
+                .replace("fn f5()", "fn five()")
+                .replace("fn f20()", "fn twenty()"),
         );
         let mut app = App::new(fixture.review(), LoadedConfig::default());
-        app.review
-            .session_for_mut(&diffler_core::source::ReviewSource::WorkingTree)
-            .add_comment(
-                diffler_core::session::Anchor {
-                    file: "f.rs".into(),
-                    line: Some(5),
-                    line_end: None,
-                    on_old_side: false,
-                    line_text: Some("    nine();".into()),
-                },
-                "reviewer",
-                "is nine still called?",
-            );
         app.open_working_tree_file("f.rs");
         let _ = render(&mut app);
         let diff = app.diff.as_mut().expect("diff");
         diff.focus = Pane::Diff;
-        diff.cursor = diff
-            .rows()
-            .iter()
-            .position(|row| matches!(row, DiffRow::Comment { .. }))
-            .expect("the comment's card")
-            - 1;
+        diff.cursor = 0;
         app.handle(key('z'));
         app.handle(key('a'));
         insta::assert_snapshot!(render(&mut app).backend());

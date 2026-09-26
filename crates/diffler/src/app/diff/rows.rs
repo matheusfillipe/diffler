@@ -45,12 +45,19 @@ pub enum DiffRow {
     Summary {
         line: usize,
     },
-    /// A collapsed run of `Line` rows. `group` indexes the view's own
-    /// `fold_groups`, which names the regions it stands for.
+    /// A folded hunk, standing in for its header and everything under it.
+    /// `group` indexes the view's own `fold_groups`.
     Fold {
         file: usize,
         group: usize,
     },
+}
+
+impl DiffRow {
+    /// A hunk's header row, open or folded: what `]`/`[` step between.
+    pub(crate) fn is_hunk_header(&self) -> bool {
+        matches!(self, Self::Hunk { .. } | Self::Fold { .. })
+    }
 }
 
 /// One display line of a comment block. Body and reply text carry markdown
@@ -539,11 +546,9 @@ pub enum SplitRow {
     Composer {
         line: usize,
     },
-    /// The side-by-side counterpart of [`DiffRow::Fold`], one full-width row
-    /// hiding `lines` of the view's own `regions[region]`.
+    /// The side-by-side counterpart of [`DiffRow::Fold`]: folded hunk `hunk`.
     Fold {
-        region: usize,
-        lines: usize,
+        hunk: usize,
     },
 }
 

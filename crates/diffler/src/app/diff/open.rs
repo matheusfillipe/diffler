@@ -117,7 +117,6 @@ impl App {
             self.config.ui.diff_file_layout,
             self.config.classify.rules(),
             self.config.ui.side_by_side,
-            &self.config.diff.default_folds,
         );
         match draft {
             Some(draft) if same_source => {

@@ -33,11 +33,9 @@ pub(crate) enum RowRef {
     /// the reader is typing.
     Composer(usize),
     Summary,
-    /// A fold row, by the first region it stands for and which of that
-    /// region's fold rows it is, since a comment inside one splits it in two.
+    /// A folded hunk's row, by its hunk key.
     Fold {
         key: String,
-        nth: usize,
     },
 }
 
@@ -123,16 +121,9 @@ impl DiffView {
             }
             DiffRow::Composer { line } => Some(RowRef::Composer(line)),
             DiffRow::Summary { .. } => Some(RowRef::Summary),
-            DiffRow::Fold { group, .. } => {
-                let key = self.fold_groups.get(group)?.keys.first()?.clone();
-                let nth = self
-                    .rows
-                    .get(..row)?
-                    .iter()
-                    .filter(|earlier| self.fold_row_leads_with(earlier, &key))
-                    .count();
-                Some(RowRef::Fold { key, nth })
-            }
+            DiffRow::Fold { group, .. } => Some(RowRef::Fold {
+                key: self.fold_groups.get(group)?.keys.first()?.clone(),
+            }),
         }
     }
 
@@ -173,8 +164,8 @@ impl DiffView {
     pub(crate) fn find_row(&self, review: &Review, target: &RowRef) -> Option<usize> {
         let session = review.session_for(&self.source);
         let model = self.model_for_rows(review);
-        match target {
-            RowRef::Hunk(id) => self.rows.iter().position(|row| {
+        let header_of = |id: &HunkId| {
+            self.rows.iter().position(|row| {
                 let DiffRow::Hunk { file, hunk } = row else {
                     return false;
                 };
@@ -183,7 +174,17 @@ impl DiffView {
                     .get(*file)
                     .and_then(|file| file.hunks.get(*hunk))
                     .is_some_and(|found| found.id == *id)
-            }),
+            })
+        };
+        let fold_of = |key: &str| {
+            self.rows
+                .iter()
+                .position(|row| self.fold_row_leads_with(row, key))
+        };
+        // folding a hunk turns its header into its fold row and opening it
+        // turns it back, so each name finds the other form of the same hunk
+        match target {
+            RowRef::Hunk(id) => header_of(id).or_else(|| fold_of(&id.0)),
             // a line a fold now hides is found as that fold's row, so closing
             // a fold under the cursor leaves the cursor on it
             RowRef::Line {
@@ -224,13 +225,7 @@ impl DiffView {
                 .rows
                 .iter()
                 .position(|row| matches!(row, DiffRow::Summary { line: 0 })),
-            RowRef::Fold { key, nth } => self
-                .rows
-                .iter()
-                .enumerate()
-                .filter(|(_, row)| self.fold_row_leads_with(row, key))
-                .nth(*nth)
-                .map(|(index, _)| index),
+            RowRef::Fold { key, .. } => fold_of(key).or_else(|| header_of(&HunkId(key.clone()))),
         }
     }
 

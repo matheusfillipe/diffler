@@ -203,7 +203,8 @@ Vim-like: `j`/`k`/`gg`/`G` motions, `/` search, and
 | `t` | cycle the sidebar: file tree, review buckets (viewed files fold away, come back if they change), kinds (source, tests, docs, config, build, generated, assets), and the walkthrough when the review has one |
 | `V` | select a range: lines in the diff, rows anywhere else, or a run of commits on the status screen, which `<cr>` then reviews as one combined diff |
 | `o` | open a flowchart under the cursor as a full-screen graph you walk node by node; on a sequence diagram or callstack row, `<cr>` jumps to its code |
-| `za` / `<tab>` | fold the block under the cursor (its function, else its hunk) or open a fold; `zR` opens every fold in the file, `zM` resets them |
+| `]` / `[` | step to the next or previous hunk, folded or open |
+| `za` / `<tab>` | fold the hunk under the cursor, or open it; `zM` folds every hunk in the file, `zR` opens them all |
 | `<c-a>` | switch the diff algorithm live (myers, minimal, patience, histogram, structural) |
 | `Z` | send feedback to the agent |
 | `C` | comments sidebar: walk every comment, Enter jumps to it in the pane; `t` groups by file, author, or status (resolved folds away), or lists them flat |

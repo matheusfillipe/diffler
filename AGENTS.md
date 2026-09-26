@@ -300,39 +300,20 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   sidebar's order, since the diff's file order is a different order on screen.
   The status screen keeps the flat magit list. OSC52 clipboard works over
   ssh/tmux.
-  The diff pane folds too (`app/diff/folds.rs`), apart from the sidebar's
-  folds: a fold row stands for a run of lines and names what it hides from
-  the scope index, `⋯ 4 lines · fn b`, or `⋯ N lines` where the file has
-  none, and counts the changes it holds, `· 2 changed`, so a folded test
-  never reads as untouched. Four rules pick the regions, each listed in
-  `[diff] default_folds`: `tests` (a test function's body or a whole
-  `test`/`tests` module, its signature line kept, a deleted line placed at
-  its neighbours' row so both sides of a change fold together; a name only
-  containing the word, `latest`, is no
-  test), `deleted-bodies` (12+ deleted lines nothing replaces, whole),
-  `removed-runs` (the middle of 5-11 such lines), `context` (5+ unchanged
-  lines, minus a changed scope's signature or closing line at either edge).
-  A region starts open where it holds a commented line, where the reader
-  widened the file's context with `+`/`=` (they asked to see it), and on a
-  walkthrough slide. Beside the rules' regions, every definition the diff
-  shows (its body, signature kept) and every hunk is a region that starts
-  open, so `za`/`<tab>` works on any line: it opens a fold row, or closes the
-  innermost region under the cursor (a rule's region, else the enclosing
-  definition, else the hunk), and a larger closed region takes its lines
-  from a smaller one. `zR` opens every region of the file, `zM` drops the
-  reader's overrides. A region is keyed by its rule and first non-blank line, plus an
-  occurrence count for two that open on the same text, never by row or line
-  count, so an opened fold stays open while the agent edits around it.
-  Comment and composer rows never break a region, so adding one keeps its
-  key; a closed region around one draws as two fold rows with the card
-  between. Two closed regions at most two unchanged rows apart merge into
-  one row; side-by-side folds each region alone, and a pair only when every
-  line it shows is folded. Motions that can land on a hidden line open its
-  fold through `DiffView::reveal_line`: `(`/`)`, and a committed search, which
-  matches a fold row on the code it hides; the cursor closing a fold over
-  itself lands on the fold row (`RowRef::Line` falls back to it). Regions
-  compute in `ensure_rows`, never per frame (~0.2ms of a 0.7ms rebuild on a
-  5k-row file).
+  The diff pane folds hunks (`app/diff/folds.rs`), the same unit `]`/`[`
+  step through. `za`/`<tab>` on any row of a hunk folds it, and on a folded
+  hunk opens it; `zM` folds every hunk of the file and `zR` opens them all.
+  Nothing starts folded. A folded hunk replaces its header and everything
+  under it with one `DiffRow::Fold` that reads as the header plus what it
+  hides, `@@ -19,7 +19,7 @@ fn f() {  ⋯ 7 lines +1 -1 · 1 comment`, so `]`/`[`
+  (`DiffRow::is_hunk_header`) land on it folded or open. A fold is keyed by
+  the hunk's id, so a hunk the agent edits comes back open with the change
+  showing. An open composer's rows stay on screen inside a folded hunk.
+  Motions that can land on a hidden line open its hunk through
+  `DiffView::reveal_line`: `(`/`)`, and a committed search, which matches a
+  fold row on the code it hides. `RowRef::Hunk` and `RowRef::Fold` each find
+  the other form of the same hunk, so folding or opening one keeps the
+  cursor on it.
 - **Kinds sidebar.** `classify::Rules` buckets a path into one fixed set,
   Source / Tests / Docs / Config / Build & CI / Generated / Assets / Other:
   the reader's `[classify]` globs, then what the repo declares, then the
@@ -441,8 +422,7 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   → `<repo>/.diffler/config.toml` → CLI flags; every flag has a config key).
   `diffler config --dump` prints the merged config with origins. `[diff]
   algorithm`/`indent_heuristic` set the line-diff algorithm (see Diff
-  algorithm, above); `[diff] default_folds` sets which diff-pane regions
-  start folded (see TUI, above). `[ui] show_agent_activity` toggles the
+  algorithm, above). `[ui] show_agent_activity` toggles the
   status bar's live agent indicator (see MCP, below).
 - **Walkthrough.** The agent that made a change is the only party who knows the
   order it should be read in, and a walkthrough is that order: one stop per

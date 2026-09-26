@@ -39,11 +39,6 @@
 # A heuristic that shifts ambiguous hunk boundaries to indentation, the way
 # modern git does by default.
 # indent_heuristic = true
-# Which regions of the diff pane start folded: "tests" (a test function's
-# body, or a whole test module), "deleted-bodies" (12+ deleted lines nothing
-# replaces), "removed-runs" (the middle of 5-11 such lines), "context" (5+
-# unchanged lines). An empty list folds nothing until you press `za`.
-# default_folds = ["tests", "deleted-bodies", "removed-runs", "context"]
 
 [mcp]
 # enabled = true
@@ -162,9 +157,9 @@
 # center_cursor = "zz"
 # cursor_top = "zt"
 # cursor_bottom = "zb"
-# toggle_fold = "za"       # also <tab>: folds the folder/section/comments-group the cursor sits in, or the diff region under the cursor
-# open_all_folds = "zR"    # open every fold in the file on screen
-# reset_folds = "zM"       # put the file on screen back to its default folds
+# toggle_fold = "za"       # also <tab>: folds the folder/section/comments-group the cursor sits in, or the hunk under the diff cursor
+# open_all_folds = "zR"    # open every folded hunk in the file on screen
+# fold_all = "zM"          # fold every hunk in the file on screen
 # switch_theme = "T"
 # switch_diff_algorithm = "<c-a>"
 # open_editor = "e"

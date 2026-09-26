@@ -238,8 +238,8 @@ impl App {
             Action::HalfPageUp => self.diff_move(-self.diff_page(false)),
             Action::FullPageDown => self.diff_move(self.diff_page(true)),
             Action::FullPageUp => self.diff_move(-self.diff_page(true)),
-            Action::NextHunk => self.diff_jump(true, |row| matches!(row, DiffRow::Hunk { .. })),
-            Action::PrevHunk => self.diff_jump(false, |row| matches!(row, DiffRow::Hunk { .. })),
+            Action::NextHunk => self.diff_jump(true, DiffRow::is_hunk_header),
+            Action::PrevHunk => self.diff_jump(false, DiffRow::is_hunk_header),
             Action::NextFunction => self.diff_jump_function(true),
             Action::PrevFunction => self.diff_jump_function(false),
             Action::CenterCursor => self.diff_align(ScrollAlign::Center),
@@ -276,7 +276,7 @@ impl App {
             Action::OpenFigureGraph => self.open_figure_graph_at_cursor(),
             Action::ToggleFold => self.diff_toggle_fold(),
             Action::OpenAllFolds => self.diff_open_all_folds(),
-            Action::ResetFolds => self.diff_reset_folds(),
+            Action::FoldAll => self.diff_fold_all(),
             other => {
                 self.info(format!("{} is not implemented yet", other.name()));
             }
@@ -296,15 +296,16 @@ impl App {
         });
     }
 
-    /// `za`/`<tab>` in the diff pane: open the fold under the cursor, or
-    /// close whatever region it sits inside.
+    /// `za`/`<tab>` in the diff pane: fold the hunk the cursor is in, or open
+    /// the folded hunk under it.
     fn diff_toggle_fold(&mut self) {
+        let review = &self.review;
         let toggled = self
             .diff
             .as_mut()
-            .is_some_and(DiffView::toggle_fold_at_cursor);
+            .is_some_and(|diff| diff.toggle_fold_at_cursor(review));
         if !toggled {
-            self.info("nothing to fold here");
+            self.info("move onto a hunk to fold it");
             return;
         }
         if let Some(diff) = self.diff.as_mut() {
@@ -312,29 +313,30 @@ impl App {
         }
     }
 
-    /// `zR`: open every fold of the file on screen.
+    /// `zR`: open every folded hunk of the file on screen.
     fn diff_open_all_folds(&mut self) {
         let opened = self.diff.as_mut().is_some_and(DiffView::open_all_folds);
         if let Some(diff) = self.diff.as_mut() {
             diff.ensure_rows(&self.review);
         }
         self.info(if opened {
-            "opened every fold"
+            "opened every hunk"
         } else {
-            "nothing to unfold here"
+            "no hunk is folded"
         });
     }
 
-    /// `zM`: put the file on screen back to its default folds.
-    fn diff_reset_folds(&mut self) {
-        let reset = self.diff.as_mut().is_some_and(DiffView::reset_folds);
+    /// `zM`: fold every hunk of the file on screen.
+    fn diff_fold_all(&mut self) {
+        let review = &self.review;
+        let folded = self.diff.as_mut().is_some_and(|diff| diff.fold_all(review));
         if let Some(diff) = self.diff.as_mut() {
             diff.ensure_rows(&self.review);
         }
-        self.info(if reset {
-            "restored the default folds"
+        self.info(if folded {
+            "folded every hunk"
         } else {
-            "already showing the default folds"
+            "this file has no hunks to fold"
         });
     }
 
