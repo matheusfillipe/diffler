@@ -2524,6 +2524,41 @@ mod tests {
         assert_eq!(app.config.diff.algorithm, DiffAlgorithm::Histogram);
     }
 
+    /// A switch says whether the diff on screen changed, since most diffs
+    /// come out the same under every algorithm.
+    #[test]
+    fn a_switch_says_whether_the_hunks_changed() {
+        let fixture = crate::test_support::Fixture::new();
+        fixture.write(
+            "a.txt",
+            "begin\nrepeat\nrepeat\nunique_anchor\nrepeat\nrepeat\nend\n",
+        );
+        fixture.write("b.txt", "one\ntwo\nthree\n");
+        fixture.commit_all("base");
+        fixture.write(
+            "a.txt",
+            "begin\nunique_anchor\nrepeat\nrepeat\nrepeat\nrepeat\nend\n",
+        );
+        fixture.write("b.txt", "one\nTWO\nthree\n");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_working_tree_diff(None);
+        let said = |app: &App| app.message.as_ref().map(|m| m.text.clone());
+
+        app.apply_diff_algorithm("patience");
+        app.settle_rediff();
+        assert_eq!(
+            said(&app).as_deref(),
+            Some("patience changed the hunks of 1 file")
+        );
+
+        app.apply_diff_algorithm("patience");
+        app.settle_rediff();
+        assert_eq!(
+            said(&app).as_deref(),
+            Some("patience gives the same hunks here")
+        );
+    }
+
     /// The reader keeps moving while the re-diff runs, so the cursor it lands
     /// on is the one they left, not the one they had when they switched.
     #[test]

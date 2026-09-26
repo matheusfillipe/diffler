@@ -20,6 +20,9 @@ use crate::config::FoldKind;
 const DELETED_BODY_MIN: usize = 12;
 const REMOVED_RUN_MIN: usize = 5;
 const CONTEXT_MIN: usize = 5;
+/// A block `za` folds on its own must hide at least this many lines, or the
+/// fold row would stand in for no more than it hides.
+const MANUAL_MIN: usize = 2;
 /// Closed regions at most this many unchanged rows apart share one fold row.
 const MERGE_GAP: usize = 2;
 
@@ -35,6 +38,9 @@ pub(crate) struct FoldRegion {
     /// Added or deleted lines the region hides, which its label names so a
     /// folded change never reads as untouched code.
     changed: usize,
+    /// A block `za` folds by hand (a definition's body or a whole hunk),
+    /// one no default rule picked.
+    pub manual: bool,
 }
 
 impl FoldRegion {
@@ -418,6 +424,7 @@ fn region(
             .iter()
             .filter(|e| e.diff.kind != LineKind::Context)
             .count(),
+        manual: false,
     }
 }
 
@@ -445,17 +452,78 @@ pub(crate) fn compute_regions(
         for piece in pieces(run, &tests, &changed, rules) {
             regions.push(region(run, &piece, rules, &mut seen));
         }
+        regions.extend(manual_regions(run, rules.scope, &mut seen));
     }
     regions
 }
 
+/// Regions that start open and close only on `za`: the body of every
+/// definition the run shows (its signature kept visible), and the run itself,
+/// so `za` folds the block around the cursor on any line.
+fn manual_regions(
+    run: &[Entry<'_>],
+    scope: Option<&ScopeIndex>,
+    seen: &mut HashMap<String, usize>,
+) -> Vec<FoldRegion> {
+    let mut out = Vec::new();
+    let mut push = |name: String, what: Option<String>, hidden: Vec<&Entry<'_>>| {
+        if hidden.len() < MANUAL_MIN {
+            return;
+        }
+        let occurrence = seen.entry(name.clone()).or_default();
+        let key = format!("{name}#{occurrence}");
+        *occurrence += 1;
+        out.push(FoldRegion {
+            key,
+            lines: hidden.iter().map(|e| (e.hunk, e.line)).collect(),
+            starts_closed: false,
+            noun: "lines",
+            what,
+            changed: hidden
+                .iter()
+                .filter(|e| e.diff.kind != LineKind::Context)
+                .count(),
+            manual: true,
+        });
+    };
+    let mut spans = HashSet::new();
+    for def in scope.map(ScopeIndex::defs).unwrap_or_default() {
+        if !spans.insert((def.start_row, def.end_row)) {
+            continue;
+        }
+        let body: Vec<&Entry<'_>> = run
+            .iter()
+            .enumerate()
+            .filter(|&(index, entry)| {
+                let signature = entry.new_row() == Some(def.start_row);
+                placed_row(run, index).is_some_and(|row| def.start_row <= row && row <= def.end_row)
+                    && !signature
+            })
+            .map(|(_, entry)| entry)
+            .collect();
+        push(format!("Scope:{}", def.name), Some(def_name(def)), body);
+    }
+    let first = run
+        .iter()
+        .map(|e| e.diff.text.trim())
+        .find(|text| !text.is_empty())
+        .unwrap_or_default()
+        .to_owned();
+    push(format!("Hunk:{first}"), None, run.iter().collect());
+    out
+}
+
 /// The region each closed line belongs to, the lookup both row builders read.
+/// Regions nest (a definition inside a hunk, a test inside a definition), so
+/// we let a larger closed region take its lines from a smaller one.
 fn closed_index(
     regions: &[FoldRegion],
     overrides: &HashMap<String, bool>,
 ) -> HashMap<(usize, usize), usize> {
     let mut owner = HashMap::new();
-    for (index, region) in regions.iter().enumerate() {
+    let mut by_size: Vec<(usize, &FoldRegion)> = regions.iter().enumerate().collect();
+    by_size.sort_by_key(|(_, region)| region.lines.len());
+    for (index, region) in by_size {
         let closed = overrides
             .get(&region.key)
             .copied()
@@ -758,6 +826,40 @@ mod tests {
         FoldKind::ALL.into()
     }
 
+    /// The regions the default rules pick, leaving out the blocks `za` folds
+    /// by hand.
+    fn default_regions(
+        rows: &[DiffRow],
+        model: &DiffModel,
+        rules: &FoldRules<'_>,
+    ) -> Vec<FoldRegion> {
+        compute_regions(rows, model, rules)
+            .into_iter()
+            .filter(|region| !region.manual)
+            .collect()
+    }
+
+    #[test]
+    fn every_definition_and_hunk_gets_a_region_that_starts_open() {
+        let src = "fn outer() {\n    fn inner() {\n        one();\n    }\n    two();\n}\n";
+        let scope = REGISTRY.scope_index("f.rs", src);
+        let lines: Vec<(LineKind, &str)> = src.lines().map(|l| (LineKind::Context, l)).collect();
+        let model = model_of(&lines);
+        let enabled = HashSet::new();
+        let manual: Vec<FoldRegion> =
+            compute_regions(&rows_of(&model), &model, &rules(&enabled, Some(&scope)))
+                .into_iter()
+                .filter(|region| region.manual)
+                .collect();
+        let whats: Vec<Option<&str>> = manual.iter().map(|r| r.what.as_deref()).collect();
+        assert_eq!(
+            whats,
+            [Some("fn outer"), Some("fn inner"), None],
+            "{manual:?}"
+        );
+        assert!(manual.iter().all(|r| !r.starts_closed));
+    }
+
     fn fold_count(rows: &[DiffRow]) -> usize {
         rows.iter()
             .filter(|row| matches!(row, DiffRow::Fold { .. }))
@@ -776,7 +878,7 @@ mod tests {
     #[test]
     fn a_removed_run_folds_the_middle_and_keeps_its_ends_visible() {
         let model = numbered(&[LineKind::Deleted; 7]);
-        let regions = compute_regions(&rows_of(&model), &model, &rules(&every_kind(), None));
+        let regions = default_regions(&rows_of(&model), &model, &rules(&every_kind(), None));
         assert_eq!(regions.len(), 1);
         assert_eq!(
             regions[0].lines,
@@ -789,7 +891,7 @@ mod tests {
     #[test]
     fn a_run_of_twelve_deleted_lines_folds_whole() {
         let model = numbered(&[LineKind::Deleted; 12]);
-        let regions = compute_regions(&rows_of(&model), &model, &rules(&every_kind(), None));
+        let regions = default_regions(&rows_of(&model), &model, &rules(&every_kind(), None));
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].lines.len(), 12);
     }
@@ -799,14 +901,14 @@ mod tests {
         let mut kinds = vec![LineKind::Deleted; 4];
         kinds.extend([LineKind::Context; 4]);
         let model = numbered(&kinds);
-        assert!(compute_regions(&rows_of(&model), &model, &rules(&every_kind(), None)).is_empty());
+        assert!(default_regions(&rows_of(&model), &model, &rules(&every_kind(), None)).is_empty());
     }
 
     #[test]
     fn a_disabled_kind_never_folds() {
         let model = numbered(&[LineKind::Deleted; 12]);
         let enabled = [FoldKind::Context].into();
-        assert!(compute_regions(&rows_of(&model), &model, &rules(&enabled, None)).is_empty());
+        assert!(default_regions(&rows_of(&model), &model, &rules(&enabled, None)).is_empty());
     }
 
     #[test]
@@ -816,7 +918,7 @@ mod tests {
         let lines: Vec<(LineKind, &str)> = src.lines().map(|l| (LineKind::Context, l)).collect();
         let model = model_of(&lines);
         let enabled = [FoldKind::Tests].into();
-        let regions = compute_regions(&rows_of(&model), &model, &rules(&enabled, Some(&scope)));
+        let regions = default_regions(&rows_of(&model), &model, &rules(&enabled, Some(&scope)));
         assert_eq!(regions.len(), 1, "{regions:?}");
         assert!(
             !regions[0].lines.contains(&(0, 3)),
@@ -846,7 +948,7 @@ mod tests {
         }
         let model = model_from(lines);
         let enabled = [FoldKind::Tests].into();
-        let regions = compute_regions(&rows_of(&model), &model, &rules(&enabled, Some(&scope)));
+        let regions = default_regions(&rows_of(&model), &model, &rules(&enabled, Some(&scope)));
         assert_eq!(regions.len(), 1, "one test region, unbroken: {regions:?}");
         let deleted = model.files[0].hunks[0]
             .lines
@@ -871,7 +973,7 @@ mod tests {
         lines[6].0 = LineKind::Added;
         let model = model_of(&lines);
         let enabled = [FoldKind::Context].into();
-        let regions = compute_regions(&rows_of(&model), &model, &rules(&enabled, Some(&scope)));
+        let regions = default_regions(&rows_of(&model), &model, &rules(&enabled, Some(&scope)));
         assert_eq!(regions.len(), 1, "{regions:?}");
         assert_eq!(
             regions[0].lines.first(),
@@ -908,7 +1010,7 @@ mod tests {
             );
         }
         let enabled = [FoldKind::DeletedBodies].into();
-        let regions = compute_regions(&rows_of(&model), &model, &rules(&enabled, Some(&scope)));
+        let regions = default_regions(&rows_of(&model), &model, &rules(&enabled, Some(&scope)));
         assert_eq!(regions.len(), 1, "{regions:?}");
         assert_eq!(regions[0].label(12), "⋯ 12 deleted lines");
     }
@@ -922,7 +1024,7 @@ mod tests {
         lines[6].0 = LineKind::Added;
         let model = model_of(&lines);
         let enabled = [FoldKind::Context].into();
-        let regions = compute_regions(&rows_of(&model), &model, &rules(&enabled, Some(&scope)));
+        let regions = default_regions(&rows_of(&model), &model, &rules(&enabled, Some(&scope)));
         assert_eq!(regions[0].label(6), "⋯ 6 lines · fn a +2 more");
     }
 
@@ -949,7 +1051,7 @@ mod tests {
         lines.extend(vec![(LineKind::Context, ""); 6]);
         let model = model_of(&lines);
         let enabled = [FoldKind::Context].into();
-        let regions = compute_regions(&rows_of(&model), &model, &rules(&enabled, None));
+        let regions = default_regions(&rows_of(&model), &model, &rules(&enabled, None));
         assert_eq!(regions.len(), 2);
         assert_ne!(regions[0].key, regions[1].key);
     }
@@ -960,7 +1062,7 @@ mod tests {
         let short = numbered(&[LineKind::Context; 6]);
         let enabled = [FoldKind::Context].into();
         let key = |model: &DiffModel| {
-            compute_regions(&rows_of(model), model, &rules(&enabled, None))[0]
+            default_regions(&rows_of(model), model, &rules(&enabled, None))[0]
                 .key
                 .clone()
         };
@@ -975,7 +1077,7 @@ mod tests {
         let model = numbered(&kinds);
         let rows = rows_of(&model);
         let enabled = [FoldKind::DeletedBodies].into();
-        let regions = compute_regions(&rows, &model, &rules(&enabled, None));
+        let regions = default_regions(&rows, &model, &rules(&enabled, None));
         assert_eq!(regions.len(), 2);
         let (out_rows, _, groups) = folded(&model, &rows, &regions);
         assert_eq!(out_rows.len(), 1, "{out_rows:?}");
@@ -996,7 +1098,7 @@ mod tests {
         });
         rows.extend_from_slice(&line_rows[5..]);
         let enabled = [FoldKind::Context].into();
-        let regions = compute_regions(&rows, &model, &rules(&enabled, None));
+        let regions = default_regions(&rows, &model, &rules(&enabled, None));
         assert_eq!(regions.len(), 1, "a comment row never splits a region");
         let (out_rows, _, _) = folded(&model, &rows, &regions);
         assert_eq!(fold_count(&out_rows), 2, "{out_rows:?}");
@@ -1012,7 +1114,7 @@ mod tests {
             comment_spans: &spans,
             ..rules(&enabled, None)
         };
-        let regions = compute_regions(&rows_of(&model), &model, &rules);
+        let regions = default_regions(&rows_of(&model), &model, &rules);
         assert!(!regions[0].starts_closed);
     }
 
@@ -1024,12 +1126,12 @@ mod tests {
             context_expanded: true,
             ..rules(&enabled, None)
         };
-        assert!(!compute_regions(&rows_of(&model), &model, &expanded)[0].starts_closed);
+        assert!(!default_regions(&rows_of(&model), &model, &expanded)[0].starts_closed);
         let slide = FoldRules {
             defaults: false,
             ..rules(&enabled, None)
         };
-        assert!(!compute_regions(&rows_of(&model), &model, &slide)[0].starts_closed);
+        assert!(!default_regions(&rows_of(&model), &model, &slide)[0].starts_closed);
     }
 
     #[test]
@@ -1037,7 +1139,7 @@ mod tests {
         let model = numbered(&[LineKind::Context; 6]);
         let rows = rows_of(&model);
         let enabled = [FoldKind::Context].into();
-        let regions = compute_regions(&rows, &model, &rules(&enabled, None));
+        let regions = default_regions(&rows, &model, &rules(&enabled, None));
         let overrides = HashMap::from([(regions[0].key.clone(), false)]);
         let copy = vec![RowCopy::Text(String::new()); rows.len()];
         let (out_rows, _, _) = apply(&rows, &copy, &model, &regions, &overrides);
@@ -1049,7 +1151,7 @@ mod tests {
         let model = numbered(&[LineKind::Context; 5]);
         let rows = rows_of(&model);
         let enabled = [FoldKind::Context].into();
-        let regions = compute_regions(&rows, &model, &rules(&enabled, None));
+        let regions = default_regions(&rows, &model, &rules(&enabled, None));
         let (_, copy, _) = folded(&model, &rows, &regions);
         assert_eq!(
             copy[0].text(),
@@ -1064,7 +1166,7 @@ mod tests {
         kinds.extend([LineKind::Deleted; 12]);
         let model = numbered(&kinds);
         let enabled = [FoldKind::DeletedBodies].into();
-        let regions = compute_regions(&rows_of(&model), &model, &rules(&enabled, None));
+        let regions = default_regions(&rows_of(&model), &model, &rules(&enabled, None));
         let split: Vec<SplitRow> = (0..26)
             .map(|line| SplitRow::Pair {
                 hunk: 0,
@@ -1088,7 +1190,7 @@ mod tests {
         let mut kinds = vec![LineKind::Deleted; 12];
         kinds.extend([LineKind::Added; 12]);
         let model = numbered(&kinds);
-        assert!(compute_regions(&rows_of(&model), &model, &rules(&every_kind(), None)).is_empty());
+        assert!(default_regions(&rows_of(&model), &model, &rules(&every_kind(), None)).is_empty());
     }
 }
 
@@ -1333,6 +1435,66 @@ mod app_tests {
         app.handle(key(')'));
         assert_eq!(cursor_line(&app), Some(4), "{:?}", rows(&app));
         assert!(folds(&app).is_empty());
+    }
+
+    /// A one-line edit in the middle of a function, the shape of most real
+    /// diffs: three lines of context around it and no default fold at all.
+    fn one_edit_in_a_function() -> Fixture {
+        let base = "fn parse(input: &str) -> Vec<u32> {\n    let mut out = Vec::new();\n    for part in input.split(',') {\n        let trimmed = part.trim();\n        if trimmed.is_empty() {\n            continue;\n        }\n        out.push(trimmed.parse().unwrap_or(0));\n    }\n    out\n}\n";
+        let fixture = Fixture::new();
+        fixture.write("p.rs", base);
+        fixture.commit_all("base");
+        fixture.write("p.rs", &base.replace("continue;", "break;"));
+        fixture
+    }
+
+    #[test]
+    fn za_on_an_ordinary_line_folds_the_function_around_it() {
+        let fixture = one_edit_in_a_function();
+        let mut app = open(&fixture, "p.rs");
+        assert!(folds(&app).is_empty(), "no default fold: {:?}", rows(&app));
+        let row = shown_at(&app, 4);
+        seat(&mut app, row);
+        press(&mut app, "za");
+        let diff = app.diff.as_ref().expect("diff");
+        let labels: Vec<&str> = diff.fold_groups.iter().map(|g| g.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            ["⋯ 8 lines · fn parse · 2 changed"],
+            "{:?}",
+            rows(&app)
+        );
+        assert_eq!(
+            folds(&app),
+            [diff.cursor],
+            "the cursor lands on the fold row"
+        );
+
+        press(&mut app, "za");
+        assert!(folds(&app).is_empty());
+        assert!(shown(&app).contains(&6));
+    }
+
+    #[test]
+    fn za_folds_the_hunk_where_the_file_has_no_definitions() {
+        let fixture = fixture(&[15]);
+        let mut app = open(&fixture, "a.txt");
+        assert!(folds(&app).is_empty());
+        let row = shown_at(&app, 14);
+        seat(&mut app, row);
+        press(&mut app, "za");
+        let diff = app.diff.as_ref().expect("diff");
+        let labels: Vec<&str> = diff.fold_groups.iter().map(|g| g.label.as_str()).collect();
+        assert_eq!(labels, ["⋯ 8 lines · 2 changed"], "{:?}", rows(&app));
+    }
+
+    #[test]
+    fn z_r_with_nothing_folded_says_so() {
+        let fixture = one_edit_in_a_function();
+        let mut app = open(&fixture, "p.rs");
+        press(&mut app, "zR");
+        let message = app.message.as_ref().expect("a message");
+        assert_eq!(message.text, "nothing to unfold here");
     }
 
     #[test]

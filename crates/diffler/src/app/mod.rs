@@ -1734,9 +1734,11 @@ impl App {
             .diff
             .as_ref()
             .map(|diff| diff.capture_positions(&self.review));
+        let before = self.shown_hunks();
         self.review.install_refresh(status, model);
         self.status.clear_enriched();
         let Some(positions) = positions else {
+            self.report_rediff(&before);
             return Flow::Continue;
         };
         let rediffed = match &request.about {
@@ -1764,7 +1766,42 @@ impl App {
             None => self.diff.as_mut().and_then(|diff| diff.commit_model.take()),
         };
         self.finish_diff_swap(positions, model);
+        self.report_rediff(&before);
         Flow::Continue
+    }
+
+    /// Every file of the diff on screen (the working tree's when no diff is
+    /// open) with the ids of its hunks, which change whenever an algorithm
+    /// splits or aligns them differently.
+    fn shown_hunks(&self) -> Vec<(String, Vec<diffler_core::model::HunkId>)> {
+        let model = match self.diff.as_ref() {
+            Some(diff) => diff.model(&self.review),
+            None => self.review.model(),
+        };
+        model
+            .files
+            .iter()
+            .map(|file| {
+                let ids = file.hunks.iter().map(|hunk| hunk.id.clone()).collect();
+                (file.path.clone(), ids)
+            })
+            .collect()
+    }
+
+    /// Say what an algorithm switch changed, since most diffs come out the
+    /// same under every algorithm and a silent switch reads as a broken one.
+    fn report_rediff(&mut self, before: &[(String, Vec<diffler_core::model::HunkId>)]) {
+        let after = self.shown_hunks();
+        let changed = after.iter().filter(|file| !before.contains(file)).count();
+        let algorithm = self.config.diff.algorithm;
+        self.info(match changed {
+            0 if algorithm == diffler_core::diffalgo::DiffAlgorithm::Structural => {
+                "structural keeps the hunks, dims reformat-only lines".to_owned()
+            }
+            0 => format!("{algorithm} gives the same hunks here"),
+            1 => format!("{algorithm} changed the hunks of 1 file"),
+            n => format!("{algorithm} changed the hunks of {n} files"),
+        });
     }
 
     /// The shared tail of every diff view model swap (a `<c-a>` algorithm

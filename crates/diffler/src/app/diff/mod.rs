@@ -1042,7 +1042,8 @@ impl DiffView {
                 let Some(region) = self
                     .regions
                     .iter()
-                    .find(|region| region.lines.contains(&(hunk, line)))
+                    .filter(|region| region.lines.contains(&(hunk, line)))
+                    .min_by_key(|region| (region.lines.len(), region.manual))
                 else {
                     return false;
                 };
@@ -1058,9 +1059,10 @@ impl DiffView {
         }
     }
 
-    /// `zR`: open every fold of the file on screen. `false` when it has none.
+    /// `zR`: open every fold of the file on screen. `false` when none is
+    /// closed.
     pub(crate) fn open_all_folds(&mut self) -> bool {
-        if self.regions.is_empty() {
+        if self.fold_groups.is_empty() {
             return false;
         }
         let entry = self
