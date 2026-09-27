@@ -100,6 +100,8 @@ pub struct CiJob {
 /// not the job's name repeated), status and duration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CiJobLeg {
+    /// The run job this leg ran as, which its log is fetched by.
+    pub id: JobId,
     pub name: String,
     pub status: JobStatus,
     pub duration_secs: Option<i64>,

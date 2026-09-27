@@ -400,7 +400,9 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   a job with legs into a foldable group: the job keeps its node id as the
   group's root (`Node.foldable`), and each leg becomes a member node
   (`Node.group`) with the matrix parameters alone as its label, the job's own
-  name already on the root. A `needs` edge is always resolved at the job
+  name already on the root. A leg's node id is the run job it ran as
+  (`CiJobLeg.id`, e.g. `build (3.11)`), so `<cr>` on a leg opens that leg's
+  own log through `job_log`'s exact-name match. A `needs` edge is always resolved at the job
   level, so it lands on the root, never a leg. Forgejo's provider maps each
   task straight into its own `CiJob` with no per-job grouping step at all (no
   workflow YAML is parsed there), so a Forgejo matrix already shows one plain

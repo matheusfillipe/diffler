@@ -940,6 +940,7 @@ fn build_job(
         matches
             .iter()
             .map(|j| CiJobLeg {
+                id: JobId(j.name.clone()),
                 name: leg_label(&name, &j.name),
                 status: leg_status(j),
                 duration_secs: j.duration_secs(now),
@@ -1919,6 +1920,12 @@ jobs:
             ["Dockerfile.cuda, -cuda", "Dockerfile.gpu"],
             "each leg's own parameters, uneven counts included"
         );
+        let leg_ids: Vec<&str> = build.legs.iter().map(|l| l.id.0.as_str()).collect();
+        assert_eq!(
+            leg_ids,
+            ["build (Dockerfile.cuda, -cuda)", "build (Dockerfile.gpu)"],
+            "each leg keeps the run job it ran as, the key its log is fetched by"
+        );
         assert!(
             build.legs.iter().all(|l| l.status == JobStatus::Ok),
             "each leg carries its own status: {:?}",
@@ -2093,6 +2100,22 @@ jobs:
         assert_eq!(chunk.steps.len(), 1);
         assert_eq!(chunk.steps[0].duration_secs, Some(3));
         assert_eq!(chunk.next_offset, chunk.text.len() as u64);
+    }
+
+    #[tokio::test]
+    async fn job_log_fetches_the_matrix_leg_a_graph_node_names() {
+        let jobs = r#"{"jobs":[
+            {"id":11,"name":"build (3.11)","status":"completed","conclusion":"success","steps":[]},
+            {"id":12,"name":"build (3.12)","status":"completed","conclusion":"failure","steps":[]}]}"#;
+        let chunk = provider(&[
+            ("runs/42/jobs", jobs),
+            ("jobs/11/logs", "leg eleven\n"),
+            ("jobs/12/logs", "leg twelve\n"),
+        ])
+        .job_log(&RunId("42".into()), &JobId("build (3.12)".into()), 0)
+        .await
+        .expect("log");
+        assert!(chunk.text.contains("leg twelve"), "{chunk:?}");
     }
 
     #[tokio::test]

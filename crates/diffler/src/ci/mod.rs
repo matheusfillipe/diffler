@@ -202,9 +202,9 @@ pub fn to_model(detail: &RunDetail) -> Model {
             subgraph: None,
             decision: false,
         });
-        for (i, leg) in job.legs.iter().enumerate() {
+        for leg in &job.legs {
             model.nodes.push(Node {
-                id: NodeId::new(format!("{}#{i}", job.id.0)),
+                id: NodeId::new(leg.id.0.clone()),
                 label: job_label(&leg.name, leg.duration_secs),
                 status: node_status(leg.status),
                 group: Some(job.id.0.clone()),
@@ -450,11 +450,13 @@ mod tests {
                     needs: vec![],
                     legs: vec![
                         CiJobLeg {
+                            id: JobId("build (Dockerfile.cuda, -cuda)".into()),
                             name: "Dockerfile.cuda, -cuda".into(),
                             status: JobStatus::Ok,
                             duration_secs: Some(60),
                         },
                         CiJobLeg {
+                            id: JobId("build (Dockerfile.gpu)".into()),
                             name: "Dockerfile.gpu".into(),
                             status: JobStatus::Failed,
                             duration_secs: Some(90),
@@ -474,7 +476,16 @@ mod tests {
         let model = to_model(&detail);
 
         let ids: Vec<&str> = model.nodes.iter().map(|n| n.id.0.as_str()).collect();
-        assert_eq!(ids, ["build", "build#0", "build#1", "publish"]);
+        assert_eq!(
+            ids,
+            [
+                "build",
+                "build (Dockerfile.cuda, -cuda)",
+                "build (Dockerfile.gpu)",
+                "publish"
+            ],
+            "a leg is keyed by the run job it ran as, so its log is found"
+        );
 
         let root = &model.nodes[0];
         assert_eq!(
