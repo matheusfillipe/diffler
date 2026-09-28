@@ -567,13 +567,27 @@ impl App {
     }
 
     /// The worst status among `indices`' runs, or `None` when none match: the
-    /// honest rendering for a row with nothing loaded for it yet.
+    /// honest rendering for a row with nothing loaded for it yet. A cancelled
+    /// or skipped run counts only when no other run of the same workflow
+    /// reached a verdict, since a forge cancels the duplicate a concurrency
+    /// group supersedes and that says nothing about the commit.
     pub(crate) fn ci_rollup(&self, indices: &[usize]) -> Option<crate::ci::JobStatus> {
-        indices
+        use crate::ci::JobStatus;
+        let runs: Vec<&crate::ci::CiRun> = indices
             .iter()
             .filter_map(|index| self.runs.get(*index))
+            .collect();
+        let inconclusive =
+            |status: JobStatus| matches!(status, JobStatus::Neutral | JobStatus::Skipped);
+        let decided = |run: &crate::ci::CiRun| {
+            runs.iter().any(|other| {
+                other.name == run.name && other.remote == run.remote && !inconclusive(other.status)
+            })
+        };
+        runs.iter()
+            .filter(|run| !inconclusive(run.status) || !decided(run))
             .map(|run| run.status)
-            .reduce(crate::ci::JobStatus::worse)
+            .reduce(JobStatus::worse)
     }
 
     pub fn is_expanded(&self, section: Section, path: &str) -> bool {
@@ -4312,6 +4326,47 @@ mod tests {
             remote: None,
         };
         app.runs = vec![run(JobStatus::Ok), run(JobStatus::Failed)];
+        let indices = app.runs_for_commit("abc123");
+        assert_eq!(app.ci_rollup(&indices), Some(JobStatus::Failed));
+    }
+
+    /// Two runs of one workflow started together and the forge cancelled the
+    /// duplicate: the one that finished decides, so the commit reads green.
+    /// A workflow whose only run was cancelled still says so.
+    #[test]
+    fn ci_rollup_lets_a_decided_run_outvote_its_cancelled_twin() {
+        use crate::ci::{CiRun, JobStatus, RunId};
+        let (_fixture, mut app) = app();
+        let run = |name: &str, status| CiRun {
+            id: RunId("x".into()),
+            name: name.into(),
+            title: String::new(),
+            branch: "main".into(),
+            commit: "abc123".into(),
+            author: String::new(),
+            created: None,
+            status,
+            url: None,
+            remote: None,
+        };
+        app.runs = vec![
+            run("Deploy - Dev", JobStatus::Neutral),
+            run("Preview", JobStatus::Ok),
+            run("Deploy - Dev", JobStatus::Ok),
+            run("Deploy - Dev", JobStatus::Ok),
+        ];
+        let indices = app.runs_for_commit("abc123");
+        assert_eq!(app.ci_rollup(&indices), Some(JobStatus::Ok));
+
+        app.runs.push(run("Lint", JobStatus::Neutral));
+        let indices = app.runs_for_commit("abc123");
+        assert_eq!(
+            app.ci_rollup(&indices),
+            Some(JobStatus::Neutral),
+            "a workflow that only ever got cancelled still reads as cancelled"
+        );
+
+        app.runs.push(run("Tests", JobStatus::Failed));
         let indices = app.runs_for_commit("abc123");
         assert_eq!(app.ci_rollup(&indices), Some(JobStatus::Failed));
     }
