@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791122478746,
+  "lastUpdate": 1791122885260,
   "repoUrl": "https://github.com/matheusfillipe/diffler",
   "entries": {
     "Benchmark": [
@@ -16223,6 +16223,102 @@ window.BENCHMARK_DATA = {
             "name": "scope_index/20000",
             "value": 88760889,
             "range": "± 1860480",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6a503eeb75fabb0c947f492c4a2952ed9fa28315",
+          "message": "chore(deps): bump the deps group across 1 directory with 3 updates (#53)\n\nBumps the deps group with 3 updates in the / directory: [thiserror](https://github.com/dtolnay/thiserror), [rmcp](https://github.com/modelcontextprotocol/rust-sdk) and [tree-sitter-haskell](https://github.com/tree-sitter/tree-sitter-haskell).\n\n\nUpdates `thiserror` from 2.0.20 to 2.0.21\n- [Release notes](https://github.com/dtolnay/thiserror/releases)\n- [Commits](https://github.com/dtolnay/thiserror/compare/2.0.20...2.0.21)\n\nUpdates `rmcp` from 3.4.0 to 3.5.0\n- [Release notes](https://github.com/modelcontextprotocol/rust-sdk/releases)\n- [Changelog](https://github.com/modelcontextprotocol/rust-sdk/blob/main/release-plz.toml)\n- [Commits](https://github.com/modelcontextprotocol/rust-sdk/compare/rmcp-v3.4.0...rmcp-v3.5.0)\n\nUpdates `tree-sitter-haskell` from 0.23.1 to 0.24.1\n- [Release notes](https://github.com/tree-sitter/tree-sitter-haskell/releases)\n- [Commits](https://github.com/tree-sitter/tree-sitter-haskell/compare/v0.23.1...v0.24.1)\n\n---\nupdated-dependencies:\n- dependency-name: rmcp\n  dependency-version: 3.5.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: deps\n- dependency-name: thiserror\n  dependency-version: 2.0.21\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: deps\n- dependency-name: tree-sitter-haskell\n  dependency-version: 0.24.1\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: deps\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-10-04T16:04:57+02:00",
+          "tree_id": "e0958037cb6b960a84618459c81d3e92019acbca",
+          "url": "https://github.com/matheusfillipe/diffler/commit/6a503eeb75fabb0c947f492c4a2952ed9fa28315"
+        },
+        "date": 1791122884465,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "syndiff_emphasis/1000",
+            "value": 4441299,
+            "range": "± 395860",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/1000",
+            "value": 12571,
+            "range": "± 449",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/1000",
+            "value": 3510604,
+            "range": "± 90669",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/1000",
+            "value": 2658298,
+            "range": "± 42044",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/5000",
+            "value": 25450733,
+            "range": "± 1161919",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/5000",
+            "value": 58912,
+            "range": "± 2439",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/5000",
+            "value": 16468657,
+            "range": "± 371961",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/5000",
+            "value": 12483954,
+            "range": "± 1505762",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/20000",
+            "value": 104776876,
+            "range": "± 6068798",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/20000",
+            "value": 234494,
+            "range": "± 4303",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/20000",
+            "value": 66609552,
+            "range": "± 2186722",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/20000",
+            "value": 51654678,
+            "range": "± 3888654",
             "unit": "ns/iter"
           }
         ]
