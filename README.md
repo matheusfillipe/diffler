@@ -122,17 +122,17 @@ new pull request from the current branch.
 
 ### With a coding agent
 
-diffler serves MCP on port 8417 while it runs. Connect your agent once:
+Connect your agent once:
 
 <details>
 <summary><b>Claude Code</b></summary>
 
 ```sh
-claude mcp add --transport http diffler http://127.0.0.1:8417/mcp
-# or, over stdio, auto-discovering the port:
 claude mcp add diffler -- npx -y diffler-mcp
 # or, as a plugin (MCP server plus the /df, /dfa and /dfr commands):
 claude plugin marketplace add matheusfillipe/diffler && claude plugin install diffler@diffler
+# or, over HTTP, reaching the first diffler you started (it takes port 8417):
+claude mcp add --transport http diffler http://127.0.0.1:8417/mcp
 ```
 
 Connected, the server's prompts show up as `/diffler:review`,
@@ -174,9 +174,10 @@ for c in df dfa dfr; do curl -fsSLo ~/.config/opencode/commands/$c.md \
 <details>
 <summary><b>Any other MCP agent</b></summary>
 
-Point it at `http://127.0.0.1:8417/mcp` (streamable HTTP), or run
-`npx -y diffler-mcp` as a stdio proxy that auto-discovers the port from
-`.diffler/mcp.json`. The server also ships `review`, `walkthrough` and
+Run `npx -y diffler-mcp` as a stdio server. It finds the port of the diffler
+running in your repo, since each diffler writes its own to `.diffler/mcp.json`.
+Or point it at `http://127.0.0.1:8417/mcp` (streamable HTTP), the port the
+first diffler you started takes. The server also ships `review`, `walkthrough` and
 `critique` prompts that prompt-aware clients surface as commands.
 
 </details>
@@ -200,9 +201,10 @@ of its change and open it from the status screen. More in
 | Agent walkthroughs | ✅ | ❌ | ❌ | ❌ |
 | jj | ✅⁴ | ✅ | ❌ | ❌ |
 
-¹ GitHub, GitLab and Forgejo. ² GitHub, GitLab, Gitea, Bitbucket, Azure DevOps
-and Gerrit. ³ tuicr exports your comments as markdown for you to paste into the
-agent. ⁴ Colocated repos.
+<sub>¹ GitHub, GitLab and Forgejo.</sub><br>
+<sub>² GitHub, GitLab, Gitea, Bitbucket, Azure DevOps and Gerrit.</sub><br>
+<sub>³ tuicr exports your comments as markdown for you to paste into the agent.</sub><br>
+<sub>⁴ Colocated repos.</sub>
 
 ## Keys
 
