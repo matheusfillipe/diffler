@@ -552,6 +552,7 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   the symbol moving), `path:start-end`, `path:line`, or a bare
   path, and every resolved one is an inclusive row span: a symbol covers its
   whole definition through `ScopeIndex::def_span`, a range clamps to the file,
+  a C/C++ method defined outside its class answers to `Class::method` too,
   a bare line covers itself. Resolution writes `anchor.line`, `anchor.line_end`
   and `anchor.line_text` onto the comment, so outdated detection and card
   placement are the ones every comment already gets; a `Whole` anchor leaves
@@ -638,11 +639,15 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   `agent_publish_walkthrough` stamps `Walkthrough.rev` with the full oid of
   `HEAD` on every call, a revision included, since each one redescribes the
   stops against whatever is checked out at that moment. The anchor worker
-  reads each file through `Review::compute_walkthrough_files`, which tries
-  `rev` first (`Vcs::read_at`) and falls back to the live worktree for a
-  path that revision lacks, or for a walkthrough saved before `rev` existed,
-  which carries none at all; `WalkthroughRequest` carries `read_rev`
-  alongside the files to read, so the worker knows which tree to open.
+  reads each file through `Review::compute_walkthrough_files`, from the copy
+  `ReadFirst` names and else the other: `rev` (`Vcs::read_at`) first for a
+  walkthrough about a commit, a range or a PR, and the worktree first for one
+  about the working tree, since that code was never in the pinned commit and
+  `rev` only serves a file deleted since. A walkthrough saved before `rev`
+  existed reads the worktree alone. `WalkthroughRequest` carries `read_rev`
+  and `read_first` alongside the files to read. A file the diff itself
+  carries skips that read when its anchors resolve: they resolve against the
+  diff's new side, the text the slide shows.
   A reader marks a slide read with `m` in the walkthrough layout
   (`Session::seen_stops`, pruned to the open source's own `stops`
   on every change); it advances to the next slide the way `m` on a file

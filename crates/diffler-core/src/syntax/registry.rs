@@ -163,8 +163,9 @@ impl LanguageRegistry {
                 tree_sitter_javascript::HIGHLIGHT_QUERY,
                 tree_sitter_typescript::HIGHLIGHTS_QUERY
             ),
-            Some(tree_sitter_typescript::TAGS_QUERY),
+            None,
         );
+        r.tags_over_javascript(tree_sitter_typescript::TAGS_QUERY);
         r.add(
             "tsx",
             &["tsx"],
@@ -175,8 +176,9 @@ impl LanguageRegistry {
                 tree_sitter_javascript::JSX_HIGHLIGHT_QUERY,
                 tree_sitter_typescript::HIGHLIGHTS_QUERY
             ),
-            Some(tree_sitter_typescript::TAGS_QUERY),
+            None,
         );
+        r.tags_over_javascript(tree_sitter_typescript::TAGS_QUERY);
         r.add(
             "go",
             &["go"],
@@ -480,6 +482,18 @@ impl LanguageRegistry {
     fn layout_significant(&mut self) {
         if let Some(entry) = self.entries.last_mut() {
             entry.layout_significant = true;
+        }
+    }
+
+    /// Gives the language just registered JavaScript's tags plus its own
+    /// `tags`. TypeScript's tags query covers only what TypeScript adds to
+    /// JavaScript, so on its own it finds no plain function at all.
+    fn tags_over_javascript(&mut self, tags: &'static str) {
+        if let Some(entry) = self.entries.last_mut() {
+            entry.tags_query = Some(Cow::Owned(format!(
+                "{}\n{tags}",
+                tree_sitter_javascript::TAGS_QUERY
+            )));
         }
     }
 

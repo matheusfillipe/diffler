@@ -73,6 +73,16 @@ pub struct BinarySides {
     pub new: Option<BinarySide>,
 }
 
+/// Which copy of a walkthrough's file [`Review::compute_walkthrough_files`]
+/// reads first, falling back to the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadFirst {
+    /// The commit the walkthrough was pinned to, for code that was committed.
+    Pin,
+    /// The file on disk, for a walkthrough of uncommitted work.
+    Worktree,
+}
+
 /// One landed off-thread refresh.
 #[derive(Debug)]
 pub struct Refreshed {
@@ -238,9 +248,9 @@ impl Review {
             .collect())
     }
 
-    /// Every requested file's content as the walkthrough's own `rev` recorded
-    /// it, falling back to the live worktree for a path that revision has
-    /// none of (or when `rev` is `None`, a walkthrough saved before it was
+    /// Every requested file's content, from the copy `read_first` names and
+    /// else the other: the walkthrough's own `rev`, or the live worktree (the
+    /// only copy when `rev` is `None`, a walkthrough saved before it was
     /// tracked). Opens its own backend so it runs on a worker thread like
     /// [`Review::compute_refresh`]; a path neither the revision nor the
     /// worktree can produce is left out rather than failing the whole read.
@@ -251,6 +261,7 @@ impl Review {
     pub fn compute_walkthrough_files(
         repo_root: &Path,
         rev: Option<&str>,
+        read_first: ReadFirst,
         files: &[String],
     ) -> WalkthroughFiles {
         let vcs = repo::open(repo_root).ok();
@@ -263,9 +274,12 @@ impl Review {
         let contents = files
             .iter()
             .filter_map(|path| {
-                let pinned = rev.and_then(|rev| vcs.as_ref()?.read_at(rev, path).ok().flatten());
-                let content =
-                    pinned.or_else(|| std::fs::read_to_string(repo_root.join(path)).ok())?;
+                let pinned = || rev.and_then(|rev| vcs.as_ref()?.read_at(rev, path).ok().flatten());
+                let worktree = || std::fs::read_to_string(repo_root.join(path)).ok();
+                let content = match read_first {
+                    ReadFirst::Pin => pinned().or_else(worktree),
+                    ReadFirst::Worktree => worktree().or_else(pinned),
+                }?;
                 Some((path.clone(), content))
             })
             .collect();
@@ -586,7 +600,7 @@ mod tests {
         write(&root, "b.txt", "worktree only\n");
 
         let files = ["a.txt".to_owned(), "b.txt".to_owned()];
-        let read = Review::compute_walkthrough_files(&root, Some(&pinned), &files);
+        let read = Review::compute_walkthrough_files(&root, Some(&pinned), ReadFirst::Pin, &files);
         assert_eq!(
             read.contents.get("a.txt").map(String::as_str),
             Some("old\n"),
@@ -613,7 +627,7 @@ mod tests {
         let root = repo::discover(root).expect("discover");
 
         let files = ["a.txt".to_owned()];
-        let read = Review::compute_walkthrough_files(&root, None, &files);
+        let read = Review::compute_walkthrough_files(&root, None, ReadFirst::Pin, &files);
         assert_eq!(
             read.contents.get("a.txt").map(String::as_str),
             Some("edited\n")
@@ -641,6 +655,7 @@ mod tests {
         let read = Review::compute_walkthrough_files(
             &root,
             Some("0000000000000000000000000000000000dead"),
+            ReadFirst::Pin,
             &files,
         );
         assert_eq!(

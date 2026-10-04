@@ -124,6 +124,7 @@ pub struct WalkthroughRequest {
     /// with one; `None` reads the live worktree, for a walkthrough published
     /// before `rev` existed.
     pub read_rev: Option<String>,
+    pub read_first: diffler_core::review::ReadFirst,
 }
 
 /// One run of a stop body: prose, or the source of a diagram fence.
@@ -595,11 +596,22 @@ impl App {
             return;
         }
         let read_rev = self.active_walkthrough().and_then(|w| w.rev.clone());
+        // working-tree code was never in the commit checked out at publish
+        // time, so we read it from disk and keep the pin for a file since gone
+        let read_first = if self
+            .active_walkthrough()
+            .is_some_and(|w| w.about == ReviewSource::WorkingTree)
+        {
+            diffler_core::review::ReadFirst::Worktree
+        } else {
+            diffler_core::review::ReadFirst::Pin
+        };
         self.walkthrough_token = self.walkthrough_token.wrapping_add(1);
         self.pending_walkthrough = Some(WalkthroughRequest {
             token: self.walkthrough_token,
             files,
             read_rev,
+            read_first,
         });
     }
 
@@ -616,6 +628,17 @@ impl App {
         if token != self.walkthrough_token {
             return Flow::Idle;
         }
+        let source = self.active_review_source();
+        let model = self.source_model(&source);
+        // a file the diff carries shows its new side on the slide, which is
+        // often uncommitted work the pinned commit never saw, so its anchors
+        // resolve against that side; the worker's read covers the rest
+        let mut contents = contents.clone();
+        for file in &model.files {
+            if let Some(text) = &file.new_text {
+                contents.insert(file.path.clone(), text.clone());
+            }
+        }
         // only the file read can tell an absent file from a symbol gone from
         // a file that is still there: `Target::locate` only ever runs once
         // content is in hand, so it never has to guess which one happened
@@ -625,8 +648,6 @@ impl App {
                 .map_or(Located::FileMissing, |content| target.locate(content))
         };
 
-        let source = self.active_review_source();
-        let model = self.source_model(&source);
         let stops = self
             .active_walkthrough()
             .map_or_else(Vec::new, |walkthrough| walkthrough.stops.clone());
@@ -1092,6 +1113,7 @@ flowchart LR
         let read = diffler_core::review::Review::compute_walkthrough_files(
             &root,
             request.read_rev.as_deref(),
+            request.read_first,
             &request.files,
         );
         app.handle(AppEvent::WalkthroughAnchors {
@@ -1121,6 +1143,64 @@ flowchart LR
             "the end line's text, the one drift is judged on"
         );
         assert_eq!(stop_anchor(&app, 1), (None, None), "nowhere to land");
+    }
+
+    /// An agent most often walks through work it has not committed, so the
+    /// anchors have to resolve against the code on disk, the code the slides
+    /// show, and not the last commit's.
+    #[test]
+    fn a_walkthrough_of_uncommitted_work_resolves_against_the_working_tree() {
+        let fixture = Fixture::new();
+        fixture.write("src/lib.rs", "fn kept() {\n    1;\n}\n");
+        fixture.commit_all("base");
+        fixture.write(
+            "src/lib.rs",
+            "fn added() {\n    2;\n}\n\nfn kept() {\n    1;\n}\n",
+        );
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let stop = |title: &str, anchor: &str| crate::mcp::StopParams {
+            id: None,
+            title: title.to_owned(),
+            anchor: Some(anchor.to_owned()),
+            body: "why".to_owned(),
+            notes: None,
+        };
+        let crate::mcp::McpResponse::WalkthroughPublished(published) =
+            app.handle_mcp(crate::mcp::McpRequestKind::PublishWalkthrough {
+                id: None,
+                title: "uncommitted".to_owned(),
+                stops: vec![
+                    stop("New", "src/lib.rs#added"),
+                    stop("Moved", "src/lib.rs#kept"),
+                ],
+                skipped: None,
+                summary: None,
+            })
+        else {
+            panic!("expected a published walkthrough");
+        };
+        app.open_walkthrough_diff(&published.id);
+        resolve(&mut app);
+        assert_eq!(
+            stop_anchor(&app, 0),
+            (Some(1), Some(3)),
+            "added exists only on disk"
+        );
+        assert_eq!(
+            stop_anchor(&app, 1),
+            (Some(5), Some(7)),
+            "kept moved down on disk"
+        );
+
+        fixture.commit_all("land it");
+        app.review.refresh().expect("refresh");
+        app.open_walkthrough_diff(&published.id);
+        resolve(&mut app);
+        assert_eq!(
+            stop_anchor(&app, 0),
+            (Some(1), Some(3)),
+            "once committed, the code it explained is still the code it shows"
+        );
     }
 
     /// One read serves both: the stop's own anchor and the nodes of the

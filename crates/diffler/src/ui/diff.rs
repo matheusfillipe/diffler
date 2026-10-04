@@ -2701,6 +2701,7 @@ mod tests {
         let read = diffler_core::review::Review::compute_walkthrough_files(
             &root,
             request.read_rev.as_deref(),
+            request.read_first,
             &request.files,
         );
         assert!(read.pin_broken, "the garbage rev must not resolve");
@@ -3060,6 +3061,7 @@ flowchart LR
         let read = diffler_core::review::Review::compute_walkthrough_files(
             &root,
             request.read_rev.as_deref(),
+            request.read_first,
             &request.files,
         );
         app.handle(crate::event::AppEvent::WalkthroughAnchors {

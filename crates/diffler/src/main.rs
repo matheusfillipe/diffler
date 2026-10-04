@@ -385,9 +385,9 @@ fn dispatch_stats(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
 
 /// Read the files the walkthrough points at, so its stops and figure nodes
 /// can resolve to lines. One read and one parse per file, which is the same
-/// shape as enrichment and belongs on the same pool. Reads `read_rev` when
-/// the walkthrough was published with one, falling back to the worktree for
-/// a path that revision lacks (or when there is no revision at all).
+/// shape as enrichment and belongs on the same pool. Reads the copy
+/// `read_first` names, the pinned revision or the worktree, and falls back to
+/// the other.
 fn dispatch_walkthrough(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     let Some(request) = app.pending_walkthrough.take() else {
         return;
@@ -398,6 +398,7 @@ fn dispatch_walkthrough(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
         let read = diffler_core::review::Review::compute_walkthrough_files(
             &root,
             request.read_rev.as_deref(),
+            request.read_first,
             &request.files,
         );
         let _ = tx.send(AppEvent::WalkthroughAnchors {
