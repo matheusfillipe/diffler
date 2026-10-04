@@ -1,6 +1,6 @@
 # diffler
 
-**A standalone magit for the terminal: a keyboard-driven git UI and code reviewer, on its own or with your coding agent.**
+**magit, without Emacs.**
 
 [![crates.io](https://img.shields.io/crates/v/diffler.svg)](https://crates.io/crates/diffler)
 [![npm](https://img.shields.io/npm/v/@mattfillipe/diffler.svg)](https://www.npmjs.com/package/@mattfillipe/diffler)
@@ -8,51 +8,103 @@
 
 ![diffler reviewing an agent's change: word-level diff highlights, an inline comment, and the agent replying and fixing the code live over MCP](assets/demo.gif)
 
-If you like magit or vim and want that workflow outside Emacs, this is it: one
-binary, [Doom Emacs](https://github.com/doomemacs/doomemacs) keys, a fast
-keyboard-driven git UI. Stage and commit your own work, review local changes or
-pull requests, and, when you work with a coding agent, review what it writes
-while it writes it.
+I like magit a lot, and I wanted it as its own program. That's diffler: one
+binary with [Doom Emacs](https://github.com/doomemacs/doomemacs) keys for
+staging, committing, branching and reading diffs. You can review pull requests
+from GitHub, GitLab or Forgejo without checking them out. And if you work with
+a coding agent like Claude Code, it can read the comments you leave in the
+diff and reply right there, while you watch it fix the code.
 
-## What it does
+## Features
 
-- magit-style git: stage, unstage, discard, commit, branch, push and pull, with Doom Emacs keys.
-- Code review in the diff: comment on a line or range, mark files viewed, compare against any branch or commit.
-- Pull requests on GitHub, GitLab and Forgejo: review without checking out, sync existing threads, submit your comments as one review.
-- Optional agent review over MCP: the diff updates as your agent edits, it answers your comments in the thread, and it can walk you through its change one stop at a time.
-- Works in git and colocated jj repos. Shows changed images as pictures (kitty, sixel, iTerm2, or half blocks).
+- Stage, commit, branch, push and pull with magit's keys
+- Comment on lines and ranges, mark files as viewed
+- Review pull requests without checking them out
+- Let your agent answer your comments and walk you through its changes (optional)
+- Works in git and jj repos
+- Shows changed images as pictures
 
 ## Install
 
 ```sh
 cargo install diffler
-# or
-brew tap matheusfillipe/diffler https://github.com/matheusfillipe/diffler && brew install diffler
-# or
-npm install -g @mattfillipe/diffler
 ```
 
 <details>
-<summary>Other install methods (prebuilt binary, Scoop, AUR, Nix)</summary>
+<summary><b>Prebuilt binary</b></summary>
+
+Skips the compile, and needs no Rust toolchain.
 
 ```sh
-# prebuilt binary, no Rust toolchain needed
 cargo binstall diffler
+```
 
-# Scoop (Windows)
+Or download it straight from the
+[releases page](https://github.com/matheusfillipe/diffler/releases): macOS,
+Linux and Windows, x86_64 and arm64. Any GitHub-release installer (`eget`,
+`ubi`, ...) works against it too.
+
+</details>
+
+<details>
+<summary><b>Homebrew</b></summary>
+
+macOS and Linux. The tap is this repository.
+
+```sh
+brew tap matheusfillipe/diffler https://github.com/matheusfillipe/diffler
+brew install diffler
+```
+
+</details>
+
+<details>
+<summary><b>Scoop</b></summary>
+
+Windows. The bucket is this repository.
+
+```sh
 scoop bucket add diffler https://github.com/matheusfillipe/diffler
 scoop install diffler
+```
 
-# Arch
+</details>
+
+<details>
+<summary><b>Arch</b></summary>
+
+`diffler-bin` on the AUR ships the prebuilt binary, so it installs without
+building.
+
+```sh
 yay -S diffler-bin
+```
 
-# Nix
+</details>
+
+<details>
+<summary><b>Nix</b></summary>
+
+The flake serves the prebuilt binary. `nix run` tries it without installing
+anything, `nix profile install` keeps it.
+
+```sh
 nix run github:matheusfillipe/diffler
 nix profile install github:matheusfillipe/diffler
 ```
 
-Binaries for macOS, Linux and Windows (x86_64 and arm64) are on the
-[releases page](https://github.com/matheusfillipe/diffler/releases).
+</details>
+
+<details>
+<summary><b>npm</b></summary>
+
+A wrapper that fetches the prebuilt binary. The package name is scoped, the
+command it installs is plain `diffler`.
+
+```sh
+npx @mattfillipe/diffler
+npm install -g @mattfillipe/diffler
+```
 
 </details>
 
@@ -70,35 +122,31 @@ new pull request from the current branch.
 
 ### With a coding agent
 
-diffler serves MCP on port 8417 while it runs. Connect Claude Code once:
+diffler serves MCP on port 8417 while it runs. Connect your agent once:
+
+<details>
+<summary><b>Claude Code</b></summary>
 
 ```sh
 claude mcp add --transport http diffler http://127.0.0.1:8417/mcp
-```
-
-Comment on the agent's changes and press `Z` to send them. The agent answers
-in the thread and you resolve it once you're happy. Ask it for a walkthrough
-of its change and open it from the status screen. More in
-[docs/walkthroughs.md](docs/walkthroughs.md). Don't need it? Set
-`enabled = false` under `[mcp]` in the config, or run `diffler --no-mcp`.
-
-<details>
-<summary>Other ways to connect an agent (Claude Code plugin, opencode, any MCP client)</summary>
-
-**Claude Code plugin**, which adds `/df` to answer your comments, `/dfa` to walk
-you through a change, and `/dfr` to review a change and leave comments:
-
-```sh
+# or, over stdio, auto-discovering the port:
+claude mcp add diffler -- npx -y diffler-mcp
+# or, as a plugin (MCP server plus the /df, /dfa and /dfr commands):
 claude plugin marketplace add matheusfillipe/diffler && claude plugin install diffler@diffler
 ```
 
-**Over stdio**, finding the running diffler's port on its own:
+Connected, the server's prompts show up as `/diffler:review`,
+`/diffler:walkthrough` and `/diffler:critique`. The plugin adds `/df`, to
+answer your comments, `/dfa`, to walk you through a change, and `/dfr`, to
+review a change and leave comments.
 
-```sh
-claude mcp add diffler -- npx -y diffler-mcp
-```
+</details>
 
-**opencode**: add the server to `opencode.json`, then fetch the commands:
+<details>
+<summary><b>opencode</b></summary>
+
+Add the server to `opencode.json` in the project, or globally in
+`~/.config/opencode/opencode.json`:
 
 ```json
 {
@@ -112,31 +160,49 @@ claude mcp add diffler -- npx -y diffler-mcp
 }
 ```
 
+And install the `/df`, `/dfa` and `/dfr` commands (opencode has no package
+mechanism for commands, so this fetches the ones maintained in this repo):
+
 ```sh
 mkdir -p ~/.config/opencode/commands
 for c in df dfa dfr; do curl -fsSLo ~/.config/opencode/commands/$c.md \
   https://raw.githubusercontent.com/matheusfillipe/diffler/main/.opencode/commands/$c.md; done
 ```
 
-**Any other MCP client**: point it at `http://127.0.0.1:8417/mcp` (streamable
-HTTP), or run `npx -y diffler-mcp` as a stdio proxy. Prompt-aware clients also
-get `review`, `walkthrough` and `critique` commands. Tools are listed in
-[docs/mcp.md](docs/mcp.md).
+</details>
+
+<details>
+<summary><b>Any other MCP agent</b></summary>
+
+Point it at `http://127.0.0.1:8417/mcp` (streamable HTTP), or run
+`npx -y diffler-mcp` as a stdio proxy that auto-discovers the port from
+`.diffler/mcp.json`. The server also ships `review`, `walkthrough` and
+`critique` prompts that prompt-aware clients surface as commands.
 
 </details>
+
+Comment on the agent's changes and press `Z` to send them. The agent answers
+in the thread and you resolve it once you're happy. Ask it for a walkthrough
+of its change and open it from the status screen. More in
+[docs/walkthroughs.md](docs/walkthroughs.md), and the MCP tools are listed in
+[docs/mcp.md](docs/mcp.md). Don't need it? Set
+`enabled = false` under `[mcp]` in the config, or run `diffler --no-mcp`.
 
 ## How it compares
 
 | | diffler | [tuicr](https://github.com/agavra/tuicr) | [lazygit](https://github.com/jesseduffield/lazygit) | [magit](https://magit.vc) |
 |---|:---:|:---:|:---:|:---:|
-| Standalone binary | ✅ | ✅ | ✅ | ❌ needs Emacs |
-| Stage, commit, branch, push | ✅ | ❌ | ✅ | ✅ |
-| Comment on diff lines | ✅ | ✅ | ❌ | ❌ |
-| Agent answers in the thread, live | ✅ MCP | markdown export | ❌ | ❌ |
-| Agent walkthroughs of a change | ✅ | ❌ | ❌ | ❌ |
-| Inline PR review | GitHub, GitLab, Forgejo | GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, Gerrit | ❌ | ❌ |
-| jj | ✅ colocated | ✅ | ❌ | ❌ |
-| Vim / Doom Emacs keys | ✅ | ✅ vim | partial | ✅ |
+| Standalone binary | ✅ | ✅ | ✅ | ❌ |
+| Stage and commit | ✅ | ❌ | ✅ | ✅ |
+| Line comments | ✅ | ✅ | ❌ | ❌ |
+| PR review | ✅¹ | ✅² | ❌ | ❌ |
+| Agent replies in the thread | ✅ | ❌³ | ❌ | ❌ |
+| Agent walkthroughs | ✅ | ❌ | ❌ | ❌ |
+| jj | ✅⁴ | ✅ | ❌ | ❌ |
+
+¹ GitHub, GitLab and Forgejo. ² GitHub, GitLab, Gitea, Bitbucket, Azure DevOps
+and Gerrit. ³ tuicr exports your comments as markdown for you to paste into the
+agent. ⁴ Colocated repos.
 
 ## Keys
 
