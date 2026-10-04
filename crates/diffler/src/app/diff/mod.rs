@@ -1591,6 +1591,78 @@ mod tests {
         );
     }
 
+    const SUMMARY_WITH_FLOWCHART: &str = r"Under Rosetta 2, `vcmpss` with the NEQ, NLT or NLE predicate writes its mask into a register, and if that register is then reloaded by a full width VEX load, later scalar reads of it still return the old mask. Games then compute NaN from finite inputs (in DOAX3 a bone slerp writes the invalid matrix marker and whole body parts vanish). This PR adds a macOS entry to the existing `Patches` table that upstream's ahead-of-time static patcher applies, and extends the patcher's gap sweep so compares outside EH frame functions are patched too.
+
+```mermaid
+flowchart TD
+  A[module.cpp static patching on macOS] --> B[PatchSegmentStatically: EH frame functions]
+  A --> C[PatchUncoveredCpuInstructions: gaps between them]
+  B --> D[FindMatchingPatch / TryPatch over Patches]
+  C -->|FindScalarCompareInstructionStart| D
+  D -->|VCMPSS + FilterNegatedScalarCompare| E[GenerateNegatedScalarCompare trampoline]
+  E --> F[vcmpss with plain predicate, then vxorps lane 0]
+```";
+
+    /// The summary's flowchart opens full screen like a stop's: the reader
+    /// walks onto it in the pane and presses `o`, even after the rows were
+    /// rebuilt under them.
+    #[test]
+    fn the_summarys_flowchart_opens_full_screen() {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(145, 43)).expect("terminal");
+        let mut draw = |app: &mut App| {
+            terminal
+                .draw(|frame| crate::ui::draw(frame, app))
+                .expect("draw");
+        };
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let crate::mcp::McpResponse::WalkthroughPublished(published) =
+            app.handle_mcp(crate::mcp::McpRequestKind::PublishWalkthrough {
+                id: None,
+                title: "flow".to_owned(),
+                stops: vec![crate::mcp::StopParams {
+                    id: None,
+                    title: "The answer".to_owned(),
+                    anchor: Some("src/lib.rs#answer".to_owned()),
+                    body: "why".to_owned(),
+                    notes: None,
+                }],
+                skipped: None,
+                summary: Some(SUMMARY_WITH_FLOWCHART.to_owned()),
+            })
+        else {
+            panic!("expected a published walkthrough");
+        };
+        app.open_walkthrough(&published.id, Slide::Summary);
+        draw(&mut app);
+        let request = app.pending_walkthrough.take().expect("an anchor read");
+        let read = diffler_core::review::Review::compute_walkthrough_files(
+            &app.review.repo_root,
+            request.read_rev.as_deref(),
+            request.read_first,
+            &request.files,
+        );
+        app.handle(AppEvent::WalkthroughAnchors {
+            contents: read.contents,
+            pin_broken: read.pin_broken,
+            token: request.token,
+        });
+        draw(&mut app);
+        app.handle(key('l'));
+        app.handle(key('G'));
+        for _ in 0..6 {
+            app.handle(key('k'));
+        }
+        // a background result (highlighting, anchors) rebuilds the rows
+        // under the reader, which must leave the cursor where it was
+        let diff = app.diff.as_mut().expect("diff");
+        diff.mark_rows_dirty();
+        diff.ensure_rows(&app.review);
+        app.handle(key('o'));
+        assert_eq!(app.screen(), Screen::Graph, "{:?}", app.message);
+    }
+
     /// `display_order` drives the file walks, so it has to be the stops' files
     /// in stop order with the repeats dropped.
     #[test]

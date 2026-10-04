@@ -23,16 +23,28 @@ pub(crate) enum RowRef {
         line: u32,
         on_old_side: bool,
     },
-    /// A stop's own row, by its position in the walkthrough's own order: a
-    /// revision that reissues every stop's comment id still keeps "the same
-    /// stop" at the same position, which a comment id could not.
-    Stop(usize),
-    Comment(String),
+    /// A row of a stop's card, by the stop's position in the walkthrough's
+    /// own order and the row's line within the card: a revision that
+    /// reissues every stop's comment id still keeps "the same stop" at the
+    /// same position, which a comment id could not.
+    Stop {
+        index: usize,
+        line: usize,
+    },
+    /// A row of a comment's card, by the comment's id and the row's line
+    /// within the card.
+    Comment {
+        id: String,
+        line: usize,
+    },
     /// One display line of the open composer (its header is line 0): a
     /// refresh names the caret's own row, so it lands back exactly where
     /// the reader is typing.
     Composer(usize),
-    Summary,
+    /// A row of the walkthrough summary's card, by its line within the card.
+    Summary {
+        line: usize,
+    },
     /// A folded hunk's row, by its hunk key.
     Fold {
         key: String,
@@ -110,17 +122,20 @@ impl DiffView {
                     on_old_side,
                 })
             }
-            DiffRow::Comment { comment, .. } => {
+            DiffRow::Comment { comment, line, .. } => {
                 let comment = session.comments.get(comment)?;
                 match self.active_walkthrough(session).and_then(|walkthrough| {
                     walkthrough.stops.iter().position(|id| *id == comment.id)
                 }) {
-                    Some(index) => Some(RowRef::Stop(index)),
-                    None => Some(RowRef::Comment(comment.id.clone())),
+                    Some(index) => Some(RowRef::Stop { index, line }),
+                    None => Some(RowRef::Comment {
+                        id: comment.id.clone(),
+                        line,
+                    }),
                 }
             }
             DiffRow::Composer { line } => Some(RowRef::Composer(line)),
-            DiffRow::Summary { .. } => Some(RowRef::Summary),
+            DiffRow::Summary { line } => Some(RowRef::Summary { line }),
             DiffRow::Fold { group, .. } => Some(RowRef::Fold {
                 key: self.fold_groups.get(group)?.keys.first()?.clone(),
             }),
@@ -212,21 +227,43 @@ impl DiffView {
                         .is_some_and(|diff_line| diff_line.number_on(*on_old_side) == Some(*line))
                 })
                 .or_else(|| self.fold_row_hiding(&model, file, *line, *on_old_side)),
-            RowRef::Stop(index) => {
+            RowRef::Stop { index, line } => {
                 let id = self.active_walkthrough(session)?.stops.get(*index)?;
-                Self::find_comment_row(&self.rows, session, id)
+                let header = Self::find_comment_row(&self.rows, session, id)?;
+                Some(Self::card_row(&self.rows, header, *line))
             }
-            RowRef::Comment(id) => Self::find_comment_row(&self.rows, session, id),
+            RowRef::Comment { id, line } => {
+                let header = Self::find_comment_row(&self.rows, session, id)?;
+                Some(Self::card_row(&self.rows, header, *line))
+            }
             RowRef::Composer(line) => self
                 .rows
                 .iter()
                 .position(|row| matches!(row, DiffRow::Composer { line: l } if l == line)),
-            RowRef::Summary => self
-                .rows
-                .iter()
-                .position(|row| matches!(row, DiffRow::Summary { line: 0 })),
+            RowRef::Summary { line } => {
+                let header = self
+                    .rows
+                    .iter()
+                    .position(|row| matches!(row, DiffRow::Summary { line: 0 }))?;
+                Some(Self::card_row(&self.rows, header, *line))
+            }
             RowRef::Fold { key, .. } => fold_of(key).or_else(|| header_of(&HunkId(key.clone()))),
         }
+    }
+
+    /// The row `line` lines into the card whose header sits at `header`, or
+    /// the card's last row when the card has since grown shorter.
+    fn card_row(rows: &[DiffRow], header: usize, line: usize) -> usize {
+        let Some(card) = rows.get(header) else {
+            return header;
+        };
+        rows.iter()
+            .enumerate()
+            .skip(header)
+            .take_while(|(_, row)| same_card(card, row))
+            .take(line + 1)
+            .last()
+            .map_or(header, |(index, _)| index)
     }
 
     /// The header row (line 0) of the comment carrying `id`, if it is on
@@ -236,6 +273,17 @@ impl DiffView {
             matches!(row, DiffRow::Comment { comment, line: 0, .. }
                 if session.comments.get(*comment).is_some_and(|c| c.id == id))
         })
+    }
+}
+
+/// Whether two rows belong to the same card: one comment's, or the summary's.
+fn same_card(a: &DiffRow, b: &DiffRow) -> bool {
+    match (a, b) {
+        (DiffRow::Comment { comment: left, .. }, DiffRow::Comment { comment: right, .. }) => {
+            left == right
+        }
+        (DiffRow::Summary { .. }, DiffRow::Summary { .. }) => true,
+        _ => false,
     }
 }
 
@@ -309,7 +357,10 @@ mod tests {
         assert_eq!(diff.row_ref(&app.review, line_row), Some(expected_line));
         assert_eq!(
             diff.row_ref(&app.review, comment_row),
-            Some(RowRef::Comment(comment_id))
+            Some(RowRef::Comment {
+                id: comment_id,
+                line: 0
+            })
         );
         let DiffRow::Composer {
             line: composer_line,
@@ -341,7 +392,7 @@ mod tests {
                 .as_ref()
                 .expect("diff")
                 .row_ref(&app.review, summary_row),
-            Some(RowRef::Summary)
+            Some(RowRef::Summary { line: 0 })
         );
 
         app.diff.as_mut().expect("diff").slide = Some(crate::app::diff::Slide::Stop(0));
@@ -353,7 +404,7 @@ mod tests {
                 .as_ref()
                 .expect("diff")
                 .row_ref(&app.review, stop_row),
-            Some(RowRef::Stop(0))
+            Some(RowRef::Stop { index: 0, line: 0 })
         );
     }
 
@@ -368,13 +419,7 @@ mod tests {
         app.open_working_tree_diff(None);
 
         let diff = app.diff.as_ref().expect("diff");
-        for (row, kind) in diff.rows().iter().enumerate() {
-            // a card (comment, composer, summary) is one thing across several
-            // rows, so only its header round-trips to itself; the rest name
-            // the same card and land back on that header, by design
-            if matches!(kind, DiffRow::Comment { line, .. } if *line != 0) {
-                continue;
-            }
+        for row in 0..diff.rows().len() {
             let Some(target) = diff.row_ref(&app.review, row) else {
                 continue;
             };
@@ -431,7 +476,10 @@ mod tests {
             .id
             .clone();
         app.open_working_tree_diff(None);
-        let target = RowRef::Comment(comment_id.clone());
+        let target = RowRef::Comment {
+            id: comment_id.clone(),
+            line: 0,
+        };
         assert!(
             app.diff
                 .as_ref()
