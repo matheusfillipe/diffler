@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791124790623,
+  "lastUpdate": 1791129488384,
   "repoUrl": "https://github.com/matheusfillipe/diffler",
   "entries": {
     "Benchmark": [
@@ -16607,6 +16607,102 @@ window.BENCHMARK_DATA = {
             "name": "scope_index/20000",
             "value": 98043585,
             "range": "± 1950109",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "committer": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "distinct": true,
+          "id": "0952677b82d336f4d0ac946c53ed298b71d9f30c",
+          "message": "fix walkthrough anchor spans and resolve them against the code on screen",
+          "timestamp": "2026-10-04T17:54:04+02:00",
+          "tree_id": "d1ca5ded3e9ad0519386b2e44226cc47008c441f",
+          "url": "https://github.com/matheusfillipe/diffler/commit/0952677b82d336f4d0ac946c53ed298b71d9f30c"
+        },
+        "date": 1791129487931,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "syndiff_emphasis/1000",
+            "value": 8299079,
+            "range": "± 267327",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/1000",
+            "value": 19890,
+            "range": "± 399",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/1000",
+            "value": 5936421,
+            "range": "± 103828",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/1000",
+            "value": 4668351,
+            "range": "± 30881",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/5000",
+            "value": 45654151,
+            "range": "± 415071",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/5000",
+            "value": 98692,
+            "range": "± 1011",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/5000",
+            "value": 30900466,
+            "range": "± 664132",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/5000",
+            "value": 23876953,
+            "range": "± 607578",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/20000",
+            "value": 182757772,
+            "range": "± 4891021",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/20000",
+            "value": 393488,
+            "range": "± 2252",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/20000",
+            "value": 125818429,
+            "range": "± 832702",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/20000",
+            "value": 98550389,
+            "range": "± 2188058",
             "unit": "ns/iter"
           }
         ]
