@@ -1229,6 +1229,7 @@ mod tests {
                         ],
                     }],
                     hashes: diffler_core::model::HashCache::default(),
+                    blobs: diffler_core::model::BlobIds::default(),
                 },
                 FileDiff {
                     path: "logo.png".into(),
@@ -1239,6 +1240,7 @@ mod tests {
                     new_text: None,
                     hunks: vec![],
                     hashes: diffler_core::model::HashCache::default(),
+                    blobs: diffler_core::model::BlobIds::default(),
                 },
             ],
         }

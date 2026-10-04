@@ -44,6 +44,35 @@ pub struct WalkthroughFiles {
     pub pin_broken: bool,
 }
 
+/// A preview reads at most this many bytes of one side (32 MiB).
+pub const MAX_PREVIEW_BYTES: u64 = 32 * 1024 * 1024;
+
+/// One side of a binary file, as [`Review::compute_binary_sides`] read it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BinarySide {
+    Bytes(Vec<u8>),
+    /// The side exists but is over [`MAX_PREVIEW_BYTES`]; its size in bytes.
+    TooLarge(u64),
+}
+
+impl BinarySide {
+    fn of(bytes: Vec<u8>) -> Self {
+        let size = bytes.len() as u64;
+        if size > MAX_PREVIEW_BYTES {
+            Self::TooLarge(size)
+        } else {
+            Self::Bytes(bytes)
+        }
+    }
+}
+
+/// Both sides of a binary file; `None` for a side that does not exist.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BinarySides {
+    pub old: Option<BinarySide>,
+    pub new: Option<BinarySide>,
+}
+
 /// One landed off-thread refresh.
 #[derive(Debug)]
 pub struct Refreshed {
@@ -243,6 +272,38 @@ impl Review {
         WalkthroughFiles {
             contents,
             pin_broken,
+        }
+    }
+
+    /// Both sides of a binary file as raw bytes, for the image preview: each
+    /// side from its blob, the new side from the worktree when the store has
+    /// no blob for it (a working-tree diff). A side over [`MAX_PREVIEW_BYTES`] comes
+    /// back as its size alone, so a huge asset never loads into memory.
+    pub fn compute_binary_sides(
+        repo_root: &Path,
+        path: &str,
+        blobs: &crate::model::BlobIds,
+        deleted: bool,
+    ) -> BinarySides {
+        let vcs = repo::open(repo_root).ok();
+        let from_blob = |oid: &Option<String>| {
+            let bytes = vcs.as_ref()?.read_blob(oid.as_deref()?).ok()??;
+            Some(BinarySide::of(bytes))
+        };
+        let new = from_blob(&blobs.new).or_else(|| {
+            if deleted {
+                return None;
+            }
+            let full = repo_root.join(path);
+            let size = std::fs::metadata(&full).ok()?.len();
+            if size > MAX_PREVIEW_BYTES {
+                return Some(BinarySide::TooLarge(size));
+            }
+            std::fs::read(full).ok().map(BinarySide::of)
+        });
+        BinarySides {
+            old: from_blob(&blobs.old),
+            new,
         }
     }
 

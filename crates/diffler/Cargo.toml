@@ -43,6 +43,8 @@ pulldown-cmark.workspace = true
 # the GitHub CI source parses workflow YAML into the graph Model
 serde_norway.workspace = true
 uuid.workspace = true
+ratatui-image.workspace = true
+image.workspace = true
 
 [dev-dependencies]
 git2.workspace = true

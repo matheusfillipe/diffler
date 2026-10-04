@@ -8,7 +8,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use diffler_core::model::{DiffLine, FileDiff, FileStatus, HashCache, Hunk, LineKind, hunk_id};
+use diffler_core::model::{
+    BlobIds, DiffLine, FileDiff, FileStatus, HashCache, Hunk, LineKind, hunk_id,
+};
 use diffler_core::session::{Comment, Session};
 use diffler_core::source::ReviewSource;
 use diffler_core::walkthrough::{Located, Target, Walkthrough};
@@ -344,6 +346,7 @@ fn context_file_diff(path: &str, content: &str) -> FileDiff {
         new_text: Some(content.to_owned()),
         hunks: vec![hunk],
         hashes: HashCache::default(),
+        blobs: BlobIds::default(),
     }
 }
 

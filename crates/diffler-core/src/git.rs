@@ -477,6 +477,15 @@ impl Vcs for GitVcs {
         }
     }
 
+    fn read_blob(&self, oid: &str) -> Result<Option<Vec<u8>>, VcsError> {
+        let oid = git2::Oid::from_str(oid)?;
+        match self.repo.find_blob(oid) {
+            Ok(blob) => Ok(Some(blob.content().to_vec())),
+            Err(err) if err.code() == git2::ErrorCode::NotFound => Ok(None),
+            Err(err) => Err(err.into()),
+        }
+    }
+
     fn tracked_files(&self) -> Result<Vec<PathBuf>, VcsError> {
         let index = self.repo.index()?;
         let mut out: Vec<PathBuf> = index
@@ -925,6 +934,7 @@ impl GitVcs {
             new_text,
             hunks,
             hashes: crate::model::HashCache::default(),
+            blobs: crate::model::BlobIds::default(),
         }))
     }
 }
@@ -1181,6 +1191,11 @@ fn hunk_model_lines(patch: &git2::Patch<'_>, h: usize) -> Result<Vec<DiffLine>, 
 
 fn build_binary_file(diff: &git2::Diff<'_>, idx: usize) -> Option<FileDiff> {
     let delta = diff.get_delta(idx)?;
+    let blob = |file: git2::DiffFile<'_>| (!file.id().is_zero()).then(|| file.id().to_string());
+    let blobs = crate::model::BlobIds {
+        old: blob(delta.old_file()),
+        new: blob(delta.new_file()),
+    };
     Some(FileDiff {
         path: delta_new_path(&delta),
         old_path: None,
@@ -1190,6 +1205,7 @@ fn build_binary_file(diff: &git2::Diff<'_>, idx: usize) -> Option<FileDiff> {
         new_text: None,
         hunks: Vec::new(),
         hashes: crate::model::HashCache::default(),
+        blobs,
     })
 }
 

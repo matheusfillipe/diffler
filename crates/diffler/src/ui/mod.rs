@@ -7,6 +7,7 @@ pub mod diff;
 pub mod diff_render;
 pub mod file;
 pub mod graph;
+mod image_pane;
 pub mod log;
 pub mod popup;
 mod prs;

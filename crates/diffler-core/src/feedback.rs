@@ -171,6 +171,7 @@ mod tests {
                     ],
                 }],
                 hashes: crate::model::HashCache::default(),
+                blobs: crate::model::BlobIds::default(),
             }],
         }
     }

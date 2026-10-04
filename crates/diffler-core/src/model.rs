@@ -59,6 +59,18 @@ pub struct FileDiff {
     pub hunks: Vec<Hunk>,
     /// Lazily memoized content hashes; texts never change after construction.
     pub hashes: HashCache,
+    /// Each side's git blob, for a binary file the pane reads bytes from (an
+    /// image preview).
+    pub blobs: BlobIds,
+}
+
+/// The git blob ids of a file's two sides, hex-encoded, `None` for a side
+/// that does not exist (an add, a delete). A working-tree side's id is only
+/// a hash of the file on disk, with no object behind it in the store.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BlobIds {
+    pub old: Option<String>,
+    pub new: Option<String>,
 }
 
 /// Memo slots for [`FileDiff::content_hash`]/[`FileDiff::sides_hash`], which
@@ -80,10 +92,14 @@ impl Eq for HashCache {}
 
 impl FileDiff {
     /// Content identity of the new side, used for viewed-mark invalidation.
+    /// A binary file has no text, so its new side's git blob id stands in.
     pub fn content_hash(&self) -> String {
         self.hashes
             .content
-            .get_or_init(|| stable_hash(self.new_text.as_deref().unwrap_or("").as_bytes()))
+            .get_or_init(|| match (&self.new_text, &self.blobs.new) {
+                (None, Some(blob)) => blob.clone(),
+                (text, _) => stable_hash(text.as_deref().unwrap_or("").as_bytes()),
+            })
             .clone()
     }
 
@@ -111,6 +127,11 @@ impl FileDiff {
                 let mut bytes = Vec::from(self.old_text.as_deref().unwrap_or("").as_bytes());
                 bytes.push(0);
                 bytes.extend_from_slice(self.new_text.as_deref().unwrap_or("").as_bytes());
+                // a binary file carries no text, so its blob ids are its identity
+                for blob in [&self.blobs.old, &self.blobs.new] {
+                    bytes.push(0);
+                    bytes.extend_from_slice(blob.as_deref().unwrap_or("").as_bytes());
+                }
                 stable_hash(&bytes)
             })
             .clone()
@@ -400,6 +421,7 @@ mod tests {
             new_text: Some("fn main() {}".into()),
             hunks: vec![],
             hashes: HashCache::default(),
+            blobs: BlobIds::default(),
         };
         let mut changed = base.clone();
         changed.new_text = Some("fn main() { let x = 1; }".into());
@@ -417,6 +439,7 @@ mod tests {
             new_text: Some("same content".into()),
             hunks: vec![],
             hashes: HashCache::default(),
+            blobs: BlobIds::default(),
         };
         assert_eq!(file.content_hash(), file.content_hash());
     }
@@ -432,6 +455,7 @@ mod tests {
             new_text: Some("fn main() { let x = 1; }".into()),
             hunks: vec![],
             hashes: HashCache::default(),
+            blobs: BlobIds::default(),
         };
         let mut changed = base.clone();
         changed.old_text = Some("fn main() { unreachable!() }".into());
@@ -454,6 +478,7 @@ mod tests {
                 new_text: Some(new_text.to_owned()),
                 hunks: vec![],
                 hashes: HashCache::default(),
+                blobs: BlobIds::default(),
             }],
         }
     }
@@ -510,6 +535,7 @@ mod tests {
                     ],
                 }],
                 hashes: HashCache::default(),
+                blobs: BlobIds::default(),
             }],
         }
     }
@@ -555,6 +581,7 @@ mod tests {
                 },
             ],
             hashes: HashCache::default(),
+            blobs: BlobIds::default(),
         };
         assert_eq!(file.diffstat(), (2, 1));
     }
@@ -586,6 +613,7 @@ mod tests {
             new_text: None,
             hunks: vec![],
             hashes: HashCache::default(),
+            blobs: BlobIds::default(),
         };
         // must not panic, must return a non-empty string (git hash of empty blob)
         let hash = file.content_hash();

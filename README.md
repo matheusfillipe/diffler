@@ -253,7 +253,9 @@ GitHub, GitLab and Forgejo pull requests, including ones whose branch you
 never checked out. It also runs in a colocated jj repo
 (`jj git init --colocate`), where commits go through jj, staging declines
 because jj has no index, and push and pull decline naming `jj git push`/`jj
-git fetch` to run yourself.
+git fetch` to run yourself. A changed image shows its before and after as
+pictures, drawn over the kitty, sixel or iTerm2 protocol where the terminal
+speaks one (tmux passthrough included), and in coloured half blocks elsewhere.
 
 You may also want to check [tuicr](https://github.com/agavra/tuicr), the
 closest alternative.
@@ -289,7 +291,7 @@ just ci     # core gate: fmt + clippy + tests
 just e2e    # PTY end-to-end suite (needs uv)
 ```
 
-Requires Rust 1.88+, `just`, `cargo-nextest`. Hooks: `prek install`.
+Requires Rust 1.90+, `just`, `cargo-nextest`. Hooks: `prek install`.
 
 ## License
 

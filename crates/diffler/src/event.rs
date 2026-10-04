@@ -65,6 +65,11 @@ pub enum AppEvent {
         result: Box<Result<diffler_core::review::Refreshed, String>>,
         request: crate::app::RediffRequest,
     },
+    /// An image file's sides, decoded and encoded for the terminal.
+    ImagePreview {
+        token: u64,
+        preview: Box<crate::app::image::ImagePreview>,
+    },
     /// Agent tool call routed through the event channel so the app stays
     /// the single owner of the review state (`mcp` module).
     Mcp(McpRequest),

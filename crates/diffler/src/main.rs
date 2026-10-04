@@ -141,6 +141,12 @@ fn print_config_dump(loaded: &config::LoadedConfig) -> color_eyre::Result<()> {
 }
 
 async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<()> {
+    // the query reads the terminal's answer from stdin, so it has to finish
+    // before the event pump starts reading keys; a terminal that answers
+    // nothing keeps the halfblocks picker `App::new` set
+    if let Ok(picker) = ratatui_image::picker::Picker::from_query_stdio() {
+        app.image_picker = picker;
+    }
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut events = event::spawn_event_loop(tx.clone());
     // a missing watcher is not fatal: the app falls back to periodic polling
@@ -402,8 +408,35 @@ fn dispatch_walkthrough(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     });
 }
 
+/// Read an image file's two sides and encode them for the terminal off the
+/// main task: decoding and resizing a large picture takes long enough to
+/// stall the loop.
+fn dispatch_image(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
+    let Some(request) = app.pending_image.take() else {
+        return;
+    };
+    let tx = tx.clone();
+    let root = app.review.repo_root.clone();
+    let picker = app.image_picker.clone();
+    tokio::task::spawn_blocking(move || {
+        let key = &request.key;
+        let sides = diffler_core::review::Review::compute_binary_sides(
+            &root,
+            &key.path,
+            &key.blobs,
+            key.deleted,
+        );
+        let preview = app::image::build_preview(&picker, &request, sides);
+        let _ = tx.send(AppEvent::ImagePreview {
+            token: request.token,
+            preview: Box::new(preview),
+        });
+    });
+}
+
 fn dispatch_workers(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     dispatch_enrich(app, tx);
+    dispatch_image(app, tx);
     dispatch_walkthrough(app, tx);
     dispatch_file(app, tx);
     dispatch_declared(app, tx);

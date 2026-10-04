@@ -314,6 +314,27 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   fold row on the code it hides. `RowRef::Hunk` and `RowRef::Fold` each find
   the other form of the same hunk, so folding or opening one keeps the
   cursor on it.
+- **Image preview.** A binary file named `.png`/`.jpg`/`.jpeg`/`.gif`/`.webp`
+  (`app::image::is_image`) draws its sides as pictures in the diff pane
+  (`ui/image_pane.rs`): before and after side by side, stacked below 60
+  columns, or the one side an add or a delete has, each fitted and centred in
+  its own frame with its pixel size and byte size under it; whole-file comment
+  cards keep rows below. `FileDiff::blobs` carries each side's git blob id,
+  which `sides_hash` folds in and `content_hash` returns as is for the new
+  side, since a binary file has no text to hash: a rewritten image refreshes,
+  and a viewed one falls back into to-review, the way an edited text file
+  does. The draw records what it
+  wants as an `ImageKey` (path, blob ids, fit size) and `queue_image_preview`
+  turns a key that is neither on screen nor in flight into a worker request:
+  `Review::compute_binary_sides` reads each side by blob (`Vcs::read_blob`),
+  the worktree side from disk when the store holds no object for it, capped
+  at `MAX_PREVIEW_BYTES` a side, then `app::image::build_preview` decodes it
+  and encodes it for the terminal at that size, scaling a small image up with
+  nearest-neighbour so its pixels stay readable. The protocol comes from
+  ratatui-image's `Picker::from_query_stdio`, asked once in `run` after raw
+  mode and before the event pump reads stdin: kitty (Unicode placeholders,
+  which survive a multiplexer), sixel or iTerm2 when the terminal answers,
+  halfblocks otherwise.
 - **Kinds sidebar.** `classify::Rules` buckets a path into one fixed set,
   Source / Tests / Docs / Config / Build & CI / Generated / Assets / Other:
   the reader's `[classify]` globs, then what the repo declares, then the

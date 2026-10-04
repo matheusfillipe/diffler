@@ -321,6 +321,7 @@ mod tests {
             new_text: None,
             hunks: Vec::new(),
             hashes: diffler_core::model::HashCache::default(),
+            blobs: diffler_core::model::BlobIds::default(),
         }
     }
 

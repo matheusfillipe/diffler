@@ -167,6 +167,10 @@ impl Vcs for JjVcs {
         self.git.read_at(rev, path)
     }
 
+    fn read_blob(&self, oid: &str) -> Result<Option<Vec<u8>>, VcsError> {
+        self.git.read_blob(oid)
+    }
+
     fn tracked_files(&self) -> Result<Vec<PathBuf>, VcsError> {
         self.git.tracked_files()
     }

@@ -14,6 +14,7 @@ pub mod enrich;
 mod expand;
 pub mod file;
 pub(crate) mod fuzzy;
+pub mod image;
 mod log;
 pub mod markdown;
 mod mcp;
@@ -748,6 +749,16 @@ pub struct App {
     /// Bumped per re-diff request, so a stale one landing after another
     /// switch (or after the open view moved on) is dropped.
     rediff_token: u64,
+    /// The terminal's image protocol and cell size, asked once at startup;
+    /// halfblocks until then, and wherever the terminal answers nothing.
+    pub image_picker: ratatui_image::picker::Picker,
+    /// An image preview the main loop should build off-thread.
+    pub pending_image: Option<image::ImageRequest>,
+    /// Bumped per image request, so a preview for a file or size the pane
+    /// has moved past is dropped.
+    image_token: u64,
+    /// The preview on its way, so a draw does not ask for it twice.
+    image_in_flight: Option<image::ImageKey>,
     /// The language breakdown screen, present only while it is open.
     pub stats: Option<stats::StatsView>,
     /// A repo scan the main loop should run off-thread.
@@ -1004,6 +1015,10 @@ impl App {
             declared_token: 0,
             pending_rediff: None,
             rediff_token: 0,
+            image_picker: ratatui_image::picker::Picker::halfblocks(),
+            pending_image: None,
+            image_token: 0,
+            image_in_flight: None,
             file_token: 0,
             pending_clipboard: None,
             pending_editor: None,
@@ -1178,6 +1193,7 @@ impl App {
                 Flow::Continue
             }
             AppEvent::RediffDone { result, request } => self.on_rediff_done(*result, &request),
+            AppEvent::ImagePreview { token, preview } => self.on_image_preview(token, *preview),
             AppEvent::Enriched(outcome) => {
                 self.on_enriched(*outcome);
                 Flow::Continue

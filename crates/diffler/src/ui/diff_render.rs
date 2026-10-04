@@ -1430,11 +1430,13 @@ flowchart LR
                 },
             ],
             hashes: diffler_core::model::HashCache::default(),
+            blobs: diffler_core::model::BlobIds::default(),
         };
         assert_eq!(file_gutter_width(&file), 6);
         let empty = FileDiff {
             hunks: vec![],
             hashes: diffler_core::model::HashCache::default(),
+            blobs: diffler_core::model::BlobIds::default(),
             ..file
         };
         assert_eq!(file_gutter_width(&empty), 4);

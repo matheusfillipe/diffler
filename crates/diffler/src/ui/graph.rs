@@ -195,7 +195,7 @@ fn annotation_text(annotation: &crate::ci::Annotation) -> String {
 /// Bytes as a compact `1.2 KB` / `3.4 MB`, matching how forges list artifacts.
 // the f64 cast only feeds a one-decimal display, so mantissa loss is moot
 #[allow(clippy::cast_precision_loss)]
-fn human_size(bytes: u64) -> String {
+pub(super) fn human_size(bytes: u64) -> String {
     let mut size = bytes as f64;
     let mut units = ["B", "KB", "MB", "GB"].into_iter();
     let mut unit = units.next().unwrap_or("B");

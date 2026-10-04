@@ -268,6 +268,7 @@ mod tests {
                 ],
             }],
             hashes: crate::model::HashCache::default(),
+            blobs: crate::model::BlobIds::default(),
         };
         assert!(LanguageRegistry::build().syntactic_emphasis(&mut file, false));
         let added = &file.hunks[0].lines[1];
@@ -299,6 +300,7 @@ mod tests {
             new_text: Some(new.into()),
             hunks: crate::diffalgo::histogram_hunks(old, new, path, 3, true),
             hashes: crate::model::HashCache::default(),
+            blobs: crate::model::BlobIds::default(),
         };
         assert!(LanguageRegistry::build().syntactic_emphasis(&mut file, true));
         file.hunks
@@ -399,6 +401,7 @@ mod tests {
                 lines,
             }],
             hashes: crate::model::HashCache::default(),
+            blobs: crate::model::BlobIds::default(),
         };
         assert!(LanguageRegistry::build().syntactic_emphasis(&mut file, false));
         for line in &file.hunks[0].lines {

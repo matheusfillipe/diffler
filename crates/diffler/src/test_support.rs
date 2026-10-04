@@ -357,8 +357,9 @@ pub(crate) fn mouse_drag(col: u16, row: u16) -> AppEvent {
 
 /// Render through the top-level draw so modal overlays and screen switching
 /// are covered too. The first draw only queues enrichment (intra-line
-/// emphasis, syntax highlight); run it and draw again so the snapshot
-/// captures the settled frame, as the real app converges to.
+/// emphasis, syntax highlight) and an image file's preview; run both and draw
+/// again so the snapshot captures the settled frame, as the real app
+/// converges to.
 pub(crate) fn render(app: &mut App) -> Terminal<TestBackend> {
     let backend = TestBackend::new(120, 40);
     let mut terminal = Terminal::new(backend).expect("terminal");
@@ -366,6 +367,7 @@ pub(crate) fn render(app: &mut App) -> Terminal<TestBackend> {
         .draw(|frame| crate::ui::draw(frame, app))
         .expect("draw");
     app.enrich_now();
+    app.settle_image_preview();
     terminal
         .draw(|frame| crate::ui::draw(frame, app))
         .expect("draw");

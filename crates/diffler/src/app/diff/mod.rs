@@ -243,6 +243,11 @@ pub struct DiffView {
     /// landed file's hunks in here too, since the merge is a snapshot taken
     /// before enrichment runs.
     pub(crate) merged_model: Option<DiffModel>,
+    /// The image file preview the pane draws, once the worker built it.
+    pub(crate) image_preview: Option<crate::app::image::ImagePreview>,
+    /// The image the last draw showed, which `App::queue_image_preview`
+    /// turns into a request.
+    pub(crate) image_want: Option<crate::app::image::ImageKey>,
     /// What each unified `DiffRow::Fold` row stands for.
     pub(crate) fold_groups: Vec<folds::FoldGroup>,
     /// The hunks the reader folded, by file path then [`folds::hunk_key`].
@@ -310,6 +315,8 @@ impl DiffView {
             context: HashMap::new(),
             context_files: Vec::new(),
             merged_model: None,
+            image_preview: None,
+            image_want: None,
             fold_groups: Vec::new(),
             folded: HashMap::new(),
             rows_path: String::new(),

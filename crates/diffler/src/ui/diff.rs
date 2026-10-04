@@ -109,6 +109,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         };
         draw_body(frame, body, &ctx, diff);
     }
+    // this only queues work: the worker builds the picture for the size the
+    // pane just drew its frames at
+    app.queue_image_preview();
 
     frame.render_widget(
         Paragraph::new(status_bar(app, bar.width)).style(Style::new().bg(app.theme.panel)),
@@ -948,6 +951,33 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
         )),
         header_area,
     );
+
+    // an image file draws its sides, leaving any whole-file comment cards
+    // their rows underneath
+    let body_area = if crate::app::image::is_image(file) {
+        let comment_rows = u16::try_from(diff.rows.len()).unwrap_or(u16::MAX);
+        let rows_height = comment_rows.min(body_area.height / 2);
+        let [picture, rest] =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(rows_height)])
+                .areas(body_area);
+        let want = super::image_pane::draw_image_sides(
+            frame,
+            picture,
+            theme,
+            file,
+            diff.image_preview.as_ref(),
+        );
+        diff.image_want = Some(want);
+        if rows_height == 0 {
+            diff.viewport = 0;
+            diff.pane = rest;
+            return;
+        }
+        rest
+    } else {
+        diff.image_want = None;
+        body_area
+    };
 
     // the breadcrumb row is reserved only for files that have definitions, so
     // plain files keep their full height

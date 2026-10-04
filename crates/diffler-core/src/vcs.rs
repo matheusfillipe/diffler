@@ -164,6 +164,10 @@ pub trait Vcs: Send {
     /// what it actually shows, rather than whatever the worktree holds now.
     fn read_at(&self, rev: &str, path: &str) -> Result<Option<String>, VcsError>;
 
+    /// A blob's raw bytes by its hex id (a [`crate::model::BlobIds`] side),
+    /// `None` when the object store has no such blob.
+    fn read_blob(&self, oid: &str) -> Result<Option<Vec<u8>>, VcsError>;
+
     /// Every tracked file, repo-relative and sorted. This is the index, so a
     /// staged new file is tracked and an untracked one is not.
     fn tracked_files(&self) -> Result<Vec<PathBuf>, VcsError>;

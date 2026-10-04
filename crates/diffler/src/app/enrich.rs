@@ -5,7 +5,7 @@
 
 use diffler_core::diffalgo::DiffAlgorithm;
 use diffler_core::highlight::Highlighter;
-use diffler_core::model::{FileDiff, HashCache, Hunk};
+use diffler_core::model::{BlobIds, FileDiff, HashCache, Hunk};
 use diffler_core::pairing;
 
 use super::App;
@@ -79,6 +79,7 @@ pub fn run_enrich(highlighter: &Highlighter, job: EnrichJob) -> EnrichOutcome {
         new_text: job.new_text,
         hunks: job.hunks,
         hashes: HashCache::default(),
+        blobs: BlobIds::default(),
     };
     let structural = job.algorithm == DiffAlgorithm::Structural;
     if !(job.semantic && highlighter.syntactic_emphasis(&mut file, structural)) {

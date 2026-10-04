@@ -199,7 +199,7 @@ pub fn review_mix<'a>(files: impl IntoIterator<Item = &'a FileDiff>) -> Vec<Lang
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{DiffLine, FileStatus, HashCache, Hunk, HunkId, LineKind};
+    use crate::model::{BlobIds, DiffLine, FileStatus, HashCache, Hunk, HunkId, LineKind};
 
     fn file(path: &str, added: usize, deleted: usize) -> FileDiff {
         let mut lines = Vec::new();
@@ -240,6 +240,7 @@ mod tests {
                 lines,
             }],
             hashes: HashCache::default(),
+            blobs: BlobIds::default(),
         }
     }
 
