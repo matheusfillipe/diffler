@@ -1,136 +1,104 @@
 # diffler
 
+**A standalone magit for the terminal: a keyboard-driven git UI and code reviewer, on its own or with your coding agent.**
+
 [![crates.io](https://img.shields.io/crates/v/diffler.svg)](https://crates.io/crates/diffler)
 [![npm](https://img.shields.io/npm/v/@mattfillipe/diffler.svg)](https://www.npmjs.com/package/@mattfillipe/diffler)
 [![IRC](https://img.shields.io/badge/IRC-chat.h4ks.com-blue.svg)](https://chat.h4ks.com)
 
 ![diffler reviewing an agent's change: word-level diff highlights, an inline comment, and the agent replying and fixing the code live over MCP](assets/demo.gif)
 
-A tool for taking ownership of agentic code: review what your agent writes,
-together with the agent, while it happens. The code that lands is code you
-have actually reviewed.
+If you like magit or vim and want that workflow outside Emacs, this is it: one
+binary, [Doom Emacs](https://github.com/doomemacs/doomemacs) keys, a fast
+keyboard-driven git UI. Stage and commit your own work, review local changes or
+pull requests, and, when you work with a coding agent, review what it writes
+while it writes it.
 
-If you know Emacs' [magit](https://magit.vc), diffler is basically a
-standalone magit with an MCP server built in: the same fast, keyboard-driven
-git UI, no Emacs required. The keys follow the
-[Doom Emacs](https://github.com/doomemacs/doomemacs) magit experience, so its
-leader-key transients land where your fingers expect them. Launch it in a repo
-alongside Claude Code or any MCP-compatible agent: it shows a live diff of what
-the agent is doing; you read, comment, stage, and commit; the agent picks your
-feedback up over MCP and responds in place. One binary, no browser, no daemon.
+## What it does
+
+- magit-style git: stage, unstage, discard, commit, branch, push and pull, with Doom Emacs keys.
+- Code review in the diff: comment on a line or range, mark files viewed, compare against any branch or commit.
+- Pull requests on GitHub, GitLab and Forgejo: review without checking out, sync existing threads, submit your comments as one review.
+- Optional agent review over MCP: the diff updates as your agent edits, it answers your comments in the thread, and it can walk you through its change one stop at a time.
+- Works in git and colocated jj repos. Shows changed images as pictures (kitty, sixel, iTerm2, or half blocks).
 
 ## Install
 
 ```sh
 cargo install diffler
+# or
+brew tap matheusfillipe/diffler https://github.com/matheusfillipe/diffler && brew install diffler
+# or
+npm install -g @mattfillipe/diffler
 ```
 
 <details>
-<summary><b>Prebuilt binary</b></summary>
-
-Skips the compile, and needs no Rust toolchain.
+<summary>Other install methods (prebuilt binary, Scoop, AUR, Nix)</summary>
 
 ```sh
+# prebuilt binary, no Rust toolchain needed
 cargo binstall diffler
-```
 
-Or download it straight from the
-[releases page](https://github.com/matheusfillipe/diffler/releases): macOS,
-Linux and Windows, x86_64 and arm64. Any GitHub-release installer (`eget`,
-`ubi`, ...) works against it too.
-
-</details>
-
-<details>
-<summary><b>Homebrew</b></summary>
-
-macOS and Linux. The tap is this repository.
-
-```sh
-brew tap matheusfillipe/diffler https://github.com/matheusfillipe/diffler
-brew install diffler
-```
-
-</details>
-
-<details>
-<summary><b>Scoop</b></summary>
-
-Windows. The bucket is this repository.
-
-```sh
+# Scoop (Windows)
 scoop bucket add diffler https://github.com/matheusfillipe/diffler
 scoop install diffler
-```
 
-</details>
-
-<details>
-<summary><b>Arch</b></summary>
-
-`diffler-bin` on the AUR ships the prebuilt binary, so it installs without
-building.
-
-```sh
+# Arch
 yay -S diffler-bin
-```
 
-</details>
-
-<details>
-<summary><b>Nix</b></summary>
-
-The flake serves the prebuilt binary. `nix run` tries it without installing
-anything, `nix profile install` keeps it.
-
-```sh
+# Nix
 nix run github:matheusfillipe/diffler
 nix profile install github:matheusfillipe/diffler
 ```
 
+Binaries for macOS, Linux and Windows (x86_64 and arm64) are on the
+[releases page](https://github.com/matheusfillipe/diffler/releases).
+
 </details>
 
-<details>
-<summary><b>npm</b></summary>
-
-A wrapper that fetches the prebuilt binary. The package name is scoped, the
-command it installs is plain `diffler`.
+## Quick start
 
 ```sh
-npx @mattfillipe/diffler
-npm install -g @mattfillipe/diffler
+diffler                 # open the status screen in the current repo
+diffler path/to/repo    # or in another one
 ```
 
-</details>
+Inside diffler, `<cr>` opens a file's diff, `s` stages, `cc` commits, and `c`
+comments a line. For pull requests, `b` `p` lists the open ones, `<cr>`
+reviews one, and `S` submits your comments as a single review. `b` `P` opens a
+new pull request from the current branch.
 
-## Quickstart
+### With a coding agent
 
-Run `diffler` inside a repository. It starts the TUI and an MCP server on
-port 8417. Connect your agent once:
-
-<details>
-<summary><b>Claude Code</b></summary>
+diffler serves MCP on port 8417 while it runs. Connect Claude Code once:
 
 ```sh
 claude mcp add --transport http diffler http://127.0.0.1:8417/mcp
-# or, over stdio, auto-discovering the port:
-claude mcp add diffler -- npx -y diffler-mcp
-# or, as a plugin (MCP server plus the /df, /dfa and /dfr commands):
+```
+
+Comment on the agent's changes and press `Z` to send them. The agent answers
+in the thread and you resolve it once you're happy. Ask it for a walkthrough
+of its change and open it from the status screen. More in
+[docs/walkthroughs.md](docs/walkthroughs.md). Don't need it? Set
+`enabled = false` under `[mcp]` in the config, or run `diffler --no-mcp`.
+
+<details>
+<summary>Other ways to connect an agent (Claude Code plugin, opencode, any MCP client)</summary>
+
+**Claude Code plugin**, which adds `/df` to answer your comments, `/dfa` to walk
+you through a change, and `/dfr` to review a change and leave comments:
+
+```sh
 claude plugin marketplace add matheusfillipe/diffler && claude plugin install diffler@diffler
 ```
 
-Connected, the server's prompts show up as `/diffler:review`,
-`/diffler:walkthrough` and `/diffler:critique`. The plugin adds `/df`, to
-answer your comments, `/dfa`, to walk you through a change, and `/dfr`, to
-review a change and leave comments.
+**Over stdio**, finding the running diffler's port on its own:
 
-</details>
+```sh
+claude mcp add diffler -- npx -y diffler-mcp
+```
 
-<details>
-<summary><b>opencode</b></summary>
-
-Add the server to `opencode.json` in the project, or globally in
-`~/.config/opencode/opencode.json`:
+**opencode**: add the server to `opencode.json`, then fetch the commands:
 
 ```json
 {
@@ -144,134 +112,66 @@ Add the server to `opencode.json` in the project, or globally in
 }
 ```
 
-And install the `/df`, `/dfa` and `/dfr` commands (opencode has no package
-mechanism for commands, so this fetches the ones maintained in this repo):
-
 ```sh
 mkdir -p ~/.config/opencode/commands
 for c in df dfa dfr; do curl -fsSLo ~/.config/opencode/commands/$c.md \
   https://raw.githubusercontent.com/matheusfillipe/diffler/main/.opencode/commands/$c.md; done
 ```
 
-</details>
-
-<details>
-<summary><b>Any other MCP agent</b></summary>
-
-Point it at `http://127.0.0.1:8417/mcp` (streamable HTTP), or run
-`npx -y diffler-mcp` as a stdio proxy that auto-discovers the port from
-`.diffler/mcp.json`. The server also ships `review`, `walkthrough` and
-`critique` prompts that prompt-aware clients surface as commands.
+**Any other MCP client**: point it at `http://127.0.0.1:8417/mcp` (streamable
+HTTP), or run `npx -y diffler-mcp` as a stdio proxy. Prompt-aware clients also
+get `review`, `walkthrough` and `critique` commands. Tools are listed in
+[docs/mcp.md](docs/mcp.md).
 
 </details>
-
-The loop: the agent edits files, the diff updates live. You comment lines or
-ranges in the diff view and press `Z` to send feedback. The agent picks the
-comments up through `wait_for_feedback`, replies or proposes resolutions, and
-you confirm in the TUI. `y`/`Y` copy the same feedback as markdown if you would
-rather paste it into a prompt.
-
-Ask the agent to walk you through what it changed and it publishes a
-walkthrough: a summary, then one stop per decision, in reading order, each
-anchored to the code it is about. The status screen lists every walkthrough the
-repository has, and `<cr>` opens one. See
-[docs/walkthroughs.md](docs/walkthroughs.md).
-
-The same review works against real pull requests: the status screen shows the
-branch's PR (and `b` `p` lists all open ones; reviewing never needs a
-checkout). PR comments sync in as regular threads, yours stack locally, and
-`S` submits them as a single review on the forge. `b` `P` opens a new one from
-the current branch, filling the title and body from its commits and pushing
-first when the forge has not seen the branch yet. Replies the agent wrote stay
-local: what goes out carries your name, so it is what you wrote.
-
-## Keys
-
-Vim-like: `j`/`k`/`gg`/`G` motions, `/` search, and
-`<c-d>`/`<c-u>` paging work in every list. The basics:
-
-| Key | Action |
-| --- | --- |
-| `<c-k>` | command palette: fuzzy-find every action on this screen and its key |
-| `<cr>` | open the thing under the cursor |
-| `s` / `u` | stage / unstage |
-| `cc` | commit |
-| `c` | comment the diff line (`V` selects a range first) |
-| `m` / `u` / `U` | in the diff view: mark the file viewed and step to the row under it, sorting it to the top of its group (a folder row marks everything under it) / jump to the next unviewed / clear every mark |
-| `+` / `-` / `=` | widen / narrow the context around a hunk, or open the whole file |
-| `\|` | side-by-side diff |
-| `t` | cycle the sidebar: file tree, review buckets (viewed files fold away, come back if they change), kinds (source, tests, docs, config, build, generated, assets), and the walkthrough when the review has one |
-| `V` | select a range: lines in the diff, rows anywhere else, or a run of commits on the status screen, which `<cr>` then reviews as one combined diff |
-| `o` | open a flowchart under the cursor as a full-screen graph you walk node by node; on a sequence diagram or callstack row, `<cr>` jumps to its code |
-| `]` / `[` | step to the next or previous hunk, folded or open |
-| `za` / `<tab>` | fold the hunk under the cursor, or open it; `zM` folds every hunk in the file, `zR` opens them all |
-| `<c-a>` | switch the diff algorithm live (myers, minimal, patience, histogram, structural) |
-| `Z` | send feedback to the agent |
-| `C` | comments sidebar: walk every comment, Enter jumps to it in the pane; `t` groups by file, author, or status (resolved folds away), or lists them flat |
-| `d` / `D` | delete the comment under the cursor / every local comment of the review |
-| `S` | submit stacked PR comments as one review |
-| `b` `P` | open a pull request for the current branch |
-| `d` | review the working tree against something else: `d` base branch, `c` last commit, `b` a branch, `s` a commit, `w` HEAD |
-| `y` / `Y` | copy feedback as markdown (file / all) |
-| `y` | on a status or PR-list row, copy what it points at: a pull request as its URL, a commit as its sha, a file or folder as its repo-relative path |
-| `gf` | find any tracked file: Enter opens it, `b` blames it, `e` sends it to `$EDITOR` |
-| `B` | blame the file under the cursor, at that line (`b` toggles the column, `<cr>` reviews the commit) |
-| `L` | language breakdown of the repo: files, lines, code, comments per language (`s` sorts) |
-| `e` | open the file in `$EDITOR` |
-| `<c-g>` | edit the focused comment, reply, or field in `$EDITOR` |
-| `?` | full keymap for the current screen |
-| `q` | back / quit |
-
-Every binding is remappable, see
-[docs/config.example.toml](docs/config.example.toml).
-
-The diff view is two panes: a file sidebar and the selected file's diff. `h`
-and `l` (or the left/right arrows) focus the sidebar and the diff; `j`/`k`
-change the selected file from the sidebar or scroll the diff when focused there,
-and `<c-d>`/`<c-u>` page whichever pane has the keyboard;
-`J`/`K` or `<c-n>`/`<c-p>` step through files from either; `<tab>` (or `za`)
-folds the folder or section under the sidebar cursor, or the region under the
-diff cursor.
-
-Diffs are compared on the syntax tree, so a reindented or rewrapped block
-highlights only the tokens that actually differ.
-
-The mouse works too (including over tmux): the wheel scrolls the pane under the
-pointer, and a left click selects a row. Clicking a section, directory, or
-recent-commits header folds it, and clicking a sidebar file opens it. Mouse
-capture means the terminal's own text selection needs the usual override
-(`Shift`, or `Option` in iTerm2).
 
 ## How it compares
 
-Pagers like [delta](https://github.com/dandavison/delta) render diffs
-beautifully, and [lazygit](https://github.com/jesseduffield/lazygit) and
-[gitui](https://github.com/gitui-org/gitui) are great general git TUIs.
-diffler is review-first: comments live on diff lines, an agent reads and
-answers them over MCP while you watch, and the same threads work against real
-GitHub, GitLab and Forgejo pull requests, including ones whose branch you
-never checked out. It also runs in a colocated jj repo
-(`jj git init --colocate`), where commits go through jj, staging declines
-because jj has no index, and push and pull decline naming `jj git push`/`jj
-git fetch` to run yourself. A changed image shows its before and after as
-pictures, drawn over the kitty, sixel or iTerm2 protocol where the terminal
-speaks one (tmux passthrough included), and in coloured half blocks elsewhere.
+| | diffler | [tuicr](https://github.com/agavra/tuicr) | [lazygit](https://github.com/jesseduffield/lazygit) | [magit](https://magit.vc) |
+|---|:---:|:---:|:---:|:---:|
+| Standalone binary | ✅ | ✅ | ✅ | ❌ needs Emacs |
+| Stage, commit, branch, push | ✅ | ❌ | ✅ | ✅ |
+| Comment on diff lines | ✅ | ✅ | ❌ | ❌ |
+| Agent answers in the thread, live | ✅ MCP | markdown export | ❌ | ❌ |
+| Agent walkthroughs of a change | ✅ | ❌ | ❌ | ❌ |
+| Inline PR review | GitHub, GitLab, Forgejo | GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, Gerrit | ❌ | ❌ |
+| jj | ✅ colocated | ✅ | ❌ | ❌ |
+| Vim / Doom Emacs keys | ✅ | ✅ vim | partial | ✅ |
 
-You may also want to check [tuicr](https://github.com/agavra/tuicr), the
-closest alternative.
+## Keys
 
-## MCP tools
+Vim motions everywhere (`j`/`k`, `gg`/`G`, `/`, `<c-d>`/`<c-u>`). `?` shows the
+full keymap of the screen you're on, and `<c-k>` fuzzy-finds any action.
 
-While the TUI is running, diffler serves an MCP server the agent uses to read
-your review and respond in place. See [docs/mcp.md](docs/mcp.md).
+| Key | Action |
+| --- | --- |
+| `<cr>` | open the thing under the cursor |
+| `s` / `u` | stage / unstage |
+| `cc` | commit |
+| `c` | comment the line (`V` selects a range first) |
+| `Z` | send comments to the agent |
+| `m` | mark the file viewed |
+| `t` | switch the sidebar layout |
+| `\|` | toggle side-by-side |
+| `]` / `[` | next / previous hunk |
+| `za` | fold or open the hunk |
+| `d` | on the status screen, diff against another branch or commit |
+| `C` | open the comments list |
+| `S` | submit PR comments as one review |
+| `gf` | find any file |
+| `B` | blame |
+| `e` | open in `$EDITOR` |
+| `q` | back / quit |
+
+Every binding is remappable in [docs/config.example.toml](docs/config.example.toml).
+The mouse works too, over tmux included.
 
 ## Configuration
 
-Layered TOML: defaults, then `~/.config/diffler/config.toml` (XDG respected,
-macOS included), then `<repo>/.diffler/config.toml`, then CLI flags. Every
-option and key remap, documented with its default, lives in
-[docs/config.example.toml](docs/config.example.toml). Inspect the merged
-result and where each value came from:
+Layered TOML: defaults, then `~/.config/diffler/config.toml`, then
+`<repo>/.diffler/config.toml`, then CLI flags. Every option is documented in
+[docs/config.example.toml](docs/config.example.toml). See the merged result and
+where each value came from:
 
 ```sh
 diffler config --dump
@@ -279,15 +179,15 @@ diffler config --dump
 
 ## Themes
 
-Switchable live with `T`, or set `ui.theme`. The
-[gallery](showcase/THEMES.md) shows each one.
+Switch live with `T`, or set `ui.theme`. See every theme in the
+[gallery](showcase/THEMES.md).
 
 ![the review screen in catppuccin-mocha: the file tree, a diff carrying a comment thread with the agent's reply, and the comments sidebar](showcase/img/catppuccin-mocha.png)
 
 ## Development
 
 ```sh
-just ci     # core gate: fmt + clippy + tests
+just ci     # fmt + clippy + tests
 just e2e    # PTY end-to-end suite (needs uv)
 ```
 

@@ -1,6 +1,6 @@
 [package]
 name = "diffler"
-description = "Terminal code review for AI coding agents"
+description = "Standalone magit-style git TUI and code reviewer, on its own or with your coding agent"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

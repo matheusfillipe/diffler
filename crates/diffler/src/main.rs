@@ -8,7 +8,7 @@ use diffler_core::review::Review;
 use ratatui::DefaultTerminal;
 use tokio::sync::mpsc;
 
-/// Terminal code review for AI coding agents.
+/// Standalone magit-style git TUI and code reviewer, on its own or with your coding agent.
 #[derive(Parser, Debug)]
 #[command(version, about)]
 struct Cli {
