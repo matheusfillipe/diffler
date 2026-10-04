@@ -6,7 +6,7 @@
 [![npm](https://img.shields.io/npm/v/@mattfillipe/diffler.svg)](https://www.npmjs.com/package/@mattfillipe/diffler)
 [![IRC](https://img.shields.io/badge/IRC-chat.h4ks.com-blue.svg)](https://chat.h4ks.com)
 
-![diffler reviewing an agent's change: word-level diff highlights, an inline comment, and the agent replying and fixing the code live over MCP](assets/demo.gif)
+![diffler: reviewing an agent's edits as it makes them, a walkthrough of the change, and a pull request review](assets/demo.gif)
 
 I like magit a lot, and I wanted it as its own program. That's diffler: one
 binary with [Doom Emacs](https://github.com/doomemacs/doomemacs) keys for
