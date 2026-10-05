@@ -667,10 +667,17 @@ fn lens_marks(
     }) else {
         return Vec::new();
     };
-    lens.marks(&file.path, on_old_side, number)
+    let mut marks: Vec<_> = lens
+        .marks(&file.path, on_old_side, number)
         .into_iter()
         .map(|(range, symbol)| (range, Mark::Lens(lens_color(theme, symbol))))
-        .collect()
+        .collect();
+    marks.extend(
+        lens.labels(&file.path, on_old_side, number, &line.text)
+            .into_iter()
+            .map(|(range, digit, symbol)| (range, Mark::Label(digit, lens_color(theme, symbol)))),
+    );
+    marks
 }
 
 /// A lens symbol's colour: the golden-angle step a comment author gets, from

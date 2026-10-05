@@ -107,6 +107,48 @@ impl Lens {
             .collect()
     }
 
+    /// On the line the lens was opened on, each symbol's digit over the first
+    /// character of the name's first appearance, so the strip's numbers read
+    /// straight onto the code.
+    pub(crate) fn labels(
+        &self,
+        path: &str,
+        on_old_side: bool,
+        line: u32,
+        text: &str,
+    ) -> Vec<(Range<usize>, char, usize)> {
+        let origin = &self.origin;
+        if origin.path != path || origin.on_old_side != on_old_side || origin.line != line {
+            return Vec::new();
+        }
+        let mut labelled = HashSet::new();
+        let mut out = Vec::new();
+        for found in &self.uses {
+            let here = found.path == path && found.on_old_side == on_old_side && found.line == line;
+            if !here || !labelled.insert(found.symbol) {
+                continue;
+            }
+            let Some(first) = text
+                .get(found.range.start..)
+                .and_then(|rest| rest.chars().next())
+            else {
+                continue;
+            };
+            let Some(digit) = u32::try_from(found.symbol + 1)
+                .ok()
+                .and_then(|n| char::from_digit(n, 10))
+            else {
+                continue;
+            };
+            out.push((
+                found.range.start..found.range.start + first.len_utf8(),
+                digit,
+                found.symbol,
+            ));
+        }
+        out
+    }
+
     pub(crate) fn use_count(&self, symbol: usize) -> usize {
         self.uses
             .iter()
@@ -699,7 +741,7 @@ mod tests {
                 .collect()
         };
         let y = (1..buffer.area.height)
-            .find(|&y| row_text(y).contains("pub fn apply(price: u32, qty: u32, discount"))
+            .find(|&y| row_text(y).contains("iscount: u32) -> u32 {"))
             .expect("the new signature is on screen");
         let text = row_text(y);
         let column = |word: &str| {
@@ -707,9 +749,13 @@ mod tests {
             u16::try_from(text[..byte].chars().count()).expect("fits a row")
         };
         assert_ne!(
-            buffer[(column("price"), y)].bg,
+            buffer[(column("rice"), y)].bg,
             buffer[(column("pub"), y)].bg,
             "a use of price wears a tint the rest of the line does not"
+        );
+        assert!(
+            text.contains("pub fn 1pply(2rice: u32, 3ty: u32, 4iscount"),
+            "each name carries its digit on its first character: {text}"
         );
         insta::assert_snapshot!(terminal.backend());
     }

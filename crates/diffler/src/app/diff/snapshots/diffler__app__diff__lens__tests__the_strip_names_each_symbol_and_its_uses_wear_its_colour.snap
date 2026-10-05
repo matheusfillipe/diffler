@@ -9,7 +9,7 @@ expression: terminal.backend()
 "   ● main.rs              +1 -1  @@ -1,7 +1,8 @@                                                                        "
 "                                ▌   1      pub fn apply(price: u32, qty: u32) -> u32 {                                  "
 "                                ▌   2          price * qty                                                              "
-"                                ▌        1 pub fn apply(price: u32, qty: u32, discount: u32) -> u32 {                   "
+"                                ▌        1 pub fn 1pply(2rice: u32, 3ty: u32, 4iscount: u32) -> u32 {                   "
 "                                ▌        2     let total = price * qty;                                                 "
 "                                ▌        3     total - discount.min(total)                                              "
 "                                    3    4 }                                                                            "

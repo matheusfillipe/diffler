@@ -671,6 +671,9 @@ pub enum Mark {
     SearchCurrent,
     /// A use of a lens symbol, in that symbol's colour.
     Lens(Color),
+    /// The digit that picks a lens symbol, drawn over the first character of
+    /// its name on the line the lens was opened on.
+    Label(char, Color),
 }
 
 impl Mark {
@@ -730,8 +733,8 @@ pub(super) fn composite_spans(
     bounds.sort_unstable();
     bounds.dedup();
 
-    // a search match outranks a lens use, and both outrank emphasis, on the
-    // chars they cover
+    // on the chars they cover, a lens label outranks a search match, which
+    // outranks a lens use, and all of them outrank emphasis
     let mark_at = |at: usize| {
         let covering = || {
             marks
@@ -740,7 +743,8 @@ pub(super) fn composite_spans(
                 .map(|(_, mark)| *mark)
         };
         covering()
-            .find(|mark| !matches!(mark, Mark::Lens(_)))
+            .find(|mark| matches!(mark, Mark::Label(..)))
+            .or_else(|| covering().find(|mark| matches!(mark, Mark::Search | Mark::SearchCurrent)))
             .or_else(|| covering().next())
     };
     let emphasized = |at: usize| {
@@ -763,10 +767,20 @@ pub(super) fn composite_spans(
         if segment.is_empty() {
             continue;
         }
+        if let Some(Mark::Label(digit, color)) = mark_at(start) {
+            let label = Style::new()
+                .fg(theme.bg)
+                .bg(color)
+                .add_modifier(Modifier::BOLD);
+            spans.push(Span::styled(digit.to_string(), label));
+            continue;
+        }
         let bg = match mark_at(start) {
             Some(Mark::SearchCurrent) => theme.search_current,
             Some(Mark::Search) => theme.search,
-            Some(Mark::Lens(color)) => crate::theme::blend(base_bg, color, LENS_TINT),
+            Some(Mark::Lens(color) | Mark::Label(_, color)) => {
+                crate::theme::blend(base_bg, color, LENS_TINT)
+            }
             None if emphasized(start) => emph_bg,
             None => base_bg,
         };
