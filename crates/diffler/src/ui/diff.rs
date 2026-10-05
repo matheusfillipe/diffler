@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use diffler_core::highlight::StyledRange;
-use diffler_core::model::{DiffLine, DiffModel, FileDiff};
+use diffler_core::model::{DiffLine, DiffModel, FileDiff, LineKind};
 use diffler_core::session::{Comment, CommentStatus, Session};
 use diffler_core::source::ReviewSource;
 use ratatui::Frame;
@@ -15,6 +15,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
+use crate::app::RefEntry;
 use crate::app::composer::{Composer, ComposerKind, ComposerLine};
 use crate::app::markdown::MdSpan;
 use crate::app::rowsel::RowSelect;
@@ -256,9 +257,6 @@ fn draw_body(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
     }
 }
 
-/// Lines of code a reference shows around its own, above and below.
-const REF_CONTEXT: usize = 1;
-
 /// How one reference's block is drawn: its colours and the pane's width.
 #[derive(Clone, Copy)]
 struct BlockLook<'a> {
@@ -269,15 +267,9 @@ struct BlockLook<'a> {
     width: u16,
 }
 
-/// One reference as the sidebar shows it: the hunk lines around `own`, each
-/// with its number and the diff's `-`/`+` marker, the name tinted on its own
-/// line, all banded when the reference is the selected one.
-fn reference_block(
-    look: BlockLook<'_>,
-    hunk: &diffler_core::model::Hunk,
-    own_line: usize,
-    range: Option<&std::ops::Range<usize>>,
-) -> Vec<Line<'static>> {
+/// One reference as the sidebar shows it: its preview lines, the use's own
+/// in full colour with the name tinted, the rest dimmed.
+fn reference_block(look: BlockLook<'_>, entry: &RefEntry) -> Vec<Line<'static>> {
     let BlockLook {
         theme,
         selected,
@@ -287,42 +279,41 @@ fn reference_block(
     } = look;
     let (bg, bar) = card_frame(theme, selected, focused, color);
     let mut lines = Vec::new();
-    let first = own_line.saturating_sub(REF_CONTEXT);
-    let last = (own_line + REF_CONTEXT).min(hunk.lines.len().saturating_sub(1));
-    for line_at in first..=last {
-        let Some(line) = hunk.lines.get(line_at) else {
-            continue;
-        };
-        let number = if line.kind == diffler_core::model::LineKind::Deleted {
-            line.old_no
-        } else {
-            line.new_no
-        };
-        let gutter = number.map_or_else(|| "    ".to_owned(), |n| format!("{n:>4}"));
+    for (at, line) in entry.preview.iter().enumerate() {
+        let gutter = line
+            .number
+            .map_or_else(|| "    ".to_owned(), |n| format!("{n:>4}"));
         let (mark, mark_fg) = match line.kind {
-            diffler_core::model::LineKind::Added => ("+ ", theme.added),
-            diffler_core::model::LineKind::Deleted => ("- ", theme.error_fg),
-            diffler_core::model::LineKind::Context => ("  ", theme.dim),
+            LineKind::Added => ("+ ", theme.added),
+            LineKind::Deleted => ("- ", theme.error_fg),
+            LineKind::Context => ("  ", theme.dim),
         };
-        let text = crate::text::elide(line.text.trim_end(), usize::from(width).saturating_sub(11));
-        let own = line_at == own_line;
+        let full = line.text.trim_end();
+        let text = crate::text::elide(full, usize::from(width).saturating_sub(11));
+        let kept = if text == full {
+            text.len()
+        } else {
+            text.len().saturating_sub('…'.len_utf8())
+        };
+        let own = at == entry.own;
         let fg = if own { theme.fg } else { theme.dim };
         let mut spans = vec![
             bar.clone(),
             Span::styled(gutter, Style::new().fg(theme.dim).bg(bg)),
             Span::styled(mark, Style::new().fg(mark_fg).bg(bg)),
         ];
-        // a name the elision cut short keeps no tint rather than a torn one
-        let parts = range.filter(|_| own).and_then(|range| {
+        // we tint a name only when the elision kept it whole
+        let range = &entry.range;
+        let parts = (own && range.end <= kept).then(|| {
             Some((
                 text.get(..range.start)?,
                 text.get(range.clone())?,
                 text.get(range.end..)?,
             ))
         });
-        match parts {
+        match parts.flatten() {
             Some((before, name, after)) => {
-                let tint = crate::theme::blend(bg, color, 40);
+                let tint = crate::theme::blend(bg, color, super::diff_render::LENS_TINT);
                 spans.push(Span::styled(before.to_owned(), Style::new().fg(fg).bg(bg)));
                 spans.push(Span::styled(name.to_owned(), Style::new().fg(fg).bg(tint)));
                 spans.push(Span::styled(after.to_owned(), Style::new().fg(fg).bg(bg)));
@@ -334,66 +325,59 @@ fn reference_block(
     lines
 }
 
-/// Right pane while a lens symbol is focused: its uses in diff order, grouped
+/// Right pane while a lens name is focused: its uses in diff order, grouped
 /// by file, each a short preview of the code around it with the name tinted,
 /// the selected one banded. Moving the selection seats the diff on that use.
-fn draw_references(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &DiffView) {
+fn draw_references(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut DiffView) {
     let theme = ctx.theme;
     let surface = sidebar_bg(theme);
     let focused = diff.focus == Pane::References;
     frame.render_widget(Block::new().style(Style::new().bg(surface)), area);
     let [heading, inner] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
-    let Some(lens) = diff.lens.as_ref() else {
+    diff.comments_rect = inner;
+    diff.ref_lines.clear();
+    let Some(lens) = diff.lens.as_mut() else {
         return;
     };
     let Some((slot, symbol)) = lens
+        .view
         .focus
-        .and_then(|slot| lens.symbols.get(slot).map(|symbol| (slot, symbol)))
+        .and_then(|slot| lens.data.symbols.get(slot).map(|symbol| (slot, symbol)))
     else {
         return;
     };
-    let title = format!("References · {} ({})", symbol.name, lens.refs.len());
+    let view = &mut lens.view;
+    let title = format!("References · {} ({})", symbol.name, view.refs.len());
     frame.render_widget(
         Paragraph::new(pane_heading(theme, &title, focused, surface)),
         heading,
     );
-    let Some(base) = diff.commit_model.as_ref().or(ctx.review_model) else {
+    if view.refs.is_empty() {
+        let hint = Line::styled(
+            " esc close the lens",
+            Style::new().fg(theme.dim).bg(surface),
+        );
+        frame.render_widget(Paragraph::new(vec![hint]), inner);
         return;
-    };
-    let model = DiffView::model_for_layout(diff.layout, base, &diff.context_files);
+    }
     let color = lens_color(theme, slot);
     let mut lines: Vec<Line<'static>> = Vec::new();
-    let mut selected_span = (0, 0);
-    let mut last_file = None;
-    for (at, entry) in lens.refs.iter().enumerate() {
-        let Some(file) = model.files.get(entry.file) else {
-            continue;
-        };
-        if last_file != Some(entry.file) {
-            last_file = Some(entry.file);
-            let count = lens
-                .refs
-                .iter()
-                .filter(|other| other.file == entry.file)
-                .count();
+    let mut owners: Vec<Option<usize>> = Vec::new();
+    let mut selected_span = (0, 1);
+    for (at, entry) in view.refs.iter().enumerate() {
+        if let Some(count) = entry.group_len {
             let hc = HeaderCtx {
                 theme,
                 bg: surface,
                 width: inner.width,
                 on_cursor: false,
             };
-            lines.push(group_header_line(hc, &file.path, count, false, Vec::new()));
+            lines.push(group_header_line(hc, &entry.path, count, false, Vec::new()));
+            owners.push(Some(at));
         }
-        let Some(hunk) = file.hunks.get(entry.hunk) else {
-            continue;
-        };
-        let selected = at == lens.ref_cursor;
+        let selected = at == view.ref_cursor;
         let start = lines.len();
-        let range = lens
-            .uses
-            .get(entry.use_index)
-            .map(|found| found.range.clone());
         let look = BlockLook {
             theme,
             selected,
@@ -401,15 +385,23 @@ fn draw_references(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff:
             color,
             width: inner.width,
         };
-        lines.extend(reference_block(look, hunk, entry.line, range.as_ref()));
+        lines.extend(reference_block(look, entry));
         lines.push(Line::default());
+        owners.resize(lines.len(), Some(at));
         if selected {
-            selected_span = (start, lines.len());
+            selected_span = (start, lines.len() - start);
         }
     }
     let height = usize::from(inner.height);
-    let scroll = selected_span.1.saturating_sub(height).min(selected_span.0);
-    let visible: Vec<Line<'static>> = lines.into_iter().skip(scroll).take(height).collect();
+    view.scroll = super::scroll_to_span(
+        selected_span.0,
+        selected_span.1,
+        view.scroll,
+        height,
+        lines.len(),
+    );
+    let visible: Vec<Line<'static>> = lines.into_iter().skip(view.scroll).take(height).collect();
+    diff.ref_lines = owners;
     frame.render_widget(
         Paragraph::new(visible).style(Style::new().bg(surface)),
         inner,
@@ -767,11 +759,7 @@ fn lens_marks(
         return Vec::new();
     };
     let on_old_side = line.kind == diffler_core::model::LineKind::Deleted;
-    let Some(number) = (if on_old_side {
-        line.old_no
-    } else {
-        line.new_no
-    }) else {
+    let Some(number) = line.number_on(on_old_side) else {
         return Vec::new();
     };
     let mut marks: Vec<_> = lens
@@ -788,8 +776,8 @@ fn lens_marks(
 }
 
 /// A lens symbol's colour: the golden-angle step a comment author gets, from
-/// its slot on the strip, lifted for contrast against the theme background.
-pub(super) fn lens_color(theme: &Theme, slot: usize) -> Color {
+/// its slot in the lens, lifted for contrast against the theme background.
+fn lens_color(theme: &Theme, slot: usize) -> Color {
     #[allow(clippy::cast_precision_loss)] // a hue only needs to look distinct, not be exact
     let hue = (slot as f32 * HUE_STEP + 25.0).rem_euclid(360.0);
     let (r, g, b) = hsl_to_rgb(hue, 0.7, 0.55);

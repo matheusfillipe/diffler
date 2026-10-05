@@ -11,6 +11,7 @@ pub mod git;
 pub mod highlight;
 pub mod jj;
 pub mod language;
+pub mod lens;
 pub mod model;
 pub mod pairing;
 pub mod repo;

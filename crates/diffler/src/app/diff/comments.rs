@@ -287,12 +287,12 @@ impl App {
             }
             return;
         }
-        // the two sidebars share one place: the comments put the references
-        // away, widening the lens back to every symbol it names
+        // both sidebars take the same place, so we widen the lens back to every
+        // name it labels, which closes the references
         if let Some(lens) = diff.lens.as_mut() {
-            lens.focus = None;
-            lens.refs.clear();
+            lens.view.widen();
         }
+        diff.settle_focus();
         let count = self.comment_rows().len();
         // an empty sidebar is an answer, so it opens with nothing to focus
         if count == 0 {

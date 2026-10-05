@@ -2,7 +2,9 @@
 //! class, method, …) for a line, derived from a grammar's tags query. The
 //! result is plain data so the diff worker can compute it once and share it.
 
-use tree_sitter::{Node, QueryCursor, StreamingIterator};
+use std::collections::HashSet;
+
+use tree_sitter::{Node, Query, QueryCursor, StreamingIterator, Tree};
 
 use crate::syntax::registry::LanguageRegistry;
 use crate::syntax::{MAX_PARSE_BYTES, parse};
@@ -89,43 +91,51 @@ impl LanguageRegistry {
         let Some(tree) = parse(entry, content) else {
             return ScopeIndex::default();
         };
+        tag_pass(query, &tree, content).0
+    }
+}
 
-        let names = query.capture_names();
-        let bytes = content.as_bytes();
-        let mut cursor = QueryCursor::new();
-        let mut matches = cursor.matches(query, tree.root_node(), bytes);
-        let mut defs = Vec::new();
-        while let Some(m) = matches.next() {
-            let mut span: Option<(usize, usize)> = None;
-            let mut name: Option<String> = None;
-            let mut qualified: Option<String> = None;
-            for cap in m.captures {
-                let cname = names.get(cap.index as usize).copied().unwrap_or("");
-                if cname.starts_with("definition.") {
-                    let node = whole_definition(cap.node);
-                    span = Some((node.start_position().row, node.end_position().row));
-                } else if cname == "name" {
-                    name = cap.node.utf8_text(bytes).ok().map(str::to_owned);
-                    qualified = cap
-                        .node
-                        .parent()
-                        .filter(|parent| parent.kind() == "qualified_identifier")
-                        .and_then(|parent| parent.utf8_text(bytes).ok())
-                        .map(str::to_owned);
-                }
-            }
-            if let (Some((start_row, end_row)), Some(name)) = (span, name) {
-                for name in std::iter::once(name).chain(qualified) {
-                    defs.push(Def {
-                        start_row,
-                        end_row,
-                        name,
-                    });
-                }
+/// One run of a grammar's tags query over a parsed file: its definition spans,
+/// and the start byte of every name the query captures, a definition's or a
+/// reference's alike.
+pub(crate) fn tag_pass(query: &Query, tree: &Tree, content: &str) -> (ScopeIndex, HashSet<usize>) {
+    let names = query.capture_names();
+    let bytes = content.as_bytes();
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(query, tree.root_node(), bytes);
+    let mut defs = Vec::new();
+    let mut captured = HashSet::new();
+    while let Some(m) = matches.next() {
+        let mut span: Option<(usize, usize)> = None;
+        let mut name: Option<String> = None;
+        let mut qualified: Option<String> = None;
+        for cap in m.captures {
+            let cname = names.get(cap.index as usize).copied().unwrap_or("");
+            if cname.starts_with("definition.") {
+                let node = whole_definition(cap.node);
+                span = Some((node.start_position().row, node.end_position().row));
+            } else if cname == "name" {
+                captured.insert(cap.node.start_byte());
+                name = cap.node.utf8_text(bytes).ok().map(str::to_owned);
+                qualified = cap
+                    .node
+                    .parent()
+                    .filter(|parent| parent.kind() == "qualified_identifier")
+                    .and_then(|parent| parent.utf8_text(bytes).ok())
+                    .map(str::to_owned);
             }
         }
-        ScopeIndex { defs }
+        if let (Some((start_row, end_row)), Some(name)) = (span, name) {
+            for name in std::iter::once(name).chain(qualified) {
+                defs.push(Def {
+                    start_row,
+                    end_row,
+                    name,
+                });
+            }
+        }
     }
+    (ScopeIndex { defs }, captured)
 }
 
 /// The node a definition spans. C and C++ tag a function by its declarator,

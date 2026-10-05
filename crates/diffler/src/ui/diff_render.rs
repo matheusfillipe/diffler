@@ -696,7 +696,7 @@ impl Mark {
 }
 
 /// How far a lens use's background leans toward its symbol's colour.
-const LENS_TINT: u16 = 40;
+pub(super) const LENS_TINT: u16 = 40;
 
 /// Split the text at every syntax/emphasis range boundary and style each
 /// segment: foreground from the syntax span covering it, background from

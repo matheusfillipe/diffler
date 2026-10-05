@@ -68,7 +68,7 @@ pub enum AppEvent {
     /// A symbol lens, built for the line `*` was pressed on.
     Lens {
         token: u64,
-        lens: Box<crate::app::diff::lens::Lens>,
+        lens: Box<crate::app::Lens>,
     },
     /// An image file's sides, decoded and encoded for the terminal.
     ImagePreview {

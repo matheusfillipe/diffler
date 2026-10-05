@@ -22,6 +22,7 @@ crates/diffler-core/   pure logic, no terminal (errors via thiserror):
   session.rs           comments (a walkthrough stop is one) + viewed marks
   walkthrough.rs       the agent's reading order: the stops' comment ids, anchors
   store.rs             .diffler/ persistence
+  lens.rs              symbol lens model: a line's names, how far each reaches, their uses
   feedback.rs          markdown feedback export
 
 crates/diffler/        binary (color-eyre at the top; thiserror for typed errors):
@@ -335,30 +336,35 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   mode and before the event pump reads stdin: kitty (Unicode placeholders,
   which survive a multiplexer), sixel or iTerm2 when the terminal answers,
   halfblocks otherwise.
-- **Symbol lens.** `*` in the diff pane (`app/diff/lens.rs`) names every
-  identifier on the cursor line, from the parse tree
-  (`LanguageRegistry::identifiers`, plain words where a language has no
-  grammar), up to nine, tints each one's uses in its own golden-angle colour
+- **Symbol lens.** `*` in the diff pane (`app/diff/lens.rs`, over the pure
+  model in `diffler_core::lens`) names every identifier on the cursor line,
+  from one parse per side (`LanguageRegistry::symbols`, plain words where a
+  language has no grammar), up to nine, tints each one's uses in its own golden-angle colour
   through the same `Mark` path search hits take, and draws each name's digit
   in red over its first letter on that line, so the number that picks a name
   sits on the name. A name the parse treats as an item on that line (a
   definition, a call or method call the tags query marks, or a type position)
   reaches every file of the diff, both sides, whether or not the diff defines
   it; any other name is a local and reaches only its enclosing function
-  (`ScopeIndex::enclosing`), or its file at the top level. Uses count only on
+  (`ScopeIndex::enclosing`, held to that one function's span even when the
+  file defines another of the same name), or its file at the top level. Uses count only on
   lines the diff shows, a deleted line on its old side and an added or context
   line on its new side, so a context line counts once. Building it parses both
   sides of every file, so it is a worker like enrichment (`pending_lens` →
-  `AppEvent::Lens`, token-guarded). `*` again cycles the focus through the
-  names and back, `#` the same ring backwards (vim's pair), a digit picks one the way a numbered list does, and `esc`
-  closes it. A focused name opens the references sidebar in the comments
+  `AppEvent::Lens`, its token held by the view that asked, so an answer for a
+  replaced view is dropped). `*` again cycles the focus through the
+  names and back, `#` the same ring backwards (vim's pair), a digit picks one the way a
+  numbered list does, and `esc` closes it. A focused name opens the references sidebar in the comments
   sidebar's place (`Pane::References`; opening either puts the other away): its
   uses in diff order, one per line, grouped by file under the same headers the
   comments sidebar draws, each a few lines of the hunk around it with the diff's
-  `-`/`+` markers and the name tinted. The keyboard stays in the diff when it
+  `-`/`+` markers and the name tinted. A reference is keyed by its path, side
+  and line number and found again when it is seated, so expanding context or
+  re-diffing never points it at the wrong row. The keyboard stays in the diff when it
   opens; `l` moves into it, and moving its selection seats the diff on that use
   through `seat_ref`, switching file and opening a fold as needed, the way the
-  comments sidebar's selection drives the diff cursor. `n`/`N` step that same
+  comments sidebar's selection drives the diff cursor; paging, `[`/`]` (file to
+  file), the wheel and a click work there as they do in the comments sidebar. `n`/`N` step that same
   selection when a name is focused, and walk every tinted use in diff order when
   none is. Side-by-side draws no lens and `*` there names the unified view. A
   refresh that moves the model drops the lens, since its line numbers name the

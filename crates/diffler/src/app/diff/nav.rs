@@ -110,8 +110,14 @@ impl App {
         match action {
             Action::MoveDown => self.refs_step(1, false),
             Action::MoveUp => self.refs_step(-1, false),
-            Action::GoTop => self.refs_step(isize::MIN / 2, false),
-            Action::GoBottom => self.refs_step(isize::MAX / 2, false),
+            Action::GoTop => self.refs_to(0),
+            Action::GoBottom => self.refs_to(usize::MAX),
+            Action::HalfPageDown => self.refs_step(self.refs_page(false), false),
+            Action::HalfPageUp => self.refs_step(-self.refs_page(false), false),
+            Action::FullPageDown => self.refs_step(self.refs_page(true), false),
+            Action::FullPageUp => self.refs_step(-self.refs_page(true), false),
+            Action::NextHunk => self.refs_jump_file(true),
+            Action::PrevHunk => self.refs_jump_file(false),
             Action::Open => {
                 self.seat_ref();
                 self.diff_focus(Pane::Diff);
@@ -314,6 +320,7 @@ impl App {
         };
         diff.side_by_side = !diff.side_by_side;
         diff.split_scroll = 0;
+        diff.settle_focus();
         self.info(if self.diff.as_ref().is_some_and(|d| d.side_by_side) {
             "side-by-side"
         } else {
@@ -397,7 +404,9 @@ impl App {
                 // pointer sits over
                 let in_sidebar = self.diff.as_ref().is_some_and(|d| col < d.pane.x);
                 let in_comments = self.comments_col(col);
-                if in_comments {
+                if self.refs_col(col) {
+                    self.refs_step(delta, false);
+                } else if in_comments {
                     self.comments_step(delta);
                 } else if in_sidebar {
                     self.diff_tree_step(delta);
@@ -419,6 +428,11 @@ impl App {
     /// Single-click: select the sidebar file under the pointer, or move the
     /// pane cursor to the clicked line, dropping any selection.
     fn diff_press_at(&mut self, col: u16, row: u16) {
+        if let Some(index) = self.refs_row_at(col, row) {
+            self.diff_focus(Pane::References);
+            self.refs_to(index);
+            return;
+        }
         if let Some(index) = self.comments_row_at(col, row) {
             self.diff_focus(Pane::Comments);
             self.comments_to(index);

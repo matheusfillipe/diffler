@@ -9,7 +9,7 @@ pub mod ci_log;
 mod commands;
 mod commit;
 pub mod composer;
-pub mod diff;
+mod diff;
 pub mod enrich;
 mod expand;
 pub mod file;
@@ -34,6 +34,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 pub(crate) use diff::RowPositions;
+pub use diff::lens::{Lens, LensRequest, RefEntry, compute_lens};
 #[cfg(test)]
 pub(crate) use diff::merge_count;
 pub use diff::{
@@ -760,7 +761,7 @@ pub struct App {
     /// The preview on its way, so a draw does not ask for it twice.
     image_in_flight: Option<image::ImageKey>,
     /// A symbol lens the main loop should build off-thread.
-    pub pending_lens: Option<diff::lens::LensRequest>,
+    pub pending_lens: Option<LensRequest>,
     /// Bumped per lens request, so a lens for a line the reader left is dropped.
     lens_token: u64,
     /// The language breakdown screen, present only while it is open.
@@ -1366,7 +1367,7 @@ impl App {
             return Flow::Continue;
         }
         if self.screen() == Screen::Diff && self.lens_active() && self.pending.is_empty() {
-            // the strip numbers its symbols, so a digit picks one the way a
+            // the labels number the lens's names, so a digit picks one the way a
             // numbered list does; esc drops the lens the way it drops a selection
             match key.code {
                 KeyCode::Esc => {
@@ -1998,7 +1999,7 @@ impl App {
             if moved {
                 diff.clear_enriched();
                 diff.invalidate();
-                diff.lens = None;
+                diff.drop_lens();
             }
             diff.ensure_rows(&self.review);
         }

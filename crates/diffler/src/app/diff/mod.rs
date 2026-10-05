@@ -5,7 +5,7 @@
 
 mod comments;
 mod folds;
-pub mod lens;
+pub(super) mod lens;
 mod nav;
 mod open;
 mod review;
@@ -255,6 +255,11 @@ pub struct DiffView {
     /// The symbol lens `*` opened, until `esc` or a refresh that moves the
     /// model drops it.
     pub(crate) lens: Option<lens::Lens>,
+    /// The token of the lens this view asked for and has not been answered.
+    pub(crate) lens_wanted: Option<u64>,
+    /// The reference each line of the references sidebar belongs to, from
+    /// the last render, so a click picks the reference it lands in.
+    pub(crate) ref_lines: Vec<Option<usize>>,
     /// What each unified `DiffRow::Fold` row stands for.
     pub(crate) fold_groups: Vec<folds::FoldGroup>,
     /// The hunks the reader folded, by file path then [`folds::hunk_key`].
@@ -325,6 +330,8 @@ impl DiffView {
             image_preview: None,
             image_want: None,
             lens: None,
+            lens_wanted: None,
+            ref_lines: Vec::new(),
             fold_groups: Vec::new(),
             folded: HashMap::new(),
             rows_path: String::new(),
@@ -969,11 +976,25 @@ impl DiffView {
             self.open_fold_group(group);
             self.ensure_rows(review);
         }
-        let at = self.rows.iter().position(
-            |row| matches!(*row, DiffRow::Line { hunk: h, line: l, .. } if h == hunk && l == line),
-        )?;
+        let at = self.row_of_line((hunk, line))?;
         self.cursor = at;
         Some(at)
+    }
+
+    /// The row showing the model line (hunk, line), or the fold row hiding it.
+    pub(crate) fn row_of_line(&self, (hunk, line): (usize, usize)) -> Option<usize> {
+        let shown = self.rows.iter().position(
+            |row| matches!(*row, DiffRow::Line { hunk: h, line: l, .. } if h == hunk && l == line),
+        );
+        shown.or_else(|| {
+            let group = self
+                .fold_groups
+                .iter()
+                .position(|group| group.lines.contains(&(hunk, line)))?;
+            self.rows
+                .iter()
+                .position(|row| matches!(*row, DiffRow::Fold { group: g, .. } if g == group))
+        })
     }
 
     /// The lines the fold row `group` hides, with their own model data.

@@ -443,7 +443,7 @@ fn dispatch_lens(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     };
     let tx = tx.clone();
     tokio::task::spawn_blocking(move || {
-        let lens = app::diff::lens::compute_lens(&request);
+        let lens = app::compute_lens(&request);
         let _ = tx.send(AppEvent::Lens {
             token: request.token,
             lens: Box::new(lens),
