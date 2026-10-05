@@ -381,8 +381,9 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   them beneath it. `y` copies whatever the cursor addresses in the form you
   would paste: a pull request as its forge URL, a commit as its full sha, a file
   or a folder as its repo-relative path (a hunk header and a line inside an
-  expanded diff both address their file, the way the editor jump reads them),
-  and the branch-checkout key on a listed pull request checks that one out. Every
+  expanded diff both address their file, the way the editor jump reads them);
+  over a `V` selection it copies every row the selection covers, one per line,
+  each value once, and the branch-checkout key on a listed pull request checks that one out. Every
   async arrival (CI poll, PR fetch, watcher refresh)
   re-seats the cursor through `status_cursor_anchor`, keyed by identity
   (path, oid, branch name) rather than row index.

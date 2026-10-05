@@ -1162,48 +1162,79 @@ impl App {
 
     /// Copy whatever the cursor is on, in the form you would paste elsewhere:
     /// a pull request as its forge URL, a commit as its full sha, a file or a
-    /// folder as its repo-relative path.
+    /// folder as its repo-relative path. A `V` selection copies every row it
+    /// covers instead, one per line.
     fn copy_at_status_cursor(&mut self) {
-        let copied = match self.cursor_row() {
-            Some(Row::Dir { path, .. }) => Some((Some(path.clone()), path)),
-            Some(Row::Pr) => self
+        if self.status.selection().is_some() {
+            self.copy_status_selection();
+            return;
+        }
+        let Some((value, label)) = self.cursor_row().and_then(|row| self.row_copy(row)) else {
+            self.info("nothing to copy here");
+            return;
+        };
+        self.copy_or_report(value, &label);
+    }
+
+    /// Copy the value of every row a `V` selection covers, one per line, each
+    /// only once: the rows of an expanded file all name that same file.
+    fn copy_status_selection(&mut self) {
+        let Some((top, bottom)) = self.status.selection() else {
+            return;
+        };
+        let rows = self.visible_rows();
+        let mut values: Vec<String> = Vec::new();
+        for row in rows.get(top..=bottom).unwrap_or_default() {
+            if let Some((Some(value), _)) = self.row_copy(row.clone())
+                && !values.contains(&value)
+            {
+                values.push(value);
+            }
+        }
+        self.status.set_anchor(None);
+        if values.is_empty() {
+            self.info("nothing to copy here");
+            return;
+        }
+        self.info(format!("copied {} lines", values.len()));
+        self.pending_clipboard = Some(values.join("\n"));
+    }
+
+    /// What `y` copies for `row`, and the label it reports when there is
+    /// nothing to copy.
+    fn row_copy(&self, row: Row) -> Option<(Option<String>, String)> {
+        match row {
+            Row::Dir { path, .. } => Some((Some(path.clone()), path)),
+            Row::Pr => self
                 .pr
                 .as_ref()
                 .map(|pr| (pr.url.clone(), format!("#{}", pr.number))),
-            Some(Row::Walkthrough { id }) => self
+            Row::Walkthrough { id } => self
                 .status
                 .walkthroughs
                 .iter()
                 .find(|w| w.id == id)
                 .map(|w| (Some(w.title.clone()), w.title.clone())),
-            Some(Row::OpenPr { index }) => self
+            Row::OpenPr { index } => self
                 .other_prs()
                 .get(index)
                 .map(|pr| (pr.url.clone(), format!("#{}", pr.number))),
-            Some(Row::Commit { index }) => self
+            Row::Commit { index } => self
                 .status
                 .recent
                 .get(index)
                 .map(|entry| (Some(entry.oid.clone()), entry.oid7.clone())),
-            Some(Row::Unpushed { index }) => self
+            Row::Unpushed { index } => self
                 .status
                 .unpushed_commits()
                 .get(index)
                 .map(|entry| (Some(entry.oid.clone()), entry.oid7.clone())),
             // a file row, a hunk header, or a line inside an expanded diff:
             // all of them address one file, the way the editor jump reads them
-            // a file row, a hunk header, or a line inside an expanded diff:
-            // all of them address one file, the way the editor jump reads them
-            other => other
-                .as_ref()
-                .and_then(|row| self.row_file(row))
+            other => self
+                .row_file(&other)
                 .map(|(_, file, _)| (Some(file.path.clone()), file.path.clone())),
-        };
-        let Some((value, label)) = copied else {
-            self.info("nothing to copy here");
-            return;
-        };
-        self.copy_or_report(value, &label);
+        }
     }
 
     fn editor_at_status_cursor(&mut self) {
@@ -4013,6 +4044,56 @@ mod tests {
         app.dispatch_status(Action::CopyUrl);
         assert_eq!(app.pending_clipboard.as_deref(), Some(expected.as_str()));
         assert_eq!(expected.len(), 40, "the full sha, not the abbreviation");
+    }
+
+    /// Two commits and two changed files, enough for a selection to span
+    /// more than one row of each kind.
+    fn two_of_each() -> (Fixture, App) {
+        let fixture = Fixture::new();
+        fixture.write("a.txt", "one\n");
+        fixture.commit_all("first");
+        fixture.write("b.txt", "two\n");
+        fixture.commit_all("second");
+        fixture.write("a.txt", "one changed\n");
+        fixture.write("b.txt", "two changed\n");
+        let app = App::new(fixture.review(), LoadedConfig::default());
+        (fixture, app)
+    }
+
+    #[test]
+    fn y_over_selected_commits_copies_each_sha_on_its_own_line() {
+        let (_fixture, mut app) = two_of_each();
+        app.status.group_folded[Group::Recent.index()] = false;
+        cursor_to(&mut app, |row| matches!(row, Row::Commit { index: 0 }));
+        app.dispatch_status(Action::VisualSelect);
+        app.dispatch_status(Action::MoveDown);
+        let expected = format!("{}\n{}", app.status.recent[0].oid, app.status.recent[1].oid);
+
+        app.dispatch_status(Action::CopyUrl);
+        assert_eq!(app.pending_clipboard.as_deref(), Some(expected.as_str()));
+        assert!(
+            app.status.selection().is_none(),
+            "the copy ends the selection"
+        );
+    }
+
+    /// An expanded file's own rows all name that file, so the selection
+    /// copies it once.
+    #[test]
+    fn y_over_selected_files_copies_each_path_once() {
+        let (_fixture, mut app) = two_of_each();
+        cursor_to(&mut app, |row| matches!(row, Row::File { .. }));
+        app.handle(key('\t'));
+        app.dispatch_status(Action::VisualSelect);
+        let last_file = app
+            .visible_rows()
+            .iter()
+            .rposition(|row| matches!(row, Row::File { .. }))
+            .expect("a second file row");
+        app.status.cursor = last_file;
+
+        app.dispatch_status(Action::CopyUrl);
+        assert_eq!(app.pending_clipboard.as_deref(), Some("a.txt\nb.txt"));
     }
 
     #[test]
