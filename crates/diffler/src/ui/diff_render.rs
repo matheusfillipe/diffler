@@ -269,7 +269,7 @@ pub fn render_diff_line(
     gutter: usize,
     width: u16,
     flags: LineFlags,
-    search: &[(Range<usize>, bool)],
+    marks: &[(Range<usize>, Mark)],
 ) -> Vec<Line<'static>> {
     let LineFlags {
         selected,
@@ -305,7 +305,7 @@ pub fn render_diff_line(
             ),
         ]
     };
-    let content = line_content(theme, line, syntax, base_bg, emph_bg, search);
+    let content = line_content(theme, line, syntax, base_bg, emph_bg, marks);
     wrapped_rows(content, prefix, prefix_width(gutter), width, base_bg)
 }
 
@@ -428,7 +428,7 @@ fn line_content(
     syntax: Option<&[StyledRange]>,
     base_bg: Color,
     emph_bg: Color,
-    search: &[(Range<usize>, bool)],
+    marks: &[(Range<usize>, Mark)],
 ) -> Vec<Span<'static>> {
     if !line.reformat_only {
         return composite_spans(
@@ -438,11 +438,11 @@ fn line_content(
             syntax,
             base_bg,
             emph_bg,
-            search,
+            marks,
         );
     }
     let dim = super::readable_on(theme.dim, base_bg);
-    composite_spans(theme, &line.text, &[], None, base_bg, emph_bg, search)
+    composite_spans(theme, &line.text, &[], None, base_bg, emph_bg, marks)
         .into_iter()
         .map(|span| {
             let style = span.style.fg(dim);
@@ -664,14 +664,45 @@ fn clip_pad(spans: Vec<Span<'static>>, width: usize, bg: Color) -> Vec<Span<'sta
     out
 }
 
+/// What colours a byte range of a line's text beyond its syntax.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mark {
+    Search,
+    SearchCurrent,
+    /// A use of a lens symbol, in that symbol's colour.
+    Lens(Color),
+}
+
+impl Mark {
+    /// Search hits as marks: the active match and the rest.
+    pub fn search(ranges: Vec<(Range<usize>, bool)>) -> Vec<(Range<usize>, Self)> {
+        ranges
+            .into_iter()
+            .map(|(range, current)| {
+                (
+                    range,
+                    if current {
+                        Self::SearchCurrent
+                    } else {
+                        Self::Search
+                    },
+                )
+            })
+            .collect()
+    }
+}
+
+/// How far a lens use's background leans toward its symbol's colour.
+const LENS_TINT: u16 = 40;
+
 /// Split the text at every syntax/emphasis range boundary and style each
 /// segment: foreground from the syntax span covering it, background from
 /// whether an emphasis range covers it. Byte offsets are snapped to char
 /// boundaries defensively so a malformed range can never split a
 /// multi-byte character.
 /// Composite one line of text: syntax foregrounds over the row background,
-/// with intraline emphasis and search hits taking their own background. The
-/// diff pane and the file view both render through this.
+/// with intraline emphasis, search hits and lens uses taking their own
+/// background. The diff pane and the file view both render through this.
 pub(super) fn composite_spans(
     theme: &Theme,
     text: &str,
@@ -679,7 +710,7 @@ pub(super) fn composite_spans(
     syntax: Option<&[StyledRange]>,
     base_bg: Color,
     emph_bg: Color,
-    search: &[(Range<usize>, bool)],
+    marks: &[(Range<usize>, Mark)],
 ) -> Vec<Span<'static>> {
     let snap = |index: usize| snap_to_boundary(text, index.min(text.len()));
 
@@ -692,19 +723,25 @@ pub(super) fn composite_spans(
         bounds.push(snap(styled.range.start));
         bounds.push(snap(styled.range.end));
     }
-    for (range, _) in search {
+    for (range, _) in marks {
         bounds.push(snap(range.start));
         bounds.push(snap(range.end));
     }
     bounds.sort_unstable();
     bounds.dedup();
 
-    // a search match outranks emphasis on the chars it covers
-    let search_at = |at: usize| {
-        search
-            .iter()
-            .find(|(range, _)| snap(range.start) <= at && at < snap(range.end))
-            .map(|(_, current)| *current)
+    // a search match outranks a lens use, and both outrank emphasis, on the
+    // chars they cover
+    let mark_at = |at: usize| {
+        let covering = || {
+            marks
+                .iter()
+                .filter(move |(range, _)| snap(range.start) <= at && at < snap(range.end))
+                .map(|(_, mark)| *mark)
+        };
+        covering()
+            .find(|mark| !matches!(mark, Mark::Lens(_)))
+            .or_else(|| covering().next())
     };
     let emphasized = |at: usize| {
         emphasis
@@ -726,9 +763,10 @@ pub(super) fn composite_spans(
         if segment.is_empty() {
             continue;
         }
-        let bg = match search_at(start) {
-            Some(true) => theme.search_current,
-            Some(false) => theme.search,
+        let bg = match mark_at(start) {
+            Some(Mark::SearchCurrent) => theme.search_current,
+            Some(Mark::Search) => theme.search,
+            Some(Mark::Lens(color)) => crate::theme::blend(base_bg, color, LENS_TINT),
             None if emphasized(start) => emph_bg,
             None => base_bg,
         };

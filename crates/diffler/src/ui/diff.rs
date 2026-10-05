@@ -31,7 +31,7 @@ use crate::theme::Theme;
 use crate::tree::{Bucket, TreeNode};
 use crate::ui::Hint;
 use crate::ui::diff_render::{
-    LineFlags, PairSelection, align_scroll, card_frame, cursor_band, diff_line_height,
+    LineFlags, Mark, PairSelection, align_scroll, card_frame, cursor_band, diff_line_height,
     file_gutter_width, fold_row, hunk_header, line_syntax, render_diff_line, render_split_pair,
     split_pair_height,
 };
@@ -112,6 +112,16 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     // this only queues work: the worker builds the picture for the size the
     // pane just drew its frames at
     app.queue_image_preview();
+    if let Some(lens) = app
+        .diff
+        .as_ref()
+        .filter(|diff| !diff.side_by_side)
+        .and_then(|diff| diff.lens.as_ref())
+    {
+        let area = frame.area();
+        let strip = Rect::new(area.x, area.y, area.width, 1);
+        frame.render_widget(Paragraph::new(lens_strip(app, lens, area.width)), strip);
+    }
 
     frame.render_widget(
         Paragraph::new(status_bar(app, bar.width)).style(Style::new().bg(app.theme.panel)),
@@ -586,6 +596,91 @@ fn hsl_to_rgb(hue: f32, saturation: f32, lightness: f32) -> (u8, u8, u8) {
         byte
     };
     (channel(r1), channel(g1), channel(b1))
+}
+
+/// The hint line while a lens is up: each symbol numbered in its own colour
+/// with how many uses it has and how far it reaches, then the keys that act
+/// on the lens, read against the live keymap, when they fit on the row whole.
+fn lens_strip(app: &App, lens: &crate::app::diff::lens::Lens, width: u16) -> Line<'static> {
+    use crate::app::diff::lens::Reach;
+    let theme = &app.theme;
+    let dim = Style::new().fg(theme.dim);
+    let mut spans = vec![Span::raw(" ")];
+    for (slot, symbol) in lens.symbols.iter().enumerate() {
+        let shown = lens.shows(slot);
+        let name = if shown {
+            Style::new()
+                .fg(lens_color(theme, slot))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            dim
+        };
+        let uses = lens.use_count(slot);
+        let reach = match &symbol.reach {
+            Reach::Function(function) => format!(" in {function}"),
+            Reach::Diff if lens.file_count(slot) > 1 => {
+                format!(" in {} files", lens.file_count(slot))
+            }
+            Reach::Diff | Reach::File => String::new(),
+        };
+        let noun = if uses == 1 { "use" } else { "uses" };
+        spans.push(Span::styled(format!("{} ", slot + 1), dim));
+        spans.push(Span::styled(symbol.name.clone(), name));
+        spans.push(Span::styled(format!(" {uses} {noun}{reach}  "), dim));
+    }
+    let keymap = app.active_keymap();
+    let next = keymap
+        .chord_for(Action::SearchNext)
+        .unwrap_or_else(|| "n".to_owned());
+    let narrow = keymap
+        .chord_for(Action::SymbolLens)
+        .unwrap_or_else(|| "*".to_owned());
+    let keys = format!("1-9 or {narrow} narrow · {next} next use · esc close lens");
+    let used: usize = spans.iter().map(Span::width).sum();
+    if used + keys.chars().count() <= usize::from(width) {
+        spans.push(Span::styled(keys, dim));
+    }
+    Line::from(spans)
+}
+
+/// The lens's uses on one code row, each in its symbol's colour.
+fn lens_marks(
+    diff: &DiffView,
+    model: &DiffModel,
+    row: &DiffRow,
+    theme: &Theme,
+) -> Vec<(std::ops::Range<usize>, Mark)> {
+    let (Some(lens), DiffRow::Line { file, hunk, line }) = (diff.lens.as_ref(), *row) else {
+        return Vec::new();
+    };
+    let Some(file) = model.files.get(file) else {
+        return Vec::new();
+    };
+    let Some(line) = file.hunks.get(hunk).and_then(|h| h.lines.get(line)) else {
+        return Vec::new();
+    };
+    let on_old_side = line.kind == diffler_core::model::LineKind::Deleted;
+    let Some(number) = (if on_old_side {
+        line.old_no
+    } else {
+        line.new_no
+    }) else {
+        return Vec::new();
+    };
+    lens.marks(&file.path, on_old_side, number)
+        .into_iter()
+        .map(|(range, symbol)| (range, Mark::Lens(lens_color(theme, symbol))))
+        .collect()
+}
+
+/// A lens symbol's colour: the golden-angle step a comment author gets, from
+/// its slot on the strip, lifted for contrast against the theme background.
+pub(super) fn lens_color(theme: &Theme, slot: usize) -> Color {
+    #[allow(clippy::cast_precision_loss)] // a hue only needs to look distinct, not be exact
+    let hue = (slot as f32 * HUE_STEP + 25.0).rem_euclid(360.0);
+    let (r, g, b) = hsl_to_rgb(hue, 0.7, 0.55);
+    let (r, g, b) = diffler_core::language::readable_on((r, g, b), super::rgb_of(theme.bg));
+    Color::Rgb(r, g, b)
 }
 
 /// The golden angle (~137.5°): stepping a hue by it spaces each new one as far
@@ -1121,6 +1216,8 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
             .filter(|_| focused)
             .map(|s| s.ranges_for(index))
             .unwrap_or_default();
+        let mut marks = Mark::search(ranges);
+        marks.extend(lens_marks(diff, model, row, theme));
         let mut rendered = row_lines(
             ctx,
             model,
@@ -1131,7 +1228,7 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
                 selected: selected(index),
                 focused,
             },
-            &ranges,
+            &marks,
         );
         // a stop points at a segment, so the whole span is banded; the cursor
         // row keeps its own band, which is what says where inside the span the
@@ -1629,7 +1726,7 @@ fn row_lines(
     row: &DiffRow,
     width: u16,
     state: RowState,
-    search: &[(std::ops::Range<usize>, bool)],
+    marks: &[(std::ops::Range<usize>, Mark)],
 ) -> Vec<Line<'static>> {
     let highlights = &diff.highlights;
     match row {
@@ -1667,7 +1764,7 @@ fn row_lines(
                     focused: state.focused,
                     annotated,
                 },
-                search,
+                marks,
             )
         }
         DiffRow::Comment {

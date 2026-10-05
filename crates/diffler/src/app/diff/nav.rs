@@ -224,6 +224,7 @@ impl App {
             Action::VisualSelect | Action::Reply | Action::Resolve | Action::ClaimComment => {
                 self.info("move into the diff to comment");
             }
+            Action::SymbolLens => self.info("move into the diff to see a line's names"),
             _ => {}
         }
     }
@@ -274,6 +275,7 @@ impl App {
             Action::CopyAllFeedback => self.copy_feedback(false),
             Action::OpenEditor => self.editor_at_diff_cursor(),
             Action::OpenFigureGraph => self.open_figure_graph_at_cursor(),
+            Action::SymbolLens => self.symbol_lens(),
             Action::ToggleFold => self.diff_toggle_fold(),
             Action::OpenAllFolds => self.diff_open_all_folds(),
             Action::FoldAll => self.diff_fold_all(),

@@ -435,8 +435,25 @@ fn dispatch_image(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     });
 }
 
+/// Build a symbol lens off the main task: it parses both sides of every file
+/// in the diff.
+fn dispatch_lens(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
+    let Some(request) = app.pending_lens.take() else {
+        return;
+    };
+    let tx = tx.clone();
+    tokio::task::spawn_blocking(move || {
+        let lens = app::diff::lens::compute_lens(&request);
+        let _ = tx.send(AppEvent::Lens {
+            token: request.token,
+            lens: Box::new(lens),
+        });
+    });
+}
+
 fn dispatch_workers(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     dispatch_enrich(app, tx);
+    dispatch_lens(app, tx);
     dispatch_image(app, tx);
     dispatch_walkthrough(app, tx);
     dispatch_file(app, tx);

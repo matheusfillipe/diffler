@@ -335,6 +335,24 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   mode and before the event pump reads stdin: kitty (Unicode placeholders,
   which survive a multiplexer), sixel or iTerm2 when the terminal answers,
   halfblocks otherwise.
+- **Symbol lens.** `*` in the diff pane (`app/diff/lens.rs`) names every
+  identifier on the cursor line, from the parse tree
+  (`LanguageRegistry::identifiers`, plain words where a language has no
+  grammar), up to nine, and tints each one's uses in its own golden-angle
+  colour through the same `Mark` path search hits take. A name some file of the
+  diff defines (a tags `@definition`, so a function, method or type) reaches
+  every file of the diff, both sides; any other name reaches only its enclosing
+  function (`ScopeIndex::enclosing`), or its file at the top level. Uses count
+  only on lines the diff shows, a deleted line on its old side and an added or
+  context line on its new side, so a context line counts once. Building it
+  parses both sides of every file, so it is a worker like enrichment
+  (`pending_lens` → `AppEvent::Lens`, token-guarded). The hint line becomes a
+  strip numbering the symbols in their colours, with the keys when they fit;
+  `*` again cycles the focus through them and back, a digit picks one the way a
+  numbered list does, `n`/`N` walk the shown uses in diff order and cross into
+  the next file that has one (not in the walkthrough layout, whose slides are
+  their own order), and `esc` closes it. A refresh that moves the model drops
+  the lens, since its line numbers name the old text.
 - **Kinds sidebar.** `classify::Rules` buckets a path into one fixed set,
   Source / Tests / Docs / Config / Build & CI / Generated / Assets / Other:
   the reader's `[classify]` globs, then what the repo declares, then the

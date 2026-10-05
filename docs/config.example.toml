@@ -166,6 +166,7 @@
 # edit_externally = "<c-g>"  # the open comment, reply, or review summary to $EDITOR
 # open_file_picker = "gf"
 # open_figure_graph = "o"  # open the figure under the cursor as a graph
+# symbol_lens = "*"       # colour the names on the cursor line and their uses; again to narrow, 1-9 to pick one, n/N to walk, esc to close
 # blame = "B"
 # open = "<cr>"
 # refresh = "<c-r>"

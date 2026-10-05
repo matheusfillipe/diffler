@@ -6,6 +6,7 @@
 pub mod intraline;
 pub mod registry;
 pub mod scope;
+pub mod symbols;
 
 use std::ops::Range;
 
@@ -13,6 +14,7 @@ use tree_sitter::Parser;
 
 pub use registry::{HIGHLIGHT_NAMES, LangEntry, LanguageRegistry};
 pub use scope::ScopeIndex;
+pub use symbols::Ident;
 
 /// Files larger than this are not parsed (avoids pathological cost on
 /// generated/minified blobs); they degrade to plain rendering / textual diff.

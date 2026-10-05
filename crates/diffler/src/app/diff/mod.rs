@@ -5,6 +5,7 @@
 
 mod comments;
 mod folds;
+pub mod lens;
 mod nav;
 mod open;
 mod review;
@@ -248,6 +249,9 @@ pub struct DiffView {
     /// The image the last draw showed, which `App::queue_image_preview`
     /// turns into a request.
     pub(crate) image_want: Option<crate::app::image::ImageKey>,
+    /// The symbol lens `*` opened, until `esc` or a refresh that moves the
+    /// model drops it.
+    pub(crate) lens: Option<lens::Lens>,
     /// What each unified `DiffRow::Fold` row stands for.
     pub(crate) fold_groups: Vec<folds::FoldGroup>,
     /// The hunks the reader folded, by file path then [`folds::hunk_key`].
@@ -317,6 +321,7 @@ impl DiffView {
             merged_model: None,
             image_preview: None,
             image_want: None,
+            lens: None,
             fold_groups: Vec::new(),
             folded: HashMap::new(),
             rows_path: String::new(),

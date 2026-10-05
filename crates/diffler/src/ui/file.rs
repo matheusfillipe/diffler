@@ -149,8 +149,15 @@ fn row_line(
     let bg = theme.bg;
     // the same compositing the diff pane uses, so syntax and search hits look
     // identical in both, and the same wrapper, so long lines wrap the same way
-    let content =
-        crate::ui::diff_render::composite_spans(theme, &text, &[], syntax, bg, bg, search);
+    let content = crate::ui::diff_render::composite_spans(
+        theme,
+        &text,
+        &[],
+        syntax,
+        bg,
+        bg,
+        &crate::ui::diff_render::Mark::search(search.to_vec()),
+    );
     let blame_cols = if view.show_blame { BLAME_WIDTH } else { 0 };
     // the cursor rail overwrites the first cell, so every row opens with one
     // the content can afford to lose

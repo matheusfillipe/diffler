@@ -45,6 +45,16 @@ impl ScopeIndex {
             .map(|def| (def.start_row, def.end_row))
     }
 
+    /// The innermost definition enclosing `line` (0-based): its name and its
+    /// inclusive row span.
+    pub fn enclosing(&self, line: usize) -> Option<(&str, usize, usize)> {
+        self.defs
+            .iter()
+            .filter(|def| def.start_row <= line && line <= def.end_row)
+            .min_by_key(|def| def.end_row - def.start_row)
+            .map(|def| (def.name.as_str(), def.start_row, def.end_row))
+    }
+
     /// Names of the definitions enclosing `line` (0-based), outermost first. A
     /// line inside `class A` → `method` → body returns `["A", "method"]`.
     pub fn crumbs(&self, line: usize) -> Vec<String> {

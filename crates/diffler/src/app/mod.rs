@@ -9,7 +9,7 @@ pub mod ci_log;
 mod commands;
 mod commit;
 pub mod composer;
-mod diff;
+pub mod diff;
 pub mod enrich;
 mod expand;
 pub mod file;
@@ -759,6 +759,10 @@ pub struct App {
     image_token: u64,
     /// The preview on its way, so a draw does not ask for it twice.
     image_in_flight: Option<image::ImageKey>,
+    /// A symbol lens the main loop should build off-thread.
+    pub pending_lens: Option<diff::lens::LensRequest>,
+    /// Bumped per lens request, so a lens for a line the reader left is dropped.
+    lens_token: u64,
     /// The language breakdown screen, present only while it is open.
     pub stats: Option<stats::StatsView>,
     /// A repo scan the main loop should run off-thread.
@@ -1019,6 +1023,8 @@ impl App {
             pending_image: None,
             image_token: 0,
             image_in_flight: None,
+            pending_lens: None,
+            lens_token: 0,
             file_token: 0,
             pending_clipboard: None,
             pending_editor: None,
@@ -1194,6 +1200,7 @@ impl App {
             }
             AppEvent::RediffDone { result, request } => self.on_rediff_done(*result, &request),
             AppEvent::ImagePreview { token, preview } => self.on_image_preview(token, *preview),
+            AppEvent::Lens { token, lens } => self.on_lens(token, *lens),
             AppEvent::Enriched(outcome) => {
                 self.on_enriched(*outcome);
                 Flow::Continue
@@ -1357,6 +1364,21 @@ impl App {
             }
             self.pending.clear();
             return Flow::Continue;
+        }
+        if self.screen() == Screen::Diff && self.lens_active() && self.pending.is_empty() {
+            // the strip numbers its symbols, so a digit picks one the way a
+            // numbered list does; esc drops the lens the way it drops a selection
+            match key.code {
+                KeyCode::Esc => {
+                    self.lens_clear();
+                    return Flow::Continue;
+                }
+                KeyCode::Char(digit @ '1'..='9') if key.modifiers.is_empty() => {
+                    self.lens_focus(usize::from(digit as u8 - b'1'));
+                    return Flow::Continue;
+                }
+                _ => {}
+            }
         }
         self.pending_ticks = 0;
         let press = keymap::press_from_event(key);
@@ -1976,6 +1998,7 @@ impl App {
             if moved {
                 diff.clear_enriched();
                 diff.invalidate();
+                diff.lens = None;
             }
             diff.ensure_rows(&self.review);
         }

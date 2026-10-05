@@ -65,6 +65,11 @@ pub enum AppEvent {
         result: Box<Result<diffler_core::review::Refreshed, String>>,
         request: crate::app::RediffRequest,
     },
+    /// A symbol lens, built for the line `*` was pressed on.
+    Lens {
+        token: u64,
+        lens: Box<crate::app::diff::lens::Lens>,
+    },
     /// An image file's sides, decoded and encoded for the terminal.
     ImagePreview {
         token: u64,

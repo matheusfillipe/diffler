@@ -43,6 +43,10 @@ impl App {
     /// `n`/`N`: step the committed search, or follow an edge on the graph,
     /// where the same keys walk edges when no search is up.
     pub(super) fn search_step_or_follow(&mut self, forward: bool) {
+        if self.search.is_none() && self.screen() == Screen::Diff && self.lens_active() {
+            self.lens_step(forward);
+            return;
+        }
         if self.search.is_none()
             && self.screen() == Screen::Graph
             && let Some(graph) = self.graph.as_mut()
