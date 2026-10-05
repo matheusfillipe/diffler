@@ -50,6 +50,9 @@ pub enum Pane {
     Diff,
     /// The comments sidebar on the right, open only while `comments_open`.
     Comments,
+    /// The symbol lens's references sidebar, in the comments sidebar's place
+    /// while a symbol is focused.
+    References,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

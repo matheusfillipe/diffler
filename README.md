@@ -223,7 +223,7 @@ full keymap of the screen you're on, and `<c-k>` fuzzy-finds any action.
 | `\|` | toggle side-by-side |
 | `]` / `[` | next / previous hunk |
 | `za` | fold or open the hunk |
-| `*` | colour the line's names and where they're used (again or `1`-`9` to narrow, `n` to walk) |
+| `*` / `#` | colour the line's names and where they're used; `1`-`9` or `*`/`#` again picks one and lists its references beside the diff |
 | `d` | on the status screen, diff against another branch or commit |
 | `C` | open the comments list |
 | `S` | submit PR comments as one review |

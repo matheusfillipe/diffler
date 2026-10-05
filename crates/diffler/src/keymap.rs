@@ -108,6 +108,7 @@ pub enum Action {
     OpenFilePicker,
     OpenFigureGraph,
     SymbolLens,
+    SymbolLensBack,
     Blame,
     ToggleBlame,
     SendFeedback,
@@ -215,6 +216,7 @@ impl Action {
             Self::OpenFilePicker => "open_file_picker",
             Self::OpenFigureGraph => "open_figure_graph",
             Self::SymbolLens => "symbol_lens",
+            Self::SymbolLensBack => "symbol_lens_back",
             Self::Blame => "blame",
             Self::ToggleBlame => "toggle_blame",
             Self::SendFeedback => "send_feedback",
@@ -322,6 +324,7 @@ impl Action {
             Self::OpenFilePicker => "find a file in the repository",
             Self::OpenFigureGraph => "open the figure under the cursor as a graph",
             Self::SymbolLens => "colour this line's names and their uses, again to narrow",
+            Self::SymbolLensBack => "colour this line's names, again to narrow from the last",
             Self::Blame => "blame this file",
             Self::ToggleBlame => "toggle the blame column",
             Self::SendFeedback => "send feedback to waiting agents",
@@ -332,7 +335,7 @@ impl Action {
         }
     }
 
-    pub(crate) const ALL: [Self; 100] = [
+    pub(crate) const ALL: [Self; 101] = [
         Self::CenterCursor,
         Self::CursorTop,
         Self::CursorBottom,
@@ -426,6 +429,7 @@ impl Action {
         Self::OpenFilePicker,
         Self::OpenFigureGraph,
         Self::SymbolLens,
+        Self::SymbolLensBack,
         Self::Blame,
         Self::ToggleBlame,
         Self::SendFeedback,
@@ -593,6 +597,7 @@ const DIFF_DEFAULTS: &[(&str, Action)] = &[
     ("gf", Action::OpenFilePicker),
     ("o", Action::OpenFigureGraph),
     ("*", Action::SymbolLens),
+    ("#", Action::SymbolLensBack),
     ("B", Action::Blame),
     ("Z", Action::SendFeedback),
     ("C", Action::CommentsOverview),

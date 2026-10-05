@@ -149,7 +149,7 @@ impl App {
             Screen::Diff => self.diff.as_ref().map_or(0, |d| match d.focus {
                 Pane::List => d.tree_cursor,
                 Pane::Comments => d.comments_cursor(),
-                Pane::Diff => d.cursor,
+                Pane::Diff | Pane::References => d.cursor,
             }),
             Screen::CiLog => self.ci_log.as_ref().map_or(0, |v| v.cursor),
             Screen::File => self.file.as_ref().map_or(0, |v| v.cursor),
@@ -239,8 +239,9 @@ impl App {
                     })
                     .collect()
             }
-            // a fold row matches on the code it hides, so a search reaches it
-            Pane::Diff => {
+            // a fold row matches on the code it hides, so a search reaches it;
+            // the references sidebar searches the diff it walks
+            Pane::Diff | Pane::References => {
                 let file = model.files.get(diff.selected);
                 diff.rows()
                     .iter()
@@ -266,7 +267,7 @@ impl App {
             Screen::Diff => match self.diff.as_ref().map(|d| d.focus) {
                 Some(Pane::List) => self.diff_tree_to(row),
                 Some(Pane::Comments) => self.comments_to(row),
-                Some(Pane::Diff) => {
+                Some(Pane::Diff | Pane::References) => {
                     if let Some(d) = self.diff.as_mut() {
                         d.cursor = row;
                     }

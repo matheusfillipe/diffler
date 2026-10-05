@@ -11,7 +11,7 @@ use diffler_core::model::{DiffModel, LineKind};
 use diffler_core::syntax::registry::REGISTRY;
 use diffler_core::syntax::{Ident, ScopeIndex};
 
-use super::DiffRow;
+use super::{DiffRow, Pane};
 use crate::app::{App, Flow};
 use crate::config::FileLayout;
 
@@ -53,7 +53,8 @@ pub enum Reach {
     Function(String),
     /// A name at the top level of its file, outside any function.
     File,
-    /// A function, method or type some file of the diff defines.
+    /// A function, method or type: a definition, a call or a type position,
+    /// linked across every file of the diff.
     Diff,
 }
 
@@ -73,6 +74,16 @@ pub struct LensUse {
     pub range: Range<usize>,
 }
 
+/// One use of the focused symbol, placed in the diff: its file and its line
+/// in that file's hunks, in the order the diff reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefEntry {
+    pub use_index: usize,
+    pub file: usize,
+    pub hunk: usize,
+    pub line: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct Lens {
     pub origin: LensOrigin,
@@ -80,6 +91,11 @@ pub struct Lens {
     pub uses: Vec<LensUse>,
     /// The one symbol the reader narrowed to, when they did.
     pub focus: Option<usize>,
+    /// The focused symbol's uses, one per line, in diff order: what the
+    /// references sidebar lists. Empty while no symbol is focused.
+    pub refs: Vec<RefEntry>,
+    /// The reference the sidebar has selected.
+    pub ref_cursor: usize,
 }
 
 impl Lens {
@@ -150,11 +166,15 @@ impl Lens {
     }
 
     /// `*` again on the same line: overview, then each symbol in turn, then
-    /// back to the overview.
-    fn cycle_focus(&mut self) {
-        self.focus = match self.focus {
-            None if !self.symbols.is_empty() => Some(0),
-            Some(at) if at + 1 < self.symbols.len() => Some(at + 1),
+    /// back to the overview; `#` walks the same ring the other way.
+    fn cycle_focus(&mut self, forward: bool) {
+        let count = self.symbols.len();
+        self.focus = match (self.focus, forward) {
+            (_, _) if count == 0 => None,
+            (None, true) => Some(0),
+            (None, false) => Some(count - 1),
+            (Some(at), true) if at + 1 < count => Some(at + 1),
+            (Some(at), false) if at > 0 => Some(at - 1),
             _ => None,
         };
     }
@@ -202,23 +222,21 @@ pub fn compute_lens(request: &LensRequest) -> Lens {
                 new.as_ref()
             }
         });
-    let symbols = line_symbols(origin, origin_side, &sides);
+    let symbols = line_symbols(origin, origin_side);
     let uses = symbol_uses(request, &sides, &symbols);
     Lens {
         origin: origin.clone(),
         symbols,
         uses,
         focus: None,
+        refs: Vec::new(),
+        ref_cursor: 0,
     }
 }
 
 /// The names on the origin line, first appearance first, each with how far
 /// its uses are looked for.
-fn line_symbols(
-    origin: &LensOrigin,
-    origin_side: Option<&Side>,
-    sides: &[(Option<Side>, Option<Side>)],
-) -> Vec<LensSymbol> {
+fn line_symbols(origin: &LensOrigin, origin_side: Option<&Side>) -> Vec<LensSymbol> {
     let origin_row = origin.line.saturating_sub(1) as usize;
     let mut names: Vec<String> = Vec::new();
     let mut items: HashSet<&str> = HashSet::new();
@@ -233,21 +251,13 @@ fn line_symbols(
             names.push(ident.name.clone());
         }
     }
-    let defined_in_diff = |name: &str| {
-        sides.iter().any(|(old, new)| {
-            [old, new]
-                .into_iter()
-                .flatten()
-                .any(|side| side.scope.def_span(name).is_some())
-        })
-    };
     let enclosing = origin_side.and_then(|side| side.scope.enclosing(origin_row));
     names
         .into_iter()
         .map(|name| {
             // a local that only shares its name with some function elsewhere
             // stays local: only a call, a definition or a type reaches out
-            let reach = if items.contains(name.as_str()) && defined_in_diff(&name) {
+            let reach = if items.contains(name.as_str()) {
                 Reach::Diff
             } else if let Some((function, _, _)) = enclosing {
                 Reach::Function(function.to_owned())
@@ -346,9 +356,9 @@ fn lens_files(model: &DiffModel) -> Vec<LensFile> {
 }
 
 impl App {
-    /// `*`: open the lens on the cursor's line, or on the line it is already
-    /// open on, narrow it to the next symbol.
-    pub(crate) fn symbol_lens(&mut self) {
+    /// `*` (`forward`) or `#`: open the lens on the cursor's line, or on the
+    /// line it is already open on, narrow it to the next or previous symbol.
+    pub(crate) fn symbol_lens(&mut self, forward: bool) {
         if self.diff.as_ref().is_some_and(|diff| diff.side_by_side) {
             self.info("switch to the unified view (|) to use the lens");
             return;
@@ -363,7 +373,8 @@ impl App {
         if let Some(lens) = diff.lens.as_mut()
             && lens.origin == origin
         {
-            lens.cycle_focus();
+            lens.cycle_focus(forward);
+            self.lens_focus_changed();
             return;
         }
         let files = lens_files(&diff.model_for_rows(&self.review));
@@ -418,7 +429,7 @@ impl App {
             .is_some_and(|diff| diff.lens.is_some() && !diff.side_by_side)
     }
 
-    /// A digit on the strip: narrow the lens to that symbol, or widen it back
+    /// A digit on a label: narrow the lens to that symbol, or widen it back
     /// when it is already the one in focus.
     pub(crate) fn lens_focus(&mut self, symbol: usize) {
         let Some(lens) = self.diff.as_mut().and_then(|diff| diff.lens.as_mut()) else {
@@ -426,18 +437,90 @@ impl App {
         };
         if symbol < lens.symbols.len() {
             lens.focus = (lens.focus != Some(symbol)).then_some(symbol);
+            self.lens_focus_changed();
+        }
+    }
+
+    /// A focused symbol brings up its references sidebar in the comments
+    /// sidebar's place; widening back to every symbol puts it away.
+    fn lens_focus_changed(&mut self) {
+        let review = &self.review;
+        let Some(diff) = self.diff.as_mut() else {
+            return;
+        };
+        diff.order_refs(review);
+        if diff.refs_visible() {
+            diff.comments_open = false;
+            if diff.focus == Pane::Comments {
+                diff.focus = Pane::Diff;
+            }
+        } else if diff.focus == Pane::References {
+            diff.focus = Pane::Diff;
         }
     }
 
     pub(crate) fn lens_clear(&mut self) {
         if let Some(diff) = self.diff.as_mut() {
             diff.lens = None;
+            if diff.focus == Pane::References {
+                diff.focus = Pane::Diff;
+            }
         }
+    }
+
+    /// Move the references sidebar's selection by `delta`, wrapping past
+    /// either end when `wrap` (`n`/`N`) and stopping there otherwise (`j`/`k`),
+    /// and seat the diff on the reference it lands on.
+    pub(crate) fn refs_step(&mut self, delta: isize, wrap: bool) {
+        let Some(lens) = self.diff.as_mut().and_then(|diff| diff.lens.as_mut()) else {
+            return;
+        };
+        let count = lens.refs.len();
+        if count == 0 {
+            return;
+        }
+        let last = count - 1;
+        lens.ref_cursor = if wrap {
+            let count = isize::try_from(count).unwrap_or(isize::MAX);
+            let at = isize::try_from(lens.ref_cursor).unwrap_or(0);
+            usize::try_from((at + delta).rem_euclid(count)).unwrap_or(0)
+        } else {
+            lens.ref_cursor.saturating_add_signed(delta).min(last)
+        };
+        self.seat_ref();
+    }
+
+    /// Put the diff cursor on the selected reference, moving to its file and
+    /// opening the fold that hides it when it has to.
+    pub(crate) fn seat_ref(&mut self) {
+        let review = &self.review;
+        let Some(diff) = self.diff.as_mut() else {
+            return;
+        };
+        let Some(entry) = diff
+            .lens
+            .as_ref()
+            .and_then(|lens| lens.refs.get(lens.ref_cursor).cloned())
+        else {
+            return;
+        };
+        if diff.selected != entry.file {
+            diff.select(entry.file, review);
+        }
+        diff.reveal_line(review, (entry.hunk, entry.line));
     }
 
     /// `n`/`N` with a lens up: the next or previous use of what it shows, in
     /// diff order, moving to the next file that has one past the last.
     pub(crate) fn lens_step(&mut self, forward: bool) {
+        if self
+            .diff
+            .as_ref()
+            .and_then(|diff| diff.lens.as_ref())
+            .is_some_and(|lens| lens.focus.is_some())
+        {
+            return self.refs_step(if forward { 1 } else { -1 }, true);
+        }
         let review = &self.review;
         let Some(diff) = self.diff.as_mut() else {
             return;
@@ -494,6 +577,72 @@ impl App {
             let lens = compute_lens(&request);
             self.on_lens(request.token, lens);
         }
+    }
+}
+
+impl super::DiffView {
+    /// Whether the references sidebar shows: a symbol is focused, in the
+    /// unified view.
+    pub(crate) fn refs_visible(&self) -> bool {
+        !self.side_by_side && self.lens.as_ref().is_some_and(|lens| lens.focus.is_some())
+    }
+
+    /// List the focused symbol's uses in diff order, one per line, and select
+    /// the one on the line the lens was opened on. The walkthrough layout
+    /// shows one slide at a time, so there it lists the slide's own file.
+    fn order_refs(&mut self, review: &diffler_core::review::Review) {
+        let walkthrough = self.layout == FileLayout::Walkthrough;
+        let selected = self.selected;
+        let model = self.model_for_rows(review).into_owned();
+        let Some(lens) = self.lens.as_mut() else {
+            return;
+        };
+        lens.refs.clear();
+        lens.ref_cursor = 0;
+        let Some(symbol) = lens.focus else {
+            return;
+        };
+        for (file_at, file) in model.files.iter().enumerate() {
+            if walkthrough && file_at != selected {
+                continue;
+            }
+            for (hunk_at, hunk) in file.hunks.iter().enumerate() {
+                for (line_at, line) in hunk.lines.iter().enumerate() {
+                    let on_old_side = line.kind == LineKind::Deleted;
+                    let number = if on_old_side {
+                        line.old_no
+                    } else {
+                        line.new_no
+                    };
+                    let found = lens.uses.iter().position(|found| {
+                        found.symbol == symbol
+                            && found.path == file.path
+                            && found.on_old_side == on_old_side
+                            && Some(found.line) == number
+                    });
+                    if let Some(use_index) = found {
+                        lens.refs.push(RefEntry {
+                            use_index,
+                            file: file_at,
+                            hunk: hunk_at,
+                            line: line_at,
+                        });
+                    }
+                }
+            }
+        }
+        let origin = &lens.origin;
+        lens.ref_cursor = lens
+            .refs
+            .iter()
+            .position(|entry| {
+                lens.uses.get(entry.use_index).is_some_and(|found| {
+                    found.path == origin.path
+                        && found.on_old_side == origin.on_old_side
+                        && found.line == origin.line
+                })
+            })
+            .unwrap_or(0);
     }
 }
 
@@ -702,6 +851,16 @@ mod tests {
     }
 
     #[test]
+    fn hash_cycles_the_focus_backwards() {
+        let (_fixture, mut app) = two_files();
+        lens_on(&mut app, "src/lib.rs", 1);
+        app.handle(key('#'));
+        assert_eq!(lens(&app).focus, Some(3), "from all names to the last");
+        app.handle(key('#'));
+        assert_eq!(lens(&app).focus, Some(2));
+    }
+
+    #[test]
     fn star_after_esc_opens_the_lens_again() {
         let (_fixture, mut app) = two_files();
         lens_on(&mut app, "src/lib.rs", 1);
@@ -745,6 +904,119 @@ mod tests {
             "each name carries its digit on its first character: {text}"
         );
         insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn a_digit_opens_the_references_with_the_keyboard_still_in_the_diff() {
+        let (_fixture, mut app) = two_files();
+        lens_on(&mut app, "src/lib.rs", 1);
+        app.handle(key('1'));
+        let diff = app.diff.as_ref().expect("diff");
+        assert!(diff.refs_visible());
+        assert_eq!(diff.focus, crate::app::Pane::Diff);
+        let lens = lens(&app);
+        assert_eq!(lens.refs.len(), 5, "one per line apply is used on");
+        let selected = &lens.uses[lens.refs[lens.ref_cursor].use_index];
+        assert_eq!((selected.path.as_str(), selected.line), ("src/lib.rs", 1));
+        assert!(!selected.on_old_side, "the line the lens was opened on");
+    }
+
+    #[test]
+    fn walking_the_references_moves_the_diff_with_them() {
+        let (_fixture, mut app) = two_files();
+        lens_on(&mut app, "src/lib.rs", 1);
+        app.handle(key('1'));
+        app.handle(key('l'));
+        assert_eq!(
+            app.diff.as_ref().expect("diff").focus,
+            crate::app::Pane::References
+        );
+        app.handle(key('j'));
+        let diff = app.diff.as_ref().expect("diff");
+        let model = diff.model_for_rows(&app.review);
+        assert_eq!(model.files[diff.selected].path, "src/main.rs");
+        let DiffRow::Line { hunk, line, .. } = diff.rows()[diff.cursor] else {
+            panic!("the diff cursor sits on the reference");
+        };
+        assert!(
+            model.files[diff.selected].hunks[hunk].lines[line]
+                .text
+                .contains("apply")
+        );
+    }
+
+    #[test]
+    fn the_comments_sidebar_puts_the_references_away() {
+        let (_fixture, mut app) = two_files();
+        lens_on(&mut app, "src/lib.rs", 1);
+        app.handle(key('1'));
+        app.handle(key('C'));
+        let diff = app.diff.as_ref().expect("diff");
+        assert!(!diff.refs_visible());
+        assert!(diff.comments_open);
+        assert!(app.lens_active(), "the labels stay; only the focus widens");
+    }
+
+    #[test]
+    fn the_references_sidebar_previews_each_use() {
+        let (_fixture, mut app) = two_files();
+        lens_on(&mut app, "src/lib.rs", 1);
+        app.handle(key('1'));
+        insta::assert_snapshot!(crate::test_support::render(&mut app).backend());
+    }
+
+    /// A call reaches across the diff even when the function it calls is
+    /// defined in a file the diff does not touch.
+    #[test]
+    fn a_call_links_every_changed_caller_of_a_function_the_diff_leaves_alone() {
+        let fixture = Fixture::new();
+        fixture.write(
+            "src/util.rs",
+            "pub fn log_it(n: u32) {}
+",
+        );
+        fixture.write(
+            "src/a.rs",
+            "fn a() {
+    log_it(1);
+}
+",
+        );
+        fixture.write(
+            "src/b.rs",
+            "fn b() {
+    log_it(2);
+}
+",
+        );
+        fixture.commit_all("base");
+        fixture.write(
+            "src/a.rs",
+            "fn a() {
+    log_it(10);
+}
+",
+        );
+        fixture.write(
+            "src/b.rs",
+            "fn b() {
+    log_it(20);
+}
+",
+        );
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_working_tree_diff(None);
+        lens_on(&mut app, "src/a.rs", 2);
+        let lens = lens(&app);
+        assert_eq!(lens.symbols[0].name, "log_it");
+        assert_eq!(lens.symbols[0].reach, Reach::Diff);
+        let files: HashSet<&str> = lens
+            .uses
+            .iter()
+            .filter(|u| u.symbol == 0)
+            .map(|u| u.path.as_str())
+            .collect();
+        assert_eq!(files, HashSet::from(["src/a.rs", "src/b.rs"]));
     }
 
     #[test]

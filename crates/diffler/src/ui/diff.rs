@@ -238,7 +238,7 @@ fn draw_body(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
     // the sidebar takes one column beyond its content so the gap and the
     // pane's own left column both stay clear of it
     let width = (sidebar_width(area.width) + 1).min(area.width);
-    let comments = comments_width(area.width, diff.comments_open);
+    let comments = comments_width(area.width, diff.comments_open || diff.refs_visible());
     let [list_area, _gap, pane_area, _right_gap, comments_area] = Layout::horizontal([
         Constraint::Length(width),
         Constraint::Length(PANE_GAP),
@@ -249,9 +249,171 @@ fn draw_body(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
     .areas(area);
     draw_sidebar(frame, list_area, ctx, diff);
     draw_pane(frame, pane_area, ctx, diff);
-    if comments > 0 {
+    if comments > 0 && diff.refs_visible() {
+        draw_references(frame, comments_area, ctx, diff);
+    } else if comments > 0 {
         draw_comments(frame, comments_area, ctx, diff);
     }
+}
+
+/// Lines of code a reference shows around its own, above and below.
+const REF_CONTEXT: usize = 1;
+
+/// How one reference's block is drawn: its colours and the pane's width.
+#[derive(Clone, Copy)]
+struct BlockLook<'a> {
+    theme: &'a Theme,
+    selected: bool,
+    focused: bool,
+    color: Color,
+    width: u16,
+}
+
+/// One reference as the sidebar shows it: the hunk lines around `own`, each
+/// with its number and the diff's `-`/`+` marker, the name tinted on its own
+/// line, all banded when the reference is the selected one.
+fn reference_block(
+    look: BlockLook<'_>,
+    hunk: &diffler_core::model::Hunk,
+    own_line: usize,
+    range: Option<&std::ops::Range<usize>>,
+) -> Vec<Line<'static>> {
+    let BlockLook {
+        theme,
+        selected,
+        focused,
+        color,
+        width,
+    } = look;
+    let (bg, bar) = card_frame(theme, selected, focused, color);
+    let mut lines = Vec::new();
+    let first = own_line.saturating_sub(REF_CONTEXT);
+    let last = (own_line + REF_CONTEXT).min(hunk.lines.len().saturating_sub(1));
+    for line_at in first..=last {
+        let Some(line) = hunk.lines.get(line_at) else {
+            continue;
+        };
+        let number = if line.kind == diffler_core::model::LineKind::Deleted {
+            line.old_no
+        } else {
+            line.new_no
+        };
+        let gutter = number.map_or_else(|| "    ".to_owned(), |n| format!("{n:>4}"));
+        let (mark, mark_fg) = match line.kind {
+            diffler_core::model::LineKind::Added => ("+ ", theme.added),
+            diffler_core::model::LineKind::Deleted => ("- ", theme.error_fg),
+            diffler_core::model::LineKind::Context => ("  ", theme.dim),
+        };
+        let text = crate::text::elide(line.text.trim_end(), usize::from(width).saturating_sub(11));
+        let own = line_at == own_line;
+        let fg = if own { theme.fg } else { theme.dim };
+        let mut spans = vec![
+            bar.clone(),
+            Span::styled(gutter, Style::new().fg(theme.dim).bg(bg)),
+            Span::styled(mark, Style::new().fg(mark_fg).bg(bg)),
+        ];
+        // a name the elision cut short keeps no tint rather than a torn one
+        let parts = range.filter(|_| own).and_then(|range| {
+            Some((
+                text.get(..range.start)?,
+                text.get(range.clone())?,
+                text.get(range.end..)?,
+            ))
+        });
+        match parts {
+            Some((before, name, after)) => {
+                let tint = crate::theme::blend(bg, color, 40);
+                spans.push(Span::styled(before.to_owned(), Style::new().fg(fg).bg(bg)));
+                spans.push(Span::styled(name.to_owned(), Style::new().fg(fg).bg(tint)));
+                spans.push(Span::styled(after.to_owned(), Style::new().fg(fg).bg(bg)));
+            }
+            None => spans.push(Span::styled(text, Style::new().fg(fg).bg(bg))),
+        }
+        lines.push(pad_line(spans, bg, width));
+    }
+    lines
+}
+
+/// Right pane while a lens symbol is focused: its uses in diff order, grouped
+/// by file, each a short preview of the code around it with the name tinted,
+/// the selected one banded. Moving the selection seats the diff on that use.
+fn draw_references(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &DiffView) {
+    let theme = ctx.theme;
+    let surface = sidebar_bg(theme);
+    let focused = diff.focus == Pane::References;
+    frame.render_widget(Block::new().style(Style::new().bg(surface)), area);
+    let [heading, inner] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
+    let Some(lens) = diff.lens.as_ref() else {
+        return;
+    };
+    let Some((slot, symbol)) = lens
+        .focus
+        .and_then(|slot| lens.symbols.get(slot).map(|symbol| (slot, symbol)))
+    else {
+        return;
+    };
+    let title = format!("References · {} ({})", symbol.name, lens.refs.len());
+    frame.render_widget(
+        Paragraph::new(pane_heading(theme, &title, focused, surface)),
+        heading,
+    );
+    let Some(base) = diff.commit_model.as_ref().or(ctx.review_model) else {
+        return;
+    };
+    let model = DiffView::model_for_layout(diff.layout, base, &diff.context_files);
+    let color = lens_color(theme, slot);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut selected_span = (0, 0);
+    let mut last_file = None;
+    for (at, entry) in lens.refs.iter().enumerate() {
+        let Some(file) = model.files.get(entry.file) else {
+            continue;
+        };
+        if last_file != Some(entry.file) {
+            last_file = Some(entry.file);
+            let count = lens
+                .refs
+                .iter()
+                .filter(|other| other.file == entry.file)
+                .count();
+            let hc = HeaderCtx {
+                theme,
+                bg: surface,
+                width: inner.width,
+                on_cursor: false,
+            };
+            lines.push(group_header_line(hc, &file.path, count, false, Vec::new()));
+        }
+        let Some(hunk) = file.hunks.get(entry.hunk) else {
+            continue;
+        };
+        let selected = at == lens.ref_cursor;
+        let start = lines.len();
+        let range = lens
+            .uses
+            .get(entry.use_index)
+            .map(|found| found.range.clone());
+        let look = BlockLook {
+            theme,
+            selected,
+            focused,
+            color,
+            width: inner.width,
+        };
+        lines.extend(reference_block(look, hunk, entry.line, range.as_ref()));
+        lines.push(Line::default());
+        if selected {
+            selected_span = (start, lines.len());
+        }
+    }
+    let height = usize::from(inner.height);
+    let scroll = selected_span.1.saturating_sub(height).min(selected_span.0);
+    let visible: Vec<Line<'static>> = lines.into_iter().skip(scroll).take(height).collect();
+    frame.render_widget(
+        Paragraph::new(visible).style(Style::new().bg(surface)),
+        inner,
+    );
 }
 
 /// The comments sidebar mirrors the file list's band, and yields the whole

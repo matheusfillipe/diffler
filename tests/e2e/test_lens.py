@@ -1,6 +1,6 @@
 # The symbol lens through a real PTY: `*` on a changed line labels each of its
-# names with a digit, a digit narrows to one, `n` walks its uses, and esc
-# takes the labels away.
+# names with a digit, a digit narrows to one and opens its references beside
+# the diff, `n` walks its uses, and esc takes it all away.
 
 from harness import git, write
 
@@ -49,6 +49,7 @@ def test_star_labels_the_lines_names_and_esc_takes_the_labels_away(spawn, repo):
     tui.wait_for("1pply(2rice: u32, 3ty: u32, 4iscount")
 
     tui.send("4")
+    tui.wait_for("References · discount (2)")
     tui.send("n")
     tui.wait_for("discount")
 

@@ -98,7 +98,26 @@ impl App {
             Some(Pane::List) => self.dispatch_diff_list(action),
             Some(Pane::Diff) => self.dispatch_diff_pane(action),
             Some(Pane::Comments) => self.dispatch_comments(action),
+            Some(Pane::References) => self.dispatch_references(action),
             None => {}
+        }
+    }
+
+    /// The references sidebar. Moving its selection seats the diff on that
+    /// use, so the diff pane's own verbs reach it the way they reach a
+    /// comment the comments sidebar selects.
+    fn dispatch_references(&mut self, action: Action) {
+        match action {
+            Action::MoveDown => self.refs_step(1, false),
+            Action::MoveUp => self.refs_step(-1, false),
+            Action::GoTop => self.refs_step(isize::MIN / 2, false),
+            Action::GoBottom => self.refs_step(isize::MAX / 2, false),
+            Action::Open => {
+                self.seat_ref();
+                self.diff_focus(Pane::Diff);
+            }
+            Action::MoveRight | Action::MoveLeft => self.diff_focus(Pane::Diff),
+            other => self.dispatch_diff_pane(other),
         }
     }
 
@@ -106,7 +125,7 @@ impl App {
     /// `l` walk that order and stop at the ends.
     fn pane_left(&self) -> Pane {
         match self.diff.as_ref().map(|diff| diff.focus) {
-            Some(Pane::Comments) => Pane::Diff,
+            Some(Pane::Comments | Pane::References) => Pane::Diff,
             _ => Pane::List,
         }
     }
@@ -116,6 +135,7 @@ impl App {
             return Pane::Diff;
         };
         match diff.focus {
+            Pane::Diff | Pane::References if diff.refs_visible() => Pane::References,
             Pane::Diff | Pane::Comments if diff.comments_open => Pane::Comments,
             _ => Pane::Diff,
         }
@@ -224,7 +244,9 @@ impl App {
             Action::VisualSelect | Action::Reply | Action::Resolve | Action::ClaimComment => {
                 self.info("move into the diff to comment");
             }
-            Action::SymbolLens => self.info("move into the diff to see a line's names"),
+            Action::SymbolLens | Action::SymbolLensBack => {
+                self.info("move into the diff to see a line's names");
+            }
             _ => {}
         }
     }
@@ -275,7 +297,8 @@ impl App {
             Action::CopyAllFeedback => self.copy_feedback(false),
             Action::OpenEditor => self.editor_at_diff_cursor(),
             Action::OpenFigureGraph => self.open_figure_graph_at_cursor(),
-            Action::SymbolLens => self.symbol_lens(),
+            Action::SymbolLens => self.symbol_lens(true),
+            Action::SymbolLensBack => self.symbol_lens(false),
             Action::ToggleFold => self.diff_toggle_fold(),
             Action::OpenAllFolds => self.diff_open_all_folds(),
             Action::FoldAll => self.diff_fold_all(),
