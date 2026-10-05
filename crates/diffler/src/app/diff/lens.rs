@@ -149,22 +149,6 @@ impl Lens {
         out
     }
 
-    pub(crate) fn use_count(&self, symbol: usize) -> usize {
-        self.uses
-            .iter()
-            .filter(|found| found.symbol == symbol)
-            .count()
-    }
-
-    pub(crate) fn file_count(&self, symbol: usize) -> usize {
-        self.uses
-            .iter()
-            .filter(|found| found.symbol == symbol)
-            .map(|found| found.path.as_str())
-            .collect::<HashSet<_>>()
-            .len()
-    }
-
     /// `*` again on the same line: overview, then each symbol in turn, then
     /// back to the overview.
     fn cycle_focus(&mut self) {
@@ -648,9 +632,16 @@ mod tests {
         assert_eq!(names, ["apply", "price", "qty", "discount"]);
         assert_eq!(lens.symbols[0].reach, Reach::Diff, "the diff defines apply");
         assert_eq!(lens.symbols[1].reach, Reach::Function("apply".to_owned()));
-        assert_eq!(lens.use_count(0), 5, "both sides of both files");
-        assert_eq!(lens.file_count(0), 2);
-        assert_eq!(lens.use_count(1), 4, "other's own price is not this one");
+        let uses = |symbol: usize| lens.uses.iter().filter(|u| u.symbol == symbol).count();
+        let files: HashSet<&str> = lens
+            .uses
+            .iter()
+            .filter(|u| u.symbol == 0)
+            .map(|u| u.path.as_str())
+            .collect();
+        assert_eq!(uses(0), 5, "both sides of both files");
+        assert_eq!(files.len(), 2);
+        assert_eq!(uses(1), 4, "other's own price is not this one");
     }
 
     #[test]
@@ -723,18 +714,14 @@ mod tests {
         assert!(app.lens_active(), "{:?}", app.message);
     }
 
-    /// The strip numbers each symbol in its colour above the pane, and the
-    /// symbol's uses below take that colour as their background.
+    /// Each name carries its digit on the line the lens opened on, and its
+    /// uses take its colour as their background.
     #[test]
-    fn the_strip_names_each_symbol_and_its_uses_wear_its_colour() {
+    fn each_name_carries_its_digit_and_its_uses_wear_its_colour() {
         let (_fixture, mut app) = two_files();
         lens_on(&mut app, "src/lib.rs", 1);
         let terminal = crate::test_support::render(&mut app);
         let buffer = terminal.backend().buffer();
-        let strip: String = (0..buffer.area.width)
-            .map(|x| buffer[(x, 0)].symbol().to_owned())
-            .collect();
-        assert!(strip.starts_with(" 1 apply 5 uses in 2 files"), "{strip}");
         let row_text = |y: u16| -> String {
             (0..buffer.area.width)
                 .map(|x| buffer[(x, y)].symbol().to_owned())

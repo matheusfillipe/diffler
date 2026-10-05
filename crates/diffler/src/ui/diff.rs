@@ -112,16 +112,6 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     // this only queues work: the worker builds the picture for the size the
     // pane just drew its frames at
     app.queue_image_preview();
-    if let Some(lens) = app
-        .diff
-        .as_ref()
-        .filter(|diff| !diff.side_by_side)
-        .and_then(|diff| diff.lens.as_ref())
-    {
-        let area = frame.area();
-        let strip = Rect::new(area.x, area.y, area.width, 1);
-        frame.render_widget(Paragraph::new(lens_strip(app, lens, area.width)), strip);
-    }
 
     frame.render_widget(
         Paragraph::new(status_bar(app, bar.width)).style(Style::new().bg(app.theme.panel)),
@@ -596,51 +586,6 @@ fn hsl_to_rgb(hue: f32, saturation: f32, lightness: f32) -> (u8, u8, u8) {
         byte
     };
     (channel(r1), channel(g1), channel(b1))
-}
-
-/// The hint line while a lens is up: each symbol numbered in its own colour
-/// with how many uses it has and how far it reaches, then the keys that act
-/// on the lens, read against the live keymap, when they fit on the row whole.
-fn lens_strip(app: &App, lens: &crate::app::diff::lens::Lens, width: u16) -> Line<'static> {
-    use crate::app::diff::lens::Reach;
-    let theme = &app.theme;
-    let dim = Style::new().fg(theme.dim);
-    let mut spans = vec![Span::raw(" ")];
-    for (slot, symbol) in lens.symbols.iter().enumerate() {
-        let shown = lens.shows(slot);
-        let name = if shown {
-            Style::new()
-                .fg(lens_color(theme, slot))
-                .add_modifier(Modifier::BOLD)
-        } else {
-            dim
-        };
-        let uses = lens.use_count(slot);
-        let reach = match &symbol.reach {
-            Reach::Function(function) => format!(" in {function}"),
-            Reach::Diff if lens.file_count(slot) > 1 => {
-                format!(" in {} files", lens.file_count(slot))
-            }
-            Reach::Diff | Reach::File => String::new(),
-        };
-        let noun = if uses == 1 { "use" } else { "uses" };
-        spans.push(Span::styled(format!("{} ", slot + 1), dim));
-        spans.push(Span::styled(symbol.name.clone(), name));
-        spans.push(Span::styled(format!(" {uses} {noun}{reach}  "), dim));
-    }
-    let keymap = app.active_keymap();
-    let next = keymap
-        .chord_for(Action::SearchNext)
-        .unwrap_or_else(|| "n".to_owned());
-    let narrow = keymap
-        .chord_for(Action::SymbolLens)
-        .unwrap_or_else(|| "*".to_owned());
-    let keys = format!("1-9 or {narrow} narrow · {next} next use · esc close lens");
-    let used: usize = spans.iter().map(Span::width).sum();
-    if used + keys.chars().count() <= usize::from(width) {
-        spans.push(Span::styled(keys, dim));
-    }
-    Line::from(spans)
 }
 
 /// The lens's uses on one code row, each in its symbol's colour.

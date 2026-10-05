@@ -769,8 +769,8 @@ pub(super) fn composite_spans(
         }
         if let Some(Mark::Label(digit, color)) = mark_at(start) {
             let label = Style::new()
-                .fg(theme.bg)
-                .bg(color)
+                .fg(theme.error_fg)
+                .bg(crate::theme::blend(base_bg, color, LENS_TINT))
                 .add_modifier(Modifier::BOLD);
             spans.push(Span::styled(digit.to_string(), label));
             continue;

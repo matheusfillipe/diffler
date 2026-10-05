@@ -1,6 +1,6 @@
-# The symbol lens through a real PTY: `*` on a changed line names its symbols
-# on the strip that replaces the hint line, a digit narrows to one, `n` walks
-# its uses, and esc brings the hint line back.
+# The symbol lens through a real PTY: `*` on a changed line labels each of its
+# names with a digit, a digit narrows to one, `n` walks its uses, and esc
+# takes the labels away.
 
 from harness import git, write
 
@@ -35,7 +35,7 @@ def seed(repo):
     write(repo / "src" / "main.rs", "use crate::apply;\n\npub fn run() -> u32 {\n    apply(2, 3, 1)\n}\n")
 
 
-def test_star_names_the_lines_symbols_and_esc_closes_the_lens(spawn, repo):
+def test_star_labels_the_lines_names_and_esc_takes_the_labels_away(spawn, repo):
     seed(repo)
     tui = spawn("--no-mcp")
     tui.wait_for("Unstaged changes (2)")
@@ -46,17 +46,15 @@ def test_star_names_the_lines_symbols_and_esc_closes_the_lens(spawn, repo):
     tui.send("jjj")  # the hunk header, the two old lines, then the new signature
 
     tui.send("*")
-    tui.wait_for("1 apply 5 uses in 2 files")
-    assert "2 price 4 uses in apply" in tui.text(), tui.dump()
+    tui.wait_for("1pply(2rice: u32, 3ty: u32, 4iscount")
 
     tui.send("4")
     tui.send("n")
     tui.wait_for("discount")
 
     tui.send("\x1b")
-    tui.wait_gone("1 apply 5 uses")
-    tui.wait_for("add comment")
+    tui.wait_gone("1pply(2rice")
 
     # n left the cursor on discount's use, so `*` there names that line
     tui.send("*")
-    tui.wait_for("1 total 3 uses in apply")
+    tui.wait_for("1otal - 2iscount")

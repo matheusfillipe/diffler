@@ -2,7 +2,7 @@
 source: crates/diffler/src/app/diff/lens.rs
 expression: terminal.backend()
 ---
-" 1 apply 5 uses in 2 files  2 price 4 uses in apply  3 qty 4 uses in apply  4 discount 2 uses in apply                  "
+" c add comment · r reply · m mark viewed · C see comment list · ? help                                                  "
 " Files                           Diff                                                                                   "
 " ▾ src                    +5 -4  modified  src/lib.rs                                                        +4 -3 █████"
 "▌  ● lib.rs               +4 -3  apply                                                                                  "
