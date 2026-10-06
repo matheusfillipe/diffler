@@ -60,6 +60,8 @@ pub enum ScrollAlign {
     Center,
     Top,
     Bottom,
+    /// The cursor's line this many screen lines below the top.
+    Offset(usize),
 }
 
 /// Which section headers are collapsed, across both layouts that have them.
@@ -173,6 +175,13 @@ pub struct DiffView {
     pub scroll: usize,
     /// Applied once the renderer knows the wrapped row heights, then cleared.
     pub(crate) scroll_align: Option<ScrollAlign>,
+    /// How many screen lines below the top the cursor's line sat in the last
+    /// frame, so a rebuild can put it back on the same screen row.
+    pub(crate) cursor_offset: usize,
+    /// Positions a caller named before swapping this view's hunks, which the
+    /// next row rebuild restores in place of reading its own from rows that
+    /// no longer match the model.
+    pub(crate) held_positions: Option<rowref::RowPositions>,
     /// Side-by-side (old left / new right) pane; pinned at open from
     /// `ui.side_by_side`, then `|` toggles it live.
     pub side_by_side: bool,
@@ -300,6 +309,8 @@ impl DiffView {
             pin_broken: false,
             scroll: 0,
             scroll_align: None,
+            cursor_offset: 0,
+            held_positions: None,
             side_by_side,
             split_scroll: 0,
             sidebar: ratatui::layout::Rect::default(),
@@ -527,7 +538,10 @@ impl DiffView {
         // name what the cursor, the visual anchor and the banded span sit on
         // now, while `self.rows` still holds the list they were seated
         // against, so they can be found again once it is rebuilt
-        let positions = self.capture_positions(review);
+        let positions = self
+            .held_positions
+            .take()
+            .unwrap_or_else(|| self.capture_positions(review));
         let (rows, copy) = build_rows(
             model,
             session,

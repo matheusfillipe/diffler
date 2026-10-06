@@ -71,13 +71,26 @@ impl App {
         self.rebuild_file(&path, target);
     }
 
+    /// Re-diff `path` at `context`, keeping the cursor on its line and that
+    /// line on its screen row.
     fn rebuild_file(&mut self, path: &str, context: u32) {
         let algorithm = self.config.diff.algorithm;
         let indent_heuristic = self.config.diff.indent_heuristic;
+        // we name the cursor's line before the hunks change, since its row
+        // indices only mean something against the hunks they were built from
+        let positions = self
+            .diff
+            .as_ref()
+            .map(|diff| diff.capture_positions(&self.review));
         let changed = self
             .diff_file_mut(path)
             .is_some_and(|file| apply_context(file, context, algorithm, indent_heuristic));
-        if changed && let Some(diff) = self.diff.as_mut() {
+        if changed
+            && let Some(diff) = self.diff.as_mut()
+            && let Some(positions) = positions
+        {
+            diff.held_positions = Some(positions);
+            diff.scroll_align = Some(super::ScrollAlign::Offset(diff.cursor_offset));
             diff.mark_rows_dirty();
             diff.ensure_rows(&self.review);
         }
@@ -225,5 +238,48 @@ mod tests {
             expanded,
             "still whole-file after enrich"
         );
+    }
+
+    /// The screen row showing `needle`, from a fresh render.
+    fn screen_row_of(app: &mut App, needle: &str) -> Option<u16> {
+        let terminal = crate::test_support::render(app);
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height).find(|&y| {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+                .contains(needle)
+        })
+    }
+
+    #[test]
+    fn expanding_keeps_the_cursor_line_where_it_sits_on_screen() {
+        let fixture = Fixture::new();
+        let mut base = String::new();
+        for i in 1..=120 {
+            let _ = writeln!(base, "line {i}");
+        }
+        fixture.write("a.txt", &base);
+        fixture.commit_all("base");
+        let changed = base
+            .replace("line 30\n", "LINE THIRTY\n")
+            .replace("line 70\n", "LINE SEVENTY\n");
+        fixture.write("a.txt", &changed);
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_working_tree_file("a.txt");
+        app.diff.as_mut().expect("diff").focus = crate::app::Pane::Diff;
+        for _ in 0..12 {
+            app.handle(key('j'));
+        }
+        let before = screen_row_of(&mut app, "LINE SEVENTY");
+        assert!(before.is_some(), "the line is on screen");
+        for press in ['+', '+', '=', '-'] {
+            app.handle(key(press));
+            assert_eq!(
+                screen_row_of(&mut app, "LINE SEVENTY"),
+                before,
+                "after {press} the cursor's line stays on its screen row"
+            );
+        }
     }
 }

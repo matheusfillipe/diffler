@@ -1288,6 +1288,7 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
         });
         let scroll = super::scroll_to_span(sel_start, sel_height, base, height, total);
         diff.split_scroll = scroll;
+        diff.cursor_offset = sel_start.saturating_sub(scroll);
         let mut lines: Vec<Line<'static>> = Vec::with_capacity(height);
         let mut top_row = None;
         for (index, row) in split.iter().enumerate() {
@@ -1362,6 +1363,7 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
     });
     let scroll = super::scroll_to_span(cur_start, cur_height, base, height, total);
     diff.scroll = scroll;
+    diff.cursor_offset = cur_start.saturating_sub(scroll);
 
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(height);
     let mut line_rows: Vec<Option<usize>> = Vec::with_capacity(height);

@@ -234,6 +234,7 @@ impl App {
             return;
         };
         let context = diff.context.get(&outcome.path).copied();
+        let positions = diff.capture_positions(&self.review);
         let same = |file: &FileDiff| file.path == outcome.path && file.sides_hash() == outcome.hash;
         let file = match diff.commit_model.as_mut() {
             Some(model) => model.files.iter_mut().find(|f| same(f)),
@@ -265,6 +266,10 @@ impl App {
         }
         // fold detection and labels read the scope index that just landed,
         // so the file on screen rebuilds with it
+        if reshaped {
+            diff.held_positions.get_or_insert(positions);
+            diff.scroll_align = Some(super::ScrollAlign::Offset(diff.cursor_offset));
+        }
         if reshaped || diff.rows_show(&outcome.path) {
             diff.mark_rows_dirty();
         }

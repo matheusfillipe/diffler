@@ -26,6 +26,7 @@ pub(super) fn align_scroll(
         ScrollAlign::Center => (cur_start + cur_height / 2).saturating_sub(height / 2),
         ScrollAlign::Top => cur_start,
         ScrollAlign::Bottom => (cur_start + cur_height).saturating_sub(height),
+        ScrollAlign::Offset(offset) => cur_start.saturating_sub(offset),
     }
 }
 
