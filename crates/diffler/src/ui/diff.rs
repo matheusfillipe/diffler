@@ -257,27 +257,48 @@ fn draw_body(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
     }
 }
 
-/// How one reference's block is drawn: its colours and the pane's width.
+/// How one reference's block is drawn: its colours, the pane's width, and
+/// its file's syntax spans once enrichment has them.
 #[derive(Clone, Copy)]
 struct BlockLook<'a> {
     theme: &'a Theme,
+    surface: Color,
     selected: bool,
     focused: bool,
     color: Color,
     width: u16,
+    syntax: Option<&'a FileHighlights>,
 }
 
-/// One reference as the sidebar shows it: its preview lines, the use's own
-/// in full colour with the name tinted, the rest dimmed.
+/// One reference as the sidebar shows it: its preview lines with their
+/// shared indent cut so the code starts at the left edge, highlighted like
+/// the diff, the use's own line bright with the name tinted, the rest dimmed.
 fn reference_block(look: BlockLook<'_>, entry: &RefEntry) -> Vec<Line<'static>> {
     let BlockLook {
         theme,
+        surface,
         selected,
         focused,
         color,
         width,
+        syntax,
     } = look;
-    let (bg, bar) = card_frame(theme, selected, focused, color);
+    // a code block reads as code against the sidebar's own surface
+    let block = crate::theme::blend(surface, theme.fg, 6);
+    let bg = if selected {
+        cursor_band(theme, block, focused)
+    } else {
+        block
+    };
+    let margin = Span::styled("  ".to_owned(), Style::new().bg(surface));
+    let bar = Span::styled("▌ ".to_owned(), Style::new().fg(color).bg(bg));
+    let indent = entry
+        .preview
+        .iter()
+        .filter(|line| !line.text.trim().is_empty())
+        .map(|line| line.text.len() - line.text.trim_start().len())
+        .min()
+        .unwrap_or(0);
     let mut lines = Vec::new();
     for (at, line) in entry.preview.iter().enumerate() {
         let gutter = line
@@ -288,41 +309,83 @@ fn reference_block(look: BlockLook<'_>, entry: &RefEntry) -> Vec<Line<'static>> 
             LineKind::Deleted => ("- ", theme.error_fg),
             LineKind::Context => ("  ", theme.dim),
         };
-        let full = line.text.trim_end();
-        let text = crate::text::elide(full, usize::from(width).saturating_sub(11));
-        let kept = if text == full {
-            text.len()
-        } else {
-            text.len().saturating_sub('…'.len_utf8())
-        };
+        let code = line.text.trim_end().get(indent..).unwrap_or_default();
+        let text = crate::text::elide(code, usize::from(width).saturating_sub(11));
         let own = at == entry.own;
-        let fg = if own { theme.fg } else { theme.dim };
-        let mut spans = vec![
+        let shift = |range: &std::ops::Range<usize>| {
+            range.start.saturating_sub(indent)..range.end.saturating_sub(indent)
+        };
+        let spans: Vec<StyledRange> = syntax
+            .and_then(|highlights| {
+                let side = if line.kind == LineKind::Deleted {
+                    &highlights.old
+                } else {
+                    &highlights.new
+                };
+                side.get(usize::try_from(line.number?).ok()?.checked_sub(1)?)
+            })
+            .map(|ranges| {
+                ranges
+                    .iter()
+                    .filter(|styled| styled.range.end > indent)
+                    .map(|styled| StyledRange {
+                        range: shift(&styled.range),
+                        ..styled.clone()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let tint = crate::theme::blend(bg, color, super::diff_render::LENS_TINT);
+        let marks = if own {
+            vec![(shift(&entry.range), Mark::Lens(color))]
+        } else {
+            Vec::new()
+        };
+        let mut row = vec![
+            margin.clone(),
             bar.clone(),
             Span::styled(gutter, Style::new().fg(theme.dim).bg(bg)),
             Span::styled(mark, Style::new().fg(mark_fg).bg(bg)),
         ];
-        // we tint a name only when the elision kept it whole
-        let range = &entry.range;
-        let parts = (own && range.end <= kept).then(|| {
-            Some((
-                text.get(..range.start)?,
-                text.get(range.clone())?,
-                text.get(range.end..)?,
-            ))
-        });
-        match parts.flatten() {
-            Some((before, name, after)) => {
-                let tint = crate::theme::blend(bg, color, super::diff_render::LENS_TINT);
-                spans.push(Span::styled(before.to_owned(), Style::new().fg(fg).bg(bg)));
-                spans.push(Span::styled(name.to_owned(), Style::new().fg(fg).bg(tint)));
-                spans.push(Span::styled(after.to_owned(), Style::new().fg(fg).bg(bg)));
+        let code_spans =
+            super::diff_render::composite_spans(theme, &text, &[], Some(&spans), bg, tint, &marks);
+        row.extend(code_spans.into_iter().map(|span| {
+            if own {
+                span
+            } else {
+                let style = span.style.add_modifier(Modifier::DIM);
+                span.style(style)
             }
-            None => spans.push(Span::styled(text, Style::new().fg(fg).bg(bg))),
-        }
-        lines.push(pad_line(spans, bg, width));
+        }));
+        lines.push(pad_line(row, bg, width));
     }
     lines
+}
+
+/// A file's header in the references sidebar: its folder dimmed and its
+/// name bright, cut from the front so the name always shows, the way a path
+/// row in the file sidebar reads.
+fn reference_header(
+    theme: &Theme,
+    bg: Color,
+    width: u16,
+    path: &str,
+    count: usize,
+) -> Line<'static> {
+    let dim = Style::new().fg(theme.dim).bg(bg);
+    let name = Style::new().fg(theme.fg).bg(bg);
+    let count = format!(" ({count})");
+    let mut spans = vec![
+        tree_lead(theme, 0, bg, false),
+        Span::styled("▾ ".to_owned(), dim),
+    ];
+    let used = spans.iter().map(Span::width).sum::<usize>() + count.len();
+    let room = usize::from(width).saturating_sub(used + 1);
+    let parent = path.rfind('/').map_or(0, |at| at + 1);
+    let styled = super::highlight_spans_split(path, parent, dim, name, &[], theme);
+    spans.extend(clip_spans(styled, room, true, dim));
+    spans.push(Span::styled(count, dim));
+    pad_line(spans, bg, width)
 }
 
 /// Right pane while a lens name is focused: its uses in diff order, grouped
@@ -367,23 +430,25 @@ fn draw_references(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff:
     let mut selected_span = (0, 1);
     for (at, entry) in view.refs.iter().enumerate() {
         if let Some(count) = entry.group_len {
-            let hc = HeaderCtx {
+            lines.push(reference_header(
                 theme,
-                bg: surface,
-                width: inner.width,
-                on_cursor: false,
-            };
-            lines.push(group_header_line(hc, &entry.path, count, false, Vec::new()));
+                surface,
+                inner.width,
+                &entry.path,
+                count,
+            ));
             owners.push(Some(at));
         }
         let selected = at == view.ref_cursor;
         let start = lines.len();
         let look = BlockLook {
             theme,
+            surface,
             selected,
             focused,
             color,
             width: inner.width,
+            syntax: diff.highlights.get(&entry.path),
         };
         lines.extend(reference_block(look, entry));
         lines.push(Line::default());
@@ -2304,6 +2369,9 @@ fn pad_line(mut spans: Vec<Span<'static>>, bg: Color, width: u16) -> Line<'stati
 mod tests {
     use crate::app::rowsel::RowSelect;
     use ratatui::Terminal;
+    use ratatui::text::Line;
+
+    use super::{BlockLook, LineKind, RefEntry, reference_block, reference_header};
 
     #[test]
     fn renders_the_comments_sidebar() {
@@ -2319,6 +2387,60 @@ mod tests {
         ));
         app.handle(key('C'));
         insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn a_reference_preview_cuts_its_shared_indent() {
+        let theme = Theme::github_dark();
+        let preview = |text: &str, number| crate::app::PreviewLine {
+            kind: LineKind::Added,
+            number: Some(number),
+            text: text.to_owned(),
+        };
+        let entry = RefEntry {
+            path: "src/a.rs".to_owned(),
+            on_old_side: false,
+            line: 2,
+            range: 12..17,
+            preview: vec![
+                preview("        if ok {", 1),
+                preview("            total(1)", 2),
+            ],
+            own: 1,
+            group_len: Some(1),
+        };
+        let look = BlockLook {
+            theme: &theme,
+            surface: theme.bg,
+            selected: false,
+            focused: false,
+            color: theme.accent,
+            width: 40,
+            syntax: None,
+        };
+        let lines = reference_block(look, &entry);
+        assert!(
+            line_text(&lines[0]).contains("+ if ok {"),
+            "{:?}",
+            line_text(&lines[0])
+        );
+        assert!(line_text(&lines[1]).contains("+     total(1)"));
+    }
+
+    #[test]
+    fn a_reference_header_keeps_the_file_name_when_the_path_is_long() {
+        let theme = Theme::github_dark();
+        let path = "tests/app/routers/test_zoning_plan_search.py";
+        let text = line_text(&reference_header(&theme, theme.bg, 38, path, 3));
+        assert!(text.contains("…"), "{text}");
+        assert!(text.contains("test_zoning_plan_search.py (3)"), "{text}");
     }
 
     /// The human and the agent never move, so the reader looks for those two

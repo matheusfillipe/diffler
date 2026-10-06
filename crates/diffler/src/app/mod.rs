@@ -34,7 +34,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 pub(crate) use diff::RowPositions;
-pub use diff::lens::{Lens, LensRequest, RefEntry, compute_lens};
+pub use diff::lens::{Lens, LensRequest, PreviewLine, RefEntry, compute_lens};
 #[cfg(test)]
 pub(crate) use diff::merge_count;
 pub use diff::{

@@ -356,9 +356,11 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   names and back, `#` the same ring backwards (vim's pair), a digit picks one the way a
   numbered list does, and `esc` closes it. A focused name opens the references sidebar in the comments
   sidebar's place (`Pane::References`; opening either puts the other away): its
-  uses in diff order, one per line, grouped by file under the same headers the
-  comments sidebar draws, each a few lines of the hunk around it with the diff's
-  `-`/`+` markers and the name tinted. A reference is keyed by its path, side
+  uses in diff order, one per line, grouped by file under a header that dims
+  the folder and cuts it from the front so the file name always shows, each a
+  few lines of the hunk around it with the diff's `-`/`+` markers, their shared
+  indent cut, highlighted from the file's enrichment (queued for every listed
+  file) and the name tinted. A reference is keyed by its path, side
   and line number and found again when it is seated, so expanding context or
   re-diffing never points it at the wrong row. The keyboard stays in the diff when it
   opens; `l` moves into it, and moving its selection seats the diff on that use

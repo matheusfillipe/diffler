@@ -132,10 +132,32 @@ impl App {
         if selected + 1 < file_count {
             targets.push(selected + 1);
         }
+        targets.extend(self.referenced_files());
         for index in targets {
             self.queue_enrich_file(index);
         }
         self.queue_enrich_context_files();
+    }
+
+    /// The model indices of the files the references sidebar lists, so their
+    /// previews highlight without the reader opening each one.
+    fn referenced_files(&self) -> Vec<usize> {
+        let Some(diff) = self.diff.as_ref().filter(|diff| diff.refs_visible()) else {
+            return Vec::new();
+        };
+        let Some(lens) = diff.lens.as_ref() else {
+            return Vec::new();
+        };
+        let model = diff
+            .commit_model
+            .as_ref()
+            .unwrap_or_else(|| self.review.model());
+        lens.view
+            .refs
+            .iter()
+            .filter(|entry| entry.group_len.is_some())
+            .filter_map(|entry| model.files.iter().position(|file| file.path == entry.path))
+            .collect()
     }
 
     /// The walkthrough's own files, the ones its stops name and the diff does
