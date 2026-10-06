@@ -194,11 +194,11 @@ impl App {
     /// line it is already open on, narrow it to the next or previous name.
     pub(crate) fn symbol_lens(&mut self, forward: bool) {
         if self.diff.as_ref().is_some_and(|diff| diff.side_by_side) {
-            self.info("switch to the unified view (|) to use the lens");
+            self.info("switch to the unified view (|) to find references");
             return;
         }
         let Some(origin) = self.lens_origin_at_cursor() else {
-            self.info("move onto a code line to see its names");
+            self.info("move onto a code line to find references");
             return;
         };
         let Some(diff) = self.diff.as_mut() else {
@@ -249,7 +249,7 @@ impl App {
         };
         diff.lens_wanted = None;
         if lens.data.symbols.is_empty() {
-            self.info("move onto a line that names something to use the lens");
+            self.info("move onto a line with a name on it to find references");
         } else {
             diff.lens = Some(lens);
             diff.settle_focus();
@@ -990,7 +990,7 @@ mod tests {
         assert!(!app.lens_active());
         assert_eq!(
             app.message.as_ref().map(|m| m.text.as_str()),
-            Some("move onto a line that names something to use the lens")
+            Some("move onto a line with a name on it to find references")
         );
     }
 

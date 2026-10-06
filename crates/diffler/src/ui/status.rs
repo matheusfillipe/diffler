@@ -1646,7 +1646,7 @@ mod tests {
         let terminal = render(&mut app);
         let content = terminal.backend().to_string();
         assert!(
-            content.contains("open the full working-tree diff"),
+            content.contains("review all uncommitted changes"),
             "{content}"
         );
         // transients appear as a prefix line plus their grouped sub-keys

@@ -251,7 +251,7 @@ impl App {
                 self.info("move into the diff to comment");
             }
             Action::SymbolLens | Action::SymbolLensBack => {
-                self.info("move into the diff to see a line's names");
+                self.info("move into the diff to find references");
             }
             _ => {}
         }
@@ -1024,7 +1024,7 @@ impl App {
             return;
         };
         let Some(scope) = diff.scopes.get(&path) else {
-            self.info("no definition index for this file (yet)");
+            self.info("this file is still being parsed, try again in a moment");
             return;
         };
         let starts: std::collections::HashSet<u32> = scope
