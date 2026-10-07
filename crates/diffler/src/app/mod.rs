@@ -39,8 +39,9 @@ pub use diff::lens::{Lens, LensRequest, PreviewLine, RefEntry, compute_lens};
 pub(crate) use diff::merge_count;
 pub use diff::{
     CommentFacts, CommentGrouping, CommentLine, CommentPaneRow, DeclaredRequest, DiffRow, DiffView,
-    FileHighlights, FileScope, Pane, RediffRequest, RowCopy, ScrollAlign, SplitRow, SplitSide,
-    blocks_of, comment_display, group_comment_rows, summary_display,
+    FileHighlights, FileScope, Pane, REPLY_LANE, RediffRequest, RowCopy, ScrollAlign, SplitRow,
+    SplitSide, blocks_of, comment_display, folded_replies_text, group_comment_rows,
+    summary_display,
 };
 pub use log::LogView;
 pub(crate) use status::{

@@ -18,8 +18,7 @@ use diffler_core::walkthrough::{Located, Target, Walkthrough};
 use crate::app::diff::Slide;
 use crate::app::markdown::MdSpan;
 use crate::app::{
-    App, CommentLine, DiffRow, Flow, Modal, PendingOp, Screen, blocks_of, comment_display,
-    summary_display,
+    App, CommentLine, DiffRow, Flow, Modal, PendingOp, Screen, blocks_of, summary_display,
 };
 use crate::graph::{Drawing, FenceKind, Fit, GraphView, NodeId};
 
@@ -463,9 +462,7 @@ impl App {
         match *row {
             DiffRow::Comment { comment, line, .. } => {
                 let comment = session.comments.get(comment)?;
-                let blocks = blocks_of(&diff.figures, &comment.id);
-                let unresolved = diff.unresolved_anchors.get(&comment.id).copied();
-                let lines = comment_display(comment, diff.wrap_width, None, blocks, unresolved);
+                let lines = diff.card_views().lines(comment, diff.wrap_width);
                 match lines.get(line)? {
                     CommentLine::Figure { block, row } => Some((comment.id.clone(), *block, *row)),
                     _ => None,
@@ -1241,11 +1238,8 @@ flowchart LR
                     let Some(comment) = session.comments.get(comment) else {
                         return false;
                     };
-                    let blocks = blocks_of(&diff.figures, &comment.id);
-                    let unresolved = diff.unresolved_anchors.get(&comment.id).copied();
                     matches!(
-                        comment_display(comment, diff.wrap_width, None, blocks, unresolved)
-                            .get(line),
+                        diff.card_views().lines(comment, diff.wrap_width).get(line),
                         Some(CommentLine::Figure { .. })
                     )
                 }
@@ -1871,8 +1865,7 @@ flowchart LR
             .expect("the stop");
         let unresolved = diff.unresolved_anchors.get(&comment.id).copied();
         assert_eq!(unresolved, Some(Located::Lost), "file present, symbol gone");
-        let blocks = blocks_of(&diff.figures, &comment.id);
-        let lines = comment_display(comment, diff.wrap_width, None, blocks, unresolved);
+        let lines = diff.card_views().lines(comment, diff.wrap_width);
         assert!(
             lines
                 .iter()

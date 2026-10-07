@@ -2103,6 +2103,105 @@ fn pane_header_line(
     pad_line(spans, bg, width)
 }
 
+/// How a thread colours and places its replies: each author in the colour
+/// the comments sidebar gives them, and every reply but the reader's own
+/// indented into the other lane.
+#[derive(Clone, Copy)]
+struct ThreadLook<'a> {
+    theme: &'a Theme,
+    bg: Color,
+    human: &'a str,
+    comment: &'a Comment,
+}
+
+impl ThreadLook<'_> {
+    fn color(&self, author: &str) -> Color {
+        let mut authors: Vec<&str> = Vec::new();
+        for name in std::iter::once(self.comment.author.as_str()).chain(
+            self.comment
+                .replies
+                .iter()
+                .map(|reply| reply.author.as_str()),
+        ) {
+            if !authors.contains(&name) {
+                authors.push(name);
+            }
+        }
+        let order = authors.iter().position(|name| *name == author).unwrap_or(0);
+        author_color(self.theme, self.bg, self.human, author, order)
+    }
+
+    /// The card's bar, the lane indent for `author`, and the reply's own bar
+    /// in the author's colour.
+    fn lane(&self, bar: Span<'static>, author: &str) -> Vec<Span<'static>> {
+        let indent = if !self.human.is_empty() && author == self.human {
+            0
+        } else {
+            crate::app::REPLY_LANE
+        };
+        vec![
+            bar,
+            Span::styled(" ".repeat(indent), Style::new().bg(self.bg)),
+            Span::styled(
+                "▌ ".to_owned(),
+                Style::new().fg(self.color(author)).bg(self.bg),
+            ),
+        ]
+    }
+
+    /// The spans of one reply-side line of the thread's card, after the
+    /// card's own `bar`.
+    fn reply_spans(&self, part: &CommentLine, bar: Span<'static>) -> Vec<Span<'static>> {
+        let Self { theme, bg, .. } = *self;
+        let dim = Style::new().fg(theme.dim).bg(bg);
+        let fg = Style::new().fg(theme.fg).bg(bg);
+        match part {
+            CommentLine::ReplyHead { author } => {
+                let mut spans = self.lane(bar, author);
+                spans.push(Span::styled(
+                    author.clone(),
+                    Style::new()
+                        .fg(self.color(author))
+                        .bg(bg)
+                        .add_modifier(Modifier::BOLD),
+                ));
+                spans
+            }
+            CommentLine::Reply {
+                author,
+                spans: runs,
+            } => {
+                let mut spans = self.lane(bar, author);
+                spans.extend(runs.iter().map(|run| md_span(run, fg, theme)));
+                spans
+            }
+            CommentLine::FoldedReplies { count, authors } => {
+                let mut spans = vec![
+                    bar,
+                    Span::styled("  ".to_owned(), Style::new().bg(bg)),
+                    Span::styled(
+                        crate::app::folded_replies_text(*count),
+                        Style::new().fg(theme.accent).bg(bg),
+                    ),
+                    Span::styled(" · ".to_owned(), dim),
+                ];
+                for (at, author) in authors.iter().enumerate() {
+                    if at > 0 {
+                        spans.push(Span::styled(", ".to_owned(), dim));
+                    }
+                    spans.push(Span::styled(
+                        author.clone(),
+                        Style::new().fg(self.color(author)).bg(bg),
+                    ));
+                }
+                spans
+            }
+            // the gap between blocks, and the card lines a thread does not draw
+            _ => vec![bar],
+        }
+    }
+}
+
 fn comment_row_line(
     ctx: &RenderCtx<'_>,
     diff: &DiffView,
@@ -2125,9 +2224,23 @@ fn comment_row_line(
     let fg = Style::new().fg(theme.fg).bg(bg);
     let blocks = crate::app::blocks_of(&diff.figures, &comment.id);
     let unresolved = diff.unresolved_anchors.get(&comment.id).copied();
-    let lines = comment_display(comment, width, Some(ctx.highlighter), blocks, unresolved);
+    let open = diff.open_threads.contains(&comment.id);
+    let lines = comment_display(
+        comment,
+        width,
+        Some(ctx.highlighter),
+        blocks,
+        unresolved,
+        open,
+    );
     let Some(part) = lines.get(line) else {
         return Line::default();
+    };
+    let thread = ThreadLook {
+        theme,
+        bg,
+        human: ctx.human_author,
+        comment,
     };
     let spans = match part {
         CommentLine::Header => {
@@ -2139,7 +2252,10 @@ fn comment_row_line(
                 ));
             }
             spans.extend([
-                Span::styled(comment.author.clone(), Style::new().fg(theme.purple).bg(bg)),
+                Span::styled(
+                    comment.author.clone(),
+                    Style::new().fg(thread.color(&comment.author)).bg(bg),
+                ),
                 Span::styled(" · ".to_owned(), dim),
                 Span::styled(status_label.to_owned(), Style::new().fg(accent).bg(bg)),
             ]);
@@ -2177,28 +2293,16 @@ fn comment_row_line(
             else {
                 return Line::default();
             };
-            return if state.selected {
-                super::fill_row(drawn.clone(), bg, width)
-            } else {
-                drawn.clone()
-            };
+            return super::fill_row(drawn.clone(), bg, width);
         }
-        CommentLine::Reply {
-            author,
-            spans: runs,
-            first,
-        } => {
-            let mut spans = vec![bar];
-            if *first {
-                spans.push(Span::styled(
-                    format!("└ {author}: "),
-                    Style::new().fg(theme.purple).bg(bg),
-                ));
-            } else {
-                spans.push(Span::styled("  ".to_owned(), fg));
-            }
-            spans.extend(runs.iter().map(|run| md_span(run, fg, theme)));
-            spans
+        CommentLine::ReplyGap
+        | CommentLine::ReplyHead { .. }
+        | CommentLine::Reply { .. }
+        | CommentLine::FoldedReplies { .. } => {
+            // the reply's own bar stands in for the card's, so the two never
+            // draw side by side
+            let margin = Span::styled("  ".to_owned(), Style::new().bg(bg));
+            thread.reply_spans(part, margin)
         }
         CommentLine::Footer => vec![Span::styled(
             "  ▌".to_owned(),
@@ -2247,15 +2351,15 @@ fn summary_row_line(
             else {
                 return Line::default();
             };
-            return if state.selected {
-                super::fill_row(drawn.clone(), bg, width)
-            } else {
-                drawn.clone()
-            };
+            return super::fill_row(drawn.clone(), bg, width);
         }
         // the summary carries no anchor of its own, so nothing ever resolves
         // it and nothing ever answers it directly
-        CommentLine::Note(_) | CommentLine::Reply { .. } => return Line::default(),
+        CommentLine::Note(_)
+        | CommentLine::ReplyGap
+        | CommentLine::ReplyHead { .. }
+        | CommentLine::Reply { .. }
+        | CommentLine::FoldedReplies { .. } => return Line::default(),
         CommentLine::Footer => vec![Span::styled(
             "  ▌".to_owned(),
             Style::new().fg(theme.accent).bg(bg),
@@ -4216,6 +4320,39 @@ flowchart LR
             content.contains(".."),
             "range header shows a span: {content}"
         );
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    /// A long thread folds the replies before its latest into one row and
+    /// shows the latest in full; the reader's own replies sit in the left
+    /// lane and everyone else's are indented.
+    #[test]
+    fn a_long_thread_folds_and_splits_into_lanes() {
+        let (_fixture, mut app) = diff_app();
+        open_lib_diff(&mut app);
+        let human = app.author.clone();
+        let id = app
+            .review
+            .session
+            .add_comment(
+                diffler_core::session::Anchor {
+                    file: "src/lib.rs".to_owned(),
+                    line: Some(1),
+                    line_end: None,
+                    on_old_side: false,
+                    line_text: Some("pub fn answer() -> u32 {".to_owned()),
+                },
+                &human,
+                "why full jitter here?",
+            )
+            .id
+            .clone();
+        let session = &mut app.review.session;
+        session.reply(&id, "agent", "it spreads the restarts after a deploy");
+        session.reply(&id, &human, "fair, but cap it");
+        session.reply(&id, &human, "and the docs?");
+        session.reply(&id, "agent", "capped at two seconds\n\nadded a test for attempt zero\n\nupdated the docs\n\nand the changelog\n\nand the bench");
+        app.diff.as_mut().unwrap().invalidate();
         insta::assert_snapshot!(render(&mut app).backend());
     }
 

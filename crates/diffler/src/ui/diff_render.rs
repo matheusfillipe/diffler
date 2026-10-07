@@ -124,22 +124,28 @@ pub(super) fn cursor_band(theme: &Theme, surface: Color, focused: bool) -> Color
 }
 
 /// The background and left bar every card in the diff pane draws first: a
-/// comment, a walkthrough stop, the open composer. Banded when the row is
-/// selected, the plain surface otherwise, with a solid `accent` bar turning
-/// the row into a card against the diff lines around it.
+/// comment, a walkthrough stop, the open composer. A faint surface of its
+/// own sets the card apart from the code around it, banded when the row is
+/// selected, with a solid `accent` bar down its left edge.
 pub(super) fn card_frame(
     theme: &Theme,
     selected: bool,
     focused: bool,
     accent: Color,
 ) -> (Color, Span<'static>) {
+    let surface = card_surface(theme);
     let bg = if selected {
-        cursor_band(theme, theme.bg, focused)
+        cursor_band(theme, surface, focused)
     } else {
-        theme.bg
+        surface
     };
     let bar = Span::styled("  ▌ ".to_owned(), Style::new().fg(accent).bg(bg));
     (bg, bar)
+}
+
+/// The faint surface a card sits on.
+pub(super) fn card_surface(theme: &Theme) -> Color {
+    crate::theme::blend(theme.bg, theme.fg, 5)
 }
 
 /// A band's blend strength, scaled down when its pane is out of focus.

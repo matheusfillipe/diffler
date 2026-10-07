@@ -135,7 +135,7 @@ def test_a_reply_on_a_stop_reaches_the_agent_on_that_stops_comment(spawn):
     tui.wait_for("reply")
     tui.send("looks right to me")
     tui.send("\r")
-    tui.wait_for("reviewer: looks right to me")
+    tui.wait_for("▌ reviewer")  # the posted reply's own author line
 
     feedback = call_tool(
         tui, url, "wait_for_feedback", {"since_epoch": epoch, "timeout_seconds": 5}

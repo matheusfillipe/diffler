@@ -31,7 +31,8 @@ use super::{App, Flow};
 pub use comments::{CommentFacts, CommentGrouping, CommentPaneRow, group_comment_rows};
 pub(crate) use rowref::RowPositions;
 pub use rows::{
-    CommentLine, DiffRow, RowCopy, SplitRow, SplitSide, blocks_of, comment_display, summary_display,
+    CommentLine, DiffRow, REPLY_LANE, RowCopy, SplitRow, SplitSide, blocks_of, comment_display,
+    folded_replies_text, summary_display,
 };
 use rows::{build_rows, build_split_rows};
 #[cfg(test)]
@@ -182,6 +183,9 @@ pub struct DiffView {
     /// next row rebuild restores in place of reading its own from rows that
     /// no longer match the model.
     pub(crate) held_positions: Option<rowref::RowPositions>,
+    /// Comment threads the reader opened, by comment id: an open thread shows
+    /// every reply in full.
+    pub(crate) open_threads: HashSet<String>,
     /// Side-by-side (old left / new right) pane; pinned at open from
     /// `ui.side_by_side`, then `|` toggles it live.
     pub side_by_side: bool,
@@ -311,6 +315,7 @@ impl DiffView {
             scroll_align: None,
             cursor_offset: 0,
             held_positions: None,
+            open_threads: HashSet::new(),
             side_by_side,
             split_scroll: 0,
             sidebar: ratatui::layout::Rect::default(),
@@ -548,8 +553,7 @@ impl DiffView {
             self.selected,
             self.wrap_width,
             composer,
-            &self.figures,
-            &self.unresolved_anchors,
+            self.card_views(),
         );
         let (rows, copy) = if self.layout == FileLayout::Walkthrough {
             self.window_slide(model, session, rows, copy)
@@ -572,8 +576,7 @@ impl DiffView {
             self.selected,
             self.wrap_width,
             composer,
-            &self.figures,
-            &self.unresolved_anchors,
+            self.card_views(),
         );
         self.split_rows = folds::apply_split(split_rows, model.files.get(self.selected), folded);
         self.fold_groups = fold_groups;
@@ -996,6 +999,58 @@ impl DiffView {
     }
 
     /// The row showing the model line (hunk, line), or the fold row hiding it.
+    pub(crate) fn card_views(&self) -> rows::CardViews<'_> {
+        rows::CardViews {
+            figures: &self.figures,
+            unresolved_anchors: &self.unresolved_anchors,
+            open_threads: &self.open_threads,
+        }
+    }
+
+    /// Open or close the thread of the comment under the cursor, when closing
+    /// it hides something. A closed thread keeps the cursor on its card.
+    pub(crate) fn toggle_thread_at_cursor(&mut self, review: &Review) -> bool {
+        let Some(DiffRow::Comment { comment, .. }) = self.rows.get(self.cursor).copied() else {
+            return false;
+        };
+        let session = review.session_for(&self.source);
+        let Some(card) = session.comments.get(comment) else {
+            return false;
+        };
+        let id = card.id.clone();
+        if !self.open_threads.remove(&id) {
+            let views = self.card_views();
+            let closed = views.lines(card, self.wrap_width).len();
+            let open = comment_display(
+                card,
+                self.wrap_width,
+                None,
+                blocks_of(&self.figures, &id),
+                self.unresolved_anchors.get(&id).copied(),
+                true,
+            )
+            .len();
+            if closed == open {
+                return false;
+            }
+            self.open_threads.insert(id);
+        }
+        self.mark_rows_dirty();
+        self.ensure_rows(review);
+        let on_card = matches!(
+            self.rows.get(self.cursor),
+            Some(DiffRow::Comment { comment: at, .. }) if *at == comment
+        );
+        if !on_card
+            && let Some(first) = self.rows.iter().position(
+                |row| matches!(row, DiffRow::Comment { comment: at, .. } if *at == comment),
+            )
+        {
+            self.cursor = first;
+        }
+        true
+    }
+
     pub(crate) fn row_of_line(&self, (hunk, line): (usize, usize)) -> Option<usize> {
         let shown = self.rows.iter().position(
             |row| matches!(*row, DiffRow::Line { hunk: h, line: l, .. } if h == hunk && l == line),
@@ -4887,7 +4942,7 @@ flowchart TD
             .id
             .clone();
         session.reply(&id, "agent", "done\nand verified");
-        let lines = comment_display(&session.comments[0], u16::MAX, None, None, None);
+        let lines = comment_display(&session.comments[0], u16::MAX, None, None, None, false);
         let plain = |s: &str| MdSpan {
             text: s.to_owned(),
             ..MdSpan::default()
@@ -4898,15 +4953,17 @@ flowchart TD
                 CommentLine::Header,
                 CommentLine::Body(vec![plain("first")]),
                 CommentLine::Body(vec![plain("second")]),
+                CommentLine::ReplyGap,
+                CommentLine::ReplyHead {
+                    author: "agent".to_owned(),
+                },
                 CommentLine::Reply {
                     author: "agent".to_owned(),
                     spans: vec![plain("done")],
-                    first: true,
                 },
                 CommentLine::Reply {
                     author: "agent".to_owned(),
                     spans: vec![plain("and verified")],
-                    first: false,
                 },
                 CommentLine::Footer,
             ]
@@ -4931,15 +4988,15 @@ flowchart TD
             .id
             .clone();
         session.reply(&id, "agent", "a reply that also runs past the pane");
-        let lines = comment_display(&session.comments[0], 30, None, None, None);
+        let lines = comment_display(&session.comments[0], 30, None, None, None, false);
         let budget = 30 - 4;
         let text = |runs: &[MdSpan]| runs.iter().map(|s| s.text.clone()).collect::<String>();
         for line in &lines {
             match line {
                 CommentLine::Body(runs) => assert!(text(runs).width() <= budget, "{runs:?}"),
-                CommentLine::Reply { spans, first, .. } => {
-                    let head = if *first { "└ agent: ".width() } else { 2 };
-                    assert!(text(spans).width() + head <= budget, "{spans:?}");
+                CommentLine::Reply { spans, .. } => {
+                    let lane = crate::app::REPLY_LANE;
+                    assert!(text(spans).width() + lane <= budget, "{spans:?}");
                 }
                 _ => {}
             }
@@ -4963,6 +5020,125 @@ flowchart TD
         );
     }
 
+    fn thread_with(replies: &[(&str, &str)]) -> Session {
+        let mut session = Session::default();
+        let id = session
+            .add_comment(
+                Anchor {
+                    file: "a.rs".to_owned(),
+                    line: Some(1),
+                    line_end: None,
+                    on_old_side: false,
+                    line_text: None,
+                },
+                "reviewer",
+                "why?",
+            )
+            .id
+            .clone();
+        for (author, body) in replies {
+            session.reply(&id, author, body);
+        }
+        session
+    }
+
+    #[test]
+    fn a_card_wraps_at_a_reading_width_on_a_wide_pane() {
+        let long = "word ".repeat(80);
+        let session = thread_with(&[("agent", long.as_str())]);
+        let lines = comment_display(&session.comments[0], 300, None, None, None, true);
+        let text = |runs: &[MdSpan]| runs.iter().map(|s| s.text.clone()).collect::<String>();
+        let widest = lines
+            .iter()
+            .filter_map(|line| match line {
+                CommentLine::Reply { spans, .. } => Some(text(spans).trim_end().width()),
+                _ => None,
+            })
+            .max()
+            .expect("the reply has lines");
+        assert!(widest <= crate::app::composer::CARD_MEASURE, "{widest}");
+        assert!(widest > 60, "it still uses the room it has: {widest}");
+    }
+
+    #[test]
+    fn a_closed_thread_folds_the_replies_before_the_latest() {
+        let session = thread_with(&[("agent", "one"), ("reviewer", "two"), ("agent", "three")]);
+        let closed = comment_display(&session.comments[0], u16::MAX, None, None, None, false);
+        assert!(closed.contains(&CommentLine::FoldedReplies {
+            count: 2,
+            authors: vec!["agent".to_owned(), "reviewer".to_owned()],
+        }));
+        let heads = |lines: &[CommentLine]| {
+            lines
+                .iter()
+                .filter(|line| matches!(line, CommentLine::ReplyHead { .. }))
+                .count()
+        };
+        assert_eq!(heads(&closed), 1, "only the latest reply shows");
+        let open = comment_display(&session.comments[0], u16::MAX, None, None, None, true);
+        assert_eq!(heads(&open), 3, "an open thread shows every reply");
+        assert!(
+            !open
+                .iter()
+                .any(|line| matches!(line, CommentLine::FoldedReplies { .. }))
+        );
+    }
+
+    #[test]
+    fn a_closed_thread_shows_its_latest_reply_in_full() {
+        let session = thread_with(&[
+            ("agent", "one"),
+            ("reviewer", "two"),
+            ("agent", "a\n\nb\n\nc\n\nd\n\ne"),
+        ]);
+        let closed = comment_display(&session.comments[0], u16::MAX, None, None, None, false);
+        let body = closed
+            .iter()
+            .filter(|line| matches!(line, CommentLine::Reply { .. }))
+            .count();
+        assert!(
+            body >= 5,
+            "every line of the latest reply shows: {closed:?}"
+        );
+    }
+
+    #[test]
+    fn tab_on_a_card_opens_and_closes_its_thread() {
+        let fixture = standard_fixture();
+        let mut app = diff_app(&fixture);
+        select_file(&mut app, "src/lib.rs");
+        app.diff.as_mut().unwrap().cursor = added_line_position(&app);
+        app.handle(key('c'));
+        type_text(&mut app, "why 42?");
+        app.handle(key('\n'));
+        let id = app.review.session.comments[0].id.clone();
+        for body in ["one", "two", "three"] {
+            app.review.session.reply(&id, "agent", body);
+        }
+        let diff = app.diff.as_mut().unwrap();
+        diff.mark_rows_dirty();
+        diff.ensure_rows(&app.review);
+        let card = rows(&app)
+            .iter()
+            .position(|r| matches!(r, DiffRow::Comment { .. }))
+            .expect("the card");
+        let diff = app.diff.as_mut().unwrap();
+        diff.cursor = card;
+        diff.focus = Pane::Diff;
+        app.handle(AppEvent::Key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Tab,
+        )));
+        assert!(app.diff.as_ref().unwrap().open_threads.contains(&id));
+        assert!(matches!(
+            rows(&app)[app.diff.as_ref().unwrap().cursor],
+            DiffRow::Comment { .. }
+        ));
+        app.handle(AppEvent::Key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Tab,
+        )));
+        assert!(!app.diff.as_ref().unwrap().open_threads.contains(&id));
+    }
+
     #[test]
     fn comment_display_hard_splits_an_unbreakable_token() {
         let mut session = Session::default();
@@ -4977,7 +5153,7 @@ flowchart TD
             "reviewer",
             "https://example.invalid/a/very/long/unbroken/path/segment/thing",
         );
-        let lines = comment_display(&session.comments[0], 24, None, None, None);
+        let lines = comment_display(&session.comments[0], 24, None, None, None, false);
         for line in &lines {
             if let CommentLine::Body(runs) = line {
                 let width: usize = runs.iter().map(|s| s.text.width()).sum();
@@ -5194,15 +5370,7 @@ flowchart TD
         let model = diff.model(&app.review);
         let session = app.review.session_for(&ReviewSource::WorkingTree);
         for (index, file) in model.files.iter().enumerate() {
-            for row in build_split_rows(
-                model,
-                session,
-                index,
-                u16::MAX,
-                None,
-                &diff.figures,
-                &diff.unresolved_anchors,
-            ) {
+            for row in build_split_rows(model, session, index, u16::MAX, None, diff.card_views()) {
                 let SplitRow::Pair { hunk, left, right } = row else {
                     continue;
                 };

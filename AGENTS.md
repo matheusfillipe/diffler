@@ -260,7 +260,19 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   indented one level under, the way a file indents under its directory:
   `tab`/`za` folds the one the cursor sits in, `[`/`]` step headers, and a
   header under the cursor selects no comment, so a verb that needs one
-  declines rather than reaching whatever the diff cursor was last on. Comments,
+  declines rather than reaching whatever the diff cursor was last on. A
+  card sits on a faint surface of its own (`card_surface`) and its text wraps
+  at `CARD_MEASURE` columns however wide the pane is. A thread draws each
+  reply as its own block, an author line over the body, with a bar in the
+  author's colour in place of the card's status bar; the reader's own replies
+  line up under the first comment and everyone else's indent `REPLY_LANE`
+  columns. A forge thread is a
+  flat list of replies, so the lanes show authorship and never nesting. A
+  closed thread folds the replies between its first comment and its latest
+  reply into one `▸ N earlier replies` row once it has more than two, and
+  always shows the latest reply in full; `tab`/`za` on any of its rows
+  opens it (`DiffView::open_threads`, read by `comment_display` so the row
+  count and the drawing agree). Comments,
   replies and edits are written in place: the composer occupies the rows the
   finished card will, under the anchored line, at the top of the file for a
   whole-file comment, under the thread for a reply. `<c-g>` there, and in the

@@ -1,13 +1,12 @@
 //! Flattening a file's diff and its review comments into the row list the
 //! pane renders.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use diffler_core::highlight::Highlighter;
 use diffler_core::model::{DiffModel, FileDiff, Hunk, LineKind};
 use diffler_core::session::{Anchor, Comment, CommentStatus, Session};
 use diffler_core::walkthrough::Located;
-use unicode_width::UnicodeWidthStr;
 
 use crate::app::composer::{Composer, ComposerKind, ComposerLine, card_budget};
 use crate::app::markdown::{self, MdSpan};
@@ -74,10 +73,22 @@ pub enum CommentLine {
     /// One line explaining why this stop or note has no code to show,
     /// rendered dim under the body.
     Note(Vec<MdSpan>),
+    /// The blank row before each block of a thread.
+    ReplyGap,
+    /// The author line opening one reply's block.
+    ReplyHead {
+        author: String,
+    },
+    /// One line of a reply's body.
     Reply {
         author: String,
         spans: Vec<MdSpan>,
-        first: bool,
+    },
+    /// The row a closed thread shows for the replies it hides, naming who
+    /// wrote them.
+    FoldedReplies {
+        count: usize,
+        authors: Vec<String>,
     },
     Footer,
 }
@@ -178,26 +189,17 @@ fn composer_line_text(line: &ComposerLine) -> String {
 pub(super) fn row_copy_for(line: &CommentLine, header: &str, key: &str) -> RowCopy {
     match line {
         CommentLine::Header => RowCopy::Text(header.to_owned()),
-        CommentLine::Body(spans) | CommentLine::Note(spans) => RowCopy::Text(md_spans_text(spans)),
-        CommentLine::Reply {
-            author,
-            spans,
-            first,
-        } => {
-            let mut text = if *first {
-                format!("└ {author}: ")
-            } else {
-                "  ".to_owned()
-            };
-            text.push_str(&md_spans_text(spans));
-            RowCopy::Text(text)
+        CommentLine::Body(spans) | CommentLine::Note(spans) | CommentLine::Reply { spans, .. } => {
+            RowCopy::Text(md_spans_text(spans))
         }
+        CommentLine::ReplyHead { author } => RowCopy::Text(author.clone()),
+        CommentLine::FoldedReplies { count, .. } => RowCopy::Text(folded_replies_text(*count)),
         CommentLine::Figure { block, row } => RowCopy::Figure {
             key: key.to_owned(),
             block: *block,
             row: *row,
         },
-        CommentLine::Footer => RowCopy::Text(String::new()),
+        CommentLine::ReplyGap | CommentLine::Footer => RowCopy::Text(String::new()),
     }
 }
 
@@ -243,16 +245,33 @@ fn body_display(
     lines
 }
 
+/// Columns a reply by anyone but the reader is indented, so the two sides
+/// of a thread read apart at a glance.
+pub const REPLY_LANE: usize = 4;
+/// A closed thread folds the replies between its first comment and its
+/// latest reply once it has more than this many.
+const FOLD_AFTER: usize = 2;
+
+pub fn folded_replies_text(count: usize) -> String {
+    if count == 1 {
+        "▸ 1 earlier reply".to_owned()
+    } else {
+        format!("▸ {count} earlier replies")
+    }
+}
+
 /// The terminal lines a comment occupies at `row_width` columns. Shared by
 /// row flattening (for counts) and rendering (for content) so they can never
 /// disagree. `unresolved` is the reason this comment's own anchor stopped
-/// resolving, when it did; it renders as one dim line under the body.
+/// resolving, when it did; it renders as one dim line under the body. A
+/// thread that is not `open` folds the replies before its latest one.
 pub fn comment_display(
     comment: &Comment,
     row_width: u16,
     highlighter: Option<&Highlighter>,
     blocks: Option<&[Block]>,
     unresolved: Option<Located>,
+    open: bool,
 ) -> Vec<CommentLine> {
     let budget = card_budget(row_width);
     let mut lines = body_display(&comment.body, row_width, highlighter, blocks);
@@ -267,24 +286,42 @@ pub fn comment_display(
             );
         }
     }
-    for reply in &comment.replies {
-        // the author label only renders on the first line; continuations get
-        // the renderer's two-space indent
-        let label = format!("└ {}: ", reply.author).width();
-        let mut first = true;
-        // a table lays out at parse time and `wrap` then leaves it alone, so
-        // it has to fit the narrowest line of the reply: the labelled one
-        let laid_out = budget.saturating_sub(label.max(2)).max(8);
-        for logical in markdown::parse(&reply.body, highlighter, laid_out) {
-            let head = budget.saturating_sub(if first { label } else { 2 }).max(8);
-            for spans in markdown::wrap(&logical, head, budget.saturating_sub(2).max(8)) {
-                lines.push(CommentLine::Reply {
-                    author: reply.author.clone(),
-                    spans,
-                    first,
-                });
-                first = false;
+    let replies = &comment.replies;
+    let folded = if open || replies.len() <= FOLD_AFTER {
+        0
+    } else {
+        replies.len() - 1
+    };
+    if folded > 0 {
+        let mut authors: Vec<String> = Vec::new();
+        for reply in replies.iter().take(folded) {
+            if !authors.contains(&reply.author) {
+                authors.push(reply.author.clone());
             }
+        }
+        lines.push(CommentLine::ReplyGap);
+        lines.push(CommentLine::FoldedReplies {
+            count: folded,
+            authors,
+        });
+    }
+    // the lane indent takes its columns from every reply alike, so a reply
+    // wraps the same whichever side it sits on
+    let width = budget.saturating_sub(REPLY_LANE).max(8);
+    for reply in replies.iter().skip(folded) {
+        lines.push(CommentLine::ReplyGap);
+        lines.push(CommentLine::ReplyHead {
+            author: reply.author.clone(),
+        });
+        for logical in markdown::parse(&reply.body, highlighter, width) {
+            lines.extend(
+                markdown::wrap(&logical, width, width)
+                    .into_iter()
+                    .map(|spans| CommentLine::Reply {
+                        author: reply.author.clone(),
+                        spans,
+                    }),
+            );
         }
     }
     lines.push(CommentLine::Footer);
@@ -377,8 +414,30 @@ struct RowCtx<'a> {
     session: &'a Session,
     wrap_width: u16,
     draft: Option<&'a Draft<'a>>,
-    figures: &'a FigureCache,
-    unresolved_anchors: &'a HashMap<String, Located>,
+    cards: CardViews<'a>,
+}
+
+/// What the open view knows about its cards beyond the session: the figure
+/// cache, which comments' anchors stopped resolving, and which threads the
+/// reader opened.
+#[derive(Clone, Copy)]
+pub(crate) struct CardViews<'a> {
+    pub figures: &'a FigureCache,
+    pub unresolved_anchors: &'a HashMap<String, Located>,
+    pub open_threads: &'a HashSet<String>,
+}
+
+impl CardViews<'_> {
+    pub(crate) fn lines(&self, comment: &Comment, wrap_width: u16) -> Vec<CommentLine> {
+        comment_display(
+            comment,
+            wrap_width,
+            None,
+            blocks_of(self.figures, &comment.id),
+            self.unresolved_anchors.get(&comment.id).copied(),
+            self.open_threads.contains(&comment.id),
+        )
+    }
 }
 
 fn push_comment_rows(
@@ -395,14 +454,8 @@ fn push_comment_rows(
             push_draft_rows(rows, copy, ctx.draft);
             continue;
         }
-        let unresolved = ctx.unresolved_anchors.get(&c.id).copied();
-        let lines = comment_display(
-            c,
-            ctx.wrap_width,
-            None,
-            blocks_of(ctx.figures, &c.id),
-            unresolved,
-        );
+        let unresolved = ctx.cards.unresolved_anchors.get(&c.id).copied();
+        let lines = ctx.cards.lines(c, ctx.wrap_width);
         let header = comment_header_text(c, outdated, unresolved.is_some());
         for (line, part) in lines.iter().enumerate() {
             rows.push(DiffRow::Comment {
@@ -470,8 +523,7 @@ pub(super) fn build_rows(
     selected: usize,
     wrap_width: u16,
     composer: Option<&Composer>,
-    figures: &FigureCache,
-    unresolved_anchors: &HashMap<String, Located>,
+    cards: CardViews<'_>,
 ) -> (Vec<DiffRow>, Vec<RowCopy>) {
     let mut rows = Vec::new();
     let mut copy = Vec::new();
@@ -483,8 +535,7 @@ pub(super) fn build_rows(
         session,
         wrap_width,
         draft: draft.as_ref(),
-        figures,
-        unresolved_anchors,
+        cards,
     };
     let (by_line, unanchored) = collect_comments(file, session, model);
     push_comment_rows(&mut rows, &mut copy, &unanchored, ctx);
@@ -561,15 +612,7 @@ fn push_split_comments(rows: &mut Vec<SplitRow>, comments: &[(usize, bool)], ctx
             push_split_draft_rows(rows, ctx.draft);
             continue;
         }
-        let unresolved = ctx.unresolved_anchors.get(&c.id).copied();
-        let count = comment_display(
-            c,
-            ctx.wrap_width,
-            None,
-            blocks_of(ctx.figures, &c.id),
-            unresolved,
-        )
-        .len();
+        let count = ctx.cards.lines(c, ctx.wrap_width).len();
         rows.extend((0..count).map(|line| SplitRow::Comment {
             comment,
             line,
@@ -621,8 +664,7 @@ pub(super) fn build_split_rows(
     selected: usize,
     wrap_width: u16,
     composer: Option<&Composer>,
-    figures: &FigureCache,
-    unresolved_anchors: &HashMap<String, Located>,
+    cards: CardViews<'_>,
 ) -> Vec<SplitRow> {
     let mut rows = Vec::new();
     let Some(file) = model.files.get(selected) else {
@@ -633,8 +675,7 @@ pub(super) fn build_split_rows(
         session,
         wrap_width,
         draft: draft.as_ref(),
-        figures,
-        unresolved_anchors,
+        cards,
     };
     let (by_line, unanchored) = collect_comments(file, session, model);
     push_split_comments(&mut rows, &unanchored, ctx);

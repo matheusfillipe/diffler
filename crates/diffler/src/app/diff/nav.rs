@@ -332,6 +332,13 @@ impl App {
     /// the folded hunk under it.
     fn diff_toggle_fold(&mut self) {
         let review = &self.review;
+        if self
+            .diff
+            .as_mut()
+            .is_some_and(|diff| diff.toggle_thread_at_cursor(review))
+        {
+            return;
+        }
         let toggled = self
             .diff
             .as_mut()

@@ -268,10 +268,14 @@ fn shape(composer: &Composer, width: u16) -> (usize, usize) {
     (lines.len(), caret)
 }
 
+/// The widest a card's text runs, however wide the pane is, so a long
+/// comment reads at a comfortable line length.
+pub const CARD_MEASURE: usize = 90;
+
 /// Text cells a comment card has after its `"  ▌ "` bar, matching
 /// [`crate::app::diff::comment_display`] so a draft and its result wrap alike.
 pub fn card_budget(row_width: u16) -> usize {
-    (row_width.saturating_sub(4) as usize).max(8)
+    (row_width.saturating_sub(4) as usize).clamp(8, CARD_MEASURE)
 }
 
 /// Break `buffer` into visual rows of at most `budget` columns, splitting on
