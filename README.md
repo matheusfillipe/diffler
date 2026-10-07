@@ -22,7 +22,7 @@ diff and reply right there, while you watch it fix the code.
 - Review pull requests without checking them out
 - Let your agent answer your comments and walk you through its changes (optional)
 - Works in git and jj repos
-- Shows changed images as pictures
+- Shows changed images right in the terminal, before and after
 
 ## Install
 
@@ -33,7 +33,7 @@ cargo install diffler
 <details>
 <summary><b>Prebuilt binary</b></summary>
 
-Skips the compile, and needs no Rust toolchain.
+No compiling, and no Rust toolchain needed.
 
 ```sh
 cargo binstall diffler
@@ -135,7 +135,7 @@ claude plugin marketplace add matheusfillipe/diffler && claude plugin install di
 claude mcp add --transport http diffler http://127.0.0.1:8417/mcp
 ```
 
-Connected, the server's prompts show up as `/diffler:review`,
+Once connected, the server's prompts show up as `/diffler:review`,
 `/diffler:walkthrough` and `/diffler:critique`. The plugin adds `/df`, to
 answer your comments, `/dfa`, to walk you through a change, and `/dfr`, to
 review a change and leave comments.
@@ -213,23 +213,23 @@ full keymap of the screen you're on, and `<c-k>` fuzzy-finds any action.
 
 | Key | Action |
 | --- | --- |
-| `<cr>` | open the thing under the cursor |
+| `<cr>` | open what's under the cursor |
 | `s` / `u` | stage / unstage |
 | `cc` | commit |
-| `c` | comment the line (`V` selects a range first) |
+| `c` | comment on the line (`V` selects a range first) |
 | `Z` | send comments to the agent |
 | `m` | mark the file viewed |
-| `t` | switch the sidebar layout |
-| `\|` | toggle side-by-side |
+| `t` | change how the file list is grouped |
+| `\|` | switch between unified and side-by-side diff |
 | `]` / `[` | next / previous hunk |
-| `za` | fold or open the hunk |
-| `*` / `#` | colour the line's names and where they're used; `1`-`9` or `*`/`#` again picks one and lists its references beside the diff |
-| `d` | on the status screen, diff against another branch or commit |
+| `za` / `tab` | fold or unfold a hunk, or a thread's earlier replies |
+| `*` / `#` | find references to a symbol on the line; `1`-`9` or `*`/`#` again picks which one |
+| `d` | on the status screen, review against another branch or commit |
 | `C` | open the comments list |
 | `S` | submit PR comments as one review |
-| `gf` | find any file |
-| `B` | blame |
-| `e` | open in `$EDITOR` |
+| `gf` | open any file in the repo |
+| `B` | blame: see who last changed each line |
+| `e` | open the file in your editor |
 | `q` | back / quit |
 
 Every binding is remappable in [docs/config.example.toml](docs/config.example.toml).
