@@ -1567,7 +1567,7 @@ impl App {
             Action::Palette => {
                 let (_, haystack) = self.command_index_haystack();
                 let mut list = fuzzy::FuzzyList::typing();
-                list.rerank(&haystack);
+                list.rerank_words(&haystack);
                 self.modal = Some(Modal::Palette { list });
             }
             Action::SendFeedback => {

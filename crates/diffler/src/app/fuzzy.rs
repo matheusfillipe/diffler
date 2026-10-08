@@ -167,6 +167,12 @@ impl FuzzyList {
         self.matches = rank(&self.query, haystacks);
         self.selected = self.selected.min(self.matches.len().saturating_sub(1));
     }
+
+    /// [`Self::rerank`] matching from word starts, for a list of prose labels.
+    pub(crate) fn rerank_words(&mut self, haystacks: &[String]) {
+        self.matches = rank_words(&self.query, haystacks);
+        self.selected = self.selected.min(self.matches.len().saturating_sub(1));
+    }
 }
 
 /// Indices of `haystacks` matching `query`, best first; everything in
@@ -188,6 +194,70 @@ pub(crate) fn rank(query: &str, haystacks: &[String]) -> Vec<usize> {
         .collect();
     scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
     scored.into_iter().map(|(_, index)| index).collect()
+}
+
+/// [`rank`] for prose labels: a label matches only when every query letter
+/// follows the previous one directly or opens a word of the label, so a
+/// query finds the words it spells and never letters scattered across them.
+pub(crate) fn rank_words(query: &str, haystacks: &[String]) -> Vec<usize> {
+    rank(query, haystacks)
+        .into_iter()
+        .filter(|&index| {
+            haystacks
+                .get(index)
+                .is_some_and(|hay| matches_word_starts(query, hay))
+        })
+        .collect()
+}
+
+/// Whether `query` spells `hay` from word starts: "amend" finds "amend the
+/// last commit" and "rlc" finds "reword last commit". A space in the query
+/// makes the next letter open a word.
+fn matches_word_starts(query: &str, hay: &str) -> bool {
+    let hay: Vec<char> = hay.to_lowercase().chars().collect();
+    let mut letters = Vec::new();
+    let mut after_space = true;
+    for ch in query.to_lowercase().chars() {
+        if ch.is_whitespace() {
+            after_space = true;
+        } else {
+            letters.push((ch, after_space));
+            after_space = false;
+        }
+    }
+    let opens_word =
+        |at: usize| at == 0 || hay.get(at - 1).is_some_and(|prev| !prev.is_alphanumeric());
+    let mut failed = std::collections::HashSet::new();
+    spell(&letters, &hay, 0, None, &opens_word, &mut failed)
+}
+
+/// Whether `letters[next..]` can be matched in `hay` after position `prev`.
+fn spell(
+    letters: &[(char, bool)],
+    hay: &[char],
+    next: usize,
+    prev: Option<usize>,
+    opens_word: &dyn Fn(usize) -> bool,
+    failed: &mut std::collections::HashSet<(usize, Option<usize>)>,
+) -> bool {
+    let Some(&(letter, must_open)) = letters.get(next) else {
+        return true;
+    };
+    if failed.contains(&(next, prev)) {
+        return false;
+    }
+    let from = prev.map_or(0, |at| at + 1);
+    for (at, &ch) in hay.iter().enumerate().skip(from) {
+        let follows = prev.is_some_and(|p| p + 1 == at) && !must_open;
+        if ch == letter
+            && (follows || opens_word(at))
+            && spell(letters, hay, next + 1, Some(at), opens_word, failed)
+        {
+            return true;
+        }
+    }
+    failed.insert((next, prev));
+    false
 }
 
 /// The item the list's selection points at, through the current ranking.
@@ -228,6 +298,20 @@ mod tests {
         let ranked = rank("pus", &items);
         assert_eq!(ranked.first(), Some(&1));
         assert!(!ranked.contains(&2) || ranked[0] == 1);
+    }
+
+    #[test]
+    fn a_label_matches_only_from_word_starts() {
+        let items = hay(&[
+            "amend the last commit and edit its message",
+            "review all uncommitted changes",
+            "blame this file: see who last changed each line",
+            "reword the last commit's message",
+        ]);
+        assert_eq!(rank_words("amend", &items), vec![0]);
+        assert_eq!(rank_words("rlc", &items), vec![3], "initials of words");
+        assert_eq!(rank_words("last com", &items).len(), 2);
+        assert!(rank_words("xyz", &items).is_empty());
     }
 
     #[test]

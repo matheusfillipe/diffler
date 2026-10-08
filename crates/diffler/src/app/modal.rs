@@ -608,7 +608,7 @@ impl App {
                 }
             }
             FuzzyKey::Cancel => self.modal = None,
-            FuzzyKey::Edited => list.rerank(&haystack),
+            FuzzyKey::Edited => list.rerank_words(&haystack),
             _ => {}
         }
         Flow::Continue
