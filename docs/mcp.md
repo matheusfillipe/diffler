@@ -2,12 +2,12 @@
 
 While the TUI is running, diffler serves an MCP server at `127.0.0.1:{port}/mcp`
 (the live port is published to `.diffler/mcp.json`). An agent connects through it
-to read your review and respond. Without a daemon, the tools are only available
-while diffler is open.
+to read your review and respond. There is no background service, so the tools
+only work while diffler is open.
 
 ## Read
 
-- **review_status**: current review: repo, branch, changed files with their viewed marks, comment counts, the feedback epoch, and every walkthrough published in the repo (id, title, stop count, publish time), newest first, empty when none has been published. `corrupt_reviews` names any review file that failed to parse and was skipped, so a missing review or walkthrough reads as that rather than a clean repository.
+- **review_status**: the review you have open: repo, branch, changed files with their viewed marks, comment counts, the feedback counter `wait_for_feedback` takes, and every walkthrough published in the repo (id, title, stop count, publish time), newest first. `corrupt_reviews` lists any review file that could not be read and was skipped, so the agent knows a review is missing, not empty.
 - **get_diff**: unified diff of the working tree under review, optionally restricted to one file.
 - **get_comments**: comments across every review (working tree, commits, ranges, PRs, walkthroughs), each with its anchor, diff context, thread, and source; filterable by status (open, replied, resolved). A comment whose source starts with `walkthrough-` is feedback on that walkthrough.
 - **list_reviews**: every review you have (the working tree, individual commits, commit ranges, and walkthroughs) with comment counts, so the agent can tell where feedback came from.
@@ -33,11 +33,18 @@ while diffler is open.
   `add_comment`, keeping its status, replies, and anchor. Same refusals as
   `delete_comment` except the reply one, since editing never touches replies.
 - **reply_comment**: answer a comment in place; you see the reply immediately.
-- **propose_resolve**: mark a comment replied. Adds nothing to the thread, so an answered comment carries the answer alone; the note lands only when the agent has not replied to that comment. Only you resolve it, in the TUI.
+- **propose_resolve**: tell you a comment is dealt with, by marking it replied. Its optional note goes into the thread only when the agent has not replied there yet, so an answered comment keeps just the answer. Only you resolve it, in the TUI.
 - **mark_viewed**: mark a file viewed in the review you're currently looking at.
 - **report_activity**: say what the agent is doing right now, in a few words and optionally the file, in your status bar. Every other tool call already shows there on its own; the indicator clears 45 seconds after the last call.
-- **wait_for_feedback**: long-poll until you send feedback (a comment, reply, or the send key), then return the new epoch and all open/replied comments. A comment on a walkthrough stop is a reply on that stop's own comment, so its id names the stop. This is how the agent waits for its turn. It answers within 55 seconds; the agent polls again to wait longer.
-- **publish_walkthrough**: publish the agent's reading order for a change, one stop per real decision and as few as the change needs, as its own review, with its own comments and viewed and seen marks. It describes whichever review you have open right now (the working tree, or a commit, range, or PR diff), the way `review_status` already reports it, so no separate argument names it; revising it while looking at its own diff keeps whatever it already described. Pass `id` (from `review_status` or `get_walkthrough`) to revise that walkthrough in place; omit it to publish a new one of its own. Every stop becomes an agent comment you reply to in place; a stop's `notes` are its own extra remarks on other parts of the same region, each its own comment. A stop's `anchor` may be omitted to hang it on the walkthrough's own file, but that file has to come from somewhere real: another stop's anchor, or the open review's own first file. Whether given or borrowed, the anchor has to name a file that review can actually reach, one in its diff or one still readable on disk, and a note's own anchor has to stay in its stop's file. `summary` is the walkthrough's own overview: one short paragraph plus one diagram of the shape of the whole change (a `mermaid` flowchart, a `mermaid` `sequenceDiagram`, or a `callstack` tree), never a list of the stops; capped like a stop body and counted toward the walkthrough's total cap. On a revision, a stop or note that passes its `id` back keeps its comment and the thread on it; one whose id is left out is deleted. Every publish, a revision included, pins the walkthrough to the commit checked out at that moment, so its stops resolve against the code they describe even after the branch moves on. The reply carries the walkthrough's `id`, that `rev`, and validation receipts; a refusal (an anchor naming nothing real, or nothing at all to fall back on) names what to fix and republish, and nothing is stored while one stands.
+- **wait_for_feedback**: wait until you send feedback (a comment, a reply, or the send key), then return a new feedback counter and every open or replied comment. A comment on a walkthrough stop is a reply on that stop's own comment, so its id names the stop. This is how the agent waits for its turn. It answers within 55 seconds; the agent polls again to wait longer.
+- **publish_walkthrough**: publish the agent's reading order for a change: one stop per real decision, as few as the change needs. It becomes a review of its own, with its own comments and viewed and seen marks.
+  - **What it describes:** whichever review you have open right now (the working tree, or a commit, range or PR diff), as `review_status` reports it. Revising a walkthrough while looking at its own diff keeps what it already described.
+  - **New or revised:** pass `id` (from `review_status` or `get_walkthrough`) to revise that walkthrough in place; leave it out to publish a new one. On a revision, a stop or note that passes its own `id` back keeps its comment and thread; one left out is deleted.
+  - **Stops and notes:** every stop becomes an agent comment you reply to in place. A stop's `notes` are extra remarks on other parts of the same region, each its own comment, anchored in the stop's own file.
+  - **Anchors:** a stop's `anchor` may be left out to hang it on the walkthrough's file, taken from another stop's anchor or the open review's first file. Every anchor has to name a file the review can reach: one in its diff, or one still readable on disk.
+  - **Summary:** `summary` is one short paragraph plus one diagram of the whole change's shape (a `mermaid` flowchart, a `mermaid` `sequenceDiagram`, or a `callstack` tree), never a list of the stops. It is capped like a stop's text and counts toward the walkthrough's total cap.
+  - **Pinned:** every publish, a revision included, pins the walkthrough to the commit checked out at that moment, so its stops still show the code they describe after the branch moves on.
+  - **Reply:** the walkthrough's `id`, the pinned `rev`, and what was checked. A refusal (an anchor naming nothing real, or nothing to fall back on) says what to fix, and nothing is stored until it is fixed.
 
 ## Prompt
 

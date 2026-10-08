@@ -30,10 +30,10 @@ anchored inside it.
 | `u` | jump to the next unseen slide |
 | `r` | reply to the agent on the card under the cursor |
 | `c` | comment on the code the stop points at |
-| `e` | open that code in `$EDITOR` |
-| `o` | open the figure under the cursor as a graph you walk node by node |
+| `e` | open that code in your editor |
+| `o` | open the diagram under the cursor full screen, where you step through its nodes |
 | `d` | delete the stop under the cursor, or the whole walkthrough from the status screen |
-| `t` | cycle back to the file tree and the other sidebar layouts |
+| `t` | change how the sidebar is grouped, back to the file tree and the other layouts |
 
 Reply on a stop and the agent picks it up the same way it picks up any review
 comment: answer in its thread, or ask it to rewrite the walkthrough.
@@ -44,7 +44,7 @@ A walkthrough is a review of its own, stored in
 `.diffler/reviews/walkthrough-<id>.json` beside the working-tree, commit,
 range and pull-request reviews. Its comments and marks stay in it, so deleting
 every comment in the working-tree review leaves it untouched and nothing it
-holds is ever posted to a forge.
+holds is ever posted to GitHub, GitLab or Forgejo.
 
 It is pinned to the commit it was published against, so it still reads
 correctly after you switch branches: each stop's code is shown as it stood.
@@ -52,8 +52,8 @@ A stop whose file or symbol has since gone says so on its card.
 
 ## Diagrams
 
-A stop's body renders markdown, and a fence becomes a figure drawn in the
-terminal: a ```mermaid `flowchart`, a ```mermaid `sequenceDiagram`, or a
+A stop's text is markdown, and a code fence of the right kind becomes a
+diagram drawn in the terminal: a ```mermaid `flowchart`, a ```mermaid `sequenceDiagram`, or a
 ```callstack tree. Anything else in a mermaid fence is simplified, and the
 agent is told what was simplified so it can adjust.
 
