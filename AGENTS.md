@@ -784,7 +784,8 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   shell.
 - **PR review.** `ReviewSource::Pr{number}` keys review state on the PR number
   (survives pushes); the diff is `merge-base..head` via `Vcs::tree_diff`,
-  fetching `refs/pull/<n>/head` when the head isn't local: reviewing never
+  fetching the head when it isn't local, from the ref the forge serves it under
+  (`refs/pull/<n>/head`, or `refs/merge-requests/<n>/head` on GitLab): reviewing never
   needs a checkout. The branch's PR is a status row; `b p` lists all open PRs
   (Enter reviews, `b` checks out). Forge review comments sync into the session
   (`remote_id` marks forge-owned rows); local comments and replies post back

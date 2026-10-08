@@ -244,6 +244,20 @@ impl App {
     /// `git_finished` must not route an unrelated op's result into them.
     pub(crate) const PR_FETCH_PREFIX: &'static str = "fetch PR #";
 
+    /// The remote a PR's head is fetched from and the ref its forge serves
+    /// the head under.
+    pub(crate) fn pr_head_source(&self, number: u64) -> (String, String) {
+        self.ci_remotes.first().map_or_else(
+            || ("origin".to_owned(), format!("refs/pull/{number}/head")),
+            |remote| {
+                (
+                    remote.name.clone(),
+                    remote.detected.kind.pr_head_ref(number),
+                )
+            },
+        )
+    }
+
     pub(crate) fn pr_fetch_label(number: u64) -> String {
         format!("{}{number}", Self::PR_FETCH_PREFIX)
     }
@@ -259,6 +273,10 @@ impl App {
     }
 
     pub(crate) fn checkout_pr(&mut self, pr: &crate::ci::PullRequest) {
+        if self.head.branch.as_deref() == Some(pr.head_ref.as_str()) {
+            self.info(format!("already on {}", pr.head_ref));
+            return;
+        }
         // `gh pr checkout` runs git's own checkout, which jj would not see
         let github = self.review.vcs.native_git_checkout()
             && self
@@ -277,10 +295,7 @@ impl App {
             });
             return;
         }
-        let remote = self
-            .ci_remotes()
-            .first()
-            .map_or_else(|| "origin".to_owned(), |r| r.name.clone());
+        let (remote, head) = self.pr_head_source(pr.number);
         self.pending_pr_switch = Some(pr.head_ref.clone());
         self.pending_git = Some(super::GitOp {
             label: Self::pr_fetch_label(pr.number),
@@ -288,7 +303,7 @@ impl App {
                 "git".to_owned(),
                 "fetch".to_owned(),
                 remote,
-                format!("refs/pull/{}/head:refs/heads/{}", pr.number, pr.head_ref),
+                format!("{head}:refs/heads/{}", pr.head_ref),
             ],
         });
     }
@@ -916,6 +931,61 @@ mod tests {
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         app.dispatch_prs(crate::keymap::Action::CopyUrl);
         assert!(app.pending_clipboard.is_none());
+    }
+
+    #[test]
+    fn checking_out_the_pr_already_checked_out_says_so() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let branch = app.head.branch.clone().expect("on a branch");
+        app.prs = vec![crate::ci::PullRequest {
+            number: 2,
+            title: "this branch".into(),
+            url: None,
+            base_ref: "main".into(),
+            head_ref: branch.clone(),
+            head_oid: "0000000000000000000000000000000000000abc".into(),
+            author: "alice".into(),
+        }];
+        app.checkout_selected_pr();
+        assert!(app.pending_git.is_none(), "nothing to fetch");
+        assert_eq!(
+            app.message.as_ref().map(|m| m.text.clone()),
+            Some(format!("already on {branch}"))
+        );
+    }
+
+    /// GitLab serves a merge request's head under its own ref, so reviewing
+    /// one that isn't local fetches that ref from the GitLab remote.
+    #[test]
+    fn reviewing_a_gitlab_merge_request_fetches_its_own_head_ref() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.ci_remotes = vec![super::super::CiRemote {
+            name: "gitlab".into(),
+            detected: crate::ci::Detected {
+                kind: crate::ci::ProviderKind::GitLab,
+                host: Some("gitlab.example.com".into()),
+            },
+            url: None,
+        }];
+        app.prs = vec![crate::ci::PullRequest {
+            number: 3,
+            title: "remote only".into(),
+            url: None,
+            base_ref: "main".into(),
+            head_ref: "feat/remote".into(),
+            head_oid: "0000000000000000000000000000000000000abc".into(),
+            author: "alice".into(),
+        }];
+        app.dispatch_prs(crate::keymap::Action::Open);
+        let git = app.pending_git.take().expect("fetch queued");
+        assert_eq!(git.argv.get(2).map(String::as_str), Some("gitlab"));
+        assert!(
+            git.argv.iter().any(|a| a == "refs/merge-requests/3/head"),
+            "{:?}",
+            git.argv
+        );
     }
 
     #[test]

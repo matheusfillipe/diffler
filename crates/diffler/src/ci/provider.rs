@@ -18,6 +18,17 @@ pub enum ProviderKind {
     Forgejo,
 }
 
+impl ProviderKind {
+    /// The ref this forge serves a pull request's head under, which a plain
+    /// `git fetch` can name without a checkout.
+    pub fn pr_head_ref(self, number: u64) -> String {
+        match self {
+            ProviderKind::GitLab => format!("refs/merge-requests/{number}/head"),
+            ProviderKind::GitHub | ProviderKind::Forgejo => format!("refs/pull/{number}/head"),
+        }
+    }
+}
+
 impl std::fmt::Display for ProviderKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {

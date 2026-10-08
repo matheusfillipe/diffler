@@ -206,8 +206,9 @@ impl App {
     }
 
     /// Review the branch's open PR: diff `merge-base..head` under the stable
-    /// `pr-<n>` source. A head we don't have yet is fetched first (forges
-    /// serve `refs/pull/<n>/head`) and the open retries when the fetch lands.
+    /// `pr-<n>` source. A head we don't have yet is fetched first, from the
+    /// ref the forge serves it under, and the open retries when the fetch
+    /// lands.
     pub(crate) fn open_pr_review(&mut self) {
         let Some(pr) = self.pr.clone() else {
             self.info("no open PR detected for this branch");
@@ -236,11 +237,7 @@ impl App {
         if let Some(range) = self.resolve_pr_range(&pr) {
             return Some(range);
         }
-        let remote = self
-            .ci_remotes
-            .first()
-            .map_or_else(|| "origin".to_owned(), |r| r.name.clone());
-        let refspec = format!("refs/pull/{}/head", pr.number);
+        let (remote, refspec) = self.pr_head_source(pr.number);
         let base_ref = pr.base_ref.clone();
         let label = Self::pr_fetch_label(pr.number);
         self.pending_pr_open = Some(pr);
