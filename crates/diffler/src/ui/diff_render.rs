@@ -78,10 +78,14 @@ pub fn line_syntax<'a>(
     new: &'a [Vec<StyledRange>],
     line: &DiffLine,
 ) -> Option<&'a [StyledRange]> {
-    let (side, number) = match line.kind {
-        LineKind::Deleted => (old, line.old_no),
-        LineKind::Added | LineKind::Context => (new, line.new_no),
-    };
+    match line.kind {
+        LineKind::Deleted => syntax_row(old, line.old_no),
+        LineKind::Added | LineKind::Context => syntax_row(new, line.new_no),
+    }
+}
+
+/// One side's cached syntax for line `number`, counted from 1.
+pub fn syntax_row(side: &[Vec<StyledRange>], number: Option<u32>) -> Option<&[StyledRange]> {
     let index = usize::try_from(number?).ok()?.checked_sub(1)?;
     side.get(index).map(Vec::as_slice)
 }
@@ -703,7 +707,7 @@ impl Mark {
 }
 
 /// How far a lens use's background leans toward its symbol's colour.
-pub(super) const LENS_TINT: u16 = 40;
+const LENS_TINT: u16 = 40;
 
 /// Split the text at every syntax/emphasis range boundary and style each
 /// segment: foreground from the syntax span covering it, background from

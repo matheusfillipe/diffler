@@ -252,6 +252,11 @@ pub const REPLY_LANE: usize = 4;
 /// latest reply once it has more than this many.
 const FOLD_AFTER: usize = 2;
 
+/// Whether closing `comment`'s thread hides any of its replies.
+pub(super) fn thread_folds(comment: &Comment) -> bool {
+    comment.replies.len() > FOLD_AFTER
+}
+
 pub fn folded_replies_text(count: usize) -> String {
     if count == 1 {
         "▸ 1 earlier reply".to_owned()
@@ -287,7 +292,7 @@ pub fn comment_display(
         }
     }
     let replies = &comment.replies;
-    let folded = if open || replies.len() <= FOLD_AFTER {
+    let folded = if open || !thread_folds(comment) {
         0
     } else {
         replies.len() - 1
@@ -305,8 +310,8 @@ pub fn comment_display(
             authors,
         });
     }
-    // the lane indent takes its columns from every reply alike, so a reply
-    // wraps the same whichever side it sits on
+    // we wrap every reply to the narrower lane's width so a reply wraps the
+    // same in either lane
     let width = budget.saturating_sub(REPLY_LANE).max(8);
     for reply in replies.iter().skip(folded) {
         lines.push(CommentLine::ReplyGap);
@@ -429,10 +434,20 @@ pub(crate) struct CardViews<'a> {
 
 impl CardViews<'_> {
     pub(crate) fn lines(&self, comment: &Comment, wrap_width: u16) -> Vec<CommentLine> {
+        self.lines_with(comment, wrap_width, None)
+    }
+
+    /// [`Self::lines`] with code blocks highlighted, for drawing.
+    pub(crate) fn lines_with(
+        &self,
+        comment: &Comment,
+        wrap_width: u16,
+        highlighter: Option<&Highlighter>,
+    ) -> Vec<CommentLine> {
         comment_display(
             comment,
             wrap_width,
-            None,
+            highlighter,
             blocks_of(self.figures, &comment.id),
             self.unresolved_anchors.get(&comment.id).copied(),
             self.open_threads.contains(&comment.id),

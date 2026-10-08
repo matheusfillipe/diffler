@@ -2,12 +2,11 @@
 
 While the TUI is running, diffler serves an MCP server at `127.0.0.1:{port}/mcp`
 (the live port is published to `.diffler/mcp.json`). An agent connects through it
-to read your review and respond. There is no background service, so the tools
-only work while diffler is open.
+to read your review and respond. The tools work while diffler is open.
 
 ## Read
 
-- **review_status**: the review you have open: repo, branch, changed files with their viewed marks, comment counts, the feedback counter `wait_for_feedback` takes, and every walkthrough published in the repo (id, title, stop count, publish time), newest first. `corrupt_reviews` lists any review file that could not be read and was skipped, so the agent knows a review is missing, not empty.
+- **review_status**: the review you have open: repo, branch, changed files with their viewed marks, comment counts, the feedback counter `wait_for_feedback` takes, and every walkthrough published in the repo (id, title, stop count, publish time), newest first. `corrupt_reviews` lists any review file that could not be read and was skipped, so the agent knows that review is missing.
 - **get_diff**: unified diff of the working tree under review, optionally restricted to one file.
 - **get_comments**: comments across every review (working tree, commits, ranges, PRs, walkthroughs), each with its anchor, diff context, thread, and source; filterable by status (open, replied, resolved). A comment whose source starts with `walkthrough-` is feedback on that walkthrough.
 - **list_reviews**: every review you have (the working tree, individual commits, commit ranges, and walkthroughs) with comment counts, so the agent can tell where feedback came from.

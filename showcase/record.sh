@@ -4,12 +4,16 @@
 # the comments sidebar, so a theme is judged on everything it has to colour.
 set -euo pipefail
 
+# `--seed` records nothing, so only a recording run needs vhs
+tools=(cargo git python3)
+[[ "${1:-}" == "--seed" ]] || tools+=(vhs)
 missing=()
-for tool in cargo git python3 vhs; do
+for tool in "${tools[@]}"; do
     command -v "$tool" >/dev/null || missing+=("$tool")
 done
 if ((${#missing[@]})); then
-    echo "record.sh needs: ${missing[*]} (vhs: https://github.com/charmbracelet/vhs)" >&2
+    echo "record.sh needs: ${missing[*]}" >&2
+    [[ " ${missing[*]} " == *" vhs "* ]] && echo "vhs: https://github.com/charmbracelet/vhs" >&2
     exit 1
 fi
 

@@ -89,10 +89,7 @@ impl App {
             && let Some(diff) = self.diff.as_mut()
             && let Some(positions) = positions
         {
-            diff.held_positions = Some(positions);
-            diff.scroll_align = Some(super::ScrollAlign::Offset(diff.cursor_offset));
-            diff.mark_rows_dirty();
-            diff.ensure_rows(&self.review);
+            diff.rebuild_in_place(&self.review, positions);
         }
     }
 

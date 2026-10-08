@@ -148,10 +148,7 @@ impl App {
         let Some(lens) = diff.lens.as_ref() else {
             return Vec::new();
         };
-        let model = diff
-            .commit_model
-            .as_ref()
-            .unwrap_or_else(|| self.review.model());
+        let model = diff.model(&self.review);
         lens.view
             .refs
             .iter()
@@ -234,7 +231,10 @@ impl App {
             return;
         };
         let context = diff.context.get(&outcome.path).copied();
-        let positions = diff.capture_positions(&self.review);
+        // reinstalling an expansion reshapes the hunks under the cursor, so we
+        // name its line first, while the rows still match the old hunks
+        let positions = (context.is_some() && diff.rows_show(&outcome.path))
+            .then(|| diff.capture_positions(&self.review));
         let same = |file: &FileDiff| file.path == outcome.path && file.sides_hash() == outcome.hash;
         let file = match diff.commit_model.as_mut() {
             Some(model) => model.files.iter_mut().find(|f| same(f)),
@@ -266,12 +266,10 @@ impl App {
         }
         // fold detection and labels read the scope index that just landed,
         // so the file on screen rebuilds with it
-        if reshaped {
-            diff.held_positions.get_or_insert(positions);
-            diff.scroll_align = Some(super::ScrollAlign::Offset(diff.cursor_offset));
-        }
-        if reshaped || diff.rows_show(&outcome.path) {
-            diff.mark_rows_dirty();
+        match positions.filter(|_| reshaped) {
+            Some(positions) => diff.rebuild_in_place(&self.review, positions),
+            None if reshaped || diff.rows_show(&outcome.path) => diff.mark_rows_dirty(),
+            None => {}
         }
     }
 }

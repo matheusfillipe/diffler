@@ -248,7 +248,10 @@ impl App {
     /// the head under.
     pub(crate) fn pr_head_source(&self, number: u64) -> (String, String) {
         self.ci_remotes.first().map_or_else(
-            || ("origin".to_owned(), format!("refs/pull/{number}/head")),
+            || {
+                let head = crate::ci::ProviderKind::GitHub.pr_head_ref(number);
+                ("origin".to_owned(), head)
+            },
             |remote| {
                 (
                     remote.name.clone(),
@@ -273,7 +276,8 @@ impl App {
     }
 
     pub(crate) fn checkout_pr(&mut self, pr: &crate::ci::PullRequest) {
-        if self.head.branch.as_deref() == Some(pr.head_ref.as_str()) {
+        let up_to_date = !self.head.oid7.is_empty() && pr.head_oid.starts_with(&self.head.oid7);
+        if up_to_date && self.head.branch.as_deref() == Some(pr.head_ref.as_str()) {
             self.info(format!("already on {}", pr.head_ref));
             return;
         }
@@ -933,26 +937,45 @@ mod tests {
         assert!(app.pending_clipboard.is_none());
     }
 
-    #[test]
-    fn checking_out_the_pr_already_checked_out_says_so() {
-        let fixture = standard_fixture();
-        let mut app = App::new(fixture.review(), LoadedConfig::default());
-        let branch = app.head.branch.clone().expect("on a branch");
-        app.prs = vec![crate::ci::PullRequest {
+    fn this_branch_pr(app: &App, head_oid: String) -> crate::ci::PullRequest {
+        crate::ci::PullRequest {
             number: 2,
             title: "this branch".into(),
             url: None,
             base_ref: "main".into(),
-            head_ref: branch.clone(),
-            head_oid: "0000000000000000000000000000000000000abc".into(),
+            head_ref: app.head.branch.clone().expect("on a branch"),
+            head_oid,
             author: "alice".into(),
-        }];
+        }
+    }
+
+    #[test]
+    fn checking_out_the_pr_already_checked_out_says_so() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let head = app.review.vcs.resolve("HEAD").expect("a head commit");
+        app.prs = vec![this_branch_pr(&app, head)];
         app.checkout_selected_pr();
         assert!(app.pending_git.is_none(), "nothing to fetch");
+        let branch = app.head.branch.clone().expect("on a branch");
         assert_eq!(
             app.message.as_ref().map(|m| m.text.clone()),
             Some(format!("already on {branch}"))
         );
+    }
+
+    /// A PR from a fork's branch of the same name, or one with newer commits,
+    /// shares the branch name but not the commit, so it still checks out.
+    #[test]
+    fn a_pr_on_a_branch_of_the_same_name_but_another_commit_still_checks_out() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.prs = vec![this_branch_pr(
+            &app,
+            "0000000000000000000000000000000000000abc".to_owned(),
+        )];
+        app.checkout_selected_pr();
+        assert!(app.pending_git.is_some(), "the PR head is fetched");
     }
 
     /// GitLab serves a merge request's head under its own ref, so reviewing

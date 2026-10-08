@@ -271,8 +271,8 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   closed thread folds the replies between its first comment and its latest
   reply into one `▸ N earlier replies` row once it has more than two, and
   always shows the latest reply in full; `tab`/`za` on any of its rows
-  opens it (`DiffView::open_threads`, read by `comment_display` so the row
-  count and the drawing agree). Comments,
+  opens it (`DiffView::open_threads`, read through `CardViews` by both the
+  row build and the drawing, so the two agree; `thread_folds` is the rule). Comments,
   replies and edits are written in place: the composer occupies the rows the
   finished card will, under the anchored line, at the top of the file for a
   whole-file comment, under the thread for a reply. `<c-g>` there, and in the

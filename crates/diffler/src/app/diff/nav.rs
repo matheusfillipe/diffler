@@ -332,19 +332,16 @@ impl App {
     /// the folded hunk under it.
     fn diff_toggle_fold(&mut self) {
         let review = &self.review;
-        if self
-            .diff
-            .as_mut()
-            .is_some_and(|diff| diff.toggle_thread_at_cursor(review))
-        {
-            return;
-        }
         let toggled = self
             .diff
             .as_mut()
-            .is_some_and(|diff| diff.toggle_fold_at_cursor(review));
+            .is_some_and(|diff| diff.toggle_thread_at_cursor(review))
+            || self
+                .diff
+                .as_mut()
+                .is_some_and(|diff| diff.toggle_fold_at_cursor(review));
         if !toggled {
-            self.info("move onto a hunk to fold it");
+            self.info("move onto a hunk or a comment thread to fold it");
             return;
         }
         if let Some(diff) = self.diff.as_mut() {

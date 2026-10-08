@@ -22,8 +22,8 @@ use crate::app::rowsel::RowSelect;
 use crate::app::walkthrough::{Block as WalkthroughBlock, stop_title, summary_figure_key};
 use crate::app::{
     App, CommentFacts, CommentGrouping, CommentLine, CommentPaneRow, DiffRow, DiffView,
-    FileHighlights, FileScope, Pane, RowCopy, SplitRow, SplitSide, comment_display,
-    group_comment_rows, summary_display,
+    FileHighlights, FileScope, Pane, RowCopy, SplitRow, SplitSide, group_comment_rows,
+    summary_display,
 };
 use crate::config::FileLayout;
 use crate::keymap::Action;
@@ -34,7 +34,7 @@ use crate::ui::Hint;
 use crate::ui::diff_render::{
     LineFlags, Mark, PairSelection, align_scroll, card_frame, cursor_band, diff_line_height,
     file_gutter_width, fold_row, hunk_header, line_syntax, render_diff_line, render_split_pair,
-    split_pair_height,
+    split_pair_height, syntax_row,
 };
 use crate::ui::{diffstat_spans, proportion_bar, status_bar, status_color};
 
@@ -98,6 +98,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         // below, so each renderer that needs them reads `diff.context_files`
         // directly instead (a fresh, disjoint borrow of its own parameter).
         let review_model = (diff.commit_model.is_none()).then(|| review.model());
+        let author_orders = pane_author_orders(
+            session,
+            diff.commit_model.as_ref().or(review_model),
+            human_author,
+        );
         let ctx = RenderCtx {
             theme,
             session,
@@ -107,6 +112,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             human_author,
             rasters: &rasters,
             algorithm,
+            author_orders,
         };
         draw_body(frame, body, &ctx, diff);
     }
@@ -136,6 +142,9 @@ struct RenderCtx<'a> {
     /// The session's current line-diff algorithm, named in the pane heading
     /// when it isn't the default.
     algorithm: diffler_core::diffalgo::DiffAlgorithm,
+    /// Each author's colour step, from [`pane_author_orders`], shared by the
+    /// comments sidebar and the threads in the diff.
+    author_orders: HashMap<&'a str, usize>,
 }
 
 /// The rendered rows of every figure a card draws, by the card's figure-cache
@@ -283,13 +292,7 @@ fn reference_block(look: BlockLook<'_>, entry: &RefEntry) -> Vec<Line<'static>> 
         width,
         syntax,
     } = look;
-    // a code block reads as code against the sidebar's own surface
-    let block = crate::theme::blend(surface, theme.fg, 6);
-    let bg = if selected {
-        cursor_band(theme, block, focused)
-    } else {
-        block
-    };
+    let (bg, _) = card_frame(theme, selected, focused, color);
     let margin = Span::styled("  ".to_owned(), Style::new().bg(surface));
     let bar = Span::styled("▌ ".to_owned(), Style::new().fg(color).bg(bg));
     let indent = entry
@@ -322,7 +325,7 @@ fn reference_block(look: BlockLook<'_>, entry: &RefEntry) -> Vec<Line<'static>> 
                 } else {
                     &highlights.new
                 };
-                side.get(usize::try_from(line.number?).ok()?.checked_sub(1)?)
+                syntax_row(side, line.number)
             })
             .map(|ranges| {
                 ranges
@@ -335,7 +338,6 @@ fn reference_block(look: BlockLook<'_>, entry: &RefEntry) -> Vec<Line<'static>> 
                     .collect()
             })
             .unwrap_or_default();
-        let tint = crate::theme::blend(bg, color, super::diff_render::LENS_TINT);
         let marks = if own {
             vec![(shift(&entry.range), Mark::Lens(color))]
         } else {
@@ -348,7 +350,7 @@ fn reference_block(look: BlockLook<'_>, entry: &RefEntry) -> Vec<Line<'static>> 
             Span::styled(mark, Style::new().fg(mark_fg).bg(bg)),
         ];
         let code_spans =
-            super::diff_render::composite_spans(theme, &text, &[], Some(&spans), bg, tint, &marks);
+            super::diff_render::composite_spans(theme, &text, &[], Some(&spans), bg, bg, &marks);
         row.extend(code_spans.into_iter().map(|span| {
             if own {
                 span
@@ -623,8 +625,7 @@ fn draw_comments(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &
     );
     diff.comments_rect = inner;
 
-    let (mut lines, owners, cursor_line) =
-        comment_pane_lines(ctx, diff, &rows, &ordered, inner, focused);
+    let (mut lines, owners, cursor_line) = comment_pane_lines(ctx, diff, &rows, inner, focused);
     diff.comment_lines = owners;
     if lines.is_empty() {
         let dim = Style::new().fg(theme.dim).bg(surface);
@@ -651,7 +652,6 @@ fn comment_pane_lines(
     ctx: &RenderCtx<'_>,
     diff: &DiffView,
     rows: &[CommentPaneRow],
-    ordered: &[(&diffler_core::session::Comment, bool)],
     inner: Rect,
     focused: bool,
 ) -> (Vec<Line<'static>>, Vec<Option<usize>>, usize) {
@@ -664,10 +664,7 @@ fn comment_pane_lines(
     // a flat list has no header to nest items under; every other grouping
     // indents its items one level, the way a file indents under its directory
     let item_depth = usize::from(diff.comment_grouping != CommentGrouping::Flat);
-    let orders = author_orders(
-        ordered.iter().map(|(comment, _)| comment.author.as_str()),
-        ctx.human_author,
-    );
+    let orders = &ctx.author_orders;
     let mut cursor_line = 0usize;
     for (row_index, row) in rows.iter().enumerate() {
         let on_cursor = row_index == diff.comments_cursor;
@@ -743,15 +740,19 @@ fn ordered_comments<'a>(
     ctx: &'a RenderCtx<'_>,
     diff: &DiffView,
 ) -> Vec<(&'a diffler_core::session::Comment, bool)> {
+    comments_in_order(ctx.session, diff.commit_model.as_ref().or(ctx.review_model))
+}
+
+fn comments_in_order<'a>(
+    session: &'a Session,
+    model: Option<&DiffModel>,
+) -> Vec<(&'a diffler_core::session::Comment, bool)> {
     let rank = |path: &str| {
-        diff.commit_model
-            .as_ref()
-            .or(ctx.review_model)
+        model
             .and_then(|model| model.files.iter().position(|file| file.path == path))
             .unwrap_or(usize::MAX)
     };
-    let mut ordered: Vec<(&diffler_core::session::Comment, usize)> = ctx
-        .session
+    let mut ordered: Vec<(&diffler_core::session::Comment, usize)> = session
         .comments
         .iter()
         .map(|comment| (comment, rank(&comment.anchor.file)))
@@ -871,6 +872,28 @@ fn author_orders<'a>(
         orders.entry(author).or_insert(next);
     }
     orders
+}
+
+/// Every author's colour step for one frame: the comment authors in the
+/// sidebar's order first, so the sidebar reads as it always has, then anyone
+/// who only replied.
+fn pane_author_orders<'a>(
+    session: &'a Session,
+    model: Option<&DiffModel>,
+    human_author: &str,
+) -> HashMap<&'a str, usize> {
+    let roots = comments_in_order(session, model);
+    let repliers = session
+        .comments
+        .iter()
+        .flat_map(|comment| comment.replies.iter().map(|reply| reply.author.as_str()));
+    author_orders(
+        roots
+            .iter()
+            .map(|(comment, _)| comment.author.as_str())
+            .chain(repliers),
+        human_author,
+    )
 }
 
 /// An author's colour: fixed for the two names that never move (the human
@@ -1540,12 +1563,10 @@ fn split_side_syntax<'a>(
     line: &DiffLine,
     side: SplitSide,
 ) -> Option<&'a [StyledRange]> {
-    let (column, number) = match side {
-        SplitSide::Left => (&highlights.old, line.old_no),
-        SplitSide::Right => (&highlights.new, line.new_no),
-    };
-    let index = usize::try_from(number?).ok()?.checked_sub(1)?;
-    column.get(index).map(Vec::as_slice)
+    match side {
+        SplitSide::Left => syntax_row(&highlights.old, line.old_no),
+        SplitSide::Right => syntax_row(&highlights.new, line.new_no),
+    }
 }
 
 /// Diff-pane title: a plain "Diff" for the working tree or a single commit, a
@@ -2111,23 +2132,12 @@ struct ThreadLook<'a> {
     theme: &'a Theme,
     bg: Color,
     human: &'a str,
-    comment: &'a Comment,
+    orders: &'a HashMap<&'a str, usize>,
 }
 
 impl ThreadLook<'_> {
     fn color(&self, author: &str) -> Color {
-        let mut authors: Vec<&str> = Vec::new();
-        for name in std::iter::once(self.comment.author.as_str()).chain(
-            self.comment
-                .replies
-                .iter()
-                .map(|reply| reply.author.as_str()),
-        ) {
-            if !authors.contains(&name) {
-                authors.push(name);
-            }
-        }
-        let order = authors.iter().position(|name| *name == author).unwrap_or(0);
+        let order = self.orders.get(author).copied().unwrap_or(0);
         author_color(self.theme, self.bg, self.human, author, order)
     }
 
@@ -2222,17 +2232,10 @@ fn comment_row_line(
     let (bg, bar) = card_frame(theme, state.selected, state.focused, accent);
     let dim = Style::new().fg(theme.dim).bg(bg);
     let fg = Style::new().fg(theme.fg).bg(bg);
-    let blocks = crate::app::blocks_of(&diff.figures, &comment.id);
     let unresolved = diff.unresolved_anchors.get(&comment.id).copied();
-    let open = diff.open_threads.contains(&comment.id);
-    let lines = comment_display(
-        comment,
-        width,
-        Some(ctx.highlighter),
-        blocks,
-        unresolved,
-        open,
-    );
+    let lines = diff
+        .card_views()
+        .lines_with(comment, width, Some(ctx.highlighter));
     let Some(part) = lines.get(line) else {
         return Line::default();
     };
@@ -2240,7 +2243,7 @@ fn comment_row_line(
         theme,
         bg,
         human: ctx.human_author,
-        comment,
+        orders: &ctx.author_orders,
     };
     let spans = match part {
         CommentLine::Header => {
@@ -2299,8 +2302,8 @@ fn comment_row_line(
         | CommentLine::ReplyHead { .. }
         | CommentLine::Reply { .. }
         | CommentLine::FoldedReplies { .. } => {
-            // the reply's own bar stands in for the card's, so the two never
-            // draw side by side
+            // each reply draws its own bar, so we leave a blank margin where
+            // the card's bar would go
             let margin = Span::styled("  ".to_owned(), Style::new().bg(bg));
             thread.reply_spans(part, margin)
         }
@@ -2547,6 +2550,37 @@ mod tests {
         let text = line_text(&reference_header(&theme, theme.bg, 38, path, 3));
         assert!(text.contains("…"), "{text}");
         assert!(text.contains("test_zoning_plan_search.py (3)"), "{text}");
+    }
+
+    /// Comment authors keep the order the comments sidebar gives them, and an
+    /// author who only replied steps after them, so a reply's colour in the
+    /// diff matches the sidebar's.
+    #[test]
+    fn reply_authors_step_after_comment_authors() {
+        let mut session = diffler_core::session::Session::default();
+        let anchor = diffler_core::session::Anchor {
+            file: "a.rs".to_owned(),
+            line: Some(1),
+            line_end: None,
+            on_old_side: false,
+            line_text: None,
+        };
+        let id = session
+            .add_comment(anchor.clone(), "alice", "one")
+            .id
+            .clone();
+        session.add_comment(anchor, "bob", "two");
+        session.reply(&id, "carol", "three");
+        session.reply(&id, "agent", "four");
+        let orders = super::pane_author_orders(&session, None, "reviewer");
+        assert_eq!(orders.get("alice"), Some(&0));
+        assert_eq!(orders.get("bob"), Some(&1));
+        assert_eq!(orders.get("carol"), Some(&2));
+        assert_eq!(
+            orders.get("agent"),
+            None,
+            "the agent keeps its fixed colour"
+        );
     }
 
     /// The human and the agent never move, so the reader looks for those two

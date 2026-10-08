@@ -34,7 +34,7 @@ pub use rows::{
     CommentLine, DiffRow, REPLY_LANE, RowCopy, SplitRow, SplitSide, blocks_of, comment_display,
     folded_replies_text, summary_display,
 };
-use rows::{build_rows, build_split_rows};
+use rows::{build_rows, build_split_rows, thread_folds};
 #[cfg(test)]
 pub(crate) use slide::merge_count;
 use slide::stop_file_index;
@@ -179,10 +179,6 @@ pub struct DiffView {
     /// How many screen lines below the top the cursor's line sat in the last
     /// frame, so a rebuild can put it back on the same screen row.
     pub(crate) cursor_offset: usize,
-    /// Positions a caller named before swapping this view's hunks, which the
-    /// next row rebuild restores in place of reading its own from rows that
-    /// no longer match the model.
-    pub(crate) held_positions: Option<rowref::RowPositions>,
     /// Comment threads the reader opened, by comment id: an open thread shows
     /// every reply in full.
     pub(crate) open_threads: HashSet<String>,
@@ -314,7 +310,6 @@ impl DiffView {
             scroll: 0,
             scroll_align: None,
             cursor_offset: 0,
-            held_positions: None,
             open_threads: HashSet::new(),
             side_by_side,
             split_scroll: 0,
@@ -543,10 +538,7 @@ impl DiffView {
         // name what the cursor, the visual anchor and the banded span sit on
         // now, while `self.rows` still holds the list they were seated
         // against, so they can be found again once it is rebuilt
-        let positions = self
-            .held_positions
-            .take()
-            .unwrap_or_else(|| self.capture_positions(review));
+        let positions = self.capture_positions(review);
         let (rows, copy) = build_rows(
             model,
             session,
@@ -998,7 +990,38 @@ impl DiffView {
         Some(at)
     }
 
-    /// The row showing the model line (hunk, line), or the fold row hiding it.
+    /// Rebuild the rows after this view's hunks changed, from `positions`
+    /// captured before the change, and keep the cursor's line on the screen
+    /// row it sat on.
+    pub(crate) fn rebuild_in_place(&mut self, review: &Review, positions: RowPositions) {
+        self.mark_rows_dirty();
+        self.ensure_rows(review);
+        self.restore_positions(review, positions);
+        self.scroll_align = Some(ScrollAlign::Offset(self.cursor_offset));
+    }
+
+    /// Open or close the thread of the comment under the cursor, when closing
+    /// it hides something.
+    pub(crate) fn toggle_thread_at_cursor(&mut self, review: &Review) -> bool {
+        let Some(DiffRow::Comment { comment, .. }) = self.rows.get(self.cursor).copied() else {
+            return false;
+        };
+        let session = review.session_for(&self.source);
+        let Some(card) = session
+            .comments
+            .get(comment)
+            .filter(|card| thread_folds(card))
+        else {
+            return false;
+        };
+        let id = card.id.clone();
+        if !self.open_threads.remove(&id) {
+            self.open_threads.insert(id);
+        }
+        self.mark_rows_dirty();
+        true
+    }
+
     pub(crate) fn card_views(&self) -> rows::CardViews<'_> {
         rows::CardViews {
             figures: &self.figures,
@@ -1007,50 +1030,7 @@ impl DiffView {
         }
     }
 
-    /// Open or close the thread of the comment under the cursor, when closing
-    /// it hides something. A closed thread keeps the cursor on its card.
-    pub(crate) fn toggle_thread_at_cursor(&mut self, review: &Review) -> bool {
-        let Some(DiffRow::Comment { comment, .. }) = self.rows.get(self.cursor).copied() else {
-            return false;
-        };
-        let session = review.session_for(&self.source);
-        let Some(card) = session.comments.get(comment) else {
-            return false;
-        };
-        let id = card.id.clone();
-        if !self.open_threads.remove(&id) {
-            let views = self.card_views();
-            let closed = views.lines(card, self.wrap_width).len();
-            let open = comment_display(
-                card,
-                self.wrap_width,
-                None,
-                blocks_of(&self.figures, &id),
-                self.unresolved_anchors.get(&id).copied(),
-                true,
-            )
-            .len();
-            if closed == open {
-                return false;
-            }
-            self.open_threads.insert(id);
-        }
-        self.mark_rows_dirty();
-        self.ensure_rows(review);
-        let on_card = matches!(
-            self.rows.get(self.cursor),
-            Some(DiffRow::Comment { comment: at, .. }) if *at == comment
-        );
-        if !on_card
-            && let Some(first) = self.rows.iter().position(
-                |row| matches!(row, DiffRow::Comment { comment: at, .. } if *at == comment),
-            )
-        {
-            self.cursor = first;
-        }
-        true
-    }
-
+    /// The row showing the model line (hunk, line), or the fold row hiding it.
     pub(crate) fn row_of_line(&self, (hunk, line): (usize, usize)) -> Option<usize> {
         let shown = self.rows.iter().position(
             |row| matches!(*row, DiffRow::Line { hunk: h, line: l, .. } if h == hunk && l == line),
