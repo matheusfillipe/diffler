@@ -116,6 +116,19 @@ pub enum Action {
     Palette,
     Quit,
     Back,
+    NextTab,
+    PrevTab,
+    AddProject,
+    CloseTab,
+    GoTab1,
+    GoTab2,
+    GoTab3,
+    GoTab4,
+    GoTab5,
+    GoTab6,
+    GoTab7,
+    GoTab8,
+    GoTab9,
 }
 
 impl Action {
@@ -224,6 +237,19 @@ impl Action {
             Self::Palette => "palette",
             Self::Quit => "quit",
             Self::Back => "back",
+            Self::NextTab => "next_tab",
+            Self::PrevTab => "prev_tab",
+            Self::AddProject => "add_project",
+            Self::CloseTab => "close_tab",
+            Self::GoTab1 => "tab_1",
+            Self::GoTab2 => "tab_2",
+            Self::GoTab3 => "tab_3",
+            Self::GoTab4 => "tab_4",
+            Self::GoTab5 => "tab_5",
+            Self::GoTab6 => "tab_6",
+            Self::GoTab7 => "tab_7",
+            Self::GoTab8 => "tab_8",
+            Self::GoTab9 => "tab_9",
         }
     }
 
@@ -334,10 +360,23 @@ impl Action {
             Self::Palette => "search all commands",
             Self::Quit => "quit",
             Self::Back => "go back",
+            Self::NextTab => "switch to the next project",
+            Self::PrevTab => "switch to the previous project",
+            Self::AddProject => "add a project as a tab",
+            Self::CloseTab => "close this project",
+            Self::GoTab1 => "switch to project tab 1",
+            Self::GoTab2 => "switch to project tab 2",
+            Self::GoTab3 => "switch to project tab 3",
+            Self::GoTab4 => "switch to project tab 4",
+            Self::GoTab5 => "switch to project tab 5",
+            Self::GoTab6 => "switch to project tab 6",
+            Self::GoTab7 => "switch to project tab 7",
+            Self::GoTab8 => "switch to project tab 8",
+            Self::GoTab9 => "switch to project tab 9",
         }
     }
 
-    pub(crate) const ALL: [Self; 101] = [
+    pub(crate) const ALL: [Self; 114] = [
         Self::CenterCursor,
         Self::CursorTop,
         Self::CursorBottom,
@@ -439,6 +478,19 @@ impl Action {
         Self::Palette,
         Self::Quit,
         Self::Back,
+        Self::NextTab,
+        Self::PrevTab,
+        Self::AddProject,
+        Self::CloseTab,
+        Self::GoTab1,
+        Self::GoTab2,
+        Self::GoTab3,
+        Self::GoTab4,
+        Self::GoTab5,
+        Self::GoTab6,
+        Self::GoTab7,
+        Self::GoTab8,
+        Self::GoTab9,
     ];
 
     fn from_name(name: &str) -> Option<Self> {
@@ -462,6 +514,8 @@ pub enum Context {
     File,
     /// The language breakdown.
     Stats,
+    /// The project tabs, reached from every screen.
+    Tabs,
 }
 
 /// Outcome of feeding one key press into a keymap.
@@ -708,6 +762,22 @@ const PRS_DEFAULTS: &[(&str, Action)] = &[
     ("q", Action::Back),
 ];
 
+const TABS_DEFAULTS: &[(&str, Action)] = &[
+    ("<a-l>", Action::NextTab),
+    ("<a-h>", Action::PrevTab),
+    ("<a-n>", Action::AddProject),
+    ("<a-w>", Action::CloseTab),
+    ("<a-1>", Action::GoTab1),
+    ("<a-2>", Action::GoTab2),
+    ("<a-3>", Action::GoTab3),
+    ("<a-4>", Action::GoTab4),
+    ("<a-5>", Action::GoTab5),
+    ("<a-6>", Action::GoTab6),
+    ("<a-7>", Action::GoTab7),
+    ("<a-8>", Action::GoTab8),
+    ("<a-9>", Action::GoTab9),
+];
+
 const STATS_DEFAULTS: &[(&str, Action)] = &[
     ("j", Action::MoveDown),
     ("k", Action::MoveUp),
@@ -757,6 +827,7 @@ impl Keymap {
             Context::Prs => (PRS_DEFAULTS, NO_PREFIXES, &keys.prs, "prs"),
             Context::File => (FILE_DEFAULTS, NO_PREFIXES, &keys.file, "file"),
             Context::Stats => (STATS_DEFAULTS, NO_PREFIXES, &keys.stats, "stats"),
+            Context::Tabs => (TABS_DEFAULTS, NO_PREFIXES, &keys.tabs, "tabs"),
         };
         let mut keymap = Self {
             // defaults are static strings validated by tests; a default that

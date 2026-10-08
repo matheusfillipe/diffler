@@ -21,6 +21,7 @@ diff and reply right there, while you watch it fix the code.
 - Comment on lines and ranges, mark files as viewed
 - Review pull requests without checking them out
 - Let your agent answer your comments and walk you through its changes (optional)
+- Open several projects as tabs; your agent sees all of them through one connection
 - Works in git and jj repos
 - Shows changed images right in the terminal, before and after
 
@@ -228,6 +229,9 @@ full keymap of the screen you're on, and `<c-k>` fuzzy-finds any action.
 | `C` | open the comments list |
 | `S` | submit PR comments as one review |
 | `gf` | open any file in the repo |
+| `alt-n` | open another project as a tab |
+| `alt-h` / `alt-l` | previous / next project tab (`alt-1`-`alt-9` jumps to one) |
+| `alt-w` | close this project tab |
 | `B` | blame: see who last changed each line |
 | `e` | open the file in your editor |
 | `q` | back / quit |

@@ -8,6 +8,9 @@ Check the diffler review and respond to the human's feedback:
    `publish_walkthrough` first (see /dfa), then continue. `review_status`
    names the `repo`; if it is not the repository you mean, call
    `list_instances`, then `use_instance` with that repo, and start over.
+   If you changed files in another git repository, call `open_project` with
+   its path, so the human reviews it as a tab beside this one; `projects`
+   lists the ones already open.
 2. Call `get_comments` with status "open" and read each comment in place.
    Each carries a `source`: the human's review comments on the diff itself
    carry the diff's own source, while one starting `walkthrough-` is feedback

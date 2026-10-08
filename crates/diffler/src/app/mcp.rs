@@ -16,9 +16,9 @@ use diffler_core::walkthrough::{
 use super::App;
 use crate::mcp::{
     AGENT_AUTHOR, CommentInfo, FileEntry, McpRequestKind, McpResponse, NoteInfo, NoteParams,
-    ReceiptInfo, ReviewStatusResponse, ReviewSummary, StopInfo, StopParams, WalkthroughInfo,
-    WalkthroughPublished, WalkthroughSummary, comment_info, comment_status_name, file_status_name,
-    render_unified,
+    ProjectInfo, ReceiptInfo, ReviewStatusResponse, ReviewSummary, StopInfo, StopParams,
+    WalkthroughInfo, WalkthroughPublished, WalkthroughSummary, comment_info, comment_status_name,
+    file_status_name, render_unified,
 };
 
 impl App {
@@ -65,6 +65,9 @@ impl App {
                 Err(err) => McpResponse::Error(err),
             },
             McpRequestKind::ReportActivity { .. } => McpResponse::Ok,
+            McpRequestKind::OpenProject { .. } => {
+                McpResponse::Error("only the workspace holding the tabs opens a project".to_owned())
+            }
         }
     }
 
@@ -72,7 +75,7 @@ impl App {
     /// indicator to the agent's own words, and every other call maps itself
     /// to a plain phrase, so a quiet stretch between calls never reads as
     /// idle just because the agent didn't say anything extra.
-    fn record_mcp_activity(&mut self, kind: &McpRequestKind) {
+    pub(crate) fn record_mcp_activity(&mut self, kind: &McpRequestKind) {
         let (focus, file): (&str, Option<&str>) = match kind {
             McpRequestKind::ReportActivity { focus, file } => (focus, file.as_deref()),
             McpRequestKind::ReviewStatus => ("checking the review", None),
@@ -88,6 +91,7 @@ impl App {
             McpRequestKind::Feedback => ("reading feedback", None),
             McpRequestKind::PublishWalkthrough { .. } => ("publishing a walkthrough", None),
             McpRequestKind::GetWalkthrough { .. } => ("reading the walkthrough", None),
+            McpRequestKind::OpenProject { .. } => ("opening a project", None),
         };
         self.set_agent_activity(focus, file);
     }
@@ -117,12 +121,7 @@ impl App {
             .map(|name| name.to_string_lossy().into_owned())
             .collect();
         ReviewStatusResponse {
-            repo: self
-                .review
-                .repo_root
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_default(),
+            repo: self.project_name(),
             branch: self.head.branch.clone(),
             oid7: self.head.oid7.clone(),
             files_changed,
@@ -133,7 +132,48 @@ impl App {
             reviews: self.review_summaries(),
             walkthroughs: self.walkthrough_summaries(),
             corrupt_reviews,
+            projects: Vec::new(),
         }
+    }
+
+    /// The name an agent passes as `project`: the repository's folder name.
+    pub(crate) fn project_name(&self) -> String {
+        self.review
+            .repo_root
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    }
+
+    /// This repository as one project tab, counting the comments across
+    /// every one of its reviews.
+    pub(crate) fn project_info(&self, active: bool) -> ProjectInfo {
+        let (open, replied) =
+            self.review_summaries()
+                .iter()
+                .fold((0, 0), |(open, replied), review| {
+                    (
+                        open + review.open_comments,
+                        replied + review.replied_comments,
+                    )
+                });
+        ProjectInfo {
+            name: self.project_name(),
+            root: self.review.repo_root.display().to_string(),
+            active,
+            open_comments: open,
+            replied_comments: replied,
+        }
+    }
+
+    /// Whether a comment or a walkthrough with `id` lives in this repository.
+    pub(crate) fn owns_id(&self, id: &str) -> bool {
+        self.review.all_reviews().is_ok_and(|reviews| {
+            reviews.iter().any(|(source, session)| {
+                matches!(source, ReviewSource::Walkthrough { id: own } if own == id)
+                    || session.comments.iter().any(|comment| comment.id == id)
+            })
+        })
     }
 
     /// Every walkthrough on disk, newest published first.
@@ -402,6 +442,7 @@ impl App {
                     .as_ref()
                     .map_or_else(|| source.label(), |w| w.title.clone());
                 ReviewSummary {
+                    project: None,
                     source: source.key(),
                     label,
                     open_comments: open,
@@ -3116,6 +3157,7 @@ mod tests {
                 skipped: None,
                 summary: None,
             },
+            project: None,
             reply,
         }));
         assert_eq!(flow, crate::app::Flow::Continue);

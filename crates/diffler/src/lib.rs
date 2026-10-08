@@ -21,3 +21,4 @@ pub mod transient;
 pub mod tree;
 pub mod ui;
 pub mod watch;
+pub mod workspace;

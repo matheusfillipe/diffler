@@ -268,14 +268,10 @@ fn shape(composer: &Composer, width: u16) -> (usize, usize) {
     (lines.len(), caret)
 }
 
-/// The widest a card's text runs, however wide the pane is, so a long
-/// comment reads at a comfortable line length.
-pub const CARD_MEASURE: usize = 90;
-
 /// Text cells a comment card has after its `"  ▌ "` bar, matching
 /// [`crate::app::diff::comment_display`] so a draft and its result wrap alike.
 pub fn card_budget(row_width: u16) -> usize {
-    (row_width.saturating_sub(4) as usize).clamp(8, CARD_MEASURE)
+    (row_width.saturating_sub(4) as usize).max(8)
 }
 
 /// Break `buffer` into visual rows of at most `budget` columns, splitting on
@@ -329,12 +325,17 @@ fn wrap_rows(buffer: &str, budget: usize) -> Vec<WrappedRow> {
         for character in paragraph.chars() {
             let cell = character.width().unwrap_or(0);
             if width + cell > budget && !text.is_empty() {
+                // we break after the row's last space, the way a finished
+                // card wraps, and keep every character so the caret maps back
+                let kept = text.rfind(' ').map_or(text.len(), |at| at + 1);
+                let carry = text.split_off(kept);
+                let row_start = start;
+                start += text.chars().count();
                 rows.push(WrappedRow {
-                    text: std::mem::take(&mut text),
-                    start,
+                    text: std::mem::replace(&mut text, carry),
+                    start: row_start,
                 });
-                width = 0;
-                start = index;
+                width = text.chars().map(|c| c.width().unwrap_or(0)).sum();
             }
             text.push(character);
             width += cell;
@@ -348,6 +349,17 @@ fn wrap_rows(buffer: &str, budget: usize) -> Vec<WrappedRow> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_draft_wraps_between_words_and_keeps_every_character() {
+        let rows = wrap_rows("one two three four", 9);
+        let texts: Vec<&str> = rows.iter().map(|row| row.text.as_str()).collect();
+        assert_eq!(texts, ["one two ", "three ", "four"]);
+        let starts: Vec<usize> = rows.iter().map(|row| row.start).collect();
+        assert_eq!(starts, [0, 8, 14], "each row starts where the last ended");
+        let long = wrap_rows("abcdefghijkl", 5);
+        assert_eq!(long.len(), 3, "a word longer than the row still breaks");
+    }
 
     fn press(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)

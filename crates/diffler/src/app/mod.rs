@@ -26,6 +26,7 @@ pub mod rowsel;
 mod search;
 pub mod stats;
 mod status;
+pub mod tabs;
 pub mod text_edit;
 pub mod walkthrough;
 
@@ -246,6 +247,13 @@ pub enum Modal {
         paths: Vec<String>,
         list: fuzzy::FuzzyList,
     },
+    /// Fuzzy picker for a project to open as a tab: the repositories near
+    /// the open ones, or the folders a typed path completes to.
+    AddProject {
+        nearby: Vec<String>,
+        entries: Vec<String>,
+        list: fuzzy::FuzzyList,
+    },
     /// Keymap listing for the screen the popup opened over.
     Help,
 }
@@ -260,6 +268,7 @@ impl Modal {
             | Self::Palette { list }
             | Self::Choice { list, .. }
             | Self::FilePicker { list, .. }
+            | Self::AddProject { list, .. }
             | Self::RemoteList { list, .. } => Some(list),
             Self::Confirm { .. }
             | Self::Input { .. }
@@ -305,6 +314,7 @@ struct Keymaps {
     prs: Keymap,
     file: Keymap,
     stats: Keymap,
+    tabs: Keymap,
 }
 
 impl Keymaps {
@@ -324,6 +334,7 @@ impl Keymaps {
             prs: build(Context::Prs),
             file: build(Context::File),
             stats: build(Context::Stats),
+            tabs: build(Context::Tabs),
         }
     }
 }
@@ -763,6 +774,11 @@ pub struct App {
     image_in_flight: Option<image::ImageKey>,
     /// A symbol lens the main loop should build off-thread.
     pub pending_lens: Option<LensRequest>,
+    /// A tab request for the workspace holding this app to carry out.
+    pub pending_tab: Option<tabs::TabOp>,
+    /// The tab row to draw above the screen, set while several projects are
+    /// open.
+    pub tab_strip: Option<tabs::TabStrip>,
     /// Bumped per lens request, so a lens for a line the reader left is dropped.
     lens_token: u64,
     /// The language breakdown screen, present only while it is open.
@@ -1026,6 +1042,8 @@ impl App {
             image_token: 0,
             image_in_flight: None,
             pending_lens: None,
+            pending_tab: None,
+            tab_strip: None,
             lens_token: 0,
             file_token: 0,
             pending_clipboard: None,
@@ -1114,7 +1132,13 @@ impl App {
             Context::Prs => &self.keymaps.prs,
             Context::File => &self.keymaps.file,
             Context::Stats => &self.keymaps.stats,
+            Context::Tabs => &self.keymaps.tabs,
         }
+    }
+
+    /// The project-tab keys, read by the tab layer above this app.
+    pub fn tabs_keymap(&self) -> &Keymap {
+        &self.keymaps.tabs
     }
 
     /// Whether `key` resolves to `action` in the keymap of the screen
@@ -1555,7 +1579,7 @@ impl App {
         true
     }
 
-    fn dispatch(&mut self, action: Action) -> Flow {
+    pub(crate) fn dispatch(&mut self, action: Action) -> Flow {
         self.message = None;
         match action {
             Action::Quit => return Flow::Quit,
@@ -1564,6 +1588,7 @@ impl App {
             Action::Refresh if self.screen() == Screen::Stats => self.rescan_stats(),
             Action::Refresh => self.queue_refresh(),
             Action::Help => self.modal = Some(Modal::Help),
+            action if tabs::tab_op(action).is_some() => self.request_tab(action),
             Action::Palette => {
                 let (_, haystack) = self.command_index_haystack();
                 let mut list = fuzzy::FuzzyList::typing();
@@ -2554,6 +2579,7 @@ mod tests {
                 id,
                 body: "late reply".to_owned(),
             },
+            project: None,
             reply,
         }));
         assert_eq!(flow, Flow::Continue);
@@ -2572,6 +2598,7 @@ mod tests {
         let (reply, mut rx) = tokio::sync::oneshot::channel();
         app.handle(AppEvent::Mcp(crate::mcp::McpRequest {
             kind: crate::mcp::McpRequestKind::ReviewStatus,
+            project: None,
             reply,
         }));
         assert!(

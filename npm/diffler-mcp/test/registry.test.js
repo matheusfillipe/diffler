@@ -539,3 +539,54 @@ test("current in list_instances follows use_instance", async () => {
     rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+test("use_instance by port binds a diffler that serves several project tabs", async () => {
+  const stateDir = tmpDir("diffler-mcp-state-");
+  const cwd = tmpDir("diffler-mcp-cwd-");
+  const widgets = await startInstance("/repos/widgets");
+  registerInstance(stateDir, widgets);
+  // the same diffler registers its second project tab under its own file
+  writeFileSync(
+    join(stateDir, "diffler", "instances", `${widgets.port}-gadgets.json`),
+    JSON.stringify({
+      repo: "/repos/gadgets",
+      port: widgets.port,
+      pid: process.pid,
+      url: `http://127.0.0.1:${widgets.port}/mcp`,
+    }),
+  );
+
+  const proxy = await handshake(driveProxy(cwd, [], { DIFFLER_STATE_DIR: stateDir }));
+  try {
+    const picked = await callTool(proxy, "use_instance", { port: widgets.port });
+    assert.equal(picked.result.isError, undefined, picked.result.content?.[0]?.text);
+  } finally {
+    proxy.kill();
+    await widgets.close();
+  }
+});
+
+test("auto-binding one diffler with several project tabs adds no ambiguity notice", async () => {
+  const stateDir = tmpDir("diffler-mcp-state-");
+  const cwd = tmpDir("diffler-mcp-cwd-");
+  const widgets = await startInstance("/repos/widgets");
+  registerInstance(stateDir, widgets);
+  writeFileSync(
+    join(stateDir, "diffler", "instances", `${widgets.port}-gadgets.json`),
+    JSON.stringify({
+      repo: "/repos/gadgets",
+      port: widgets.port,
+      pid: process.pid,
+      url: `http://127.0.0.1:${widgets.port}/mcp`,
+    }),
+  );
+
+  const proxy = await handshake(driveProxy(cwd, [], { DIFFLER_STATE_DIR: stateDir }));
+  try {
+    const status = await callTool(proxy, "review_status");
+    assert.equal(status.result.content.length, 1, "one instance, so no notice rides along");
+  } finally {
+    proxy.kill();
+    await widgets.close();
+  }
+});

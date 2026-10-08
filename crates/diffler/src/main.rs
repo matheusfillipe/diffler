@@ -3,7 +3,8 @@ use std::path::Path;
 use clap::{Parser, Subcommand};
 use diffler::app::{self, App, CiRequest, Flow};
 use diffler::event::AppEvent;
-use diffler::{ci, clipboard, config, editor, event, mcp, ui, watch};
+use diffler::workspace::{self, Workspace, WsEvent};
+use diffler::{ci, clipboard, config, editor, event, mcp, ui};
 use diffler_core::review::Review;
 use ratatui::DefaultTerminal;
 use tokio::sync::mpsc;
@@ -71,7 +72,7 @@ async fn main() -> color_eyre::Result<()> {
             let terminal = ratatui::init();
             set_mouse_capture(true);
             install_mouse_panic_hook();
-            let result = run(terminal, app).await;
+            let result = run(terminal, app, overrides).await;
             set_mouse_capture(false);
             ratatui::restore();
             result
@@ -140,7 +141,11 @@ fn print_config_dump(loaded: &config::LoadedConfig) -> color_eyre::Result<()> {
     Ok(())
 }
 
-async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<()> {
+async fn run(
+    mut terminal: DefaultTerminal,
+    mut app: App,
+    overrides: config::CliOverrides,
+) -> color_eyre::Result<()> {
     // the query reads the terminal's answer from stdin, so it has to finish
     // before the event pump starts reading keys; a terminal that answers
     // nothing keeps the halfblocks picker `App::new` set
@@ -148,28 +153,22 @@ async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<
         app.image_picker = picker;
     }
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let mut events = event::spawn_event_loop(tx.clone());
-    // a missing watcher is not fatal: the app falls back to periodic polling
-    let git_dir = app
-        .review
-        .vcs
-        .git_dir()
-        .unwrap_or_else(|_| app.review.repo_root.join(".git"));
-    let watcher = watch::spawn_watcher(&app.review.repo_root, &git_dir, tx.clone()).ok();
-    if let Some(handle) = &watcher {
-        app.watcher_healthy = Some(handle.healthy.clone());
-    }
-    let mcp = start_mcp(&mut app, &tx);
+    let mut events = spawn_input(&tx);
+    let mut workspace = Workspace::new(app, tx.clone(), overrides);
+    let mcp = start_mcp(&mut workspace, &tx);
     let mut needs_draw = true;
     loop {
         if needs_draw {
+            workspace.sync_strip();
             // rendering writes to the tty and handling an event runs git: both
             // block, so hand the worker back to the runtime for the duration or
             // a slow repo stalls the MCP server and the watcher with it
-            tokio::task::block_in_place(|| terminal.draw(|frame| ui::draw(frame, &mut app)))?;
+            tokio::task::block_in_place(|| {
+                terminal.draw(|frame| ui::draw(frame, workspace.active_mut()))
+            })?;
             needs_draw = false;
         }
-        if let Some(text) = app.pending_clipboard.take() {
+        if let Some(text) = workspace.take_clipboard() {
             // OSC52 addresses the terminal emulator, not the screen: it must
             // bypass ratatui's buffer and go out raw, right after the draw so
             // it cannot interleave with one. The native CLI pipe (on a blocking
@@ -180,7 +179,7 @@ async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<
             out.flush()?;
             tokio::task::spawn_blocking(move || clipboard::native_copy(&text));
         }
-        if let Some(request) = app.pending_editor.take() {
+        if let Some((tab, request)) = workspace.take_editor() {
             // the event pump must release the tty before the editor gets
             // it, or both end up reading the same keystrokes
             events.abort();
@@ -195,32 +194,17 @@ async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<
             terminal = ratatui::init();
             set_mouse_capture(true);
             terminal.clear()?;
-            events = event::spawn_event_loop(tx.clone());
-            app.editor_finished(purpose, outcome);
+            events = spawn_input(&tx);
+            workspace.editor_finished(tab, purpose, outcome);
             // the screen came back blank from the suspend
             needs_draw = true;
             continue;
         }
-        if let Some(app::GitOp { label, argv }) = app.pending_git.take() {
-            // the terminal stays up: spawn the process on a blocking thread
-            // with a tx clone so the result returns as an event and the loop
-            // keeps drawing the "running …" status meanwhile
-            let repo_root = app.review.repo_root.clone();
-            let tx = tx.clone();
-            tokio::task::spawn_blocking(move || {
-                let _ = tx.send(run_git(&label, &argv, &repo_root));
-            });
-            continue;
-        }
-        dispatch_workers(&mut app, &tx);
-        if let Some(request) = app.pending_ci.take() {
-            // service the CI provider call off-thread; the result returns as an
-            // event so the active CI screen stays live without blocking the loop
-            dispatch_ci(&app, request, &tx);
-            continue;
+        for tab in workspace.tabs_mut() {
+            dispatch_tab(tab);
         }
         let Some(event) = rx.recv().await else { break };
-        match tokio::task::block_in_place(|| app.handle(event)) {
+        match tokio::task::block_in_place(|| workspace.handle(event)) {
             Flow::Quit => break,
             Flow::Continue => needs_draw = true,
             Flow::Idle => {}
@@ -230,7 +214,7 @@ async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<
         // first-view enrichment) per event and the UI lags behind the input
         let mut quit = false;
         while let Ok(event) = rx.try_recv() {
-            match tokio::task::block_in_place(|| app.handle(event)) {
+            match tokio::task::block_in_place(|| workspace.handle(event)) {
                 Flow::Quit => {
                     quit = true;
                     break;
@@ -238,11 +222,7 @@ async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<
                 Flow::Continue => needs_draw = true,
                 Flow::Idle => {}
             }
-            if app.pending_editor.is_some()
-                || app.pending_git.is_some()
-                || app.pending_ci.is_some()
-                || app.pending_clipboard.is_some()
-            {
+            if workspace.has_pending() {
                 break;
             }
         }
@@ -253,35 +233,63 @@ async fn run(mut terminal: DefaultTerminal, mut app: App) -> color_eyre::Result<
     events.abort();
     if let Some(mcp) = mcp {
         mcp.handle.abort();
-        mcp::clear_endpoint(&app.review.repo_root, mcp.port);
+        workspace.clear_endpoints();
     }
-    drop(watcher);
     Ok(())
 }
 
-/// Spawn the MCP server when enabled and publish its endpoint for the stdio
-/// proxy to discover. A startup failure disables MCP for the session; a
-/// failed endpoint write only loses proxy discovery, so it surfaces as a
-/// toast rather than aborting startup.
-fn start_mcp(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) -> Option<mcp::McpHandle> {
-    if !app.config.mcp.enabled {
+/// Start the terminal event pump, its events tagged as input.
+fn spawn_input(tx: &mpsc::UnboundedSender<WsEvent>) -> tokio::task::JoinHandle<()> {
+    let (input_tx, _) = workspace::forward(tx, WsEvent::Input);
+    event::spawn_event_loop(input_tx)
+}
+
+/// Run whatever one tab queued: its git process, its workers, its CI call.
+/// Each answers on the tab's own channel.
+fn dispatch_tab(tab: &mut workspace::Tab) {
+    if let Some(app::GitOp { label, argv }) = tab.app.pending_git.take() {
+        // the terminal stays up: spawn the process on a blocking thread
+        // with a tx clone so the result returns as an event and the loop
+        // keeps drawing the "running …" status meanwhile
+        let repo_root = tab.app.review.repo_root.clone();
+        let tx = tab.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let _ = tx.send(run_git(&label, &argv, &repo_root));
+        });
+    }
+    dispatch_workers(&mut tab.app, &tab.tx);
+    if let Some(request) = tab.app.pending_ci.take() {
+        // service the CI provider call off-thread; the result returns as an
+        // event so the active CI screen stays live without blocking the loop
+        dispatch_ci(&tab.app, request, &tab.tx);
+    }
+}
+
+/// Spawn the MCP server when enabled and publish its endpoint into every
+/// open project for the stdio proxy to discover. A startup failure disables
+/// MCP for the session.
+fn start_mcp(
+    workspace: &mut Workspace,
+    tx: &mpsc::UnboundedSender<WsEvent>,
+) -> Option<mcp::McpHandle> {
+    let config = &workspace.active().config;
+    if !config.mcp.enabled {
         return None;
     }
-    let handle = match mcp::spawn_mcp(tx.clone(), app.feedback_tx.subscribe(), app.config.mcp.port)
-    {
-        Ok(handle) => handle,
-        Err(err) => {
-            app.error(format!("mcp server failed to start: {err}"));
-            return None;
+    let port = config.mcp.port;
+    let (mcp_tx, _) = workspace::forward(tx, WsEvent::Mcp);
+    match mcp::spawn_mcp(mcp_tx, workspace.feedback_rx(), port) {
+        Ok(handle) => {
+            workspace.set_mcp_port(handle.port);
+            Some(handle)
         }
-    };
-    app.mcp_port = Some(handle.port);
-    if let Err(err) = mcp::write_endpoint(&app.review.repo_root, handle.port) {
-        // the proxy that agents connect through discovers the port from
-        // this file; a write failure means it silently can't find diffler
-        app.error(format!("failed to write mcp endpoint file: {err}"));
+        Err(err) => {
+            workspace
+                .active_mut()
+                .error(format!("mcp server failed to start: {err}"));
+            None
+        }
     }
-    Some(handle)
 }
 
 /// Start the off-thread repo refresh when one is queued and none is running.

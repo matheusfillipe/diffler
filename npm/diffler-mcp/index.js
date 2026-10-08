@@ -154,6 +154,19 @@ function describeInstances(instances) {
   return instances.map((i) => `${i.repo} (port ${i.port})`).join(", ");
 }
 
+// One diffler with several project tabs registers each project under the
+// same url: one entry per url is one instance.
+function distinctInstances(instances) {
+  const byUrl = new Map();
+  for (const instance of instances) {
+    const seen = byUrl.get(instance.url);
+    if (!seen || instance.mtimeMs > seen.mtimeMs) {
+      byUrl.set(instance.url, instance);
+    }
+  }
+  return [...byUrl.values()];
+}
+
 function matchInstances(instances, { repo, port }) {
   if (port != null) {
     return instances.filter((i) => i.port === Number(port));
@@ -248,7 +261,7 @@ function resolveUrl(opts) {
   if (local !== null) {
     return { url: `http://${host}:${local}/mcp`, ambiguous: false };
   }
-  const instances = liveRegistry();
+  const instances = distinctInstances(liveRegistry());
   if (instances.length === 1) {
     return { url: instances[0].url, ambiguous: false };
   }
@@ -418,7 +431,7 @@ async function main() {
         `no running instance matches ${JSON.stringify(args)}. Choices: ${describeInstances(instances) || "none running"}.`,
       );
     }
-    if (matches.length > 1) {
+    if (distinctInstances(matches).length > 1) {
       return toolError(
         `${JSON.stringify(args)} matches more than one instance: ${describeInstances(matches)}. Be more specific.`,
       );

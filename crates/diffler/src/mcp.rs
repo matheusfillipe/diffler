@@ -44,9 +44,11 @@ const MAX_WAIT_SECONDS: u64 = 55;
 /// The editor suspension is the main source of delays; 30 s is generous.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// One agent tool call in flight: the app answers on `reply`.
+/// One agent tool call in flight: the app answers on `reply`. `project`
+/// names the tab a project-scoped call acts on, the one in front when unset.
 pub struct McpRequest {
     pub kind: McpRequestKind,
+    pub project: Option<String>,
     pub reply: oneshot::Sender<McpResponse>,
 }
 
@@ -54,6 +56,7 @@ impl fmt::Debug for McpRequest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("McpRequest")
             .field("kind", &self.kind)
+            .field("project", &self.project)
             .finish_non_exhaustive()
     }
 }
@@ -126,6 +129,10 @@ pub enum McpRequestKind {
         focus: String,
         file: Option<String>,
     },
+    /// Open the git repository at `path` as a project tab.
+    OpenProject {
+        path: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -151,6 +158,8 @@ pub enum McpResponse {
     Feedback {
         comments: Vec<CommentInfo>,
     },
+    /// Answers [`McpRequestKind::OpenProject`]: the tab now showing it.
+    ProjectOpened(ProjectInfo),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
@@ -178,6 +187,23 @@ pub struct ReviewStatusResponse {
     /// because of one of these, rather than the repository having none.
     /// Empty when every review file parsed.
     pub corrupt_reviews: Vec<String>,
+    /// Every project open as a tab, with its comment counts. Comments and
+    /// feedback cover all of them; `project` targets a call at one.
+    pub projects: Vec<ProjectInfo>,
+}
+
+/// One project open as a tab in the human's diffler.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+pub struct ProjectInfo {
+    /// The name to pass as `project`: the repository's folder name.
+    pub name: String,
+    pub root: String,
+    /// The tab the human is looking at.
+    pub active: bool,
+    #[schemars(with = "Count")]
+    pub open_comments: usize,
+    #[schemars(with = "Count")]
+    pub replied_comments: usize,
 }
 
 /// What a fresh agent needs to know a walkthrough exists before reading
@@ -198,6 +224,9 @@ pub struct WalkthroughSummary {
 /// a commit, or a range) and how many comments sit at each status.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub struct ReviewSummary {
+    /// The project this review belongs to, when more than one is open.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
     /// Stable source key (e.g. "working", "commit-<oid>", "range-<a>-<b>").
     pub source: String,
     /// Human-facing description (e.g. "commit a1b2c3", "range a1b2c3..d4e5f6").
@@ -225,6 +254,9 @@ pub struct DiffResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub struct CommentInfo {
     pub id: String,
+    /// The project this comment belongs to, when more than one is open.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
     /// Stable key of the review this comment belongs to (see [`ReviewSummary`]).
     pub source: String,
     /// Human-facing description of that review (what the human was looking at).
@@ -356,6 +388,9 @@ pub struct WaitForFeedbackResponse {
 pub struct GetDiffParams {
     /// Restrict the diff to one file (repo-relative path).
     pub file: Option<String>,
+    /// The project to act on: its folder name from `review_status`, or its
+    /// path. Omit it for the project the human is looking at.
+    pub project: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -381,6 +416,9 @@ pub struct ProposeResolveParams {
 pub struct MarkViewedParams {
     /// Repo-relative path of a file in the review diff.
     pub file: String,
+    /// The project to act on: its folder name from `review_status`, or its
+    /// path. Omit it for the project the human is looking at.
+    pub project: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -398,6 +436,9 @@ pub struct AddCommentParams {
     /// next submitted review. Off by default, which leaves the comment the
     /// agent's own for the human to answer.
     pub as_human: Option<bool>,
+    /// The project to act on: its folder name from `review_status`, or its
+    /// path. Omit it for the project the human is looking at.
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
@@ -470,6 +511,15 @@ pub struct PublishWalkthroughParams {
     /// of the stops or a repeat of their titles. Omit for a walkthrough with
     /// no summary.
     pub summary: Option<String>,
+    /// The project to act on: its folder name from `review_status`, or its
+    /// path. Omit it for the project the human is looking at.
+    pub project: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct OpenProjectParams {
+    /// Path of a git repository, absolute or starting with `~`.
+    pub path: String,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -601,6 +651,7 @@ pub fn comment_info(comment: &Comment, model: &DiffModel, source: &ReviewSource)
     let outdated = anchor.is_outdated(model);
     CommentInfo {
         id: comment.id.clone(),
+        project: None,
         source: source.key(),
         source_label: source.label(),
         file: anchor.file.clone(),
@@ -660,17 +711,32 @@ impl DifflerMcp {
     }
 
     async fn request(&self, kind: McpRequestKind) -> Result<McpResponse, ErrorData> {
-        self.request_with_timeout(kind, REQUEST_TIMEOUT).await
+        self.request_with_timeout(kind, None, REQUEST_TIMEOUT).await
+    }
+
+    /// [`Self::request`] for a call that acts on one project's tab.
+    async fn request_in(
+        &self,
+        project: Option<String>,
+        kind: McpRequestKind,
+    ) -> Result<McpResponse, ErrorData> {
+        self.request_with_timeout(kind, project, REQUEST_TIMEOUT)
+            .await
     }
 
     async fn request_with_timeout(
         &self,
         kind: McpRequestKind,
+        project: Option<String>,
         timeout: Duration,
     ) -> Result<McpResponse, ErrorData> {
         let (reply, response) = oneshot::channel();
         self.tx
-            .send(AppEvent::Mcp(McpRequest { kind, reply }))
+            .send(AppEvent::Mcp(McpRequest {
+                kind,
+                project,
+                reply,
+            }))
             .map_err(|_| ErrorData::internal_error("the diffler TUI is not running", None))?;
         match tokio::time::timeout(timeout, response).await {
             Ok(Ok(McpResponse::Error(message))) => Err(ErrorData::invalid_params(message, None)),
@@ -707,7 +773,7 @@ impl DifflerMcp {
         Parameters(params): Parameters<GetDiffParams>,
     ) -> Result<Json<DiffResponse>, ErrorData> {
         let kind = McpRequestKind::GetDiff { file: params.file };
-        match self.request(kind).await? {
+        match self.request_in(params.project, kind).await? {
             McpResponse::Diff(diff) => Ok(Json(DiffResponse { diff })),
             _ => Err(mismatch()),
         }
@@ -777,7 +843,7 @@ impl DifflerMcp {
         Parameters(params): Parameters<MarkViewedParams>,
     ) -> Result<Json<OkResponse>, ErrorData> {
         let kind = McpRequestKind::MarkViewed { file: params.file };
-        match self.request(kind).await? {
+        match self.request_in(params.project, kind).await? {
             McpResponse::Ok => Ok(Json(OkResponse { ok: true })),
             _ => Err(mismatch()),
         }
@@ -797,7 +863,7 @@ impl DifflerMcp {
             body: params.body,
             as_human: params.as_human.unwrap_or(false),
         };
-        match self.request(kind).await? {
+        match self.request_in(params.project, kind).await? {
             McpResponse::Added { id } => Ok(Json(AddCommentResponse { id })),
             _ => Err(mismatch()),
         }
@@ -848,7 +914,7 @@ impl DifflerMcp {
             skipped: params.skipped,
             summary: params.summary,
         };
-        match self.request(kind).await? {
+        match self.request_in(params.project, kind).await? {
             McpResponse::WalkthroughPublished(published) => Ok(Json(published)),
             _ => Err(mismatch()),
         }
@@ -885,6 +951,20 @@ impl DifflerMcp {
         };
         match self.request(kind).await? {
             McpResponse::Ok => Ok(Json(OkResponse { ok: true })),
+            _ => Err(mismatch()),
+        }
+    }
+
+    #[tool(
+        description = "Open a git repository as a project tab in the human's diffler, so they can review its changes beside the others. Call it for every repository you changed outside the one diffler started in. Comments and feedback then cover it too, and `project` targets a call at it."
+    )]
+    async fn open_project(
+        &self,
+        Parameters(params): Parameters<OpenProjectParams>,
+    ) -> Result<Json<ProjectInfo>, ErrorData> {
+        let kind = McpRequestKind::OpenProject { path: params.path };
+        match self.request(kind).await? {
+            McpResponse::ProjectOpened(project) => Ok(Json(project)),
             _ => Err(mismatch()),
         }
     }
@@ -1011,7 +1091,10 @@ impl ServerHandler for DifflerMcp {
              reply_comment answers them in place, propose_resolve flags an \
              answered one as addressed without adding text, and \
              wait_for_feedback long-polls until the human sends \
-             new feedback. The review prompt packages that loop as a command.",
+             new feedback. open_project opens another repository you \
+             changed as a tab in the same diffler; comments and feedback \
+             cover every open project, each tagged with its project. The \
+             review prompt packages that loop as a command.",
         )
     }
 }
@@ -1115,7 +1198,7 @@ pub fn clear_endpoint(repo_root: &Path, port: u16) {
             let _ = std::fs::remove_file(&path);
         }
     }
-    clear_registry_entry(port);
+    clear_registry_entry(repo_root, port);
 }
 
 #[derive(Serialize)]
@@ -1157,9 +1240,7 @@ fn write_registry_entry(repo_root: &Path, port: u16, pid: u32) {
     if std::fs::create_dir_all(&dir).is_err() {
         return;
     }
-    let repo = repo_root
-        .canonicalize()
-        .unwrap_or_else(|_| repo_root.to_path_buf());
+    let repo = canonical_repo(repo_root);
     let Some(repo) = repo.to_str() else {
         return;
     };
@@ -1171,17 +1252,31 @@ fn write_registry_entry(repo_root: &Path, port: u16, pid: u32) {
     }) else {
         return;
     };
-    let _ = std::fs::write(dir.join(format!("{port}.json")), body);
+    let _ = std::fs::write(dir.join(registry_file(repo_root, port)), body);
+}
+
+pub(crate) fn canonical_repo(repo_root: &Path) -> PathBuf {
+    repo_root
+        .canonicalize()
+        .unwrap_or_else(|_| repo_root.to_path_buf())
+}
+
+/// One registry entry per project a diffler serves, since one diffler with
+/// several tabs serves them all on one port.
+fn registry_file(repo_root: &Path, port: u16) -> String {
+    let mut hasher = std::hash::DefaultHasher::new();
+    std::hash::Hash::hash(&canonical_repo(repo_root), &mut hasher);
+    format!("{port}-{:016x}.json", std::hash::Hasher::finish(&hasher))
 }
 
 /// Mirrors `clear_endpoint`'s owner check: only remove the registry entry
 /// when it still names this process's own port, so a later instance that
 /// reused the same ephemeral port isn't torn down by an earlier one's exit.
-fn clear_registry_entry(port: u16) {
+fn clear_registry_entry(repo_root: &Path, port: u16) {
     let Some(dir) = registry_dir() else {
         return;
     };
-    let path = dir.join(format!("{port}.json"));
+    let path = dir.join(registry_file(repo_root, port));
     let Ok(body) = std::fs::read_to_string(&path) else {
         return;
     };
@@ -1427,7 +1522,11 @@ mod tests {
         let (_feedback_tx, feedback_rx) = tokio::sync::watch::channel(0u64);
         let handler = DifflerMcp::new(tx, feedback_rx);
         let err = handler
-            .request_with_timeout(McpRequestKind::ReviewStatus, Duration::from_millis(50))
+            .request_with_timeout(
+                McpRequestKind::ReviewStatus,
+                None,
+                Duration::from_millis(50),
+            )
             .await
             .unwrap_err();
         assert!(
@@ -1585,7 +1684,10 @@ mod tests {
         let state = tempfile::tempdir().expect("tempdir");
         with_state_dir(state.path(), || {
             write_endpoint(dir.path(), 8417).expect("write");
-            let entry_path = state.path().join("diffler/instances/8417.json");
+            let entry_path = state
+                .path()
+                .join("diffler/instances")
+                .join(registry_file(dir.path(), 8417));
             let body = std::fs::read_to_string(&entry_path).expect("registry entry written");
             // the entry is JSON, and a Windows path's separators are escaped in
             // it, so the fields are read rather than matched as substrings
@@ -1619,13 +1721,31 @@ mod tests {
             clear_endpoint(dir.path(), 1111);
 
             assert!(
-                !instances.join("1111.json").exists(),
+                !instances.join(registry_file(dir.path(), 1111)).exists(),
                 "the cleared instance's own registry entry is gone"
             );
             assert!(
-                instances.join("2222.json").exists(),
+                instances.join(registry_file(dir.path(), 2222)).exists(),
                 "a different instance's registry entry survives"
             );
+        });
+    }
+
+    #[test]
+    fn one_diffler_registers_every_project_it_serves() {
+        let (first, second) = (
+            tempfile::tempdir().expect("tempdir"),
+            tempfile::tempdir().expect("tempdir"),
+        );
+        let state = tempfile::tempdir().expect("tempdir");
+        with_state_dir(state.path(), || {
+            write_endpoint(first.path(), 3333).expect("first project");
+            write_endpoint(second.path(), 3333).expect("second project");
+            let instances = state.path().join("diffler/instances");
+            assert_eq!(std::fs::read_dir(&instances).expect("registry").count(), 2);
+            clear_endpoint(second.path(), 3333);
+            assert!(instances.join(registry_file(first.path(), 3333)).exists());
+            assert!(!instances.join(registry_file(second.path(), 3333)).exists());
         });
     }
 

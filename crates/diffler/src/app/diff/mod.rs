@@ -5023,24 +5023,6 @@ flowchart TD
     }
 
     #[test]
-    fn a_card_wraps_at_a_reading_width_on_a_wide_pane() {
-        let long = "word ".repeat(80);
-        let session = thread_with(&[("agent", long.as_str())]);
-        let lines = comment_display(&session.comments[0], 300, None, None, None, true);
-        let text = |runs: &[MdSpan]| runs.iter().map(|s| s.text.clone()).collect::<String>();
-        let widest = lines
-            .iter()
-            .filter_map(|line| match line {
-                CommentLine::Reply { spans, .. } => Some(text(spans).trim_end().width()),
-                _ => None,
-            })
-            .max()
-            .expect("the reply has lines");
-        assert!(widest <= crate::app::composer::CARD_MEASURE, "{widest}");
-        assert!(widest > 60, "it still uses the room it has: {widest}");
-    }
-
-    #[test]
     fn a_closed_thread_folds_the_replies_before_the_latest() {
         let session = thread_with(&[("agent", "one"), ("reviewer", "two"), ("agent", "three")]);
         let closed = comment_display(&session.comments[0], u16::MAX, None, None, None, false);

@@ -4,9 +4,13 @@ While the TUI is running, diffler serves an MCP server at `127.0.0.1:{port}/mcp`
 (the live port is published to `.diffler/mcp.json`). An agent connects through it
 to read your review and respond. The tools work while diffler is open.
 
+## Projects
+
+You can open several repositories as tabs in one diffler, and the agent reaches all of them through the same connection. Comments, feedback and the review list cover every open project, and each item names its `project` once more than one is open. A reply, a resolve, an edit or a delete goes to the project holding that comment. `get_diff`, `add_comment`, `mark_viewed` and `publish_walkthrough` take an optional `project`: the folder name `review_status` lists, or the project's path when two open projects share a name. Without it they act on the tab you are looking at.
+
 ## Read
 
-- **review_status**: the review you have open: repo, branch, changed files with their viewed marks, comment counts, the feedback counter `wait_for_feedback` takes, and every walkthrough published in the repo (id, title, stop count, publish time), newest first. `corrupt_reviews` lists any review file that could not be read and was skipped, so the agent knows that review is missing.
+- **review_status**: the review you have open: repo, branch, changed files with their viewed marks, comment counts, the feedback counter `wait_for_feedback` takes, and every walkthrough published in the repo (id, title, stop count, publish time), newest first. `corrupt_reviews` lists any review file that could not be read and was skipped, so the agent knows that review is missing. `projects` lists every project open as a tab.
 - **get_diff**: unified diff of the working tree under review, optionally restricted to one file.
 - **get_comments**: comments across every review (working tree, commits, ranges, PRs, walkthroughs), each with its anchor, diff context, thread, and source; filterable by status (open, replied, resolved). A comment whose source starts with `walkthrough-` is feedback on that walkthrough.
 - **list_reviews**: every review you have (the working tree, individual commits, commit ranges, and walkthroughs) with comment counts, so the agent can tell where feedback came from.
@@ -34,6 +38,7 @@ to read your review and respond. The tools work while diffler is open.
 - **reply_comment**: answer a comment in place; you see the reply immediately.
 - **propose_resolve**: tell you a comment is dealt with, by marking it replied. Its optional note goes into the thread only when the agent has not replied there yet, so an answered comment keeps just the answer. Only you resolve it, in the TUI.
 - **mark_viewed**: mark a file viewed in the review you're currently looking at.
+- **open_project**: open another git repository as a tab in your diffler, by path. The agent should call it for every repository it changed beyond the one diffler started in. The tab opens behind the one you are looking at.
 - **report_activity**: say what the agent is doing right now, in a few words and optionally the file, in your status bar. Every other tool call already shows there on its own; the indicator clears 45 seconds after the last call.
 - **wait_for_feedback**: wait until you send feedback (a comment, a reply, or the send key), then return a new feedback counter and every open or replied comment. A comment on a walkthrough stop is a reply on that stop's own comment, so its id names the stop. This is how the agent waits for its turn. It answers within 55 seconds; the agent polls again to wait longer.
 - **publish_walkthrough**: publish the agent's reading order for a change: one stop per real decision, as few as the change needs. It becomes a review of its own, with its own comments and viewed and seen marks.

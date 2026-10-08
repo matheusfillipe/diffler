@@ -276,6 +276,8 @@ pub struct KeysConfig {
     pub file: BTreeMap<String, String>,
     /// The language breakdown screen.
     pub stats: BTreeMap<String, String>,
+    /// The project tabs, from every screen.
+    pub tabs: BTreeMap<String, String>,
     pub commit: BTreeMap<String, String>,
     pub branch: BTreeMap<String, String>,
     pub diff_menu: BTreeMap<String, String>,
@@ -729,6 +731,7 @@ fn apply_layer(
         (layer.keys.prs, &mut config.keys.prs, "prs"),
         (layer.keys.file, &mut config.keys.file, "file"),
         (layer.keys.stats, &mut config.keys.stats, "stats"),
+        (layer.keys.tabs, &mut config.keys.tabs, "tabs"),
         (layer.keys.commit, &mut config.keys.commit, "commit"),
         (layer.keys.branch, &mut config.keys.branch, "branch"),
         (

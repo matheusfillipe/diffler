@@ -197,6 +197,14 @@
 # refresh = "<c-r>"        # rescan the checkout
 # switch_theme = "T"
 
+[keys.tabs]
+# project tabs, from every screen; single keys only
+# add_project = "<a-n>"   # open a project as a tab: nearby repos, or type a path
+# close_tab = "<a-w>"
+# next_tab = "<a-l>"
+# prev_tab = "<a-h>"
+# tab_1 = "<a-1>"         # through tab_9 = "<a-9>"
+
 [keys.ci_log]
 # toggle_fold = "<tab>"    # also <cr>
 # visual_select = "V"

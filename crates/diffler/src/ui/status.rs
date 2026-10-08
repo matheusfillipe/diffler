@@ -1639,6 +1639,23 @@ mod tests {
     }
 
     #[test]
+    fn several_projects_draw_a_tab_row_above_the_screen() {
+        let fixture = standard_fixture();
+        let mut app = app_for(&fixture);
+        app.tab_strip = Some(crate::app::tabs::TabStrip {
+            names: vec!["diffler".to_owned(), "api".to_owned(), "web".to_owned()],
+            active: 1,
+        });
+        let terminal = render(&mut app);
+        let first_row: String = (0..terminal.backend().buffer().area.width)
+            .map(|x| terminal.backend().buffer()[(x, 0)].symbol().to_owned())
+            .collect();
+        assert!(first_row.contains(" 2 api "), "{first_row}");
+        assert!(first_row.contains("add project"), "{first_row}");
+        insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
     fn help_popup_lists_the_active_keymap_and_transient_groups() {
         let fixture = standard_fixture();
         let mut app = app_for(&fixture);

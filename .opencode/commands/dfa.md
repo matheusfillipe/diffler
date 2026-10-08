@@ -10,6 +10,8 @@ this review when `$ARGUMENTS` is empty:
    the change is a different one, publish a new walkthrough without an `id`.
    `review_status` names the `repo`; if it is not the repository you mean,
    call `list_instances`, then `use_instance` with that repo, and start over.
+   If the change spans another git repository, call `open_project` with its
+   path, then pass that project's name as `project` when publishing about it.
    A walkthrough is pinned to the commit it is published at, so publish it
    once the code it describes is the code checked out; once the branch has
    moved on, revise it so the stops point at the revision it is on now.

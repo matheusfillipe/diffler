@@ -51,6 +51,16 @@ impl App {
                 );
             }
         }
+        commands.extend(
+            self.tabs_keymap()
+                .bindings()
+                .iter()
+                .map(|(chord, action)| Command {
+                    action: *action,
+                    label: action.label(),
+                    chord: render_chord(chord),
+                }),
+        );
         commands
     }
 }

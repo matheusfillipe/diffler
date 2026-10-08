@@ -19,7 +19,7 @@ use diffler_core::language;
 use diffler_core::model::FileStatus;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -99,12 +99,61 @@ pub(super) fn highlight_spans_split(
     spans
 }
 
+/// The frame below the project tab row, drawing the row first while several
+/// projects are open.
+fn screen_area(frame: &mut Frame<'_>, app: &App) -> Rect {
+    let area = frame.area();
+    let Some(strip) = app.tab_strip.as_ref() else {
+        return area;
+    };
+    let [row, rest] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
+    frame.render_widget(Paragraph::new(tab_row(app, strip, row.width)), row);
+    rest
+}
+
+/// One line naming every open project, the one in front in the accent
+/// colour, with the key that adds another on the right.
+fn tab_row(app: &App, strip: &crate::app::tabs::TabStrip, width: u16) -> Line<'static> {
+    let theme = &app.theme;
+    let bg = theme.panel;
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for (index, name) in strip.names.iter().enumerate() {
+        let style = if index == strip.active {
+            theme.chip.add_modifier(Modifier::BOLD)
+        } else {
+            Style::new().fg(theme.dim).bg(bg)
+        };
+        spans.push(Span::styled(format!(" {} {name} ", index + 1), style));
+        spans.push(Span::styled(" ".to_owned(), Style::new().bg(bg)));
+    }
+    let tail: Vec<Span<'static>> = app
+        .tabs_keymap()
+        .chord_for(crate::keymap::Action::AddProject)
+        .map(|chord| {
+            vec![
+                Span::styled(chord, Style::new().fg(theme.fg).bg(bg)),
+                Span::styled(
+                    " add project ".to_owned(),
+                    Style::new().fg(theme.dim).bg(bg),
+                ),
+            ]
+        })
+        .unwrap_or_default();
+    let used: usize = spans.iter().chain(&tail).map(Span::width).sum();
+    spans.push(Span::styled(
+        " ".repeat(usize::from(width).saturating_sub(used)),
+        Style::new().bg(bg),
+    ));
+    spans.extend(tail);
+    Line::from(spans)
+}
+
 /// Shared chrome for the `[hint, body, bar]` screens: paints the full-area
 /// background, splits off the hint row and renders it, and hands back the
 /// body and bar rects. The bar's own paragraph (content and style both vary
 /// per screen) stays with the caller.
 pub(super) fn screen_chrome(frame: &mut Frame<'_>, app: &App, hints: &[Hint]) -> (Rect, Rect) {
-    let area = frame.area();
+    let area = screen_area(frame, app);
     frame.render_widget(Block::new().style(app.theme.base()), area);
     let [hint, body, bar] = Layout::vertical([
         Constraint::Length(1),
@@ -123,7 +172,7 @@ pub(super) fn screen_chrome_with_header(
     app: &App,
     hints: &[Hint],
 ) -> (Rect, Rect, Rect) {
-    let area = frame.area();
+    let area = screen_area(frame, app);
     frame.render_widget(Block::new().style(app.theme.base()), area);
     let [hint, header, body, bar] = Layout::vertical([
         Constraint::Length(1),
@@ -216,6 +265,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) -> Option<popup::ListHits> {
             | Modal::Palette { .. }
             | Modal::Choice { .. }
             | Modal::FilePicker { .. }
+            | Modal::AddProject { .. }
             | Modal::RemoteList { .. },
         ) => fuzzy_modal(app).map(|modal| modal.render(frame, &app.theme)),
         Some(Modal::PullDiverged { upstream }) => {
@@ -373,6 +423,12 @@ fn fuzzy_modal(app: &App) -> Option<popup::FuzzyModal> {
             modal.footer = footer_for(list, " · b blame · e editor", " open");
             Some(modal)
         }
+        Some(Modal::AddProject { entries, list, .. }) => {
+            let mut modal = plain_list("Add project".to_owned(), list, entries, " open");
+            " type a name or a path · tab complete · enter open · esc close "
+                .clone_into(&mut modal.footer);
+            Some(modal)
+        }
         _ => None,
     }
 }
@@ -397,6 +453,35 @@ fn help_entries(app: &App) -> Vec<(String, String)> {
                 entries.push((format!("  {key}"), entry.label.to_owned()));
             }
         }
+    }
+    entries.extend(tab_help_entries(app.tabs_keymap()));
+    entries
+}
+
+/// The project-tab keys for the help popup, the nine tab numbers folded
+/// into one row.
+fn tab_help_entries(keymap: &crate::keymap::Keymap) -> Vec<(String, String)> {
+    use crate::keymap::Action;
+    let mut entries: Vec<(String, String)> = keymap
+        .bindings()
+        .iter()
+        .filter(|(_, action)| crate::app::tabs::tab_op(*action).is_some())
+        .filter(|(_, action)| {
+            !matches!(
+                crate::app::tabs::tab_op(*action),
+                Some(crate::app::tabs::TabOp::Go(_))
+            )
+        })
+        .map(|(chord, action)| (render_chord(chord), action.label().to_owned()))
+        .collect();
+    if let (Some(first), Some(last)) = (
+        keymap.chord_for(Action::GoTab1),
+        keymap.chord_for(Action::GoTab9),
+    ) {
+        entries.push((
+            format!("{first}-{last}"),
+            "switch to project tab N".to_owned(),
+        ));
     }
     entries
 }
@@ -878,12 +963,7 @@ pub(super) fn status_bar(app: &App, width: u16) -> Line<'static> {
     let theme = &app.theme;
     let on_panel = |fg| Style::new().fg(fg).bg(theme.panel);
     let chip = mode_chip(app);
-    let repo = app
-        .review
-        .repo_root
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let repo = app.project_name();
     let branch = app.head.branch.clone().unwrap_or_else(|| "?".to_owned());
     let mut spans = vec![
         Span::styled(chip, theme.chip),
