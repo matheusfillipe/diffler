@@ -40,7 +40,7 @@ syndiff = "0.2"
 imara-diff = "0.2"
 # image files in a diff preview as images: kitty/sixel/iTerm2 through the
 # terminal (and a multiplexer's passthrough), halfblocks everywhere else
-ratatui-image = { version = "=12.0.0-rc.0", default-features = false, features = ["crossterm"] }
+ratatui-image = { version = "=12.0.0-rc.2", default-features = false, features = ["crossterm"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 # bundled grammars (statically linked; musl-static cannot dlopen, so no runtime fetch)
 tree-sitter-rust = "0.24"
