@@ -4,6 +4,15 @@
 # the comments sidebar, so a theme is judged on everything it has to colour.
 set -euo pipefail
 
+missing=()
+for tool in cargo git python3 vhs; do
+    command -v "$tool" >/dev/null || missing+=("$tool")
+done
+if ((${#missing[@]})); then
+    echo "record.sh needs: ${missing[*]} (vhs: https://github.com/charmbracelet/vhs)" >&2
+    exit 1
+fi
+
 root="$(cd "$(dirname "$0")/.." && pwd)"
 img="$root/showcase/img"
 repo="$(mktemp -d)/showcase-repo"
