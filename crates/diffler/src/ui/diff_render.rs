@@ -1,7 +1,5 @@
-//! Pure diff-line renderers shared by the status screen's inline diffs and
-//! the diff view: hunk headers, gutter line numbers, line-kind backgrounds,
-//! intra-line emphasis ranges, and optional syntax foregrounds composited
-//! per cell (syntax = fg, diff kind = bg, emphasis = stronger bg).
+//! Diff-line renderers shared by the status screen's inline diffs and the
+//! diff view (syntax = fg, diff kind = bg, emphasis = stronger bg).
 
 use std::ops::Range;
 
@@ -31,16 +29,11 @@ pub(super) fn align_scroll(
 }
 
 /// Per-file syntax for both diff sides, `(old, new)`, each indexed by line
-/// number. The renderer picks the side per line via [`line_syntax`].
+/// number.
 pub type SideSyntax<'a> = (&'a [Vec<StyledRange>], &'a [Vec<StyledRange>]);
 
-/// Render one hunk as terminal lines: index 0 is the `@@` header, the rest
-/// map 1:1 to `hunk.lines`. `selected` is an index into the returned vec
-/// (0 = header) and paints that row with the cursor-line background.
-///
-/// `syntax` is the file's per-line syntax for both sides (`(old, new)`); when
-/// present each line is highlighted exactly as the diff pane does, with syntax
-/// foregrounds composited over the diff-kind background. `None` renders plain.
+/// Index 0 of the result is the `@@` header, the rest map 1:1 to
+/// `hunk.lines`; `selected` indexes the result.
 pub fn render_hunk_lines(
     theme: &Theme,
     hunk: &Hunk,
@@ -69,10 +62,6 @@ pub fn render_hunk_lines(
     lines
 }
 
-/// The per-line syntax slice for `line`, picked from the file's cached
-/// highlights: the old side for deletions, the new side for additions and
-/// context, indexed by the line's number. `None` when the line has no number
-/// on that side or the cache lacks it (e.g. a not-yet-highlighted file).
 pub fn line_syntax<'a>(
     old: &'a [Vec<StyledRange>],
     new: &'a [Vec<StyledRange>],
@@ -84,14 +73,13 @@ pub fn line_syntax<'a>(
     }
 }
 
-/// One side's cached syntax for line `number`, counted from 1.
+/// `number` counts from 1.
 pub fn syntax_row(side: &[Vec<StyledRange>], number: Option<u32>) -> Option<&[StyledRange]> {
     let index = usize::try_from(number?).ok()?.checked_sub(1)?;
     side.get(index).map(Vec::as_slice)
 }
 
-/// Digits needed for the widest line number in the hunk, with a sane floor
-/// so neighbouring hunks rarely disagree.
+/// The floor of 4 keeps neighbouring hunks from disagreeing on width.
 pub fn hunk_gutter_width(hunk: &Hunk) -> usize {
     let max = (hunk.old_start + hunk.old_lines)
         .max(hunk.new_start + hunk.new_lines)
@@ -99,8 +87,6 @@ pub fn hunk_gutter_width(hunk: &Hunk) -> usize {
     (max.ilog10() as usize + 1).max(4)
 }
 
-/// One gutter width for a whole file, so hunks in the continuous diff view
-/// line up.
 pub fn file_gutter_width(file: &FileDiff) -> usize {
     let max = file
         .hunks
@@ -112,25 +98,19 @@ pub fn file_gutter_width(file: &FileDiff) -> usize {
     (max.ilog10() as usize + 1).max(4)
 }
 
-/// How far the hunk band sits off the diff surface, toward the border tint.
-/// It has to clear both surfaces: the diff pane's panel and the status
+/// The band has to stand off both the diff pane's panel and the status
 /// screen's background.
 const HUNK_BAND: u16 = 45;
 
-/// Share of a cursor band an out-of-focus pane keeps: one bright selection is
-/// on screen at a time, and the quiet one stays findable. Only the band moves
-/// with focus; foregrounds and intra-line emphasis are content.
+/// Share of a cursor band an out-of-focus pane keeps, so only one bright
+/// selection is on screen at a time.
 const UNFOCUSED_BAND: u16 = 35;
 
-/// The cursor band over `surface`, quieted while its pane is out of focus.
 pub(super) fn cursor_band(theme: &Theme, surface: Color, focused: bool) -> Color {
     crate::theme::blend(surface, theme.cursor_line, band_strength(100, focused))
 }
 
-/// The background and left bar every card in the diff pane draws first: a
-/// comment, a walkthrough stop, the open composer. A faint surface of its
-/// own sets the card apart from the code around it, banded when the row is
-/// selected, with a solid `accent` bar down its left edge.
+/// The background and left bar every card in the diff pane draws first.
 pub(super) fn card_frame(
     theme: &Theme,
     selected: bool,
@@ -147,12 +127,10 @@ pub(super) fn card_frame(
     (bg, bar)
 }
 
-/// The faint surface a card sits on.
 pub(super) fn card_surface(theme: &Theme) -> Color {
     crate::theme::blend(theme.bg, theme.fg, 5)
 }
 
-/// A band's blend strength, scaled down when its pane is out of focus.
 const fn band_strength(full: u16, focused: bool) -> u16 {
     if focused {
         full
@@ -161,11 +139,8 @@ const fn band_strength(full: u16, focused: bool) -> u16 {
     }
 }
 
-/// A dim labeled separator band: `text` at the left, padded to `width`.
-/// [`hunk_header`] and [`fold_row`] both draw through it, so the two
-/// separators read as one kind of row. Several themes put their cursor band
-/// within a few shades of this one, so a selected band also takes the accent
-/// on its text, the way a sidebar header under the cursor does.
+/// Several themes put their cursor band within a few shades of this one, so
+/// a selected band also takes the accent on its text.
 fn band_line(
     theme: &Theme,
     text: &str,
@@ -187,10 +162,6 @@ fn band_line(
     ])
 }
 
-/// GitHub-style section separator: a dim full-width band carrying git's
-/// enclosing-section context (the `@@` line numbers are dropped as redundant
-/// with the gutter). When git names no section the band alone reads as the
-/// hunk boundary. Stays a navigable row so `{`/`}` hunk jumps land on it.
 pub fn hunk_header(
     theme: &Theme,
     hunk: &Hunk,
@@ -210,7 +181,6 @@ pub fn hunk_header(
     band_line(theme, &text, width, selected, focused)
 }
 
-/// A fold row: the hunk header's band, naming what it hides.
 pub fn fold_row(
     theme: &Theme,
     label: &str,
@@ -221,15 +191,12 @@ pub fn fold_row(
     band_line(theme, &format!(" {label}"), width, selected, focused)
 }
 
-/// Columns a diff line's rail + gutter numbers occupy before the text.
 fn prefix_width(gutter: usize) -> usize {
     1 + gutter * 2 + 2
 }
 
-/// Rows the greedy wrapper produces for characters of the given display
-/// widths: the same loop as [`wrap_spans`], counting instead of building,
-/// so height predictions can never drift from the render (a width-2 glyph
-/// at a row boundary wastes a column that plain division would miscount).
+/// Mirrors [`wrap_spans`]'s loop so height predictions match the render; a
+/// width-2 glyph at a row boundary wastes a column plain division miscounts.
 fn greedy_rows(widths: impl Iterator<Item = usize>, budget: usize) -> usize {
     let mut rows = 1;
     let mut used = 0;
@@ -248,21 +215,15 @@ fn char_widths(text: &str) -> impl Iterator<Item = usize> + '_ {
         .map(|c| UnicodeWidthChar::width(c).unwrap_or(0))
 }
 
-/// Terminal rows a diff line needs at `width`: 1 plus one per wrapped
-/// continuation. Agrees with [`render_diff_line`]'s wrapping by construction.
 pub fn diff_line_height(line: &DiffLine, gutter: usize, width: u16) -> usize {
     text_height(&line.text, prefix_width(gutter), width)
 }
 
-/// Terminal rows `text` needs beside a prefix of `prefix_cols`. Agrees with
-/// [`wrapped_rows`] by construction, so a caller can predict heights without
-/// building the rows.
 pub(super) fn text_height(text: &str, prefix_cols: usize, width: u16) -> usize {
     let budget = (width as usize).saturating_sub(prefix_cols).max(1);
     greedy_rows(char_widths(text), budget)
 }
 
-/// A diff line's selection/annotation state, orthogonal to its content.
 #[derive(Clone, Copy)]
 pub struct LineFlags {
     pub selected: bool,
@@ -270,9 +231,6 @@ pub struct LineFlags {
     pub annotated: bool,
 }
 
-/// Render one diff line: gutter numbers, then the text composited from the
-/// optional per-line syntax spans (fg) and the line's emphasis ranges (bg).
-/// Text wider than the pane wraps onto continuation rows under a blank gutter.
 pub fn render_diff_line(
     theme: &Theme,
     line: &DiffLine,
@@ -320,10 +278,7 @@ pub fn render_diff_line(
     wrapped_rows(content, prefix, prefix_width(gutter), width, base_bg)
 }
 
-/// Lay one logical line out as rows: the content wrapped to whatever the
-/// prefix leaves, each row carrying the prefix (blank on continuations) and
-/// padded to the full width so the row background runs to the edge. The diff
-/// pane and the file view differ only in what their prefix is.
+/// `prefix(first)` builds each row's prefix, blank on continuations.
 pub(super) fn wrapped_rows(
     content: Vec<Span<'static>>,
     prefix: impl Fn(bool) -> Vec<Span<'static>>,
@@ -348,9 +303,7 @@ pub(super) fn wrapped_rows(
         .collect()
 }
 
-/// Split styled spans into rows of at most `budget` display columns, cutting
-/// at character boundaries so every style survives the wrap. Always yields at
-/// least one row.
+/// Always yields at least one row.
 fn wrap_spans(spans: Vec<Span<'static>>, budget: usize) -> Vec<Vec<Span<'static>>> {
     let mut rows: Vec<Vec<Span<'static>>> = Vec::new();
     let mut current: Vec<Span<'static>> = Vec::new();
@@ -378,15 +331,12 @@ fn wrap_spans(spans: Vec<Span<'static>>, budget: usize) -> Vec<Vec<Span<'static>
     rows
 }
 
-/// How far a selected changed line travels from its own tint toward that
-/// tint's emphasis colour. Short of the emphasis itself, so intra-line
-/// emphasis still stands out on the row under the cursor.
+/// Kept short of the emphasis colour so intra-line emphasis still stands out
+/// on the row under the cursor.
 const SELECTION_LIFT: u16 = 55;
 
-/// The line (base) and emphasis backgrounds, given selection/annotation state.
-/// Selection brightens whatever colour the row already carries, so a selected
-/// addition still reads as an addition. Only the base moves with focus; the
-/// emphasis colour is content and comes back at full strength.
+/// Selection brightens the row's own colour, so a selected addition still
+/// reads as an addition.
 fn line_backgrounds(
     theme: &Theme,
     line: &DiffLine,
@@ -413,10 +363,6 @@ fn line_backgrounds(
     (base_bg, emph_bg)
 }
 
-/// The reserved leading cell: a bar on a changed line, blank on context and
-/// on a reformat-only line, which is unchanged in substance.
-/// [`rail_color`] already tints it, so the kind of a line reads from the
-/// margin even where the background tint is washed out.
 fn rail(line: &DiffLine) -> &'static str {
     match line.kind {
         _ if line.reformat_only => " ",
@@ -425,14 +371,10 @@ fn rail(line: &DiffLine) -> &'static str {
     }
 }
 
-/// The cell between the gutter numbers and the text: `≈` on a reformat-only
-/// line, so the reader can tell a dimmed layout change from a context line.
 fn gutter_mark(line: &DiffLine) -> &'static str {
     if line.reformat_only { "≈" } else { " " }
 }
 
-/// A line's text composited for the pane. A reformat-only line keeps no
-/// syntax colour and dims its text, the way outdated and stale things dim.
 fn line_content(
     theme: &Theme,
     line: &DiffLine,
@@ -462,8 +404,6 @@ fn line_content(
         .collect()
 }
 
-/// The rail's tint: the line's kind, or the accent on the row under the
-/// cursor so selection reads on a second channel besides the background.
 fn rail_color(theme: &Theme, line: &DiffLine, selected: bool) -> Color {
     if selected {
         return theme.accent;
@@ -475,23 +415,14 @@ fn rail_color(theme: &Theme, line: &DiffLine, selected: bool) -> Color {
     }
 }
 
-/// One side of a side-by-side row: the line and its per-line syntax, or `None`
-/// for a column with no counterpart (a lone deletion's right, a lone
-/// addition's left).
+/// One side of a side-by-side row, `None` for a column with no counterpart.
 pub type SplitCell<'a> = Option<(&'a DiffLine, Option<&'a [StyledRange]>, bool)>;
 
-/// Render one side-by-side row: the old line in the left column, the new line
-/// in the right, divided by a separator. Each column shows a single gutter
-/// number (old on the left, new on the right) and the same composited text the
-/// unified view draws. `sel_left`/`sel_right` paint a column with the
-/// cursor-line background.
-/// Columns of a split cell taken by its rail + one gutter number.
 fn split_prefix_width(gutter: usize) -> usize {
     1 + gutter + 1
 }
 
-/// Terminal rows a side-by-side row needs at `width`: the taller of its two
-/// wrapped sides. Must agree with [`render_split_pair`]'s wrapping.
+/// Must agree with [`render_split_pair`]'s wrapping.
 pub fn split_pair_height(
     left: Option<&DiffLine>,
     right: Option<&DiffLine>,
@@ -509,9 +440,6 @@ pub fn split_pair_height(
     side(left, left_w).max(side(right, right_w))
 }
 
-/// Which side of a split row is under the cursor, and whether the pane holds
-/// focus. `left`/`right` and `focused` are independent: only the cursor's side
-/// carries `left`/`right`, both keep `focused` for how bright that reads.
 #[derive(Clone, Copy)]
 pub struct PairSelection {
     pub left: bool,
@@ -577,8 +505,6 @@ pub fn render_split_pair(
         .collect()
 }
 
-/// Render one column of a side-by-side row, wrapped and padded to
-/// `col_width`; continuations get a blank gutter.
 fn side_rows(
     theme: &Theme,
     cell: SplitCell<'_>,
@@ -639,8 +565,6 @@ fn side_rows(
         .collect()
 }
 
-/// Clip a styled run to `width` display columns, padding the remainder with
-/// the background so every column fills exactly.
 fn clip_pad(spans: Vec<Span<'static>>, width: usize, bg: Color) -> Vec<Span<'static>> {
     let mut out = Vec::new();
     let mut used = 0;
@@ -653,9 +577,8 @@ fn clip_pad(spans: Vec<Span<'static>>, width: usize, bg: Color) -> Vec<Span<'sta
             used += w;
             out.push(span);
         } else {
-            // clip by display width, not char count, so a wide (CJK/emoji)
-            // glyph at the boundary can't overrun the column and shove the
-            // neighbouring column off the pane
+            // we clip by display width so a wide glyph at the boundary
+            // can't push the neighbouring column off the pane
             let mut clipped = String::new();
             for ch in span.content.chars() {
                 let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
@@ -680,15 +603,12 @@ fn clip_pad(spans: Vec<Span<'static>>, width: usize, bg: Color) -> Vec<Span<'sta
 pub enum Mark {
     Search,
     SearchCurrent,
-    /// A use of a lens symbol, in that symbol's colour.
     Lens(Color),
-    /// The digit that picks a lens symbol, drawn over the first character of
-    /// its name on the line the lens was opened on.
+    /// The digit that picks a lens symbol, drawn over its name's first char.
     Label(char, Color),
 }
 
 impl Mark {
-    /// Search hits as marks: the active match and the rest.
     pub fn search(ranges: Vec<(Range<usize>, bool)>) -> Vec<(Range<usize>, Self)> {
         ranges
             .into_iter()
@@ -706,17 +626,10 @@ impl Mark {
     }
 }
 
-/// How far a lens use's background leans toward its symbol's colour.
 const LENS_TINT: u16 = 40;
 
-/// Split the text at every syntax/emphasis range boundary and style each
-/// segment: foreground from the syntax span covering it, background from
-/// whether an emphasis range covers it. Byte offsets are snapped to char
-/// boundaries defensively so a malformed range can never split a
-/// multi-byte character.
-/// Composite one line of text: syntax foregrounds over the row background,
-/// with intraline emphasis, search hits and lens uses taking their own
-/// background. The diff pane and the file view both render through this.
+/// Byte offsets snap to char boundaries so a malformed range can never split
+/// a multi-byte character.
 pub(super) fn composite_spans(
     theme: &Theme,
     text: &str,
@@ -818,9 +731,8 @@ fn snap_to_boundary(text: &str, mut index: usize) -> usize {
     index
 }
 
-/// A figure rasterised into an offscreen buffer, then copied out row by row.
-/// That is what lets a graph be half on screen: a widget drawn straight into
-/// the frame can only start at a row that exists.
+/// We rasterise into an offscreen buffer and copy rows out, so a graph can be
+/// half on screen.
 pub(super) fn figure_lines(
     figure: &mut FigureBlock,
     ordinal: usize,
@@ -867,17 +779,14 @@ pub(super) fn figure_lines(
     rows
 }
 
-/// A buffer cell the graph never painted carries [`Color::Reset`], which a
-/// terminal with a transparent background shows the desktop through. A card is
-/// a surface, so every cell it prints owns its background.
+/// An unpainted cell carries [`Color::Reset`], which a transparent terminal
+/// shows the desktop through.
 fn opaque(color: Color, bg: Color) -> Color {
     if color == Color::Reset { bg } else { color }
 }
 
-/// The dim line under a figure the card had to help fit: redrawn top-down,
-/// or (rarer) still cropped even so. Leads with the key that opens a graph
-/// full-screen, when one is bound, so a narrow card elides the explanation
-/// and keeps what the reader can do about it.
+/// Leads with the open key so a narrow card elides the explanation and keeps
+/// the action.
 fn fit_notice(
     figure: &FigureBlock,
     open_hint: Option<&str>,
@@ -936,9 +845,6 @@ mod tests {
 
     use super::*;
 
-    /// A figure the card had to redraw top-down carries a dim line under it
-    /// naming the key that opens the full graph; one that fits as drawn
-    /// carries no such line.
     #[test]
     fn a_redrawn_figure_names_the_key_that_opens_the_full_graph() {
         use crate::app::walkthrough::{Block, blocks};
@@ -989,8 +895,6 @@ flowchart LR
         terminal.backend().to_string()
     }
 
-    /// A body's first figure drawn into an 80-column pane, laid out to the
-    /// card budget the pane gives it.
     fn figure_card(body: &str) -> String {
         use crate::app::composer::card_budget;
         use crate::app::walkthrough::{Block, blocks};
@@ -1055,8 +959,6 @@ main
         ));
     }
 
-    /// A wide glyph spans two buffer cells, and the copy out of the figure's
-    /// buffer has to take it once, or every CJK label widens its row.
     #[test]
     fn a_figure_with_wide_labels_keeps_its_rows_at_the_card_width() {
         let card = figure_card(
@@ -1077,9 +979,8 @@ main
         assert!(!card.contains("验 证"), "{card}");
     }
 
-    /// Two subgraphs and a decision, redrawn top-down to fit the card: both
-    /// outlines draw, an edge crossing one keeps its arrowhead, and a title
-    /// moves off the border an arrowhead pierces.
+    /// Both outlines draw, a crossing edge keeps its arrowhead, and a title
+    /// moves off a border an arrowhead pierces.
     #[test]
     fn a_flowchart_with_subgraphs_renders_in_a_card() {
         insta::assert_snapshot!(figure_card(
@@ -1104,7 +1005,6 @@ flowchart LR
         assert_eq!(align_scroll(ScrollAlign::Top, 20, 1, 10), 20);
         assert_eq!(align_scroll(ScrollAlign::Bottom, 20, 1, 10), 11);
         assert_eq!(align_scroll(ScrollAlign::Center, 20, 1, 10), 15);
-        // clamps at the top of the buffer
         assert_eq!(align_scroll(ScrollAlign::Center, 1, 1, 10), 0);
     }
 
@@ -1112,9 +1012,6 @@ flowchart LR
         DiffLine::new(kind, old, new, text.to_owned())
     }
 
-    /// A reformat-only paired line reads as context with its text dimmed and
-    /// a `≈` between the gutter and the text, whichever side it is. Under the
-    /// cursor it takes the context band.
     #[test]
     fn reformat_only_lines_dim_instead_of_red_or_green() {
         let (theme, _) = Theme::from_name("github-dark");

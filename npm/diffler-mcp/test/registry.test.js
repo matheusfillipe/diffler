@@ -32,8 +32,6 @@ function reply(repoLabel, method, params) {
   }
 }
 
-// A fake diffler TUI: one HTTP backend plus its registry entry, standing in
-// for the real process the Rust side would have started and registered.
 async function startInstance(repo) {
   const http = createServer((req, res) => {
     if (req.method !== "POST") {
@@ -62,10 +60,8 @@ async function startInstance(repo) {
   };
 }
 
-// Like startInstance, but also answers the streamable-HTTP GET stream (the
-// persistent one the client opens after the handshake, same as the real
-// diffler MCP server) and holds it open. `streamSocket` names the exact
-// connection it arrived on, so a test can prove the proxy closes that one.
+// We hold the client's persistent GET stream open and record its socket, so a
+// test can check the proxy closes that exact connection.
 async function startInstanceWithOpenStream(repo) {
   let streamSocket = null;
   const http = createServer((req, res) => {
@@ -415,8 +411,8 @@ test("use_instance closes the connection to the instance it switches away from",
   const proxy = await handshake(driveProxy(cwd, [], { DIFFLER_STATE_DIR: stateDir }));
   try {
     await callTool(proxy, "ping"); // binds to widgets, the newest instance
-    // the client opens its persistent stream in the background, after the
-    // handshake, so give it a moment to actually land on the server
+    // the client opens its persistent stream in the background after the
+    // handshake, so we wait for the server to see it
     await waitUntil(() => widgets.streamSocket() !== null, "widgets never saw the open stream");
     const widgetsSocket = widgets.streamSocket();
     assert.equal(widgetsSocket.destroyed, false, "widgets' stream is open");
@@ -449,8 +445,6 @@ test("list_instances then use_instance from a third, unrelated directory", async
   registerInstance(stateDir, tuiA);
   registerInstance(stateDir, tuiB);
 
-  // the proxy runs from a directory in neither repo, with no local
-  // .diffler/mcp.json anywhere up its own tree
   const proxy = await handshake(driveProxy(outsider, [], { DIFFLER_STATE_DIR: stateDir }));
   try {
     const listed = await callTool(proxy, "list_instances");

@@ -1,7 +1,5 @@
-//! `GraphView`: the reusable, IO-free graph component. The host pushes a
-//! [`Model`] in, renders it into any area, and reacts to the [`GraphAction`]s
-//! it emits. It owns only view state (selection, scroll, zoom, collapsed
-//! groups): no terminal, no event loop, no sources.
+//! `GraphView` owns a graph's view state: selection, scroll, zoom and
+//! collapsed groups.
 
 use std::collections::HashSet;
 
@@ -16,10 +14,8 @@ use crate::graph::engine::{GraphEngine, Layered, Layout, Placement, Zoom};
 use crate::graph::model::{Model, NodeId, NodeStatus, RankDir};
 use crate::graph::theme::GraphTheme;
 
-/// Whether a figure fit the card as its author drew it, or needed help: a
-/// mermaid `flowchart LR` too wide is redrawn top to bottom (a chain always
-/// fits a card's width running downward); if even that overflows, the card
-/// crops it and says so.
+/// How a figure fit its card. We redraw a too-wide `flowchart LR` top to
+/// bottom, and crop it when even that overflows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fit {
     AsDrawn,
@@ -27,22 +23,17 @@ pub enum Fit {
     Cropped,
 }
 
-/// What the component asks the host to do. The host owns the side effects.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GraphAction {
-    /// Enter / double-click on a non-foldable node: open it (code, log, …).
     Activated(NodeId),
-    /// A group was folded or unfolded.
     Folded { group: String, collapsed: bool },
 }
 
-/// Two left-presses within this window (at ~the same cell) are a double-click.
 const DOUBLE_CLICK_WINDOW: std::time::Duration = std::time::Duration::from_millis(400);
 
 pub struct GraphView {
     model: Model,
-    // `+ Send` so an embedding host that crosses threads/await points (the
-    // review app is spawned in tests) keeps `App: Send`
+    // tests spawn the app, so the engine has to keep `App: Send`
     engine: Box<dyn GraphEngine + Send>,
     layout: Layout,
     selected: Option<NodeId>,
@@ -55,8 +46,7 @@ pub struct GraphView {
     last_click: Option<(std::time::Instant, u16, u16)>,
 }
 
-/// Shape only: a laid-out graph's cells and engine say nothing useful in a
-/// `{:?}` of the screen that embeds it.
+/// Shape only: the laid-out cells and engine are noise in a `{:?}`.
 #[allow(clippy::missing_fields_in_debug)]
 impl std::fmt::Debug for GraphView {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -96,22 +86,16 @@ impl GraphView {
         self.zoom
     }
 
-    /// Rows the laid-out graph occupies, so a host embedding it in a document
-    /// can give it the height it actually needs.
     #[must_use]
     pub fn height(&self) -> u16 {
         self.layout.height
     }
 
-    /// Columns the laid-out graph occupies, for a host that has to know
-    /// whether it fits before committing to draw it.
     #[must_use]
     pub fn width(&self) -> u16 {
         self.layout.width
     }
 
-    /// The model currently laid out, for a host that wants to hand the same
-    /// graph to a second view (a card's static figure opened full-screen).
     pub fn model(&self) -> &Model {
         &self.model
     }
@@ -120,19 +104,14 @@ impl GraphView {
         self.selected.as_ref()
     }
 
-    // --- state in: the host signals state dynamically ---
-
-    /// Replace the whole graph (topology changed). Keeps the selection if it
-    /// survives.
+    /// Keeps the selection if it survives.
     pub fn set_model(&mut self, model: Model) {
         self.model = model;
         self.relayout();
     }
 
-    /// Lay `model` out within `max_width` columns: its own declared
-    /// direction if that fits, else the same graph redrawn top-down (only a
-    /// `LeftRight` model gets this fallback: a `TopDown` one already runs
-    /// the direction that fits a card, so there is nothing more to try).
+    /// Lay `model` out within `max_width` columns, falling back from
+    /// `LeftRight` to top-down when the declared direction overflows.
     pub fn set_model_fit(&mut self, model: Model, max_width: u16) -> Fit {
         let declared = model.rankdir;
         self.set_model(model.clone());
@@ -152,8 +131,6 @@ impl GraphView {
         }
     }
 
-    /// Update node statuses in place (e.g. a live CI poll) without changing
-    /// topology, then re-lay out: positions stay put, colors/glyphs move.
     pub fn patch_status(&mut self, updates: impl IntoIterator<Item = (NodeId, NodeStatus)>) {
         for (id, status) in updates {
             if let Some(node) = self.model.nodes.iter_mut().find(|n| n.id == id) {
@@ -186,14 +163,11 @@ impl GraphView {
         }
     }
 
-    /// Deselect. `relayout` defaults a fresh view onto its first selectable
-    /// node, which a card figure never asked for: it draws a static picture.
     pub fn clear_selection(&mut self) {
         self.selected = None;
     }
 
-    /// The searchable nodes in placement order: `(row, label)` pairs feeding
-    /// the shared `/` search, one row per visible node.
+    /// `(row, label)` per visible node in placement order, for the `/` search.
     pub fn search_rows(&self) -> Vec<(usize, String)> {
         self.searchable()
             .enumerate()
@@ -209,7 +183,6 @@ impl GraphView {
             .collect()
     }
 
-    /// Select the node at `row` of [`Self::search_rows`], scrolling it into view.
     pub fn select_nth(&mut self, row: usize) {
         let id = self.searchable().nth(row).cloned();
         if let Some(id) = id {
@@ -226,8 +199,6 @@ impl GraphView {
         self.searchable().position(|id| id == selected).unwrap_or(0)
     }
 
-    /// Mark the given [`Self::search_rows`] rows as search matches; they render
-    /// on the search background until replaced.
     pub fn set_marks(&mut self, rows: &[usize]) {
         let ids: Vec<NodeId> = self.searchable().cloned().collect();
         self.marks = rows
@@ -244,37 +215,27 @@ impl GraphView {
             .map(|p| &p.id)
     }
 
-    // --- input: semantic operations; the host's keymap decides the keys ---
-
-    /// Move the selection one node in `dir` (spatially nearest, columns for
-    /// horizontal moves).
     pub fn move_selection(&mut self, dir: Dir) {
         self.step(dir);
         self.ensure_visible();
     }
 
-    /// Follow an edge out of (forward) or into (backward) the selection.
     pub fn follow_edge(&mut self, forward: bool) {
         self.follow(forward);
         self.ensure_visible();
     }
 
-    /// Jump the selection to the first / last navigable node.
     pub fn select_end(&mut self, top: bool) {
         self.jump_end(top);
         self.ensure_visible();
     }
 
-    /// Activate the selection: fold a group root (`Folded`), else hand the
-    /// node to the host (`Activated`).
     pub fn activate(&mut self) -> Option<GraphAction> {
         let action = self.fold_or_open();
         self.ensure_visible();
         action
     }
 
-    /// Handle a mouse event: click selects (a leg wins over its container),
-    /// double-click activates (fold or open), wheel pans.
     pub fn on_mouse(&mut self, mouse: MouseEvent) -> Option<GraphAction> {
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
@@ -299,8 +260,6 @@ impl GraphView {
         }
     }
 
-    // --- render ---
-
     pub fn render(&mut self, area: Rect, buf: &mut Buffer, theme: &GraphTheme) {
         self.viewport = area;
         self.ensure_visible();
@@ -315,8 +274,6 @@ impl GraphView {
             .render(area, buf);
         self.paint_nodes(area, buf, theme);
     }
-
-    // --- internals ---
 
     fn relayout(&mut self) {
         let view = self.model.collapse(&self.collapsed);
@@ -333,7 +290,6 @@ impl GraphView {
         }
     }
 
-    /// Fold a group root, else open a plain node.
     fn fold_or_open(&mut self) -> Option<GraphAction> {
         let id = self.selected.clone()?;
         if let Some(group) = self.model.foldable_of(&id) {
@@ -375,9 +331,8 @@ impl GraphView {
                     i32::from(to.0) - i32::from(from.0),
                     i32::from(to.1) - i32::from(from.1),
                 );
-                // horizontal moves measure column edges, not centers: nodes in
-                // one column share their left x but not their width, so a wide
-                // same-column cousin's center would read as nearer/"ahead"
+                // we measure horizontal moves from left edges, since nodes in
+                // one column share their left x but differ in width
                 let edge_dx = i32::from(p.x) - i32::from(from_x);
                 let ahead = match dir {
                     Dir::Left => edge_dx < 0,
@@ -490,8 +445,8 @@ impl GraphView {
         double
     }
 
-    /// Recolor each node's cells by status (containers: border only, so member
-    /// boxes keep their own colors); the selection is bold + reversed.
+    /// A container recolors only its border, so member boxes keep their own
+    /// colors.
     fn paint_nodes(&self, area: Rect, buf: &mut Buffer, theme: &GraphTheme) {
         for p in &self.layout.placements {
             let selected = self.selected.as_ref() == Some(&p.id);
@@ -542,8 +497,8 @@ pub enum Dir {
     Down,
 }
 
-/// The point navigation measures from. A container uses its top so `j` enters
-/// the first leg and `j`/`k` cycle the legs cleanly.
+/// The point navigation measures from. A container uses its top so `j`
+/// enters its first leg.
 fn center(p: &Placement) -> (u16, u16) {
     let cy = if p.container { p.y } else { p.y + p.h / 2 };
     (p.x + p.w / 2, cy)

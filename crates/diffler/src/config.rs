@@ -1,10 +1,9 @@
 //! Layered TOML configuration: defaults → global file → project file → CLI.
 //!
-//! The global file lives at `$XDG_CONFIG_HOME/diffler/config.toml` (fallback
-//! `~/.config/diffler/config.toml`) on every OS, macOS included: unix-first,
-//! no platform dirs, so the config stays greppable and editable in one place.
+//! The global file is `$XDG_CONFIG_HOME/diffler/config.toml` (default
+//! `~/.config`) on every OS, macOS included.
 //!
-//! literal '<' is not bindable (no `<lt>` escape), a known v1 limit.
+//! A literal '<' is not bindable, since chords have no `<lt>` escape.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -17,8 +16,7 @@ use diffler_core::diffalgo::DiffAlgorithm;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// Merged effective configuration. Every field has a default so any layer
-/// (including all of them) may be absent.
+/// Every field has a default, so any layer may be absent.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -28,15 +26,12 @@ pub struct Config {
     pub editor: EditorConfig,
     pub ci: CiConfig,
     pub classify: ClassifyConfig,
-    /// The reader's own `glob = language` rules for highlighting, ahead of
-    /// what the file's name and first line imply.
+    /// `glob = language` highlighting rules, checked before name and shebang.
     pub syntax: BTreeMap<String, String>,
     pub keys: KeysConfig,
 }
 
 impl Config {
-    /// The line-diff context, algorithm and indent heuristic a backend opens
-    /// with, so every caller reads the same three config keys the same way.
     pub fn diff_settings(&self) -> diffler_core::diffalgo::DiffSettings {
         diffler_core::diffalgo::DiffSettings {
             context_lines: self.ui.context_lines,
@@ -46,15 +41,13 @@ impl Config {
     }
 }
 
-/// How the diff is computed and shown. `algorithm` is also switchable live
-/// from the diff screen's algorithm picker; that switch writes back here
-/// too, so a later background refresh keeps using it.
+/// The live algorithm picker writes back here, so a later background refresh
+/// keeps the switched algorithm.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DiffConfig {
     pub algorithm: DiffAlgorithm,
-    /// A heuristic that shifts ambiguous hunk boundaries to indentation, the
-    /// way modern git does by default. On by default.
+    /// Shifts ambiguous hunk boundaries to indentation, as git does by default.
     pub indent_heuristic: bool,
 }
 
@@ -67,10 +60,9 @@ impl Default for DiffConfig {
     }
 }
 
-/// Globs that pin a path into a sidebar bucket, consulted before the built-in
-/// table and before the repo's own `linguist-*` attributes. Gitignore-flavoured:
-/// `*` and `?` stay inside a path segment, `**` spans segments, and a pattern
-/// with no `/` matches the basename at any depth.
+/// Globs that pin a path into a sidebar bucket, ahead of `linguist-*`
+/// attributes and the built-in table. Gitignore-flavoured: a pattern with no
+/// `/` matches the basename at any depth.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ClassifyConfig {
@@ -85,8 +77,8 @@ pub struct ClassifyConfig {
 }
 
 impl ClassifyConfig {
-    /// The classifier these globs describe, buckets in sidebar order so two
-    /// patterns claiming one path resolve the same way every time.
+    /// Buckets go in sidebar order so two patterns claiming one path resolve
+    /// the same way every time.
     pub fn rules(&self) -> Rules {
         let patterns = |kind: Kind| match kind {
             Kind::Source => &self.source,
@@ -108,11 +100,7 @@ impl ClassifyConfig {
     }
 }
 
-/// How a view lists files: a flat magit-style list (one row per file, full
-/// repo-relative path), a collapsible directory tree, the review mode that
-/// splits files into to-review and viewed buckets, the kinds mode that groups
-/// them by what they are, or the walkthrough mode that lists the agent's stops
-/// instead of files (diff sidebar only for the last three).
+/// `Review`, `Kinds` and `Walkthrough` apply to the diff sidebar only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FileLayout {
@@ -124,8 +112,7 @@ pub enum FileLayout {
 }
 
 impl FileLayout {
-    /// Parse a config string, falling back to `default` with a warning on an
-    /// unknown value: the same lenient flow the theme key uses, so a typo
+    /// An unknown value falls back to `default` with a warning, so a typo
     /// never aborts startup.
     fn from_str(value: &str, key: &str, default: Self) -> (Self, Option<String>) {
         match value {
@@ -160,19 +147,11 @@ pub struct UiConfig {
     pub theme: String,
     pub context_lines: u32,
     pub recent_commits: usize,
-    /// File-list layout on the status screen; flat magit list by default.
     pub status_file_layout: FileLayout,
-    /// File-list layout in the diff sidebar; collapsible tree by default.
     pub diff_file_layout: FileLayout,
-    /// Open the diff pane in side-by-side (old left, new right) mode; `|`
-    /// toggles it live. Unified by default.
     pub side_by_side: bool,
-    /// Emphasize only what changed *semantically* (AST diff): reindentation and
-    /// block wrapping are not flagged. On by default; set false for the textual
-    /// engine.
+    /// Emphasize changes by AST diff, leaving reindentation and block wrapping unflagged.
     pub semantic_diff: bool,
-    /// Show the connected agent's live activity in the status bar. On by
-    /// default.
     pub show_agent_activity: bool,
 }
 
@@ -210,20 +189,17 @@ impl Default for McpConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EditorConfig {
-    /// Editor command. `None` falls back to `$DIFFLER_EDITOR` then `$EDITOR`
-    /// at the point of use, not at config load time.
+    /// `None` falls back to `$DIFFLER_EDITOR`, then `$EDITOR`, read at the point of use.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
 }
 
-/// CI monitoring: which provider to use for the repo's runs and how often to
-/// re-poll. `provider = "auto"` detects from the remote/config files.
+/// `provider = "auto"` detects the forge from the remote and config files.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CiConfig {
     pub provider: String,
-    /// Which git remote's CI to follow. Unset picks the one the branch pushes
-    /// to, then `origin`.
+    /// Unset picks the remote the branch pushes to, then `origin`.
     pub remote: Option<String>,
     pub poll_seconds: u64,
     pub gitlab: CiGitLabConfig,
@@ -242,8 +218,7 @@ impl Default for CiConfig {
     }
 }
 
-/// GitLab-specific CI settings. `host` overrides remote detection for a
-/// self-hosted instance.
+/// `host` overrides remote detection for a self-hosted instance.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CiGitLabConfig {
@@ -251,8 +226,7 @@ pub struct CiGitLabConfig {
     pub host: Option<String>,
 }
 
-/// Forgejo-specific CI settings. `host` overrides remote detection for a
-/// self-hosted instance (without it, a forced provider targets codeberg.org).
+/// `host` overrides remote detection for a self-hosted instance.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CiForgejoConfig {
@@ -260,26 +234,21 @@ pub struct CiForgejoConfig {
     pub host: Option<String>,
 }
 
-/// Key remaps per screen and per transient: action (or sub-key) name → chord
-/// string. Defaults are empty; built-in bindings live in the keymap and config
-/// entries override them. The `commit`/`branch`/`log_menu` tables address the
-/// transient sub-keys (e.g. `[keys.commit] amend = "m"`).
+/// Action name → chord, per screen and per transient (`[keys.commit] amend = "m"`).
+/// Entries override the keymap's built-in bindings.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct KeysConfig {
     pub status: BTreeMap<String, String>,
     pub diff: BTreeMap<String, String>,
     pub log: BTreeMap<String, String>,
-    /// The CI job-log screen; `logs` is the pre-rename TOML key, kept working.
+    /// Configs written as `[keys.logs]` still load.
     #[serde(alias = "logs")]
     pub ci_log: BTreeMap<String, String>,
     pub graph: BTreeMap<String, String>,
     pub prs: BTreeMap<String, String>,
-    /// The whole-file view with its blame column.
     pub file: BTreeMap<String, String>,
-    /// The language breakdown screen.
     pub stats: BTreeMap<String, String>,
-    /// The project tabs, from every screen.
     pub tabs: BTreeMap<String, String>,
     pub commit: BTreeMap<String, String>,
     pub branch: BTreeMap<String, String>,
@@ -292,7 +261,6 @@ pub struct KeysConfig {
 }
 
 impl KeysConfig {
-    /// Override table for a transient's sub-keys.
     pub fn transient(&self, kind: crate::transient::TransientKind) -> &BTreeMap<String, String> {
         match kind {
             crate::transient::TransientKind::Commit => &self.commit,
@@ -313,8 +281,7 @@ fn project_config_path(repo_root: &Path) -> PathBuf {
 
 const PROJECT_CONFIG: &str = "config.toml";
 
-/// Set `"glob" = "language"` under `[syntax]` in the project's own config,
-/// keeping every other line as the reader wrote it.
+/// Keeps every other line of the project config as the reader wrote it.
 pub fn save_syntax_rule(repo_root: &Path, glob: &str, language: &str) -> std::io::Result<()> {
     let text = match std::fs::read_to_string(project_config_path(repo_root)) {
         Ok(text) => text,
@@ -327,8 +294,7 @@ pub fn save_syntax_rule(repo_root: &Path, glob: &str, language: &str) -> std::io
     diffler_core::store::write_file(repo_root, PROJECT_CONFIG, &edited)
 }
 
-/// `text` with the `[syntax]` rule for `glob` set to `language`, or `None`
-/// when `text` spells its rules in a shape we cannot edit line by line.
+/// `None` when `text` spells its rules in a shape we cannot edit line by line.
 fn with_syntax_rule(text: &str, glob: &str, language: &str) -> Option<String> {
     let rule = format!("{} = {}", toml_string(glob), toml_string(language));
     let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
@@ -361,7 +327,6 @@ fn with_syntax_rule(text: &str, glob: &str, language: &str) -> Option<String> {
     (saved == language).then_some(edited)
 }
 
-/// Whether `line` opens the `[name]` table, however it is spaced or commented.
 fn is_table_header(line: &str, name: &str) -> bool {
     line.trim_start().starts_with('[')
         && toml::from_str::<toml::Table>(line).is_ok_and(|table| {
@@ -369,17 +334,15 @@ fn is_table_header(line: &str, name: &str) -> bool {
         })
 }
 
-/// Whether `line` assigns `key`, in any of TOML's spellings of it.
 fn sets_key(line: &str, key: &str) -> bool {
     toml::from_str::<toml::Table>(line).is_ok_and(|table| table.contains_key(key))
 }
 
-/// `value` as a TOML basic string.
 fn toml_string(value: &str) -> String {
     toml::Value::from(value).to_string()
 }
 
-/// CLI flags that override file layers. Every flag maps to a config key.
+/// Every flag maps to a config key.
 #[derive(Debug, Clone, Default)]
 pub struct CliOverrides {
     pub port: Option<u16>,
@@ -410,10 +373,8 @@ impl fmt::Display for Origin {
 #[derive(Debug, Default)]
 pub struct LoadedConfig {
     pub config: Config,
-    /// Origin per dotted key actually set by some layer; keys absent here
-    /// kept their built-in default.
+    /// A key absent here kept its built-in default.
     pub origins: BTreeMap<String, Origin>,
-    /// Non-fatal problems (unknown keys) worth surfacing to the user.
     pub warnings: Vec<String>,
 }
 
@@ -431,8 +392,7 @@ pub enum ConfigError {
     Render(#[from] toml::ser::Error),
 }
 
-/// Load and merge all configuration layers. Missing files are fine; a file
-/// that exists but cannot be read or parsed is an error.
+/// A missing file is skipped; an unreadable or invalid one is an error.
 pub fn load(repo_root: Option<&Path>, cli: &CliOverrides) -> Result<LoadedConfig, ConfigError> {
     let global = global_config_path_from(
         std::env::var_os("XDG_CONFIG_HOME"),
@@ -486,9 +446,7 @@ fn load_layers(
     })
 }
 
-/// Partial mirror of [`Config`] used for layering: every scalar is optional so
-/// merging is per-field (later layer wins per field, never whole-section);
-/// keys maps merge per entry.
+/// Every scalar is optional so a later layer wins per field; keys maps merge per entry.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct PartialConfig {
@@ -505,8 +463,7 @@ struct PartialConfig {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct PartialDiff {
-    // a raw string, so an unknown value warns and falls back, leaving the
-    // rest of the parse intact
+    // raw strings, so an unknown value warns without aborting the parse
     algorithm: Option<String>,
     indent_heuristic: Option<bool>,
 }
@@ -517,8 +474,7 @@ struct PartialUi {
     theme: Option<String>,
     context_lines: Option<u32>,
     recent_commits: Option<usize>,
-    // layouts are read as raw strings so an unknown value warns and falls back
-    // (via [`FileLayout::from_str`]) instead of aborting the whole parse
+    // raw strings, so an unknown value warns without aborting the parse
     status_file_layout: Option<String>,
     diff_file_layout: Option<String>,
     side_by_side: Option<bool>,
@@ -577,10 +533,8 @@ fn read_layer(path: &Path, warnings: &mut Vec<String>) -> Result<PartialConfig, 
     .map_err(parse_err)
 }
 
-/// Apply a layer's file-layout value: a value the key does not accept keeps
-/// the prior value (the default) and warns, matching the theme key's lenient
-/// handling. Each key takes its own set: the review layout needs viewed marks,
-/// and the flat list is only worth having where the paths are short.
+/// Each key accepts its own set: the review layout needs viewed marks, and the
+/// flat list suits only short paths. A rejected value warns and keeps the prior one.
 fn set_layout(
     value: Option<String>,
     target: &mut FileLayout,
@@ -611,8 +565,6 @@ fn set_layout(
     origins.insert(key.to_owned(), origin.clone());
 }
 
-/// Apply a layer's `diff.algorithm` value: an unrecognized name keeps the
-/// prior value and warns, matching the file-layout keys' lenient handling.
 fn set_algorithm(
     value: Option<String>,
     target: &mut DiffAlgorithm,
@@ -633,7 +585,7 @@ fn set_algorithm(
     origins.insert("diff.algorithm".to_owned(), origin.clone());
 }
 
-// flat per-key application list
+// a flat list, one statement per key
 #[allow(clippy::too_many_lines)]
 fn apply_layer(
     layer: PartialConfig,
@@ -774,8 +726,7 @@ fn apply_layer(
         origins.insert("ci.forgejo.host".to_owned(), origin.clone());
     }
 
-    // a bucket a layer lists replaces the one below it: half-overriding a
-    // bucket's globs by appending would make the effective set unreadable
+    // a bucket a layer lists replaces the lower layer's, so the effective globs stay readable
     let classify_buckets = [
         (layer.classify.source, &mut config.classify.source, "source"),
         (layer.classify.tests, &mut config.classify.tests, "tests"),
@@ -863,8 +814,7 @@ fn apply_cli(cli: &CliOverrides, config: &mut Config, origins: &mut BTreeMap<Str
     }
 }
 
-/// Scalar keys always listed in the `--dump` origins block; `keys.*` entries
-/// are appended dynamically since their names come from the user.
+/// Always listed in the `--dump` origins block; `keys.*` entries follow from the user's config.
 const SCALAR_KEYS: [&str; 18] = [
     "ui.theme",
     "ui.context_lines",
@@ -886,8 +836,7 @@ const SCALAR_KEYS: [&str; 18] = [
     "ci.forgejo.host",
 ];
 
-/// Render the merged config as TOML followed by a comment block with the
-/// origin of every tracked key, for `diffler config --dump`.
+/// `diffler config --dump`: the merged TOML, then each key's origin as comments.
 pub fn render_dump(loaded: &LoadedConfig) -> Result<String, ConfigError> {
     use std::fmt::Write as _;
 
@@ -914,8 +863,7 @@ pub fn render_dump(loaded: &LoadedConfig) -> Result<String, ConfigError> {
     Ok(out)
 }
 
-/// One key press in a chord, mirroring crossterm's `KeyEvent` shape: an
-/// uppercase letter carries `shift` like the events crossterm delivers.
+/// An uppercase letter carries `shift`, as crossterm's events do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyPress {
     pub code: KeyCode,
@@ -924,7 +872,6 @@ pub struct KeyPress {
     pub shift: bool,
 }
 
-/// A chord is one or more key presses in sequence (e.g. `cc`, `<c-x><c-c>`).
 pub type Chord = Vec<KeyPress>;
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -937,9 +884,8 @@ pub enum ChordError {
     UnknownKey(String),
 }
 
-/// Parse a chord string: plain chars (`q`, `V` = shift), bracketed tokens
-/// (`<c-r>`, `<a-x>`, `<cr>`, `<tab>`, `<esc>`, `<space>`, `<s-cr>`), and
-/// concatenation for sequences (`cc`, `<c-x><c-c>`).
+/// Plain chars (`V` is shift+v), bracketed tokens (`<c-r>`, `<s-cr>`), and
+/// concatenation for sequences (`<c-x><c-c>`).
 pub fn parse_chord(s: &str) -> Result<Chord, ChordError> {
     if s.is_empty() {
         return Err(ChordError::Empty);
@@ -968,8 +914,6 @@ pub fn parse_chord(s: &str) -> Result<Chord, ChordError> {
     Ok(presses)
 }
 
-/// Parse a chord that must be exactly one key press; `None` otherwise. Prefix
-/// and transient keys are single-press by design.
 pub(crate) fn single_press(chord: &str) -> Option<KeyPress> {
     let mut presses = parse_chord(chord).ok()?;
     if presses.len() == 1 {
@@ -1019,8 +963,7 @@ fn parse_bracketed(token: &str) -> Result<KeyPress, ChordError> {
             match (rest_chars.next(), rest_chars.next()) {
                 (Some(c), None) => {
                     shift = shift || c.is_uppercase();
-                    // crossterm delivers shift+letter as Char('A')+SHIFT, so
-                    // Char('a')+SHIFT would never match an incoming event
+                    // crossterm delivers shift+a as Char('A')+SHIFT
                     let c = if shift && c.is_ascii_lowercase() {
                         c.to_ascii_uppercase()
                     } else {
@@ -1040,7 +983,7 @@ fn parse_bracketed(token: &str) -> Result<KeyPress, ChordError> {
     })
 }
 
-/// Strip a leading `m-` modifier prefix (case-insensitive), e.g. `c-` / `C-`.
+/// Case-insensitive: `c-` and `C-` both match.
 fn strip_modifier(rest: &str, modifier: char) -> Option<&str> {
     let mut chars = rest.chars();
     if chars.next()?.to_ascii_lowercase() != modifier {
@@ -1122,7 +1065,6 @@ mod tests {
             "[ui]\ntheme = \"global-theme\"\ncontext_lines = 5\n\n[mcp]\nport = 9000\n",
         )
         .unwrap();
-        // project overrides only theme; context_lines must survive from global
         fs::write(&project, "[ui]\ntheme = \"project-theme\"\n").unwrap();
         let cli = CliOverrides {
             port: Some(9999),
@@ -1171,7 +1113,6 @@ mod tests {
         fs::write(&project, "[keys.status]\nrefresh = \"R\"\n").unwrap();
 
         let loaded = load_layers(Some(&global), Some(&project), &CliOverrides::default()).unwrap();
-        // per-entry merge: quit survives from global, refresh overridden by project
         assert_eq!(loaded.config.keys.status["quit"], "q");
         assert_eq!(loaded.config.keys.status["refresh"], "R");
         assert_eq!(loaded.config.keys.diff["fold"], "<tab>");
@@ -1241,7 +1182,6 @@ mod tests {
     fn file_layouts_override_in_either_direction() {
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().join("project.toml");
-        // flip both away from their defaults: status to tree, diff to review
         fs::write(
             &project,
             "[ui]\nstatus_file_layout = \"tree\"\ndiff_file_layout = \"review\"\n",
@@ -1286,7 +1226,6 @@ mod tests {
         let project = dir.path().join("project.toml");
         fs::write(&project, "[ui]\nstatus_file_layout = \"nope\"\n").unwrap();
         let loaded = load_layers(None, Some(&project), &CliOverrides::default()).unwrap();
-        // the bad value falls back to the default; nothing aborts
         assert_eq!(loaded.config.ui.status_file_layout, FileLayout::List);
         assert!(!loaded.origins.contains_key("ui.status_file_layout"));
         assert_eq!(loaded.warnings.len(), 1);
@@ -1535,19 +1474,13 @@ mod tests {
         );
     }
 
-    // <s-{letter}> must produce the same press as the bare uppercase
-    // letter, because crossterm delivers shift+a as Char('A')+SHIFT, not
-    // Char('a')+SHIFT.
     #[test]
     fn chord_shift_letter_normalizes_to_uppercase() {
         assert_eq!(parse_chord("<s-a>").unwrap(), parse_chord("A").unwrap());
         assert_eq!(parse_chord("<s-z>").unwrap(), parse_chord("Z").unwrap());
-        // uppercase input already works the same way (regression guard)
         assert_eq!(parse_chord("<s-A>").unwrap(), parse_chord("A").unwrap());
     }
 
-    // A bad chord string in a keys section must not abort loading;
-    // the entry is dropped and a warning naming the dotted key path is emitted.
     #[test]
     fn bad_chord_in_keys_warns_and_drops_entry() {
         let dir = tempfile::tempdir().unwrap();
@@ -1558,11 +1491,8 @@ mod tests {
         )
         .unwrap();
         let loaded = load_layers(Some(&path), None, &CliOverrides::default()).unwrap();
-        // good chord survives
         assert_eq!(loaded.config.keys.status["quit"], "q");
-        // bad chord is dropped
         assert!(!loaded.config.keys.status.contains_key("refresh"));
-        // warning names the dotted key path and the bad string
         assert_eq!(loaded.warnings.len(), 1, "expected exactly one warning");
         let w = &loaded.warnings[0];
         assert!(
@@ -1611,7 +1541,6 @@ mod tests {
         assert_eq!(loaded.warnings.len(), 1, "{:?}", loaded.warnings);
     }
 
-    // Good chords in keys sections are stored and not warned about.
     #[test]
     fn valid_chords_in_keys_stored_without_warnings() {
         let dir = tempfile::tempdir().unwrap();
@@ -1623,9 +1552,8 @@ mod tests {
         assert!(loaded.warnings.is_empty());
     }
 
-    /// Uncomment the `# key = value` lines of the example config, leaving the
-    /// prose comments alone, so the documentation can be loaded and compared
-    /// against the built-in defaults.
+    /// The example config with its `# key = value` lines uncommented, so we can
+    /// compare it against the built-in defaults.
     fn uncommented_example() -> String {
         const EXAMPLE: &str = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),

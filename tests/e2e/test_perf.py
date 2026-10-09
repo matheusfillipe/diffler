@@ -1,7 +1,6 @@
 # Latency ceilings through a real PTY: first frame and diff file-switching
-# must stay interactive even with large files. Ceilings are generous for CI
-# noise; the point is catching order-of-magnitude regressions (e.g. heavy
-# work creeping back onto the render path).
+# must stay interactive even with large files. We keep the ceilings generous
+# for CI noise, so they catch order-of-magnitude regressions only.
 import subprocess
 import time
 

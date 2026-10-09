@@ -1,10 +1,6 @@
-//! jj backend for the [`Vcs`] trait: a colocated jj/git repo (`.jj` beside
-//! `.git`, as `jj git init --colocate` makes). Reads delegate to [`GitVcs`],
-//! since a colocated repo keeps git's HEAD on jj's `@-` and the working
-//! copy on disk matches `@`, so diff, log, blame, and tree reads already
-//! answer correctly through git2. Writes shell out to the `jj` CLI: jj owns
-//! the operation log and working-copy snapshot, and duplicating that through
-//! git2 would fight the real source of truth.
+//! jj backend for a colocated repo. Reads delegate to [`GitVcs`], since git's
+//! HEAD sits on `@-` and the worktree matches `@`. Writes shell out to `jj`,
+//! which owns the operation log and working-copy snapshot.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -23,7 +19,6 @@ pub struct JjVcs {
 }
 
 impl JjVcs {
-    /// Open at [`DiffSettings::default`].
     pub fn open(root: &Path) -> Result<Self, VcsError> {
         Self::open_with_settings(root, &DiffSettings::default())
     }
@@ -35,10 +30,8 @@ impl JjVcs {
         })
     }
 
-    /// Run a jj subcommand with the repo root as its working directory (jj
-    /// resolves paths against the process cwd, not `-R`) and return trimmed
-    /// stdout. A non-zero exit becomes a [`VcsError::Rejected`] carrying jj's
-    /// `Error: ...` summary line.
+    /// Run jj from the repo root, since jj resolves paths against the cwd. A
+    /// failure carries jj's `Error:` line.
     fn run(&self, args: &[&str]) -> Result<String, VcsError> {
         let output = Command::new("jj")
             .current_dir(&self.root)
@@ -67,16 +60,15 @@ impl JjVcs {
         Err(VcsError::Rejected(message))
     }
 
-    /// The oid a write just landed on: colocation exports jj's state to git
-    /// synchronously, so HEAD (which sits on `@-`) already reflects it.
+    /// Colocation exports jj's state to git synchronously, so HEAD already
+    /// names the commit a write made.
     fn head_oid(&self) -> Result<String, VcsError> {
         self.git.resolve("HEAD")
     }
 }
 
-/// `s` as a jj string literal, so a path or bookmark name reaches jj's
-/// fileset and revset parsers as one symbol: `fix(x)` and `u@v` are valid
-/// git names that parse as expressions when passed bare.
+/// `s` as a jj string literal, since git names like `fix(x)` and `u@v` parse
+/// as fileset or revset expressions when passed bare.
 fn quoted(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
@@ -102,11 +94,8 @@ impl Vcs for JjVcs {
         self.git.head()
     }
 
-    /// Built from `working_tree_diff` (`@-` vs the whole working copy in one
-    /// diff pass): jj's snapshot marks a new file intent-to-add in the
-    /// colocated index, so merging git's own untracked/unstaged/staged lists
-    /// would double-count it, git2 reporting it once as added (tree vs
-    /// index) and again as modified (index vs workdir).
+    /// One diff pass of `@-` vs the working copy. jj marks a new file
+    /// intent-to-add in the index, so git's three lists would count it twice.
     fn status(&self) -> Result<StatusModel, VcsError> {
         Ok(StatusModel {
             untracked: DiffModel::default(),
@@ -235,12 +224,8 @@ impl Vcs for JjVcs {
         self.git.head_message()
     }
 
-    /// `message: None` folds the working copy into its parent, keeping the
-    /// parent's description (`jj squash -u`: a bare squash opens an editor
-    /// when both sides are described); `Some` with `use_index` folds and
-    /// sets the new description in the same squash; `Some` without
-    /// `use_index` rewords the parent alone (`jj describe`), leaving the
-    /// working copy untouched.
+    /// `None` squashes with `-u`, since a bare squash opens an editor when
+    /// both sides are described. `Some` without `use_index` rewords `@-` alone.
     fn amend(&self, message: Option<&str>, use_index: bool) -> Result<String, VcsError> {
         if let Some(message) = message
             && message.trim().is_empty()
@@ -257,8 +242,7 @@ impl Vcs for JjVcs {
         self.head_oid()
     }
 
-    /// Labels the current change (`@`) with a bookmark; `checkout` is a
-    /// no-op since `@` is already where the reader is standing.
+    /// Bookmarks `@`; `checkout` is moot since `@` is already checked out.
     fn create_branch(&self, name: &str, _checkout: bool) -> Result<(), VcsError> {
         self.run(&["bookmark", "create", "-r", "@", "--", name])?;
         Ok(())
@@ -275,9 +259,8 @@ impl Vcs for JjVcs {
         Ok(())
     }
 
-    /// `jj new <rev>` keeps working on top of the branch; `jj edit` edits
-    /// its tip commit in place. `jj new` never discards the change being
-    /// left behind, only detaches it.
+    /// `jj new <rev>` works on top of the branch and keeps the change left
+    /// behind; `jj edit` would rewrite the tip in place.
     fn checkout(&self, name: &str) -> Result<(), VcsError> {
         self.run(&["new", "--", &quoted(name)])?;
         Ok(())

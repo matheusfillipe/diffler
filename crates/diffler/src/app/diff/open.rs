@@ -22,16 +22,10 @@ impl App {
 
     /// Open the walkthrough `id` as its own review source, rendering whatever
     /// review it is about: the working tree by default, or the commit,
-    /// range, or PR the human had open when it was published. Even over an
-    /// empty diff there this still opens: its own anchored files fill the
-    /// pane once they resolve, so that is not "nothing to review" here.
-    ///
-    /// A PR `about` names isn't always resolved yet (a fresh session never
-    /// opened it, so `pr_ranges` has nothing for it): `resolve_walkthrough_pr`
-    /// resolves it the way opening that PR directly would, fetching its head
-    /// first when needed. Returns `false` while that resolution is still in
-    /// flight, leaving `self.diff` untouched; the caller retries once it
-    /// lands rather than opening a diff that renders the PR as unchanged.
+    /// range, or PR the human had open when it was published. It opens over
+    /// an empty diff too, since its anchored files fill the pane once they
+    /// resolve. Returns `false` while a PR's range is still resolving, leaving
+    /// `self.diff` untouched for the caller to retry.
     pub(crate) fn open_walkthrough_diff(&mut self, id: &str) -> bool {
         let about = self.walkthrough_about(id);
         if let ReviewSource::Pr { number } = about
@@ -68,23 +62,18 @@ impl App {
         view.focus = focus;
     }
 
-    /// Shared ceremony for every diff opener: load the source's review state,
-    /// build a fresh `DiffView` from the current file-layout config, install
-    /// it as `self.diff`, and push the diff screen. On a source load failure
-    /// the error is reported and nothing changes (`self.diff` stays `None` or
-    /// keeps the previous view).
-    /// `allow_empty` skips the "nothing to review" refusal below for a caller
-    /// whose own files will fill the pane once they resolve (a walkthrough
-    /// over a clean tree): every other opener passes `false`.
+    /// Load the source's review state, install a fresh `DiffView` and push the
+    /// diff screen. A load failure is reported and changes nothing.
+    /// `allow_empty` skips the empty-diff refusal, for a walkthrough whose own
+    /// files fill the pane once they resolve.
     fn install_diff_view(
         &mut self,
         source: ReviewSource,
         model: Option<DiffModel>,
         allow_empty: bool,
     ) {
-        // a source with no files has nothing to read and no line to comment on,
-        // so entering it strands the reader on an empty screen: say why instead.
-        // A review already open stays open when its diff empties out.
+        // we refuse to open a source with no files and say why; a review
+        // already open stays open when its diff empties out
         let files = model.as_ref().map_or_else(
             || self.review.model().files.len(),
             |model| model.files.len(),
@@ -101,8 +90,8 @@ impl App {
             self.error(err.to_string());
             return;
         }
-        // a queued open can land while a comment is being written: the draft
-        // rides along when it still belongs here, and is never dropped silently
+        // a queued open can arrive while a comment is being written, so we
+        // carry the draft over when it still belongs here
         let open = self.diff.take();
         let same_source = open.as_ref().is_some_and(|open| open.source == source);
         let drafted_path = open
@@ -121,7 +110,7 @@ impl App {
         match draft {
             Some(draft) if same_source => {
                 // the composer only draws on the file it is anchored to, so
-                // the rebuilt view has to land back on it
+                // we select that file in the rebuilt view
                 if let Some(index) = drafted_path.and_then(|path| {
                     view.model(&self.review)
                         .files
@@ -207,8 +196,7 @@ impl App {
 
     /// Review the branch's open PR: diff `merge-base..head` under the stable
     /// `pr-<n>` source. A head we don't have yet is fetched first, from the
-    /// ref the forge serves it under, and the open retries when the fetch
-    /// lands.
+    /// ref the forge serves it under, and the open retries after the fetch.
     pub(crate) fn open_pr_review(&mut self) {
         let Some(pr) = self.pr.clone() else {
             self.info("no open PR detected for this branch");
@@ -227,9 +215,9 @@ impl App {
     }
 
     /// `(merge_base, head)` for `pr` against the local objects, fetching its
-    /// head first when the repository doesn't have it: the fetch lands as a
-    /// `git_finished` continuation keyed off `pending_pr_open`, so `None`
-    /// here means the caller must retry once that lands.
+    /// head first when the repository lacks it. `None` means the caller
+    /// retries from the `git_finished` continuation keyed off
+    /// `pending_pr_open`.
     pub(crate) fn ensure_pr_range(
         &mut self,
         pr: crate::ci::PullRequest,
@@ -241,8 +229,7 @@ impl App {
         let base_ref = pr.base_ref.clone();
         let label = Self::pr_fetch_label(pr.number);
         self.pending_pr_open = Some(pr);
-        // the base ref comes along so merge-base reflects the forge's
-        // view, not however stale the last fetch left it
+        // we fetch the base ref too so merge-base matches the forge's view
         self.pending_git = Some(crate::app::GitOp {
             label,
             argv: vec![
@@ -283,12 +270,9 @@ impl App {
             .or_else(|| self.prs.iter().find(|pr| pr.number == number).cloned())
     }
 
-    /// Make sure `pr_ranges` holds `number`, the way opening that PR
-    /// directly resolves it: a PR already known locally resolves its range
-    /// or queues fetching its head; a number nobody has fetched yet queues
-    /// the open-PRs list and is looked up once it lands. `false` means
-    /// resolution is still in flight (a git fetch or a forge poll) and the
-    /// caller must retry once it completes.
+    /// Make sure `pr_ranges` holds `number`, queueing a head fetch or the
+    /// open-PRs list when needed. `false` means resolution is still in flight
+    /// and the caller retries once it completes.
     pub(crate) fn resolve_walkthrough_pr(&mut self, number: u64) -> bool {
         let Some(pr) = self.known_pr(number) else {
             if self.status.prs_loaded {
@@ -327,10 +311,8 @@ impl App {
                     self.error(err.to_string());
                     return;
                 }
-                // re-opening the PR already on screen (a head-move refresh,
-                // or picking it again from the list) swaps the model in
-                // place: the reviewer keeps their cursor, folds, and screen
-                // stack instead of landing on a fresh view
+                // re-opening the PR already on screen swaps the model in place,
+                // so the reviewer keeps their cursor, folds and screen stack
                 if let Some(diff) = self.diff.as_ref().filter(|d| d.source == source) {
                     // capture before the model swap, or the position named
                     // would already read against the row it is moving to

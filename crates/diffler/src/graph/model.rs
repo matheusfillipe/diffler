@@ -1,11 +1,8 @@
-//! The engine-agnostic graph model. A plain directed graph: cycles are
-//! allowed (CI pipelines are DAGs, but call/reference maps are not), so layout
-//! engines, not the model, decide how to handle back-edges. Front-ends (GitHub
-//! Actions today; DOT/mermaid later) all build this same shape.
+//! The engine-agnostic graph model. It allows cycles, so the layout engine
+//! decides how to handle back-edges.
 
 use std::collections::HashSet;
 
-/// Stable node key from the source (a CI job name, a DOT id, a symbol path).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NodeId(pub String);
 
@@ -15,8 +12,6 @@ impl NodeId {
     }
 }
 
-/// Status of a node, driving its color and glyph. Maps from CI job conclusions
-/// now; generic enough for other producers later.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeStatus {
     Ok,
@@ -28,7 +23,6 @@ pub enum NodeStatus {
 }
 
 impl NodeStatus {
-    /// A compact status glyph shown beside the label.
     pub fn glyph(self) -> &'static str {
         match self {
             Self::Ok => "✓",
@@ -40,8 +34,8 @@ impl NodeStatus {
         }
     }
 
-    /// The more severe of two statuses, so a failing matrix leg dominates a
-    /// collapsed group's (or aggregate run's) status.
+    /// The more severe of two statuses, so a failing matrix leg colours its
+    /// collapsed group.
     #[must_use]
     pub fn worse(self, other: Self) -> Self {
         let rank = |s: Self| match s {
@@ -72,26 +66,21 @@ pub struct Node {
     pub id: NodeId,
     pub label: String,
     pub status: NodeStatus,
-    /// Set on a member node (a CI matrix leg): the key of the foldable group it
-    /// belongs to. Members hang off their group's root and are hidden when the
-    /// group is collapsed. `None` for ordinary nodes and group roots.
+    /// The foldable group a member node (a CI matrix leg) belongs to; we hide
+    /// it while the group is collapsed.
     pub group: Option<String>,
-    /// Set on the one *root* node of a foldable group: the group key. Only a
-    /// root node is foldable (it takes the collapse shortcut); external edges
-    /// connect to the root, and its members branch off it.
+    /// The group key on a group's root, the one node that folds and that
+    /// external edges connect to.
     pub foldable: Option<String>,
-    /// The id of the outermost mermaid `subgraph` this node was declared
-    /// inside, if any. Purely cosmetic: it neither ranks nor groups the node,
-    /// it only earns an outline drawn around it and its siblings once they
-    /// are laid out (see [`Model::subgraphs`]).
+    /// The outermost mermaid `subgraph` this node was declared in. It only
+    /// affects the outline we draw, never ranking.
     pub subgraph: Option<String>,
-    /// A mermaid `{decision}` node: drawn with a distinct marker (`◇`), since
-    /// the terminal grid cannot actually draw its diamond shape.
+    /// A mermaid `{decision}` node, drawn with a `◇` marker since the grid
+    /// cannot draw a diamond.
     pub decision: bool,
 }
 
 impl Node {
-    /// An ordinary node whose label is its id.
     pub fn leaf(id: &str, status: NodeStatus) -> Self {
         Self {
             id: NodeId::new(id),
@@ -104,14 +93,12 @@ impl Node {
         }
     }
 
-    /// Mark this node a member (leg) of `group`.
     #[must_use]
     pub fn in_group(mut self, group: &str) -> Self {
         self.group = Some(group.to_owned());
         self
     }
 
-    /// Mark this node the foldable root of `group`.
     #[must_use]
     pub fn fold_root(mut self, group: &str) -> Self {
         self.foldable = Some(group.to_owned());
@@ -126,8 +113,7 @@ pub struct Edge {
     pub label: Option<String>,
 }
 
-/// A mermaid `subgraph`, flattened into the ordinary node/edge flow but drawn
-/// with an outline around its members when, once laid out, they land
+/// A mermaid `subgraph`. We outline its members only when they land
 /// contiguous with no foreign node inside their bounding box.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Subgraph {
@@ -153,13 +139,10 @@ impl Model {
         }
     }
 
-    /// Index of a node by id, for engines that key on position.
     pub fn index_of(&self, id: &NodeId) -> Option<usize> {
         self.nodes.iter().position(|n| &n.id == id)
     }
 
-    /// The foldable group key of a node, if it is a group root. Only roots are
-    /// foldable; members and ordinary nodes return `None`.
     pub fn foldable_of(&self, id: &NodeId) -> Option<String> {
         self.nodes
             .iter()
@@ -167,10 +150,8 @@ impl Model {
             .and_then(|n| n.foldable.clone())
     }
 
-    /// The render view for a set of collapsed groups. Every foldable root gets a
-    /// fold marker (`▾` open / `▸ … (N)` closed); a collapsed group's members and
-    /// the edges touching them are dropped, so only the root stays in the flow.
-    /// The root's status reflects the worst of its members either way.
+    /// The model with `collapsed` groups' members and their edges dropped. A
+    /// root always takes the worst status of its members.
     #[must_use]
     pub fn collapse(&self, collapsed: &HashSet<String>) -> Model {
         let hidden: HashSet<&NodeId> = self
@@ -214,8 +195,6 @@ impl Model {
         out
     }
 
-    /// A CI-shaped sample used by tests and snapshots: lint/typos/deny fan into
-    /// a foldable test matrix, which fans into the publish jobs.
     #[cfg(test)]
     pub(crate) fn demo() -> Self {
         use NodeStatus::{Failed, Neutral, Ok, Queued, Running};
@@ -224,7 +203,6 @@ impl Model {
             Node::leaf("lint", Ok),
             Node::leaf("typos", Ok),
             Node::leaf("deny", Ok),
-            // the test matrix: one foldable root with three legs branching off it
             Node::leaf("test", Neutral).fold_root("test"),
             Node::leaf("test ubuntu", Ok).in_group("test"),
             Node::leaf("test macos", Ok).in_group("test"),
@@ -240,8 +218,6 @@ impl Model {
             label: None,
         };
         model.edges = vec![
-            // the flow connects to the group as a whole; the legs live inside
-            // its container (by membership), not via edges
             edge("lint", "test"),
             edge("typos", "test"),
             edge("deny", "test"),

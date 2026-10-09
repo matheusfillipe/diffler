@@ -71,10 +71,8 @@ impl App {
         }
     }
 
-    /// Every tool call counts as agent activity: `report_activity` sets the
-    /// indicator to the agent's own words, and every other call maps itself
-    /// to a plain phrase, so a quiet stretch between calls never reads as
-    /// idle just because the agent didn't say anything extra.
+    /// We count every tool call as activity, so an agent that never calls
+    /// `report_activity` still shows as busy.
     pub(crate) fn record_mcp_activity(&mut self, kind: &McpRequestKind) {
         let (focus, file): (&str, Option<&str>) = match kind {
             McpRequestKind::ReportActivity { focus, file } => (focus, file.as_deref()),
@@ -109,9 +107,7 @@ impl App {
             })
             .collect();
         let (open, replied, resolved) = count_by_status(&self.review.session.comments);
-        // named, not just skipped, so an agent knows a walkthrough or review
-        // might be missing from the lists below because its file would not
-        // parse, rather than reading a clean repository that has none
+        // we name unparsable review files so the agent knows the lists below may be incomplete
         let corrupt_reviews = self
             .review
             .all_reviews_and_corrupt()
@@ -136,7 +132,6 @@ impl App {
         }
     }
 
-    /// The name an agent passes as `project`: the repository's folder name.
     pub(crate) fn project_name(&self) -> String {
         self.review
             .repo_root
@@ -145,8 +140,6 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// This repository as one project tab, counting the comments across
-    /// every one of its reviews.
     pub(crate) fn project_info(&self, active: bool) -> ProjectInfo {
         let (open, replied) =
             self.review_summaries()
@@ -166,7 +159,6 @@ impl App {
         }
     }
 
-    /// Whether a comment or a walkthrough with `id` lives in this repository.
     pub(crate) fn owns_id(&self, id: &str) -> bool {
         self.review.all_reviews().is_ok_and(|reviews| {
             reviews.iter().any(|(source, session)| {
@@ -176,7 +168,6 @@ impl App {
         })
     }
 
-    /// Every walkthrough on disk, newest published first.
     fn walkthrough_summaries(&self) -> Vec<WalkthroughSummary> {
         let mut rows: Vec<WalkthroughSummary> = self
             .review
@@ -200,10 +191,8 @@ impl App {
         rows
     }
 
-    /// The walkthrough `id` names, or the newest one on disk when `id` is
-    /// `None`. `Ok(None)` means no such walkthrough exists; a genuine read
-    /// failure (a corrupt review file) is `Err`, so the two are never folded
-    /// into the same answer.
+    /// The newest walkthrough when `id` is `None`. `Ok(None)` means none
+    /// exists; a corrupt review file is `Err`.
     fn walkthrough_info(&mut self, id: Option<&str>) -> Result<Option<WalkthroughInfo>, String> {
         let id = match id {
             Some(id) => id.to_owned(),
@@ -256,18 +245,10 @@ impl App {
         }))
     }
 
-    /// Store the agent's reading order as its own review source: revises the
-    /// walkthrough `id` names, or creates a new one when `id` is `None`.
-    /// Every stop becomes an agent comment, so the human answers it in its
-    /// own thread; a stop that passes its comment id back keeps that thread,
-    /// and every other agent comment the source held goes with it (a human
-    /// comment or reply is never one of these, so it always survives).
-    /// A stop's anchor has to name something real, so an anchor naming no
-    /// file this review can reach, or a publish with nothing at all to
-    /// anchor an anchorless stop on, is refused rather than stored (see
-    /// `walkthrough_refusals`). Figure receipts, by contrast, are reported
-    /// but never refuse: the walkthrough is stored either way, so the agent
-    /// learns what to fix without a broken figure ever reaching the reader.
+    /// Creates a walkthrough source, or revises the one `id` names. A stop
+    /// passing its comment id back keeps that thread; every other agent
+    /// comment in the source is dropped. Unresolvable anchors refuse the
+    /// publish; figure receipts are only reported.
     fn agent_publish_walkthrough(
         &mut self,
         id: Option<String>,
@@ -281,16 +262,9 @@ impl App {
         if let Err(err) = self.review.ensure_source(&source) {
             return McpResponse::Error(err.to_string());
         }
-        // every publish, a revision included, redescribes the stops against
-        // whatever is checked out right now, so it is pinned to that HEAD
-        // and not whatever an earlier revision of this same walkthrough
-        // named; a repo with no commits yet resolves to nothing, the same as
-        // a walkthrough saved before `rev` existed
+        // a revision redescribes the stops against the current checkout, so we repin it to HEAD
         let rev = self.review.vcs.resolve("HEAD").ok();
-        // the review this walkthrough describes is whichever one the human
-        // has open right now; looking at the walkthrough's own diff while
-        // revising it keeps whatever it already described, since that
-        // source names no review of its own to fall back on
+        // a walkthrough's own diff names no review, so revising from it keeps the old `about`
         let about = match self.active_review_source() {
             ReviewSource::Walkthrough { .. } => self
                 .review
@@ -316,8 +290,6 @@ impl App {
             .flatten()
             .collect();
         let session = self.review.session_for_mut(&source);
-        // every agent comment this source already held is this walkthrough's
-        // previous revision; a fresh source has none, so nothing to prune
         let previous: Vec<String> = session
             .comments
             .iter()
@@ -342,8 +314,6 @@ impl App {
             );
             stop_ids.push(id);
             for note in notes_of(stop) {
-                // a note with no anchor of its own rides the stop's, and the
-                // worker seats it where that region starts
                 let anchor = note.anchor.clone().or_else(|| stop.anchor.clone());
                 write_agent_comment(session, note.id.as_deref(), None, anchor, file, &note.body);
             }
@@ -377,12 +347,9 @@ impl App {
         })
     }
 
-    /// Every stop's own file, once `stops` and `summary` clear every
-    /// [`walkthrough_refusals`] check; the refusals formatted as the tool's
-    /// error text otherwise, so nothing is ever stored against them. A stop
-    /// with no anchor falls back to the first anchored stop's file, or
-    /// `model`'s own first file, `None` when neither exists. `model` is the
-    /// diff of whichever review this walkthrough is about.
+    /// Every stop's file, or the [`walkthrough_refusals`] as error text. An
+    /// anchorless stop falls back to the first anchored stop's file, then
+    /// `model`'s first file.
     fn resolve_stop_files(
         &self,
         stops: &[StopParams],
@@ -415,8 +382,6 @@ impl App {
                 .collect::<Vec<_>>()
                 .join("\n"));
         }
-        // every stop above cleared `walkthrough_refusals`, so its own anchor
-        // is either real or absent with a real fallback to use instead
         Ok(stops
             .iter()
             .map(|stop| {
@@ -435,8 +400,6 @@ impl App {
             .into_iter()
             .map(|(source, session)| {
                 let (open, replied, resolved) = count_by_status(&session.comments);
-                // a walkthrough's own title reads better than its fallback
-                // `walkthrough <id8>` label, once the session is loaded
                 let label = session
                     .walkthrough
                     .as_ref()
@@ -453,21 +416,16 @@ impl App {
             .collect()
     }
 
-    /// The diff a source is reviewing, used to render comment context and judge
-    /// outdated-ness. Commit and range diffs are immutable, so they compute
-    /// once and stay cached: agent polls must not stall the render loop.
-    /// Backend errors degrade to an empty diff.
+    /// We cache pinned diffs (commit, range, PR) so agent polls never stall
+    /// the render loop. Backend errors degrade to an empty diff.
     pub(crate) fn source_model(&mut self, source: &ReviewSource) -> std::sync::Arc<DiffModel> {
         match source {
             ReviewSource::WorkingTree => return std::sync::Arc::new(self.review.model().clone()),
-            // a walkthrough's diff is whatever review it is about; resolve
-            // that once and recurse into this same lookup for it
             ReviewSource::Walkthrough { .. } => {
                 let about = self.resolve_about(source);
                 return self.source_model(&about);
             }
-            // live like the working tree, so caching it would go stale; the
-            // open view already holds a model the refresh keeps current
+            // live like the working tree, so we never cache it
             ReviewSource::Against { rev } => {
                 return std::sync::Arc::new(self.against_model_for(rev));
             }
@@ -482,11 +440,8 @@ impl App {
         self.source_models.get(&key).cloned().unwrap_or_default()
     }
 
-    /// The concrete source `source`'s diff actually reads: a walkthrough
-    /// carries no diff of its own, so it resolves to whatever review it is
-    /// about; every other source names itself. Shared by
-    /// [`Self::source_model`] and [`App::queue_rediff`] so both read the
-    /// same resolution.
+    /// The source whose diff `source` shows: a walkthrough resolves to the
+    /// review it is about, every other source to itself.
     pub(crate) fn resolve_about(&mut self, source: &ReviewSource) -> ReviewSource {
         match source {
             ReviewSource::Walkthrough { id } => self.walkthrough_about(id),
@@ -494,11 +449,6 @@ impl App {
         }
     }
 
-    /// The freshly fetched diff for a commit, range, or PR source, on this
-    /// review's own live backend: [`Self::source_model`]'s cache reads it on
-    /// the UI thread the same way an algorithm switch's off-thread re-diff
-    /// reads [`diffler_core::review::pinned_diff`] on a fresh one, since both
-    /// go through that one function.
     pub(crate) fn fetch_pinned(&self, source: &ReviewSource) -> Result<DiffModel, VcsError> {
         let pr_head = match source {
             ReviewSource::Pr { number } => Some(
@@ -515,14 +465,11 @@ impl App {
         )
     }
 
-    /// Comments across every review, each tagged with its source so the agent
-    /// knows what the human reviewed and where the change came from.
     fn comments_response(&mut self, keep: impl Fn(CommentStatus) -> bool) -> Vec<CommentInfo> {
         let mut out = Vec::new();
         for (source, session) in self.review.all_reviews().unwrap_or_default() {
             let comments: Vec<_> = session.comments.iter().filter(|c| keep(c.status)).collect();
-            // a live source rebuilds its model here, so an agent poll must not
-            // pay for one whose comments it is about to discard
+            // a live source rebuilds its model here, so we skip sources with nothing to report
             if comments.is_empty() {
                 continue;
             }
@@ -534,7 +481,6 @@ impl App {
         out
     }
 
-    /// The review a comment id lives in, searching every persisted source.
     fn source_of_comment(&self, id: &str) -> Option<ReviewSource> {
         self.review
             .all_reviews()
@@ -561,9 +507,9 @@ impl App {
         self.comment_status_response(&source, id)
     }
 
-    /// The agent can only propose: the comment moves to replied and the human
-    /// resolves it in the TUI (`R`). The note lands as the reply when the
-    /// thread is empty, so a flag on an answered comment adds nothing.
+    /// Marks the comment replied; only the human resolves it (`R`). We post
+    /// the note only when the agent has not replied yet, so it never repeats
+    /// the answer.
     fn agent_propose_resolve(&mut self, id: &str, note: Option<&str>) -> McpResponse {
         let Some(source) = self.source_of_comment(id) else {
             return McpResponse::Error(format!("unknown comment id: {id}"));
@@ -572,16 +518,12 @@ impl App {
             return McpResponse::Error(err.to_string());
         }
         let session = self.review.session_for_mut(&source);
-        // the agent's own answer is what a note would restate; a reply from
-        // the human or another reviewer says nothing about this flag
         let answered = session.comment(id).is_some_and(|comment| {
             comment
                 .replies
                 .iter()
                 .any(|reply| reply.author == AGENT_AUTHOR)
         });
-        // the note speaks only when the thread is otherwise empty: an agent
-        // that replied and then proposed would say the same thing twice
         match note.map(str::trim).filter(|note| !note.is_empty()) {
             Some(note) if !answered => {
                 session.reply(id, AGENT_AUTHOR, note);
@@ -611,8 +553,6 @@ impl App {
     }
 
     fn agent_mark_viewed(&mut self, file: &str) -> McpResponse {
-        // mark the file in the review the human is currently looking at, so a
-        // commit/range diff gets its own viewed marks like the working tree
         let source = self.active_review_source();
         let Some(hash) = self
             .source_model(&source)
@@ -636,10 +576,6 @@ impl App {
         McpResponse::Ok
     }
 
-    /// A new comment on `file`, anchored to `line` (through `line_end` for a
-    /// range) in the review the human is currently looking at, exactly the
-    /// way a human's own comment anchors: a snapshot of the line's text, so
-    /// a later rewrite marks it outdated like any other.
     fn agent_add_comment(
         &mut self,
         file: &str,
@@ -653,8 +589,6 @@ impl App {
         {
             return McpResponse::Error(format!("line_end {end} is before line {line}"));
         }
-        // the same emptiness rule the human's own composer applies: a
-        // comment has to say something to be worth keeping
         let body = body.trim();
         if body.is_empty() {
             return McpResponse::Error("comment body is empty".to_owned());
@@ -672,9 +606,7 @@ impl App {
         else {
             return McpResponse::Error(format!("{file}:{anchor_line} is not part of the diff"));
         };
-        // a range's start has to land in the same hunk as its end, or the
-        // band it draws and the range a forge later expects would both cover
-        // a stretch of the file the diff never touched
+        // a range spanning two hunks would cover lines the diff never touched
         if line != anchor_line
             && find_line_in_hunk(&model, file, line, on_old_side).map(|(index, _)| index)
                 != Some(hunk)
@@ -713,10 +645,8 @@ impl App {
         McpResponse::Added { id }
     }
 
-    /// Refuses the comment `id` names when it belongs to someone else, or
-    /// to a walkthrough (a stop or note, kept and dropped only through
-    /// `publish_walkthrough`, which already tracks their ids and threads;
-    /// touching one here would desync that bookkeeping).
+    /// Refuses another author's comment, and a walkthrough stop or note,
+    /// since `publish_walkthrough` tracks those ids.
     fn check_own_editable_comment(&self, source: &ReviewSource, id: &str) -> Option<McpResponse> {
         let Some(comment) = self.review.session_for(source).comment(id) else {
             return Some(McpResponse::Error(format!("unknown comment id: {id}")));
@@ -738,11 +668,8 @@ impl App {
         None
     }
 
-    /// Refuses deleting `id` when someone other than the agent has replied
-    /// to it: a reply lives inside its comment, so deleting the comment
-    /// would take the reply down with it. `agent_edit_comment` only ever
-    /// rewrites the body, so a comment with an answer is still reachable
-    /// through that.
+    /// A reply lives inside its comment, so we refuse a delete that would
+    /// take someone else's reply with it.
     fn check_no_foreign_reply(&self, source: &ReviewSource, id: &str) -> Option<McpResponse> {
         let comment = self.review.session_for(source).comment(id)?;
         let reply = comment.replies.iter().find(|r| r.author != AGENT_AUTHOR)?;
@@ -752,8 +679,6 @@ impl App {
         )))
     }
 
-    /// Delete a comment the agent itself wrote (never a human's, and never a
-    /// walkthrough stop or note).
     fn agent_delete_comment(&mut self, id: &str) -> McpResponse {
         let Some(source) = self.source_of_comment(id) else {
             return McpResponse::Error(format!("unknown comment id: {id}"));
@@ -775,9 +700,6 @@ impl App {
         McpResponse::Ok
     }
 
-    /// Replace the body of a comment the agent itself wrote (never a
-    /// human's, and never a walkthrough stop or note). Status, replies and
-    /// anchor stay as they are.
     fn agent_edit_comment(&mut self, id: &str, body: &str) -> McpResponse {
         let body = body.trim();
         if body.is_empty() {
@@ -807,9 +729,7 @@ impl App {
     }
 }
 
-/// The side, hunk index and text of the line `line` names in `file`, tried
-/// on the new side first, then the old (a deleted line only exists there).
-/// The hunk index lets a range's other end be checked against the same one.
+/// The side, hunk index and text of `line` in `file`, new side first.
 fn locate_anchor_line(model: &DiffModel, file: &str, line: u32) -> Option<(bool, usize, String)> {
     if let Some((hunk, found)) = find_line_in_hunk(model, file, line, false) {
         return Some((false, hunk, found.text.clone()));
@@ -817,8 +737,6 @@ fn locate_anchor_line(model: &DiffModel, file: &str, line: u32) -> Option<(bool,
     find_line_in_hunk(model, file, line, true).map(|(hunk, found)| (true, hunk, found.text.clone()))
 }
 
-/// The index into `file`'s hunks holding the line `line` names on
-/// `on_old_side`, and the line itself.
 fn find_line_in_hunk<'a>(
     model: &'a DiffModel,
     file: &str,
@@ -834,8 +752,6 @@ fn find_line_in_hunk<'a>(
     })
 }
 
-/// The file an anchor names, falling back to the file a walkthrough hangs its
-/// anchorless cards on.
 fn anchored_path(anchor: Option<&str>, fallback: &str) -> String {
     anchor.map_or_else(
         || fallback.to_owned(),
@@ -847,9 +763,8 @@ fn notes_of(stop: &StopParams) -> impl Iterator<Item = &NoteParams> {
     stop.notes.iter().flatten()
 }
 
-/// Write one comment the walkthrough owns, reusing the one `id` names so a
-/// revision keeps the thread hanging off it. Lines stay unset: the worker
-/// resolves `anchor_ref` against the file and fills them in.
+/// Reuses the comment `id` names so a revision keeps its thread. Lines stay
+/// unset until the anchor worker resolves `anchor_ref`.
 fn write_agent_comment(
     session: &mut diffler_core::session::Session,
     id: Option<&str>,
@@ -890,11 +805,8 @@ fn write_agent_comment(
     id
 }
 
-/// Every id repeated across `stops` and their notes within one publish. A
-/// second write sharing an id with an earlier one in the same call would
-/// find the comment the first just made and overwrite its title, anchor and
-/// body, so the walkthrough ends up with a duplicate id in its stop list and
-/// the first stop or note silently lost.
+/// A repeated id would overwrite the comment the first write just made, so
+/// we refuse it.
 fn duplicate_id_receipts(stops: &[StopParams]) -> Vec<Receipt> {
     let mut first_seen: HashMap<&str, usize> = HashMap::new();
     let mut receipts = Vec::new();
@@ -917,22 +829,15 @@ fn duplicate_id_receipts(stops: &[StopParams]) -> Vec<Receipt> {
     receipts
 }
 
-/// Whether `path` is something this review can honestly point a reader at: a
-/// file the diff itself covers (added, modified or deleted), or one the
-/// context-file machinery can still read live off disk. An empty path never
-/// qualifies, even though `repo_root.join("")` is the repo root and exists:
-/// `Target::parse` returns one for a malformed anchor like `"#foo"` or `":1"`
-/// (no path before the marker), and that must not slip through as if it
-/// named the repo itself.
+/// A file in the diff or on disk. We reject an empty path, which a malformed
+/// anchor like `"#foo"` parses to, since joining it yields the repo root.
 fn file_in_review(path: &str, model: &DiffModel, repo_root: &Path) -> bool {
     !path.is_empty()
         && (model.files.iter().any(|f| f.path == path) || repo_root.join(path).exists())
 }
 
-/// The file `index`'s own anchor resolves to, or the receipt refusing it.
-/// `Ok(None)` is a stop with no anchor and no fallback either: the
-/// publish-level `NothingToAnchor` receipt already names that, so there is
-/// nothing more to say about this one stop.
+/// `Ok(None)` is a stop with no anchor and no fallback, which the
+/// publish-level `NothingToAnchor` receipt already reports.
 fn stop_file_receipt(
     index: usize,
     anchor: Option<&str>,
@@ -968,10 +873,7 @@ fn stop_file_receipt(
     }
 }
 
-/// Every refusal receipt one stop and its notes earn: a body over the cap, an
-/// anchor naming nothing real, and a note that strays from its stop's own
-/// file. Adds every body length counted along the way to `total`, the
-/// walkthrough's own running byte count.
+/// Adds every body length to `total`, the walkthrough's running byte count.
 fn stop_and_note_refusals(
     index: usize,
     stop: &StopParams,
@@ -1022,10 +924,8 @@ fn stop_and_note_refusals(
                 stop: Some(index),
                 code: ReceiptCode::NoteOutsideStop,
                 detail: format!(
-                    "note {at} names a different file (\"{note_path}\") than stop \
-                     {index}'s (\"{stop_path}\"); a note can anchor anywhere in that \
-                     same file, not just inside the stop's own span, or give it its \
-                     own stop if \"{note_path}\" is what it's really about"
+                    "note {at} names \"{note_path}\", stop {index} names \"{stop_path}\"; \
+                     anchor the note anywhere in \"{stop_path}\", or give it its own stop"
                 ),
             });
         }
@@ -1033,11 +933,8 @@ fn stop_and_note_refusals(
     receipts
 }
 
-/// Every hard-limit receipt the incoming stops and summary earn. All codes
-/// here are refusals: nothing is stored while any are present. `fallback` is
-/// the file an anchorless stop falls back on (the first stop's own anchor, or
-/// `model`'s own first file), `None` when neither exists. A stop's own
-/// resolved file is also what its notes have to stay inside.
+/// Nothing is stored while any of these are present. `fallback` is the file
+/// an anchorless stop uses.
 fn walkthrough_refusals(
     stops: &[StopParams],
     fallback: Option<&str>,
@@ -1066,11 +963,8 @@ fn walkthrough_refusals(
         receipts.push(Receipt {
             stop: None,
             code: ReceiptCode::NothingToAnchor,
-            detail: "no stop names a file and the review you have open carries none either, \
-                     so an anchorless stop has nothing real to land on; anchor every stop \
-                     explicitly, or open the review this walkthrough should describe (the \
-                     working tree, a commit, a range, or a PR) before publishing, so it has \
-                     a file to fall back on"
+            detail: "no stop names a file and the open review has none; anchor every \
+                     stop, or open the review this walkthrough describes before publishing"
                 .to_owned(),
         });
     }
@@ -1116,11 +1010,7 @@ fn count_by_status(comments: &[diffler_core::session::Comment]) -> (usize, usize
     (open, replied, resolved)
 }
 
-/// Receipts for a walkthrough that already cleared `validate`: a bare-path
-/// anchor highlights the whole file rather than a span, and a stop's own
-/// `mermaid` fences may have drawn simplified or, with no shape at all,
-/// dropped to their source. Reported so the agent learns without a broken
-/// figure ever reaching the reader.
+/// Advisory receipts: whole-file anchors and simplified or dropped figures.
 fn walkthrough_receipts(stops: &[StopParams]) -> Vec<ReceiptInfo> {
     let mut receipts = Vec::new();
     for (index, stop) in stops.iter().enumerate() {
@@ -1130,7 +1020,9 @@ fn walkthrough_receipts(stops: &[StopParams]) -> Vec<ReceiptInfo> {
             receipts.push(ReceiptInfo {
                 stop: Some(index),
                 code: "anchor_whole".to_owned(),
-                detail: format!("\"{anchor}\" has no symbol or line; the whole file anchors"),
+                detail: format!(
+                    "\"{anchor}\" has no symbol or line, so it anchors to the whole file"
+                ),
             });
         }
         let bodies = std::iter::once(&stop.body).chain(notes_of(stop).map(|note| &note.body));
@@ -1182,9 +1074,8 @@ mod tests {
         (fixture, app, id)
     }
 
-    /// A live source rebuilds its diff whenever the agent asks for comments, so
-    /// one contributing nothing must not be built at all. The cache is the
-    /// observable: a commit source populates it the moment its model is built.
+    /// We observe the build through the cache, which a commit source fills
+    /// the moment its model is built.
     #[test]
     fn a_source_contributing_no_comments_builds_no_model() {
         let fixture = standard_fixture();
@@ -1200,7 +1091,6 @@ mod tests {
             "a commentless source was diffed anyway"
         );
 
-        // and it is built as soon as that source has something to say
         app.review
             .session_for_mut(&ReviewSource::commit(&oid))
             .add_comment(
@@ -1274,7 +1164,6 @@ mod tests {
     #[test]
     fn pairing_deferral_does_not_change_mcp_diff_or_feedback() {
         let (_fixture, mut app, _id) = app_with_comment();
-        // capture the agent-facing outputs while the model carries no emphasis
         let McpResponse::Diff(before_diff) = app.handle_mcp(McpRequestKind::GetDiff { file: None })
         else {
             panic!("expected a diff response");
@@ -1287,8 +1176,6 @@ mod tests {
             panic!("expected comments");
         };
 
-        // enrich the whole working model with intra-line emphasis, the thing
-        // the backend used to do eagerly and the TUI now does per file
         for file in &mut app.review.model_mut().files {
             diffler_core::pairing::enrich_file(file);
         }
@@ -1313,7 +1200,6 @@ mod tests {
         else {
             panic!("expected comments");
         };
-        // emphasis is a render-only concern: MCP output is byte-identical
         assert_eq!(before_diff, after_diff, "get_diff ignores emphasis");
         assert_eq!(before_feedback, after_feedback, "feedback ignores emphasis");
     }
@@ -1399,8 +1285,6 @@ mod tests {
         );
     }
 
-    /// The agent answers, then flags. The flag is a status change, so the card
-    /// carries one reply rather than the answer plus a summary of it.
     #[test]
     fn propose_resolve_after_a_reply_writes_nothing() {
         let (_fixture, mut app, id) = app_with_comment();
@@ -1456,8 +1340,6 @@ mod tests {
         assert!(matches!(response, McpResponse::Error(_)));
     }
 
-    /// The comment anchors to the line exactly the way a human's own does: a
-    /// snapshot of its text, so a later rewrite reads it outdated the same way.
     #[test]
     fn add_comment_anchors_the_line_and_reads_outdated_like_any_comment() {
         let (_fixture, mut app, _human_id) = app_with_comment();
@@ -1526,8 +1408,7 @@ mod tests {
         assert!(matches!(response, McpResponse::Error(message) if message.contains("999")));
     }
 
-    /// A range's start has to be in the diff too, not only its end: line 10
-    /// sits in the gap between `two_hunk_fixture`'s two hunks (1-4, 17-20).
+    /// Line 10 sits between `two_hunk_fixture`'s hunks (1-4, 17-20).
     #[test]
     fn add_comment_range_with_a_start_outside_the_diff_errors() {
         let fixture = two_hunk_fixture();
@@ -1542,8 +1423,6 @@ mod tests {
         assert!(matches!(response, McpResponse::Error(message) if message.contains("data.txt:10")));
     }
 
-    /// Line 2 and line 18 are each real diff lines, but in different hunks
-    /// (1-4 and 17-20): a range may not cross the gap between them.
     #[test]
     fn add_comment_range_spanning_two_hunks_errors() {
         let fixture = two_hunk_fixture();
@@ -1558,8 +1437,6 @@ mod tests {
         assert!(matches!(response, McpResponse::Error(message) if message.contains("data.txt:2")));
     }
 
-    /// The same emptiness rule the human's own composer applies: a comment
-    /// has to say something to be worth keeping.
     #[test]
     fn add_comment_with_an_empty_body_errors() {
         let (_fixture, mut app, _id) = app_with_comment();
@@ -1586,8 +1463,6 @@ mod tests {
         assert!(matches!(response, McpResponse::Error(_)));
     }
 
-    /// The same cap `publish_walkthrough` enforces, since both write from an
-    /// agent into text that parses and renders on the thread serving the TUI.
     #[test]
     fn add_comment_over_the_body_cap_errors() {
         let (_fixture, mut app, _id) = app_with_comment();
@@ -1601,8 +1476,6 @@ mod tests {
         assert!(matches!(response, McpResponse::Error(message) if message.contains("at most")));
     }
 
-    /// `as_human` decides the author: off is the agent's own comment, the
-    /// human answers it; on posts it as the human's, so it goes out untouched.
     #[test]
     fn add_comment_as_human_authors_it_with_the_human_name() {
         let (_fixture, mut app, _id) = app_with_comment();
@@ -1637,8 +1510,6 @@ mod tests {
         );
     }
 
-    /// The agent can rewrite a comment it wrote itself, keeping its status
-    /// and anchor.
     #[test]
     fn edit_comment_replaces_the_body_of_the_agents_own_comment() {
         let (_fixture, mut app, _human_id) = app_with_comment();
@@ -1662,7 +1533,6 @@ mod tests {
         assert_eq!(comment.author, AGENT_AUTHOR);
     }
 
-    /// The agent can drop a comment it wrote itself.
     #[test]
     fn delete_comment_removes_the_agents_own_comment() {
         let (_fixture, mut app, _human_id) = app_with_comment();
@@ -1681,7 +1551,6 @@ mod tests {
         assert!(app.review.session.comment(&id).is_none());
     }
 
-    /// Neither tool ever reaches a human's own comment, in any review source.
     #[test]
     fn delete_and_edit_comment_refuse_a_humans_own_comment() {
         let (_fixture, mut app, human_id) = app_with_comment();
@@ -1707,10 +1576,6 @@ mod tests {
         );
     }
 
-    /// A walkthrough stop is an agent comment too, but its lifecycle belongs
-    /// to `publish_walkthrough`: touching it through these tools would leave
-    /// `Walkthrough.stops` naming a comment that no longer matches what is on
-    /// screen.
     #[test]
     fn delete_and_edit_comment_refuse_a_walkthrough_stop() {
         let (_fixture, mut app, _human_id) = app_with_comment();
@@ -1748,8 +1613,6 @@ mod tests {
         );
     }
 
-    /// The bug this fixes: a human's reply lives inside its comment, so
-    /// deleting the comment used to take the reply down with it, silently.
     #[test]
     fn deleting_an_agents_comment_with_a_humans_reply_is_refused() {
         let (_fixture, mut app, _human_comment_id) = app_with_comment();
@@ -1770,7 +1633,6 @@ mod tests {
         assert_eq!(comment.replies.len(), 1, "the human's reply survives too");
         assert_eq!(comment.replies[0].body, "no, main calls it");
 
-        // the agent can still take its finding back by rewriting it
         let edit = app.handle_mcp(McpRequestKind::EditComment {
             id: id.clone(),
             body: "corrected: it is reachable from main".to_owned(),
@@ -1778,8 +1640,6 @@ mod tests {
         assert!(matches!(edit, McpResponse::Ok), "{edit:?}");
     }
 
-    /// Only a reply from someone other than the agent blocks a delete: the
-    /// agent answering its own finding is not a human's words to lose.
     #[test]
     fn deleting_an_agents_comment_with_only_its_own_reply_still_works() {
         let (_fixture, mut app, _human_comment_id) = app_with_comment();
@@ -1874,7 +1734,6 @@ mod tests {
                 status: "replied".to_owned()
             }
         );
-        // the reply persists under the commit source, not the working tree
         let reloaded = diffler_core::store::load_source(&fixture.root, &source).expect("load");
         assert_eq!(reloaded.comments[0].status, CommentStatus::Replied);
         assert_eq!(reloaded.comments[0].replies[0].author, AGENT_AUTHOR);
@@ -2010,14 +1869,12 @@ mod tests {
         stop
     }
 
-    /// The session of the walkthrough source `id` names, once ensured.
     fn walkthrough_session<'a>(app: &'a mut App, id: &str) -> &'a diffler_core::session::Session {
         let source = ReviewSource::walkthrough(id);
         app.review.ensure_source(&source).expect("ensure source");
         app.review.session_for(&source)
     }
 
-    /// The comment ids the walkthrough `id` is made of, in reading order.
     fn stop_ids(app: &mut App, id: &str) -> Vec<String> {
         walkthrough_session(app, id)
             .walkthrough
@@ -2052,8 +1909,6 @@ mod tests {
         assert_eq!(walkthrough.title, "tour");
     }
 
-    /// A stop is an agent comment, which is what puts it in the comments pane
-    /// and gives the human a thread to answer it in.
     #[test]
     fn publishing_makes_one_agent_comment_per_stop() {
         let (_fixture, mut app, _id) = app_with_comment();
@@ -2090,8 +1945,6 @@ mod tests {
         );
     }
 
-    /// A walkthrough published with nothing else open still describes the
-    /// working tree, exactly like every walkthrough before `about` existed.
     #[test]
     fn publishing_with_nothing_else_open_describes_the_working_tree() {
         let (_fixture, mut app, _id) = app_with_comment();
@@ -2113,14 +1966,7 @@ mod tests {
         assert_eq!(walkthrough.about, ReviewSource::WorkingTree);
     }
 
-    /// The bug this fixes: a pull request review is open on a clean working
-    /// tree, and the PR adds a file the checkout never had at all (built on a
-    /// branch that was never checked out, the way a PR review always works).
-    /// Before this fix `publish_walkthrough` checked every anchor against the
-    /// working tree's own (empty) diff, so this stop was refused as
-    /// `anchor_file_missing`. It must be accepted, and the walkthrough must
-    /// record the PR as what it is about, and open on that PR's diff, not an
-    /// empty working tree.
+    /// A PR review open on a clean working tree, anchoring a file only the PR adds.
     #[test]
     fn publishing_while_a_pr_is_open_describes_and_later_renders_that_pr() {
         let fixture = crate::test_support::Fixture::new();
@@ -2131,10 +1977,7 @@ mod tests {
         fixture.write("pr_only.rs", "pub fn only_in_pr() -> u32 {\n    7\n}\n");
         fixture.commit_all("add pr_only.rs");
         fixture.checkout("main");
-        // `checkout` only moves HEAD; the file the feature commit wrote is
-        // still sitting in the worktree until this removes it, which is what
-        // makes the tree match main's own tree again: clean, and without a
-        // file that exists only in the PR's history.
+        // `checkout` only moves HEAD, so we remove the feature file to leave the tree clean
         std::fs::remove_file(fixture.root.join("pr_only.rs")).expect("remove");
 
         let mut app = App::new(fixture.review(), LoadedConfig::default());
@@ -2186,12 +2029,8 @@ mod tests {
         }
     }
 
-    /// The bug this fixes: a walkthrough about a PR, opened in a session
-    /// that never touched that PR (`pr_ranges` empty, the branch's own PR
-    /// unresolved, the open-PRs list never fetched), the way a restart
-    /// leaves every one of them. Before the fix `open_walkthrough_diff`
-    /// rendered it straight off `pr_ranges`, found nothing, and opened on an
-    /// empty diff with no word to the reader that anything was unresolved.
+    /// A walkthrough about a PR, opened after a restart with nothing about
+    /// that PR resolved yet.
     #[test]
     fn opening_a_walkthrough_about_a_pr_resolves_it_with_nothing_fetched_yet() {
         let fixture = crate::test_support::Fixture::new();
@@ -2224,7 +2063,6 @@ mod tests {
         };
         let head_oid = fixture.review().vcs.resolve("feature").expect("head");
 
-        // a fresh session: nothing about PR #7 has been fetched yet
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         app.ci_remotes = vec![github_ci_remote()];
         assert!(app.pr_ranges.is_empty(), "nothing resolved yet");
@@ -2248,7 +2086,6 @@ mod tests {
             Some(published_id.clone())
         );
 
-        // the open-PRs list lands, naming the PR the walkthrough is about
         app.on_prs_event(vec![crate::ci::PullRequest {
             number: 7,
             title: "add pr_only.rs".into(),
@@ -2276,10 +2113,6 @@ mod tests {
         );
     }
 
-    /// A PR the open-PRs list already named, but whose head the local
-    /// repository hasn't fetched, is resolved the same way `open_pr_diff`
-    /// resolves any other PR: a fetch queued first, the walkthrough opening
-    /// once it lands.
     #[test]
     fn opening_a_walkthrough_about_a_known_pr_fetches_its_head_first() {
         let fixture = crate::test_support::Fixture::new();
@@ -2314,8 +2147,6 @@ mod tests {
 
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         app.ci_remotes = vec![github_ci_remote()];
-        // the list already named the PR, but its base isn't fetched locally
-        // yet (the head is a real, resolvable oid on its own)
         app.prs = vec![crate::ci::PullRequest {
             number: 7,
             title: "add pr_only.rs".into(),
@@ -2340,7 +2171,6 @@ mod tests {
         assert_eq!(app.pending_pr_open.as_ref().map(|pr| pr.number), Some(7));
         assert!(app.pending_walkthrough_open.is_some());
 
-        // the fetch lands, bringing the base ref in
         fixture.branch("not-fetched-yet");
         app.handle(AppEvent::GitDone {
             label: App::pr_fetch_label(7),
@@ -2361,8 +2191,6 @@ mod tests {
         );
     }
 
-    /// Publishing twice with no `id` creates two separate walkthrough
-    /// sources, side by side, rather than replacing the first.
     #[test]
     fn publishing_twice_without_an_id_gives_two_walkthroughs() {
         let (_fixture, mut app, _id) = app_with_comment();
@@ -2401,10 +2229,7 @@ mod tests {
         );
     }
 
-    /// An id an agent supplies is arbitrary text, not a filesystem-safe oid: a
-    /// `/` in it must not turn the review key into a path whose directory
-    /// does not exist. The walkthrough still saves, and a fresh read of the
-    /// same id finds it.
+    /// An agent's id is arbitrary text, so a `/` in it must not become a path.
     #[test]
     fn a_walkthrough_id_with_a_slash_still_saves_and_loads() {
         let (fixture, mut app, _id) = app_with_comment();
@@ -2436,9 +2261,6 @@ mod tests {
         assert_eq!(info.title, "tour");
     }
 
-    /// A publish that cannot write its review file must not claim success:
-    /// the agent is told the save failed rather than being handed an id for
-    /// a walkthrough that was never persisted.
     #[cfg(unix)]
     #[test]
     fn a_walkthrough_that_fails_to_save_is_reported_not_claimed_published() {
@@ -2467,10 +2289,6 @@ mod tests {
         );
     }
 
-    /// Revising is how an agent answers feedback: passing the walkthrough's
-    /// own `id` back revises that exact source, leaving any other walkthrough
-    /// untouched; a stop that passes its own id back keeps its thread, and
-    /// the stops it drops go with the old revision.
     #[test]
     fn republishing_with_the_walkthroughs_id_revises_it_and_leaves_the_other_one() {
         let (_fixture, mut app, _id) = app_with_comment();
@@ -2569,12 +2387,7 @@ mod tests {
         );
     }
 
-    /// The real failure this refusal exists for: an agent walking through a
-    /// change whose diff it never actually reads (a PR reviewed while
-    /// diffler sits on a clean working tree) publishes stops with no anchor
-    /// at all. With nothing in the diff to fall back on, the old fallback
-    /// chain silently hung every stop's card on `""`; this must refuse
-    /// instead, and never write a walkthrough whose stops point nowhere.
+    /// Anchorless stops on a clean working tree have no file to fall back on.
     #[test]
     fn publishing_with_no_anchors_against_an_empty_diff_is_refused() {
         let fixture = crate::test_support::Fixture::new();
@@ -2638,10 +2451,7 @@ mod tests {
         );
     }
 
-    /// The context-file machinery exists so a stop can anchor to a file the
-    /// diff never touched: `notes.txt` is committed with no further edits, so
-    /// it never appears in `model.files`, yet it is a real file on disk and
-    /// must still be accepted.
+    /// `notes.txt` is committed and unchanged, so only the disk has it.
     #[test]
     fn a_stop_anchored_outside_the_diff_but_on_disk_still_publishes() {
         let (_fixture, mut app, _id) = app_with_comment();
@@ -2715,10 +2525,6 @@ mod tests {
         assert_eq!(info.summary, None);
     }
 
-    /// Publishing stamps the walkthrough with the full oid of whatever is
-    /// checked out right now, so its anchors resolve against the code they
-    /// actually describe even after the branch moves on. Both the publish
-    /// response and a later `get_walkthrough` report it.
     #[test]
     fn publishing_stamps_the_current_head() {
         let (_fixture, mut app, _id) = app_with_comment();
@@ -2744,9 +2550,6 @@ mod tests {
         assert_eq!(info.rev, Some(head));
     }
 
-    /// A revision restamps to whatever HEAD is now: it redescribes the stops
-    /// against the code currently checked out, not the code an earlier
-    /// revision of this same walkthrough was pinned to.
     #[test]
     fn republishing_restamps_to_the_new_head() {
         let (fixture, mut app, _id) = app_with_comment();
@@ -2781,8 +2584,6 @@ mod tests {
         assert_eq!(second.rev, Some(after));
     }
 
-    /// A revision that passes the same summary back keeps it, the way a stop
-    /// passing its own id back keeps its thread.
     #[test]
     fn a_revision_that_passes_the_same_summary_back_keeps_it() {
         let (_fixture, mut app, _id) = app_with_comment();
@@ -2889,8 +2690,6 @@ mod tests {
         );
     }
 
-    /// A `sequenceDiagram` fence is not dropped: it has its own layout, so
-    /// publishing one carries no `figure_dropped` receipt.
     #[test]
     fn a_sequence_diagram_fence_publishes_with_no_dropped_receipt() {
         let (_fixture, mut app, _id) = app_with_comment();
@@ -2950,8 +2749,6 @@ mod tests {
         );
     }
 
-    /// An id nobody has published under is a real "no such walkthrough",
-    /// distinct from a read that failed.
     #[test]
     fn get_walkthrough_by_an_unknown_id_returns_none_not_an_error() {
         let (_fixture, mut app, _id) = app_with_comment();
@@ -2961,9 +2758,6 @@ mod tests {
         assert_eq!(response, McpResponse::Walkthrough(None));
     }
 
-    /// A review file that fails to parse is a real error, not the same
-    /// "nothing here" a genuinely unpublished id answers with: an id
-    /// `review_status` just listed must never come back silently null.
     #[test]
     fn get_walkthrough_surfaces_a_read_failure_instead_of_none() {
         let (fixture, mut app, _id) = app_with_comment();
@@ -2985,8 +2779,6 @@ mod tests {
         );
     }
 
-    /// `get_walkthrough` fetches a specific walkthrough by id, or the newest
-    /// one when `id` is omitted.
     #[test]
     fn get_walkthrough_by_id_and_by_default() {
         let (_fixture, mut app, _id) = app_with_comment();
@@ -3012,8 +2804,7 @@ mod tests {
         else {
             panic!("expected a published walkthrough");
         };
-        // both publishes can land in the same wall-clock second; force them
-        // apart so "the newest one" has something real to pick
+        // both publishes can share a timestamp, so we force them apart
         if let Some(w) = app
             .review
             .session_for_mut(&ReviewSource::walkthrough(&first.id))
@@ -3047,7 +2838,6 @@ mod tests {
         assert_eq!(info.id, second.id);
     }
 
-    /// `review_status` lists every walkthrough of the review, newest first.
     #[test]
     fn review_status_lists_every_walkthrough_newest_first() {
         let (_fixture, mut app, _id) = app_with_comment();
@@ -3073,8 +2863,7 @@ mod tests {
         else {
             panic!("expected a published walkthrough");
         };
-        // both publishes can land in the same wall-clock second; force them
-        // apart so the newest-first sort has something real to sort on
+        // both publishes can share a timestamp, so we force them apart
         if let Some(w) = app
             .review
             .session_for_mut(&ReviewSource::walkthrough(&first.id))
@@ -3103,9 +2892,6 @@ mod tests {
         assert_eq!(titles, vec!["second tour", "first tour"]);
     }
 
-    /// A corrupt review file must not hide every other review or walkthrough
-    /// behind a false "clean repository": `review_status` names the file
-    /// instead, and `list_reviews` keeps listing everything that did parse.
     #[test]
     fn a_corrupt_review_file_is_named_not_hidden_and_never_hides_the_rest() {
         let (_fixture, mut app, _id) = app_with_comment();
@@ -3142,9 +2928,6 @@ mod tests {
         );
     }
 
-    /// The status screen reads the session's walkthrough at draw time, so a
-    /// publish over MCP has to show up on the very next render, with no
-    /// keypress in between.
     #[test]
     fn publishing_over_mcp_shows_on_the_status_screen_without_a_keypress() {
         let (_fixture, mut app, _id) = app_with_comment();
@@ -3170,9 +2953,6 @@ mod tests {
         assert!(content.contains("Walkthrough"), "{content}");
     }
 
-    /// A comment on a stop is a reply on that stop's own comment, so the id in
-    /// the feedback is how the agent knows which stop the human is talking
-    /// about.
     #[test]
     fn feedback_carries_a_reply_on_the_stop_it_answers() {
         let (_fixture, mut app, _id) = app_with_comment();
@@ -3204,10 +2984,6 @@ mod tests {
         assert_eq!(answered.replies[0].body, "why not 43?");
     }
 
-    /// A stop's `notes` are its own remarks on other parts of the same
-    /// region: each becomes an agent comment beside the stop's, and the
-    /// walkthrough owns all of them so a republish can tell them from a
-    /// human's.
     #[test]
     fn publishing_a_stops_notes_makes_extra_agent_comments() {
         let (_fixture, mut app, _id) = app_with_comment();
@@ -3252,8 +3028,6 @@ mod tests {
         assert_eq!(info.stops[0].notes.len(), 2);
     }
 
-    /// A note anchored outside its stop's own file would show up in another
-    /// slide entirely, so it is refused rather than silently misplaced.
     #[test]
     fn a_note_naming_another_file_than_its_stop_is_refused() {
         let (_fixture, mut app, _id) = app_with_comment();
@@ -3286,9 +3060,6 @@ mod tests {
         );
     }
 
-    /// Two stops passing back the same id would have the second write find
-    /// the comment the first just made and overwrite it, silently losing the
-    /// first stop. Refused instead, naming the repeated id.
     #[test]
     fn two_stops_sharing_an_id_are_refused() {
         let (_fixture, mut app, _id) = app_with_comment();
@@ -3321,8 +3092,6 @@ mod tests {
         );
     }
 
-    /// The same collision applies between a stop and one of its own notes:
-    /// nothing distinguishes their ids from each other in the write loop.
     #[test]
     fn a_stop_and_its_own_note_sharing_an_id_are_refused() {
         let (_fixture, mut app, _id) = app_with_comment();
@@ -3343,9 +3112,6 @@ mod tests {
         assert!(text.contains("duplicate_id"), "{text}");
     }
 
-    /// A note's thread survives a revision the same way a stop's does: pass
-    /// its id back to keep it, leave it out and it goes with the rest of the
-    /// old walkthrough.
     #[test]
     fn republishing_keeps_a_note_passed_back_by_id_and_deletes_the_rest() {
         let (_fixture, mut app, _id) = app_with_comment();
@@ -3432,8 +3198,6 @@ mod tests {
         assert_eq!(activity.focus, "writing the walkthrough");
         assert_eq!(activity.file.as_deref(), Some("src/app/refresh.rs"));
 
-        // a later call with no file report replaces the whole indicator,
-        // never merges: a stale file name would outlive the activity it was about
         app.handle_mcp(McpRequestKind::ListReviews);
         let activity = app.agent_activity.current.as_ref().expect("activity set");
         assert_eq!(activity.file, None);

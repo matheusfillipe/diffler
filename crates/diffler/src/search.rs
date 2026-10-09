@@ -1,12 +1,9 @@
-//! Vim-style `/` search. A pane feeds [`Search`] its rows as `(row index,
-//! text)`; the search holds the query, matches, and active match, and drives
-//! incremental highlight + `n`/`N` navigation. Matching is plain substring with
-//! smartcase: case-insensitive unless the query has an uppercase letter.
+//! Vim-style `/` search over a pane's `(row index, text)` rows: plain substring
+//! with smartcase, case-insensitive unless the query has an uppercase letter.
 
 use std::ops::Range;
 
-/// A byte range within row `row`'s text. The row index is the pane's own, the
-/// one it uses to move its cursor and to key its rendered rows.
+/// `row` is the pane's own row index; `range` is bytes within that row's text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Match {
     pub row: usize,
@@ -15,13 +12,11 @@ pub struct Match {
 
 pub struct Search {
     query: String,
-    /// The prompt is capturing input; once committed it stays `false` while
-    /// highlights persist and `n`/`N` navigate.
+    /// The prompt is capturing input; after commit, highlights and `n`/`N` stay.
     pub open: bool,
     matches: Vec<Match>,
     current: usize,
-    /// Cursor row when the search started: the first match is picked relative to
-    /// it, and the cursor returns here on cancel.
+    /// The first match is picked from here, and cancel returns the cursor here.
     origin_row: usize,
 }
 
@@ -61,15 +56,13 @@ impl Search {
         self.query.pop();
     }
 
-    /// Recompute matches against `rows`, picking the active match as the first
-    /// at or after `origin_row`. Re-run whenever the rows change so highlights
-    /// track the live content.
+    /// Re-run whenever the rows change so highlights track the live content.
     pub fn recompute(&mut self, rows: &[(usize, String)]) {
         self.reseat(rows, self.origin_row, true);
     }
 
-    /// Recompute matches against `rows`, the active one the first at or after
-    /// row `at` (`forward`) or the last at or before it.
+    /// The active match is the first at or after `at` (`forward`), else the
+    /// last at or before it.
     pub fn reseat(&mut self, rows: &[(usize, String)], at: usize, forward: bool) {
         self.matches = find_matches(rows, &self.query);
         let found = if forward {
@@ -109,7 +102,6 @@ impl Search {
         self.active_row()
     }
 
-    /// The distinct rows holding at least one match, in row order.
     pub fn match_rows(&self) -> Vec<usize> {
         let mut rows: Vec<usize> = self.matches.iter().map(|m| m.row).collect();
         rows.dedup();
@@ -126,9 +118,8 @@ impl Search {
     }
 }
 
-/// Plain-substring matches with smartcase. Byte ranges index the original row
-/// text: ASCII case-folding preserves byte length, so a fold-space match maps
-/// back unchanged.
+/// ASCII case-folding keeps byte length, so a folded match's range indexes the
+/// original text unchanged.
 pub fn find_matches(rows: &[(usize, String)], query: &str) -> Vec<Match> {
     if query.is_empty() {
         return Vec::new();

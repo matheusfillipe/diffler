@@ -1,7 +1,6 @@
 //! What a [`DiffRow`] points at, named by something that survives
-//! [`DiffView::ensure_rows`] rebuilding the row list: a rename, a comment
-//! landing above it, a hunk changing shape. Mirrors
-//! [`crate::app::status::CursorAnchor`], the same idea for the status screen.
+//! [`DiffView::ensure_rows`] rebuilding the row list. The status screen's
+//! counterpart is [`crate::app::status::CursorAnchor`].
 
 use diffler_core::model::{DiffModel, HunkId};
 use diffler_core::review::Review;
@@ -10,23 +9,19 @@ use diffler_core::session::Session;
 use super::{DiffRow, DiffView};
 
 /// The identity of the thing one [`DiffRow`] displays, in a form that
-/// outlives its row index: a rebuild can move, insert before, or drop any
-/// row, but the thing underneath keeps its own name.
+/// outlives its row index.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RowRef {
     Hunk(HunkId),
-    /// A line by its file's path, the number it carries on whichever side it
-    /// sits on, and that side: a refresh rebuilds every hunk, but the reader
-    /// is still on the same line of the same file.
+    /// A line by its file's path, its number on its side, and that side.
     Line {
         file: String,
         line: u32,
         on_old_side: bool,
     },
     /// A row of a stop's card, by the stop's position in the walkthrough's
-    /// own order and the row's line within the card: a revision that
-    /// reissues every stop's comment id still keeps "the same stop" at the
-    /// same position, which a comment id could not.
+    /// own order and the row's line within the card, since a revision
+    /// reissues every stop's comment id.
     Stop {
         index: usize,
         line: usize,
@@ -37,9 +32,7 @@ pub(crate) enum RowRef {
         id: String,
         line: usize,
     },
-    /// One display line of the open composer (its header is line 0): a
-    /// refresh names the caret's own row, so it lands back exactly where
-    /// the reader is typing.
+    /// One display line of the open composer; its header is line 0.
     Composer(usize),
     /// A row of the walkthrough summary's card, by its line within the card.
     Summary {
@@ -52,9 +45,7 @@ pub(crate) enum RowRef {
 }
 
 /// The cursor, the visual selection anchor, and the banded span, each named
-/// by the [`RowRef`] it currently sits on. [`DiffView::capture_positions`]
-/// takes this before something rebuilds the rows out from under them;
-/// [`DiffView::restore_positions`] resolves it back afterward.
+/// by the [`RowRef`] it sits on.
 #[derive(Debug)]
 pub(crate) struct RowPositions {
     cursor: Option<RowRef>,
@@ -63,14 +54,10 @@ pub(crate) struct RowPositions {
 }
 
 impl DiffView {
-    /// Name what the cursor, the visual anchor, and the banded span
-    /// currently sit on, while `self.rows` and `review` still agree with
-    /// each other. A caller that is about to swap the model out from under
-    /// this view (a refresh) must capture before the swap and resolve with
-    /// [`Self::restore_positions`] after `ensure_rows` rebuilds against the
-    /// new one, since a `RowRef` read from stale rows against an already-new
-    /// model would name the wrong thing. `ensure_rows` itself calls both
-    /// around its own rebuild, for every other reason rows go dirty.
+    /// Name what the cursor, the visual anchor, and the banded span sit on,
+    /// while `self.rows` and `review` still agree. A caller swapping the model
+    /// must capture before the swap, since a `RowRef` read from stale rows
+    /// against the new model names the wrong thing.
     pub(crate) fn capture_positions(&self, review: &Review) -> RowPositions {
         RowPositions {
             cursor: self.row_ref(review, self.cursor),
@@ -82,11 +69,8 @@ impl DiffView {
     }
 
     /// Resolve `positions` (from [`Self::capture_positions`]) against the
-    /// rows on screen now. The cursor falls to the nearest surviving row so
-    /// the reader is never thrown to the top; a selection anchor or a
-    /// banded span over something that is gone is not a selection or a span,
-    /// so both simply end rather than latching onto whatever now sits at the
-    /// old row index.
+    /// rows on screen. The cursor falls to the nearest surviving row; a
+    /// selection anchor or band over something gone is dropped.
     pub(crate) fn restore_positions(&mut self, review: &Review, positions: RowPositions) {
         self.cursor = positions
             .cursor
@@ -101,7 +85,7 @@ impl DiffView {
     }
 
     /// The identity of the thing row `row` displays, or `None` when `row` is
-    /// out of range or the model can no longer answer for it.
+    /// out of range or the model lacks it.
     pub(crate) fn row_ref(&self, review: &Review, row: usize) -> Option<RowRef> {
         let session = review.session_for(&self.source);
         let model = self.model_for_rows(review);
@@ -174,8 +158,7 @@ impl DiffView {
         })
     }
 
-    /// The row now holding `target`, or `None` when the thing it names is
-    /// gone: a deleted comment, a hunk the model no longer carries.
+    /// The row holding `target`, or `None` when the thing it names is gone.
     pub(crate) fn find_row(&self, review: &Review, target: &RowRef) -> Option<usize> {
         let session = review.session_for(&self.source);
         let model = self.model_for_rows(review);
@@ -252,7 +235,7 @@ impl DiffView {
     }
 
     /// The row `line` lines into the card whose header sits at `header`, or
-    /// the card's last row when the card has since grown shorter.
+    /// the card's last row when the card is shorter.
     fn card_row(rows: &[DiffRow], header: usize, line: usize) -> usize {
         let Some(card) = rows.get(header) else {
             return header;
@@ -267,7 +250,7 @@ impl DiffView {
     }
 
     /// The header row (line 0) of the comment carrying `id`, if it is on
-    /// screen: the same row `seat_stop`/`focus_comment` seat the cursor on.
+    /// screen.
     fn find_comment_row(rows: &[DiffRow], session: &Session, id: &str) -> Option<usize> {
         rows.iter().position(|row| {
             matches!(row, DiffRow::Comment { comment, line: 0, .. }

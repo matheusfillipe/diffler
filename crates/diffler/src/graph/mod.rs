@@ -1,7 +1,6 @@
-//! A navigable orthogonal node-graph component for ratatui, plus the host glue
-//! mapping the app theme onto its palette. The component is IO-free (no terminal
-//! setup, event loop, or network); the host builds a [`Model`] (from CI, …),
-//! pushes it into a [`GraphView`], renders it, and reacts to [`GraphAction`]s.
+//! A navigable orthogonal node-graph component for ratatui. It does no IO: the
+//! host builds a [`Model`], pushes it into a [`GraphView`], renders it, and
+//! handles the [`GraphAction`]s it returns.
 
 mod callstack;
 mod drawing;
@@ -22,7 +21,6 @@ pub use view::{Dir, Fit, GraphAction, GraphView};
 
 use crate::theme::Theme;
 
-/// Map the app theme onto the component's palette.
 pub fn graph_theme(theme: &Theme) -> GraphTheme {
     GraphTheme {
         bg: theme.bg,

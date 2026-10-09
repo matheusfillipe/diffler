@@ -1,16 +1,11 @@
-//! The language breakdown screen: what the checkout is written in.
-//!
-//! Counting reads every tracked file, so it runs on the blocking pool and
-//! answers over the event channel like every other worker here. The screen
-//! opens immediately and says it is counting; the table replaces that when the
-//! scan lands.
+//! The language breakdown screen. Counting reads every tracked file, so it
+//! runs on the blocking pool.
 
 use diffler_core::stats::RepoStats;
 
 use crate::app::{App, Flow, Screen};
 
-/// How the table is ordered. Code lines first, since that is the number the
-/// bar draws.
+/// Code lines sort first, since the bar draws that number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StatsSort {
     #[default]
@@ -40,7 +35,7 @@ impl StatsSort {
     }
 }
 
-/// The screen's own state. `stats` is `None` while the scan is out.
+/// `stats` is `None` while the scan runs.
 #[derive(Debug, Default)]
 pub struct StatsView {
     pub stats: Option<RepoStats>,
@@ -52,7 +47,6 @@ pub struct StatsView {
 }
 
 impl StatsView {
-    /// The rows to draw, in the order the sort asks for.
     pub fn rows(&self) -> Vec<diffler_core::stats::LanguageCount> {
         let Some(stats) = self.stats.as_ref() else {
             return Vec::new();
@@ -69,8 +63,6 @@ impl StatsView {
     }
 }
 
-/// A queued repo scan; the token drops an answer for a scan the screen has
-/// already replaced.
 #[derive(Debug, Clone)]
 pub struct StatsRequest {
     pub token: u64,
@@ -84,8 +76,7 @@ impl App {
         self.push_screen(Screen::Stats);
     }
 
-    /// `<c-r>` on the breakdown: count again, and empty the table while the
-    /// answer is out so the numbers on screen are never from a stale scan.
+    /// `<c-r>`: count again, emptying the table so it never shows a stale scan.
     pub(crate) fn rescan_stats(&mut self) {
         if let Some(view) = self.stats.as_mut() {
             view.stats = None;

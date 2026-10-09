@@ -23,9 +23,8 @@ pub enum RepoError {
     Git(#[from] git2::Error),
 }
 
-/// Discover the repository containing `path` and return its working directory root.
-/// A `.jj` directory with no colocated `.git` is a distinct, more actionable
-/// failure than a plain "not a repository": we found a jj repo but no git one.
+/// The worktree root of the repository containing `path`. A `.jj` with no
+/// `.git` reports [`RepoError::JjNotColocated`].
 pub fn discover(path: &Path) -> Result<PathBuf, RepoError> {
     let repo = match git2::Repository::discover(path) {
         Ok(repo) => repo,
@@ -42,8 +41,6 @@ pub fn discover(path: &Path) -> Result<PathBuf, RepoError> {
         .ok_or_else(|| RepoError::Bare(path.to_path_buf()))
 }
 
-/// Walk `path` and its ancestors for a `.jj` directory, for the discovery
-/// error message when git2 found no `.git` at all.
 fn find_uncolocated_jj(path: &Path) -> Option<PathBuf> {
     let mut dir = if path.is_dir() {
         Some(path)
@@ -59,15 +56,11 @@ fn find_uncolocated_jj(path: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Open the right backend for `root`, as [`discover`] resolved it, at
-/// [`DiffSettings::default`]: [`JjVcs`] when a `.jj` directory sits beside
-/// `.git` (a colocated jj repo), plain [`GitVcs`] otherwise.
+/// [`JjVcs`] when a `.jj` directory sits beside `.git`, else [`GitVcs`].
 pub fn open(root: &Path) -> Result<Box<dyn Vcs>, VcsError> {
     open_with_settings(root, &DiffSettings::default())
 }
 
-/// [`open`] with the line-diff context, algorithm and indent heuristic the
-/// review diffs with.
 pub fn open_with_settings(root: &Path, settings: &DiffSettings) -> Result<Box<dyn Vcs>, VcsError> {
     if root.join(".jj").is_dir() {
         Ok(Box::new(JjVcs::open_with_settings(root, settings)?))
@@ -89,8 +82,8 @@ mod tests {
 
     #[test]
     fn fails_outside_a_repository() {
-        // discover() walks all ancestors, so this test needs a dir whose
-        // ancestors are repo-free; tempdirs satisfy that on CI runners
+        // discover() walks every ancestor, so we rely on the tempdir having
+        // no repo above it
         let dir = tempfile::tempdir().expect("tempdir");
         assert!(matches!(discover(dir.path()), Err(RepoError::NotFound(_))));
     }

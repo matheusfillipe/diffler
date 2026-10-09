@@ -1,7 +1,6 @@
 //! Diff context expansion: re-diff the selected file's own text at more (or
-//! all) context so the reviewer can see around a hunk. Highlights index by line
-//! number and so cover the revealed lines for free; changed-line emphasis is
-//! carried onto the rebuilt hunks.
+//! all) context. Highlights index by line number, so they already cover the
+//! revealed lines.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -66,8 +65,7 @@ impl App {
                 diff.context.insert(path.clone(), target);
             }
         }
-        // rebuild at `target` even when collapsing to default (re-diffing at the
-        // default context restores the original hunks)
+        // collapsing to default rebuilds too, which restores the original hunks
         self.rebuild_file(&path, target);
     }
 
@@ -106,9 +104,8 @@ impl App {
     }
 }
 
-/// Rebuild `file`'s hunks at `context` under `algorithm`, carrying
-/// changed-line emphasis onto the rebuilt lines. Returns whether the hunks
-/// were replaced.
+/// Rebuild `file`'s hunks at `context`. Returns whether the hunks were
+/// replaced.
 pub(super) fn apply_context(
     file: &mut FileDiff,
     context: u32,
@@ -123,9 +120,8 @@ pub(super) fn apply_context(
     true
 }
 
-/// Copy emphasis from the current hunks onto rebuilt ones by line number: the
-/// changed lines are identical across contexts, so their emphasis survives a
-/// re-diff without re-enriching.
+/// Copy emphasis onto rebuilt hunks by line number. The changed lines are the
+/// same at any context, so we skip re-enriching.
 fn carry_emphasis(old: &[Hunk], new: &mut [Hunk]) {
     let mut prior: EmphasisByLine = HashMap::new();
     for line in old.iter().flat_map(|h| &h.lines) {

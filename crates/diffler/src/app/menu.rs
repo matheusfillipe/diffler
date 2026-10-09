@@ -1,6 +1,5 @@
-//! The context menu a right-click, or a press held still, opens over a row:
-//! what the reader can do to the thing under the pointer, each entry naming
-//! the key that does the same, so the reader learns the keys from it.
+//! The context menu a right-click or a held press opens over a row. Each entry
+//! names its key, so the reader learns the keys from it.
 
 use std::time::{Duration, Instant};
 
@@ -12,7 +11,6 @@ use crate::keymap::Action;
 /// screens and trackpads with no right button.
 const HOLD: Duration = Duration::from_millis(500);
 
-/// A left press the reader has not let go of yet.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct HeldPress {
     col: u16,
@@ -82,7 +80,7 @@ impl App {
             Screen::Log | Screen::CiLog => {
                 vec![Action::Open, Action::CopyUrl, Action::CopyFileFeedback]
             }
-            // these screens take no clicks yet, so a menu would act on
+            // these screens select nothing on click, so a menu would act on
             // whatever row the keyboard left selected
             Screen::Prs | Screen::Runs | Screen::Graph | Screen::File | Screen::Stats => Vec::new(),
         }

@@ -22,7 +22,7 @@ def test_t_cycles_into_the_kinds_layout(spawn, repo):
         lambda text: "Source (1)" in text and "Tests (1)" in text,
         "the kinds layout groups the diff",
     )
-    # the arrow carries the fold state; the pane may well be showing the file
+    # we read the fold from the arrow, since the pane may be showing the file
     tui.wait_until(
         lambda text: "▸ Generated (1)" in text,
         "the generated bucket is present and folded",

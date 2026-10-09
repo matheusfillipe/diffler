@@ -21,13 +21,11 @@ def test_d_reviews_the_branch_against_its_base(spawn, repo):
     tui.wait_for("Diff the working tree against")
     tui.send("d")
     tui.wait_for("DIFF vs main")
-    # the sidebar carries the committed file and the uncommitted edit
     tui.wait_for("feature.txt")
     tui.wait_for("app.txt")
-    # the pane opens on the first file; walk to each and read its content
-    tui.wait_for("beta2")  # app.txt, edited but never committed
+    tui.wait_for("beta2")  # app.txt, uncommitted
     tui.send("J")
-    tui.wait_for("shipped")  # feature.txt, landed in the branch commit
+    tui.wait_for("shipped")  # feature.txt, from the branch commit
     tui.send("q")  # the diff screen pops back to status first
     tui.wait_for(" STATUS ")
     assert tui.quit() == 0

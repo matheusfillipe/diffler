@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
-# Render the Homebrew formula, Scoop manifest, AUR PKGBUILD/.SRCINFO, and Nix
-# flake for a release from its uploaded GitHub assets. CI commits all of them;
-# the AUR push is done manually (just aur-publish). The binary archives carry a
-# top-level diffler-v<ver>-<target>/ directory holding the `diffler` binary.
+# Render the package manager manifests for a release from its GitHub assets.
 #
 # Usage: scripts/packaging.sh <version> <assets-dir>
 set -euo pipefail
@@ -121,8 +118,7 @@ package() {
 }
 PKG
 
-# .SRCINFO is normally produced by `makepkg --printsrcinfo` (Arch-only); since
-# every field is known here, render it directly so the AUR push needs no makepkg
+# We render .SRCINFO directly so the AUR push needs no Arch-only makepkg.
 {
   printf 'pkgbase = diffler-bin\n'
   printf '\tpkgdesc = %s\n' "$desc"
@@ -139,8 +135,8 @@ PKG
   printf '\npkgname = diffler-bin\n'
 } >"$root/packaging/aur/.SRCINFO"
 
-# Flake fetching the prebuilt binary (musl-static on Linux runs on NixOS as-is,
-# so no patchelf). nix's ${..} and $out are escaped to survive this heredoc.
+# The static musl binary runs on NixOS as-is, so we skip patchelf. We escape
+# nix's ${..} and $out to survive this heredoc.
 cat >"$root/flake.nix" <<NIX
 {
   description = "$desc";

@@ -1,10 +1,6 @@
-//! GitHub Actions adapter (via `gh`). The dependency DAG comes from a run's
-//! workflow YAML `jobs.<id>.needs` (the run API omits it); status overlays from
-//! `gh run view`. Logs, steps, artifacts, and annotations all come from the REST
-//! API via `gh api`. The job-log archive 404s until the job finishes, so an
-//! in-progress job returns its live step states with the content still empty.
-//! A `uses:` job calls a reusable workflow whose jobs the caller YAML doesn't
-//! list; that workflow is fetched and inlined so its jobs appear with real edges.
+//! GitHub Actions through `gh`. We read the job DAG from the run's workflow
+//! YAML `jobs.<id>.needs`, since the run API omits it, and inline a `uses:`
+//! job's reusable workflow so its jobs show with real edges.
 
 use std::collections::{HashMap, HashSet};
 
@@ -19,39 +15,30 @@ use crate::ci::model::{
 };
 use crate::ci::provider::{ForgeProvider, ProviderKind};
 
-/// Talks to GitHub Actions through `gh`. The runs list is scoped to the current
-/// `branch` (across all of its workflows); each run's DAG comes from whichever
-/// of the repo's `workflows` YAMLs matches that run's workflow name.
 pub type YamlCache = std::sync::Arc<std::sync::Mutex<HashMap<String, String>>>;
 
-/// The last response GitHub gave for one endpoint, kept so the next poll can
-/// ask conditionally. A `304` answer costs no rate limit, which is what lets
-/// the runs list stay on a live cadence.
+/// We keep the last response per endpoint so the next poll asks conditionally;
+/// a `304` costs no rate limit, which keeps the runs list live.
 #[derive(Debug, Clone)]
 pub struct Conditional {
     pub etag: String,
     pub body: String,
 }
 
-/// Per-endpoint conditional state, shared across provider rebuilds the way
-/// [`YamlCache`] is.
 pub type EtagCache = std::sync::Arc<std::sync::Mutex<HashMap<String, Conditional>>>;
 
 pub struct GitHubProvider {
     runner: Box<dyn CommandRunner>,
     etags: EtagCache,
-    /// Fetched reusable-workflow bodies keyed by contents path (which embeds
-    /// the ref, so entries are immutable). Shared across provider rebuilds so
-    /// the graph poll doesn't refetch per cycle.
+    /// Reusable-workflow bodies keyed by contents path, which embeds the ref,
+    /// so entries never go stale.
     yaml_cache: YamlCache,
-    /// Every `.github/workflows/*.yml` body, so a run's DAG is built from its own
-    /// workflow (matched by the YAML `name:`), not a single guessed file.
+    /// Every `.github/workflows/*.yml` body; a run matches its own by `name:`.
     workflows: Vec<String>,
-    /// The checked-out branch, scoping the runs list; `None` on detached HEAD.
+    /// `None` on detached HEAD.
     branch: Option<String>,
-    /// `owner/name` of the remote diffler picked, from its URL. `gh` resolves
-    /// a fork to its parent when nobody says otherwise, so every call names
-    /// the repo explicitly.
+    /// `owner/name` of the picked remote. `gh` resolves a fork to its parent
+    /// unless told otherwise, so every call names the repo.
     slug: Option<String>,
 }
 
@@ -74,8 +61,7 @@ impl GitHubProvider {
         }
     }
 
-    /// `path` with `{owner}`/`{repo}` filled in from the remote diffler picked.
-    /// Left to `gh` when the remote named no repo it could parse.
+    /// Leaves the placeholders to `gh` when the remote named no parsable repo.
     fn scoped(&self, path: &str) -> String {
         let Some((owner, name)) = self.slug.as_deref().and_then(|s| s.split_once('/')) else {
             return path.to_owned();
@@ -83,8 +69,7 @@ impl GitHubProvider {
         path.replace("{owner}", owner).replace("{repo}", name)
     }
 
-    /// `gh <args>` against the picked repo: the subcommands take `-R`, unlike
-    /// `gh api`, whose paths go through [`Self::scoped`] instead.
+    /// Subcommands take `-R`; `gh api` paths go through [`Self::scoped`].
     async fn gh(&self, args: &[String]) -> Result<String> {
         let mut args = args.to_vec();
         if let Some(slug) = self.slug.clone() {
@@ -94,10 +79,7 @@ impl GitHubProvider {
         self.runner.run("gh", &args).await
     }
 
-    /// `gh api <path>` asking GitHub to answer only if the resource changed.
-    /// An unchanged answer is a `304`, which costs no rate limit, so a live
-    /// poll of a quiet repo is effectively free. `gh` exits non-zero on a
-    /// `304`, so the status comes from the response rather than the exit code.
+    /// `gh` exits non-zero on a `304`, so we read the status from the response.
     async fn conditional_api(&self, path: &str) -> Result<String> {
         let known = self
             .etags
@@ -179,8 +161,7 @@ impl GitHubProvider {
                     map.insert(comment.database_id, (node.id.clone(), node.is_resolved));
                 }
             }
-            // a next page without a cursor cannot advance; bail rather than
-            // refetch page one forever inside the poll task
+            // a next page without a cursor would refetch page one forever
             if !threads.page_info.has_next_page || threads.page_info.end_cursor.is_none() {
                 return Ok(map);
             }
@@ -188,8 +169,7 @@ impl GitHubProvider {
         }
     }
 
-    /// The current repo's `owner`/`name`, for GraphQL calls where `gh` does
-    /// not expand `{owner}`/`{repo}` placeholders.
+    /// For GraphQL calls, where `gh` expands no `{owner}`/`{repo}` placeholders.
     async fn repo_slug(&self) -> Result<(String, String)> {
         if let Some((owner, name)) = self.slug.as_deref().and_then(|s| s.split_once('/')) {
             return Ok((owner.to_owned(), name.to_owned()));
@@ -210,7 +190,7 @@ impl GitHubProvider {
         Ok((slug.owner.login, slug.name))
     }
 
-    /// `gh api` returning the raw file body (not the base64 contents envelope).
+    /// The raw file body, unwrapped from the base64 contents envelope.
     async fn api_raw(&self, path: &str) -> Result<String> {
         self.runner
             .run(
@@ -225,8 +205,6 @@ impl GitHubProvider {
             .await
     }
 
-    /// Fetch and parse the workflow a `uses:` points at: a local `./path` (read
-    /// at the run's commit) or a remote `owner/repo/path@ref`.
     async fn fetch_reusable(&self, uses: &str, head_sha: &str) -> Result<Vec<JobSpec>> {
         let path = reusable_contents_path(uses, head_sha).ok_or_else(|| CiError::Parse {
             what: "reusable uses".into(),
@@ -258,9 +236,8 @@ impl GitHubProvider {
         head_sha: &str,
     ) -> Vec<CiJob> {
         let now = time::OffsetDateTime::now_utc();
-        // child node ids scope by the caller's label (the value here), not its
-        // id: that's what GitHub prefixes run-job names with, so the ids stay
-        // matchable for status and log lookup
+        // we scope child ids by the caller's label, the prefix GitHub gives
+        // their run-job names, so status and log lookups match them
         let mut children: HashMap<&str, (&str, Vec<JobSpec>)> = HashMap::new();
         for spec in specs {
             if let Some(uses) = &spec.uses
@@ -313,9 +290,8 @@ impl GitHubProvider {
         jobs
     }
 
-    /// Every name a job node answers to: its own id, plus the `name:` any
-    /// bundled workflow gives that id. Two workflows can share an id, and a
-    /// label from the wrong one simply matches nothing.
+    /// A node's id plus the `name:` any workflow gives that id. Two workflows
+    /// can share an id; a label from the wrong one matches nothing.
     fn labels_of(&self, id: &str) -> Vec<String> {
         let mut labels = vec![id.to_owned()];
         labels.extend(
@@ -350,8 +326,7 @@ impl GitHubProvider {
         let jobs: JobsApi = parse_json("gh api jobs", &raw)?;
         let mut annotations = Vec::new();
         for job in jobs.jobs {
-            // one job's annotations 404ing (a GC'd check run) or rate-limiting
-            // must not drop every other job's: skip it and keep going
+            // a GC'd check run 404s; we skip it to keep the other jobs' annotations
             let Ok(raw) = self
                 .api(&format!("{}/annotations", job.check_run_url))
                 .await
@@ -401,8 +376,6 @@ impl ForgeProvider for GitHubProvider {
         let out = self.gh(&args).await?;
         let view: RunView = parse_json("gh run view", &out)?;
 
-        // build the DAG from the run's own workflow, matched by the YAML `name:`
-        // against the run's `workflowName`; an unmatched run falls back to flat
         let specs = self
             .workflows
             .iter()
@@ -410,8 +383,7 @@ impl ForgeProvider for GitHubProvider {
             .and_then(|yaml| parse_workflow(yaml).ok())
             .unwrap_or_default();
         let jobs = if specs.is_empty() {
-            // no workflow file: a flat, edgeless node per run job, one leg
-            // and all, since there's no job id to fold several run jobs under
+            // with no job ids to fold legs under, each run job is its own node
             let now = time::OffsetDateTime::now_utc();
             view.jobs
                 .iter()
@@ -434,8 +406,6 @@ impl ForgeProvider for GitHubProvider {
     }
 
     async fn job_log(&self, run: &RunId, job: &JobId, offset: u64) -> Result<LogChunk> {
-        // resolve the run-job (matrix jobs expand into several legs; the first
-        // matching leg is shown) and its live step states straight from the API
         let out = self
             .api(&format!(
                 "repos/{{owner}}/{{repo}}/actions/runs/{}/jobs",
@@ -443,8 +413,7 @@ impl ForgeProvider for GitHubProvider {
             ))
             .await?;
         let view: JobList = parse_json("gh api jobs", &out)?;
-        // a node is keyed by its YAML id while the API names the job by its
-        // `name:`, so the run job answers to either
+        // nodes key on the YAML id and the API names jobs by `name:`, so we match either
         let labels = self.labels_of(&job.0);
         let job = view
             .jobs
@@ -456,22 +425,17 @@ impl ForgeProvider for GitHubProvider {
             })
             .ok_or_else(|| CiError::NotFound(format!("job {} in run {}", job.0, run.0)))?;
         let steps = job.steps.iter().map(RunStep::to_meta).collect();
-        // route through the same classifier `steps` was just built from
-        // (rather than a raw status literal), so "done" agrees with every
-        // other reading of this job's state
         let done = job_finished(&job.status, job.conclusion.as_deref());
 
-        // the log archive (`jobs/{id}/logs`) only exists once the job finishes.
-        // it 404s while running. so for an in-progress job, return the live step
-        // states with no text and keep polling; the content fills in on completion
+        // the log archive 404s until the job finishes, so a running job gets
+        // its live step states and no text
         let log_path = format!(
             "repos/{{owner}}/{{repo}}/actions/jobs/{}/logs",
             job.database_id
         );
         match self.api(&log_path).await {
             Ok(full) => {
-                // honor `offset` so a re-poll racing `done` yields the tail
-                // (empty), never a duplicated transcript
+                // we honour `offset` so a re-poll racing `done` duplicates nothing
                 let mut start = usize::try_from(offset)
                     .unwrap_or(usize::MAX)
                     .min(full.len());
@@ -497,9 +461,8 @@ impl ForgeProvider for GitHubProvider {
     }
 
     async fn run_extras(&self, run: &RunId) -> Result<RunExtras> {
-        // the extras panel is auxiliary: a forge hiccup degrades a section to
-        // empty rather than failing the graph page (and, since the host re-polls
-        // extras only while they're absent, rather than re-fetching forever)
+        // a failed section shows empty so the graph page still opens; the host
+        // re-polls extras only while they are absent
         Ok(RunExtras {
             artifacts: self.artifacts(run).await.unwrap_or_default(),
             annotations: self.annotations(run).await.unwrap_or_default(),
@@ -528,9 +491,8 @@ impl ForgeProvider for GitHubProvider {
             self.scoped(&format!("repos/{{owner}}/{{repo}}/pulls/{number}/comments")),
         ];
         let raw = self.runner.run("gh", &args).await?;
-        // `--paginate` concatenates one JSON array per page; stream-parse the
-        // documents. A parse error must propagate: an empty fallback would
-        // read as "the forge deleted every comment" and wipe synced state.
+        // `--paginate` concatenates one JSON array per page. We propagate a parse
+        // error, since an empty list would wipe every synced comment.
         let mut items: Vec<ReviewCommentApi> = Vec::new();
         for page in serde_json::Deserializer::from_str(&raw).into_iter::<Vec<ReviewCommentApi>>() {
             items.extend(page.map_err(|err| CiError::Parse {
@@ -541,8 +503,8 @@ impl ForgeProvider for GitHubProvider {
         if items.is_empty() {
             return Ok(Vec::new());
         }
-        // thread handles and resolution live only in GraphQL; losing them
-        // (query failure) degrades to unresolvable threads, not an error
+        // thread handles and resolution live only in GraphQL; on failure we
+        // keep the comments with unresolvable threads
         let threads = self.review_threads(number).await.unwrap_or_default();
         Ok(items
             .into_iter()
@@ -574,8 +536,7 @@ impl ForgeProvider for GitHubProvider {
             "-f".to_owned(),
             format!("path={}", new.path),
         ];
-        // a line-less comment targets the whole file: GitHub's own sentinel
-        // for that is `subject_type=file` with no line/side at all
+        // GitHub marks a whole-file comment with `subject_type=file` and no line or side
         let Some(line) = new.line else {
             args.push("-f".to_owned());
             args.push("subject_type=file".to_owned());
@@ -645,8 +606,7 @@ impl ForgeProvider for GitHubProvider {
         let result = self.runner.run("gh", &args).await;
         let _ = std::fs::remove_file(&input);
         result?;
-        // a whole-file comment has no slot in the review's own payload, so it
-        // posts on its own, as its own notification, once the review lands
+        // the review payload has no slot for a whole-file comment, so we post each one after it
         for comment in review.comments.iter().filter(|c| c.line.is_none()) {
             self.post_pr_comment(comment).await?;
         }
@@ -654,7 +614,7 @@ impl ForgeProvider for GitHubProvider {
     }
 
     async fn resolve_pr_thread(&self, _number: u64, thread_id: &str, resolved: bool) -> Result<()> {
-        // resolution is GraphQL-only; REST has no endpoint for it
+        // resolution is GraphQL-only
         let mutation = if resolved {
             "mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{id}}}"
         } else {
@@ -727,7 +687,7 @@ impl ForgeProvider for GitHubProvider {
             args.push("--draft".to_owned());
         }
         let raw = self.gh(&args).await?;
-        // the command answers with the new PR's url and nothing machine-readable
+        // `gh pr create` prints only the new PR's url
         let number = pr_number_from_url(&raw).ok_or_else(|| CiError::Parse {
             what: "pr create".to_owned(),
             message: format!("no pull-request url in the output: {}", raw.trim()),
@@ -739,8 +699,7 @@ impl ForgeProvider for GitHubProvider {
         let Some(branch) = &self.branch else {
             return Ok(None);
         };
-        // `gh pr view` exits non-zero when the branch has no PR; that's a normal
-        // state, not an error, so a failed call resolves to "no PR"
+        // `gh pr view` exits non-zero when the branch has no PR
         let args = [
             "pr",
             "view",
@@ -752,8 +711,7 @@ impl ForgeProvider for GitHubProvider {
         let Ok(raw) = self.gh(&args).await else {
             return Ok(None);
         };
-        // a malformed response must propagate, same as `pr`/`list_prs`:
-        // treating it as "no PR" would look like a normal, PR-less branch
+        // a malformed response is an error, so it never reads as a PR-less branch
         let pr: PrView = parse_json("pr view", &raw)?;
         Ok(Some(PullRequest {
             number: pr.number,
@@ -767,8 +725,7 @@ impl ForgeProvider for GitHubProvider {
     }
 }
 
-/// A workflow job's structure from the YAML. `uses` is set when the job calls a
-/// reusable workflow instead of running steps.
+/// `uses` is set when the job calls a reusable workflow.
 struct JobSpec {
     id: String,
     label: String,
@@ -776,8 +733,7 @@ struct JobSpec {
     uses: Option<String>,
 }
 
-/// The workflow's display `name:` (what `gh run list` reports as `workflowName`),
-/// used to match a run to the YAML that defines its DAG.
+/// The `name:` that `gh run list` reports as `workflowName`.
 fn workflow_name(yaml: &str) -> Option<String> {
     let value: serde_norway::Value = serde_norway::from_str(yaml).ok()?;
     value
@@ -786,8 +742,7 @@ fn workflow_name(yaml: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Parse `jobs.<id>` into specs, preserving declaration order; `needs` is a
-/// scalar or a sequence of upstream job ids.
+/// `jobs.<id>` in declaration order; `needs` is a scalar or a sequence.
 fn parse_workflow(yaml: &str) -> Result<Vec<JobSpec>> {
     let value: serde_norway::Value = serde_norway::from_str(yaml).map_err(|e| CiError::Parse {
         what: "workflow YAML".into(),
@@ -838,8 +793,7 @@ fn scope(caller: &str, child: &str) -> String {
     format!("{caller} / {child}")
 }
 
-/// The `gh api` contents path for a `uses:` target: a local `./path` resolved
-/// at the run's commit, or a remote `owner/repo/path@ref`. `None` if malformed.
+/// A local `./path` resolves at the run's commit, a remote one is `owner/repo/path@ref`.
 fn reusable_contents_path(uses: &str, head_sha: &str) -> Option<String> {
     if let Some(local) = uses.strip_prefix("./") {
         return Some(format!(
@@ -856,8 +810,7 @@ fn reusable_contents_path(uses: &str, head_sha: &str) -> Option<String> {
     ))
 }
 
-/// The terminal children of an expanded caller (those no sibling needs), so a
-/// downstream dependent attaches to the reusable workflow's exit, not its entry.
+/// The children no sibling needs: a downstream dependent attaches to these.
 fn reusable_terminals(caller: &str, children: &[JobSpec]) -> Vec<String> {
     let needed: HashSet<&str> = children
         .iter()
@@ -870,9 +823,6 @@ fn reusable_terminals(caller: &str, children: &[JobSpec]) -> Vec<String> {
         .collect()
 }
 
-/// Resolve one `needs` entry to the node ids satisfying it: an expanded caller's
-/// terminal children (scoped by its label, matching their node ids), or the
-/// dependency unchanged.
 fn resolve_dep(dep: &str, expanded: &HashMap<&str, (&str, Vec<JobSpec>)>) -> Vec<String> {
     match expanded.get(dep) {
         Some((label, children)) => reusable_terminals(label, children),
@@ -880,8 +830,7 @@ fn resolve_dep(dep: &str, expanded: &HashMap<&str, (&str, Vec<JobSpec>)>) -> Vec
     }
 }
 
-/// The child's run-job name (resolves a `${{ }}` `name:` to its runtime value),
-/// or the scoped id before the job exists.
+/// A `${{ }}` name shows the run job's runtime name, or the scoped id until it exists.
 fn child_display(scoped_id: &str, scoped_label: &str, jobs: &[RunJob]) -> String {
     if scoped_label.contains("${{") {
         return jobs
@@ -892,9 +841,8 @@ fn child_display(scoped_id: &str, scoped_label: &str, jobs: &[RunJob]) -> String
     scoped_label.to_owned()
 }
 
-/// Whether a run job belongs to a spec. Beyond an exact name/id match this
-/// covers a matrix leg (`name (os)`), a reusable child (`caller / child`, with
-/// further ` / ` for nested calls), and a `${{ }}` name (matched by its prefix).
+/// Also matches a matrix leg `name (os)`, a reusable child `caller / child`,
+/// and a `${{ }}` name by its prefix.
 fn name_matches(run_job_name: &str, candidate: &str) -> bool {
     if let Some((prefix, _)) = candidate.split_once("${{") {
         return !prefix.is_empty() && run_job_name.starts_with(prefix);
@@ -908,20 +856,14 @@ fn job_matches(run_job_name: &str, id: &str, label: &str) -> bool {
     name_matches(run_job_name, label) || name_matches(run_job_name, id)
 }
 
-/// Every run job answering to a job spec's id or label, in run order: one
-/// entry per matrix leg the forge actually ran, or a single entry for a job
-/// that ran as itself.
 fn matching_run_jobs<'a>(id: &str, label: &str, jobs: &'a [RunJob]) -> Vec<&'a RunJob> {
     jobs.iter()
         .filter(|j| job_matches(&j.name, id, label))
         .collect()
 }
 
-/// One job spec's `CiJob`, aggregated across every run job that answered to
-/// it: `status` and `duration_secs` are the worst status and longest span
-/// over the whole set, and `legs` keeps each one separately once there was
-/// more than one (the job's `strategy.matrix` fanned it out), so the graph
-/// can render a foldable root instead of losing which leg failed.
+/// Takes the worst status and longest span over `matches`, and keeps each
+/// matrix leg in `legs` so the graph can show which one failed.
 fn build_job(
     id: String,
     name: String,
@@ -959,12 +901,8 @@ fn build_job(
     }
 }
 
-/// A leg's own label: its run job's name with the job's own name stripped off
-/// the front, so a leg under a root already labeled "build" reads as
-/// "Dockerfile.cuda, -cuda" rather than repeating "build (Dockerfile.cuda,
-/// -cuda)". Falls back to the run job's full name when it doesn't carry the
-/// job's name as a literal prefix (an expression-named job matched by its
-/// prefix before `${{`, say).
+/// `build (Dockerfile.cuda, -cuda)` under a `build` root becomes
+/// `Dockerfile.cuda, -cuda`; a name without that literal prefix stays whole.
 fn leg_label(job_name: &str, run_job_name: &str) -> String {
     run_job_name
         .strip_prefix(job_name)
@@ -975,9 +913,6 @@ fn leg_label(job_name: &str, run_job_name: &str) -> String {
 }
 
 fn map_status(status: &str, conclusion: Option<&str>) -> JobStatus {
-    // GitHub and Forgejo Actions share the same `conclusion` vocabulary
-    // (`crate::ci::map_conclusion` covers both); only the in-progress/no-conclusion
-    // status strings are forge-specific
     crate::ci::map_conclusion(conclusion).unwrap_or(match status {
         "in_progress" => JobStatus::Running,
         "completed" => JobStatus::Neutral,
@@ -985,10 +920,6 @@ fn map_status(status: &str, conclusion: Option<&str>) -> JobStatus {
     })
 }
 
-/// Whether a job has reached a terminal state, classified the same way as
-/// every other reading of `status`/`conclusion` in this file, not a raw
-/// string comparison, which would drift the moment a new terminal status or
-/// conclusion is added to `map_status`.
 fn job_finished(status: &str, conclusion: Option<&str>) -> bool {
     matches!(
         map_status(status, conclusion),
@@ -1000,7 +931,6 @@ fn parse_created(raw: &str) -> Option<time::OffsetDateTime> {
     time::OffsetDateTime::parse(raw, &time::format_description::well_known::Rfc3339).ok()
 }
 
-/// Split a `gh api -i` response into its status code, header lines and body.
 fn split_response(raw: &str) -> (Option<u16>, Vec<&str>, String) {
     let mut lines = raw.lines();
     let status = lines
@@ -1026,9 +956,7 @@ fn header(headers: &[&str], name: &str) -> Option<String> {
     })
 }
 
-/// The REST runs response. GitHub names these fields differently from
-/// `gh run list --json`, and carries both a `url` and an `html_url`, so it
-/// gets its own shape rather than aliases onto [`RunListItem`].
+/// The REST runs response, whose field names differ from `gh run list --json`.
 #[derive(Deserialize)]
 struct RunsApi {
     workflow_runs: Vec<RunApi>,
@@ -1070,8 +998,6 @@ impl RunApi {
     }
 }
 
-/// The jobs array alone (from the REST `actions/runs/{id}/jobs` response, whose
-/// `total_count` is ignored): the run meta in [`RunView`] isn't needed for logs.
 #[derive(Deserialize)]
 struct JobList {
     jobs: Vec<RunJob>,
@@ -1112,8 +1038,7 @@ impl RunView {
     }
 }
 
-// Parses both `gh run view --json jobs` (camelCase) and the REST jobs API
-// (snake_case `id`/`started_at`/…), so the same shape serves the DAG and logs.
+// reads both `gh run view --json jobs` (camelCase) and the REST jobs API (snake_case)
 #[derive(Deserialize)]
 struct RunJob {
     #[serde(rename = "databaseId", alias = "id")]
@@ -1130,11 +1055,8 @@ struct RunJob {
 }
 
 impl RunJob {
-    /// Time on the clock: finished jobs report their span, a running one
-    /// counts from its start.
     fn duration_secs(&self, now: time::OffsetDateTime) -> Option<i64> {
-        // GitHub writes an unset time as its zero value (`0001-01-01…`), which
-        // parses, so both ends need the year to tell "not yet" from a real stamp
+        // GitHub writes an unset time as `0001-01-01…`, which parses, so we check the year
         let real = |raw: &Option<String>| {
             raw.as_deref()
                 .and_then(parse_created)
@@ -1163,9 +1085,8 @@ impl RunStep {
         let dur = started
             .zip(self.completed_at.as_deref().and_then(parse_created))
             .map(|(start, end)| (end - start).whole_seconds());
-        // a skipped/not-started step gets key 0 so it claims no log lines: GitHub
-        // gives those a null or zero (`0001-…`) start that would otherwise sort
-        // below real steps and, mid-list, swallow an earlier step's output
+        // a step that never ran gets key 0 so it claims no log lines; its
+        // `0001-…` start would otherwise swallow an earlier step's output
         let ran = started.is_some_and(|t| t.year() >= 2000);
         LogStepMeta {
             name: self.name.clone(),
@@ -1203,9 +1124,8 @@ impl From<ArtifactItem> for Artifact {
     }
 }
 
-/// The REST jobs response (`actions/runs/{id}/jobs`). It carries each job's
-/// `check_run_url`, the handle the annotations endpoint hangs off.
-/// `gh run view --json jobs` omits that field.
+/// The REST jobs response, for each job's `check_run_url`, which the
+/// annotations endpoint needs and `gh run view --json jobs` omits.
 #[derive(Deserialize)]
 struct JobsApi {
     jobs: Vec<JobApi>,
@@ -1216,7 +1136,6 @@ fn parse_posted(raw: &str) -> Result<PrComment> {
     Ok(item.into_comment())
 }
 
-/// One review comment from the REST API (list and post share the shape).
 #[derive(Deserialize)]
 struct ReviewCommentApi {
     id: u64,
@@ -1332,7 +1251,6 @@ impl ReviewCommentApi {
     }
 }
 
-/// A single line (or range) comment in the GitHub review-submission wire shape.
 #[derive(Serialize)]
 struct ReviewCommentPayload {
     path: String,
@@ -1345,9 +1263,6 @@ struct ReviewCommentPayload {
     start_side: Option<&'static str>,
 }
 
-/// The REST body for POST /pulls/N/reviews: verdict as the event, the
-/// optional summary, every pending comment with its side (and range when
-/// multi-line).
 #[derive(Serialize)]
 struct ReviewPayload {
     commit_id: String,
@@ -1357,9 +1272,8 @@ struct ReviewPayload {
     body: String,
 }
 
-/// The review's line comments only: GitHub's reviews endpoint has no slot for
-/// a `subject_type: file` entry, so `submit_pr_review` posts a whole-file one
-/// through [`GitHubProvider::post_pr_comment`] instead, after this review lands.
+/// Line comments only: the reviews endpoint has no slot for a whole-file one,
+/// so `submit_pr_review` posts those separately.
 fn review_payload(review: &crate::ci::NewPrReview) -> serde_json::Value {
     let comments = review
         .comments
@@ -1388,14 +1302,10 @@ fn review_payload(review: &crate::ci::NewPrReview) -> serde_json::Value {
         comments,
         body: review.body.clone(),
     };
-    // every field is a plain String/number/&'static str, so serialization
-    // can never fail
     #[allow(clippy::expect_used)]
     serde_json::to_value(payload).expect("wire payload of plain fields always serializes")
 }
 
-/// The number from a pull-request url anywhere in `output`, so the url the
-/// create command prints can be turned back into a PR to open.
 fn pr_number_from_url(output: &str) -> Option<u64> {
     output.split_whitespace().rev().find_map(|token| {
         let (_, tail) = token.rsplit_once("/pull/")?;
@@ -1522,8 +1432,7 @@ jobs:
     runs-on: ubuntu-latest
 ";
 
-    // caller with a reusable `deploy` job, and the reusable workflow it fetches,
-    // mirrors a real deploy pipeline (a nested `uses:` and a `${{ }}` job name)
+    // a caller with a reusable `deploy` job, which nests a `uses:` and a `${{ }}` job name
     const DEPLOY_WORKFLOW: &str = r"
 name: Auth Service Deploy
 on: push
@@ -1534,7 +1443,7 @@ jobs:
   deploy:
     name: Build and deploy
     needs: audit
-    uses: syte-tech/syte-ci-tooling/.github/workflows/app-deploy.yml@main
+    uses: acme/ci-tooling/.github/workflows/app-deploy.yml@main
 ";
 
     const APP_DEPLOY_WORKFLOW: &str = r"
@@ -1546,7 +1455,7 @@ jobs:
     runs-on: ubuntu-latest
   build-and-push:
     needs: [prepare-deployment]
-    uses: syte-tech/syte-ci-tooling/.github/workflows/docker-build-push.yml@main
+    uses: acme/ci-tooling/.github/workflows/docker-build-push.yml@main
   deploy:
     name: Deploy to ${{ needs.prepare-deployment.outputs.env }}
     needs: [prepare-deployment, build-and-push]
@@ -1579,8 +1488,6 @@ jobs:
         )
     }
 
-    /// A provider over a shared runner, so the caller can inspect `calls()`
-    /// after the exercised method returns.
     fn provider_with(runner: std::sync::Arc<RecordingRunner>) -> GitHubProvider {
         GitHubProvider::new(
             Box::new(runner),
@@ -1613,9 +1520,7 @@ jobs:
         assert_eq!(runs[0].branch, "feat/x");
     }
 
-    /// `gh` resolves a fork to the repo it was forked from, so a checkout with
-    /// `origin` and `upstream` would report the parent's runs. Every call names
-    /// the repo diffler picked instead.
+    /// `gh` resolves a fork to its parent unless the call names the repo.
     #[tokio::test]
     async fn every_call_names_the_repo_the_remote_points_at() {
         let runner = std::sync::Arc::new(RecordingRunner::new(&[
@@ -1675,8 +1580,6 @@ jobs:
             api.contains("repos/mine/widgets/") && !api.contains("{owner}"),
             "the api path names the repo: {api}"
         );
-        // every subcommand, not a sample of them: an unscoped one resolves to
-        // the fork's parent and answers about the wrong repository
         let subcommands: Vec<&String> = calls.iter().filter(|c| !c.starts_with("api")).collect();
         assert_eq!(subcommands.len(), 6, "{subcommands:?}");
         for call in subcommands {
@@ -1687,8 +1590,6 @@ jobs:
         }
     }
 
-    /// Without a parsable remote the calls go out as they always did, and `gh`
-    /// resolves the repo from the checkout.
     #[tokio::test]
     async fn an_unknown_remote_leaves_the_repo_to_gh() {
         let runner = std::sync::Arc::new(RecordingRunner::new(&[(
@@ -1720,7 +1621,6 @@ jobs:
             status: "in_progress".into(),
             conclusion: None,
             started_at: Some(started.to_owned()),
-            // an unfinished job carries GitHub's zero time, not a null
             completed_at: Some(completed.to_owned()),
             steps: Vec::new(),
         };
@@ -1745,8 +1645,6 @@ jobs:
 
     #[tokio::test]
     async fn run_detail_builds_the_dag_from_the_runs_own_workflow() {
-        // the run is a `Release` run; its DAG must come from the Release YAML
-        // (one `publish` job), not the CI YAML (lint/test/publish)
         let view = r#"{
           "displayTitle":"cut","headBranch":"main","headSha":"abc","status":"completed",
           "conclusion":"success","workflowName":"Release",
@@ -1788,7 +1686,6 @@ jobs:
                 None,
             )
         };
-        // first poll stores the etag, second is answered 304 from the cache
         let first = build().list_runs(10).await.expect("first");
         let second = build().list_runs(10).await.expect("second");
         assert_eq!(first, second, "a 304 yields the body we already had");
@@ -1861,9 +1758,8 @@ jobs:
         );
     }
 
-    // an `include` matrix whose legs carry an uneven number of parameters,
-    // since GitHub drops an empty one from the run job's name: exactly the
-    // shape a naive "split and count" parser gets wrong
+    // legs with an uneven number of parameters, since GitHub drops an empty
+    // one from the run job's name
     const MATRIX_WORKFLOW: &str = r"
 name: CI
 on: push
@@ -1985,7 +1881,6 @@ jobs:
 
         let by_id = |id: &str| detail.jobs.iter().find(|j| j.id.0 == id).cloned();
         let ids: Vec<&str> = detail.jobs.iter().map(|j| j.id.0.as_str()).collect();
-        // node ids scope by the caller's label, matching GitHub's run-job names
         assert_eq!(
             ids,
             [
@@ -2004,7 +1899,6 @@ jobs:
                 .needs,
             vec![JobId("audit".into())]
         );
-        // internal edges from the reusable workflow's own `needs`
         assert_eq!(
             by_id("Build and deploy / deploy").unwrap().needs,
             vec![
@@ -2012,12 +1906,10 @@ jobs:
                 JobId("Build and deploy / build-and-push".into())
             ]
         );
-        // a `${{ }}` job name resolves to its run-job value
         assert_eq!(
             by_id("Build and deploy / deploy").unwrap().name,
             "Build and deploy / Deploy to staging"
         );
-        // a nested reusable child takes the worst status of its run legs
         assert_eq!(
             by_id("Build and deploy / build-and-push").unwrap().status,
             JobStatus::Running
@@ -2133,8 +2025,7 @@ jobs:
 
     #[tokio::test]
     async fn job_log_in_progress_returns_live_steps_without_text() {
-        // the log archive 404s mid-run (here: no `/logs` response, so empty); the
-        // job stays in_progress → live steps but no text, and polling continues
+        // no `/logs` response stands in for the archive's mid-run 404
         let jobs = r#"{"jobs":[{"id":7,"name":"lint","status":"in_progress","conclusion":null,
             "steps":[{"name":"Run x","status":"in_progress","conclusion":null,
                       "started_at":"2026-06-20T00:00:00Z","completed_at":null}]}]}"#;
@@ -2182,8 +2073,7 @@ jobs:
 
     #[tokio::test]
     async fn run_extras_degrades_to_artifacts_when_annotations_fail() {
-        // the jobs list is fetchable but its one job's annotations call has no
-        // recorded response (the mock errors): artifacts must survive
+        // the annotations call has no recorded response, so the mock errors
         let artifacts =
             r#"{"artifacts":[{"name":"coverage","size_in_bytes":2048,"expired":false}]}"#;
         let jobs =
@@ -2308,8 +2198,6 @@ jobs:
         }
     }
 
-    /// GitHub's reviews endpoint has no `subject_type` slot at all: a
-    /// whole-file comment never reaches this payload, batched or not.
     #[test]
     fn review_payload_drops_a_whole_file_comment_the_reviews_endpoint_cannot_carry() {
         let review = crate::ci::NewPrReview {
@@ -2365,8 +2253,6 @@ jobs:
         assert!(!call.contains("subject_type"), "{call}");
     }
 
-    /// GitHub's own sentinel for a file-level comment: `subject_type=file`
-    /// with no line, side, or start fields at all.
     #[tokio::test]
     async fn a_whole_file_comment_posts_subject_type_file_with_no_line() {
         let runner = std::sync::Arc::new(RecordingRunner::new(&[(
@@ -2386,8 +2272,6 @@ jobs:
         assert!(!call.contains("side="), "{call}");
     }
 
-    /// A whole-file comment has no slot in the batched review, so it posts as
-    /// its own call once that review lands.
     #[tokio::test]
     async fn submitting_a_review_posts_a_whole_file_comment_as_a_separate_call() {
         let runner = std::sync::Arc::new(RecordingRunner::new(&[

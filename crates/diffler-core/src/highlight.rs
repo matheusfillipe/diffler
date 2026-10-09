@@ -1,7 +1,5 @@
-//! Whole-file syntax highlighting via tree-sitter, sliced into per-line styled
-//! ranges. Highlighting whole files (not hunks) keeps multi-line constructs
-//! like strings correct across hunk boundaries. Unknown languages and parse
-//! failures degrade to plain (empty) ranges so rendering never breaks.
+//! Tree-sitter highlighting sliced into per-line styled ranges. We highlight
+//! whole files so multi-line strings stay correct across hunk boundaries.
 
 use std::ops::Range;
 
@@ -13,14 +11,11 @@ use crate::syntax::{HIGHLIGHT_NAMES, LanguageRegistry};
 pub struct Highlighter {
     registry: &'static LanguageRegistry,
     theme: SyntaxTheme,
-    /// The reader's `glob = language` rules, in the order we try them, ahead
-    /// of anything the registry infers from a file's name or `#!` line.
+    /// The reader's `glob = language` rules, tried in order before the
+    /// registry's own inference.
     rules: Vec<(String, String)>,
 }
 
-/// Syntax-highlight palette, paired with a UI theme so foreground colors stay
-/// legible against the diff backgrounds (a dark UI needs dark-theme syntax, a
-/// light UI light-theme syntax).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum SyntaxTheme {
     #[default]
@@ -35,7 +30,6 @@ pub enum SyntaxTheme {
     Kanagawa,
 }
 
-/// Foreground color + style for a byte range of one line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StyledRange {
     pub range: Range<usize>,
@@ -51,7 +45,6 @@ impl Default for Highlighter {
 }
 
 impl Highlighter {
-    /// Build a highlighter whose foregrounds come from `syntax`.
     pub fn new(syntax: SyntaxTheme) -> Self {
         Self {
             registry: &crate::syntax::registry::REGISTRY,
@@ -60,15 +53,14 @@ impl Highlighter {
         }
     }
 
-    /// This highlighter with the reader's `glob = language` rules on top.
     #[must_use]
     pub fn with_rules(mut self, rules: Vec<(String, String)>) -> Self {
         self.rules = rules;
         self
     }
 
-    /// The grammar `path` highlights as: the first rule whose glob matches it
-    /// and names a bundled grammar, else its name, else its `#!` line.
+    /// The first matching rule that names a bundled grammar, else the
+    /// registry's inference.
     pub fn language(&self, path: &str, content: &str) -> Option<&'static LangEntry> {
         self.rules
             .iter()
@@ -77,14 +69,12 @@ impl Highlighter {
             .or_else(|| self.registry.for_file(path, content))
     }
 
-    /// Highlight `content` as the language [`Self::language`] picks.
-    /// Returns one `Vec<StyledRange>` per line (without trailing newlines).
-    /// Unknown languages produce empty ranges per line (plain rendering).
+    /// One `Vec<StyledRange>` per line, empty for an unknown language.
     pub fn highlight(&self, path: &str, content: &str) -> Vec<Vec<StyledRange>> {
         self.highlight_entry(self.language(path, content), content)
     }
 
-    /// Highlight `content` as a markdown fence token (`rust`, `py`, ...).
+    /// Highlight `content` as a markdown fence token.
     pub fn highlight_lang(&self, token: &str, content: &str) -> Vec<Vec<StyledRange>> {
         self.highlight_entry(self.registry.for_token(token), content)
     }
@@ -147,16 +137,11 @@ impl Highlighter {
         out
     }
 
-    /// Definition breadcrumb index for `content`, computed via the same grammar
-    /// registry used for highlighting. Empty for unsupported languages.
     pub fn scope_index(&self, path: &str, content: &str) -> crate::syntax::ScopeIndex {
         LanguageRegistry::scope_index_as(self.language(path, content), content)
     }
 
-    /// Set AST-diff char-precise emphasis on `file`. Returns `false` (caller
-    /// should fall back to the textual engine) when unavailable.
-    /// `mark_reformat_only` flags reformat-only line pairs for the structural
-    /// algorithm's dimmed rendering.
+    /// See [`LanguageRegistry::syntactic_emphasis`].
     pub fn syntactic_emphasis(
         &self,
         file: &mut crate::model::FileDiff,
@@ -192,9 +177,8 @@ fn push_styled(
     });
 }
 
-/// Palette category and face for markdown `text.*` captures, reusing the general
-/// syntax colors (headings as functions, code spans as strings, links as
-/// properties) so every theme styles markdown with no extra color tables.
+/// Palette category and face for markdown `text.*` captures, so themes need
+/// no markdown colors of their own.
 fn markdown_face(name: &str) -> Option<(&'static str, bool, bool)> {
     let face = match name {
         "text.title" => ("function", true, false),
@@ -207,9 +191,8 @@ fn markdown_face(name: &str) -> Option<(&'static str, bool, bool)> {
     Some(face)
 }
 
-/// Fold a grammar's own capture category onto the palette's, so every theme
-/// styles it without carrying an entry for it. Applied before the face is
-/// chosen, so a folded comment stays italic like a native one.
+/// Fold a grammar's own capture category onto the palette's. We apply it
+/// before picking the face so a folded comment stays italic.
 fn palette_category(category: &str) -> &str {
     match category {
         "boolean" => "constant",
@@ -223,8 +206,7 @@ fn palette_category(category: &str) -> &str {
 }
 
 impl SyntaxTheme {
-    /// Style for a tree-sitter capture name, matched by its leading category
-    /// (`function.method` -> `function`). `None` leaves the span at default fg.
+    /// Matched by the capture's leading category. `None` leaves the default fg.
     fn style(self, name: &str) -> Option<StyleSpec> {
         if let Some((category, bold, italic)) = markdown_face(name) {
             return Some(StyleSpec {
@@ -252,7 +234,7 @@ impl SyntaxTheme {
                 "type" | "constructor" => (229, 192, 123),
                 "string" => (152, 195, 121),
                 // brighter than One Dark's default so comments stay legible on
-                // the added/removed diff backgrounds, not just the editor bg
+                // the diff backgrounds
                 "comment" => (126, 134, 145),
                 "constant" | "number" | "attribute" => (209, 154, 102),
                 "operator" | "escape" => (86, 182, 194),
@@ -385,9 +367,8 @@ mod tests {
         );
     }
 
-    /// Every registered grammar must colour a representative snippet: a crate
-    /// that ships a parser with a broken or absent highlight query would
-    /// otherwise link fine and render plain.
+    /// A grammar crate with a broken highlight query links fine and renders
+    /// plain, so we check each one colours a sample.
     #[test]
     fn every_language_colours_a_sample() {
         let samples: &[(&str, &str)] = &[
@@ -560,7 +541,6 @@ mod tests {
         let src = "# Title\n\nSome `code` and **bold** text.\n";
         let lines = hl.highlight("readme.md", src);
         assert!(!lines[0].is_empty(), "heading line should be styled");
-        // `code` is styled by the by-hand inline pass over the block (inline) node
         assert!(
             lines[2].iter().any(|r| r.fg == (152, 195, 121)),
             "inline `code` should get the string color"
@@ -569,8 +549,6 @@ mod tests {
 
     #[test]
     fn markdown_inline_code_offset_is_absolute_not_range_relative() {
-        // inline content starts well past byte 0 (after a heading and blank
-        // lines); the code span must still land on its own line
         let hl = Highlighter::default();
         let src = "# A longer heading here\n\nintro line\n\nthen `code` appears.\n";
         let lines = hl.highlight("readme.md", src);
@@ -595,7 +573,6 @@ mod tests {
         let hl = Highlighter::default();
         let src = "text\n\n```rust\nfn f() {}\n```\n";
         let lines = hl.highlight("readme.md", src);
-        // `fn` keyword inside the fence is highlighted by the injected rust grammar
         assert!(
             lines[3].iter().any(|r| r.fg == (198, 120, 221)),
             "fenced rust `fn` should get the keyword color"
@@ -604,8 +581,6 @@ mod tests {
 
     #[test]
     fn markdown_fence_tag_resolves_by_extension() {
-        // an `rs` fence tag is a file extension, not a grammar name; it resolves
-        // to rust through the extension table
         let hl = Highlighter::default();
         let src = "text\n\n```rs\nfn f() {}\n```\n";
         let lines = hl.highlight("readme.md", src);

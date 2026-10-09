@@ -1,14 +1,10 @@
-//! Magit/neogit-style transient menus: a top-level prefix key opens a
-//! transient whose own keys are pure leaves (immediate actions). The model is
-//! data, not closures, so resolution and the which-key panel layout stay pure
-//! and unit-testable; the app owns the live transient state and timer.
+//! Magit-style transient menus: a prefix key opens a menu whose keys are all
+//! leaves. The model is plain data so resolution and the which-key layout stay
+//! unit-testable; the app owns the live state and timer.
 
 use crate::config::{KeyPress, KeysConfig, single_press};
 use crate::keymap::{Action, render_chord};
 
-/// Which transient a top-level prefix opens. Commit and branch are multi-leaf;
-/// log/push/pull/fetch are small transients so every git group is reached the
-/// same way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransientKind {
     Commit,
@@ -22,8 +18,7 @@ pub enum TransientKind {
 }
 
 impl TransientKind {
-    /// Config-facing section name, mirroring `Action::name`. Also the
-    /// `[keys.<section>]` table that overrides this transient's sub-keys.
+    /// The `[keys.<section>]` table that overrides this transient's sub-keys.
     pub fn name(self) -> &'static str {
         match self {
             Self::Commit => "commit",
@@ -38,7 +33,6 @@ impl TransientKind {
         }
     }
 
-    /// Human title shown atop the which-key panel and the help popup group.
     pub fn title(self) -> &'static str {
         match self {
             Self::Commit => "Commit",
@@ -64,8 +58,6 @@ impl TransientKind {
     ];
 }
 
-/// One entry inside a transient: a single key bound to an `Action`, with a
-/// short label for the which-key panel and help popup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransientEntry {
     pub key: KeyPress,
@@ -73,36 +65,29 @@ pub struct TransientEntry {
     pub label: &'static str,
 }
 
-/// A labelled column of entries within a transient (magit groups its keys
-/// under headings like "Create" / "Commit").
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransientGroup {
     pub heading: &'static str,
     pub entries: Vec<TransientEntry>,
 }
 
-/// A fully-resolved transient: a title and its groups, ready to resolve keys
-/// against and to render as a which-key panel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Transient {
     pub kind: TransientKind,
     pub groups: Vec<TransientGroup>,
 }
 
-/// Outcome of feeding one key into an open transient.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransientResolve {
-    /// A leaf fired; the transient closes and the action dispatches.
     Action(Action),
-    /// No entry owns the key; neogit-style, the caller closes and beeps.
+    /// The caller closes the transient and beeps, as neogit does.
     Unbound,
 }
 
-/// A built-in transient sub-key: `(config key, chord, action, label)`. The
-/// config key addresses the override as `[keys.<section>] <key> = "<chord>"`.
+/// `(config key, chord, action, label)`; the override is
+/// `[keys.<section>] <config key> = "<chord>"`.
 type DefaultEntry = (&'static str, &'static str, Action, &'static str);
 
-/// A built-in group: heading plus its default entries.
 type DefaultGroup = (&'static str, &'static [DefaultEntry]);
 
 const COMMIT_GROUPS: &[DefaultGroup] = &[(
@@ -200,10 +185,8 @@ impl TransientKind {
 }
 
 impl Transient {
-    /// Build a transient from its defaults, applying `[keys.<section>]`
-    /// overrides keyed by the entry's config name. Returns warnings for
-    /// unknown actions, bad chords, and within-transient conflicts (two
-    /// entries on one chord), falling back to the default per conflict.
+    /// Applies `[keys.<section>]` overrides; a bad chord or a clash warns and
+    /// falls back to the default.
     pub fn build(kind: TransientKind, keys: &KeysConfig) -> (Self, Vec<String>) {
         let section = kind.name();
         let overrides = keys.transient(kind);
@@ -212,8 +195,7 @@ impl Transient {
         for (heading, entries) in kind.default_groups() {
             let mut built = Vec::new();
             for (config_key, default_chord, action, label) in *entries {
-                // a default that failed to parse would silently vanish; the
-                // defaults_are_conflict_free test guards against that
+                // a default that fails to parse vanishes; defaults_are_conflict_free guards it
                 let Some(default_key) = single_press(default_chord) else {
                     continue;
                 };
@@ -246,10 +228,8 @@ impl Transient {
         (transient, warnings)
     }
 
-    /// Drop entries whose chord collides with an earlier entry in the same
-    /// transient, restoring the loser to its default when that default is
-    /// itself free; emit a warning per collision. Keeps every level
-    /// internally unambiguous (the HARD config requirement).
+    /// A later entry on a taken chord falls back to its default when that is
+    /// free, else drops; each clash warns.
     fn resolve_conflicts(&mut self, section: &str) -> Vec<String> {
         let mut warnings = Vec::new();
         let mut seen: Vec<KeyPress> = Vec::new();
@@ -257,8 +237,6 @@ impl Transient {
             for entry in &mut group.entries {
                 if seen.contains(&entry.key) {
                     let clashing = render_chord(std::slice::from_ref(&entry.key));
-                    // the override aimed this entry at a taken key; fall back
-                    // to its default chord if that is still free
                     let default = entry
                         .action
                         .name()
@@ -288,7 +266,6 @@ impl Transient {
         warnings
     }
 
-    /// Resolve one key against this transient's entries.
     pub fn resolve(&self, press: &KeyPress) -> TransientResolve {
         for group in &self.groups {
             for entry in &group.entries {
@@ -300,8 +277,6 @@ impl Transient {
         TransientResolve::Unbound
     }
 
-    /// `(rendered key, entry)` pairs across all groups, for the help popup
-    /// and the command palette.
     pub fn flat_entries(&self) -> impl Iterator<Item = (String, &TransientEntry)> + '_ {
         self.groups.iter().flat_map(|group| {
             group
@@ -312,8 +287,6 @@ impl Transient {
     }
 }
 
-/// Look up the default key for `action` within `kind` so a clashing override
-/// can fall back to it.
 trait DefaultKeyLookup {
     fn pipe_default_key(self, kind: TransientKind) -> Option<KeyPress>;
 }
@@ -496,20 +469,17 @@ mod tests {
             commit.resolve(&press("m")),
             TransientResolve::Action(Action::CommitAmend)
         );
-        // the old `a` no longer fires amend
         assert_eq!(commit.resolve(&press("a")), TransientResolve::Unbound);
     }
 
     #[test]
     fn clashing_override_warns_and_falls_back_to_the_default() {
         let mut keys = KeysConfig::default();
-        // aim amend at `c`, which the commit leaf already owns
         keys.commit.insert("amend".to_owned(), "c".to_owned());
         let (commit, warnings) = Transient::build(TransientKind::Commit, &keys);
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].contains("amend"), "{warnings:?}");
         assert!(warnings[0].contains("[keys.commit]"), "{warnings:?}");
-        // commit still fires on `c`; amend fell back to its default `a`
         assert_eq!(
             commit.resolve(&press("c")),
             TransientResolve::Action(Action::CommitFlow)

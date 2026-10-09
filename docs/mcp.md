@@ -14,7 +14,7 @@ You can open several repositories as tabs in one diffler, and the agent reaches 
 - **get_diff**: unified diff of the working tree under review, optionally restricted to one file.
 - **get_comments**: comments across every review (working tree, commits, ranges, PRs, walkthroughs), each with its anchor, diff context, thread, and source; filterable by status (open, replied, resolved). A comment whose source starts with `walkthrough-` is feedback on that walkthrough.
 - **list_reviews**: every review you have (the working tree, individual commits, commit ranges, and walkthroughs) with comment counts, so the agent can tell where feedback came from.
-- **get_walkthrough**: the walkthrough its `id` names (from `review_status`), or the newest one when `id` is omitted, or null when none has been published. A walkthrough carries its title, author, stops, what was skipped, its `summary`, when it has one, and the full commit `rev` it is pinned to, `null` for a walkthrough published before `rev` existed. Each stop carries the id of the comment it is and its `notes`, extra remarks on other parts of its own region, each with its own id; those ids are what a revision passes back.
+- **get_walkthrough**: the walkthrough its `id` names (from `review_status`), or the newest one when `id` is omitted, or null when none has been published. A walkthrough carries its title, author, stops, what was skipped, its `summary`, when it has one, and the full commit `rev` it is pinned to, or `null` for an older walkthrough. Each stop carries the id of the comment it is and its `notes`, extra remarks on other parts of its own region, each with its own id; those ids are what a revision passes back.
 
 ## Respond
 
@@ -28,10 +28,9 @@ You can open several repositories as tabs in one diffler, and the agent reaches 
   untouched with their next submitted review.
 - **delete_comment**: delete a comment you wrote with `add_comment`. Refused
   for a human's own comment, for a walkthrough stop or note (revise or
-  drop those with `publish_walkthrough` instead, which already tracks their
-  ids and threads), and for one someone else has replied to (a reply lives
-  inside its comment, so deleting it would take the reply down too; edit the
-  body instead).
+  drop those with `publish_walkthrough`), and for one someone else has
+  replied to, since deleting a comment deletes its replies (edit the body
+  instead).
 - **edit_comment**: replace the body of a comment you wrote with
   `add_comment`, keeping its status, replies, and anchor. Same refusals as
   `delete_comment` except the reply one, since editing never touches replies.
@@ -39,7 +38,7 @@ You can open several repositories as tabs in one diffler, and the agent reaches 
 - **propose_resolve**: tell you a comment is dealt with, by marking it replied. Its optional note goes into the thread only when the agent has not replied there yet, so an answered comment keeps just the answer. Only you resolve it, in the TUI.
 - **mark_viewed**: mark a file viewed in the review you're currently looking at.
 - **open_project**: open another git repository as a tab in your diffler, by path. The agent should call it for every repository it changed beyond the one diffler started in. The tab opens behind the one you are looking at.
-- **report_activity**: say what the agent is doing right now, in a few words and optionally the file, in your status bar. Every other tool call already shows there on its own; the indicator clears 45 seconds after the last call.
+- **report_activity**: say what the agent is doing right now, in a few words and optionally the file, in your status bar. Every other tool call also shows there; the indicator clears 45 seconds after the last call.
 - **wait_for_feedback**: wait until you send feedback (a comment, a reply, or the send key), then return a new feedback counter and every open or replied comment. A comment on a walkthrough stop is a reply on that stop's own comment, so its id names the stop. This is how the agent waits for its turn. It answers within 55 seconds; the agent polls again to wait longer.
 - **publish_walkthrough**: publish the agent's reading order for a change: one stop per real decision, as few as the change needs. It becomes a review of its own, with its own comments and viewed and seen marks.
   - **What it describes:** whichever review you have open right now (the working tree, or a commit, range or PR diff), as `review_status` reports it. Revising a walkthrough while looking at its own diff keeps what it already described.
@@ -63,9 +62,9 @@ You can open several repositories as tabs in one diffler, and the agent reaches 
 
 ## Cross-repo discovery (proxy only)
 
-These two tools live in the `diffler-mcp` stdio proxy, not the TUI: a human's
-diffler and an agent's shell are often in different repos, so the proxy keeps
-a per-user registry of every running instance and can retarget itself.
+The `diffler-mcp` stdio proxy serves these two tools. A human's diffler and an
+agent's shell are often in different repos, so the proxy keeps a per-user
+registry of every running instance and can retarget itself.
 
 - **list_instances**: every running diffler this proxy can reach, across all
   repos.

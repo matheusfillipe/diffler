@@ -1,5 +1,4 @@
-//! The names a file uses, as its parse tree sees them: every identifier by
-//! line and byte range, so a reader can follow one name through a change.
+//! Every identifier in a file, by line and byte range.
 
 use std::ops::Range;
 
@@ -7,23 +6,20 @@ use crate::syntax::registry::LanguageRegistry;
 use crate::syntax::scope::tag_pass;
 use crate::syntax::{MAX_PARSE_BYTES, ScopeIndex, parse};
 
-/// One identifier: its 0-based line, its byte range within that line, and the
-/// name itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ident {
     pub line: usize,
     pub range: Range<usize>,
     pub name: String,
-    /// The parse names a function, method or type here: a definition or a
-    /// call the grammar's tags query marks, or a type position.
+    /// A function, method or type: tagged by the grammar's tags query, or in
+    /// a type position.
     pub item: bool,
 }
 
 impl LanguageRegistry {
-    /// Every identifier in `content`, top to bottom, and its definition
-    /// spans, from one parse. A file with no grammar, or too large to parse,
-    /// falls back to plain words and no definitions; those words include the
-    /// ones inside strings and comments.
+    /// Every identifier in `content` and its definition spans, from one
+    /// parse. Without a parse we fall back to plain words, strings and
+    /// comments included.
     pub fn symbols(&self, path: &str, content: &str) -> (Vec<Ident>, ScopeIndex) {
         let entry = (content.len() <= MAX_PARSE_BYTES)
             .then(|| self.for_file(path, content))
@@ -70,9 +66,7 @@ impl LanguageRegistry {
     }
 }
 
-/// Node kinds that name something. Grammars spell it many ways
-/// (`field_identifier`, `type_identifier`, `simple_identifier`, PHP's
-/// `name`, Ruby's `constant`), and only leaves are names.
+/// PHP spells an identifier `name` and Ruby `constant`.
 fn is_identifier(kind: &str) -> bool {
     kind.ends_with("identifier") || kind == "name" || kind == "constant"
 }

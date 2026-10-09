@@ -1,6 +1,4 @@
-//! Headless full-stack MCP coverage: a real git fixture, the real `App`
-//! event pump (replicating the main-loop dispatch), the real axum/rmcp
-//! server on an ephemeral port, and the rmcp client over streamable HTTP.
+//! Headless MCP coverage over a real fixture, `App`, axum/rmcp server and rmcp client.
 
 // helper fns run outside #[test] fns, where clippy's test allowances don't reach
 #![allow(clippy::expect_used)]
@@ -39,8 +37,7 @@ struct Harness {
     client: McpClient,
 }
 
-/// Build the app, seed it, spawn the event pump exactly like the main loop
-/// (recv → `App::handle`), serve MCP on an ephemeral port, and connect.
+/// The event pump mirrors the main loop's recv → `App::handle`.
 async fn start(seed: impl FnOnce(&mut App)) -> Harness {
     let fixture = fixture();
     let review = Review::open(&fixture.root).expect("review");
@@ -211,7 +208,6 @@ async fn comment_lifecycle_reply_resolve_and_viewed() {
     })
     .await;
 
-    // the human's comment arrives with anchor + context
     let result = call(&harness.client, "get_comments", json!({})).await;
     let comments = structured(&result)["comments"]
         .as_array()
@@ -230,7 +226,6 @@ async fn comment_lifecycle_reply_resolve_and_viewed() {
     assert!(context.contains("+    42"));
     let id = comment["id"].as_str().expect("id").to_owned();
 
-    // agent reply flips the status to replied
     let result = call(
         &harness.client,
         "reply_comment",
@@ -240,7 +235,6 @@ async fn comment_lifecycle_reply_resolve_and_viewed() {
     assert_eq!(structured(&result)["ok"], true);
     assert_eq!(structured(&result)["status"], "replied");
 
-    // propose_resolve flags an answered comment without adding to the thread
     let result = call(
         &harness.client,
         "propose_resolve",
@@ -263,7 +257,6 @@ async fn comment_lifecycle_reply_resolve_and_viewed() {
         "the answer stands alone, with no summary of itself under it"
     );
 
-    // mark_viewed is reflected in review_status
     let result = call(
         &harness.client,
         "mark_viewed",
@@ -277,7 +270,6 @@ async fn comment_lifecycle_reply_resolve_and_viewed() {
     assert_eq!(status["open_comments"], 0);
     assert_eq!(status["replied_comments"], 1);
 
-    // unknown ids are tool errors
     let err = harness
         .client
         .call_tool(
@@ -314,8 +306,7 @@ async fn get_comments_with_invalid_status_is_a_tool_error() {
 #[tokio::test]
 async fn comment_payloads_carry_range_and_old_side_anchors() {
     let harness = start(|app| {
-        // range comment over the whole function on the new side; the
-        // anchor end (line 3, "}") is what outdated detection checks
+        // outdated detection checks the range's end line, "}"
         app.review.session.add_comment(
             Anchor {
                 file: "src/lib.rs".to_owned(),
@@ -327,7 +318,6 @@ async fn comment_payloads_carry_range_and_old_side_anchors() {
             "human",
             "whole function",
         );
-        // single-line comment on the deleted side (old line 2, "    41")
         app.review.session.add_comment(
             Anchor {
                 file: "src/lib.rs".to_owned(),
@@ -400,9 +390,8 @@ async fn wait_for_feedback_unblocks_on_the_send_key() {
     };
     let (client, task) = waiter;
 
-    // no signal marks when the long poll has reached the server and
-    // subscribed, so poll repeatedly over a generous window instead of
-    // guessing one delay: any iteration seeing it finished early fails fast
+    // nothing signals when the poll has subscribed, so we check it stays
+    // blocked across a window
     for _ in 0..40 {
         assert!(!task.is_finished(), "the poll must block until the bump");
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;

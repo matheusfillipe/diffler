@@ -2,8 +2,8 @@
 
 A walkthrough is an agent's reading order for a change: a summary, then one
 stop per decision, each anchored to the code it is about. The agent that wrote
-the change is the only party who knows which parts matter and in what order,
-so it says so and you read along.
+the change knows which parts matter and in what order, so it sets the order
+and you read along.
 
 Ask for one in your agent:
 
@@ -42,9 +42,8 @@ comment: answer in its thread, or ask it to rewrite the walkthrough.
 
 A walkthrough is a review of its own, stored in
 `.diffler/reviews/walkthrough-<id>.json` beside the working-tree, commit,
-range and pull-request reviews. Its comments and marks stay in it, so deleting
-every comment in the working-tree review leaves it untouched and nothing it
-holds is ever posted to GitHub, GitLab or Forgejo.
+range and pull-request reviews. Its comments and marks stay in it, and nothing
+in it is posted to GitHub, GitLab or Forgejo.
 
 It is pinned to the commit it was published against, so it still reads
 correctly after you switch branches: each stop's code is shown as it stood.

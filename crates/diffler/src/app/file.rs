@@ -1,6 +1,5 @@
 //! The whole-file view and its blame column, plus the fuzzy picker that
-//! reaches any tracked file. The diff screens only ever list changed files,
-//! so this is the one way into a file the review does not touch.
+//! reaches any tracked file, including files the review does not touch.
 
 use diffler_core::highlight::StyledRange;
 use diffler_core::vcs::BlameSpan;
@@ -10,7 +9,6 @@ use super::rowsel::{RowSelect, RowText};
 use super::{App, Flow, Modal, Screen};
 use crate::keymap::Action;
 
-/// What choosing a file in the picker does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileAction {
     View,
@@ -22,16 +20,13 @@ pub enum FileAction {
 #[derive(Debug, Clone)]
 pub struct FileOpen {
     pub path: String,
-    /// Rows the reference covers, 1-based and inclusive. The cursor seats on
-    /// the first and the view marks the whole span.
+    /// Rows the reference covers, 1-based and inclusive.
     pub span: Option<(u32, u32)>,
     pub blame: bool,
-    /// Whether this load colours the open view again, keeping the reader's
-    /// place in it.
+    /// Whether this load recolours the open view, keeping the reader's place.
     pub reload: bool,
-    /// The request this load answers. A result whose token no longer matches
-    /// the app's is an answer to a question the user has moved on from, and
-    /// installing it would resurrect a screen they left.
+    /// We drop a result whose token no longer matches the app's, so it never
+    /// reopens a screen the user left.
     pub token: u64,
 }
 
@@ -47,7 +42,6 @@ pub struct FileView {
     pub cursor: usize,
     pub scroll: usize,
     /// Rows a reference brought the reader here for, 0-based and inclusive.
-    /// Marked so the segment reads as one thing, not a cursor on a line.
     pub referenced: Option<(usize, usize)>,
     /// Line where `V` started; `Some` means range selection is active.
     pub visual_anchor: Option<usize>,
@@ -100,7 +94,6 @@ impl FileView {
         here.is_some() && here != above
     }
 
-    /// Commit under the cursor, when blame has one to give.
     pub fn cursor_commit(&self) -> Option<&BlameSpan> {
         self.span_at(self.cursor).filter(|span| span.committed)
     }
@@ -152,8 +145,8 @@ impl RowText for FileView {
     }
 }
 
-/// Map each line onto the span that owns it. Spans are line runs, so a line
-/// no span covers (blame gave up on it) stays `None` and renders plain.
+/// Map each line onto the span that owns it. A line no span covers stays
+/// `None` and renders plain.
 fn index_spans(spans: &[BlameSpan], line_count: usize) -> Vec<Option<usize>> {
     let mut out = vec![None; line_count];
     for (index, span) in spans.iter().enumerate() {
@@ -167,8 +160,8 @@ fn index_spans(spans: &[BlameSpan], line_count: usize) -> Vec<Option<usize>> {
 }
 
 impl App {
-    /// Open the file view on a repo-relative path. The content and blame land
-    /// through a worker, so the caller returns immediately.
+    /// Open the file view on a repo-relative path. A worker reads the content
+    /// and blame.
     pub(crate) fn open_file(&mut self, path: &str, span: Option<(u32, u32)>, blame: bool) {
         self.file_token += 1;
         self.pending_file = Some(FileOpen {
@@ -181,8 +174,7 @@ impl App {
         self.info(format!("opening {path}"));
     }
 
-    /// Load the open file again, so the worker highlights it under the
-    /// current highlighter.
+    /// Load the open file again under the current highlighter.
     pub(crate) fn reload_file(&mut self) {
         let Some(view) = self.file.as_ref() else {
             return;
@@ -197,8 +189,7 @@ impl App {
         });
     }
 
-    /// Abandon whatever file load is in flight, so its answer never lands on a
-    /// screen the user has since left.
+    /// Abandon whatever file load is in flight.
     pub(crate) fn cancel_file_load(&mut self) {
         self.file_token += 1;
         self.pending_file = None;
@@ -321,8 +312,6 @@ impl App {
         };
         self.open_commit_diff(&oid);
     }
-
-    // --- the picker ---
 
     pub(crate) fn open_file_picker(&mut self) {
         let files = match self.review.vcs.tracked_files() {

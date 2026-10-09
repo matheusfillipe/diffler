@@ -1,5 +1,4 @@
-//! Terminal event pump: crossterm's async stream plus a periodic tick,
-//! multiplexed onto one channel. Kept thin: all decisions live in
+//! Terminal events and a periodic tick on one channel. Every decision lives in
 //! `App::handle`, which is what the tests drive.
 
 use std::time::{Duration, Instant};
@@ -16,15 +15,12 @@ pub enum AppEvent {
     Key(KeyEvent),
     Mouse(MouseEvent),
     Resize,
-    /// The terminal gained or lost focus (DEC mode 1004). Terminals without
-    /// focus reporting never send it, so the app treats itself as focused.
+    /// DEC mode 1004. A terminal without focus reporting never sends it, so
+    /// the app starts out focused.
     Focus(bool),
     Tick,
-    /// Debounced filesystem change from the watcher (`watch` module).
     RepoChanged,
-    /// A background enrichment (emphasis/highlight/scope) finished.
     Enriched(Box<crate::app::enrich::EnrichOutcome>),
-    /// A file the view asked for came back loaded and blamed, or failed to.
     FileLoaded {
         result: Box<Result<crate::app::file::FileView, String>>,
         /// Rows the request pointed at, 1-based and inclusive.
@@ -33,71 +29,57 @@ pub enum AppEvent {
         /// The request this answers; a stale one is dropped on arrival.
         token: u64,
     },
-    /// The kinds sidebar's git-attribute lookup came back. Absent paths are
-    /// the ones the repo says nothing about.
+    /// A path is absent when the repo's attributes say nothing about it.
     DeclaredKinds {
         kinds: std::collections::HashMap<String, diffler_core::classify::Kind>,
         /// The request this answers; a stale one is dropped on arrival.
         token: u64,
     },
-    /// The language breakdown's repo scan came back.
     RepoStats {
         stats: Box<diffler_core::stats::RepoStats>,
         /// The request this answers; a stale one is dropped on arrival.
         token: u64,
     },
-    /// The files the walkthrough's anchors name, read off-thread so its stops
-    /// and figures can resolve to lines.
+    /// The files the walkthrough's anchors name.
     WalkthroughAnchors {
         contents: std::collections::HashMap<String, String>,
-        /// The pinned revision the walkthrough was read against no longer
-        /// resolves, so every file fell back to the worktree.
+        /// The pinned revision no longer resolves, so every file came from the worktree.
         pin_broken: bool,
         /// The request this answers; a stale one is dropped on arrival.
         token: u64,
     },
-    /// An off-thread repo refresh finished (status + working diff, plus the
-    /// open three-dot diff when one is up), or failed.
     RefreshDone(Box<Result<diffler_core::review::Refreshed, String>>),
-    /// An off-thread re-diff under a newly switched algorithm finished:
-    /// status, the working diff, and whatever source the diff view had open
-    /// when the switch was made.
+    /// The re-diff a live algorithm switch queued.
     RediffDone {
         result: Box<Result<diffler_core::review::Refreshed, String>>,
         request: crate::app::RediffRequest,
     },
-    /// A symbol lens, built for the line `*` was pressed on.
     Lens {
         token: u64,
         lens: Box<crate::app::Lens>,
     },
-    /// An image file's sides, decoded and encoded for the terminal.
     ImagePreview {
         token: u64,
         preview: Box<crate::app::image::ImagePreview>,
     },
-    /// Agent tool call routed through the event channel so the app stays
-    /// the single owner of the review state (`mcp` module).
+    /// Routed through the channel so the app stays the single owner of review state.
     Mcp(McpRequest),
     /// `wait_for_feedback` started a poll that ends by `until` at the latest.
     McpWaiting {
         until: Instant,
     },
-    /// A shelled-out network git op finished (`app::GitOp`). The result returns
-    /// as an event so the run loop keeps drawing while the process runs.
+    /// A shelled-out network git op (`app::GitOp`) finished.
     GitDone {
         label: String,
         ok: bool,
         output: String,
     },
-    /// Branch-scoped CI run list from a provider poll.
     CiRuns(Vec<crate::ci::CiRun>),
-    /// The checked-out branch's PR, fetched once per branch (not every poll).
     PrComments {
         number: u64,
         comments: Vec<crate::ci::PrComment>,
-        /// The PR as the forge sees it now, so a force-push is noticed on the
-        /// same poll that syncs comments. `None` when the lookup failed.
+        /// So the same poll that syncs comments notices a force-push; `None`
+        /// when the lookup failed.
         pr: Option<crate::ci::PullRequest>,
     },
     PrPosted {
@@ -106,32 +88,23 @@ pub enum AppEvent {
     },
     CiPrs(Vec<crate::ci::PullRequest>),
     CiPr(Option<crate::ci::PullRequest>),
-    /// A composed pull request came back from the forge, or failed to.
     PrCreated(Box<Result<crate::ci::PullRequest, String>>),
-    /// A run's jobs + dependency DAG, mapped onto the graph view.
     CiRunDetail(crate::ci::RunDetail),
-    /// A run's artifacts + annotations for the graph page's extras panel.
     CiExtras(crate::ci::RunExtras),
-    /// An incremental job-log slice from a provider poll, with the job's step
-    /// boundaries (empty when the provider exposes none).
     CiLog {
         text: String,
         steps: Vec<crate::ci::LogStepMeta>,
         next_offset: u64,
         done: bool,
     },
-    /// A CI provider call failed; surfaced as a status-bar message.
     CiError(String),
-    /// A failed PR-list fetch, told apart from every other CI failure so the
-    /// single-fetch-in-flight guard frees only its own slot.
+    /// Kept apart from `CiError` so the in-flight guard frees only the PR-list slot.
     CiPrsError(String),
     Quit,
 }
 
 pub(crate) const TICK: Duration = Duration::from_millis(250);
 
-/// Forward terminal events and ticks into `tx` until the terminal stream
-/// ends or the receiver is dropped.
 pub fn spawn_event_loop(tx: UnboundedSender<AppEvent>) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut events = EventStream::new();

@@ -8,7 +8,6 @@ use std::path::Path;
 
 use tempfile::TempDir;
 
-/// A throwaway git repo with helpers to commit and mutate files.
 pub(crate) struct Fixture {
     pub dir: TempDir,
     pub repo: git2::Repository,
@@ -38,7 +37,6 @@ impl Fixture {
         diffler_core::test_git::commit_all(&self.repo, message, &sig);
     }
 
-    /// Commit with an explicit timestamp, for tests that assert on commit time.
     pub(crate) fn commit_all_at(&self, message: &str, unix: i64) {
         let time = git2::Time::new(unix, 0);
         let sig = git2::Signature::new("test", "test@test", &time).expect("sig");
@@ -51,7 +49,6 @@ impl Fixture {
         index.write().expect("index write");
     }
 
-    /// Create a branch at HEAD without checking it out.
     pub(crate) fn branch(&self, name: &str) {
         let head = self
             .repo
@@ -80,9 +77,7 @@ impl Fixture {
     }
 }
 
-/// A throwaway repo colocated with jj: a git repo on a pinned branch name
-/// (colocation imports it as a bookmark of the same name) with one initial
-/// commit.
+/// A jj-colocated repo on `main` with one initial commit.
 pub(crate) struct JjFixture {
     pub git: Fixture,
 }
@@ -106,8 +101,6 @@ impl JjFixture {
         self.git.write(rel, content);
     }
 
-    /// Run a jj subcommand directly, for fixture setup the `Vcs` trait has
-    /// no method for.
     pub(crate) fn jj(&self, args: &[&str]) -> String {
         diffler_core::test_git::jj(self.root(), args)
     }

@@ -39,7 +39,6 @@ impl PrField {
         Self::ORDER.get(next).copied().unwrap_or(Self::Title)
     }
 
-    /// The text-field pair this row maps to, for the two the editor can open.
     pub(crate) fn as_text(self) -> Option<PrTextField> {
         match self {
             Self::Title => Some(PrTextField::Title),
@@ -49,15 +48,13 @@ impl PrField {
     }
 }
 
-/// The two [`PrField`] rows that hold text, for [`crate::editor::EditorPurpose::PrBody`]
-/// to say which one an edit lands in.
+/// The [`PrField`] rows that hold text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrTextField {
     Title,
     Body,
 }
 
-/// The pull request being composed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrDraft {
     pub base: String,
@@ -224,7 +221,7 @@ impl App {
         self.pending_ci = Some(super::CiRequest::CreatePr(Box::new(request)));
     }
 
-    /// The push a create was waiting on landed; send the pull request now.
+    /// The push a create waited on finished, so we send the pull request.
     pub(crate) fn pr_create_after_push(&mut self) {
         if let Some(request) = self.pending_pr_create.take() {
             self.queue_pr_create(*request);
@@ -235,12 +232,10 @@ impl App {
         match result {
             Ok(pr) => {
                 self.info(format!("opened #{}: {}", pr.number, pr.title));
-                // the branch's PR is resolved once per branch, so the new one
-                // has to be seated here or the band stays empty until a
-                // checkout re-arms the poll
+                // we resolve the branch's PR once per branch, so we seat the
+                // new one here or the band stays empty until a checkout
                 self.seat_branch_pr(pr.clone());
-                // reviewing needs the head commit; a provider that answers
-                // without one leaves the review to be opened from the PR list
+                // reviewing needs the head commit, which some providers omit
                 if pr.head_oid.is_empty() {
                     return;
                 }
@@ -287,7 +282,6 @@ mod tests {
     fn fields_stop_at_both_ends() {
         assert_eq!(PrField::Base.step(false), PrField::Base);
         assert_eq!(PrField::Base.step(true), PrField::Title);
-        // the buttons are the last two rows, so the walk runs on past draft
         assert_eq!(PrField::Draft.step(true), PrField::Create);
         assert_eq!(PrField::Create.step(true), PrField::Cancel);
         assert_eq!(PrField::Cancel.step(true), PrField::Cancel);
@@ -314,8 +308,6 @@ mod tests {
         assert!(app.modal.is_none(), "no forge, no form");
     }
 
-    /// The forge only sees a branch that is pushed, so the create waits for
-    /// the push it queues.
     #[test]
     fn an_unpushed_branch_pushes_before_the_forge_call() {
         let fixture = crate::test_support::standard_fixture();
@@ -339,15 +331,14 @@ mod tests {
             !matches!(app.pending_ci, Some(super::super::CiRequest::CreatePr(_))),
             "nothing reaches the forge before the branch does"
         );
-        // the push carries its own label so no other push can consume the slot
         assert_eq!(
             app.pending_git.as_ref().map(|op| op.label.as_str()),
             Some(App::PR_CREATE_PUSH),
         );
     }
 
-    /// The forge call is addressed against the pushed head, which only the
-    /// landed refresh carries.
+    /// We address the forge call against the pushed head, which only the
+    /// refresh after the push knows.
     #[test]
     fn the_forge_call_waits_for_the_refresh_the_finished_push_queues() {
         let fixture = crate::test_support::standard_fixture();
@@ -592,8 +583,6 @@ mod form_tests {
         }
     }
 
-    /// The body edits in place like the title: `<cr>` opens the input modal,
-    /// not the editor.
     #[test]
     fn the_body_opens_the_inline_editor() {
         let (_fixture, mut app) = form(PrField::Body);
@@ -606,8 +595,6 @@ mod form_tests {
         assert!(app.pending_editor.is_none(), "no editor was launched");
     }
 
-    /// A body cleared to nothing stays cleared; a title cannot be blanked,
-    /// since a pull request needs one.
     #[test]
     fn an_emptied_body_sticks_but_an_emptied_title_does_not() {
         let (_fixture, mut app) = form(PrField::Body);
@@ -631,8 +618,6 @@ mod form_tests {
         assert!(app.pending_editor.is_some(), "an editor was queued");
     }
 
-    /// The file is scratch, not the gitdir's `PR_EDITMSG.md` of before, and it
-    /// is gone once the text is read back.
     #[test]
     fn e_writes_a_scratch_file_removed_after_the_round_trip() {
         let (_fixture, mut app) = form(PrField::Body);
@@ -652,9 +637,6 @@ mod form_tests {
         assert!(!path.exists(), "the scratch file is removed");
     }
 
-    /// Editing the title must land in the title, not the body: the purpose
-    /// carries which field opened, since both go through the one scratch-file
-    /// mechanism.
     #[test]
     fn e_on_the_title_lands_in_the_title_not_the_body() {
         let (_fixture, mut app) = form(PrField::Title);
@@ -672,8 +654,6 @@ mod form_tests {
         assert_eq!(draft.body, "a body", "the body is untouched");
     }
 
-    /// A cancelled edit (a non-zero editor exit) must leave the body exactly
-    /// as it was.
     #[test]
     fn a_cancelled_body_edit_keeps_the_body() {
         let (_fixture, mut app) = form(PrField::Body);
@@ -692,8 +672,6 @@ mod form_tests {
         assert_eq!(draft.body, "a body", "the cancelled edit changed nothing");
     }
 
-    /// The base is a list and the draft flag is a toggle, so neither is text
-    /// the editor could take.
     #[test]
     fn e_on_a_non_text_field_says_so() {
         let (_fixture, mut app) = form(PrField::Draft);
@@ -713,13 +691,10 @@ mod form_tests {
     fn the_create_button_submits() {
         let (_fixture, mut app) = form(PrField::Create);
         app.handle_modal_key(&press(KeyCode::Enter));
-        // no forge is configured in the fixture, so the submit reports rather
-        // than queueing: what matters is that the button ran it
+        // the fixture has no forge, so the submit only reports
         assert!(app.modal.is_none() || app.pending_git.is_some());
     }
 
-    /// The buttons are rows in the same list the fields are, so the pointer
-    /// finds them: one click selects, a second takes it.
     #[test]
     fn clicking_the_cancel_button_closes_the_form() {
         let (_fixture, mut app) = form(PrField::Base);

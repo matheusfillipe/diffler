@@ -1,13 +1,11 @@
 # diffler-mcp
 
-A tiny stdio↔HTTP bridge that lets Claude Code (or any stdio MCP client) talk to
-the MCP server embedded in a running [diffler](https://github.com/matheusfillipe/diffler)
-review session.
+A stdio↔HTTP bridge from Claude Code (or any stdio MCP client) to the MCP
+server of a running [diffler](https://github.com/matheusfillipe/diffler).
 
-diffler's MCP server runs **inside the TUI** as a streamable-HTTP endpoint
-(`http://127.0.0.1:8417/mcp` by default) because it serves the live review state
-on the app's main loop. This proxy is spawned by Claude over stdio and forwards
-every tool call to that endpoint: it owns no state itself.
+diffler serves MCP from inside the TUI as a streamable-HTTP endpoint
+(`http://127.0.0.1:8417/mcp` by default). The proxy forwards every tool call
+to that endpoint and keeps no state of its own.
 
 ## Use it with Claude Code
 
@@ -31,8 +29,8 @@ Or in a checked-in `.mcp.json`:
 }
 ```
 
-Start Claude anywhere inside the repo and the proxy auto-discovers the port
-from `.diffler/mcp.json`. No diffler running ⇒ every tool call reports which
+Start Claude anywhere inside the repo and the proxy finds the port in
+`.diffler/mcp.json`. With no diffler running, every tool call reports which
 directory it searched.
 
 ## Configuration
@@ -50,29 +48,15 @@ Resolution order (first match wins):
    `use_instance` switches; several are listed by `list_instances`
 
 `use_instance` connects before it answers, so a bad target never gets bound.
-When diffler isn't running yet, the proxy keeps retrying quietly and announces
-its tools once one appears, so a human can start Claude first and diffler
-second. A call diffler doesn't answer within 110 s fails with that instance
-named.
+When diffler isn't running yet, the proxy keeps retrying and announces its
+tools once one appears, so you can start Claude before diffler. A call diffler
+doesn't answer within 110 s fails with that instance named.
 
-Discovery covers the normal case, so nothing needs configuring:
-
-```json
-{
-  "mcpServers": {
-    "diffler": {
-      "command": "npx",
-      "args": ["-y", "diffler-mcp"]
-    }
-  }
-}
-```
-
-Reach for `--port`, `--host` or `--repo` when diffler runs somewhere the walk-up
+Use `--port`, `--host` or `--repo` when diffler runs somewhere the walk-up
 cannot see, such as another machine over a tunnel.
 
-A human's diffler and an agent's shell are often in different repos. Two
-proxy-owned tools handle that, always available alongside diffler's own:
+A human's diffler and an agent's shell are often in different repos. The proxy
+adds two tools for that, alongside diffler's own:
 
 - **list_instances**: every running diffler this proxy can reach, across all
   repos, from the registry.
@@ -81,10 +65,8 @@ proxy-owned tools handle that, always available alongside diffler's own:
 
 ## Prefer HTTP directly?
 
-Claude Code speaks HTTP natively, so you can skip this proxy entirely:
+Claude Code speaks HTTP, so you can skip the proxy and use a fixed port:
 
 ```bash
 claude mcp add --transport http diffler http://127.0.0.1:8417/mcp
 ```
-
-The proxy exists for the `npx`, zero-config, auto-port-discovery ergonomics.

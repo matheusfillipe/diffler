@@ -26,8 +26,7 @@ pub struct FuzzyList {
     pub cursor: usize,
     /// Index into `matches`.
     pub selected: usize,
-    /// Ranked haystack indices, best first: the one place the ranking is
-    /// computed (on open and on each edit), read by handler and renderer.
+    /// Ranked haystack indices, best first.
     pub matches: Vec<usize>,
 }
 
@@ -35,10 +34,10 @@ pub struct FuzzyList {
 pub(crate) enum FuzzyKey {
     Submit,
     Cancel,
-    /// Query changed; the caller re-ranks and the selection reset to the top.
+    /// The query changed, so the caller re-ranks.
     Edited,
     Consumed,
-    /// Not a list/input key: the dialog's own shortcuts get their turn.
+    /// A key for the dialog's own shortcuts.
     Other,
 }
 
@@ -197,8 +196,7 @@ pub(crate) fn rank(query: &str, haystacks: &[String]) -> Vec<usize> {
 }
 
 /// [`rank`] for prose labels: a label matches only when every query letter
-/// follows the previous one directly or opens a word of the label, so a
-/// query finds the words it spells and never letters scattered across them.
+/// follows the previous one directly or opens a word of the label.
 pub(crate) fn rank_words(query: &str, haystacks: &[String]) -> Vec<usize> {
     rank(query, haystacks)
         .into_iter()
@@ -335,7 +333,7 @@ mod tests {
         assert!(list.query.is_empty(), "list focus never types");
         assert_eq!(list.feed(&press(KeyCode::Char('q'))), FuzzyKey::Cancel);
 
-        // tab into the input: printables filter, the selection rides the top
+        // tab into the input: printables filter
         list.feed(&press(KeyCode::Tab));
         assert_eq!(list.focus, FuzzyFocus::Input);
         assert_eq!(list.feed(&press(KeyCode::Char('s'))), FuzzyKey::Edited);

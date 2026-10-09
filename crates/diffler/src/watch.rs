@@ -1,7 +1,4 @@
-//! Filesystem watcher: debounced notify events on the repo become
-//! `AppEvent::RepoChanged`. Noise sources (the session store, lockfiles,
-//! git's object database) are filtered out so staging or saving a comment
-//! does not echo back as a repo change.
+//! Debounced filesystem events on the repo become `AppEvent::RepoChanged`.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -16,17 +13,14 @@ use crate::event::AppEvent;
 
 const DEBOUNCE: Duration = Duration::from_millis(200);
 
-/// Keeps the watcher alive and exposes its health: when notify reports
-/// errors the app falls back to periodic polling.
+/// When notify reports errors, the app falls back to periodic polling.
 pub struct WatcherHandle {
     pub healthy: Arc<AtomicBool>,
     _debouncer: Debouncer<RecommendedWatcher, NoCache>,
 }
 
-/// Watch the repository and send `RepoChanged` for relevant debounced
-/// events. The recursive root watch already covers an in-tree `.git`; the
-/// explicit HEAD/refs/index watches on the resolved `git_dir` cover linked
-/// worktrees, whose gitdir lives outside the workdir.
+/// We also watch HEAD, refs and index under `git_dir`, for a linked worktree
+/// whose gitdir lives outside the workdir.
 pub fn spawn_watcher(
     repo_root: &Path,
     git_dir: &Path,
@@ -51,9 +45,8 @@ pub fn spawn_watcher(
         }
         Err(_) => flag.store(false, Ordering::Relaxed),
     };
-    // the file-id cache walks the entire watched tree on registration, which
-    // costs seconds in a repo with node_modules; rename correlation is the only
-    // thing it buys and a coalesced "something changed" needs none of it
+    // the file-id cache walks the whole tree on registration (seconds with
+    // node_modules) and buys only rename correlation, which we never use
     let mut debouncer = new_debouncer_opt::<_, RecommendedWatcher, NoCache>(
         DEBOUNCE,
         None,
@@ -72,8 +65,7 @@ pub fn spawn_watcher(
         } else {
             RecursiveMode::NonRecursive
         };
-        // duplicates of the root watch at worst; the debounced batch still
-        // collapses into a single RepoChanged
+        // an in-tree gitdir duplicates the root watch, which the debounce absorbs
         let _ = debouncer.watch(&path, mode);
     }
     Ok(WatcherHandle {
@@ -82,17 +74,10 @@ pub fn spawn_watcher(
     })
 }
 
-/// Whether an event path should trigger a refresh. Filters the session
-/// store (`.diffler/`), git's own transient lockfiles (`*.lock` under the
-/// gitdir flickers on every git write), the object database (every commit
-/// floods it), and a colocated jj repo's own state (`.jj/`, which rewrites
-/// its operation log and working-copy snapshot on every jj command; the same
-/// command also moves `.git/HEAD` and `.git/refs`, which stay unfiltered and
-/// carry the real signal). Project lockfiles (Cargo.lock, uv.lock, etc.) are
-/// kept because they represent real working-tree changes worth reviewing.
+/// We filter `.diffler/`, git's lockfiles and object database, and `.jj/`,
+/// which every jj command rewrites; that same command moves `.git/HEAD` and
+/// `.git/refs`, which carry the real signal. Project lockfiles stay relevant.
 fn relevant(path: &Path, repo_root: &Path, git_dir: &Path) -> bool {
-    // git metadata, wherever the gitdir lives: in-tree `.git` or a linked
-    // worktree's external dir under the main repo
     if let Ok(rel) = path.strip_prefix(git_dir) {
         return !(is_lockfile(path) || rel.starts_with("objects"));
     }
@@ -161,7 +146,6 @@ mod tests {
 
     #[test]
     fn project_lockfiles_are_relevant() {
-        // Cargo.lock, uv.lock and friends are real working-tree changes
         assert!(relevant_in("/repo", "Cargo.lock"));
         assert!(relevant_in("/repo", "uv.lock"));
         assert!(relevant_in("/repo", "Cargo.lock.bak"));
@@ -169,7 +153,6 @@ mod tests {
 
     #[test]
     fn a_path_outside_the_root_stays_relevant() {
-        // strip_prefix failing must not panic nor misclassify
         assert!(relevant(
             Path::new("/elsewhere/src/a.rs"),
             Path::new("/repo"),
@@ -179,8 +162,6 @@ mod tests {
 
     #[test]
     fn external_gitdir_metadata_events_pass_through() {
-        // a linked worktree's gitdir lives outside the workdir; HEAD/index
-        // changes there must still refresh the review
         let root = Path::new("/checkouts/wt");
         let gitdir = Path::new("/main/.git/worktrees/wt");
         assert!(relevant(&gitdir.join("HEAD"), root, gitdir));
@@ -205,11 +186,8 @@ mod tests {
         assert!(handle.healthy.load(Ordering::Relaxed));
     }
 
-    // End-to-end against the real notify backend: a relevant write must
-    // surface as RepoChanged, an irrelevant one (under .diffler) must not.
-    // macOS FSEvents reports canonicalized paths, so the watched root is
-    // canonicalized too. otherwise `relevant`'s prefix-stripping silently
-    // falls back to treating every event as relevant.
+    // macOS FSEvents reports canonicalized paths, so we canonicalize the root,
+    // or `relevant` treats every event as relevant.
     #[tokio::test]
     async fn spawn_watcher_emits_repo_changed_for_relevant_writes_only() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -221,9 +199,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let _handle = spawn_watcher(&root, &git_dir, tx).expect("watcher");
 
-        // FSEvents can deliver events from just before the stream started
-        // (the tempdir/.git/.diffler creation above), and a root-dir event
-        // passes `relevant`; drain until one quiet window before asserting
+        // FSEvents can deliver the setup writes above, so we drain until a quiet window
         for _ in 0..10 {
             if tokio::time::timeout(Duration::from_millis(500), rx.recv())
                 .await
@@ -233,8 +209,6 @@ mod tests {
             }
         }
 
-        // an irrelevant write must not produce an event within a window well
-        // past the debounce interval
         std::fs::write(root.join(".diffler/session.json"), "{}").expect("write");
         let irrelevant = tokio::time::timeout(Duration::from_millis(800), rx.recv()).await;
         assert!(
@@ -242,8 +216,7 @@ mod tests {
             "a write under .diffler must not surface as RepoChanged, got {irrelevant:?}"
         );
 
-        // a relevant write must arrive, retried across a generous timeout so
-        // OS-level notify latency doesn't make this flaky on slower CI runners
+        // a generous timeout, since notify latency varies on slow CI runners
         std::fs::write(root.join("src.rs"), "fn main() {}").expect("write");
         let event = tokio::time::timeout(Duration::from_secs(10), rx.recv())
             .await

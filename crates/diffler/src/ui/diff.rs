@@ -1,7 +1,4 @@
-//! Diff/review screen: a two-pane layout with a left file sidebar listing every
-//! file in the diff (status, viewed mark, comment count) and a right pane that
-//! renders the visible slice of the selected file's hunks, lines, and inline
-//! comment blocks, keeping the cursor in view.
+//! Diff/review screen: file sidebar, diff pane, and the comments or references sidebar.
 
 use std::collections::HashMap;
 
@@ -38,7 +35,6 @@ use crate::ui::diff_render::{
 };
 use crate::ui::{diffstat_spans, proportion_bar, status_bar, status_color};
 
-/// Hint entries, rendered against the live keymap so remaps show.
 const HINTS: &[Hint] = &[
     Hint::Leaf(&[Action::Comment], "add comment"),
     Hint::Leaf(&[Action::Reply], "reply"),
@@ -47,7 +43,6 @@ const HINTS: &[Hint] = &[
     Hint::Leaf(&[Action::Help], "help"),
 ];
 
-/// Sidebar width: a quarter of the screen, clamped to a readable band.
 fn sidebar_width(total: u16) -> u16 {
     (total / 4).clamp(28, 44).min(total)
 }
@@ -55,24 +50,16 @@ fn sidebar_width(total: u16) -> u16 {
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let (body, bar) = super::screen_chrome(frame, app, HINTS);
 
-    // a figure that needed help fitting names the key that opens it
-    // full-screen, read against the live keymap so a remap still shows
     let open_figure_hint = app.active_keymap().chord_for(Action::OpenFigureGraph);
-    // enrichment (emphasis/highlight/scope) runs on the blocking pool; this
-    // only queues work, and the pane renders plain until the result lands
     app.queue_enrich_selected();
-    // comment wrap follows the diff pane's inner width: the body minus the
-    // sidebar column and the pane block's two border columns. The bodies are
-    // parsed to it, so the width has to be in before anything reads them
+    // comment bodies are parsed to this width, so we set it before anything reads them
     let pane_width = body.width.saturating_sub(sidebar_width(body.width) + 2);
     if let Some(diff) = app.diff.as_mut() {
         diff.set_wrap_width(pane_width);
     }
-    // an agent republishing under a reader has to show; this only queues work
     app.ensure_walkthrough_view();
 
-    // disjoint field borrows: the diff view mutates (scroll, highlight
-    // cache) while theme and review stay read-only
+    // we borrow fields disjointly: the diff view mutates while theme and review stay read-only
     let theme = &app.theme;
     let review = &app.review;
     let search = app.search.as_ref();
@@ -81,22 +68,14 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let algorithm = app.config.diff.algorithm;
     if let Some(diff) = app.diff.as_mut() {
         diff.ensure_rows(review);
-        // the source is cloned out so the session's borrow is off the view,
-        // which the rasteriser needs mutably
+        // we clone the source so the session's borrow stays off the view, which the rasteriser mutates
         let source = diff.source.clone();
         let session = review.session_for(&source);
-        // rasterising a figure needs the graph mutably, and the pane's loop
-        // holds the model borrowed off the same view: do them all up front
+        // rasterising needs the graph mutably while the pane's loop borrows the model, so we do it up front
         let rasters = rasterize_figures(diff, theme, pane_width, open_figure_hint.as_deref());
-        // a figure's box-drawing text only exists once it is drawn, so a
-        // selection covering it copies exactly what this pass just rasterised
         patch_figure_copy_text(diff, &rasters);
-        // a commit view renders from its pinned model; only fall back to the
-        // (lazily computed) working-tree model for the working-tree view.
-        // Context files are not folded in here: they live on `diff`, and this
-        // reference has to survive passing `diff` itself into `draw_body`
-        // below, so each renderer that needs them reads `diff.context_files`
-        // directly instead (a fresh, disjoint borrow of its own parameter).
+        // context files stay off this model because `diff` itself goes into `draw_body`,
+        // so each renderer that needs them reads `diff.context_files`
         let review_model = (diff.commit_model.is_none()).then(|| review.model());
         let author_orders = pane_author_orders(
             session,
@@ -116,8 +95,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         };
         draw_body(frame, body, &ctx, diff);
     }
-    // this only queues work: the worker builds the picture for the size the
-    // pane just drew its frames at
+    // we queue after drawing so the worker builds the picture for the size the pane just drew
     app.queue_image_preview();
 
     frame.render_widget(
@@ -132,29 +110,15 @@ struct RenderCtx<'a> {
     review_model: Option<&'a DiffModel>,
     search: Option<&'a Search>,
     highlighter: &'a diffler_core::highlight::Highlighter,
-    /// The reviewer's own author name (`App::author`), so a comment's colour
-    /// can tell "you" apart from everyone else without a second source.
     human_author: &'a str,
-    /// Every card's figures, drawn once per frame and keyed by `(id, block)`
-    /// (a comment's id, or the walkthrough's own summary key); a card row
-    /// then only reads a line out of one.
     rasters: &'a FigureRaster,
-    /// The session's current line-diff algorithm, named in the pane heading
-    /// when it isn't the default.
     algorithm: diffler_core::diffalgo::DiffAlgorithm,
-    /// Each author's colour step, from [`pane_author_orders`], shared by the
-    /// comments sidebar and the threads in the diff.
     author_orders: HashMap<&'a str, usize>,
 }
 
-/// The rendered rows of every figure a card draws, by the card's figure-cache
-/// key and the block they belong to.
+/// Rendered figure rows, keyed by the card's figure-cache key and block index.
 type FigureRaster = HashMap<(String, usize), Vec<Line<'static>>>;
 
-/// Draw every figure the open view's cards hold into lines: every comment's
-/// and the walkthrough's own summary alike, since both cache their bodies the
-/// same way. Figures are static in the pane, so one pass per frame serves
-/// every row that shows part of one.
 fn rasterize_figures(
     diff: &mut DiffView,
     theme: &Theme,
@@ -185,10 +149,8 @@ fn rasterize_figures(
     raster
 }
 
-/// Resolve every figure row's copy text from the lines this pass just drew: a
-/// plain-text builder cannot reproduce the graph renderer's layout, so a
-/// figure row starts as a lookup key (see [`RowCopy`]) and is patched here,
-/// the one place the box-drawing already exists.
+/// A figure row's copy text exists only once the figure is drawn, so we patch
+/// each [`RowCopy::Figure`] key with the line this pass rasterised.
 fn patch_figure_copy_text(diff: &mut DiffView, rasters: &FigureRaster) {
     for entry in &mut diff.row_copy {
         let RowCopy::Figure { key, block, row } = entry else {
@@ -211,16 +173,12 @@ fn patch_figure_copy_text(diff: &mut DiffView, rasters: &FigureRaster) {
     }
 }
 
-/// Whether a row sits under the cursor, and whether its pane holds focus
-/// (focus decides how bright the cursor band renders).
 #[derive(Clone, Copy)]
 struct RowState {
     selected: bool,
     focused: bool,
 }
 
-/// A sidebar tree row's shared rendering inputs: theme, its indent depth, the
-/// pane width, cursor/focus state, and any search ranges to highlight.
 #[derive(Clone, Copy)]
 struct TreeRowCtx<'a> {
     theme: &'a Theme,
@@ -231,8 +189,6 @@ struct TreeRowCtx<'a> {
     search: &'a [(std::ops::Range<usize>, bool)],
 }
 
-/// The side-by-side view's currently open file: its diff, cached highlights,
-/// and gutter width, constant for every row while that file is open.
 #[derive(Clone, Copy)]
 struct SplitFileCtx<'a> {
     file: &'a FileDiff,
@@ -240,13 +196,10 @@ struct SplitFileCtx<'a> {
     gutter: usize,
 }
 
-/// Columns of empty background between the two panes. The gap is what reads
-/// as their divider.
+/// Empty columns between panes; the gap is the divider.
 const PANE_GAP: u16 = 1;
 
 fn draw_body(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut DiffView) {
-    // the sidebar takes one column beyond its content so the gap and the
-    // pane's own left column both stay clear of it
     let width = (sidebar_width(area.width) + 1).min(area.width);
     let comments = comments_width(area.width, diff.comments_open || diff.refs_visible());
     let [list_area, _gap, pane_area, _right_gap, comments_area] = Layout::horizontal([
@@ -266,8 +219,6 @@ fn draw_body(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
     }
 }
 
-/// How one reference's block is drawn: its colours, the pane's width, and
-/// its file's syntax spans once enrichment has them.
 #[derive(Clone, Copy)]
 struct BlockLook<'a> {
     theme: &'a Theme,
@@ -279,9 +230,8 @@ struct BlockLook<'a> {
     syntax: Option<&'a FileHighlights>,
 }
 
-/// One reference as the sidebar shows it: its preview lines with their
-/// shared indent cut so the code starts at the left edge, highlighted like
-/// the diff, the use's own line bright with the name tinted, the rest dimmed.
+/// A reference's preview with its shared indent cut, the use's own line bright
+/// and the name tinted, the rest dimmed.
 fn reference_block(look: BlockLook<'_>, entry: &RefEntry) -> Vec<Line<'static>> {
     let BlockLook {
         theme,
@@ -390,9 +340,7 @@ fn reference_header(
     pad_line(spans, bg, width)
 }
 
-/// Right pane while a lens name is focused: its uses in diff order, grouped
-/// by file, each a short preview of the code around it with the name tinted,
-/// the selected one banded. Moving the selection seats the diff on that use.
+/// Right pane while a lens name is focused: its uses in diff order, grouped by file.
 fn draw_references(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut DiffView) {
     let theme = ctx.theme;
     let surface = sidebar_bg(theme);
@@ -475,8 +423,6 @@ fn draw_references(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff:
     );
 }
 
-/// The comments sidebar mirrors the file list's band, and yields the whole
-/// width back when closed.
 fn comments_width(total: u16, open: bool) -> u16 {
     if !open {
         return 0;
@@ -484,37 +430,28 @@ fn comments_width(total: u16, open: bool) -> u16 {
     sidebar_width(total).min(total / 3)
 }
 
-/// What a card needs to light its search matches: the live query, and whether
-/// this card holds the active match so its hits take the stronger colour.
 #[derive(Clone, Copy)]
 struct CardSearch<'a> {
     query: &'a str,
+    /// This card holds the active match, so its hits take the stronger colour.
     current: bool,
 }
 
-/// A comment card's shared rendering inputs, the sidebar's counterpart to
-/// [`TreeRowCtx`].
 #[derive(Clone, Copy)]
 struct CardCtx<'a> {
     theme: &'a Theme,
     budget: usize,
     bg: Color,
     width: u16,
-    /// Indent under the group header the way a file indents under its
-    /// directory; 0 for a flat list, which has no header to nest under.
     depth: usize,
     on_cursor: bool,
     orphan: bool,
-    /// The author's own colour: stepped from where the author first appears
-    /// in the pane, fixed instead for the human and the agent, so the
-    /// reader's eye finds those two without reading.
     author_color: Color,
     search: Option<CardSearch<'a>>,
 }
 
-/// The pane's rows under its current grouping, built from the same ordering
-/// (`ordered_comments`) `App::comment_rows` sorts before it groups, so the
-/// two never disagree on which row a click or a keystroke lands on.
+/// Built from the same ordering `App::comment_rows` groups, so a click or a key
+/// and the drawn rows agree on which row is which.
 fn comment_pane_rows(
     ordered: &[(&diffler_core::session::Comment, bool)],
     diff: &DiffView,
@@ -532,8 +469,6 @@ fn comment_pane_rows(
     group_comment_rows(&facts, diff.comment_grouping, &diff.comment_folds)
 }
 
-/// A group header row's shared rendering inputs, trimmed down to what
-/// `group_header_line` needs beyond label/count/fold/tail.
 #[derive(Clone, Copy)]
 struct HeaderCtx<'a> {
     theme: &'a Theme,
@@ -542,9 +477,8 @@ struct HeaderCtx<'a> {
     on_cursor: bool,
 }
 
-/// A group header row: fold arrow, bold label, its count, and an optional
-/// right-aligned tail. Shared by the file sidebar's own sections, which pass a
-/// diffstat, and the comments pane's, which pass none.
+/// A group header row with an optional right-aligned tail (the file sidebar
+/// passes a diffstat).
 fn group_header_line(
     hc: HeaderCtx<'_>,
     label: &str,
@@ -573,7 +507,6 @@ fn group_header_line(
     pad_line(spans, bg, width)
 }
 
-/// A comments-pane group header: `group_header_line` with no tail.
 fn comment_group_header_line(
     theme: &Theme,
     bg: Color,
@@ -597,10 +530,8 @@ fn comment_group_header_line(
     )
 }
 
-/// Right pane: the review's comments under the pane's own grouping, each a
-/// header line (file, line, status) and its body wrapped to the column. The
-/// selection drives the diff cursor, so the highlighted card is always the
-/// one the pane's verbs act on.
+/// Right pane: the review's comments under the pane's own grouping. The
+/// selection drives the diff cursor, so the pane's verbs act on the highlighted card.
 fn draw_comments(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut DiffView) {
     let theme = ctx.theme;
     let focused = diff.focus == Pane::Comments;
@@ -644,10 +575,8 @@ fn draw_comments(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &
     frame.render_widget(Paragraph::new(shown), inner);
 }
 
-/// Every row of the comments pane flattened to rendered lines: one entry per
-/// line back to the row it belongs to, so a click on any wrapped body line
-/// selects the header or comment it came from, plus where the cursor's own
-/// line landed so the pane can scroll to it.
+/// The pane's rendered lines, each line's owning row (so a click on a wrapped
+/// line selects its comment), and the cursor's line index.
 fn comment_pane_lines(
     ctx: &RenderCtx<'_>,
     diff: &DiffView,
@@ -661,8 +590,6 @@ fn comment_pane_lines(
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut owners: Vec<Option<usize>> = Vec::new();
     let budget = (inner.width as usize).saturating_sub(2).max(1);
-    // a flat list has no header to nest items under; every other grouping
-    // indents its items one level, the way a file indents under its directory
     let item_depth = usize::from(diff.comment_grouping != CommentGrouping::Flat);
     let orders = &ctx.author_orders;
     let mut cursor_line = 0usize;
@@ -709,14 +636,10 @@ fn comment_pane_lines(
                         current: search.current_row() == Some(row_index),
                     }),
                 };
-                // every comment is one line, the cursor's included: the diff
-                // pane already shows the one it seats, and a row that grew
-                // under the cursor moved every row below it on each step
+                // the cursor's comment stays one line too: the diff pane shows it in
+                // full, and a row that grew under the cursor would shift every row below
                 lines.push(comment_summary_line(&card, comment));
                 owners.push(Some(row_index));
-                // a spacer trails a group's last item, so a busy pane reads
-                // dense and not as a wall of gaps; a header carries no spacer
-                // of its own, the same density the file sidebar's sections keep
                 let last_in_group =
                     !matches!(rows.get(row_index + 1), Some(CommentPaneRow::Item { .. }));
                 if last_in_group {
@@ -732,10 +655,8 @@ fn comment_pane_lines(
     (lines, owners, cursor_line)
 }
 
-/// The review's comments in sidebar order: by file as the diff lists them,
-/// then by line, matching `App::comment_order`. A file the diff no longer
-/// carries ranks last, which is the same thing as being orphaned, so each
-/// comment comes back paired with that answer.
+/// Comments by diff file order then line, matching `App::comment_order`, each
+/// paired with whether its file left the diff (orphaned, ranked last).
 fn ordered_comments<'a>(
     ctx: &'a RenderCtx<'_>,
     diff: &DiffView,
@@ -764,8 +685,6 @@ fn comments_in_order<'a>(
         .collect()
 }
 
-/// One comment as a header line plus its wrapped body.
-/// One line's search matches, in the shape `highlight_spans` paints everywhere.
 fn search_ranges(
     search: Option<CardSearch<'_>>,
     text: &str,
@@ -780,9 +699,6 @@ fn search_ranges(
         .unwrap_or_default()
 }
 
-/// A hue turned into a saturated colour by `author_color`'s golden-angle
-/// step, lifted through [`readable_on`](diffler_core::language::readable_on)
-/// the same way `crate::ui::language_color` lifts Linguist's palette.
 fn hsl_to_rgb(hue: f32, saturation: f32, lightness: f32) -> (u8, u8, u8) {
     let c = (1.0 - (2.0 * lightness - 1.0).abs()) * saturation;
     let h = hue.rem_euclid(360.0) / 60.0;
@@ -800,7 +716,7 @@ fn hsl_to_rgb(hue: f32, saturation: f32, lightness: f32) -> (u8, u8, u8) {
     };
     let m = lightness - c / 2.0;
     let channel = |v: f32| {
-        // scaled into 0.0..=255.0 by the clamp just above the cast
+        // the clamp keeps the value in 0.0..=255.0 before the cast
         #[allow(clippy::cast_sign_loss)]
         let byte = ((v + m) * 255.0).round().clamp(0.0, 255.0) as u8;
         byte
@@ -808,7 +724,6 @@ fn hsl_to_rgb(hue: f32, saturation: f32, lightness: f32) -> (u8, u8, u8) {
     (channel(r1), channel(g1), channel(b1))
 }
 
-/// The lens's uses on one code row, each in its symbol's colour.
 fn lens_marks(
     diff: &DiffView,
     model: &DiffModel,
@@ -841,8 +756,6 @@ fn lens_marks(
     marks
 }
 
-/// A lens symbol's colour: the golden-angle step a comment author gets, from
-/// its slot in the lens, lifted for contrast against the theme background.
 fn lens_color(theme: &Theme, slot: usize) -> Color {
     #[allow(clippy::cast_precision_loss)] // a hue only needs to look distinct, not be exact
     let hue = (slot as f32 * HUE_STEP + 25.0).rem_euclid(360.0);
@@ -851,14 +764,11 @@ fn lens_color(theme: &Theme, slot: usize) -> Color {
     Color::Rgb(r, g, b)
 }
 
-/// The golden angle (~137.5°): stepping a hue by it spaces each new one as far
-/// as possible from every hue before it, the same trick sunflower seeds use to
-/// pack without two ever landing too close.
+/// The golden angle, so each new hue lands far from every earlier one.
 const HUE_STEP: f32 = 137.507_76;
 
-/// Each author's position in the pane's own order, first appearance first,
-/// skipping the human and the agent: they take a fixed colour, so they never
-/// consume a step and never collide with one either.
+/// Each author's first-appearance position, skipping the human and the agent
+/// since they take fixed colours.
 fn author_orders<'a>(
     authors: impl Iterator<Item = &'a str>,
     human_author: &str,
@@ -874,9 +784,7 @@ fn author_orders<'a>(
     orders
 }
 
-/// Every author's colour step for one frame: the comment authors in the
-/// sidebar's order first, so the sidebar reads as it always has, then anyone
-/// who only replied.
+/// Comment authors in sidebar order first, then anyone who only replied.
 fn pane_author_orders<'a>(
     session: &'a Session,
     model: Option<&DiffModel>,
@@ -896,12 +804,9 @@ fn pane_author_orders<'a>(
     )
 }
 
-/// An author's colour: fixed for the two names that never move (the human
-/// reviewing, the agent replying) since the reader looks for those first,
-/// stepped by the golden angle from `order` for anyone else so a handful of
-/// reviewers read as visibly distinct hues rather than colliding on a hash.
-/// Lifted for contrast against `bg`, the row's own background, so it stays
-/// legible on any theme and under the cursor's own band.
+/// The human and the agent keep fixed colours because the reader looks for
+/// them first; everyone else steps the golden angle from `order`, lifted for
+/// contrast against the row's own `bg`.
 fn author_color(theme: &Theme, bg: Color, human_author: &str, author: &str, order: usize) -> Color {
     if !human_author.is_empty() && author == human_author {
         return theme.accent;
@@ -916,9 +821,7 @@ fn author_color(theme: &Theme, bg: Color, human_author: &str, author: &str, orde
     Color::Rgb(r, g, b)
 }
 
-/// A comment not under the cursor draws as one line: the status glyph and
-/// author lead it exactly as the open card's header does, then as much of
-/// its preview as the row holds.
+/// The title, else the body's first line.
 fn comment_preview(comment: &diffler_core::session::Comment) -> String {
     comment.title.clone().unwrap_or_else(|| {
         comment
@@ -931,9 +834,7 @@ fn comment_preview(comment: &diffler_core::session::Comment) -> String {
     })
 }
 
-/// The header spans every card leads with: status glyph, then the author in
-/// its own colour, at whatever width `rest_budget` still has room for once
-/// they are placed.
+/// The status glyph and author spans, plus the width left after them.
 fn comment_header_spans(
     cc: &CardCtx<'_>,
     comment: &diffler_core::session::Comment,
@@ -948,8 +849,7 @@ fn comment_header_spans(
         author_color,
         ..
     } = cc;
-    // an orphan outranks its status: the file it points at is gone, which is
-    // the only thing worth saying about it
+    // an orphan's file is gone, so we show that over its status
     let (status, colour) = match comment.status {
         _ if orphan => ("⚠", theme.error_fg),
         CommentStatus::Open => ("○", theme.warn_fg),
@@ -971,12 +871,9 @@ fn comment_header_spans(
     (spans, budget.saturating_sub(used))
 }
 
-/// Columns a name may take on a comment row. A long handle would otherwise
-/// fill the row and leave the preview beside it nothing to say.
+/// Caps an author's columns so a long handle leaves room for the preview.
 const AUTHOR_MAX: usize = 14;
 
-/// A comment not under the cursor: the status and author its own card leads
-/// with, then as much of its preview as the row still holds, elided.
 fn comment_summary_line(
     cc: &CardCtx<'_>,
     comment: &diffler_core::session::Comment,
@@ -992,8 +889,6 @@ fn comment_summary_line(
     pad_line(spans, cc.bg, cc.width)
 }
 
-/// Left pane: a heading row then one row per file in the diff, the selected
-/// one highlighted.
 fn draw_sidebar(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut DiffView) {
     let (theme, session, review_model, search) =
         (ctx.theme, ctx.session, ctx.review_model, ctx.search);
@@ -1015,8 +910,7 @@ fn draw_sidebar(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &m
     let Some(model) = diff.commit_model.as_ref().or(review_model) else {
         return;
     };
-    // build only the visible slice: the tree can be far taller than the pane
-    // and styling every row per frame is O(files)
+    // we style only the visible slice since the tree can be far taller than the pane
     let height = inner.height.max(1) as usize;
     let rows = diff.tree_rows(model, session);
     let stat = GroupStat::collect(diff, model, session);
@@ -1030,8 +924,6 @@ fn draw_sidebar(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &m
         .take(height)
         .map(|(row_index, row)| {
             let on_cursor = row_index == diff.tree_cursor;
-            // ranges are offsets into the row's name, so the `/` match
-            // highlights the exact substring like the log and diff panes do
             let ranges = search
                 .filter(|_| focused)
                 .map(|s| s.ranges_for(row_index))
@@ -1080,10 +972,8 @@ fn draw_sidebar(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &m
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-/// What the sidebar is listing: files, or the walkthrough by name, since a
-/// stop list is only readable when the reader knows whose order it is. A
-/// broken pin says so here, since it is a fact about the whole walkthrough,
-/// not any one stop.
+/// "Files", or the walkthrough's name in its layout so the reader knows whose
+/// reading order it is. A broken pin concerns the whole walkthrough, so we say it here.
 fn sidebar_title(ctx: &RenderCtx<'_>, diff: &DiffView) -> String {
     match (diff.layout, diff.active_walkthrough(ctx.session)) {
         (FileLayout::Walkthrough, Some(walkthrough)) => {
@@ -1098,9 +988,6 @@ fn sidebar_title(ctx: &RenderCtx<'_>, diff: &DiffView) -> String {
     }
 }
 
-/// A walkthrough stop row: its title, the file it is anchored to dimmed after
-/// it, and how many comments its region holds once that is more than the stop
-/// itself.
 fn sidebar_stop_line(
     rc: &TreeRowCtx<'_>,
     session: &Session,
@@ -1130,10 +1017,7 @@ fn sidebar_stop_line(
     let title_style = Style::new()
         .fg(if on_cursor { theme.accent } else { theme.fg })
         .bg(bg);
-    // stops keep their reading order regardless of what is seen, so leading
-    // with a check the way a viewed file does would not read as a run the
-    // way a sorted file list does; the trailing `✓` already says a stop is
-    // seen
+    // stops never re-sort by seen state, so we trail the check where a viewed file leads with it
     let mut spans = vec![tree_lead(theme, 0, bg, on_cursor)];
     spans.extend(super::highlight_spans(
         &stop_title(stop),
@@ -1154,8 +1038,6 @@ fn sidebar_stop_line(
     pad_line(spans, bg, width)
 }
 
-/// The walkthrough layout's leading row, shown only where the walkthrough has
-/// a summary: no count, since it is one card, not a bucket of stops.
 fn sidebar_summary_line(rc: &TreeRowCtx<'_>) -> Line<'static> {
     let &TreeRowCtx {
         theme,
@@ -1179,14 +1061,10 @@ fn sidebar_summary_line(rc: &TreeRowCtx<'_>) -> Line<'static> {
     pad_line(spans, bg, width)
 }
 
-/// The last segment of a path, which is how a file is named in a list beside
-/// something else.
 pub(crate) fn base_name(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).to_owned()
 }
 
-/// Right pane: the selected file's header then the visible slice of its rows,
-/// in unified or side-by-side mode.
 #[allow(clippy::too_many_lines)]
 fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut DiffView) {
     let (theme, session, review_model, search) =
@@ -1216,7 +1094,6 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
         return;
     };
 
-    // header is fixed; the rows scroll beneath it
     let [header_area, body_area] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
     let viewed = session.is_viewed(&file.path, &file.content_hash());
@@ -1237,8 +1114,6 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
         header_area,
     );
 
-    // an image file draws its sides, leaving any whole-file comment cards
-    // their rows underneath
     let body_area = if crate::app::image::is_image(file) {
         let comment_rows = u16::try_from(diff.rows.len()).unwrap_or(u16::MAX);
         let rows_height = comment_rows.min(body_area.height / 2);
@@ -1264,8 +1139,6 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
         body_area
     };
 
-    // the breadcrumb row is reserved only for files that have definitions, so
-    // plain files keep their full height
     let has_scope = diff
         .scopes
         .get(&file.path)
@@ -1363,8 +1236,7 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
     let selected = |index: usize| {
         index == cursor || selection.is_some_and(|(start, end)| index >= start && index <= end)
     };
-    // long lines wrap, so rows vary in height: place every row first, then
-    // scroll in visual lines keeping the whole cursor row on screen
+    // wrapped rows vary in height, so we scroll in visual lines
     let rows = diff.rows().to_vec();
     let referenced = diff.referenced;
     let heights: Vec<usize> = rows
@@ -1402,8 +1274,7 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
             break;
         }
         top_row.get_or_insert(index);
-        // only the focused pane highlights; otherwise the sidebar's
-        // matches (keyed by row index) would bleed onto diff rows
+        // search ranges are keyed by row index, so an unfocused pane would show the sidebar's matches
         let ranges = search
             .filter(|_| focused)
             .map(|s| s.ranges_for(index))
@@ -1422,9 +1293,7 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
             },
             &marks,
         );
-        // a stop points at a segment, so the whole span is banded; the cursor
-        // row keeps its own band, which is what says where inside the span the
-        // reader is standing
+        // the cursor row keeps its own band so the reader sees where in the span they stand
         if !selected(index) {
             rendered = super::band_referenced(rendered, referenced, index, theme, rows_area.width);
         }
@@ -1444,7 +1313,6 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
     render_scope_crumb(frame, crumb_area, theme, diff.scopes.get(&file.path), top);
 }
 
-/// Terminal rows a split row occupies at `width`; only pairs can wrap.
 fn split_row_height(file_ctx: SplitFileCtx<'_>, row: &SplitRow, width: u16) -> usize {
     let SplitRow::Pair { hunk, left, right } = *row else {
         return 1;
@@ -1556,8 +1424,6 @@ fn split_row_lines(
     }
 }
 
-/// Per-side syntax for a split row: the old highlights for the left column, the
-/// new highlights for the right, indexed by that side's line number.
 fn split_side_syntax<'a>(
     highlights: &'a FileHighlights,
     line: &DiffLine,
@@ -1569,10 +1435,8 @@ fn split_side_syntax<'a>(
     }
 }
 
-/// Diff-pane title: a plain "Diff" for the working tree or a single commit, a
-/// `oldest7..newest7` range span when the pane shows a combined commit range.
-/// A non-default algorithm trails as `· <name>`, so switching stays visible
-/// past the one-time status message.
+/// A non-default algorithm trails the title so a switch stays visible after its
+/// status message clears.
 fn pane_title(source: &ReviewSource, algorithm: diffler_core::diffalgo::DiffAlgorithm) -> String {
     let base = match source {
         ReviewSource::WorkingTree
@@ -1592,15 +1456,11 @@ fn pane_title(source: &ReviewSource, algorithm: diffler_core::diffalgo::DiffAlgo
     }
 }
 
-/// The file sidebar's surface. A step away from the diff pane's surface is
-/// what tells the two panes apart, so neither needs a border drawn: the diff
-/// is the lit card, the file list lies flat on the app background.
+/// The sidebar differs from the diff pane's surface, which is what separates them with no border.
 fn sidebar_bg(theme: &Theme) -> Color {
     theme.bg
 }
 
-/// A pane's name as a plain heading row over its own surface, accented when
-/// the pane holds focus.
 fn pane_heading(theme: &Theme, title: &str, focused: bool, bg: Color) -> Line<'static> {
     Line::styled(
         format!(" {title}"),
@@ -1618,11 +1478,8 @@ fn open_comment_count(session: &Session, path: &str) -> usize {
         .count()
 }
 
-/// The `(added, deleted)` line counts and the `(viewed, total)` file counts
-/// each sidebar group covers, built once per frame from one pass over the
-/// model: a header row knows its own name, not its members. A directory
-/// covers every file beneath it at any depth; a section covers the files its
-/// bucket holds. Only the layout on screen is walked.
+/// Each sidebar group's `(added, deleted)` totals, from one pass over the model
+/// per frame, since a header row knows its name and not its members.
 #[derive(Default)]
 struct GroupStat {
     dirs: HashMap<String, (usize, usize)>,
@@ -1652,8 +1509,6 @@ impl GroupStat {
                     };
                     tally(stat.sections.entry(bucket).or_default());
                 }
-                // a stop row stands for a span of one file, so it carries no
-                // group total
                 FileLayout::Walkthrough => {}
                 FileLayout::Tree | FileLayout::List => {
                     for (at, _) in file.path.match_indices('/') {
@@ -1667,9 +1522,7 @@ impl GroupStat {
     }
 }
 
-/// Push `tail` against the row's right edge, gap-padded, when what is already
-/// in `spans` leaves room for it. A row too narrow keeps its name and marks and
-/// loses the tail, which is the part a reader can do without.
+/// Right-align `tail` when it fits; a row too narrow drops it and keeps its name.
 fn push_right(spans: &mut Vec<Span<'static>>, tail: Vec<Span<'static>>, width: u16, bg: Color) {
     if tail.is_empty() {
         return;
@@ -1685,8 +1538,6 @@ fn push_right(spans: &mut Vec<Span<'static>>, tail: Vec<Span<'static>>, width: u
     spans.extend(tail);
 }
 
-/// A sidebar row's background: the list surface, or the cursor band over it for
-/// the row under the cursor.
 fn sidebar_row_bg(theme: &Theme, on_cursor: bool, focused: bool) -> Color {
     if on_cursor {
         cursor_band(theme, sidebar_bg(theme), focused)
@@ -1695,10 +1546,9 @@ fn sidebar_row_bg(theme: &Theme, on_cursor: bool, focused: bool) -> Color {
     }
 }
 
-/// Sidebar leading cells: the cursor `▌` marker plus the tree indent for
-/// `depth`. Shared by dir and file rows so columns line up.
+/// The cursor `▌` marker plus the tree indent for `depth`.
 fn tree_lead(theme: &Theme, depth: usize, bg: Color, on_cursor: bool) -> Span<'static> {
-    // a left bar makes the cursor row unmistakable where the bg tint is subtle
+    // some themes tint the cursor band faintly, so we add a bar
     let marker = if on_cursor { "▌" } else { " " };
     Span::styled(
         format!("{marker}{}", " ".repeat(depth * 2)),
@@ -1706,8 +1556,6 @@ fn tree_lead(theme: &Theme, depth: usize, bg: Color, on_cursor: bool) -> Span<'s
     )
 }
 
-/// A directory row: indent, fold arrow, the dim directory name, and the
-/// diffstat of everything beneath it.
 fn sidebar_dir_line(
     rc: &TreeRowCtx<'_>,
     name: &str,
@@ -1731,15 +1579,12 @@ fn sidebar_dir_line(
         tree_lead(theme, depth, bg, on_cursor),
         Span::styled(arrow.to_owned(), Style::new().fg(theme.dim).bg(bg)),
     ];
-    // dir names are never clipped, so the highlight maps straight onto them
     spans.extend(super::highlight_spans(name, name_style, search, theme));
     let tail = diffstat_spans(theme, stat.0, stat.1, bg);
     push_right(&mut spans, tail, width, bg);
     pad_line(spans, bg, width)
 }
 
-/// A section header row: `group_header_line` with the bucket's own diffstat
-/// as its tail.
 fn sidebar_section_line(
     rc: &TreeRowCtx<'_>,
     bucket: Bucket,
@@ -1770,10 +1615,6 @@ fn sidebar_section_line(
     )
 }
 
-/// A file row: cursor lead, a viewed file's check in place of its status
-/// glyph, basename, then the comment-count mark and the `+A -B` diffstat.
-/// The diffstat is dropped first when the sidebar is too narrow to keep the
-/// name and marks legible.
 fn sidebar_file_line(
     rc: &TreeRowCtx<'_>,
     file: &FileDiff,
@@ -1791,8 +1632,6 @@ fn sidebar_file_line(
     } = rc;
     let bg = sidebar_row_bg(theme, on_cursor, focused);
     let dim = Style::new().fg(theme.dim).bg(bg);
-    // a viewed file leads with its check, the way a resolved comment does, so
-    // a column of them reads down the left edge without reading a name
     let (glyph, glyph_colour) = if viewed {
         ('✓', theme.added)
     } else {
@@ -1802,8 +1641,7 @@ fn sidebar_file_line(
         tree_lead(theme, depth, bg, on_cursor),
         Span::styled(format!("{glyph} "), Style::new().fg(glyph_colour).bg(bg)),
     ];
-    // reserve room for the trailing count, then clip the basename into the
-    // rest: " ·{open}" is 2 + the count's digits wide
+    // " ·{open}" is 2 + the count's digits wide
     let suffix_width = if open > 0 {
         2 + open.to_string().len()
     } else {
@@ -1814,10 +1652,7 @@ fn sidebar_file_line(
     let name_style = Style::new()
         .fg(if on_cursor { theme.accent } else { theme.fg })
         .bg(bg);
-    // highlight the whole name, then clip the spans so a match stays lit on the
-    // visible part; a path row (with a `/`) dims its parents and front-elides,
-    // so its tail (the basename, the file's identity) stays in view and reads
-    // as the name it is
+    // we highlight before clipping so a match stays lit; a path front-elides to keep its basename
     let parent = name.rfind('/').map_or(0, |at| at + 1);
     let highlighted = super::highlight_spans_split(name, parent, dim, name_style, search, theme);
     spans.extend(clip_spans(
@@ -1829,8 +1664,6 @@ fn sidebar_file_line(
     if open > 0 {
         spans.push(Span::styled(format!(" ·{open}"), dim));
     }
-    // GitHub-PR style: the file's `+A -B` hugs the right edge, but only if it
-    // fits after the name and marks: name + marks stay legible first
     let (added, deleted) = file.diffstat();
     push_right(
         &mut spans,
@@ -1841,11 +1674,8 @@ fn sidebar_file_line(
     pad_line(spans, bg, width)
 }
 
-/// Clip a name's already-styled `spans` to `room` cells, preserving each span's
-/// style (so a search highlight survives on the visible cells). `front` elides
-/// from the left with a leading `…` (for flat-list paths, keeping the tail
-/// basename in view), otherwise from the right with a trailing `…`. The ellipsis
-/// takes `ellipsis_style`. Char-based, multibyte-safe.
+/// Clip styled `spans` to `room` chars, keeping each span's style. `front`
+/// elides from the left, otherwise from the right.
 fn clip_spans(
     spans: Vec<Span<'static>>,
     room: usize,
@@ -1894,7 +1724,6 @@ fn clip_spans(
     }
 }
 
-/// Terminal rows `row` occupies at `width`; only diff lines can wrap.
 fn row_height(model: &DiffModel, row: &DiffRow, width: u16) -> usize {
     let DiffRow::Line { file, hunk, line } = row else {
         return 1;
@@ -2007,8 +1836,6 @@ fn row_lines(
     }
 }
 
-/// One terminal row: the enclosing-definition breadcrumb for the top visible
-/// line, styled like a hunk heading. Blank when the top line is at top level.
 fn scope_line(theme: &Theme, crumbs: &[String], width: u16) -> Line<'static> {
     let text = if crumbs.is_empty() {
         String::new()
@@ -2039,8 +1866,6 @@ fn render_scope_crumb(
     frame.render_widget(Paragraph::new(scope_line(theme, &crumbs, area.width)), area);
 }
 
-/// Whether `line` falls inside any comment's anchored range for `file_path`:
-/// drives the GitHub-style highlight marking a multi-line comment's scope.
 fn line_annotated(session: &Session, file_path: &str, line: &DiffLine) -> bool {
     session.comments.iter().any(|c| {
         if c.anchor.file != file_path {
@@ -2058,7 +1883,6 @@ fn line_annotated(session: &Session, file_path: &str, line: &DiffLine) -> bool {
     })
 }
 
-/// New-side line number of a unified diff row, if it has one.
 fn row_new_no(file: &FileDiff, row: &DiffRow) -> Option<u32> {
     match *row {
         DiffRow::Line { hunk, line, .. } => file.hunks.get(hunk)?.lines.get(line)?.new_no,
@@ -2066,7 +1890,6 @@ fn row_new_no(file: &FileDiff, row: &DiffRow) -> Option<u32> {
     }
 }
 
-/// New-side line number of a split row's right cell, if any.
 fn split_right_new_no(file: &FileDiff, row: &SplitRow) -> Option<u32> {
     match *row {
         SplitRow::Pair { hunk, right, .. } => file.hunks.get(hunk)?.lines.get(right?)?.new_no,
@@ -2074,12 +1897,11 @@ fn split_right_new_no(file: &FileDiff, row: &SplitRow) -> Option<u32> {
     }
 }
 
-/// Right-pane header: status, path, binary/viewed marks, comment count.
 fn pane_header_line(
     theme: &Theme,
     file: &FileDiff,
     viewed: bool,
-    // (open or replied, total) comment counts for the file
+    // (open or replied, total)
     comments: (usize, usize),
     width: u16,
 ) -> Line<'static> {
@@ -2097,7 +1919,6 @@ fn pane_header_line(
     if viewed {
         spans.push(Span::styled(" ✓ viewed".to_owned(), dim));
     }
-    // resolved-only files read as done: no count, just a quiet marker
     let (open, total) = comments;
     if open > 0 {
         let noun = if open == 1 { "comment" } else { "comments" };
@@ -2105,8 +1926,6 @@ fn pane_header_line(
     } else if total > 0 {
         spans.push(Span::styled(" · resolved".to_owned(), dim));
     }
-    // GitHub-PR style: the file's `+A -B` and its proportion bar hug the right
-    // edge of the header, mirroring the status screen's grand-total summary
     let (added, deleted) = file.diffstat();
     let mut tail = diffstat_spans(theme, added, deleted, bg);
     let bar = proportion_bar(theme, added, deleted, bg);
@@ -2124,9 +1943,8 @@ fn pane_header_line(
     pad_line(spans, bg, width)
 }
 
-/// How a thread colours and places its replies: each author in the colour
-/// the comments sidebar gives them, and every reply but the reader's own
-/// indented into the other lane.
+/// Replies take the comments sidebar's author colours, and every reply but the
+/// reader's own indents into the other lane.
 #[derive(Clone, Copy)]
 struct ThreadLook<'a> {
     theme: &'a Theme,
@@ -2141,8 +1959,6 @@ impl ThreadLook<'_> {
         author_color(self.theme, self.bg, self.human, author, order)
     }
 
-    /// The card's bar, the lane indent for `author`, and the reply's own bar
-    /// in the author's colour.
     fn lane(&self, bar: Span<'static>, author: &str) -> Vec<Span<'static>> {
         let indent = if !self.human.is_empty() && author == self.human {
             0
@@ -2159,8 +1975,6 @@ impl ThreadLook<'_> {
         ]
     }
 
-    /// The spans of one reply-side line of the thread's card, after the
-    /// card's own `bar`.
     fn reply_spans(&self, part: &CommentLine, bar: Span<'static>) -> Vec<Span<'static>> {
         let Self { theme, bg, .. } = *self;
         let dim = Style::new().fg(theme.dim).bg(bg);
@@ -2206,7 +2020,6 @@ impl ThreadLook<'_> {
                 }
                 spans
             }
-            // the gap between blocks, and the card lines a thread does not draw
             _ => vec![bar],
         }
     }
@@ -2222,8 +2035,6 @@ fn comment_row_line(
     state: RowState,
 ) -> Line<'static> {
     let theme = ctx.theme;
-    // a solid left bar in the comment's status color turns the block into a
-    // distinct card that stands out against the diff lines around it
     let (status_label, accent) = match comment.status {
         CommentStatus::Open => ("open", theme.warn_fg),
         CommentStatus::Replied => ("replied", theme.accent),
@@ -2268,8 +2079,7 @@ fn comment_row_line(
                     Style::new().fg(theme.warn_fg).bg(bg),
                 ));
             }
-            // only the worker can tell an anchor that is gone from one that
-            // has not been read yet, so the answer comes from its map
+            // only the anchor worker can tell a lost anchor from an unread one, so we read its map
             if unresolved.is_some() {
                 spans.push(Span::styled(
                     " · stale".to_owned(),
@@ -2302,8 +2112,7 @@ fn comment_row_line(
         | CommentLine::ReplyHead { .. }
         | CommentLine::Reply { .. }
         | CommentLine::FoldedReplies { .. } => {
-            // each reply draws its own bar, so we leave a blank margin where
-            // the card's bar would go
+            // each reply draws its own bar, so we leave the card's bar column blank
             let margin = Span::styled("  ".to_owned(), Style::new().bg(bg));
             thread.reply_spans(part, margin)
         }
@@ -2315,9 +2124,8 @@ fn comment_row_line(
     pad_line(spans, bg, width)
 }
 
-/// The walkthrough's own summary as one card: a plain "Summary" header (no
-/// status, no author line, since nothing threads on it), its body, and any
-/// figure it draws through the same figure cache a comment's card reads.
+/// The walkthrough summary's card: a "Summary" header with no status or author,
+/// since nothing threads on it.
 fn summary_row_line(
     ctx: &RenderCtx<'_>,
     diff: &DiffView,
@@ -2356,8 +2164,7 @@ fn summary_row_line(
             };
             return super::fill_row(drawn.clone(), bg, width);
         }
-        // the summary carries no anchor of its own, so nothing ever resolves
-        // it and nothing ever answers it directly
+        // the summary has no anchor and no thread
         CommentLine::Note(_)
         | CommentLine::ReplyGap
         | CommentLine::ReplyHead { .. }
@@ -2371,9 +2178,7 @@ fn summary_row_line(
     pad_line(spans, bg, width)
 }
 
-/// The open composer, drawn as the card it is about to become: same bar, same
-/// wrap, with the caret shown as a reversed cell so the writer sees where the
-/// next character lands.
+/// The open composer, drawn as the card it will become, with the caret as a reversed cell.
 fn composer_row_line(
     theme: &Theme,
     composer: &Composer,
@@ -2433,12 +2238,11 @@ fn composer_title(composer: &Composer) -> String {
             _ => format!("comment on {}", anchor.file),
         },
         ComposerKind::Reply { .. } => "reply".to_owned(),
-        ComposerKind::Edit { .. } => "editing".to_owned(),
+        ComposerKind::Edit { .. } => "edit comment".to_owned(),
     }
 }
 
-/// Map a markdown run's flags onto `base` (the body foreground over the card
-/// background). Recoloring flags (code, link, muted) win over the base fg.
+/// Recolouring flags (code, link, muted) win over `base`'s foreground.
 pub(super) fn md_span(run: &MdSpan, base: Style, theme: &Theme) -> Span<'static> {
     let mut style = base;
     if run.bold {
@@ -2552,9 +2356,6 @@ mod tests {
         assert!(text.contains("test_zoning_plan_search.py (3)"), "{text}");
     }
 
-    /// Comment authors keep the order the comments sidebar gives them, and an
-    /// author who only replied steps after them, so a reply's colour in the
-    /// diff matches the sidebar's.
     #[test]
     fn reply_authors_step_after_comment_authors() {
         let mut session = diffler_core::session::Session::default();
@@ -2583,9 +2384,6 @@ mod tests {
         );
     }
 
-    /// The human and the agent never move, so the reader looks for those two
-    /// colours first; the golden-angle step never lands on either for anyone
-    /// else, and the same order always reads the same colour.
     #[test]
     fn author_color_is_fixed_for_human_and_agent_regardless_of_order() {
         let theme = Theme::github_dark();
@@ -2607,10 +2405,6 @@ mod tests {
         );
     }
 
-    /// Several reviewers stepping the golden angle from their first
-    /// appearance read as visibly distinct hues, the separation a hash could
-    /// only promise by chance, and none of them ever lands on the accent or
-    /// purple the human and the agent keep.
     #[test]
     fn several_authors_get_distinct_hues_and_never_the_fixed_two() {
         let theme = Theme::github_dark();
@@ -2645,9 +2439,7 @@ mod tests {
         }
     }
 
-    /// A titled comment is a walkthrough stop. In the list the title is the
-    /// summary; the body stays in the card under its span, or ten stops of
-    /// four bullets each turn the pane into a wall.
+    /// A stop's body stays in its card; ten stops of four bullets would bury the list.
     #[test]
     fn the_comments_sidebar_lists_a_titled_comment_by_its_title_alone() {
         let (_fixture, mut app) = diff_app();
@@ -2690,10 +2482,7 @@ mod tests {
         }
         app.handle(key('C'));
         let screen = render(&mut app).backend().to_string();
-        // the body still draws in the pane's own card; only the list column
-        // must leave it out, so read the screen from the pane's left edge
-        // by column, since a row carrying box-drawing glyphs has more bytes
-        // than columns and a byte slice into one lands mid-character
+        // we slice by column since box-drawing glyphs make a byte slice land mid-character
         let pane_start = screen
             .lines()
             .find_map(|row| row.find("Comments (").map(|at| row[..at].chars().count()))
@@ -2703,7 +2492,6 @@ mod tests {
             .map(|row| row.chars().skip(pane_start).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n");
-        // the pane is narrow, so the title is elided; the head of it is enough
         assert!(pane.contains("Missing staff list"), "{pane}");
         assert!(
             !pane.contains("We refuse a default here"),
@@ -2718,8 +2506,6 @@ mod tests {
         insta::assert_snapshot!(render(&mut app).backend());
     }
 
-    /// Two files, two authors (one the reviewer), one resolved thread: enough
-    /// to give every grouping something real to show.
     fn app_with_grouped_comments() -> (crate::test_support::Fixture, App) {
         let (fixture, mut app) = diff_app();
         let source = app.active_review_source();
@@ -2809,10 +2595,6 @@ mod tests {
         }
     }
 
-    /// A pane busy enough to prove the redesign holds up: three files, six
-    /// authors including one long handle, a body too long for its collapsed
-    /// row, and two folded groups on screen at once, none of which the
-    /// shorter fixtures above ever show together.
     #[test]
     fn a_busy_comments_pane_stays_dense_with_a_long_name_an_elided_body_and_two_folds() {
         let (_fixture, mut app) = diff_app();
@@ -2854,8 +2636,6 @@ mod tests {
         let diff = app.diff.as_mut().expect("diff");
         diff.comment_folds.insert("file:ci.yml".to_owned());
         diff.comment_folds.insert("file:todo.md".to_owned());
-        // land the cursor on the reviewer's own comment so its card opens,
-        // leaving its long-named neighbour to show collapsed, elided, dense
         let open_row = app
             .comment_rows()
             .iter()
@@ -2952,8 +2732,6 @@ mod tests {
         (fixture, app)
     }
 
-    /// `<c-a>` opens the algorithm picker; picking one switches it live,
-    /// re-diffs the open view, and names it in the pane heading.
     #[test]
     fn diff_algorithm_picker_switches_the_algorithm_live() {
         let (_fixture, mut app) = diff_app();
@@ -2978,9 +2756,8 @@ mod tests {
         );
     }
 
-    /// The file's content hash is the same under both algorithms, so an
-    /// enrichment queued before the switch must not put the old hunks back,
-    /// on the diff pane or on the status sections the stage keys read.
+    /// The content hash is the same under both algorithms, so an enrichment
+    /// queued before the switch could put the old hunks back.
     #[test]
     fn a_switch_rediffs_everything_and_outlives_an_enrichment_in_flight() {
         use diffler_core::diffalgo::{DiffAlgorithm, histogram_hunks};
@@ -3017,8 +2794,6 @@ mod tests {
         assert_eq!(app.config.diff.algorithm, DiffAlgorithm::Histogram);
     }
 
-    /// A switch says whether the diff on screen changed, since most diffs
-    /// come out the same under every algorithm.
     #[test]
     fn a_switch_says_whether_the_hunks_changed() {
         let fixture = crate::test_support::Fixture::new();
@@ -3052,8 +2827,6 @@ mod tests {
         );
     }
 
-    /// The reader keeps moving while the re-diff runs, so the cursor it lands
-    /// on is the one they left, not the one they had when they switched.
     #[test]
     fn a_rediff_keeps_the_cursor_moved_while_it_ran() {
         use crate::app::rowsel::RowText as _;
@@ -3085,8 +2858,6 @@ mod tests {
         assert_eq!(diff.row_text(diff.cursor), " line 36");
     }
 
-    /// A view opened while the re-diff runs is built on the old hunks, so the
-    /// landing result rebuilds it too.
     #[test]
     fn a_view_opened_during_a_rediff_rebuilds_when_it_lands() {
         let old = "begin\nrepeat\nrepeat\nunique_anchor\nrepeat\nrepeat\nend\n";
@@ -3118,8 +2889,6 @@ mod tests {
         assert_eq!(landed, fresh);
     }
 
-    /// A stop list is only readable when the reader knows whose order it is,
-    /// so the pane heading carries the walkthrough's name instead of "Files".
     #[test]
     fn the_walkthrough_layout_names_itself_in_the_sidebar_heading() {
         let fixture = standard_fixture();
@@ -3132,9 +2901,6 @@ mod tests {
         assert!(!screen.contains(" Files"), "{screen}");
     }
 
-    /// A pin that no longer resolves (a squash, a rebase, a gc) is a fact
-    /// about the whole walkthrough, not any one stop, so it shows in the
-    /// sidebar heading rather than only on the stops that needed the pin.
     #[test]
     fn a_broken_pin_shows_in_the_sidebar_heading() {
         let fixture = standard_fixture();
@@ -3191,9 +2957,6 @@ flowchart LR
 ```
 ";
 
-    /// The card is the walkthrough's whole surface in the pane: a header, the
-    /// body's markdown, and a figure, under the span it explains. A stop with
-    /// nothing to point at heads the file instead.
     #[test]
     fn a_stop_card_renders_its_body_table_and_figure_under_the_span() {
         let fixture = standard_fixture();
@@ -3208,7 +2971,6 @@ flowchart LR
         insta::assert_snapshot!(render(&mut app).backend());
     }
 
-    /// An overview stop has no line to sit on, so its card is the whole view.
     #[test]
     fn the_current_anchorless_stop_shows_its_card_alone() {
         let fixture = standard_fixture();
@@ -3222,8 +2984,6 @@ flowchart LR
         insta::assert_snapshot!(render(&mut app).backend());
     }
 
-    /// A stop anchored inside a large synthetic file shows its span and
-    /// nothing else of the file: the bug this layout exists to fix.
     #[test]
     fn a_stop_in_a_large_file_windows_to_its_span() {
         let fixture = crate::test_support::big_file_fixture();
@@ -3234,9 +2994,7 @@ flowchart LR
         insta::assert_snapshot!(render(&mut app).backend());
     }
 
-    /// A slide shows its region and nothing else, so banding the region would
-    /// paint every code row on screen and read as a selection; the band is for
-    /// a span inside what is shown, which a comment jump in a file layout gets.
+    /// A slide shows only its region, so banding it would paint every code row.
     #[test]
     fn a_slide_never_bands_its_whole_region_while_a_file_layout_bands_a_span() {
         let fixture = standard_fixture();
@@ -3291,9 +3049,7 @@ flowchart LR
         );
     }
 
-    /// Commenting inside a slide leaves it unbanded: the card's rows shift the
-    /// code around them, which a band keyed on row numbers would follow into
-    /// colouring the whole slide.
+    /// The card's rows shift the code, so a band keyed on row numbers would colour the whole slide.
     #[test]
     fn a_comment_added_inside_a_slide_leaves_it_unbanded() {
         let fixture = standard_fixture();
@@ -3326,8 +3082,6 @@ flowchart LR
         assert_eq!(banded, 0, "the slide stays plain with a comment in it");
     }
 
-    /// A slide's second card sits right under the first: nothing from
-    /// another stop leaks in, and nothing gets cut off.
     #[test]
     fn a_slide_with_two_comments_renders_both_cards() {
         let fixture = standard_fixture();
@@ -3351,9 +3105,6 @@ flowchart LR
         insta::assert_snapshot!(render(&mut app).backend());
     }
 
-    /// A stop's `notes` become extra agent comments in its own region:
-    /// publishing writes one comment per note, and the sidebar row counts
-    /// the whole slide, not just the stop.
     #[test]
     fn a_stops_notes_count_toward_its_sidebar_row() {
         let fixture = standard_fixture();
@@ -3416,9 +3167,6 @@ flowchart LR
         );
     }
 
-    /// A `mermaid` fence in any comment draws as a figure, not as its source:
-    /// what a stop keeps from the boards it replaced, and every other comment
-    /// gains.
     #[test]
     fn a_mermaid_fence_in_a_human_comment_draws_as_a_figure() {
         let (_fixture, mut app) = diff_app();
@@ -3443,11 +3191,7 @@ flowchart LR
         insta::assert_snapshot!(render(&mut app).backend());
     }
 
-    /// A figure's `GraphView` used to default a selection on `set_model`
-    /// (nothing asked for one, and a card figure is a static picture, not
-    /// something being navigated), so it drew one node bold and reversed.
-    /// Clearing the selection after `set_model` means no node in a card
-    /// figure ever renders reversed.
+    /// `GraphView::set_model` selects a node by default, and a card figure is a static picture.
     #[test]
     fn a_figures_selection_is_cleared_so_no_node_reverses_in_the_card() {
         let (_fixture, mut app) = diff_app();
@@ -3505,8 +3249,6 @@ flowchart LR
         assert_eq!(reversed, 0, "no node in the figure should render reversed");
     }
 
-    /// The walkthrough layout with the stops resolved, the way the worker
-    /// leaves them.
     fn walkthrough_app(fixture: &Fixture, stops: &[(&str, Option<&str>, &str)]) -> App {
         let mut loaded = LoadedConfig::default();
         loaded.config.ui.diff_file_layout = crate::config::FileLayout::Walkthrough;
@@ -3514,7 +3256,7 @@ flowchart LR
         app.author = "reviewer".to_owned();
         crate::test_support::seat_walkthrough(&mut app, "How the answer moved", stops);
         app.open_walkthrough_diff("w1");
-        // the anchors resolve off-thread; the render tests want them landed
+        // anchors resolve off-thread, so we land them before rendering
         let Some(request) = app.pending_walkthrough.take() else {
             return app;
         };
@@ -3533,17 +3275,13 @@ flowchart LR
         app
     }
 
-    /// `draw_pane` runs every frame; a stop anchored outside the diff forces
-    /// `DiffView::model_with_context` to merge in a context file. That merge
-    /// is the clone `crate::app::merge_count` counts, and a render must not
-    /// trigger a fresh one: `ensure_rows` already cached it.
+    /// A stop outside the diff makes `model_with_context` clone the model, which
+    /// `ensure_rows` caches, so a render must not count a fresh merge.
     #[test]
     fn draw_pane_reads_the_cached_merged_model_instead_of_rebuilding_it() {
         let fixture = standard_fixture();
         let mut app = walkthrough_app(&fixture, &[("Notes", Some("notes.txt:1"), "why alpha")]);
-        // the first render settles `walkthrough_built` and enrichment, which
-        // legitimately trigger a rebuild of their own; only renders after
-        // that are the steady state a per-frame rebuild bug would show up in
+        // the first render settles `walkthrough_built` and enrichment, which rebuild on their own
         render(&mut app);
         assert!(
             app.diff.as_ref().expect("diff view").merged_model.is_some(),
@@ -3559,7 +3297,6 @@ flowchart LR
         );
     }
 
-    /// The summary slide renders as one card, with no diff rows beneath it.
     #[test]
     fn the_summary_slide_renders_one_card_and_no_diff_rows() {
         let fixture = standard_fixture();
@@ -3585,8 +3322,6 @@ flowchart LR
         insta::assert_snapshot!(render(&mut app).backend());
     }
 
-    /// The selected card has to dim when the pane loses focus, exactly as a
-    /// selected file row does, or there is no telling which pane the keys go to.
     #[test]
     fn the_comments_cursor_band_follows_focus_like_the_file_rows() {
         let (_fixture, mut app) = diff_app();
@@ -3618,8 +3353,6 @@ flowchart LR
         assert_ne!(focused, unfocused, "the band weakens with focus lost");
     }
 
-    /// The sidebar lights matches with the same two search colours every other
-    /// pane uses: the active card's stronger, the rest plain.
     #[test]
     fn searching_the_comments_sidebar_lights_the_matches() {
         let (_fixture, mut app) = diff_app();
@@ -3784,10 +3517,7 @@ flowchart LR
 
     #[test]
     fn diff_pane_renders_with_syntax_emphasis_and_gutter() {
-        // textual engine: it word-diffs the `41`→`42` literal so the emphasis
-        // background composites. The syntactic engine treats the whole literal
-        // as changed (no partial highlight); that path is covered by the core
-        // intraline tests.
+        // the textual engine word-diffs the `41`→`42` literal so the emphasis background composites
         let fixture = standard_fixture();
         let mut loaded = LoadedConfig::default();
         loaded.config.ui.semantic_diff = false;
@@ -3796,13 +3526,11 @@ flowchart LR
         app.open_working_tree_diff(None);
         open_lib_diff(&mut app);
         let terminal = render(&mut app);
-        // emphasis backgrounds composited over the line backgrounds
         let styles = format!("{:?}", terminal.backend().buffer());
         let add_emph = format!("{:?}", app.theme.add_emph_bg);
         let del_emph = format!("{:?}", app.theme.del_emph_bg);
         assert!(styles.contains(&add_emph), "added emphasis bg rendered");
         assert!(styles.contains(&del_emph), "deleted emphasis bg rendered");
-        // the lazy cache highlighted the selected rust file
         let highlights = &app.diff.as_ref().unwrap().highlights;
         let lib = highlights
             .get("src/lib.rs")
@@ -4321,8 +4049,6 @@ flowchart LR
         );
     }
 
-    /// A group's diffstat is the diff it holds, so a header says how big the
-    /// directory or kind is without unfolding it.
     #[test]
     fn a_directory_header_sums_the_diffstat_of_every_file_below_it() {
         let fixture = crate::test_support::Fixture::new();
@@ -4370,8 +4096,6 @@ flowchart LR
         assert!(text.contains("Docs (1)"), "the count stays: {text}");
     }
 
-    /// The review layout groups by viewed state, so its headers say how much
-    /// diff is still to read.
     #[test]
     fn the_review_buckets_split_the_diffstat_by_what_is_left() {
         let fixture = crate::test_support::Fixture::new();
@@ -4452,8 +4176,7 @@ flowchart LR
             .expect("draw");
         let content = terminal.backend().to_string();
         assert!(content.contains("f39.txt"), "cursor row visible: {content}");
-        // f01 lives only in the sidebar (f00 is the selected file shown in the
-        // pane header), so its absence proves the sidebar scrolled past the top
+        // f00 also shows in the pane header, so we check f01 to prove the sidebar scrolled
         assert!(
             !content.contains("f01.txt"),
             "top rows scrolled off: {content}"
@@ -4489,7 +4212,6 @@ flowchart LR
         app.handle(key('j'));
         app.handle(key('\n'));
         let content = render(&mut app).backend().to_string();
-        // the pane title carries the oldest7..newest7 span
         assert!(
             content.contains(".."),
             "range header shows a span: {content}"
@@ -4497,9 +4219,6 @@ flowchart LR
         insta::assert_snapshot!(render(&mut app).backend());
     }
 
-    /// A long thread folds the replies before its latest into one row and
-    /// shows the latest in full; the reader's own replies sit in the left
-    /// lane and everyone else's are indented.
     #[test]
     fn a_long_thread_folds_and_splits_into_lanes() {
         let (_fixture, mut app) = diff_app();
@@ -4629,7 +4348,6 @@ flowchart LR
         let lit = terminal.backend().buffer().clone();
         app.diff.as_mut().unwrap().visual_anchor = None;
         let plain = render(&mut app).backend().buffer().clone();
-        // the visual range repaints rows the bare cursor leaves alone
         let repainted = lit
             .content
             .iter()
@@ -4645,7 +4363,6 @@ flowchart LR
         let (_fixture, mut app) = diff_app();
         open_lib_diff(&mut app);
         cursor_to_added_line(&mut app);
-        // a comment on the selected file
         app.handle(key('c'));
         for c in "look".chars() {
             app.handle(key(c));
@@ -4716,14 +4433,9 @@ flowchart LR
         let (_fixture, mut app) = diff_app();
         app.handle(key('m'));
         app.handle(key('m'));
-        // two files viewed; the sidebar cursor sits on the last unviewed
-        // file, progress reads 2/3
         insta::assert_snapshot!(render(&mut app).backend());
     }
 
-    /// Viewed files sort to the top of their group, so once a few are marked
-    /// they stack into one run: their rows lead with a check in place of the
-    /// status glyph, the file still to review below keeps its own.
     #[test]
     fn viewed_files_lead_with_a_check_and_sort_above_the_rest() {
         let fixture = Fixture::new();
@@ -4783,8 +4495,6 @@ flowchart LR
         insta::assert_snapshot!(render(&mut app).backend());
     }
 
-    /// A folded hunk reads as its own header, naming what it hides, and the
-    /// open hunk beside it is untouched.
     #[test]
     fn a_folded_hunk_reads_as_its_header_naming_what_it_hides() {
         let base: String = (1..=30)
@@ -4810,9 +4520,7 @@ flowchart LR
         insta::assert_snapshot!(render(&mut app).backend());
     }
 
-    /// A fold row sits on the hunk header's band, and under the cursor both
-    /// take the accent: several themes put the cursor band within a shade of
-    /// the hunk band.
+    /// Several themes put the cursor band within a shade of the hunk band, so both take the accent.
     #[test]
     fn a_fold_row_shares_the_hunk_band_and_lights_its_text_under_the_cursor() {
         use crate::ui::diff_render::{fold_row, hunk_header};
@@ -4837,8 +4545,6 @@ flowchart LR
         }
     }
 
-    /// Structural mode draws a whitespace-only pair as context with its text
-    /// dimmed and a `≈` beside the gutter, no rail; the real edit keeps its own.
     #[test]
     fn a_reformat_only_pair_reads_as_dimmed_context() {
         let fixture = Fixture::new();
@@ -4892,7 +4598,6 @@ flowchart LR
 
     #[test]
     fn diff_pane_renders_a_sliding_window_and_jumps_to_extremes() {
-        // a single file with ~2000 lines: the model dwarfs the viewport
         let fixture = Fixture::new();
         let lines: Vec<String> = (1..=2000).map(|i| format!("line {i}")).collect();
         fixture.write("big.txt", &(lines.join("\n") + "\n"));

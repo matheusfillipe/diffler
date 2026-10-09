@@ -1,11 +1,11 @@
-//! Diff model: what changed, organized as files -> hunks -> lines.
+//! Diff model: files, hunks, lines.
 
 use std::ops::Range;
 
 use serde::{Deserialize, Serialize};
 
-/// FNV-1a 64 as lowercase hex. Content hashes key persisted viewed marks and
-/// derived caches, so the algorithm is pinned forever (tested below).
+/// FNV-1a 64 as lowercase hex. Persisted viewed marks key on it, so the
+/// algorithm must never change.
 fn stable_hash(bytes: &[u8]) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in bytes {
@@ -21,9 +21,8 @@ pub struct DiffModel {
 }
 
 impl DiffModel {
-    /// Cheap content identity of the whole model (file paths + per-file
-    /// sides hashes), so callers can skip invalidating derived state when
-    /// a refresh recomputed an identical diff.
+    /// Content identity of the whole model, so a refresh that recomputed an
+    /// identical diff keeps derived state.
     pub fn fingerprint(&self) -> String {
         let mut buf = Vec::new();
         for file in &self.files {
@@ -35,8 +34,6 @@ impl DiffModel {
         stable_hash(&buf)
     }
 
-    /// The diff line carrying number `line` on the requested side of
-    /// `file`'s hunks, if it is part of the diff.
     pub fn find_line(&self, file: &str, line: u32, on_old_side: bool) -> Option<&DiffLine> {
         let file = self.files.iter().find(|f| f.path == file)?;
         file.hunks.iter().flat_map(|h| &h.lines).find(|l| {
@@ -52,30 +49,26 @@ pub struct FileDiff {
     pub old_path: Option<String>,
     pub status: FileStatus,
     pub binary: bool,
-    /// Full contents of each side, used for whole-file syntax highlighting.
-    /// `None` for binary files and for the missing side of adds/deletes.
+    /// Full contents of each side. `None` for binary files and for the
+    /// missing side of adds/deletes.
     pub old_text: Option<String>,
     pub new_text: Option<String>,
     pub hunks: Vec<Hunk>,
-    /// Lazily memoized content hashes; texts never change after construction.
     pub hashes: HashCache,
-    /// Each side's git blob, for a binary file the pane reads bytes from (an
-    /// image preview).
     pub blobs: BlobIds,
 }
 
-/// The git blob ids of a file's two sides, hex-encoded, `None` for a side
-/// that does not exist (an add, a delete). A working-tree side's id is only
-/// a hash of the file on disk, with no object behind it in the store.
+/// Hex blob ids of a file's two sides. A working-tree side's id has no
+/// object behind it in the store.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BlobIds {
     pub old: Option<String>,
     pub new: Option<String>,
 }
 
-/// Memo slots for [`FileDiff::content_hash`]/[`FileDiff::sides_hash`], which
-/// the UI probes every frame: hashing full file contents per frame is the
-/// cost this avoids. Compares equal always so `FileDiff` equality is on data.
+/// Memo for [`FileDiff::content_hash`] and [`FileDiff::sides_hash`], which
+/// the UI reads every frame. Always compares equal so `FileDiff` equality is
+/// on data.
 #[derive(Debug, Clone, Default)]
 pub struct HashCache {
     content: std::sync::OnceLock<String>,
@@ -91,8 +84,8 @@ impl PartialEq for HashCache {
 impl Eq for HashCache {}
 
 impl FileDiff {
-    /// Content identity of the new side, used for viewed-mark invalidation.
-    /// A binary file has no text, so its new side's git blob id stands in.
+    /// Identity of the new side, which viewed marks key on. A binary file
+    /// uses its new blob id.
     pub fn content_hash(&self) -> String {
         self.hashes
             .content
@@ -103,7 +96,7 @@ impl FileDiff {
             .clone()
     }
 
-    /// `(added, deleted)` line counts across the file's hunks.
+    /// `(added, deleted)` line counts.
     pub fn diffstat(&self) -> (usize, usize) {
         let mut added = 0;
         let mut deleted = 0;
@@ -117,9 +110,7 @@ impl FileDiff {
         (added, deleted)
     }
 
-    /// Content identity of both sides, for caches derived from old and new
-    /// text (e.g. syntax highlighting). Viewed marks key on `content_hash`
-    /// instead: they only care about the side the reviewer reads.
+    /// Identity of both sides, for caches derived from old and new text.
     pub fn sides_hash(&self) -> String {
         self.hashes
             .sides
@@ -127,7 +118,6 @@ impl FileDiff {
                 let mut bytes = Vec::from(self.old_text.as_deref().unwrap_or("").as_bytes());
                 bytes.push(0);
                 bytes.extend_from_slice(self.new_text.as_deref().unwrap_or("").as_bytes());
-                // a binary file carries no text, so its blob ids are its identity
                 for blob in [&self.blobs.old, &self.blobs.new] {
                     bytes.push(0);
                     bytes.extend_from_slice(blob.as_deref().unwrap_or("").as_bytes());
@@ -146,15 +136,12 @@ pub enum FileStatus {
     Deleted,
     Renamed,
     Untracked,
-    /// A walkthrough's own file: one a stop or note anchors outside the diff,
-    /// shown at its current content with nothing to compare it against.
+    /// A file a walkthrough anchors outside the diff.
     Unchanged,
 }
 
 impl FileStatus {
-    /// Single-character shape naming the status in the diff sidebar. It reads
-    /// by form alone, so a palette whose hues a reader cannot separate still
-    /// carries the status; colour reinforces it.
+    /// Each status has a distinct shape so it reads without colour.
     pub const fn glyph(self) -> char {
         match self {
             Self::Added => '+',
@@ -166,7 +153,6 @@ impl FileStatus {
         }
     }
 
-    /// Neogit-style row label shown in file headers and the diff pane.
     pub const fn label(self) -> &'static str {
         match self {
             Self::Added => "new file",
@@ -179,8 +165,7 @@ impl FileStatus {
     }
 }
 
-/// Stable identity for a hunk: hash of its normalized content. Survives
-/// edits elsewhere in the file; changes when the hunk's lines change.
+/// Hash of a hunk's content, so it survives edits elsewhere in the file.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct HunkId(pub String);
 
@@ -191,9 +176,8 @@ pub struct Hunk {
     pub old_lines: u32,
     pub new_start: u32,
     pub new_lines: u32,
-    /// git's section heading: the enclosing function/section name git emits
-    /// after the second `@@` of the hunk header. Empty when git gives none
-    /// (e.g. a top-of-file hunk). Excluded from `id`, which keys only on lines.
+    /// git's function heading after the second `@@`, empty when git gives
+    /// none. `id` ignores it.
     pub context: String,
     pub lines: Vec<DiffLine>,
 }
@@ -216,7 +200,6 @@ pub enum LineKind {
 }
 
 impl LineKind {
-    /// Unified-diff origin character (' ', '-', '+').
     pub const fn origin(self) -> char {
         match self {
             Self::Context => ' ',
@@ -231,13 +214,11 @@ pub struct DiffLine {
     pub kind: LineKind,
     pub old_no: Option<u32>,
     pub new_no: Option<u32>,
-    /// Line content without the trailing newline.
+    /// Without the trailing newline.
     pub text: String,
-    /// Byte ranges within `text` to emphasize (intra-line changes).
+    /// Byte ranges within `text`.
     pub emphasis: Vec<Range<usize>>,
-    /// True on a paired deleted/added line the structural algorithm found to
-    /// be a pure reformat (identical token structure, e.g. reindentation):
-    /// the renderer dims it, leaving red/green for an actual change.
+    /// A paired line the structural algorithm found differs in layout alone.
     pub reformat_only: bool,
 }
 
@@ -253,19 +234,13 @@ impl DiffLine {
         }
     }
 
-    /// The line number on the named side: `old_no` on the old side (where a
-    /// deletion lives), `new_no` everywhere else.
     pub const fn number_on(&self, old_side: bool) -> Option<u32> {
         if old_side { self.old_no } else { self.new_no }
     }
 }
 
-/// Hash the hunk's content (kinds + text) into a stable id. `occurrence` is
-/// how many earlier hunks in the same file hash to the same content: two
-/// hunks with byte-identical lines in one file get distinct ids this way,
-/// while every other hunk's id depends on its own content alone, so it
-/// survives edits elsewhere in the file. [`disambiguated_hunk_id`] is the
-/// usual way to call this, since it tracks the count for the caller.
+/// `occurrence` counts earlier hunks in the file with the same content, so
+/// identical hunks get distinct ids. Prefer [`disambiguated_hunk_id`].
 pub fn hunk_id(file_path: &str, lines: &[DiffLine], occurrence: usize) -> HunkId {
     let mut buf = String::new();
     buf.push_str(file_path);
@@ -287,10 +262,7 @@ pub fn hunk_id(file_path: &str, lines: &[DiffLine], occurrence: usize) -> HunkId
     HunkId(stable_hash(buf.as_bytes()))
 }
 
-/// [`hunk_id`] for one hunk of a file whose other hunks are being assigned
-/// ids through the same `seen` map: each distinct content gets occurrence 0
-/// the first time and counts up from there, so two identical hunks in one
-/// file never collide.
+/// [`hunk_id`] with `seen` counting occurrences across one file's hunks.
 // every caller shares one default-hashed map for one file's hunks, so a
 // generic hasher buys nothing
 #[allow(clippy::implicit_hasher)]
@@ -310,8 +282,6 @@ pub fn disambiguated_hunk_id(
 mod tests {
     use super::*;
 
-    // hashes key persisted viewed marks: the algorithm must stay stable
-    // across releases, so pin known FNV-1a 64 values
     #[test]
     fn stable_hash_is_fnv1a64_and_never_changes() {
         assert_eq!(stable_hash(b""), "cbf29ce484222325");
@@ -542,11 +512,9 @@ mod tests {
 
     #[test]
     fn diffstat_counts_added_and_deleted_over_hunks() {
-        // model_with_lines: one context, one deleted, one added line
         let model = model_with_lines();
         assert_eq!(model.files[0].diffstat(), (1, 1));
 
-        // two hunks: 2 added + 1 deleted total, context ignored
         let file = FileDiff {
             path: "f.rs".into(),
             old_path: None,
@@ -615,7 +583,6 @@ mod tests {
             hashes: HashCache::default(),
             blobs: BlobIds::default(),
         };
-        // must not panic, must return a non-empty string (git hash of empty blob)
         let hash = file.content_hash();
         assert!(!hash.is_empty());
     }

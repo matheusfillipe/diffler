@@ -1,9 +1,6 @@
-//! Several projects in one diffler: each tab is a whole [`App`] over its own
-//! repository, with its own screens, review state and workers. The workspace
-//! in front of them routes input to the tab on screen, worker answers to the
-//! tab that asked, and agent calls to the tab they name. The agent's comment
-//! and feedback reads cover every tab at once, so one MCP connection reviews
-//! them all.
+//! Project tabs: each tab is a whole [`App`] over its own repository. The
+//! workspace routes input to the tab on screen, worker answers to the tab that
+//! asked, and agent calls to the tab they name.
 
 use std::path::{Path, PathBuf};
 
@@ -19,20 +16,17 @@ use crate::event::AppEvent;
 use crate::keymap::{self, Resolved};
 use crate::mcp::{self, McpRequest, McpRequestKind, McpResponse};
 
-/// One event for the workspace, tagged with where it came from.
 #[derive(Debug)]
 pub enum WsEvent {
     /// Terminal input and ticks.
     Input(AppEvent),
     /// A worker or watcher answer for the tab with this id.
     Tab(u64, AppEvent),
-    /// Something the MCP server sent.
     Mcp(AppEvent),
 }
 
-/// A channel whose events reach `main` wrapped by `wrap`: how each source of
-/// events tells the workspace where it came from. The forwarder ends once
-/// every sender of the returned channel is gone.
+/// Tags each event source for the workspace. The forwarder ends once every
+/// sender of the returned channel is gone.
 pub fn forward(
     main: &mpsc::UnboundedSender<WsEvent>,
     wrap: impl Fn(AppEvent) -> WsEvent + Send + 'static,
@@ -52,10 +46,8 @@ pub fn forward(
 pub struct Tab {
     pub id: u64,
     pub app: App,
-    /// The channel this tab's workers and watcher answer on.
     pub tx: mpsc::UnboundedSender<AppEvent>,
-    /// The repository root as the filesystem resolves it, so two spellings
-    /// of one folder compare equal.
+    /// Canonicalized, so two spellings of one folder compare equal.
     root: PathBuf,
     _watcher: Option<crate::watch::WatcherHandle>,
     forward: JoinHandle<()>,
@@ -83,18 +75,15 @@ pub struct Workspace {
     next_id: u64,
     main_tx: mpsc::UnboundedSender<WsEvent>,
     overrides: CliOverrides,
-    /// One epoch for the agent across every tab: it moves whenever any tab's
-    /// own feedback epoch does, and never goes back when a tab closes.
+    /// Moves whenever any tab's own epoch does, and never goes back when a tab closes.
     feedback_tx: watch::Sender<u64>,
-    /// The MCP server's port, published into every open project.
     mcp_port: Option<u16>,
     /// Whether the terminal has focus; only the tab in front shares it.
     focused: bool,
 }
 
 impl Workspace {
-    /// A workspace whose first tab is `app`. Must run inside the tokio
-    /// runtime, since every tab forwards its own channel into `main_tx`.
+    /// Must run inside the tokio runtime, since every tab spawns a forwarder.
     pub fn new(app: App, main_tx: mpsc::UnboundedSender<WsEvent>, overrides: CliOverrides) -> Self {
         let mut workspace = Self {
             tabs: Vec::new(),
@@ -131,7 +120,7 @@ impl Workspace {
             .app
     }
 
-    /// Hand `event` to tab `index`; only the tab in front asks for a redraw.
+    /// Only the tab in front asks for a redraw.
     fn handle_in(&mut self, index: usize, event: AppEvent) -> Flow {
         let Some(tab) = self.tabs.get_mut(index) else {
             return Flow::Idle;
@@ -152,23 +141,20 @@ impl Workspace {
         self.feedback_tx.subscribe()
     }
 
-    /// Text any tab asked to put on the clipboard. A tab switch can land
-    /// between the request and the main loop's next look, so we take it from
-    /// whichever tab left it.
+    /// A tab switch can happen between the request and the main loop's next
+    /// look, so we take it from whichever tab left it.
     pub fn take_clipboard(&mut self) -> Option<String> {
         self.tabs
             .iter_mut()
             .find_map(|tab| tab.app.pending_clipboard.take())
     }
 
-    /// The editor request any tab left, with the id of the tab to answer.
     pub fn take_editor(&mut self) -> Option<(u64, EditorRequest)> {
         self.tabs
             .iter_mut()
             .find_map(|tab| Some((tab.id, tab.app.pending_editor.take()?)))
     }
 
-    /// Hand the editor's outcome back to the tab with id `id`.
     pub fn editor_finished(
         &mut self,
         id: u64,
@@ -180,8 +166,7 @@ impl Workspace {
         }
     }
 
-    /// Whether any tab is waiting on the main loop for a process, an editor
-    /// or the clipboard, which the loop must serve before draining more.
+    /// The main loop serves these before draining more events.
     pub fn has_pending(&self) -> bool {
         self.tabs.iter().any(|tab| {
             let app = &tab.app;
@@ -192,8 +177,6 @@ impl Workspace {
         })
     }
 
-    /// Note the MCP server's port on every tab, and publish it into each
-    /// project so a proxy started there finds this diffler.
     pub fn set_mcp_port(&mut self, port: u16) {
         self.mcp_port = Some(port);
         for tab in &mut self.tabs {
@@ -201,7 +184,6 @@ impl Workspace {
         }
     }
 
-    /// Take every project's endpoint file back down.
     pub fn clear_endpoints(&self) {
         for tab in &self.tabs {
             tab.clear_endpoint(self.mcp_port);
@@ -217,7 +199,7 @@ impl Workspace {
             .vcs
             .git_dir()
             .unwrap_or_else(|_| app.review.repo_root.join(".git"));
-        // a missing watcher is not fatal: the app falls back to periodic polling
+        // without a watcher the app falls back to periodic polling
         let watcher = crate::watch::spawn_watcher(&app.review.repo_root, &git_dir, tx.clone()).ok();
         app.watcher_healthy = watcher.as_ref().map(|handle| handle.healthy.clone());
         if let Some(port) = self.mcp_port {
@@ -240,8 +222,7 @@ impl Workspace {
         self.tabs.len() - 1
     }
 
-    /// Open the repository at `path` as a tab, or find the tab already
-    /// showing it. Returns the tab's index.
+    /// Reuses the tab already showing `path`.
     pub fn open(&mut self, path: &Path) -> Result<usize, String> {
         let root = diffler_core::repo::discover(path).map_err(|err| err.to_string())?;
         let canonical = mcp::canonical_repo(&root);
@@ -254,7 +235,6 @@ impl Workspace {
         Ok(self.push_tab(App::new(review, loaded)))
     }
 
-    /// Handle one event, answering how the screen should react.
     pub fn handle(&mut self, event: WsEvent) -> Flow {
         let flow = match event {
             WsEvent::Input(AppEvent::Quit) => return Flow::Quit,
@@ -281,8 +261,7 @@ impl Workspace {
         }
     }
 
-    /// Ticks, resizes and the agent's waiting signal reach every tab; the
-    /// screen only redraws for the one in front.
+    /// Only the tab in front decides the redraw.
     fn broadcast(&mut self, event: &AppEvent) -> Flow {
         let mut flow = Flow::Idle;
         for (index, tab) in self.tabs.iter_mut().enumerate() {
@@ -297,8 +276,8 @@ impl Workspace {
         flow
     }
 
-    /// The tab keys reach the app's own action handling first, so a tab
-    /// switch works from any screen, over a dialog or a draft too.
+    /// Tab keys resolve before the app sees the key, so a tab switch works
+    /// from any screen, over a dialog or a draft too.
     fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> Flow {
         let press = keymap::press_from_event(&key);
         if let Resolved::Action(action) =
@@ -311,7 +290,6 @@ impl Workspace {
         self.active_mut().handle(AppEvent::Key(key))
     }
 
-    /// Carry out the tab request the tab in front left, if any.
     fn apply_tab_op(&mut self) -> Flow {
         let Some(op) = self.active_mut().pending_tab.take() else {
             return Flow::Idle;
@@ -348,9 +326,7 @@ impl Workspace {
         Flow::Continue
     }
 
-    /// The tab left behind loses the terminal's focus and the one now in
-    /// front takes it, so a background tab polls the way an unfocused one
-    /// does.
+    /// A background tab polls the way an unfocused one does.
     fn hand_over_focus(&mut self, left: usize) {
         if let Some(tab) = self.tabs.get_mut(left) {
             tab.app.handle(AppEvent::Focus(false));
@@ -359,7 +335,6 @@ impl Workspace {
         self.active_mut().handle(AppEvent::Focus(focused));
     }
 
-    /// Show the tab row on the tab in front while several projects are open.
     pub fn sync_strip(&mut self) {
         let names: Vec<String> = self.tabs.iter().map(|tab| tab.app.project_name()).collect();
         let strip = (names.len() > 1).then_some(TabStrip {
@@ -375,7 +350,6 @@ impl Workspace {
         }
     }
 
-    /// Move the agent's epoch on when any tab's own feedback epoch moved.
     fn publish_feedback(&mut self) {
         let mut moved = false;
         for tab in &mut self.tabs {
@@ -413,8 +387,7 @@ impl Workspace {
                         return Flow::Idle;
                     }
                 };
-                // the status bar on screen names what the agent is doing,
-                // whichever tab the call itself went to
+                // the visible status bar shows the agent's activity whichever tab the call went to
                 if index != self.active {
                     self.active_mut().record_mcp_activity(&kind);
                 }
@@ -435,8 +408,7 @@ impl Workspace {
         Flow::Continue
     }
 
-    /// The tab a call acts on: the one owning the comment or walkthrough an
-    /// id names, else the project the call names, else the tab in front.
+    /// The tab owning the id the call names, else the named project, else the tab in front.
     fn target_tab(&self, kind: &McpRequestKind, project: Option<&str>) -> Result<usize, String> {
         let id = match kind {
             McpRequestKind::ReplyComment { id, .. }
@@ -475,8 +447,7 @@ impl Workspace {
         }
     }
 
-    /// The tab holding the comment or walkthrough `id`, asking the tab in
-    /// front first since the agent mostly answers what the human is reading.
+    /// Asks the tab in front first, since the agent mostly answers what the human is reading.
     fn owner_of(&self, id: &str) -> Option<usize> {
         let others = (0..self.tabs.len()).filter(|index| *index != self.active);
         std::iter::once(self.active)
@@ -503,8 +474,7 @@ impl Workspace {
         }
     }
 
-    /// Comments, feedback and reviews from every tab, each item naming its
-    /// project once more than one is open.
+    /// Each item names its project once more than one is open.
     fn merge_across_tabs(&mut self, kind: &McpRequestKind) -> McpResponse {
         let tagged = self.tabs.len() > 1;
         let mut comments = Vec::new();
@@ -535,7 +505,7 @@ impl Workspace {
         }
     }
 
-    /// Open a project the agent names, behind the human's own tab.
+    /// Opens behind the human's own tab.
     fn agent_open_project(&mut self, path: &str) -> McpResponse {
         let count = self.tabs.len();
         match self.open(&expand_home(path)) {
@@ -560,7 +530,6 @@ impl Workspace {
     }
 }
 
-/// A copy of an event every tab receives.
 fn copy_event(event: &AppEvent) -> Option<AppEvent> {
     match event {
         AppEvent::Tick => Some(AppEvent::Tick),
@@ -570,8 +539,7 @@ fn copy_event(event: &AppEvent) -> Option<AppEvent> {
     }
 }
 
-/// Write the MCP endpoint into `app`'s project so a proxy started there
-/// finds this diffler.
+/// So a proxy started in this project finds this diffler.
 fn publish_endpoint(app: &mut App, port: u16) {
     app.mcp_port = Some(port);
     if let Err(err) = mcp::write_endpoint(&app.review.repo_root, port) {

@@ -1,5 +1,4 @@
-//! Status screen: hint line, head line, neogit-style sections with inline
-//! diff expansion, recent commits, and the status bar.
+//! Status screen: neogit-style sections with inline diff expansion.
 
 use crate::app::rowsel::RowSelect;
 use diffler_core::model::FileDiff;
@@ -28,10 +27,7 @@ use crate::ui::{
     status_bar, status_color,
 };
 
-/// Prefix-only hint entries: top-level keys and the transient prefixes,
-/// rendered against the live keymap so remaps show. Sub-commands stay out of
-/// the hint line: they appear in the which-key panel and the help popup.
-/// `stage` is left out for jj, which has no staging area to advertise.
+/// Sub-commands live in the which-key panel and the help popup.
 const GIT_HINTS: &[Hint] = &[
     Hint::Prefix(TransientKind::Commit, "commit"),
     Hint::Prefix(TransientKind::Branch, "branch"),
@@ -65,19 +61,16 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     );
 }
 
-/// Body lines, the vertical scroll keeping the cursor row in view, and a
-/// per-rendered-line table of the `visible_rows` index each line belongs to
-/// (`None` for headers/blanks) so mouse clicks map back to a row.
+/// Returns the lines, the scroll, and each line's `visible_rows` index so a
+/// click maps back to a row.
 fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16, Vec<Option<usize>>) {
     let mut lines = vec![head_line(app)];
     let (added, deleted) = Section::ALL
         .into_iter()
         .map(|section| section_diffstat(app, section))
         .fold((0, 0), |(a, d), (sa, sd)| (a + sa, d + sd));
-    // omit the summary entirely when there is nothing to review
     if added != 0 || deleted != 0 {
         lines.push(changes_line(&app.theme, added, deleted));
-        // borrowed, since this runs on every draw of the status screen
         let mix = diffler_core::stats::review_mix(
             Section::ALL
                 .into_iter()
@@ -101,14 +94,11 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16, Vec<Option<usize>>) 
 
     let mut cursor_line_index = 0usize;
     let mut cursor_span = 1usize;
-    // the preamble lines (head, optional changes summary, blanks, empty-state)
-    // belong to no row
     let mut line_rows: Vec<Option<usize>> = vec![None; lines.len()];
     let mut index = 0;
     while let Some(row) = rows.get(index) {
         match row {
-            // a hunk renders as one block: header + its diff lines, which all
-            // follow contiguously in the flattened rows
+            // a hunk's diff lines follow its header contiguously in the rows
             &Row::HunkHeader {
                 section,
                 file,
@@ -146,8 +136,6 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16, Vec<Option<usize>>) 
                     lines.push(Line::default());
                     line_rows.push(None);
                 }
-                // a selected run tints like the cursor row, so the reader sees
-                // what `<cr>` is about to review
                 let selected = app.status.row_selected(index);
                 if index == app.status.cursor {
                     cursor_line_index = lines.len();
@@ -159,7 +147,6 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16, Vec<Option<usize>>) 
                     .map(|search| search.ranges_for(index))
                     .unwrap_or_default();
                 lines.push(row_line(app, row, selected, area.width, &ranges));
-                // furniture: never a mouse-click or search target
                 line_rows.push((!matches!(row, Row::RepoDivider)).then_some(index));
                 index += 1;
             }
@@ -167,8 +154,8 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16, Vec<Option<usize>>) 
     }
 
     let height = area.height.max(1) as usize;
-    // carry the previous offset in: the view holds still until the cursor
-    // reaches its margin, rather than re-deriving from the cursor every frame
+    // we pass the previous offset so the view holds still until the cursor
+    // reaches its margin
     let scroll = super::scroll_to_span(
         cursor_line_index,
         cursor_span,
@@ -179,19 +166,16 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16, Vec<Option<usize>>) 
     (lines, scroll as u16, line_rows)
 }
 
-/// The body's growing output: rendered lines, their line->row table, and the
-/// screen line the cursor row starts at, threaded through the row loop.
 struct BodyAccum<'a> {
     lines: &'a mut Vec<Line<'static>>,
     line_rows: &'a mut Vec<Option<usize>>,
     cursor_line_index: &'a mut usize,
-    /// Terminal rows the cursor's own row occupies: a wrapped diff line is
-    /// taller than one, and the margin has to clear all of it.
+    /// A wrapped diff line is taller than one row, and the margin has to
+    /// clear all of it.
     cursor_span: &'a mut usize,
 }
 
-/// Append one expanded hunk (header + wrapped diff lines) with its
-/// line->row table entries; returns how many rows the block spans.
+/// Returns how many rows the block spans.
 fn hunk_block(
     app: &App,
     file_diff: &FileDiff,
@@ -206,8 +190,6 @@ fn hunk_block(
         .cursor
         .checked_sub(index)
         .filter(|offset| *offset < span);
-    // long lines wrap, so each diff line can span several terminal rows:
-    // the header is one, then per-line heights
     let gutter = hunk_gutter_width(hunk);
     let heights: Vec<usize> = std::iter::once(1)
         .chain(
@@ -221,8 +203,7 @@ fn hunk_block(
         *accum.cursor_line_index = accum.lines.len() + above;
         *accum.cursor_span = heights.get(offset).copied().unwrap_or(1);
     }
-    // enrichment lands asynchronously: the hash in the key ties the spans
-    // to the exact content they were computed from
+    // enrichment is async, so we key it by hash to match the content it saw
     let syntax = app
         .status
         .highlights
@@ -248,9 +229,6 @@ fn centered_line(text: &str, style: Style, width: u16) -> Line<'static> {
     ])
 }
 
-/// How far HEAD has drifted from its upstream: `↑` for commits only this
-/// branch has, `↓` for commits only the remote has. A branch level with its
-/// upstream, or with none at all, shows nothing.
 fn divergence_spans(theme: &Theme, ahead: usize, behind: usize) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     if ahead > 0 {
@@ -268,14 +246,11 @@ fn divergence_spans(theme: &Theme, ahead: usize, behind: usize) -> Vec<Span<'sta
     spans
 }
 
-/// Style a branch name carries wherever it appears: the head line and the
-/// Branches section rows.
 fn branch_name_style(theme: &Theme) -> Style {
     Style::new().fg(theme.purple).bg(theme.bg)
 }
 
-/// The upstream when it is something other than this branch's namesake on a
-/// remote (`origin/main` for `main`), which is the case the head line spells out.
+/// The upstream when it is anything other than `<remote>/<branch>`.
 fn unexpected_upstream(app: &App) -> Option<&str> {
     let upstream = app.head.upstream.as_deref()?;
     let branch = app.head.branch.as_deref()?;
@@ -290,9 +265,8 @@ fn head_line(app: &App) -> Line<'static> {
         None => spans.push(Span::styled("(detached)", theme.dim_style())),
     }
     spans.extend(divergence_spans(theme, app.head.ahead, app.head.behind));
-    // the arrows count against the upstream, which git lets be any ref: name it
-    // whenever it is not the same-named branch on a remote, or `↑28` reads as
-    // 28 unpushed commits when they are all on the remote already
+    // git lets the upstream be any ref, so we name an unusual one or `↑28`
+    // reads as 28 unpushed commits
     if let Some(upstream) = unexpected_upstream(app) {
         spans.push(Span::styled(format!(" ({upstream})"), theme.dim_style()));
     }
@@ -308,8 +282,6 @@ fn head_line(app: &App) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Grand-total diffstat summary: ` Changes  +A -B  <bar>`, aligned under the
-/// head line. The bar is a compact green:red proportion of added to deleted.
 fn changes_line(theme: &Theme, added: usize, deleted: usize) -> Line<'static> {
     let mut spans = vec![Span::styled(" Changes  ", theme.dim_style())];
     spans.extend(diffstat_spans(theme, added, deleted, theme.bg));
@@ -318,9 +290,6 @@ fn changes_line(theme: &Theme, added: usize, deleted: usize) -> Line<'static> {
     Line::from(spans)
 }
 
-/// The review's own language mix, under the diffstat it breaks down: a stacked
-/// bar in Linguist's colours, then as many names as the row has room for. One
-/// language is no mix, so the line only appears from two.
 fn mix_line(theme: &Theme, mix: &[LanguageChurn], width: u16) -> Option<Line<'static>> {
     const BAR_CELLS: usize = 16;
     if mix.len() < 2 {
@@ -328,7 +297,7 @@ fn mix_line(theme: &Theme, mix: &[LanguageChurn], width: u16) -> Option<Line<'st
     }
     let churn: Vec<usize> = mix.iter().map(LanguageChurn::churn).collect();
     let cells = super::allocate(&churn, BAR_CELLS);
-    // shared out the same way the bar is, so the labels add up to 100
+    // we allocate the same way as the bar so the labels add up to 100
     let shares = super::allocate(&churn, 100);
     let hue = |color| {
         Style::new()
@@ -341,7 +310,6 @@ fn mix_line(theme: &Theme, mix: &[LanguageChurn], width: u16) -> Option<Line<'st
             spans.push(Span::styled("█".repeat(*cell), hue(entry.color)));
         }
     }
-    // the names are what the bar means, so they get whatever width is left
     let mut used: usize = spans.iter().map(Span::width).sum();
     for (index, entry) in mix.iter().enumerate() {
         let share = shares.get(index).copied().unwrap_or(0);
@@ -389,7 +357,6 @@ fn row_line(
                 app.is_group_folded(Group::Unpushed),
                 search,
             );
-            // a capped walk counted a floor, not a total
             let more = if *capped { "+" } else { "" };
             spans.push(Span::styled(format!(" ({count}{more})"), theme.dim_style()));
             spans
@@ -463,7 +430,7 @@ fn row_line(
             search,
         ),
         Row::CiRun { index, nested } => ci_run_spans(app, *index, *nested, theme, width, search),
-        // hunk rows are rendered as blocks in `body`, never through here
+        // `body` renders hunk rows as blocks
         Row::HunkHeader { .. } | Row::DiffLine { .. } => Vec::new(),
     };
     let line = Line::from(spans);
@@ -474,10 +441,7 @@ fn row_line(
     }
 }
 
-/// A collapsible section header: fold arrow, title, and an item count. `count`
-/// is `None` while a lazily-fetched group's first fetch is still in flight, so
-/// the header shows the group exists without claiming a total it doesn't
-/// know yet.
+/// `count` is `None` while a lazily fetched group's first fetch is in flight.
 fn header_spans(
     theme: &Theme,
     title: &str,
@@ -497,13 +461,10 @@ fn header_spans(
     spans
 }
 
-/// Indentation for a tree row at `depth` within a section: a base indent that
-/// clears the header's fold arrow, plus two cells per level.
 fn tree_indent(depth: usize) -> String {
     " ".repeat(5 + depth * 2)
 }
 
-/// A directory row: indent, fold arrow, the dim directory name.
 fn dir_spans(
     theme: &Theme,
     name: &str,
@@ -522,10 +483,6 @@ fn dir_spans(
     spans
 }
 
-/// A file row. In the tree layout: indent, status glyph (colored), basename;
-/// the directory rows above carry the path. In the flat magit list: a status
-/// glyph plus the full repo-relative path, no indent. Both trail the viewed
-/// check and the file's `+A -B` diffstat.
 fn file_spans(
     app: &App,
     file: Option<&FileDiff>,
@@ -562,9 +519,7 @@ fn file_spans(
     spans
 }
 
-/// The leading three cells of a repo-band row: margin, rolled-up CI glyph,
-/// separator. Blank when no run matches, which keeps every row in a group
-/// aligned whether or not its CI has been seen.
+/// Blank when no run matches, so every row in a group stays aligned.
 fn ci_glyph_spans(rollup: Option<crate::ci::JobStatus>, theme: &Theme) -> Vec<Span<'static>> {
     match rollup {
         Some(status) => vec![Span::styled(
@@ -577,8 +532,6 @@ fn ci_glyph_spans(rollup: Option<crate::ci::JobStatus>, theme: &Theme) -> Vec<Sp
     }
 }
 
-/// The two cells between a row's CI glyph and its text: a fold arrow when the
-/// row has runs to show underneath, blank when it has none to open.
 fn run_fold_marker(theme: &Theme, has_runs: bool, unfolded: bool) -> Span<'static> {
     let arrow = match (has_runs, unfolded) {
         (false, _) => "  ",
@@ -627,9 +580,6 @@ fn commit_spans(
     spans
 }
 
-/// The branch's open PR as a selectable row: `⇄ PR #12 title → base`.
-/// One PR row: `⇄ PR #12 title → base`, shared by the branch's own PR and
-/// the repo-band list of other open PRs.
 fn pr_row_spans(
     pr: &crate::ci::PullRequest,
     theme: &Theme,
@@ -657,8 +607,6 @@ fn pr_spans(app: &App, theme: &Theme, search: &[(Range<usize>, bool)]) -> Vec<Sp
     })
 }
 
-/// One walkthrough of the repo: its title, then dimmed ` · N stops`, and a
-/// dim `✓` once every stop of it is seen.
 fn walkthrough_row_spans(
     app: &App,
     id: &str,
@@ -695,8 +643,6 @@ fn open_pr_spans(
     spans
 }
 
-/// A local branch row: name, divergence from its upstream, age right-aligned
-/// at the pane edge.
 fn branch_spans(
     app: &App,
     index: usize,
@@ -708,7 +654,6 @@ fn branch_spans(
         return Vec::new();
     };
     let mut spans = ci_glyph_spans(app.ci_rollup(&app.runs_for_branch(&branch.name)), theme);
-    // the same head marker the branch picker uses, so the two lists agree
     let marker = if branch.is_head { "* " } else { "  " };
     spans.push(Span::styled(marker, theme.dim_style()));
     spans.extend(highlight_spans(
@@ -754,7 +699,6 @@ fn ci_run_spans(
         format!("{indent}{glyph} "),
         Style::new().fg(color),
     )];
-    // tag the source remote when runs from several forges are aggregated
     if let Some(remote) = &run.remote {
         spans.push(Span::styled(
             format!("{remote}/"),
@@ -798,7 +742,6 @@ fn ci_run_spans(
     spans
 }
 
-/// Summed `(added, deleted)` over every file in a section.
 fn section_diffstat(app: &App, section: Section) -> (usize, usize) {
     app.section_files(section)
         .iter()
@@ -819,8 +762,6 @@ mod tests {
         two_hunk_fixture,
     };
 
-    /// One language is not a mix, and the line would be furniture on every
-    /// single-language review, which is most of them.
     #[test]
     fn the_language_line_appears_only_once_a_review_spans_two() {
         let theme = crate::theme::Theme::github_dark();
@@ -855,7 +796,6 @@ mod tests {
             text.contains("Rust 75%") && text.contains("YAML 25%"),
             "{text}"
         );
-        // the bar fills its own width, in the order the legend names
         let bar: String = line
             .spans
             .iter()
@@ -890,9 +830,7 @@ mod tests {
         assert!(text.contains('█'), "the bar survives: {text:?}");
     }
 
-    /// jj has no staging area: the three sections `standard_fixture` would
-    /// otherwise show fold into one "Working copy (@)" section, and the
-    /// hint line drops `s stage`.
+    /// The hint line also drops `s stage`.
     #[test]
     fn status_screen_in_a_jj_repo_folds_into_one_working_copy_section() {
         let fixture = jj_fixture();
@@ -931,11 +869,8 @@ mod tests {
             run("Release", "main", "9988776655", JobStatus::Ok),
             run("CI", "other", &commit_oid, JobStatus::Ok),
         ];
-        // the branch row is individually unfolded: its runs show as children
         app.status.group_folded[Group::Branches.index()] = false;
-        // the recent-commits row picks up a glyph too, but stays folded
         app.status.group_folded[Group::Recent.index()] = false;
-        // pin "now" so the ages render stably
         app.now_unix = app
             .status
             .recent
@@ -1010,7 +945,6 @@ mod tests {
             run("codeberg", JobStatus::Running),
         ];
         app.status.group_folded[Group::Branches.index()] = false;
-        // pin "now" an hour past the branch tip so the age renders stably
         app.now_unix = app
             .status
             .branches
@@ -1052,8 +986,6 @@ mod tests {
         assert!(rendered.contains("PR #28"), "header shows the PR number");
     }
 
-    /// Screen position rendering `visible_rows()[row]`, via the geometry the
-    /// last render stored.
     fn screen_pos(app: &App, row: usize) -> (u16, u16) {
         let line = app
             .status
@@ -1078,8 +1010,7 @@ mod tests {
         assert!(app.status.cursor < after, "wheel up moved it back");
     }
 
-    /// A click while a run of commits is selected starts over, so `<cr>` after
-    /// it reviews the row clicked and never a range nobody chose.
+    /// A click drops the selected run so `<cr>` reviews the clicked row.
     #[test]
     fn clicking_a_row_ends_a_selection() {
         let fixture = standard_fixture();
@@ -1105,7 +1036,7 @@ mod tests {
         let fixture = standard_fixture();
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         render(&mut app);
-        // pick a non-zero file row to prove the click maps there, not just to 0
+        // a non-zero row proves the click maps there
         let rows = app.visible_rows();
         let target = rows
             .iter()
@@ -1243,9 +1174,6 @@ mod tests {
         assert!(!screen.contains("↑"), "{screen}");
     }
 
-    /// The header leads the branch band, named and counted like any other
-    /// group header, folded until the reader unfolds it; a walkthrough row
-    /// then shows its title and how many stops it has.
     #[test]
     fn the_walkthrough_header_and_row_render() {
         let fixture = standard_fixture();
@@ -1269,8 +1197,7 @@ mod tests {
         insta::assert_snapshot!(render(&mut app).backend());
     }
 
-    /// Weight is reserved for content that is itself bold: markdown emphasis
-    /// and syntax keywords. Chrome says what it is with colour.
+    /// We reserve bold for content (markdown emphasis, syntax keywords).
     #[test]
     fn no_chrome_on_the_status_screen_reaches_for_bold() {
         let fixture = standard_fixture();
@@ -1352,15 +1279,12 @@ mod tests {
         cursor_to_file(&mut app, Section::Unstaged);
         app.handle(key('\t'));
         let terminal = render(&mut app);
-        // the text snapshot carries no styles: assert the intra-line
-        // emphasis backgrounds made it into the buffer separately
+        // the text snapshot carries no styles, so we check emphasis separately
         let styles = format!("{:?}", terminal.backend().buffer());
         let add_emph = format!("{:?}", app.theme.add_emph_bg);
         let del_emph = format!("{:?}", app.theme.del_emph_bg);
         assert!(styles.contains(&add_emph), "added emphasis bg rendered");
         assert!(styles.contains(&del_emph), "deleted emphasis bg rendered");
-        // the inline diff is syntax-highlighted like the diff pane: the lazy
-        // cache filled for the expanded rust file produced styled ranges
         let lib = app
             .status
             .highlights
@@ -1390,7 +1314,6 @@ mod tests {
         let mut app = app_for(&fixture);
         cursor_to_file(&mut app, Section::Unstaged);
         app.handle(key('\t'));
-        // expanding puts the hunk header directly under the file row
         app.handle(key('j'));
         app.handle(key('j'));
         assert!(matches!(
@@ -1429,7 +1352,6 @@ mod tests {
             .position(|row| matches!(row, Row::RecentHeader { .. }))
             .expect("recent header");
         app.handle(key('\t'));
-        // pin "now" an hour past the newest commit so the ages render stably
         app.now_unix = app
             .status
             .recent
@@ -1443,9 +1365,8 @@ mod tests {
 
     #[test]
     fn unpushed_section_renders_above_recent_commits() {
-        // commit_all stages everything in the worktree, so the upstream and
-        // the unpushed commits are set up before any dirty files, keeping
-        // Untracked alongside Unpushed in the rendered order
+        // commit_all stages the whole worktree, so we commit before making
+        // any dirty files
         let fixture = Fixture::new();
         fixture.write("base.rs", "pub fn base() {}\n");
         fixture.commit_all("initial commit");
@@ -1456,7 +1377,6 @@ mod tests {
         fixture.commit_all("second unpushed");
         fixture.write("todo.md", "- [ ] review\n");
         let mut app = app_for(&fixture);
-        // pin "now" an hour past the newest commit so the ages render stably
         app.now_unix = app
             .status
             .unpushed_commits()
@@ -1559,7 +1479,6 @@ mod tests {
         fixture.commit_all("only here");
         let mut app = app_for(&fixture);
         app.status.group_folded[Group::Branches.index()] = false;
-        // pin "now" an hour past the newest branch tip so the ages render stably
         app.now_unix = app
             .status
             .branches
@@ -1599,7 +1518,6 @@ mod tests {
     fn status_bar_shows_message() {
         let fixture = standard_fixture();
         let mut app = app_for(&fixture);
-        // sending feedback surfaces an info message in the bar
         app.handle(key('Z'));
         insta::assert_snapshot!(render(&mut app).backend());
     }
@@ -1919,7 +1837,6 @@ mod tests {
             .find(|s| s.content.trim() == file.status.glyph().to_string())
             .expect("status glyph span");
         assert_eq!(glyph.style.fg, Some(status_color(&app.theme, file.status)));
-        // the tree shows the basename, not the full path
         assert!(
             spans.iter().any(|s| s.content == "lib.rs"),
             "basename present: {spans:?}"
@@ -1933,11 +1850,9 @@ mod tests {
     #[test]
     fn flat_list_file_row_shows_the_full_repo_relative_path() {
         let fixture = standard_fixture();
-        // default layout is the flat magit list
         let app = app_for(&fixture);
         let file = app.section_files(Section::Unstaged).first().expect("file");
         let spans = super::file_spans(&app, Some(file), &app.theme, 0, &[]);
-        // the whole path shows, not just the basename
         assert!(
             spans.iter().any(|s| s.content == file.path),
             "full path present: {spans:?}"

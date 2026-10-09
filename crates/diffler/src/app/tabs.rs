@@ -1,7 +1,5 @@
-//! The project-tab side of one app: the tab row it draws when several
-//! projects are open, the tab requests it hands to the workspace above it,
-//! and the add-project picker, which fuzzy-finds repositories near the open
-//! ones or completes a typed path the way a shell does.
+//! The project-tab side of one app: the tab row, the tab requests it passes to
+//! the workspace, and the add-project picker.
 
 use std::path::{Path, PathBuf};
 
@@ -12,7 +10,6 @@ use super::fuzzy::{FuzzyKey, FuzzyList, name_haystack, selected};
 use super::{App, Flow, Modal};
 use crate::keymap::Action;
 
-/// What the tab row shows: every open project's name and which is in front.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TabStrip {
     pub names: Vec<String>,
@@ -23,15 +20,13 @@ pub struct TabStrip {
 pub const ADD_HINT: &str = " add project ";
 
 impl TabStrip {
-    /// One tab's label as the tab row draws it.
     pub fn label(index: usize, name: &str) -> String {
         format!(" {} {name} ", index + 1)
     }
 
-    /// The tab request a click on column `col` of the tab row stands for:
-    /// a tab's label switches to it, and the add hint at the right edge of a
-    /// row `width` wide, `add_width` columns long, opens the picker while the
-    /// labels leave it room to show.
+    /// The tab request for a click on column `col`. The add hint sits at the
+    /// right edge, `add_width` columns long, and counts only while the labels
+    /// leave it room.
     pub fn hit(&self, col: u16, width: u16, add_width: u16) -> Option<TabOp> {
         let mut start = 0u16;
         for (index, name) in self.names.iter().enumerate() {
@@ -59,7 +54,6 @@ pub enum TabOp {
     Open(PathBuf),
 }
 
-/// The tab request a tab action stands for.
 pub fn tab_op(action: Action) -> Option<TabOp> {
     let op = match action {
         Action::NextTab => TabOp::Next,
@@ -192,8 +186,6 @@ fn looks_like_path(query: &str) -> bool {
     query.starts_with('/') || query.starts_with('~') || query.starts_with('.')
 }
 
-/// We resolve a leading `~` against the home directory and leave any other
-/// path unchanged.
 pub fn expand_home(path: &str) -> PathBuf {
     match (path.strip_prefix('~'), std::env::var_os("HOME")) {
         (Some(rest), Some(home)) => PathBuf::from(home).join(rest.trim_start_matches('/')),

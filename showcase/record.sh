@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Regenerate showcase/img/*.png, one screenshot per built-in theme. Each shot
-# is the review screen with all three panes up: the file sidebar, the diff, and
-# the comments sidebar, so a theme is judged on everything it has to colour.
+# Regenerate showcase/img/*.png: the review screen with all three panes up, one
+# shot per built-in theme.
 set -euo pipefail
 
 # `--seed` records nothing, so only a recording run needs vhs
@@ -99,8 +98,7 @@ dep_line="$(grep -n 'use subtle::ConstantTimeEq;' src/auth.rs | cut -d: -f1)"
 dep_text="$(sed -n "${dep_line}p" src/auth.rs)"
 
 mkdir -p .diffler/reviews
-# what diffler writes on its first save: the review state is not part of the
-# diff being reviewed
+# diffler writes this on its first save, which keeps the review state out of the diff
 printf '*\n' > .diffler/.gitignore
 python3 - "$anchor_line" "$anchor_text" "$dep_line" "$dep_text" <<'PY'
 import json, sys
@@ -173,8 +171,7 @@ review = {
 open(".diffler/reviews/working.json", "w").write(json.dumps(review, indent=2))
 PY
 
-# `--seed` leaves the review repo on disk and records nothing, so the screen
-# the tape is about to shoot can be inspected without nine renders
+# `--seed` leaves the review repo on disk so we can inspect the frame without nine renders
 if [[ "${1:-}" == "--seed" ]]; then
     trap - EXIT
     echo "$repo"
@@ -194,8 +191,7 @@ for name in github-dark catppuccin-mocha tokyo-night gruvbox-dark nord rose-pine
         echo "Type \"cd $repo && clear\"" ; echo "Enter" ; echo "Sleep 400ms"
         echo "Type \"$diffler --theme $name\"" ; echo "Enter" ; echo "Sleep 1800ms"
         echo "Type \"D\"" ; echo "Sleep 800ms"
-        # the comments sidebar, then step onto the answered thread: its
-        # selection drives the diff pane onto the line it anchors to
+        # selecting the answered thread in the comments sidebar seats the diff on its line
         echo "Type \"C\"" ; echo "Sleep 900ms"
         echo "Type \"j\"" ; echo "Sleep 600ms"
         echo "Type \"k\"" ; echo "Sleep 1400ms"

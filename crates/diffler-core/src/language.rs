@@ -1,31 +1,23 @@
-//! What language a path is written in, the colour GitHub paints it, and the
-//! comment syntax the line counter needs.
-//!
-//! Detection is a pure path function: the syntax registry already maps every
-//! extension it can highlight to a grammar, so that mapping stays the one
-//! source of truth and this module adds the languages diffler counts but does
-//! not highlight. Colours are Linguist's own hexes, the ones a reader knows
-//! from a repository page, lifted toward the foreground when the terminal's
-//! background would swallow them.
+//! A path's language, its Linguist colour, and its comment syntax for the
+//! line counter. The syntax registry owns the extension table for every
+//! language it highlights; this module adds the ones it only counts.
 
 use crate::syntax::registry::REGISTRY;
 
 pub type Rgb = (u8, u8, u8);
 
-/// A language diffler can name, with everything the breakdown needs about it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Language {
-    /// Display label, spelled the way a repository page spells it.
     pub name: &'static str,
-    /// Linguist's colour for the language, untouched.
+    /// Linguist's colour, unadjusted.
     pub color: Rgb,
     line_comments: &'static [&'static str],
     block_comment: Option<(&'static str, &'static str)>,
 }
 
 impl Language {
-    /// Whether `line`, already trimmed, opens a comment that ends on the same
-    /// line, and what remains open after it.
+    /// The kind of a trimmed `line`, and whether a block comment is still
+    /// open after it.
     fn classify(self, line: &str, in_block: bool) -> (LineKind, bool) {
         if in_block {
             let closed = self
@@ -33,8 +25,7 @@ impl Language {
                 .is_some_and(|(_, end)| line.contains(end));
             return (LineKind::Comment, !closed);
         }
-        // the block opener is tested first because it can start with the line
-        // token itself: Lua's `--[[` opens a block, `--` only a line
+        // we test the block opener first since Lua's `--[[` starts with `--`
         if let Some((start, end)) = self.block_comment
             && line.starts_with(start)
         {
@@ -57,9 +48,8 @@ enum LineKind {
     Comment,
 }
 
-/// The `(code, comments, blanks)` a source text holds. A line counts as a
-/// comment when it opens with one, so a trailing `// note` after code reads as
-/// code, the same call `scc` and `cloc` make.
+/// `(code, comments, blanks)`. A line counts as a comment only when it opens
+/// with one, as `scc` and `cloc` count.
 #[must_use]
 pub fn count_lines(text: &str, language: Option<Language>) -> (usize, usize, usize) {
     let (mut code, mut comments, mut blanks) = (0, 0, 0);
@@ -70,8 +60,7 @@ pub fn count_lines(text: &str, language: Option<Language>) -> (usize, usize, usi
             blanks += 1;
             continue;
         }
-        // a shebang is the file's first instruction, and `#` would otherwise
-        // swallow it
+        // a shebang is code, though `#` opens a comment in the same languages
         if index == 0 && line.starts_with("#!") {
             code += 1;
             continue;
@@ -90,11 +79,8 @@ pub fn count_lines(text: &str, language: Option<Language>) -> (usize, usize, usi
     (code, comments, blanks)
 }
 
-/// The language of `path`, by extension or by whole filename.
 #[must_use]
 pub fn of_path(path: &str) -> Option<Language> {
-    // the highlighter's registry owns the extension table for everything it can
-    // parse; only what it cannot appears in EXTRA below
     if let Some(entry) = REGISTRY.for_path(path)
         && let Some(language) = by_key(entry.name)
     {
@@ -114,8 +100,7 @@ pub fn of_path(path: &str) -> Option<Language> {
     {
         return by_key(key);
     }
-    // consulted after the extensions so `LICENSE.md` stays Markdown: a repo
-    // ships `LICENSE-APACHE` beside `LICENSE-MIT`, and both are prose
+    // we check doc names after extensions so `LICENSE.md` stays Markdown
     if crate::classify::DOC_NAMES
         .iter()
         .any(|stem| name.starts_with(stem))
@@ -131,16 +116,13 @@ fn by_key(key: &str) -> Option<Language> {
         .find_map(|(name, language)| (*name == key).then_some(*language))
 }
 
-/// Lift `color` until it separates from `bg`. Linguist's palette is tuned for
-/// a white page, so a few entries (JSON's `#292929`, C's `#555555`) vanish on a
-/// dark terminal and a few of the bright ones wash out on a light one.
+/// Push `color` away from `bg` until it reaches 3:1 contrast. Linguist tunes
+/// its palette for a white page, so JSON's `#292929` vanishes on a dark one.
 #[must_use]
 pub fn readable_on(color: Rgb, bg: Rgb) -> Rgb {
     const TARGET: f32 = 3.0;
     let toward = if luminance(bg) > 0.5 { 0 } else { 255 };
     let mut out = color;
-    // each step moves a tenth of what is left, and never by less than one
-    // channel value, so this reaches the end of the ramp and stops
     for _ in 0..40 {
         if contrast(out, bg) >= TARGET {
             break;
@@ -181,9 +163,7 @@ fn luminance(color: Rgb) -> f32 {
     0.2126 * channel(color.0) + 0.7152 * channel(color.1) + 0.0722 * channel(color.2)
 }
 
-/// Everything the sidebar's grammar names map to, plus the languages diffler
-/// counts without highlighting. Keys match `syntax::registry` names where a
-/// grammar exists; colours are Linguist's.
+/// Keys match `syntax::registry` names where a grammar exists.
 const TABLE: &[(&str, Language)] = &[
     lang(
         "rust",
@@ -197,9 +177,6 @@ const TABLE: &[(&str, Language)] = &[
         "Python",
         (0x35, 0x72, 0xa5),
         &["#"],
-        // a docstring is the module's or function's comment, and both fences
-        // are the same token, which `classify` handles by looking past the
-        // opening one
         Some(("\"\"\"", "\"\"\"")),
     ),
     lang(
@@ -354,7 +331,7 @@ const TABLE: &[(&str, Language)] = &[
         &[],
         Some(("<!--", "-->")),
     ),
-    // no grammar bundled for these; EXTRA_* below routes paths to them
+    // no bundled grammar; EXTRA_* routes paths to these
     lang(
         "kotlin",
         "Kotlin",
@@ -384,7 +361,6 @@ const TABLE: &[(&str, Language)] = &[
     lang("text", "Text", (0x8b, 0x94, 0x9e), &[], None),
 ];
 
-/// Extensions the highlighter has no grammar for.
 const EXTRA_EXTENSIONS: &[(&str, &str)] = &[
     ("kt", "kotlin"),
     ("kts", "kotlin"),
@@ -436,7 +412,6 @@ mod tests {
     fn extensions_resolve_through_the_highlighters_own_table() {
         assert_eq!(of_path("src/main.rs").map(|l| l.name), Some("Rust"));
         assert_eq!(of_path("a/b/setup.py").map(|l| l.name), Some("Python"));
-        // the registry maps sh, bash and zsh to one grammar; all read as Shell
         assert_eq!(of_path("scripts/release.sh").map(|l| l.name), Some("Shell"));
         assert_eq!(of_path("infra/main.tf").map(|l| l.name), Some("HCL"));
         assert_eq!(of_path("Makefile").map(|l| l.name), Some("Makefile"));
@@ -446,7 +421,6 @@ mod tests {
     fn a_license_is_prose_whatever_it_is_suffixed_with() {
         assert_eq!(of_path("LICENSE-APACHE").map(|l| l.name), Some("Text"));
         assert_eq!(of_path("LICENSE-MIT").map(|l| l.name), Some("Text"));
-        // the extension still wins, so a markdown licence stays markdown
         assert_eq!(of_path("LICENSE.md").map(|l| l.name), Some("Markdown"));
     }
 
@@ -455,7 +429,6 @@ mod tests {
         let python = of_path("x.py").expect("python");
         let source = "\"\"\"What this does.\n\nAnd why.\n\"\"\"\nimport os\n";
         assert_eq!(count_lines(source, Some(python)), (1, 3, 1));
-        // one line holding both fences opens nothing
         let inline = "def f():\n    \"\"\"Note.\"\"\"\n    return 1\n";
         assert_eq!(count_lines(inline, Some(python)), (2, 1, 0));
     }
@@ -507,14 +480,11 @@ mod tests {
         );
     }
 
-    /// Lua opens a block with `--[[` and a line with `--`, so the longer token
-    /// has to be tried first or every block reads as one line comment.
     #[test]
     fn a_block_opener_that_starts_with_the_line_token_still_opens_a_block() {
         let lua = of_path("init.lua").expect("lua");
         let source = "--[[\n  long note\n  more\n]]\nprint(1)\n";
         assert_eq!(count_lines(source, Some(lua)), (1, 4, 0));
-        // a plain line comment still ends at its own line
         assert_eq!(count_lines("-- note\nprint(1)\n", Some(lua)), (1, 1, 0));
     }
 

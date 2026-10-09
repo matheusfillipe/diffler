@@ -106,11 +106,9 @@ fn plural<'a>(count: usize, one: &'a str, many: &'a str) -> &'a str {
     if count == 1 { one } else { many }
 }
 
-/// Queue every non-agent body of `comment` (its own, then its unposted
-/// replies riding along at the same anchor: a flattened thread beats a lost
-/// reply) as its own post built by `anchor`, withholding agent-authored ones.
-/// An id lands in `comment_ids` only once every body posted, since a withheld
-/// reply would otherwise lose the local comment it still needs to answer under.
+/// Queues the comment and its unposted replies as posts at one anchor,
+/// withholding agent-authored bodies. We record the id only when nothing was
+/// withheld, so a held-back reply keeps its local comment.
 fn queue_bodies(
     pending: &mut PrPending,
     comment: &Comment,
@@ -137,10 +135,8 @@ fn queue_bodies(
     }
 }
 
-/// Hand a published comment's unposted replies to the forge copy coming back
-/// for it, and report the local ids those roots now stand in for. A comment
-/// keeps replies that were held back, so its local original outlives the
-/// submit and would otherwise sit beside the forge copy as a duplicate.
+/// Moves a published comment's unposted replies onto its forge copy and
+/// returns the local ids to drop, so the original never duplicates the copy.
 fn absorb_published_locals(roots: &mut [Comment], locals: &[Comment]) -> Vec<String> {
     let mut absorbed = Vec::new();
     for root in roots {
@@ -177,24 +173,19 @@ impl App {
     }
 
     pub(crate) fn on_prs_event(&mut self, prs: Vec<crate::ci::PullRequest>) -> super::Flow {
-        // the inline repo-band group renders from `prs` too; a landing list
-        // can insert rows above whatever the status cursor sits on
+        // the status screen renders `prs` too, so new rows can shift its cursor
         let anchor = self.status_cursor_anchor();
         self.prs = prs;
         self.status.prs_loaded = true;
         self.status.prs_in_flight = false;
         self.prs_cursor = self.prs_cursor.min(self.prs.len().saturating_sub(1));
         self.restore_status_cursor(anchor);
-        // a walkthrough waiting on this list to name its PR retries now that
-        // it's landed, whether that PR turns up in it or not
         if let Some((id, slide)) = self.pending_walkthrough_open.take() {
             self.open_walkthrough(&id, slide);
         }
         super::Flow::Continue
     }
 
-    /// The PR list from keymap actions: list motions, Enter reviews the PR
-    /// (its branch never needs to be checked out), `b` checks the branch out.
     pub(crate) fn dispatch_prs(&mut self, action: crate::keymap::Action) {
         use crate::keymap::Action;
         let last = self.prs.len().saturating_sub(1);
@@ -227,9 +218,6 @@ impl App {
         }
     }
 
-    /// Put the forge's web URL for the selected pull request on the clipboard.
-    /// Every provider fills `url` from its own field (GitHub and Forgejo
-    /// `html_url`, GitLab `web_url`), so this works wherever the list does.
     fn copy_selected_pr_url(&mut self) {
         let Some(pr) = self.prs.get(self.prs_cursor) else {
             self.info("no pull request under the cursor");
@@ -239,9 +227,8 @@ impl App {
         self.copy_or_report(url, &format!("#{number}"));
     }
 
-    /// Marks the git ops whose completion may consume the `pending_pr_*`
-    /// continuation slots: several ops can be in flight at once, so
-    /// `git_finished` must not route an unrelated op's result into them.
+    /// Several git ops can be in flight, so this label marks the ones whose
+    /// result `git_finished` routes into the `pending_pr_*` slots.
     pub(crate) const PR_FETCH_PREFIX: &'static str = "fetch PR #";
 
     /// The remote a PR's head is fetched from and the ref its forge serves
@@ -265,9 +252,6 @@ impl App {
         format!("{}{number}", Self::PR_FETCH_PREFIX)
     }
 
-    /// Fetch the PR's head into a local branch and switch to it. GitHub's CLI
-    /// does both (and handles forks); other forges fetch the pull ref into a
-    /// branch named after the PR head and switch when the fetch lands.
     pub(crate) fn checkout_selected_pr(&mut self) {
         let Some(pr) = self.prs.get(self.prs_cursor).cloned() else {
             return;
@@ -334,9 +318,8 @@ impl App {
         super::Flow::Continue
     }
 
-    /// Replace the PR session's forge-synced comments with the fresh listing,
-    /// keeping local ones (no `remote_id`) untouched. Thread roots become
-    /// comments; replies attach to their root by forge id.
+    /// Replaces the forge-synced comments with the fresh listing; local ones
+    /// (no `remote_id`) stay.
     pub(crate) fn sync_pr_comments(&mut self, number: u64, remote: &[PrComment]) {
         let source = ReviewSource::pr(number);
         let model = self.source_model(&source);
@@ -359,7 +342,6 @@ impl App {
                 author: item.author.clone(),
                 anchor: Anchor {
                     file: item.path.clone(),
-                    // a multi-line comment anchors its range start..end
                     line: item.start_line.or(item.line),
                     line_end: item.start_line.and(item.line),
                     on_old_side: !item.new_side,
@@ -386,8 +368,7 @@ impl App {
             }
         }
         let session = self.review.session_for_mut(&source);
-        // a re-imported root must not clobber local state: unsent replies and
-        // the locally set status live only here, not on the forge
+        // unsent replies and local status exist only here, so a re-import keeps them
         for root in &mut roots {
             let Some(prior) = session
                 .comments
@@ -396,10 +377,7 @@ impl App {
             else {
                 continue;
             };
-            // the forge's resolution is authoritative; other statuses
-            // (Replied) are local workflow state and survive the sync. An
-            // optimistic flip (either direction) whose post is still in
-            // flight also survives: the forge just hasn't heard yet
+            // the forge owns resolution, except while our own flip is still in flight
             let flip_inflight = inflight
                 .iter()
                 .any(|key| key.starts_with(&resolve_key_prefix(&root.id)));
@@ -414,7 +392,6 @@ impl App {
                     (_, prior) => prior,
                 }
             };
-            // same for a body rewrite the forge hasn't acknowledged yet
             let edit_inflight = inflight
                 .iter()
                 .any(|key| key.starts_with(&edit_key_prefix(&root.id)));
@@ -438,8 +415,7 @@ impl App {
             .collect();
         merged.extend(roots);
         merged.sort_by_key(|c| c.at);
-        // a poll that changed nothing must not dirty the store: the write wakes
-        // the watcher, which refreshes, which redraws (a self-sustaining storm)
+        // a write wakes the watcher, so an unchanged poll writing would loop forever
         if merged == session.comments {
             return;
         }
@@ -452,8 +428,6 @@ impl App {
         }
     }
 
-    /// `S`: start the review submit: pick the verdict first, then an
-    /// optional summary body, then everything pending posts as one review.
     pub(crate) fn submit_pr_review(&mut self) {
         let ReviewSource::Pr { number } = self.active_review_source() else {
             self.info("not reviewing a PR: nothing to submit");
@@ -468,7 +442,6 @@ impl App {
         });
     }
 
-    /// The verdict is chosen; ask for the review's optional summary body.
     pub(crate) fn pr_review_verdict_chosen(&mut self, number: u64, verdict: ReviewVerdict) {
         self.open_input(
             "Review summary (optional)".to_owned(),
@@ -477,11 +450,9 @@ impl App {
         );
     }
 
-    /// The number the anchored row carries on the diff's other side, for a row
-    /// both sides have. A forge that refuses to place an unchanged line from
-    /// one side alone needs both.
+    /// The anchored row's number on the other side. Some forges need both to
+    /// place an unchanged line.
     fn counterpart_line(&self, anchor: &Anchor, line: u32) -> Option<u32> {
-        // the open diff is the PR's, which the working-tree model knows nothing of
         let model = self
             .diff
             .as_ref()
@@ -491,8 +462,7 @@ impl App {
         row.number_on(!anchor.on_old_side)
     }
 
-    /// Everything a submit would send. The confirmation and the posting read
-    /// the same plan, so the dialog describes exactly what goes out.
+    /// The confirmation dialog and the submit both read this plan.
     pub(crate) fn pr_pending(&self, number: u64) -> Option<PrPending> {
         let (_, head) = self.pr_ranges.get(&number).cloned()?;
         let session = self.review.session_for(&ReviewSource::pr(number));
@@ -503,7 +473,6 @@ impl App {
         for comment in &session.comments {
             match (&comment.remote_id, comment.anchor.line) {
                 (None, Some(line)) => {
-                    // a range anchor posts as a real multi-line comment
                     let (start_line, line) = match comment.anchor.line_end {
                         Some(end) if end != line => (Some(line), end),
                         _ => (None, line),
@@ -551,7 +520,6 @@ impl App {
                 _ => {}
             }
         }
-        // a forge with no slot for a whole-file comment holds it back entirely
         pending.file_level = if file_comments_supported {
             0
         } else {
@@ -565,9 +533,8 @@ impl App {
         Some(pending)
     }
 
-    /// Queue everything pending in the PR review as one forge review with
-    /// `verdict` and `body` (plus individual replies to existing threads),
-    /// so the forge sends a single notification.
+    /// We batch pending comments into one review so the forge sends a single
+    /// notification; replies to existing threads post individually.
     pub(crate) fn queue_pr_review(&mut self, number: u64, verdict: ReviewVerdict, body: &str) {
         let Some((_, head)) = self.pr_ranges.get(&number).cloned() else {
             return;
@@ -633,24 +600,21 @@ impl App {
         self.info(message);
     }
 
-    /// Queue one outbound post unless an identical one is already in flight.
     fn queue_pr_post(&mut self, post: PrPost) {
         if self.pr_posts_inflight.insert(post_key(&post)) {
             self.pending_pr_posts.push(post);
         }
     }
 
-    /// Drop every queued post, freeing the dedup keys: a key left behind
-    /// would block that comment's posts for the rest of the session.
+    /// We free the dedup keys too, or that comment could never post again.
     pub fn drop_pending_pr_posts(&mut self) {
         for post in self.pending_pr_posts.drain(..) {
             self.pr_posts_inflight.remove(&post_key(&post));
         }
     }
 
-    /// A completed post. A reply stamps its forge id; a submitted review
-    /// hands its comments over to the forge: the local copies go away and
-    /// the immediate resync brings back the canonical ones.
+    /// A submitted review drops its local comments; the resync brings back
+    /// the forge's copies.
     pub(crate) fn on_pr_posted(
         &mut self,
         post: &PrPost,
@@ -676,9 +640,7 @@ impl App {
                     PrPost::Reply {
                         comment_id, body, ..
                     } => {
-                        // a resync can reshape the replies vec while the post
-                        // is in flight, so the queue-time index is unsafe:
-                        // stamp the matching unsent reply instead
+                        // a resync can reorder replies mid-flight, so we match by body
                         if let Some(r) = session
                             .comments
                             .iter_mut()
@@ -692,8 +654,6 @@ impl App {
                             r.remote_id = remote.map(|c| c.id);
                         }
                     }
-                    // resolve was applied optimistically; edit already
-                    // landed locally. The next sync confirms both
                     PrPost::Resolve { .. } | PrPost::Edit { .. } => {}
                     PrPost::Delete { comment_id, .. } => {
                         session.comments.retain(|c| c.id != *comment_id);
@@ -708,7 +668,6 @@ impl App {
                 }
             }
             Err(err) => {
-                // an optimistic resolve that the forge refused rolls back
                 if let PrPost::Resolve {
                     comment_id,
                     resolved,
@@ -733,9 +692,6 @@ impl App {
         }
     }
 
-    /// The forge's current view of the PR arrived with a comment sync: a
-    /// moved head means someone (force-)pushed while the review is open, so
-    /// the diff and the post target both refresh.
     pub(crate) fn on_pr_head_seen(&mut self, pr: &crate::ci::PullRequest) {
         let moved = self
             .pr_ranges
@@ -748,8 +704,6 @@ impl App {
         self.open_pr_review_for(pr.clone());
     }
 
-    /// Push a local edit of a forge-owned comment out to the forge; local
-    /// comments and non-PR sources are already done.
     pub(crate) fn queue_pr_comment_edit(
         &mut self,
         source: &ReviewSource,
@@ -778,8 +732,7 @@ impl App {
         self.queue_pr_post(post);
     }
 
-    /// Queue a forge-side delete; the local copy stays until the forge
-    /// confirms so a rejection loses nothing.
+    /// The local copy stays until the forge confirms, so a rejection loses nothing.
     pub(crate) fn queue_pr_comment_delete(
         &mut self,
         number: u64,
@@ -794,9 +747,8 @@ impl App {
         self.queue_pr_post(post);
     }
 
-    /// Queue a forge thread-resolution toggle. `false` when the comment has
-    /// no thread handle yet (not synced, or a forge without threads): the
-    /// caller must not flip anything locally then.
+    /// `false` when the comment has no thread handle yet, and then the caller
+    /// must not flip anything locally.
     pub(crate) fn queue_pr_resolve(
         &mut self,
         number: u64,
@@ -828,9 +780,6 @@ impl App {
         true
     }
 
-    /// Whether the repo's forge can be told a thread is resolved. Where it
-    /// can't, the flip stays in the local session; a queued post would come
-    /// back as an error and revert it.
     fn forge_resolves_threads(&self) -> bool {
         self.ci_remotes()
             .first()
@@ -838,9 +787,8 @@ impl App {
     }
 }
 
-/// The inflight-dedup key. Resolve carries its direction so a quick toggle
-/// back is not swallowed; an edit carries a body hash so a follow-up edit
-/// with new text still posts.
+/// Resolve keys carry the direction so a quick toggle back still posts; edit
+/// keys carry a body hash so a follow-up edit still posts.
 fn post_key(post: &PrPost) -> String {
     match post {
         PrPost::Review { review, .. } => format!("review-{}", review.number),
@@ -866,15 +814,10 @@ fn post_key(post: &PrPost) -> String {
     }
 }
 
-/// Prefix of a resolve toggle's inflight key for `comment_id`, regardless of
-/// direction. An in-flight check that doesn't care which way it flipped
-/// matches on this prefix; [`post_key`] returns the direction-specific key.
 fn resolve_key_prefix(comment_id: &str) -> String {
     format!("res-{comment_id}-")
 }
 
-/// Prefix of an edit's inflight key for `comment_id`, regardless of the body
-/// hash [`post_key`] mixes in.
 fn edit_key_prefix(comment_id: &str) -> String {
     format!("e-{comment_id}-")
 }
@@ -1035,7 +978,6 @@ mod tests {
         assert_eq!(app.pending_pr_open.as_ref().map(|p| p.number), Some(9));
     }
 
-    /// The dialog must describe the posts the submit actually makes.
     #[test]
     fn the_submit_summary_counts_what_gets_posted_including_agent_replies() {
         let fixture = standard_fixture();
@@ -1093,8 +1035,7 @@ mod tests {
             "file level",
         );
 
-        // no ci remote is configured: the plan defaults to a forge that can
-        // take a whole-file comment, so it rides along with the line one
+        // with no ci remote we assume a forge that takes whole-file comments
         let pending = app.pr_pending(3).expect("plan");
         assert_eq!(
             pending
@@ -1152,9 +1093,7 @@ mod tests {
             );
     }
 
-    /// Forgejo has no slot for a whole-file comment: it stays held back, and
-    /// the summary names the forge that can't take it rather than blaming
-    /// reviews in general.
+    /// Forgejo has no slot for a whole-file comment.
     #[test]
     fn a_forge_with_no_file_level_comments_holds_it_back_and_names_itself() {
         let fixture = standard_fixture();
@@ -1184,8 +1123,6 @@ mod tests {
         );
     }
 
-    /// GitHub (and GitLab) can take a whole-file comment, so it posts
-    /// alongside the line ones instead of being held back.
     #[test]
     fn a_forge_with_file_level_comments_posts_it_alongside_the_line_ones() {
         let fixture = standard_fixture();
@@ -1207,9 +1144,6 @@ mod tests {
         assert_eq!(pending.summary(), vec!["posting 1 comment".to_owned()]);
     }
 
-    /// A comment written through `add_comment` follows the same authorship
-    /// rule as any other: the agent's own body is withheld from a submit
-    /// until `as_human` makes it the human's.
     #[test]
     fn an_added_comment_is_withheld_unless_authored_as_the_human() {
         let fixture = standard_fixture();
@@ -1257,8 +1191,6 @@ mod tests {
         assert!(pending.comment_ids.contains(&human_id));
     }
 
-    /// Bulk-claiming turns every agent comment of the open review into the
-    /// human's, so a submit carries them the way it carries the human's own.
     #[test]
     fn claiming_all_comments_makes_a_submit_carry_them() {
         let fixture = standard_fixture();
@@ -1291,8 +1223,6 @@ mod tests {
         assert_eq!(pending.agent_withheld, 0);
     }
 
-    /// A walkthrough is its own review source: its comments are never in
-    /// reach of the PR posting flow, whatever the open PR review holds.
     #[test]
     fn a_walkthrough_comment_is_never_queued_for_posting_to_the_pr() {
         let fixture = standard_fixture();
@@ -1629,10 +1559,8 @@ mod tests {
         assert!(app.pending_git.is_none(), "fetch already in flight");
     }
 
-    /// `on_pr_head_seen` re-opens the PR on its own when a force-push moves
-    /// the head, with nobody at the keyboard to notice a wrong jump: the row
-    /// the reader was on must be found again by what it is, not by whatever
-    /// now sits at its old row index.
+    /// A force-push reopens the PR unattended, so we find the cursor's row by
+    /// identity.
     #[test]
     fn reopening_a_pr_after_a_force_push_keeps_the_cursor_on_its_own_row() {
         use std::fmt::Write as _;
@@ -1688,7 +1616,6 @@ mod tests {
         );
     }
 
-    /// The full submit→ack→resync event chain, as the live app sees it.
     #[test]
     fn submit_ack_and_resync_round_trip() {
         let fixture = standard_fixture();
@@ -1863,8 +1790,7 @@ mod tests {
             "local reply not yet sent"
         );
 
-        // an optimistic flip whose post is still in flight is not stale:
-        // the poll must not flicker it back, in either direction
+        // a flip still in flight must survive the poll, in either direction
         {
             let session = app.review.session_for_mut(&source);
             session.comments[0].status = CommentStatus::Resolved;
@@ -1878,8 +1804,7 @@ mod tests {
         );
         app.pr_posts_inflight.clear();
 
-        // the unresolve direction: forge still says resolved while the
-        // unresolve post is in flight: the local Open must survive
+        // the forge still says resolved while our unresolve is in flight
         let resolved_listing = [PrComment {
             resolved: true,
             thread_id: Some("T_1".into()),

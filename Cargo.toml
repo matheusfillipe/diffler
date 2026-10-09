@@ -28,21 +28,16 @@ similar = { version = "3", features = ["inline", "unicode"] }
 notify = "8.2"
 notify-debouncer-full = "0.7"
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
-# <2.2: 2.2.0's reqwest client transport does not compile (upstream typo,
-# from_bytes_stream vs from_byte_stream); lift the cap once fixed
 rmcp = { version = "3", features = ["server", "transport-streamable-http-server"] }
 axum = "0.8"
 tree-sitter = "0.26"
 tree-sitter-highlight = "0.26"
 syndiff = "0.2"
-# already locked as syndiff's own line-diff engine; used directly here too so
-# the histogram/structural algorithms add no new crate to Cargo.lock
+# syndiff already depends on it, so the histogram algorithm adds no new crate
 imara-diff = "0.2"
-# image files in a diff preview as images: kitty/sixel/iTerm2 through the
-# terminal (and a multiplexer's passthrough), halfblocks everywhere else
 ratatui-image = { version = "=12.0.0-rc.0", default-features = false, features = ["crossterm"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
-# bundled grammars (statically linked; musl-static cannot dlopen, so no runtime fetch)
+# we link grammars statically because the musl build cannot dlopen
 tree-sitter-rust = "0.24"
 tree-sitter-python = "0.25"
 tree-sitter-javascript = "0.25"
@@ -80,24 +75,20 @@ arborium-dockerfile = "2.18"
 serde = { version = "1", features = ["derive"] }
 serde_ignored = "0.1"
 serde_json = "1"
-# serde_norway parses GitHub Actions workflow YAML for the CI dependency graph
 serde_norway = "0.9"
-# perf benches for the diff pipeline (core hot paths)
 criterion = "0.8"
 toml = "1"
 uuid = { version = "1", features = ["v4"] }
 unicode-width = "0.2"
-# fuzzy matching for the command palette (Helix's matcher)
 nucleo-matcher = "0.3"
-# CommonMark parser for rendering markdown in comment/reply bodies
 pulldown-cmark = { version = "0.13", default-features = false }
 insta = "1.47"
 tempfile = "3"
 
 [workspace.lints.rust]
 unsafe_code = "deny"
-# two clippy lints we allow below exist only from rust 1.98 and 1.99, and the
-# msrv build is older
+# two clippy lints we allow below exist only from rust 1.98 and 1.99, which is
+# newer than the msrv
 unknown_lints = { level = "allow", priority = -2 }
 rust_2018_idioms = { level = "warn", priority = -1 }
 # a pub item a private module keeps unreachable evades dead_code analysis
@@ -106,7 +97,7 @@ unreachable_pub = "warn"
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
-# restriction lints that catch LLM-generated mistakes
+# restriction lints we enforce
 unwrap_used = "deny"
 expect_used = "warn"
 panic = "deny"
@@ -116,14 +107,13 @@ dbg_macro = "deny"
 print_stdout = "deny"
 print_stderr = "warn"
 indexing_slicing = "warn"
-# nursery, so it is named on its own: a rail against a function quietly
-# growing a second job, not a target to optimise
+# a nursery lint, so we name it on its own; it flags a function that grew a
+# second job
 cognitive_complexity = "warn"
-# pedantic noise control
 # rmcp's tool_handler/prompt_handler expand into async trait impls that never
-# await. The lint fires inside the expansion, where no `#[allow]` of ours
-# reaches it, so it has to be a compiler flag.
+# await, where no `#[allow]` of ours reaches, so we allow it here
 unused_async_trait_impl = "allow"
+# pedantic lints we allow
 assert_is_empty = "allow"
 module_name_repetitions = "allow"
 must_use_candidate = "allow"
@@ -131,8 +121,7 @@ missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 cast_possible_truncation = "allow"
 
-# keep panic backtraces for our own code, but drop the heavy debuginfo from
-# dependencies (we never step-debug into them): cuts target/debug ~3-4x
+# line tables keep panic backtraces and cut target/debug about 3-4x
 [profile.dev]
 debug = "line-tables-only"
 

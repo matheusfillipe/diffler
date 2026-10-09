@@ -1,8 +1,5 @@
-//! Selectable line-diff algorithms, shared by every diff source. `Myers`,
-//! `Minimal` and `Patience` are git2's own (see [`crate::git`]); `Histogram`
-//! and `Structural` (which layers reformat detection on top, in
-//! [`crate::syntax::intraline`]) run through imara-diff, since libgit2 has no
-//! histogram implementation.
+//! Selectable line-diff algorithms. libgit2 has no histogram, so we run
+//! `Histogram` and `Structural` through imara-diff.
 
 use std::collections::HashMap;
 
@@ -18,9 +15,7 @@ pub enum DiffAlgorithm {
     Minimal,
     Patience,
     Histogram,
-    /// The histogram line diff, plus: a paired deleted/added line that only
-    /// reformats the same tokens renders dimmed, leaving red/green for an
-    /// actual change.
+    /// Histogram, plus dimming paired lines that differ in layout alone.
     Structural,
 }
 
@@ -33,8 +28,6 @@ impl DiffAlgorithm {
         Self::Structural,
     ];
 
-    /// The config and display name, the one spelling serde and [`Self::parse`]
-    /// both read.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Myers => "myers",
@@ -49,8 +42,6 @@ impl DiffAlgorithm {
         Self::ALL.into_iter().find(|a| a.as_str() == value)
     }
 
-    /// Whether this algorithm needs imara-diff, since libgit2 has no
-    /// histogram implementation.
     pub const fn is_imara(self) -> bool {
         matches!(self, Self::Histogram | Self::Structural)
     }
@@ -80,10 +71,8 @@ impl<'de> Deserialize<'de> for DiffAlgorithm {
     }
 }
 
-/// The line-diff context, algorithm and indent heuristic every diff source
-/// honours, threaded through construction so the review's long-lived backend
-/// and every worker that opens a fresh one read the same values and can
-/// never drift apart.
+/// One value for every backend we open, so the review's backend and the
+/// workers' never drift apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DiffSettings {
     pub context_lines: u32,
@@ -102,7 +91,6 @@ impl Default for DiffSettings {
 }
 
 impl DiffSettings {
-    /// [`Self::default`] with a custom number of context lines.
     pub fn with_context(context_lines: u32) -> Self {
         Self {
             context_lines,
@@ -111,13 +99,8 @@ impl DiffSettings {
     }
 }
 
-/// Line hunks of `old` vs `new` computed by imara-diff's histogram algorithm,
-/// grouped with `context` unchanged lines around each change the way git
-/// itself merges nearby hunks together (mirrors imara-diff's own
-/// `unified_diff` grouping rule, without needing its text printer).
-/// `file_path` seeds the hunk ids the same way [`crate::git`] does, so
-/// staging can find the hunk it shows regardless of which algorithm produced
-/// it, as long as both read the current algorithm.
+/// Histogram hunks of `old` vs `new`, merged the way git merges nearby hunks.
+/// We seed ids like [`crate::git`] so staging finds the hunk it shows.
 pub fn histogram_hunks(
     old: &str,
     new: &str,
@@ -177,11 +160,9 @@ fn line_text(input: &InternedInput<&str>, token: imara_diff::Token) -> String {
         .to_owned()
 }
 
-/// The hunk heading git2 gives the other algorithms, from libgit2's default
-/// funcname rule: the nearest old-side line above the hunk's first row that
-/// opens with an ASCII letter, `_` or `$`, right-trimmed and cut to 80 bytes.
-/// Hunks arrive in file order, so each one scans only the rows since the
-/// previous hunk's first row and keeps that hunk's heading when none match.
+/// libgit2's default funcname rule: the nearest old-side line above the hunk
+/// that opens with an ASCII letter, `_` or `$`, cut to 80 bytes. Hunks arrive
+/// in file order, so we scan only the rows since the previous hunk.
 #[derive(Default)]
 struct FuncHeading {
     scanned: u32,
@@ -211,8 +192,6 @@ impl FuncHeading {
     }
 }
 
-/// Append context lines for the unchanged old-side span `old_from..old_to`,
-/// whose new-side counterpart starts at `new_from`.
 fn push_context_lines(
     lines: &mut Vec<DiffLine>,
     input: &InternedInput<&str>,
@@ -361,7 +340,6 @@ mod tests {
 
     #[test]
     fn nearby_changes_merge_into_one_hunk() {
-        // one unchanged line between two edits, context 3: 1 < 2*3, so they merge
         let old = "a\nb\nc\nd\ne\n";
         let new = "A\nb\nc\nD\ne\n";
         let hunks = histogram_hunks(old, new, "f.txt", 3, true);
@@ -448,8 +426,6 @@ mod tests {
 
     #[test]
     fn hunk_context_skips_a_same_indent_sibling() {
-        // `a = 1` sits right above the change at the same indentation as `b = 2`
-        // and starts with a letter too, but git skips it for the def above it.
         let old = "def parse_config():\n    a = 1\n    b = 2\n";
         let new = "def parse_config():\n    a = 1\n    b = 20\n";
         let hunks = histogram_hunks(old, new, "f.py", 0, true);

@@ -1,9 +1,6 @@
-//! Image files in the diff pane. A binary file whose path names an image shows
-//! its two sides as pictures: the worker reads each side's bytes, decodes
-//! them, and builds each one's terminal protocol at the size the pane asked
-//! for, so a draw only writes an image that is already encoded. The protocol
-//! (kitty, sixel, iTerm2, or halfblocks) is whatever the terminal answered to
-//! at startup.
+//! Image files in the diff pane. A worker decodes each side and encodes it for
+//! the terminal at the size the pane asked for, so a draw only writes an image
+//! that is already encoded.
 
 use diffler_core::model::{BlobIds, FileDiff, FileStatus};
 use diffler_core::review::{BinarySide, BinarySides};
@@ -30,9 +27,8 @@ pub(crate) fn is_image(file: &FileDiff) -> bool {
             })
 }
 
-/// What a preview shows: one file's sides, by content, fitted to `target`
-/// cells. A side's blob id changes with its bytes, so an image rewritten on
-/// disk asks for a new preview.
+/// One file's sides, by blob id, fitted to `target` cells. A rewritten image
+/// gets a new blob id and so a new preview.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageKey {
     pub path: String,
@@ -52,14 +48,12 @@ impl ImageKey {
     }
 }
 
-/// A queued preview.
 #[derive(Debug, Clone)]
 pub struct ImageRequest {
     pub token: u64,
     pub key: ImageKey,
 }
 
-/// One side of a previewed image as the pane draws it.
 #[derive(Clone)]
 pub enum PreviewSide {
     Image {
@@ -74,7 +68,6 @@ pub enum PreviewSide {
     Unreadable,
 }
 
-/// A file's previewed sides.
 #[derive(Clone)]
 pub struct ImagePreview {
     pub key: ImageKey,
@@ -92,8 +85,6 @@ impl std::fmt::Debug for ImagePreview {
     }
 }
 
-/// Decode and encode both sides of `request` for the terminal `picker`
-/// speaks to. Runs on the blocking pool.
 pub fn build_preview(picker: &Picker, request: &ImageRequest, sides: BinarySides) -> ImagePreview {
     let side = |side: BinarySide| match side {
         BinarySide::TooLarge(size) => PreviewSide::TooLarge(size),
@@ -122,9 +113,8 @@ pub fn build_preview(picker: &Picker, request: &ImageRequest, sides: BinarySides
     }
 }
 
-/// Fill the frame either way: an icon smaller than it scales up with hard
-/// edges so its pixels stay readable, a photo larger than it scales down
-/// smooth.
+/// Scale an image smaller than the frame up with nearest-neighbour so its
+/// pixels stay readable, and a larger one down smoothly.
 fn fit_to_frame(picker: &Picker, target: Size, width: u32, height: u32) -> Resize {
     let font = picker.font_size();
     let fits = width <= u32::from(target.width) * u32::from(font.width)
@@ -138,7 +128,7 @@ fn fit_to_frame(picker: &Picker, target: Size, width: u32, height: u32) -> Resiz
 
 impl App {
     /// Queue the preview the last draw asked for, unless it is already on
-    /// screen or on its way. Called after every draw, like enrichment.
+    /// screen or in flight.
     pub(crate) fn queue_image_preview(&mut self) {
         let Some(diff) = self.diff.as_ref() else {
             return;
@@ -161,7 +151,6 @@ impl App {
         self.image_in_flight = Some(want);
     }
 
-    /// Install a landed preview, dropping one the view has moved past.
     pub(crate) fn on_image_preview(&mut self, token: u64, preview: ImagePreview) -> Flow {
         if token != self.image_token {
             return Flow::Idle;

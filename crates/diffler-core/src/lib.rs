@@ -1,7 +1,5 @@
-//! Core review engine for diffler: diff computation, sessions, comments, viewed marks.
-//!
-//! This crate holds all logic with no terminal dependency, so it can be tested
-//! headless and reused by the TUI, the MCP server, and future frontends.
+//! Core review engine for diffler, with no terminal dependency: diffs,
+//! sessions, comments, viewed marks.
 
 pub mod classify;
 pub mod diff;

@@ -85,10 +85,8 @@ function pidAlive(pid) {
   }
 }
 
-// Each diffler publishes its live port under its own repo root, so the walk-up
-// finds the instance owning the directory the editor launched from. Returns
-// null both when nothing is found and when the closest file names a dead
-// process, so the caller falls through to the cross-repo registry either way.
+// We return null for a dead process too, so the caller falls through to the
+// cross-repo registry.
 function findLocalEndpoint(from) {
   let dir = resolve(from);
   for (;;) {
@@ -98,7 +96,7 @@ function findLocalEndpoint(from) {
         return pidAlive(pid) ? port : null;
       }
     } catch {
-      // unreadable or malformed reads like absent: keep walking up
+      // We treat an unreadable or malformed file as absent and keep walking up.
     }
     const parent = dirname(dir);
     if (parent === dir) {
@@ -115,8 +113,6 @@ function registryDir() {
   return join(base, "diffler", "instances");
 }
 
-// Every running diffler that isn't the one found by the walk-up: read from
-// the registry, dropping (and deleting) entries whose process has exited.
 function liveRegistry() {
   let files;
   try {
@@ -181,8 +177,6 @@ function matchInstances(instances, { repo, port }) {
   return instances.filter((i) => i.repo.endsWith(`/${repo}`) || i.repo.endsWith(`\\${repo}`));
 }
 
-// Best-effort label for an error message: which repo (and port) a URL names,
-// falling back to the port alone when the registry doesn't know it.
 function describeUrl(url) {
   const match = liveRegistry().find((i) => i.url === url);
   if (match) {
@@ -198,8 +192,8 @@ function describeUrl(url) {
 class CallDeadline extends Error {}
 
 // Dropping the `upstream` reference alone leaves the transport's
-// AbortController and reconnection timer alive, so every place that
-// abandons a client closes it first.
+// AbortController and reconnection timer alive, so we close every client we
+// abandon.
 function closeQuietly(client) {
   if (!client) {
     return;
@@ -207,10 +201,6 @@ function closeQuietly(client) {
   client.close().catch(() => {});
 }
 
-// A call to the upstream that never answers must not hang the client
-// forever; racing it against a timer is what lets the proxy give up and
-// report it. `fn` is what to race (a tool call, a tools/list), so both share
-// the same deadline and reconnect handling in `withUpstream` below.
 function withDeadline(client, fn, meta) {
   let timer;
   const timeout = new Promise((_, reject) => {
@@ -236,13 +226,10 @@ function unreachableError(err) {
   return toolError(`diffler isn't reachable. Is it running in this repo? (${err.message ?? err})${extra}`);
 }
 
-// Set by the use_instance tool; overrides every other resolution source for
-// the rest of this proxy process.
 let overrideUrl = null;
 
-// `ambiguous` marks the one resolution path with no explicit say-so from the
-// human or the caller: more than one diffler is running and the newest was
-// picked for them. `forwardCall` uses it to tell the agent once per bind.
+// `ambiguous` means we picked the newest of several instances with nobody
+// choosing, so `forwardCall` tells the agent once per bind.
 function resolveUrl(opts) {
   if (overrideUrl) {
     return { url: overrideUrl, ambiguous: false };
@@ -288,20 +275,16 @@ async function main() {
   let upstreamMeta = null;
   let connecting = null;
   let retryActive = false;
-  // Set on an ambiguous auto-bind (several instances, newest picked with no
-  // say-so); `forwardCall` reports it on the first result after and clears
-  // it. A resolution the caller or the human chose leaves this null.
   let pendingBindNotice = null;
 
   const connect = async () => {
     const { url, ambiguous } = resolveUrl(opts);
     const client = new Client({ name: "diffler-mcp-proxy", version: "0.1.0" });
     await client.connect(new StreamableHTTPClientTransport(new URL(url)));
-    // One round trip before caching: a registered pid can be alive while the
-    // MCP server behind it is not (mid-restart, a crashed listener), and this
-    // is what tells the two apart.
+    // A registered pid can be alive while its MCP server is not (mid-restart,
+    // a crashed listener), so we make one round trip before caching.
     await client.listTools();
-    // cache synchronously after the await so a later close can't race ahead of it
+    // We cache synchronously after the await so a later close can't race ahead of it.
     upstream = client;
     upstreamMeta = describeUrl(url);
     pendingBindNotice = ambiguous
@@ -330,10 +313,8 @@ async function main() {
     return connecting;
   };
 
-  // Runs `fn` against the live upstream client under the deadline above; a
-  // deadline drops the upstream and fails outright, no second wait on the
-  // same call, while any other failure gets one reconnect-and-retry. Shared
-  // by tools/list and tools/call, so a hung diffler fails either one alike.
+  // A missed deadline drops the upstream and fails at once, so a hung diffler
+  // costs one wait; any other failure gets one reconnect and retry.
   const withUpstream = async (fn) => {
     let client;
     const attempt = async () => {
@@ -361,9 +342,8 @@ async function main() {
     }
   };
 
-  // Lets a human start Claude first and diffler second: a `tools/list` that
-  // finds nothing arms this, and it keeps trying quietly until diffler
-  // appears (or ten minutes pass), announcing the new tools once it does.
+  // A human may start Claude before diffler, so we keep retrying after an
+  // empty `tools/list` and announce the tools once diffler appears.
   const startRetryingUpstream = () => {
     if (retryActive) {
       return;
@@ -388,8 +368,6 @@ async function main() {
     setTimeout(attempt, RETRY_MS);
   };
 
-  // Forwards one tool call, appending the ambiguous-bind notice to the first
-  // result after such a bind (once only: it clears itself here).
   const forwardCall = async (params) => {
     try {
       const result = await withUpstream((client) => client.callTool(params));
@@ -476,8 +454,8 @@ async function main() {
   });
 
   await server.connect(new StdioServerTransport());
-  // stdout is the MCP channel, so the startup diagnosis goes to stderr, where
-  // clients surface it; the proxy stays up and reconnects when diffler starts
+  // stdout is the MCP channel, so we write the startup diagnosis to stderr and
+  // stay up to reconnect when diffler starts.
   void ensureUpstream().catch((err) => {
     process.stderr.write(`diffler-mcp: ${err.message ?? err}\n`);
   });

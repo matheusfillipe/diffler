@@ -1,9 +1,5 @@
-//! Counting a repo, and counting a review.
-//!
-//! Two tallies over the same [`crate::language`] table: the working tree's
-//! lines per language, which needs a read per file, and the diff's churn per
-//! language, which the model already holds. Both are pure functions of what
-//! they are handed, so the caller decides which thread pays.
+//! Lines per language for the working tree, and churn per language for a
+//! review.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -15,11 +11,10 @@ use crate::model::FileDiff;
 use crate::review::ReviewError;
 use crate::vcs::Vcs;
 
-/// Files past this size count as data: a checked-in dump would otherwise
-/// decide the whole breakdown.
+/// We skip files past this size so a checked-in data dump never dominates the
+/// breakdown.
 const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
 
-/// How much of one language a repo holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LanguageCount {
     pub name: &'static str,
@@ -32,15 +27,14 @@ pub struct LanguageCount {
     pub bytes: u64,
 }
 
-/// The whole scan: one entry per language, heaviest first, plus what it skipped.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RepoStats {
+    /// Heaviest first.
     pub languages: Vec<LanguageCount>,
-    /// Files read but written in no language the table knows.
     pub unknown_files: usize,
-    /// Files not read at all: binary, oversized, or unreadable.
+    /// Binary, oversized or unreadable.
     pub skipped_files: usize,
-    /// Files left out as generated, lockfiles included.
+    /// Lockfiles included.
     pub generated_files: usize,
 }
 
@@ -69,13 +63,8 @@ impl RepoStats {
     }
 }
 
-/// Count every path under `root`, grouped by language and ordered by code
-/// lines. Reads each file once; a path that is binary, oversized or unreadable
-/// is counted as skipped and never parsed.
-///
-/// What `rules` calls generated is left out, lockfiles included, the way a
-/// repository page counts: a lockfile runs to thousands of lines and would
-/// outrank the code beside it.
+/// Count `paths` by language, ordered by code lines. We leave out what `rules`
+/// calls generated, since a lockfile would outrank the code beside it.
 #[must_use]
 pub fn scan(root: &Path, paths: &[PathBuf], rules: &Rules) -> RepoStats {
     let mut stats = RepoStats::default();
@@ -126,17 +115,15 @@ pub fn scan(root: &Path, paths: &[PathBuf], rules: &Rules) -> RepoStats {
         entry.blanks += blanks;
         entry.bytes += metadata.len();
     }
-    // heaviest first, and by name where two languages tie, so the table never
-    // reshuffles between two scans of the same tree
+    // we break ties by name so two scans of one tree order the same
     let mut languages: Vec<LanguageCount> = counts.into_values().collect();
     languages.sort_by(|a, b| b.code.cmp(&a.code).then_with(|| a.name.cmp(b.name)));
     stats.languages = languages;
     stats
 }
 
-/// Scan a checkout from its root, opening the backend here so the whole job,
-/// the index read included, happens on the caller's thread. `extra` carries
-/// what git does not track yet, the status screen's untracked files.
+/// [`scan`] over the index plus `extra` untracked paths, index read included,
+/// on the caller's thread.
 pub fn scan_repo(
     repo_root: &Path,
     extra: &[String],
@@ -148,12 +135,11 @@ pub fn scan_repo(
     Ok(scan(repo_root, &paths, rules))
 }
 
-/// A NUL byte in the first block is what git itself treats as binary.
+/// git's own rule: a NUL byte in the first 8000 bytes.
 fn is_binary(bytes: &[u8]) -> bool {
     bytes.iter().take(8000).any(|byte| *byte == 0)
 }
 
-/// One language's share of a review.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LanguageChurn {
     pub name: &'static str,
@@ -170,9 +156,7 @@ impl LanguageChurn {
     }
 }
 
-/// What the review is written in, busiest language first. Files in no known
-/// language are left out: naming them would take a row from the languages the
-/// reader can act on.
+/// Churn per language, busiest first, leaving out files in no known language.
 pub fn review_mix<'a>(files: impl IntoIterator<Item = &'a FileDiff>) -> Vec<LanguageChurn> {
     let mut totals: HashMap<&'static str, LanguageChurn> = HashMap::new();
     for file in files {
@@ -298,8 +282,6 @@ mod tests {
         assert_eq!(stats.totals().lines, 8);
     }
 
-    /// The worker hands `scan_repo` a root and nothing else, so it has to find
-    /// the tracked files itself and fold in what git has not seen yet.
     #[test]
     fn scan_repo_counts_the_index_and_the_untracked_files_it_is_given() {
         let dir = tempfile::tempdir().expect("tempdir");

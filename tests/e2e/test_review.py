@@ -39,7 +39,6 @@ def test_comment_modal_writes_comment_and_session(spawn, repo):
     tui.wait_for("comment on app.txt:2")
     tui.send("needs work")
     tui.send("\r")
-    # the comment box renders inline: author chip, body, border
     tui.wait_for("▌ reviewer · open")
     tui.wait_for("needs work")
     tui.wait_for("▌ reviewer")

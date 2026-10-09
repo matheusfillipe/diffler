@@ -1,7 +1,7 @@
 //! Background enrichment of diff files: intra-line emphasis, whole-file
-//! syntax highlight, and the scope index are CPU-heavy (hundreds of ms on
-//! large files) and used to run inside `draw`. They now run on the blocking
-//! pool; the pane renders plain until the result lands as an event.
+//! syntax highlight, and the scope index cost hundreds of ms on large files,
+//! so we run them on the blocking pool and the pane renders plain until the
+//! result arrives as an event.
 
 use diffler_core::diffalgo::DiffAlgorithm;
 use diffler_core::highlight::Highlighter;
@@ -11,7 +11,6 @@ use diffler_core::pairing;
 use super::App;
 use super::diff::{FileHighlights, FileScope};
 
-/// Everything a worker needs, detached from the model.
 #[derive(Debug)]
 pub struct EnrichJob {
     pub path: String,
@@ -34,7 +33,6 @@ pub struct EnrichStamp {
     pub highlighter: u64,
 }
 
-/// The computed result, installed back into the caches if still current.
 #[derive(Debug)]
 pub struct EnrichOutcome {
     pub path: String,
@@ -45,13 +43,9 @@ pub struct EnrichOutcome {
     pub stamp: EnrichStamp,
 }
 
-/// Queue `file` for enrichment unless the caller's own cache says it's
-/// already fresh (`ready`) or a job for the same content is already in
-/// flight. Shared by every enrichment call site (the diff pane and the
-/// status screen's expanded inline diffs) so the hash/inflight/push recipe
-/// lives in one place; each caller keeps only its own freshness check. Takes
-/// the two collections directly (rather than `&mut App`) so a caller mid-loop
-/// over data borrowed from another `App` field can still call it.
+/// Queue `file` for enrichment unless it is `ready` or a job for the same
+/// content is in flight. We take the two collections, so a caller looping over
+/// another borrowed `App` field can still call it.
 pub(super) fn queue_if_stale(
     inflight: &mut std::collections::HashSet<String>,
     pending: &mut Vec<EnrichJob>,
@@ -78,7 +72,6 @@ pub(super) fn queue_if_stale(
     });
 }
 
-/// Run one job to completion (called on the blocking pool).
 pub fn run_enrich(highlighter: &Highlighter, job: EnrichJob) -> EnrichOutcome {
     let mut file = FileDiff {
         path: job.path,
@@ -130,8 +123,8 @@ pub fn run_enrich(highlighter: &Highlighter, job: EnrichJob) -> EnrichOutcome {
 }
 
 impl App {
-    /// Queue enrichment for the selected diff file (and its neighbours, so a
-    /// j/k step usually lands on a ready file). Cheap; deduped by content.
+    /// Queue enrichment for the selected diff file and its neighbours, so a
+    /// j/k step usually reaches a ready file.
     pub(crate) fn queue_enrich_selected(&mut self) {
         let Some(diff) = self.diff.as_ref() else {
             return;
@@ -155,8 +148,6 @@ impl App {
         self.queue_enrich_context_files();
     }
 
-    /// The model indices of the files the references sidebar lists, so their
-    /// previews highlight without the reader opening each one.
     fn referenced_files(&self) -> Vec<usize> {
         let Some(diff) = self.diff.as_ref().filter(|diff| diff.refs_visible()) else {
             return Vec::new();
@@ -173,8 +164,6 @@ impl App {
             .collect()
     }
 
-    /// The walkthrough's own files, the ones its stops name and the diff does
-    /// not carry, highlight like any other: they are few and deduped by hash.
     fn queue_enrich_context_files(&mut self) {
         let stamp = self.enrich_stamp();
         let Some(diff) = self.diff.as_ref() else {
@@ -228,10 +217,8 @@ impl App {
     }
 
     /// Install a finished enrichment wherever the file still has the same
-    /// content: the diff view's model and caches, and any expanded
-    /// status-section file (jobs from both screens share this worker path).
-    /// A stale outcome (the file changed mid-flight) installs nothing; the
-    /// next frame re-queues against the new content.
+    /// content. A stale outcome installs nothing, and the next frame queues
+    /// the new content.
     pub(crate) fn on_enriched(&mut self, outcome: EnrichOutcome) {
         // a highlighter rebuild clears every marker, and the hash may since
         // mark a fresh job for the same content, so we leave that one alone
@@ -262,13 +249,12 @@ impl App {
             return;
         };
         file.hunks = outcome.hunks;
-        // enrichment ships default-context hunks; reinstalling the expansion
-        // reshapes them, so the row list must re-flow to match
+        // enrichment returns default-context hunks, so we reapply the expansion
         let reshaped = context.is_some_and(|context| {
             super::expand::apply_context(file, context, algorithm, indent_heuristic)
         });
-        // the walkthrough render cache holds its own snapshot of this file,
-        // taken before enrichment landed, so it needs the same hunks mirrored in
+        // the walkthrough render cache holds its own snapshot of this file, so
+        // we copy the new hunks into it
         let hunks = file.hunks.clone();
         diff.highlights
             .insert(outcome.path.clone(), outcome.highlights);
@@ -281,8 +267,8 @@ impl App {
         {
             cached.hunks = hunks;
         }
-        // fold detection and labels read the scope index that just landed,
-        // so the file on screen rebuilds with it
+        // fold detection and labels read the new scope index, so we rebuild
+        // the file on screen
         match positions.filter(|_| reshaped) {
             Some(positions) => diff.rebuild_in_place(&self.review, positions),
             None if reshaped || diff.rows_show(&outcome.path) => diff.mark_rows_dirty(),

@@ -1,6 +1,4 @@
-//! The whole-file view. The blame column takes the left edge and collapses a
-//! commit's run to a single row, so a block of untouched code reads as one
-//! attribution.
+//! The whole-file view with its optional blame column.
 
 use ratatui::Frame;
 use ratatui::style::Style;
@@ -17,12 +15,11 @@ use crate::ui::{Hint, cursor_line, status_bar};
 const HINTS: &[Hint] = &[
     Hint::Leaf(&[Action::ToggleBlame], "toggle blame"),
     Hint::Leaf(&[Action::Open], "open commit"),
-    Hint::Leaf(&[Action::OpenEditor], "open editor"),
+    Hint::Leaf(&[Action::OpenEditor], "open in editor"),
     Hint::Leaf(&[Action::Help], "help"),
 ];
 
-/// Width of the blame column: 7 for the sha, a space, 12 for the author, two
-/// spaces, 4 for the age, and a trailing separator space.
+/// sha 7, space, author 12, two spaces, age 4, separator space.
 const BLAME_WIDTH: usize = 27;
 const AUTHOR_WIDTH: usize = 12;
 
@@ -55,8 +52,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let gutter = view.lines.len().to_string().len().max(3);
     let blame_cols = if view.show_blame { BLAME_WIDTH } else { 0 };
     let prefix_cols = 1 + blame_cols + gutter + 1;
-    // a wrapped line owns several terminal rows, so scrolling counts rows, not
-    // source lines; heights are counted by the same greedy walk that wraps
+    // scrolling counts terminal rows, since a wrapped line takes several
     let row_height = |index: usize| {
         view.lines.get(index).map_or(1, |text| {
             super::diff_render::text_height(text, prefix_cols, body.width)
@@ -72,7 +68,6 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         total,
     );
 
-    // walk source lines until the viewport is full, skipping the rows above it
     let selected = |index: usize| view.row_selected(index);
     let referenced = view.referenced;
 
@@ -89,8 +84,6 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             .and_then(|all| all.get(index).cloned())
             .unwrap_or_default();
         let mut rendered = row_line(&theme, view, index, gutter, body.width, &ranges, now);
-        // a reference points at a segment, so the whole span is banded and
-        // the cursor rail still says which line inside it the reader is on
         rendered = super::band_referenced(rendered, referenced, index, &theme, body.width);
         if selected(index) {
             rendered = rendered
@@ -147,8 +140,6 @@ fn row_line(
     let text = view.lines.get(index).cloned().unwrap_or_default();
     let syntax = view.highlights.get(index).map(Vec::as_slice);
     let bg = theme.bg;
-    // the same compositing the diff pane uses, so syntax and search hits look
-    // identical in both, and the same wrapper, so long lines wrap the same way
     let content = crate::ui::diff_render::composite_spans(
         theme,
         &text,
@@ -159,8 +150,7 @@ fn row_line(
         &crate::ui::diff_render::Mark::search(search.to_vec()),
     );
     let blame_cols = if view.show_blame { BLAME_WIDTH } else { 0 };
-    // the cursor rail overwrites the first cell, so every row opens with one
-    // the content can afford to lose
+    // the cursor rail overwrites the first cell, so every row opens with a spare one
     let prefix_cols = 1 + blame_cols + gutter + 1;
     let prefix = |first: bool| {
         let mut spans = vec![Span::raw(" ")];
@@ -184,8 +174,7 @@ fn row_line(
     crate::ui::diff_render::wrapped_rows(content, prefix, prefix_cols, width, bg)
 }
 
-/// One blame cell. Only the first line of a commit's run prints it; the rest
-/// of the run is blank, which is what makes a long untouched block readable.
+/// Only the first line of a commit's run prints its blame.
 fn blame_span(theme: &Theme, view: &FileView, index: usize, now: i64) -> Span<'static> {
     if !view.starts_span(index) {
         return Span::raw(" ".repeat(BLAME_WIDTH));
@@ -289,8 +278,6 @@ mod tests {
         insta::assert_snapshot!(terminal.backend());
     }
 
-    /// A reference points at a segment, so the whole span is banded: opening
-    /// one shows the reader the code it names, not a cursor on a line.
     #[test]
     fn a_referenced_span_is_banded_across_its_rows() {
         let mut app = app_with_file(true);

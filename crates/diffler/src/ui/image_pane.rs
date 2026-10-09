@@ -1,6 +1,4 @@
-//! An image file's sides in the diff pane: before and after beside each other
-//! (stacked when the pane is narrow), or the one side an add or a delete has,
-//! each in its own frame, the picture fitted and centred inside it.
+//! An image file's before and after sides in the diff pane.
 
 use diffler_core::model::{FileDiff, FileStatus};
 use ratatui::Frame;
@@ -12,13 +10,9 @@ use ratatui::widgets::{Block, BorderType, Paragraph};
 use crate::app::image::{ImageKey, ImagePreview, PreviewSide};
 use crate::theme::Theme;
 
-/// Below this many columns the two frames stack instead of sitting side by
-/// side, so neither picture gets too narrow to read.
 const SIDE_BY_SIDE_MIN_WIDTH: u16 = 60;
 
-/// Frame each side of `file` inside `area`, drawing whatever of `preview`
-/// matches, and return the preview this frame wants, which the caller
-/// requests.
+/// Returns the preview this frame wants, for the caller to request.
 pub(super) fn draw_image_sides(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -70,7 +64,6 @@ impl Side {
     }
 }
 
-/// The frame of each side `file` has, laid out in `area`.
 fn frames(file: &FileDiff, area: Rect) -> Vec<(Side, Rect)> {
     let has_old = !matches!(
         file.status,

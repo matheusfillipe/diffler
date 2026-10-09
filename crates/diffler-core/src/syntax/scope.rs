@@ -1,6 +1,4 @@
-//! "What are we inside of": the chain of enclosing definitions (function,
-//! class, method, …) for a line, derived from a grammar's tags query. The
-//! result is plain data so the diff worker can compute it once and share it.
+//! The chain of definitions enclosing a line, from a grammar's tags query.
 
 use std::collections::HashSet;
 
@@ -9,8 +7,6 @@ use tree_sitter::{Node, Query, QueryCursor, StreamingIterator, Tree};
 use crate::syntax::registry::{LangEntry, LanguageRegistry};
 use crate::syntax::{MAX_PARSE_BYTES, parse};
 
-/// Definition spans for a file, queried per line for the enclosing-definition
-/// breadcrumb.
 #[derive(Debug, Clone, Default)]
 pub struct ScopeIndex {
     defs: Vec<Def>,
@@ -28,8 +24,7 @@ impl ScopeIndex {
         self.defs.is_empty()
     }
 
-    /// 0-based start rows of every definition, sorted and deduped: the jump
-    /// targets for function/definition motions.
+    /// 0-based start rows of every definition, sorted and deduped.
     pub fn def_starts(&self) -> Vec<usize> {
         let mut rows: Vec<usize> = self.defs.iter().map(|d| d.start_row).collect();
         rows.sort_unstable();
@@ -37,9 +32,7 @@ impl ScopeIndex {
         rows
     }
 
-    /// 0-based row span of the definition called `name`, start and end
-    /// inclusive. What lets a reference open on a symbol and show its whole
-    /// extent rather than seating a cursor on its first line.
+    /// 0-based inclusive row span of the definition called `name`.
     pub fn def_span(&self, name: &str) -> Option<(usize, usize)> {
         self.defs
             .iter()
@@ -75,9 +68,8 @@ impl ScopeIndex {
 }
 
 impl LanguageRegistry {
-    /// Parse `content` and index its definition spans for scope lookup. Returns
-    /// an empty index when the language is unsupported, has no tags query, the
-    /// file is too large, or parsing fails, so callers show no breadcrumb.
+    /// Empty when the file has no grammar or tags query, is too large, or
+    /// fails to parse.
     pub fn scope_index(&self, path: &str, content: &str) -> ScopeIndex {
         Self::scope_index_as(self.for_file(path, content), content)
     }
@@ -100,9 +92,8 @@ impl LanguageRegistry {
     }
 }
 
-/// One run of a grammar's tags query over a parsed file: its definition spans,
-/// and the start byte of every name the query captures, a definition's or a
-/// reference's alike.
+/// Definition spans, plus the start byte of every name the tags query
+/// captures, definitions and references alike.
 pub(crate) fn tag_pass(query: &Query, tree: &Tree, content: &str) -> (ScopeIndex, HashSet<usize>) {
     let names = query.capture_names();
     let bytes = content.as_bytes();

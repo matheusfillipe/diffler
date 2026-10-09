@@ -1,31 +1,22 @@
-//! Pair deleted/added line runs inside a hunk and attach intra-line
-//! emphasis. Within a run, lines pair by best total similarity (delta's
-//! homologous-line model): an unbalanced run pairs each line with its true
-//! counterpart, and lines with no counterpart stay unpaired and render
-//! plain: emphasis only ever contrasts a line against its homolog.
+//! Pair deleted/added line runs by best total similarity (delta's
+//! homologous-line model) and attach intra-line emphasis. Unpaired lines
+//! render plain.
 
 use similar::TextDiff;
 
 use crate::diff::intraline;
 use crate::model::{DiffLine, FileDiff, Hunk, LineKind};
 
-/// Emphasis above this share of a line's content is noise, not signal:
-/// highlights are for punctual edits, not rewrites. Word-level emphasis
-/// legitimately covers whole tokens (`old_name` → `new_name` is most of its
-/// line), so the ceiling sits above one-substituted-word territory; true
-/// rewrites already fall out at the token-ratio gate.
+/// Word-level emphasis covers whole tokens (`old_name` → `new_name` is most
+/// of its line), so we set this above one substituted word.
 const MAX_EMPHASIS_SHARE: f32 = 0.7;
 
-/// More separate emphasis runs than this and the line reads as confetti:
-/// scattered small edits render better as plain +/- lines (jj draws the
-/// same line at 3 inline alternations). Counted after near-adjacent runs
-/// merge under `diff::MAX_GAP_CHARS`. Tune the two together.
+/// Counted after near-adjacent runs merge under `diff::MAX_GAP_CHARS`, so we
+/// tune the two together. jj uses the same cap.
 const MAX_EMPHASIS_RUNS: usize = 3;
 
 /// True when the emphasized ranges cover a minority of the line's
-/// non-whitespace content in a few contiguous runs: a punctual edit worth
-/// highlighting. A line that changed (nearly) everywhere, or in many
-/// scattered places, reads better as a plain +/- line.
+/// non-whitespace content in a few runs.
 pub(crate) fn emphasis_is_punctual(text: &str, ranges: &[std::ops::Range<usize>]) -> bool {
     // usize→f32 precision loss is irrelevant at line lengths
     #[allow(clippy::cast_precision_loss)]
@@ -43,17 +34,14 @@ pub(crate) fn emphasis_is_punctual(text: &str, ranges: &[std::ops::Range<usize>]
             emphasized += 1;
         }
     }
-    // a couple of changed characters is always signal, whatever the ratio:
-    // short lines ("41" → "42") would otherwise lose their only highlight;
-    // the run cap stands regardless (whitespace-only runs count zero chars
-    // and would ride the shortcut into confetti)
+    // we always keep two changed characters so "41" → "42" stays lit, and
+    // keep the run cap regardless since whitespace runs count zero chars
     content > 0
         && ranges.len() <= MAX_EMPHASIS_RUNS
         && (emphasized <= 2 || share(emphasized) < share(content) * MAX_EMPHASIS_SHARE)
 }
 
-/// Intra-line emphasis for a paired old/new line, gated as a pair: both
-/// sides punctual, or neither side gets any.
+/// Both sides punctual, or neither side gets emphasis.
 pub(crate) fn gated_pair_emphasis(
     old: &str,
     new: &str,
@@ -66,9 +54,6 @@ pub(crate) fn gated_pair_emphasis(
     }
 }
 
-/// Attach intra-line emphasis to one file's hunks. Pairing is a render-time
-/// concern (only the TUI reads `.emphasis`), so callers enrich the file they
-/// are about to display rather than enriching whole models up front.
 pub fn enrich_file(file: &mut FileDiff) {
     for hunk in &mut file.hunks {
         enrich_hunk(hunk);
@@ -90,21 +75,15 @@ fn enrich_hunk(hunk: &mut Hunk) {
     }
 }
 
-/// Below this token similarity two lines never pair as homologs; a line
-/// with no partner above the floor renders plain rather than being
-/// contrasted against an unrelated neighbor. Keep at or above the engine's
-/// `diff::MIN_INLINE_RATIO`, or pairs form whose emphasis it always
-/// suppresses, wasting a real homolog candidate.
+/// Keep at or above `diff::MIN_INLINE_RATIO`, or pairs form whose emphasis
+/// it always suppresses.
 const MIN_PAIR_RATIO: f32 = 0.5;
 
-/// Runs whose candidate table exceeds this fall back to positional prefix
-/// pairing: a run that big is a rewrite, and the quadratic alignment would
-/// buy nothing but latency. Fallback pairs skip the ratio floor and lean on
-/// the downstream emphasis gates instead.
+/// A run past this is a rewrite, so we pair it by position and skip the
+/// quadratic alignment.
 const MAX_PAIR_TABLE: usize = 1024;
 
-/// `(deleted, added)` index pairs for a hunk's del/add runs: the shared
-/// homologous-line model.
+/// `(deleted, added)` index pairs for a hunk's del/add runs.
 pub(crate) fn paired_run_indices(lines: &[DiffLine]) -> Vec<(usize, usize)> {
     let kind_at = |i: usize| lines.get(i).map(|l| l.kind);
     let mut pairs = Vec::new();
@@ -127,9 +106,8 @@ pub(crate) fn paired_run_indices(lines: &[DiffLine]) -> Vec<(usize, usize)> {
     pairs
 }
 
-/// Monotonic best-total-similarity alignment of a deleted run against its
-/// added run (a weighted LCS over line pairs): positional pairing mismatches
-/// as soon as a run inserts or drops one line, contrasting unrelated lines.
+/// Weighted LCS over line pairs. Positional pairing mismatches as soon as a
+/// run inserts or drops one line.
 // the DP tables are allocated (d+1)×(a+1) and every index below stays
 // inside those bounds
 #[allow(clippy::indexing_slicing)]
@@ -184,21 +162,18 @@ fn pair_runs(
     pairs.extend(aligned.into_iter().rev());
 }
 
-/// Lines longer than this never pair: the token diff per DP cell is
-/// quadratic on dissimilar lines, and a run of huge lines would stall the
-/// render path for emphasis that reads as noise anyway.
+/// The token diff per DP cell is quadratic on dissimilar lines, so longer
+/// lines never pair.
 const MAX_PAIR_LINE_BYTES: usize = 1024;
 
-/// Token-level similarity of two lines. Indentation counts: a shared indent
-/// is what keeps short single-token pairs (`41` → `42`) above the floor, and
-/// the alignment already prefers a real homolog over an indent-only match.
+/// Indentation counts, since a shared indent keeps short pairs like
+/// `41` → `42` above the floor.
 fn line_ratio(old: &str, new: &str) -> f32 {
     if old.len() > MAX_PAIR_LINE_BYTES || new.len() > MAX_PAIR_LINE_BYTES {
         return 0.0;
     }
-    // blank and whitespace-only lines match anything of their kind at full
-    // ratio yet carry no signal; scoring them zero keeps a stray blank from
-    // stealing a real homolog's slot in the alignment
+    // we score blank lines zero so a stray blank cannot take a real
+    // homolog's slot
     if old.trim().is_empty() || new.trim().is_empty() {
         return 0.0;
     }
@@ -234,20 +209,17 @@ mod tests {
             (LineKind::Added, "    if x <= y:"),
         ]);
         enrich_hunk(&mut h);
-        assert!(h.lines[1].emphasis.is_empty()); // deletion side: nothing removed, only insert
+        assert!(h.lines[1].emphasis.is_empty());
         assert_eq!(h.lines[2].emphasis, vec![10..11]);
     }
 
     #[test]
     fn emphasis_is_punctual_separates_edits_from_rewrites() {
-        // minority coverage is signal
         assert!(emphasis_is_punctual(
             "let x = compute();",
             std::slice::from_ref(&(8..15))
         ));
-        // a tiny edit always qualifies, whatever the ratio
         assert!(emphasis_is_punctual("41", std::slice::from_ref(&(1..2))));
-        // majority coverage is a rewrite: no char highlights
         assert!(!emphasis_is_punctual(
             "let x = compute();",
             std::slice::from_ref(&(0..14))
@@ -258,18 +230,14 @@ mod tests {
     #[test]
     fn scattered_runs_beyond_the_cap_are_not_punctual() {
         let text = "alpha one beta two gamma three delta four epsilon";
-        // three runs under the coverage ceiling: still an edit
         let three = vec![6..9, 15..18, 25..30];
         assert!(emphasis_is_punctual(text, &three));
-        // a fourth scattered run tips it into confetti
         let four = vec![6..9, 15..18, 25..30, 37..41];
         assert!(!emphasis_is_punctual(text, &four));
     }
 
     #[test]
     fn whitespace_only_runs_do_not_ride_the_tiny_edit_shortcut() {
-        // alignment-only edits emphasize zero content chars; four scattered
-        // space runs must still fail the cap, not pass as a "tiny edit"
         let text = "a   = 1; b   = 2; c   = 3; d   = 4";
         let runs = vec![1..4, 10..13, 19..22, 28..31];
         assert!(!emphasis_is_punctual(text, &runs));
@@ -277,8 +245,7 @@ mod tests {
 
     #[test]
     fn shifted_single_token_columns_still_pair_positionally() {
-        // "    1" vs "    2" sits exactly on the ratio floor; a renumber
-        // shift must not collapse onto the lone identity pair and go plain
+        // "    1" vs "    2" sits exactly on the ratio floor
         let mut h = hunk(vec![
             (LineKind::Deleted, "    1"),
             (LineKind::Deleted, "    2"),
@@ -300,7 +267,6 @@ mod tests {
             (LineKind::Added, "foo(x);"),
         ]);
         enrich_hunk(&mut h);
-        // a blank-to-blank identity pair would cross and unpair the real edit
         assert_eq!(paired_run_indices(&h.lines), vec![(0, 3)]);
         assert!(!h.lines[3].emphasis.is_empty(), "the edit keeps emphasis");
     }
@@ -337,8 +303,6 @@ mod tests {
             (LineKind::Added, "beta line TWO"),
         ]);
         enrich_hunk(&mut h);
-        // positional pairing would contrast the add with "alpha line one";
-        // the alignment finds its real homolog on the second deletion
         assert_eq!(
             paired_run_indices(&h.lines),
             vec![(1, 2)],
@@ -348,9 +312,6 @@ mod tests {
         assert!(h.lines[0].emphasis.is_empty());
     }
 
-    /// A 4-deleted/3-added run where positional pairing would contrast
-    /// `email` with `permissions` and `permissions` with `states`, painting
-    /// identifier "renames" that never happened.
     #[test]
     fn misaligned_type_hunk_pairs_fields_with_their_homologs() {
         let mut h = hunk(vec![

@@ -1,17 +1,12 @@
-//! Mermaid `sequenceDiagram` into a [`TextFigure`]: who calls whom, in order,
-//! one lane per participant.
-//!
-//! Best effort by design, the way [`crate::graph::mermaid`] treats a
-//! flowchart: `activate`/`deactivate`/`rect`/`box`/`create`/`destroy` are
-//! simplified away and reported, never refused.
+//! Mermaid `sequenceDiagram` into a [`TextFigure`], one lane per participant.
+//! We drop the statements we cannot draw and report them in the notes.
 
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::graph::model::NodeId;
 use crate::graph::text_figure::{SpanKind, TextFigure, TextSpan, elide};
 
-/// Participants a diagram may declare. Past this a terminal card cannot lay
-/// the lanes out readably anyway, and the source comes from an agent.
+/// The source comes from an agent, so we cap what we lay out.
 pub(crate) const MAX_PARTICIPANTS: usize = 12;
 /// Messages, notes and frame markers combined.
 pub(crate) const MAX_EVENTS: usize = 80;
@@ -257,8 +252,8 @@ impl Parsed {
         self.events.push(Event::FrameEnd);
     }
 
-    /// `link <id>: <label> @ <target>`, mermaid's own `link` statement
-    /// repurposed to carry the anchor a receiving message jumps to.
+    /// `link <id>: <label> @ <target>`: we reuse mermaid's `link` statement to
+    /// carry the anchor a message to that participant jumps to.
     fn link(&mut self, rest: &str) {
         let Some((id, rest)) = rest.split_once(':') else {
             return;
@@ -286,12 +281,9 @@ fn arrowhead_of(arrow: &str) -> Arrowhead {
     }
 }
 
-/// The arrow tokens a message line names. Order here does not matter:
-/// [`find_arrow`] breaks a tie by length, so `-->>` is never mistaken for
-/// `->>` starting one character late.
+/// Order does not matter: [`find_arrow`] picks the earliest, then longest.
 const ARROWS: &[&str] = &["-->>", "--x", "--)", "->>", "-x", "-)", "-->", "->"];
 
-/// The earliest, longest arrow in `line`, split into `(from, arrow, rest)`.
 fn find_arrow(line: &str) -> Option<(&str, &str, &str)> {
     let mut best: Option<(usize, &str)> = None;
     for &arrow in ARROWS {
@@ -307,13 +299,9 @@ fn find_arrow(line: &str) -> Option<(&str, &str, &str)> {
     Some((&line[..at], arrow, &line[at + arrow.len()..]))
 }
 
-/// Parse and lay out a `sequenceDiagram`, widening the lanes so message
-/// labels fit, as far as `max_width` columns allow; a label that still does
-/// not fit its lane is elided.
 pub(crate) fn parse(src: &str, max_width: usize) -> Result<SequenceFigure, SequenceError> {
     let mut lines = crate::graph::mermaid::statements(src);
-    // the header (`sequenceDiagram`) is already how the caller chose this
-    // parser; skip it here too so it is never read as a bare message
+    // the caller already matched the `sequenceDiagram` header
     let _ = lines.next();
 
     let mut parsed = Parsed::default();
@@ -352,8 +340,6 @@ pub(crate) fn parse(src: &str, max_width: usize) -> Result<SequenceFigure, Seque
     })
 }
 
-/// One [`NodeId`] per linked participant, and which lane index it belongs to,
-/// for [`render`] to attach it to that participant's own message rows.
 fn resolve_links(
     lanes: &[Lane],
     links: &[(String, String)],
@@ -383,14 +369,13 @@ fn message_need(label: &str) -> usize {
     label.width() + 3
 }
 
-/// Columns a self message's `↺ label` needs from its own lifeline to the next.
 fn self_need(label: &str) -> usize {
     label.width() + 5
 }
 
-/// Each lane's lifeline column, and the canvas width. Lanes start packed as
-/// tight as their boxes allow; then, left to right, the gap before a
-/// message's right end grows until its label fits, while `max_width` lasts.
+/// Each lane's lifeline column, and the canvas width. Lanes start packed;
+/// left to right we widen the gap before each message's right end until its
+/// label fits, while `max_width` lasts.
 fn lane_centers(lanes: &[Lane], events: &[Event], max_width: usize) -> (Vec<usize>, usize) {
     let boxes: Vec<usize> = lanes.iter().map(|l| box_label(l).width()).collect();
     // `gaps[i]` is lane i's lifeline minus lane i-1's (minus the canvas edge
@@ -455,17 +440,14 @@ fn lane_centers(lanes: &[Lane], events: &[Event], max_width: usize) -> (Vec<usiz
     (centers, gaps.iter().sum())
 }
 
-/// A blank canvas as `width` columns of `' '` for every row, the base every
-/// event's own row overlays: a fresh lifeline is redrawn on top per row.
 struct Canvas {
     rows: Vec<Vec<char>>,
     width: usize,
 }
 
 impl Canvas {
-    /// Marks the trailing column of a two-cell-wide glyph, so [`Self::into_lines`]
-    /// can drop it: emitting a real cell there would shift everything after
-    /// it one column to the right.
+    /// Marks the trailing column of a wide glyph so [`Self::into_lines`] drops
+    /// it; a real cell there would shift the rest of the row right.
     const WIDE_CONT: char = '\u{e000}';
 
     fn new(width: usize, height: usize) -> Self {
@@ -481,9 +463,7 @@ impl Canvas {
         }
     }
 
-    /// Write `text` starting at `x`, advancing by each glyph's terminal
-    /// width, and return the display columns it took: a wide glyph occupies
-    /// two columns and marks the second so it is never overwritten.
+    /// Returns the display columns `text` took.
     fn write(&mut self, x: usize, y: usize, text: &str) -> usize {
         let mut at = x;
         for ch in text.chars() {
@@ -517,8 +497,6 @@ impl Canvas {
     }
 }
 
-/// Rows an event occupies: a cross-lane message is a label then an arrow, a
-/// self message, note, or frame marker takes just one.
 fn event_rows(event: &Event) -> usize {
     match event {
         Event::Message { from, to, .. } if from == to => 1,
@@ -577,8 +555,6 @@ impl Draw<'_> {
         self.centers.get(lane).copied().unwrap_or(0)
     }
 
-    /// Write `text` in the foreground colour, the one thing on its row the
-    /// reader should read.
     fn text(&mut self, x: usize, y: usize, text: &str) {
         let len = self.canvas.write(x, y, text);
         self.spans.push(TextSpan {
@@ -744,8 +720,6 @@ mod tests {
         assert!(figure.text.lines.join("\n").contains("greeting"));
     }
 
-    /// Only messages take a number: a note or a frame between two messages
-    /// never makes the count skip.
     #[test]
     fn autonumber_counts_messages_only() {
         let figure = figure(
@@ -825,8 +799,6 @@ mod tests {
         assert!(figure.text.lines[0].contains("Unknown"));
     }
 
-    /// Lanes widen to fit a label while the card has room, so nothing is
-    /// elided that did not have to be.
     #[test]
     fn lanes_widen_to_fit_a_label_the_card_has_room_for() {
         let label = "POST /login {user, pass}";
@@ -836,8 +808,6 @@ mod tests {
         assert!(wide.text.width <= 80);
     }
 
-    /// A label wider than the card allows is elided to its lane, never
-    /// written across the next lifeline or past the canvas edge.
     #[test]
     fn a_label_too_long_for_the_card_is_elided_to_its_lane() {
         let long = "x".repeat(500);
@@ -863,10 +833,6 @@ mod tests {
         assert!(figure.text.lines[1].contains("hi"));
     }
 
-    /// CJK participant names and message labels are twice as wide on screen
-    /// as their character count, so lane placement and the figure's own
-    /// `width` have to be sized in cells or a row overflows its own canvas
-    /// and the next figure's lifelines misalign under it.
     #[test]
     fn cjk_participants_and_labels_stay_within_the_figures_own_width() {
         let figure = figure(

@@ -17,45 +17,31 @@ use crate::config::FileLayout;
 use crate::keymap::Action;
 use crate::tree::{self, TreeNode, TreeRow};
 
-/// Heading for the trailing unpushed-commits section, shared by the renderer
-/// and the search labels so a `/` match lines up with the displayed text.
+/// Shared by the renderer and the search labels so a `/` match lines up with
+/// the displayed text, as are the titles below.
 pub(crate) const UNPUSHED_TITLE: &str = "Unpushed";
 
-/// Heading for the trailing recent-commits section, shared by the renderer and
-/// the search labels so a `/` match lines up with the displayed text.
 pub(crate) const RECENT_TITLE: &str = "Recent commits";
 
-/// Heading for the trailing CI-runs section (when a provider is detected).
 pub(crate) const CI_TITLE: &str = "CI runs";
 
-/// Heading for the trailing Branches section.
 pub(crate) const BRANCHES_TITLE: &str = "Branches";
 
-/// Heading for the leading Open-pull-requests section (when a forge is
-/// detected).
 pub(crate) const PRS_TITLE: &str = "Open pull requests";
 
-/// Heading for the review's walkthroughs group.
 pub(crate) const WALKTHROUGHS_TITLE: &str = "Walkthroughs";
 
-/// How far the unpushed walk goes. Nothing prunes it in a repository whose
-/// remote refs sit off HEAD's history, where the honest answer is the whole
-/// log, so the ceiling keeps both the walk and the row list finite.
+/// When the remote refs sit off HEAD's history nothing prunes the unpushed
+/// walk, so we cap it to keep the walk and the row list finite.
 pub(crate) const UNPUSHED_LIMIT: usize = 100;
 
-/// How many local branches the inline status section shows (the full list is
-/// reachable through the branch picker).
 const BRANCHES_INLINE_LIMIT: usize = 10;
 
-/// How many of the repo's other open PRs the inline status section shows (the
-/// full list is reachable through the Prs screen).
 const PRS_INLINE_LIMIT: usize = 5;
 
-/// How many runs the trailing CI section shows (the full list lives on the
-/// Runs screen).
 const CI_INLINE_LIMIT: usize = 5;
 
-/// Status screen sections, in display order.
+/// In display order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
     Untracked,
@@ -86,32 +72,24 @@ impl Section {
     }
 }
 
-/// The status screen's collapsible groups below (and including) the
-/// unpushed-commits list, each addressed by one slot of
+/// The status screen's collapsible groups, each one slot of
 /// [`StatusView::group_folded`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Group {
-    /// Commits on HEAD its upstream lacks: local and actionable, so it opens
-    /// unfolded.
     Unpushed,
-    /// The repo's open pull requests, minus the branch's own (already shown
-    /// above the divider). Fetched lazily: nothing is requested from the
-    /// forge until this group is first unfolded.
+    /// Excludes the branch's own PR. We fetch nothing from the forge until
+    /// this group is first unfolded.
     Prs,
     Branches,
     Recent,
-    /// Every run in `App::runs`, whether or not it also nests under a row
-    /// above. Listing them all is what keeps a run reachable when it belongs
-    /// to nothing on screen: a scheduled job, a cron run, a run on a branch
-    /// that fell off the list.
+    /// Lists every run, nested ones included, so a run that belongs to
+    /// nothing on screen (a scheduled job, a run on a branch off the list)
+    /// stays reachable.
     Ci,
-    /// The review's walkthroughs, listed under their header.
     Walkthrough,
 }
 
 impl Group {
-    /// Variant count: `group_folded`'s array length derives from this one
-    /// spot, so it grows automatically as variants are added.
     pub(crate) const COUNT: usize = 6;
 
     pub(crate) fn index(self) -> usize {
@@ -126,7 +104,6 @@ impl Group {
     }
 }
 
-/// Only Unpushed opens by default: the rest of the repo band starts folded.
 fn default_group_folded() -> [bool; Group::COUNT] {
     let mut folded = [true; Group::COUNT];
     if let Some(slot) = folded.get_mut(Group::Unpushed.index()) {
@@ -135,19 +112,15 @@ fn default_group_folded() -> [bool; Group::COUNT] {
     folded
 }
 
-/// One cursor-addressable row of the status screen: section headers, directory
-/// rows, file rows, and (when a file is expanded inline) hunk headers and
-/// diff lines, plus the trailing Recent commits section. Holds an owned
-/// directory path (the fold key), so it is `Clone`, not `Copy`.
+/// One cursor-addressable row of the status screen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Row {
     SectionHeader {
         section: Section,
         count: usize,
     },
-    /// A directory in a section's file tree; `path` is the fold key, `name` the
-    /// display name (a joined `a/b/c` for a collapsed single-child chain),
-    /// `depth` the indentation under the header.
+    /// `path` is the fold key; `name` joins a collapsed single-child chain as
+    /// `a/b/c`.
     Dir {
         section: Section,
         path: String,
@@ -170,13 +143,12 @@ pub enum Row {
         hunk: usize,
         line: usize,
     },
-    /// Header of the Unpushed section: commits no remote has yet. `capped`
-    /// marks a count the walk stopped short of finishing.
+    /// `capped` marks a count the walk stopped short of finishing.
     UnpushedHeader {
         count: usize,
         capped: bool,
     },
-    /// One such commit; `index` into `StatusView::unpushed`.
+    /// `index` into `StatusView::unpushed`.
     Unpushed {
         index: usize,
     },
@@ -186,54 +158,44 @@ pub enum Row {
     Commit {
         index: usize,
     },
-    /// The branch's open pull request; Enter reviews it.
+    /// The branch's own pull request.
     Pr,
-    /// Header of the review's walkthroughs; `count` is how many there are.
     WalkthroughHeader {
         count: usize,
     },
-    /// One walkthrough of the review, named by id. Enter opens the diff in
-    /// its walkthrough layout.
     Walkthrough {
         id: String,
     },
-    /// Divider between the branch band (this branch) and the repo band (this
-    /// repo). Furniture, not a cursor-addressable row: it never holds the
-    /// cursor, has no search label, and is skipped by every movement.
+    /// Divider between the branch band and the repo band. The cursor never
+    /// rests on it and search never matches it.
     RepoDivider,
-    /// Header of the leading Open-pull-requests section; `None` while the
-    /// first fetch is still in flight.
+    /// `None` while the first fetch is in flight.
     PrsHeader {
         count: Option<usize>,
     },
-    /// One PR in the inline section, other than the branch's own; `index`
-    /// into `App::other_prs`.
+    /// `index` into `App::other_prs`.
     OpenPr {
         index: usize,
     },
-    /// Header of the trailing Branches section.
     BranchesHeader {
         count: usize,
     },
-    /// One local branch in the inline section; `index` into
-    /// `StatusView::branches`.
+    /// `index` into `StatusView::branches`.
     Branch {
         index: usize,
     },
-    /// Header of the trailing CI-runs section.
     CiHeader {
         count: usize,
     },
-    /// One CI run; `index` into `App::runs`. `nested` is `true` under the
-    /// commit row that triggered it (deeper indent), `false` in the flat CI
-    /// section.
+    /// `index` into `App::runs`. `nested` marks a run drawn under the commit
+    /// that triggered it.
     CiRun {
         index: usize,
         nested: bool,
     },
 }
 
-/// Where the cursor logically sits, so it can be restored after a refresh
+/// Where the cursor sits by identity, so we can restore it after a refresh
 /// reshuffles the rows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum CursorAnchor {
@@ -246,9 +208,7 @@ pub(super) enum CursorAnchor {
         section: Section,
         path: String,
         hunk: Option<usize>,
-        /// The diff line the cursor sat on, by the number the file gives it:
-        /// a poll that re-reads the working tree rebuilds every hunk, and the
-        /// reader is still on the same line.
+        /// Keyed by line number, since a poll rebuilds every hunk.
         line: Option<LineAnchor>,
     },
     Unpushed,
@@ -266,36 +226,28 @@ pub(super) enum CursorAnchor {
     CiRun(usize),
 }
 
-/// One diff line by the numbers it carries: an addition and a context line
-/// have a new-side number, a deletion only an old-side one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct LineAnchor {
     old_no: Option<u32>,
     new_no: Option<u32>,
 }
 
-/// The unpushed commits and whether the walk that found them stopped at its
-/// ceiling, so a count rendered from this can say `100+` there.
+/// `capped` says the walk stopped at its ceiling, so the count renders as `N+`.
 pub struct Unpushed {
     pub commits: Vec<LogEntry>,
     pub capped: bool,
 }
 
-/// One walkthrough of the repo, as its own review file holds it: what the
-/// status screen's row needs, without going through whatever diff is open.
 pub struct WalkthroughRow {
     pub id: String,
     pub title: String,
     pub stops: usize,
     pub all_seen: bool,
-    /// Whether the walkthrough has a summary: `<cr>` opens on it when so,
-    /// else on the first stop.
     pub has_summary: bool,
 }
 
-/// Every walkthrough source on disk (the working review's in-memory edits
-/// included), newest published first. Real disk IO, so this runs once per
-/// refresh (`App::new`, `App::apply_refresh`), never from the render path.
+/// Newest published first. This reads disk, so we call it once per refresh
+/// and never from the render path.
 pub(super) fn load_walkthroughs(review: &Review) -> Vec<WalkthroughRow> {
     let mut rows: Vec<(u64, WalkthroughRow)> = review
         .all_reviews()
@@ -327,56 +279,38 @@ pub(super) fn load_walkthroughs(review: &Review) -> Vec<WalkthroughRow> {
     rows.into_iter().map(|(_, row)| row).collect()
 }
 
-/// All state owned by the status screen.
 pub struct StatusView {
     pub cursor: usize,
-    /// Where a `V` selection started, so a run of commits can be reviewed as
-    /// one range.
+    /// Where a `V` selection started.
     pub anchor: Option<usize>,
     pub folded: [bool; 3],
-    /// Commits no remote has yet: local, free to act on, so shown unfolded by
-    /// default. `None` in a repository with no remote-tracking refs, where
-    /// the section is absent entirely.
+    /// `None` in a repository with no remote-tracking refs, where the section
+    /// is absent.
     pub unpushed: Option<Unpushed>,
     pub recent: Vec<LogEntry>,
-    /// Local branches, newest tip first, capped to `BRANCHES_INLINE_LIMIT`.
     pub branches: Vec<BranchInfo>,
-    /// Every walkthrough source on disk, newest published first. Loaded once
-    /// per refresh, not per frame: real disk IO.
     pub walkthroughs: Vec<WalkthroughRow>,
-    /// Fold state of the repo-band groups (and Unpushed above them), indexed
-    /// by [`Group::index`]. The whole repo band starts folded, unlike the
-    /// always-open branch band above it.
+    /// Indexed by `Group::index`.
     pub group_folded: [bool; Group::COUNT],
-    /// Commits whose CI runs are unfolded beneath them, keyed by oid rather
-    /// than row index so the set survives a refresh that reorders the list.
+    /// Keyed by oid so the set survives a refresh that reorders the list.
     pub(crate) unfolded_commits: BTreeSet<String>,
-    /// Body height of the last render, so half-page motions step by a screenful.
+    /// Body height of the last render, for half-page motions.
     pub(crate) viewport: u16,
-    /// Per-section set of file paths whose inline diff is expanded.
     expanded: [BTreeSet<String>; 3],
-    /// Per-section set of folded directory paths in that section's file tree.
     folded_dirs: [BTreeSet<String>; 3],
-    /// Per-section set of file paths whose inline diff has received its
-    /// background enrichment (intra-line emphasis), so a landed file isn't
-    /// re-queued. Cleared when the status sections are rebuilt (refresh).
+    /// Paths already enriched, so we don't re-queue them. A refresh clears it.
     enriched: [BTreeSet<String>; 3],
-    /// Per-file syntax spans for inline diffs, keyed by path plus both-sides
-    /// content hash: a partially staged file shows up in two sections with
-    /// different content, and each needs its own entry to stay settled.
-    /// Filled lazily, only for expanded files.
+    /// Keyed by path plus both-sides content hash, since a partially staged
+    /// file shows in two sections with different content.
     pub(crate) highlights: HashMap<(String, String), FileHighlights>,
-    /// Whether `App::prs` has been fetched at least once, so the inline
-    /// Open-pull-requests group can tell "nothing fetched yet" (still shown,
-    /// no count) from "the repo truly has no open PRs" (hidden).
+    /// Lets the PR group tell "not fetched yet" (shown, no count) from "no
+    /// open PRs" (hidden).
     pub prs_loaded: bool,
-    /// A PR-list fetch is out and its answer has not landed. Unfolding again
-    /// while one is in flight would put a second identical request on the wire,
-    /// since `prs_loaded` only turns true once the first one answers.
+    /// Stops a second unfold from sending a duplicate fetch before the first
+    /// answers.
     pub prs_in_flight: bool,
-    /// Last render's body rect, line scroll, and per-rendered-line row index
-    /// (rows vary in height, so a screen row maps back to a `visible_rows`
-    /// index only through this table). Drives mouse hit-testing.
+    /// Rows vary in height, so mouse hit-testing maps a screen row back to a
+    /// row index through `line_rows`.
     pub(crate) body: ratatui::layout::Rect,
     pub(crate) scroll: u16,
     pub(crate) line_rows: Vec<Option<usize>>,
@@ -426,16 +360,12 @@ impl StatusView {
         }
     }
 
-    /// The unpushed commits, empty where the repository has no remote to
-    /// measure against.
     pub(crate) fn unpushed_commits(&self) -> &[LogEntry] {
         self.unpushed
             .as_ref()
             .map_or(&[], |unpushed| unpushed.commits.as_slice())
     }
 
-    /// Forget which inline diffs have been enriched (after a refresh rebuilds
-    /// the status sections unenriched).
     pub(super) fn clear_enriched(&mut self) {
         for set in &mut self.enriched {
             set.clear();
@@ -443,12 +373,9 @@ impl StatusView {
     }
 }
 
-/// The Unpushed and Recent commit lists, as `(unpushed, recent)`, with
-/// `unpushed` `None` in a repository that has no remote. Loaded together and
-/// returned or discarded as a pair: recent is filtered against unpushed, so
-/// applying one without the other leaves a pushed commit missing from both
-/// sections. Recent is walked deep enough to still fill `limit` after the
-/// unpushed commits are taken out of it.
+/// Returns `(unpushed, recent)`. Recent is filtered against unpushed, so
+/// callers must apply both or neither, or a commit goes missing from both
+/// sections.
 pub(super) fn load_commit_lists(
     vcs: &dyn Vcs,
     limit: usize,
@@ -467,17 +394,13 @@ pub(super) fn load_commit_lists(
     Ok((unpushed, recent))
 }
 
-/// Every local branch, the checked-out one first and the rest newest tip first.
-/// The inline section renders only the first `BRANCHES_INLINE_LIMIT`, so the
-/// header still counts the whole repo and a capped list reads as a cut rather
-/// than as the total. Head leads so sitting on an old branch while ten newer
-/// ones exist cannot cut your own branch out of the list.
+/// Head first, so the inline cap never cuts the checked-out branch, then
+/// newest tip first.
 pub(super) fn load_branches(vcs: &dyn Vcs) -> Result<Vec<BranchInfo>, VcsError> {
     let mut branches = vcs.branches()?;
     branches.sort_by_key(|branch| (!branch.is_head, std::cmp::Reverse(branch.tip_unix)));
-    // a divergence costs a config read and a graph walk each, which a
-    // repository carrying hundreds of branches feels on every refresh, so only
-    // the rows the section renders ask for one
+    // each divergence costs a config read and a graph walk, so we compute it
+    // only for the rows the section renders
     for branch in branches.iter_mut().take(BRANCHES_INLINE_LIMIT) {
         branch.divergence = vcs.divergence(&branch.name).unwrap_or_default();
     }
@@ -485,10 +408,7 @@ pub(super) fn load_branches(vcs: &dyn Vcs) -> Result<Vec<BranchInfo>, VcsError> 
 }
 
 impl App {
-    /// Re-read every walkthrough source on disk. Called after a refresh, and
-    /// after any change to a walkthrough's own file (publish, delete, a stop
-    /// removed), so the status screen's listing never trails the change that
-    /// just made it.
+    /// Call after a refresh and after any write to a walkthrough's file.
     pub(crate) fn reload_walkthroughs(&mut self) {
         self.status.walkthroughs = load_walkthroughs(&self.review);
     }
@@ -509,8 +429,7 @@ impl App {
             .unwrap_or(false)
     }
 
-    /// The repo's open PRs minus the current branch's own (already shown
-    /// above the divider as `Row::Pr`), for the inline repo-band list.
+    /// Open PRs minus the branch's own, which `Row::Pr` shows.
     pub(crate) fn other_prs(&self) -> Vec<&crate::ci::PullRequest> {
         let own = self.pr.as_ref().map(|pr| pr.number);
         self.prs
@@ -519,8 +438,6 @@ impl App {
             .collect()
     }
 
-    /// Indices into `App::runs` whose triggering commit is `oid` (a commit's
-    /// own sha, or a PR's head sha).
     pub(crate) fn runs_for_commit(&self, oid: &str) -> Vec<usize> {
         self.runs
             .iter()
@@ -530,8 +447,6 @@ impl App {
             .collect()
     }
 
-    /// Run rows to render under the commit `oid`, empty while it is folded or
-    /// has no runs of its own.
     fn nested_runs(&self, oid: &str) -> Vec<Row> {
         if !self.status.unfolded_commits.contains(oid) {
             return Vec::new();
@@ -545,8 +460,7 @@ impl App {
             .collect()
     }
 
-    /// Show or hide a commit's runs. A commit with none stays as it is: the row
-    /// carries no fold marker, so a keypress there must do nothing visible.
+    /// A commit with no runs draws no fold marker, so we leave it unfolded.
     fn toggle_commit_runs(&mut self, oid: String) {
         if self.runs_for_commit(&oid).is_empty() {
             return;
@@ -556,7 +470,6 @@ impl App {
         }
     }
 
-    /// Indices into `App::runs` whose branch is `name`.
     pub(crate) fn runs_for_branch(&self, name: &str) -> Vec<usize> {
         self.runs
             .iter()
@@ -566,11 +479,10 @@ impl App {
             .collect()
     }
 
-    /// The worst status among `indices`' runs, or `None` when none match: the
-    /// honest rendering for a row with nothing loaded for it yet. A cancelled
-    /// or skipped run counts only when no other run of the same workflow
-    /// reached a verdict, since a forge cancels the duplicate a concurrency
-    /// group supersedes and that says nothing about the commit.
+    /// The worst status among `indices`' runs, `None` when none match. A
+    /// cancelled or skipped run counts only when no other run of its workflow
+    /// reached a verdict, since forges cancel duplicates a concurrency group
+    /// supersedes.
     pub(crate) fn ci_rollup(&self, indices: &[usize]) -> Option<crate::ci::JobStatus> {
         use crate::ci::JobStatus;
         let runs: Vec<&crate::ci::CiRun> = indices
@@ -597,7 +509,6 @@ impl App {
             .is_some_and(|set| set.contains(path))
     }
 
-    /// Whether the directory `path` is folded in `section`'s file tree.
     pub fn is_dir_folded(&self, section: Section, path: &str) -> bool {
         self.status
             .folded_dirs
@@ -613,14 +524,12 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// Layout-aware flattened rows for a section's files. The flat list is a
-    /// degenerate tree (one File node per file, depth 0, no Dir nodes), so the
-    /// caller's row-building and the cursor model are identical for both
-    /// layouts. The tree honors the section's folded directories.
+    /// The flat list is a tree with no Dir nodes, so both layouts share one
+    /// row model.
     fn section_layout_rows(&self, section: Section, files: &[FileDiff]) -> Vec<TreeRow> {
         match self.config.ui.status_file_layout {
-            // review and kinds are diff-sidebar-only (config rejects them
-            // here); a stray value degrades to the flat list
+            // config rejects the diff-sidebar-only layouts here; a stray one
+            // falls back to the flat list
             FileLayout::List | FileLayout::Review | FileLayout::Kinds | FileLayout::Walkthrough => {
                 let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
                 tree::flat_rows(&paths)
@@ -633,21 +542,17 @@ impl App {
         }
     }
 
-    /// Flattened cursor-addressable rows given current fold/expansion state.
-    /// Empty sections are hidden, neogit-style; blank separators are a
-    /// rendering concern, so j/k skip them by construction.
+    /// Cursor-addressable rows under the current folds. Blank separators are
+    /// drawn by the renderer, so they never appear here.
     // one flat block per band, straight-line by design
     #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
     pub fn visible_rows(&self) -> Vec<Row> {
         let mut rows = Vec::new();
-        // the branch's own PR leads the band: it is the thing the branch is
-        // for, and it lands from an async fetch, so whoever sets `pr`
-        // re-seats the cursor over the rows it displaces
+        // the PR arrives from an async fetch, so whoever sets `pr` must
+        // re-seat the cursor over the rows it displaces
         if self.pr.is_some() {
             rows.push(Row::Pr);
         }
-        // the repo's walkthroughs, right where the reader decides what to
-        // open; newest first, so the one just published leads
         if !self.status.walkthroughs.is_empty() {
             rows.push(Row::WalkthroughHeader {
                 count: self.status.walkthroughs.len(),
@@ -673,13 +578,8 @@ impl App {
             if self.is_folded(section) {
                 continue;
             }
-            // List renders a degenerate tree (one File row per file at depth 0,
-            // no Dir rows), so the same cursor/navigation model serves both
-            // layouts; Tree groups files under collapsible directory rows.
             for tree_row in self.section_layout_rows(section, files) {
                 match tree_row.node {
-                    // status sections never produce review buckets, stops,
-                    // or the walkthrough sidebar's leading row
                     TreeNode::Section { .. }
                     | TreeNode::Stop { .. }
                     | TreeNode::WalkthroughSummary => {}
@@ -718,8 +618,7 @@ impl App {
                 }
             }
         }
-        // this-branch band: HEAD's own history, which `Vcs::log` walks from
-        // HEAD, so recent commits belong here and not under the repo divider
+        // `Vcs::log` walks from HEAD, so recent commits belong to the branch band
         if let Some(unpushed) = &self.status.unpushed {
             rows.push(Row::UnpushedHeader {
                 count: unpushed.commits.len(),
@@ -743,11 +642,8 @@ impl App {
                 }
             }
         }
-        // this-repo band, folded by default: branches, open PRs, CI runs
-        //
-        // a group is present when the repo can have the thing at all, never
-        // because it currently has one: a count of zero is an answer, and a row
-        // that deletes itself on unfold hides whether it was even asked
+        // we show a group whenever the repo can have the thing, since a count
+        // of zero is an answer and a vanishing header hides whether we asked
         let has_forge = !self.ci_remotes().is_empty();
         rows.push(Row::RepoDivider);
         {
@@ -784,9 +680,7 @@ impl App {
         rows
     }
 
-    /// Searchable `(row index, text)` pairs for the `/` search: section
-    /// titles, directory names, file paths, and recent-commit lines. Inline
-    /// diff rows are left out: the diff view is where code is searched.
+    /// `(row index, text)` pairs for `/`. Inline diff rows are left out.
     pub(crate) fn status_search_rows(&self) -> Vec<(usize, String)> {
         self.visible_rows()
             .iter()
@@ -834,10 +728,8 @@ impl App {
         })
     }
 
-    /// The text a file row displays: the basename in the tree layout (the
-    /// directory rows above carry the path), the whole repo-relative path in
-    /// the flat list. The search labels and the renderer share it so a `/`
-    /// match highlights exactly the displayed substring.
+    /// Shared by the search labels and the renderer so a `/` match highlights
+    /// exactly the displayed text.
     pub(crate) fn status_file_name<'a>(&self, file: &'a FileDiff) -> &'a str {
         if self.config.ui.status_file_layout == FileLayout::List {
             file.path.as_str()
@@ -855,11 +747,7 @@ impl App {
         &model.files
     }
 
-    /// Queue background enrichment (intra-line emphasis + syntax highlight)
-    /// for every currently-expanded inline diff. Cheap and deduped by
-    /// content, so the renderer calls it per frame; the expanded rows draw
-    /// plain until the outcome lands as an `AppEvent::Enriched` event: draw
-    /// only renders.
+    /// Deduped by content, so the renderer can call it every frame.
     pub(crate) fn queue_enrich_status_expanded(&mut self) {
         let semantic = self.config.ui.semantic_diff;
         let stamp = self.enrich_stamp();
@@ -897,14 +785,11 @@ impl App {
         }
     }
 
-    /// Install a finished enrichment into every status-section file it still
-    /// matches (same path and content): swap in the emphasised hunks, cache
-    /// the syntax highlights, and mark the file enriched so it isn't
-    /// re-queued. A stale outcome (the file changed while the job ran)
-    /// matches nothing and is dropped; the next frame re-queues.
+    /// A stale outcome matches no file and is dropped; the next frame
+    /// re-queues it.
     pub(super) fn install_status_enrichment(&mut self, outcome: &EnrichOutcome) {
-        // entries for content no section still shows are dead; drop them so
-        // an edited file doesn't accumulate one entry per past hash
+        // we drop entries no section shows, so an edited file doesn't keep
+        // one entry per past hash
         let live: Vec<String> = [
             &self.review.status.untracked,
             &self.review.status.unstaged,
@@ -941,7 +826,6 @@ impl App {
         }
     }
 
-    /// Move the cursor by half a screenful, clamped to the visible rows.
     fn status_page(&mut self, down: bool, full: bool) {
         let step = super::page_step(self.status.viewport, full);
         let rows = self.visible_rows();
@@ -982,8 +866,7 @@ impl App {
         }
     }
 
-    /// Move the cursor to the row under `(col, row)`. Returns whether a row was
-    /// hit (so a double-click only activates on a real row).
+    /// Returns whether a row was hit.
     fn status_select_at(&mut self, col: u16, row: u16) -> bool {
         let Some(line) = super::hit_index(self.status.body, self.status.scroll as usize, col, row)
         else {
@@ -995,14 +878,11 @@ impl App {
         if index >= self.visible_rows().len() {
             return false;
         }
-        // a click names where the reader wants to be, so it clears any
-        // anchor and starts a fresh selection there
         self.status.set_anchor(None);
         self.status.cursor = index;
         true
     }
 
-    /// The context menu's verbs for the row under the cursor.
     pub(super) fn status_menu_actions(&self) -> Vec<Action> {
         match self.cursor_row() {
             Some(Row::File { .. }) => vec![
@@ -1020,7 +900,6 @@ impl App {
         }
     }
 
-    /// Whether the cursor sits on a row that folds: a group header or a folder.
     fn cursor_on_group(&self) -> bool {
         self.cursor_row().is_some_and(|row| folds(&row))
     }
@@ -1118,13 +997,12 @@ impl App {
             Action::OpenEditor => self.editor_at_status_cursor(),
             Action::CopyUrl => self.copy_at_status_cursor(),
             other => {
-                self.info(format!("{} is not implemented yet", other.name()));
+                self.info(format!("{} does nothing on this screen", other.name()));
             }
         }
     }
 
-    /// Review against the branch a pull request would target: the primary
-    /// remote's default branch, or a local main/master.
+    /// Reviews against the branch a pull request would target.
     fn diff_against_base(&mut self) {
         let remotes = self.review.vcs.remotes().unwrap_or_default();
         let primary = remotes
@@ -1171,9 +1049,7 @@ impl App {
         }
     }
 
-    /// A pull-request row checks that request out; anywhere else the key keeps
-    /// its usual job and opens the branch picker. The branch's own PR is left
-    /// out: its head is the branch already under you.
+    /// Checks out the PR under the cursor, else opens the branch picker.
     fn checkout_at_status_cursor(&mut self) {
         let pr = match self.cursor_row() {
             Some(Row::OpenPr { index }) => self.other_prs().get(index).map(|pr| (*pr).clone()),
@@ -1185,10 +1061,6 @@ impl App {
         }
     }
 
-    /// Copy whatever the cursor is on, in the form you would paste elsewhere:
-    /// a pull request as its forge URL, a commit as its full sha, a file or a
-    /// folder as its repo-relative path. A `V` selection copies every row it
-    /// covers instead, one per line.
     fn copy_at_status_cursor(&mut self) {
         if self.status.selection().is_some() {
             self.copy_status_selection();
@@ -1201,8 +1073,7 @@ impl App {
         self.copy_or_report(value, &label);
     }
 
-    /// Copy the value of every row a `V` selection covers, one per line, each
-    /// only once: the rows of an expanded file all name that same file.
+    /// Deduped, since every row of an expanded file names the same file.
     fn copy_status_selection(&mut self) {
         let Some((top, bottom)) = self.status.selection() else {
             return;
@@ -1225,8 +1096,7 @@ impl App {
         self.pending_clipboard = Some(values.join("\n"));
     }
 
-    /// What `y` copies for `row`, and the label it reports when there is
-    /// nothing to copy.
+    /// What `y` copies for `row`, and the label it reports.
     fn row_copy(&self, row: Row) -> Option<(Option<String>, String)> {
         match row {
             Row::Dir { path, .. } => Some((Some(path.clone()), path)),
@@ -1254,8 +1124,6 @@ impl App {
                 .unpushed_commits()
                 .get(index)
                 .map(|entry| (Some(entry.oid.clone()), entry.oid7.clone())),
-            // a file row, a hunk header, or a line inside an expanded diff:
-            // all of them address one file, the way the editor jump reads them
             other => self
                 .row_file(&other)
                 .map(|(_, file, _)| (Some(file.path.clone()), file.path.clone())),
@@ -1269,12 +1137,8 @@ impl App {
         }
     }
 
-    /// The file and line the status cursor addresses, shared by the editor
-    /// jump and blame.
     pub(crate) fn status_cursor_file_line(&self) -> Option<(String, Option<u32>)> {
         let row = self.cursor_row()?;
-        // For an expanded inline diff line, pass the line number so the
-        // editor opens at the right spot, same as the dedicated diff view.
         let line_no = if let Row::DiffLine {
             section,
             file,
@@ -1298,7 +1162,7 @@ impl App {
         self.visible_rows().get(self.status.cursor).cloned()
     }
 
-    /// The file a row addresses, with the hunk index for hunk-scoped rows.
+    /// The hunk index is set for hunk-scoped rows.
     pub fn row_file(&self, row: &Row) -> Option<(Section, &FileDiff, Option<usize>)> {
         match *row {
             Row::File { section, index, .. } => self
@@ -1385,9 +1249,8 @@ impl App {
         }
     }
 
-    /// Stage everything, resolved by the backend: the section model is a
-    /// snapshot, and a file edited on disk since the last refresh is missing
-    /// from it, which is what made this take two presses.
+    /// We let the backend resolve what to stage, since the section model is a
+    /// snapshot that misses files edited since the last refresh.
     fn stage_all(&mut self) {
         if self.review.vcs.has_index()
             && self.section_files(Section::Untracked).is_empty()
@@ -1421,9 +1284,8 @@ impl App {
         });
     }
 
-    /// `d` is the diff transient's key on this screen, and a walkthrough
-    /// row's delete only while the cursor sits on one; the header takes no
-    /// special action, like every other header.
+    /// `d` deletes only on a walkthrough row; everywhere else on this screen it
+    /// opens the diff transient.
     pub(super) fn status_cursor_on_walkthrough(&self) -> bool {
         self.screen() == super::Screen::Status
             && matches!(self.cursor_row(), Some(Row::Walkthrough { .. }))
@@ -1451,8 +1313,7 @@ impl App {
         }
     }
 
-    /// The oids of the commits a `V` selection covers, newest first. Rows that
-    /// are not commits sit between the sections and are simply passed over.
+    /// Newest first; non-commit rows in the selection are skipped.
     fn selected_commit_oids(&self) -> Vec<String> {
         let Some((top, bottom)) = self.status.selection() else {
             return Vec::new();
@@ -1472,9 +1333,7 @@ impl App {
             .collect()
     }
 
-    /// `<cr>` with a selection: the selected commits read as one review, since
-    /// a run of commits is usually one piece of work. The list is newest first,
-    /// so the last of it is the range's oldest end.
+    /// Opens two or more selected commits as one range review.
     fn open_selected_commits(&mut self) -> bool {
         let oids = self.selected_commit_oids();
         let (Some(newest), Some(oldest)) = (oids.first(), oids.last()) else {
@@ -1528,7 +1387,6 @@ impl App {
                 };
                 self.open_walkthrough(id, slide);
             }
-            // a PR row reviews that PR directly; the header opens the full list
             Row::OpenPr { index } => {
                 let Some(pr) = self.other_prs().get(*index).map(|pr| (*pr).clone()) else {
                     return;
@@ -1536,7 +1394,6 @@ impl App {
                 self.open_pr_review_for(pr);
             }
             Row::PrsHeader { .. } => self.open_prs(),
-            // a branch row checks it out directly; the header opens the full picker
             Row::Branch { index } => {
                 let Some(name) = self.status.branches.get(*index).map(|b| b.name.clone()) else {
                     return;
@@ -1544,15 +1401,12 @@ impl App {
                 self.checkout_branch(&name);
             }
             Row::BranchesHeader { .. } => self.open_branch_list(BranchAction::Checkout),
-            // a CI run opens its graph directly; the header opens the full Runs list
             Row::CiRun { index, .. } => {
                 self.runs_cursor = *index;
                 self.open_selected_run();
             }
             Row::CiHeader { .. } => self.open_runs(),
             Row::RecentHeader { .. } => self.open_log(),
-            // a section header opens the full review diff, starting the
-            // walk at the section's first file (when the review covers it)
             Row::SectionHeader { section, .. } => {
                 let section = *section;
                 let review_model = self.review.model();
@@ -1563,7 +1417,6 @@ impl App {
                     .map(|f| f.path.clone());
                 self.open_working_tree_diff(path.as_deref());
             }
-            // file/hunk/diff rows open the file; a dir row has no file: no-op
             row => {
                 let Some(path) = self.row_file(row).map(|(_, file, _)| file.path.clone()) else {
                     return;
@@ -1595,7 +1448,6 @@ impl App {
             self.review.session.unmark_viewed(&path);
         } else {
             self.review.session.mark_viewed(&path, &hash);
-            // a viewed file reads as done: collapse its inline diffs
             for set in &mut self.status.expanded {
                 set.remove(&path);
             }
@@ -1618,7 +1470,6 @@ impl App {
                 }
                 self.cursor_to_section_header(section);
             }
-            // a directory folds/unfolds in place; its row stays under the cursor
             Row::Dir { section, path, .. } => {
                 if let Some(set) = self.status.folded_dirs.get_mut(section.index())
                     && !set.remove(&path)
@@ -1654,7 +1505,6 @@ impl App {
                 if let Some(set) = self.status.expanded.get_mut(section.index()) {
                     set.remove(&path);
                 }
-                // collapsing from inside lands the cursor on the file row
                 self.seat_cursor_on(
                     |row| matches!(row, Row::File { section: s, index, .. } if *s == section && *index == file),
                 );
@@ -1666,8 +1516,8 @@ impl App {
             }
             Row::PrsHeader { .. } => {
                 self.toggle_group(Group::Prs, |row| matches!(row, Row::PrsHeader { .. }));
-                // the list is fetched once, the first time the group opens;
-                // a re-fold and re-unfold rides the regular CI poll instead
+                // we fetch only on the first unfold; the CI poll refreshes it
+                // after that
                 if !self.is_group_folded(Group::Prs)
                     && !self.status.prs_loaded
                     && !self.status.prs_in_flight
@@ -1717,9 +1567,6 @@ impl App {
         self.clamp_cursor();
     }
 
-    /// Fold/unfold one repo-band group (or the always-open Unpushed group
-    /// above it) and land the cursor on its header, the way every one of
-    /// these toggles must.
     fn toggle_group(&mut self, group: Group, is_header: impl Fn(&Row) -> bool) {
         if let Some(folded) = self.status.group_folded.get_mut(group.index()) {
             *folded ^= true;
@@ -1727,8 +1574,6 @@ impl App {
         self.seat_cursor_on(is_header);
     }
 
-    /// Move the cursor onto the first visible row matching `pred`, if any.
-    /// Every fold toggle needs this re-seat once the row set it sits in shifts.
     fn seat_cursor_on(&mut self, pred: impl Fn(&Row) -> bool) {
         self.status.set_anchor(None);
         if let Some(position) = self.visible_rows().iter().position(pred) {
@@ -1742,7 +1587,6 @@ impl App {
         );
     }
 
-    /// Move the cursor to the next/previous row matching `target`.
     fn jump(&mut self, forward: bool, target: impl Fn(&Row) -> bool) {
         let rows = self.visible_rows();
         if let Some(position) = super::step_to(&rows, self.status.cursor, forward, target) {
@@ -1765,7 +1609,6 @@ impl App {
             Row::Pr => CursorAnchor::Pr,
             Row::WalkthroughHeader { .. } => CursorAnchor::WalkthroughHeader,
             Row::Walkthrough { id } => CursorAnchor::Walkthrough(id.clone()),
-            // furniture: the cursor never actually rests here
             Row::RepoDivider => return None,
             Row::PrsHeader { .. } => CursorAnchor::Prs,
             Row::OpenPr { index } => CursorAnchor::PrsRow(*index),
@@ -1806,8 +1649,6 @@ impl App {
         })
     }
 
-    /// Re-seat the cursor after rows changed: exact hunk → same file in the
-    /// same section → same path anywhere → the section header → clamp.
     pub(super) fn restore_status_cursor(&mut self, anchor: Option<CursorAnchor>) {
         self.status.set_anchor(None);
         let Some(anchor) = anchor else {
@@ -1862,8 +1703,6 @@ impl App {
                 |r| matches!(r, Row::CiRun { index: i, .. } if i == index),
                 |r| matches!(r, Row::CiHeader { .. }),
             ),
-            // a folded dir survives a refresh by its path; fall back to the
-            // section header when the directory is gone
             CursorAnchor::Dir { section, path } => rows
                 .iter()
                 .position(
@@ -1887,9 +1726,8 @@ impl App {
         }
     }
 
-    /// Where a file's cursor lands after the rows changed, narrowest first:
-    /// the line it was reading, that line's hunk, the file in its own section,
-    /// the file wherever it moved to, then the section header.
+    /// Narrowest match first: the line, its hunk, the file in its section, the
+    /// file anywhere, then the section header.
     fn file_anchor_position(
         &self,
         rows: &[Row],
@@ -1958,8 +1796,8 @@ impl App {
     }
 
     pub(super) fn clamp_cursor(&mut self) {
-        // a selection names rows by position, so it cannot outlive a rebuild of
-        // the row list: the rows it covered are no longer the rows it covered
+        // a selection names rows by position, so we drop it whenever the rows
+        // are rebuilt
         self.status.set_anchor(None);
         let rows = self.visible_rows();
         let clamped = self.status.cursor.min(rows.len().saturating_sub(1));
@@ -1967,13 +1805,10 @@ impl App {
     }
 }
 
-/// A header row's position, for a [`CursorAnchor`] that names nothing else.
 fn header_pos(rows: &[Row], header: impl Fn(&Row) -> bool) -> Option<usize> {
     rows.iter().position(header)
 }
 
-/// An indexed row's position, falling back to its group's header once the
-/// item itself is gone (moved section, disappeared commit, and so on).
 fn indexed_or_header(
     rows: &[Row],
     at: impl Fn(&Row) -> bool,
@@ -1988,7 +1823,6 @@ fn is_hunk_header(row: &Row) -> bool {
     matches!(row, Row::HunkHeader { .. })
 }
 
-/// Whether `row` folds: a group header or a folder.
 fn folds(row: &Row) -> bool {
     is_section_header(row) || matches!(row, Row::Dir { .. })
 }
@@ -2006,7 +1840,6 @@ fn is_section_header(row: &Row) -> bool {
     )
 }
 
-/// Furniture rows the cursor must never land on.
 fn is_selectable(row: &Row) -> bool {
     !matches!(row, Row::RepoDivider)
 }
@@ -2028,9 +1861,8 @@ fn last_selectable_up_to(rows: &[Row], end: usize) -> Option<usize> {
         .map(|(index, _)| index)
 }
 
-/// The selectable row nearest `index`, preferring `forward`'s direction and
-/// falling back to the other one, so a divider (alone, doubled up, or at
-/// either end) can never trap the cursor.
+/// Prefers `forward`'s direction and falls back to the other, so a divider at
+/// either end never traps the cursor.
 fn nearest_selectable(rows: &[Row], index: usize, forward: bool) -> usize {
     if rows.is_empty() {
         return 0;
@@ -2062,12 +1894,10 @@ mod tests {
         (fixture, app)
     }
 
-    /// The status screen with `data.txt`'s diff unfolded and the cursor on a
-    /// line inside it, which is where a reader sits while a poll lands.
+    /// `data.txt` unfolded with the cursor on a line inside it.
     fn app_reading_a_hunk() -> (Fixture, App) {
         let fixture = two_hunk_fixture();
         let mut app = App::new(fixture.review(), LoadedConfig::default());
-        // onto the file row, unfold it, then down into the hunk's lines
         app.handle(key('j'));
         app.handle(key('\t'));
         for _ in 0..4 {
@@ -2081,7 +1911,6 @@ mod tests {
         (fixture, app)
     }
 
-    /// The line under the cursor, by the numbers the file gives it.
     fn cursor_line_numbers(app: &App) -> (Option<u32>, Option<u32>) {
         let Some(Row::DiffLine {
             section,
@@ -2096,8 +1925,6 @@ mod tests {
         (line.old_no, line.new_no)
     }
 
-    /// A CI poll or a watcher echo rebuilds the status without changing a
-    /// byte, and the reader keeps their place in the hunk they were reading.
     #[test]
     fn a_refresh_keeps_the_cursor_on_the_diff_line_it_was_on() {
         let (_fixture, mut app) = app_reading_a_hunk();
@@ -2111,8 +1938,6 @@ mod tests {
         assert_eq!(cursor_line_numbers(&app), numbers);
     }
 
-    /// An edit below the cursor rebuilds the hunks, and the cursor follows its
-    /// own line.
     #[test]
     fn an_edit_elsewhere_leaves_the_cursor_on_its_own_line() {
         let (fixture, mut app) = app_reading_a_hunk();
@@ -2132,8 +1957,6 @@ mod tests {
         assert_eq!(cursor_line_numbers(&app), numbers);
     }
 
-    /// An app whose status file layout is forced to `layout`, overriding the
-    /// default.
     fn app_with_status_layout(layout: crate::config::FileLayout) -> (Fixture, App) {
         let fixture = standard_fixture();
         let mut loaded = LoadedConfig::default();
@@ -2142,7 +1965,6 @@ mod tests {
         (fixture, app)
     }
 
-    /// Move the cursor onto the first row matching `pred`.
     /// Three commits on the status screen, so a run of them can be selected.
     fn app_with_commits() -> (Fixture, App) {
         let fixture = standard_fixture();
@@ -2159,8 +1981,6 @@ mod tests {
         (fixture, app)
     }
 
-    /// `V` over a run of commits and `<cr>`: the whole run reads as one range,
-    /// which is what a stack of commits usually is.
     #[test]
     fn enter_on_a_selected_run_of_commits_opens_their_combined_range() {
         let (_fixture, mut app) = app_with_commits();
@@ -2187,8 +2007,6 @@ mod tests {
         assert!(app.status.anchor.is_none(), "opening ends the selection");
     }
 
-    /// One commit selected is one commit: the range only earns itself with a
-    /// second, so `<cr>` opens the single review it always did.
     #[test]
     fn enter_on_a_single_selected_commit_opens_that_commit() {
         let (_fixture, mut app) = app_with_commits();
@@ -2205,8 +2023,6 @@ mod tests {
         );
     }
 
-    /// A selection dragged up over the section header covers rows that are not
-    /// commits; they carry no oid, so the range is still the commits in it.
     #[test]
     fn a_selection_reaching_past_the_header_ranges_only_the_commits() {
         let (_fixture, mut app) = app_with_commits();
@@ -2237,9 +2053,8 @@ mod tests {
         );
     }
 
-    /// Expanding a file's diff inserts rows above the selected commits, so the
-    /// rows the selection named are no longer those rows. It ends there rather
-    /// than reviewing whatever moved under it.
+    /// Expanding a file inserts rows above the selection, so the rows it named
+    /// have moved.
     #[test]
     fn expanding_a_file_above_the_selection_ends_it() {
         let fixture = standard_fixture();
@@ -2267,7 +2082,6 @@ mod tests {
         );
     }
 
-    /// Esc drops a status selection, the way it drops one anywhere else.
     #[test]
     fn escape_cancels_the_status_selection() {
         let (_fixture, mut app) = app_with_commits();
@@ -2324,9 +2138,6 @@ mod tests {
     #[test]
     fn cursor_moves_and_clamps() {
         let (_fixture, mut app) = app();
-        // flat default: untracked (header + todo.md) + unstaged (header +
-        // lib.rs) + staged (header + ci.yml) + the repo-band divider +
-        // branches header + recent commits header: 9 rows
         assert_eq!(app.visible_rows().len(), 9);
         app.handle(key('k'));
         assert_eq!(app.status.cursor, 0, "MoveUp clamps at the top");
@@ -2350,7 +2161,6 @@ mod tests {
     fn half_page_motions_step_by_the_viewport_and_clamp() {
         let (_fixture, mut app) = app();
         assert_eq!(app.visible_rows().len(), 9);
-        // a half-page of a 4-row body is 2 rows
         app.status.viewport = 4;
         app.handle(ctrl_key('d'));
         assert_eq!(app.status.cursor, 2);
@@ -2358,7 +2168,6 @@ mod tests {
         assert_eq!(app.status.cursor, 4);
         app.handle(ctrl_key('u'));
         assert_eq!(app.status.cursor, 2);
-        // a tall viewport clamps to the last row, never past it
         app.status.viewport = 40;
         app.handle(ctrl_key('d'));
         assert_eq!(app.status.cursor, 8);
@@ -2369,7 +2178,6 @@ mod tests {
     #[test]
     fn fold_toggles_the_section_under_the_cursor() {
         let (_fixture, mut app) = app();
-        // the untracked section holds one root-level file (todo.md)
         app.handle(key('\t'));
         assert!(app.is_folded(Section::Untracked));
         assert_eq!(app.visible_rows().len(), 8);
@@ -2382,18 +2190,15 @@ mod tests {
     fn the_default_layout_lists_files_flat_with_no_dir_rows() {
         let (_fixture, app) = app();
         let rows = app.visible_rows();
-        // the flat magit list emits no Dir rows at all
         assert!(
             !rows.iter().any(|r| matches!(r, Row::Dir { .. })),
             "flat list has no directory rows: {rows:?}"
         );
-        // every file row sits at depth 0 (no tree indentation)
         assert!(
             rows.iter()
                 .all(|r| !matches!(r, Row::File { depth, .. } if *depth != 0)),
             "flat file rows live at depth 0: {rows:?}"
         );
-        // the nested unstaged file is still present, just without its src dir
         let unstaged_files = rows
             .iter()
             .filter(|r| {
@@ -2707,9 +2512,8 @@ mod tests {
         assert!(in_section(Section::Unstaged), "other hunk stays unstaged");
     }
 
-    /// The section model is a snapshot. A file edited on disk since the last
-    /// refresh is absent from it, and staging from that list quietly skipped
-    /// the edit, so the key had to be pressed twice.
+    /// The section model is a snapshot that misses files edited since the last
+    /// refresh.
     #[test]
     fn stage_all_catches_a_file_edited_since_the_last_refresh() {
         let (fixture, mut app) = app();
@@ -2726,8 +2530,6 @@ mod tests {
         assert_eq!(app.section_files(Section::Staged).len(), 3);
     }
 
-    /// Unstaging resolves against the repository for the same reason staging
-    /// does, so it clears an entry that landed after the last refresh.
     #[test]
     fn unstage_all_clears_a_file_staged_since_the_last_refresh() {
         let (fixture, mut app) = app();
@@ -2996,10 +2798,8 @@ mod tests {
     fn e_on_an_expanded_diff_line_passes_the_line_number() {
         let (fixture, mut app) = app();
         app.config.editor.command = Some("vim".to_owned());
-        // expand the unstaged file's inline diff
         cursor_to(&mut app, file_row_in(Section::Unstaged));
         app.handle(key('\t'));
-        // find the first DiffLine and what line number it carries
         let rows = app.visible_rows();
         let (diff_line_pos, row) = rows
             .iter()
@@ -3687,9 +3487,8 @@ mod tests {
         }
     }
 
-    /// Mirrors the production loop, which only ever calls the CI provider
-    /// once a request is actually queued: ties the assertion to a real forge
-    /// call, not just to `pending_ci` bookkeeping.
+    /// Mirrors the production loop, which calls the CI provider only once a
+    /// request is queued.
     async fn dispatch_if_queued(app: &App, provider: &crate::ci::GitHubProvider) {
         use crate::ci::ForgeProvider;
         if matches!(app.pending_ci, Some(CiRequest::Prs)) {
@@ -3832,8 +3631,6 @@ mod tests {
         );
     }
 
-    /// The repo's walkthroughs sit in the branch band under the pull
-    /// request, folded like any other group until unfolded.
     #[test]
     fn the_walkthrough_header_follows_the_branch_pr_and_starts_folded() {
         let (_fixture, mut app) = app();
@@ -3854,8 +3651,6 @@ mod tests {
         );
     }
 
-    /// A review with no walkthrough has no row: the band never says an agent
-    /// wrote nothing.
     #[test]
     fn a_review_without_a_walkthrough_has_no_row() {
         let (_fixture, app) = app();
@@ -3866,7 +3661,6 @@ mod tests {
         );
     }
 
-    /// `tab` on the header unfolds the walkthroughs, one row each.
     #[test]
     fn tab_on_the_walkthrough_header_unfolds_the_walkthroughs() {
         let (_fixture, mut app) = app();
@@ -3884,7 +3678,6 @@ mod tests {
         assert_eq!(ids, vec!["w1".to_owned()], "{rows:?}");
     }
 
-    /// Every walkthrough on disk lists as its own row, newest published first.
     #[test]
     fn two_walkthroughs_list_as_two_rows_newest_first() {
         let (_fixture, mut app) = app();
@@ -3922,8 +3715,6 @@ mod tests {
         assert_eq!(ids, vec!["w2", "w1"], "the newest one leads");
     }
 
-    /// `<cr>` on the header does nothing special, like every other header:
-    /// only `tab` folds and unfolds it.
     #[test]
     fn enter_on_the_walkthrough_header_does_nothing_special() {
         let (_fixture, mut app) = app();
@@ -3933,7 +3724,6 @@ mod tests {
         assert_eq!(app.screen(), crate::app::Screen::Status);
     }
 
-    /// `<cr>` on a walkthrough row opens its summary when it has one.
     #[test]
     fn enter_on_a_walkthrough_row_opens_its_summary() {
         let (_fixture, mut app) = app();
@@ -3952,8 +3742,6 @@ mod tests {
         assert_eq!(diff.tree_cursor, 0);
     }
 
-    /// `<cr>` on a walkthrough row with no summary opens straight on its
-    /// first stop, since the sidebar has no leading row to land on.
     #[test]
     fn enter_on_a_walkthrough_row_with_no_summary_opens_the_first_stop() {
         let (_fixture, mut app) = app();
@@ -3982,7 +3770,6 @@ mod tests {
         );
     }
 
-    /// `y` on the header copies nothing, the same as any other header.
     #[test]
     fn y_on_the_walkthrough_header_copies_nothing() {
         let (_fixture, mut app) = app();
@@ -3992,9 +3779,6 @@ mod tests {
         assert_eq!(app.pending_clipboard, None);
     }
 
-    /// `d` on a walkthrough row asks, then deletes its review file and every
-    /// comment in it; `d` on the header still opens the diff transient, like
-    /// every other header.
     #[test]
     fn d_on_a_walkthrough_row_asks_then_deletes_it_and_its_comments() {
         let (_fixture, mut app) = app();
@@ -4107,8 +3891,6 @@ mod tests {
         );
     }
 
-    /// An expanded file's own rows all name that file, so the selection
-    /// copies it once.
     #[test]
     fn y_over_selected_files_copies_each_path_once() {
         let (_fixture, mut app) = two_of_each();
@@ -4161,8 +3943,6 @@ mod tests {
         assert_eq!(app.pending_clipboard.as_deref(), Some("todo.md"));
     }
 
-    /// A line inside an expanded file still addresses that file, the way the
-    /// editor jump reads it.
     #[test]
     fn y_on_a_line_inside_an_expanded_file_copies_the_file() {
         let (_fixture, mut app) = app();
@@ -4399,9 +4179,8 @@ mod tests {
 
     #[test]
     fn partially_staged_file_expanded_in_both_sections_settles() {
-        // the same path carries different content in Unstaged and Staged, so
-        // each side needs its own cache entry: a path-keyed cache would make
-        // the two sections evict each other and re-enrich forever
+        // a path-keyed cache would make the two sections evict each other and
+        // re-enrich forever
         let fixture = standard_fixture();
         fixture.stage("src/lib.rs");
         fixture.write("src/lib.rs", "pub fn answer() -> u32 {\n    43\n}\n");
@@ -4441,9 +4220,7 @@ mod tests {
         assert_eq!(app.ci_rollup(&indices), Some(JobStatus::Failed));
     }
 
-    /// Two runs of one workflow started together and the forge cancelled the
-    /// duplicate: the one that finished decides, so the commit reads green.
-    /// A workflow whose only run was cancelled still says so.
+    /// The forge cancelled a duplicate run, so the finished one decides.
     #[test]
     fn ci_rollup_lets_a_decided_run_outvote_its_cancelled_twin() {
         use crate::ci::{CiRun, JobStatus, RunId};

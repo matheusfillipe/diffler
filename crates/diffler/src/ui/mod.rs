@@ -1,6 +1,5 @@
-//! Rendering. `draw` never computes review state; it reads `App` (the diff
-//! view additionally fills its lazy highlight cache and follows the cursor
-//! with its scroll offset, which is why it takes `&mut App`).
+//! Rendering. `draw` reads review state from `App` and computes none; it takes
+//! `&mut App` for scroll offsets and the diff view's highlight cache.
 
 pub mod ci_log;
 pub mod diff;
@@ -29,10 +28,8 @@ use crate::keymap::{Action, render_chord};
 use crate::theme::Theme;
 use crate::transient::TransientKind;
 
-/// Split `text` into spans, painting `/`-search match byte ranges with the
-/// search background (the active match stronger). Shared by every searchable
-/// pane so highlight looks the same everywhere; `ranges` are byte offsets into
-/// `text`, paired with whether each is the active match.
+/// Paint `/`-search matches over `text`. `ranges` are byte offsets, each
+/// paired with whether it is the active match.
 pub(super) fn highlight_spans(
     text: &str,
     base: Style,
@@ -42,9 +39,8 @@ pub(super) fn highlight_spans(
     highlight_spans_split(text, 0, base, base, ranges, theme)
 }
 
-/// [`highlight_spans`] with the leading `split` bytes in `lead` instead of
-/// `base`: a path recedes into its parent directories while its basename keeps
-/// the foreground, and a search hit stays lit across the boundary.
+/// [`highlight_spans`] with the leading `split` bytes styled `lead`, so a
+/// path's parent directories can dim while its basename stays bright.
 pub(super) fn highlight_spans_split(
     text: &str,
     split: usize,
@@ -99,7 +95,7 @@ pub(super) fn highlight_spans_split(
     spans
 }
 
-/// The frame below the project tab row, drawing the row first while several
+/// The frame below the project tab row, which we draw only while several
 /// projects are open.
 fn screen_area(frame: &mut Frame<'_>, app: &App) -> Rect {
     let area = frame.area();
@@ -111,8 +107,6 @@ fn screen_area(frame: &mut Frame<'_>, app: &App) -> Rect {
     rest
 }
 
-/// One line naming every open project, the one in front in the accent
-/// colour, with the key that adds another on the right.
 fn tab_row(app: &App, strip: &crate::app::tabs::TabStrip, width: u16) -> Line<'static> {
     let theme = &app.theme;
     let bg = theme.panel;
@@ -151,10 +145,8 @@ fn tab_row(app: &App, strip: &crate::app::tabs::TabStrip, width: u16) -> Line<'s
     Line::from(spans)
 }
 
-/// Shared chrome for the `[hint, body, bar]` screens: paints the full-area
-/// background, splits off the hint row and renders it, and hands back the
-/// body and bar rects. The bar's own paragraph (content and style both vary
-/// per screen) stays with the caller.
+/// Chrome for the `[hint, body, bar]` screens. Returns the body and bar
+/// rects; the caller draws its own bar.
 pub(super) fn screen_chrome(frame: &mut Frame<'_>, app: &App, hints: &[Hint]) -> (Rect, Rect) {
     let area = screen_area(frame, app);
     frame.render_widget(Block::new().style(app.theme.base()), area);
@@ -168,8 +160,7 @@ pub(super) fn screen_chrome(frame: &mut Frame<'_>, app: &App, hints: &[Hint]) ->
     (body, bar)
 }
 
-/// Like [`screen_chrome`], for screens that carve an extra header row (a
-/// provenance/summary line) out from under the hint line.
+/// [`screen_chrome`] with a header row under the hint line.
 pub(super) fn screen_chrome_with_header(
     frame: &mut Frame<'_>,
     app: &App,
@@ -192,9 +183,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     app.frame_width = frame.area().width;
     match app.screen() {
         Screen::Status => {
-            // enrichment (emphasis/highlight) runs on the blocking pool; this
-            // only queues work, and expanded inline diffs render plain until
-            // the result lands
+            // expanded inline diffs render plain until their enrichment lands
             app.queue_enrich_status_expanded();
             status::draw(frame, app);
         }
@@ -208,8 +197,6 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         Screen::Stats => stats::draw(frame, app),
     }
     app.modal_hits = draw_modal(frame, app);
-    // the which-key panel is a transient overlay, not a modal: it draws only
-    // once the reveal timer has elapsed and never over a modal
     if app.modal.is_none()
         && let Some(which_key) = app.which_key_panel()
     {
@@ -217,8 +204,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     }
 }
 
-/// Draw the open modal, returning where it put its rows so the pointer can
-/// find them. `None` for a dialog with nothing to point at.
+/// Returns where the modal drew its rows, for mouse hit-testing.
 fn draw_modal(frame: &mut Frame<'_>, app: &App) -> Option<popup::ListHits> {
     match &app.modal {
         Some(Modal::Confirm { message, .. }) => {
@@ -309,8 +295,6 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) -> Option<popup::ListHits> {
     }
 }
 
-/// Dialog footer for the active focus: classic keys in list focus, the
-/// filter hints while typing.
 fn footer_for(list: &fuzzy::FuzzyList, list_keys: &str, verb: &str) -> String {
     match list.focus {
         fuzzy::FuzzyFocus::List => {
@@ -322,7 +306,6 @@ fn footer_for(list: &fuzzy::FuzzyList, list_keys: &str, verb: &str) -> String {
     }
 }
 
-/// A dialog listing commands, each label beside its key.
 fn command_modal(
     title: &str,
     commands: &[crate::app::Command],
@@ -345,7 +328,6 @@ fn command_modal(
     }
 }
 
-/// A dialog whose rows are plain labels, ranked through the list's matches.
 fn plain_list(
     title: String,
     list: &fuzzy::FuzzyList,
@@ -368,7 +350,6 @@ fn plain_list(
     }
 }
 
-/// The question of how long a picked language holds.
 fn scope_modal(
     language: &str,
     scopes: &[crate::app::language::LanguageScope],
@@ -476,9 +457,6 @@ fn fuzzy_modal(app: &App) -> Option<popup::FuzzyModal> {
     }
 }
 
-/// Help popup entries: the active keymap's leaves, then, on the status
-/// screen, each transient's prefix and its grouped sub-keys, so the popup
-/// documents the full two-level map.
 fn help_entries(app: &App) -> Vec<(String, String)> {
     let keymap = app.active_keymap();
     let mut entries: Vec<(String, String)> = keymap
@@ -501,8 +479,7 @@ fn help_entries(app: &App) -> Vec<(String, String)> {
     entries
 }
 
-/// The project-tab keys for the help popup, the nine tab numbers folded
-/// into one row.
+/// The nine go-to-tab keys fold into one row.
 fn tab_help_entries(keymap: &crate::keymap::Keymap) -> Vec<(String, String)> {
     use crate::keymap::Action;
     let mut entries: Vec<(String, String)> = keymap
@@ -529,7 +506,6 @@ fn tab_help_entries(keymap: &crate::keymap::Keymap) -> Vec<(String, String)> {
     entries
 }
 
-/// Status accent shared by the diff sidebar and the status screen.
 pub(super) fn status_color(theme: &Theme, status: FileStatus) -> Color {
     match status {
         FileStatus::Added | FileStatus::Untracked => theme.added,
@@ -539,8 +515,6 @@ pub(super) fn status_color(theme: &Theme, status: FileStatus) -> Color {
     }
 }
 
-/// Theme color for a CI job/run status, shared by the runs list and the inline
-/// status section so the palette stays in one place.
 pub(super) fn ci_status_color(theme: &Theme, status: crate::ci::JobStatus) -> Color {
     use crate::ci::JobStatus;
     match status {
@@ -551,8 +525,7 @@ pub(super) fn ci_status_color(theme: &Theme, status: crate::ci::JobStatus) -> Co
     }
 }
 
-/// GitHub-style ` +A -B` diffstat spans over `bg`. A zero side is dimmed so it
-/// reads as inactive; both-zero yields no spans.
+/// ` +A -B` over `bg`, with a zero side dimmed.
 pub(super) fn diffstat_spans(
     theme: &Theme,
     added: usize,
@@ -578,8 +551,7 @@ pub(super) fn language_color(theme: &Theme, color: language::Rgb) -> Color {
     readable_on(Color::Rgb(r, g, b), theme.bg)
 }
 
-/// `fg` lifted until it clears the UI's 3:1 contrast on `bg`, for text drawn
-/// over a blended surface no theme tuned its own palette for.
+/// `fg` lifted until it clears 3:1 contrast on `bg`.
 pub(super) fn readable_on(fg: Color, bg: Color) -> Color {
     let Color::Rgb(r, g, b) = fg else {
         return fg;
@@ -591,23 +563,19 @@ pub(super) fn readable_on(fg: Color, bg: Color) -> Color {
 pub(super) fn rgb_of(color: Color) -> language::Rgb {
     match color {
         Color::Rgb(r, g, b) => (r, g, b),
-        // every bundled theme is truecolor; a terminal-palette colour has no
-        // channels to compare, so treat it as the dark end
+        // every bundled theme is truecolor, so we treat a palette colour as dark
         _ => (0, 0, 0),
     }
 }
 
-/// Split `cells` between `shares` in proportion, by largest remainder, so the
-/// pieces add up to exactly `cells` and no non-zero share rounds away to
-/// nothing. A stacked bar is only honest if it fills its own width.
+/// Split `cells` between `shares` by largest remainder, so the pieces sum to
+/// exactly `cells` and no non-zero share rounds away to nothing.
 pub(super) fn allocate(shares: &[usize], cells: usize) -> Vec<usize> {
     let total: usize = shares.iter().sum();
     let counted = shares.iter().filter(|share| **share > 0).count();
     if total == 0 || cells == 0 || counted == 0 {
         return vec![0; shares.len()];
     }
-    // every language that changed anything keeps a cell, so the rest of the
-    // bar is what is left to share out
     if counted >= cells {
         return shares
             .iter()
@@ -643,9 +611,7 @@ pub(super) fn allocate(shares: &[usize], cells: usize) -> Vec<usize> {
     out
 }
 
-/// A ~5-cell bar split green:red by the added:deleted ratio over `bg`; at least
-/// one cell goes to each non-zero side so neither vanishes. Empty with no
-/// changes. Shared by the status total and the diff pane header.
+/// A 5-cell added:deleted bar, giving each non-zero side at least one cell.
 pub(super) fn proportion_bar(
     theme: &Theme,
     added: usize,
@@ -681,17 +647,14 @@ pub(super) fn proportion_bar(
     spans
 }
 
-/// One hint entry: either leaf actions sharing a label, or a transient prefix.
-/// Prefix entries render only the top-level key, keeping the hint line at the
-/// prefix altitude (sub-commands live in the which-key panel and help popup).
+/// A prefix hint shows only its own key; the which-key panel lists the rest.
 pub(super) enum Hint {
     Leaf(&'static [Action], &'static str),
     Prefix(TransientKind, &'static str),
 }
 
-/// Hint line built from the active keymap so config remaps show. Leaf items
-/// whose action lost its key to a remap are dropped; a prefix without a bound
-/// key (a dropped conflict) is dropped too.
+/// Built from the active keymap so remaps show; an entry with an unbound key
+/// is dropped.
 pub(super) fn hint_line(app: &App, items: &[Hint]) -> Line<'static> {
     let keymap = app.active_keymap();
     let mut parts: Vec<(String, &str)> = Vec::new();
@@ -724,10 +687,8 @@ pub(super) fn hint_line(app: &App, items: &[Hint]) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Repaint a row with the cursor-line background, padded to the full width
-/// so the highlight spans the whole row.
-/// Compact "time ago" for a commit time, neogit-style: `49s`, `6m`, `21h`,
-/// `3d`, `2w`, `5mo`, `1y`. Future times (clock skew) clamp to `0s`.
+/// Compact "time ago": `49s`, `6m`, `21h`, `3d`, `2w`, `5mo`, `1y`. A future
+/// time (clock skew) clamps to `0s`.
 pub(super) fn relative_time(now: i64, then: i64) -> String {
     let secs = (now - then).max(0);
     let (n, unit) = match secs {
@@ -742,16 +703,12 @@ pub(super) fn relative_time(now: i64, then: i64) -> String {
     format!("{n}{unit}")
 }
 
-/// Padding to right-align `content_width` cells within `width`, given `used`
-/// cells already consumed. `None` when there is no room, so the left content
-/// is never pushed off-screen. Shared by every right-aligned row column.
+/// `None` when there is no room, so the left content stays on screen.
 fn right_align_pad(used: usize, content_width: usize, width: usize) -> Option<usize> {
     (used + content_width < width).then(|| width - used - content_width)
 }
 
-/// Right-aligned author + commit age for a commit row, given the width already
-/// used by the row's left content. Empty when there is no room, so the left
-/// content (oid, subject) is never pushed off-screen.
+/// Right-aligned author and age for a commit row, empty when there is no room.
 pub(super) fn commit_meta_spans(
     theme: &Theme,
     author: &str,
@@ -777,9 +734,6 @@ pub(super) fn commit_meta_spans(
     ]
 }
 
-/// Right-aligned age for a branch row, given the width already used by the
-/// row's left content: same padding arithmetic as [`commit_meta_spans`],
-/// without the author column a branch row has no use for.
 pub(super) fn age_spans(
     theme: &Theme,
     time_unix: i64,
@@ -799,23 +753,17 @@ pub(super) fn age_spans(
     ]
 }
 
-/// Rows kept between the cursor and the edge of the viewport, vim's
-/// `scrolloff`: the view starts moving before the cursor reaches the last row,
-/// so there is always something to read ahead of it.
+/// Vim's `scrolloff`.
 pub(super) const SCROLLOFF: usize = 3;
 
-/// Scroll offset that keeps `cursor` inside a `height`-row viewport with
-/// [`SCROLLOFF`] rows to spare: the top follows the cursor down before it hits
-/// the bottom row and up before it hits the top one. The first and last rows of
-/// the content have no room for a margin, so the cursor reaches them. `total`
-/// is the row count; shared by every row-list pane so scrolling behaves
-/// identically.
+/// Scroll offset that keeps `cursor` [`SCROLLOFF`] rows from the viewport's
+/// edges, except at the content's first and last rows.
 pub(super) fn scroll_to_cursor(cursor: usize, scroll: usize, height: usize, total: usize) -> usize {
     scroll_to_span(cursor, 1, scroll, height, total)
 }
 
-/// [`scroll_to_cursor`] for a cursor that spans several lines, which a wrapped
-/// diff row does: `start` is its first line and `span` how many it occupies.
+/// [`scroll_to_cursor`] for a cursor spanning `span` lines from `start`, as a
+/// wrapped diff row does.
 pub(super) fn scroll_to_span(
     start: usize,
     span: usize,
@@ -834,16 +782,11 @@ pub(super) fn scroll_to_span(
     scroll.min(highest).max(lowest).min(last)
 }
 
-/// Truncate to `max` display columns with an ellipsis. Shared by the runs
-/// list and the status screen's inline CI section, which both fit run
-/// metadata into fixed-width columns.
 pub(super) use crate::text::elide;
 
-/// A list row under the cursor: the band across its full width, and its
-/// leading cell given over to the accent bar. The flat lists share this so the
-/// bar means one thing and a row holds its columns as the cursor arrives. The
-/// diff sidebar builds its own equivalent, because its band also carries which
-/// pane has focus.
+/// A list row under the cursor: banded to full width, its lead cell taken by
+/// the accent bar. The diff sidebar draws its own, since its band also shows
+/// pane focus.
 pub(super) fn cursor_line(line: Line<'static>, theme: &Theme, width: u16) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = line
         .spans
@@ -865,9 +808,7 @@ pub(super) fn cursor_line(line: Line<'static>, theme: &Theme, width: u16) -> Lin
     Line::from(spans)
 }
 
-/// A row banded to its full width in `bg`, keeping every span's own colours.
-/// What marks a range of rows as one thing: the segment a reference points at,
-/// where the cursor rail still has to read on top of it.
+/// A row banded to its full width in `bg`, keeping every span's foreground.
 pub(super) fn fill_row(line: Line<'static>, bg: Color, width: u16) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = line
         .spans
@@ -885,16 +826,11 @@ pub(super) fn fill_row(line: Line<'static>, bg: Color, width: u16) -> Line<'stat
     Line::from(spans)
 }
 
-/// How far the reference band leans from the pane's ground toward the accent.
-/// Enough to read as a band, light enough for text to stay legible on it.
+/// How far the reference band blends from the background toward the accent.
 const REFERENCE_BAND: u16 = 25;
 
-/// `rendered`, banded when `index` falls inside `referenced`: the segment a
-/// stop or a comment anchor points at, so the whole span reads as one thing
-/// and not just the line the cursor sits on. The colour is chosen here rather
-/// than passed in, so the diff pane and the file view cannot band the same
-/// kind of span in two different colours, and it replaces whatever background
-/// the row painted itself, an added line's green included.
+/// Band `rendered` when `index` falls inside the `referenced` span. We pick
+/// the colour here so the diff pane and the file view always agree on it.
 pub(super) fn band_referenced(
     rendered: Vec<Line<'static>>,
     referenced: Option<(usize, usize)>,
@@ -912,9 +848,8 @@ pub(super) fn band_referenced(
         .collect()
 }
 
-/// Rows lead with an indent cell for the bar to claim, so claiming it holds
-/// every following column in place. A row leading with something wider, or
-/// with nothing at all, takes the bar in front and shifts.
+/// The bar replaces a one-cell lead so the row's columns hold still; any
+/// other row shifts right to make room.
 fn claim_lead_cell(spans: &mut Vec<Span<'static>>, theme: &Theme) {
     let bar = |bg| Span::styled("▌", Style::new().fg(theme.accent).bg(bg));
     let Some(first) = spans.first_mut() else {
@@ -932,9 +867,8 @@ fn claim_lead_cell(spans: &mut Vec<Span<'static>>, theme: &Theme) {
     }
 }
 
-/// `agent · <focus>[ · <file>]` in at most `room` cells: the file goes first,
-/// then the focus elides, then only `agent` is left, so the indicator never
-/// pushes the bar's own content off screen.
+/// `agent · <focus>[ · <file>]` in at most `room` cells, dropping the file
+/// first, then eliding the focus.
 fn agent_activity_spans(
     activity: &AgentActivity,
     theme: &Theme,
@@ -965,8 +899,6 @@ fn agent_activity_spans(
     spans
 }
 
-/// The status bar's mode indicator: a forge-backed review must read
-/// differently from a local one, so the PR source names itself.
 fn mode_chip(app: &App) -> String {
     match app.screen() {
         Screen::Status => " STATUS ".to_owned(),
@@ -1000,8 +932,6 @@ fn mode_chip(app: &App) -> String {
     }
 }
 
-/// Bottom bar shared by every screen: mode chip, repo@branch, MCP state,
-/// viewed counts, the agent's activity, and the transient message.
 pub(super) fn status_bar(app: &App, width: u16) -> Line<'static> {
     let theme = &app.theme;
     let on_panel = |fg| Style::new().fg(fg).bg(theme.panel);
@@ -1015,7 +945,6 @@ pub(super) fn status_bar(app: &App, width: u16) -> Line<'static> {
     if let Some(port) = app.mcp_port {
         spans.push(Span::styled(format!(" · mcp :{port}"), on_panel(theme.dim)));
     } else if app.config.mcp.enabled {
-        // server is configured but not yet bound (or failed)
         spans.push(Span::styled(" · mcp off", on_panel(theme.dim)));
     }
     if app.refresh_flash > 0 {
@@ -1023,7 +952,6 @@ pub(super) fn status_bar(app: &App, width: u16) -> Line<'static> {
     }
     let (files, viewed) = app.viewed_counts();
     if files > 0 {
-        // the diff view is the review walk, so its counter reads as progress
         let text = if app.screen() == Screen::Diff {
             format!(" · viewed {viewed}/{files} files")
         } else {
@@ -1087,8 +1015,7 @@ mod tests {
     };
     use ratatui::style::{Color, Style};
 
-    /// Snapshots carry text only, so the styles a sidebar path row is made of
-    /// are asserted here or nowhere.
+    /// Snapshots carry text only, so we assert a path row's styles here.
     #[test]
     fn a_paths_parents_recede_behind_its_basename() {
         let theme = Theme::github_dark();
@@ -1132,7 +1059,6 @@ mod tests {
         let held = scroll_to_cursor(10, 0, 20, 100);
         assert_eq!(held, 0, "a cursor in the middle moves nothing");
 
-        // walking down, the view starts moving SCROLLOFF rows short of the end
         assert_eq!(scroll_to_cursor(16, 0, 20, 100), 0);
         assert_eq!(scroll_to_cursor(17, 0, 20, 100), 1, "the margin is reached");
         assert_eq!(
@@ -1144,7 +1070,6 @@ mod tests {
 
     #[test]
     fn the_last_rows_are_reachable_without_a_margin() {
-        // there is nothing below the final row to keep in view
         let scroll = scroll_to_cursor(99, 80, 20, 100);
         assert_eq!(scroll, 80, "the last screenful is the end of the scroll");
         assert_eq!(99 - scroll, 19, "the cursor still reaches the bottom row");
@@ -1158,7 +1083,6 @@ mod tests {
 
     #[test]
     fn a_short_viewport_keeps_the_cursor_centred() {
-        // fewer rows than two margins: the gap shrinks rather than fighting
         for height in 1..=(SCROLLOFF * 2) {
             let scroll = scroll_to_cursor(50, 0, height, 100);
             assert!(
@@ -1296,7 +1220,6 @@ mod tests {
         assert_eq!(relative_time(now, now - 2 * 7 * 86_400), "2w");
         assert_eq!(relative_time(now, now - 90 * 86_400), "3mo");
         assert_eq!(relative_time(now, now - 800 * 86_400), "2y");
-        // future commit times (clock skew) clamp to 0s, never negative
         assert_eq!(relative_time(now, now + 500), "0s");
     }
 
@@ -1315,7 +1238,6 @@ mod tests {
             .collect();
         assert!(text.starts_with("▌● src/lib.rs"), "{text}");
         assert_eq!(under_cursor.width(), 40, "the band spans the full width");
-        // the glyph sits in the same column either way, so the list holds still
         let column = |line: &Line<'_>| {
             line.spans
                 .iter()

@@ -1,5 +1,5 @@
-//! Facade tying the VCS backend, session, and store together: the one
-//! entry point the TUI and MCP layers consume.
+//! Facade over the VCS backend, session and store, used by the TUI and MCP
+//! layers.
 
 use std::cell::OnceCell;
 use std::collections::{BTreeMap, HashMap};
@@ -32,22 +32,16 @@ pub struct FileSnapshot {
     pub blame: Vec<crate::vcs::BlameSpan>,
 }
 
-/// The result of [`Review::compute_walkthrough_files`]: every file it could
-/// read, plus whether the revision it was asked to pin to still resolves.
 #[derive(Debug, Default)]
 pub struct WalkthroughFiles {
     pub contents: HashMap<String, String>,
-    /// A `rev` was named but no longer resolves (a squash, a rebase, a gc):
-    /// every file fell back to the worktree, and the reader is looking at
-    /// live code believing it is pinned. `false` when nothing was pinned at
-    /// all, which is not broken, just untracked.
+    /// A `rev` was named but no longer resolves (a squash, a rebase, a gc), so
+    /// every file fell back to the worktree. `false` when nothing was pinned.
     pub pin_broken: bool,
 }
 
-/// A preview reads at most this many bytes of one side (32 MiB).
 pub const MAX_PREVIEW_BYTES: u64 = 32 * 1024 * 1024;
 
-/// One side of a binary file, as [`Review::compute_binary_sides`] read it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BinarySide {
     Bytes(Vec<u8>),
@@ -66,7 +60,6 @@ impl BinarySide {
     }
 }
 
-/// Both sides of a binary file; `None` for a side that does not exist.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BinarySides {
     pub old: Option<BinarySide>,
@@ -77,35 +70,23 @@ pub struct BinarySides {
 /// reads first, falling back to the other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReadFirst {
-    /// The commit the walkthrough was pinned to, for code that was committed.
     Pin,
-    /// The file on disk, for a walkthrough of uncommitted work.
     Worktree,
 }
 
-/// One landed off-thread refresh.
 #[derive(Debug)]
 pub struct Refreshed {
     pub status: StatusModel,
     pub model: DiffModel,
-    /// The [`ReviewSource::Against`] rev the caller asked about and its
-    /// recomputed diff. The rev rides along so a review swapped while the
-    /// worker ran can ignore an answer meant for the previous one.
+    /// The [`ReviewSource::Against`] rev asked about and its diff. We carry
+    /// the rev so a review swapped while the worker ran drops the answer.
     pub against: Option<(String, Result<DiffModel, VcsError>)>,
-    /// A pinned commit, range, or PR source's freshly recomputed diff, when
-    /// the caller asked [`Review::compute_refresh`] for one (an algorithm
-    /// switch re-diffing whatever source is open).
     pub pinned: Option<Result<DiffModel, VcsError>>,
 }
 
-/// The freshly fetched diff for a commit, range, or PR review source,
-/// straight from the backend: the one place each variant's vcs call is
-/// made, whether the caller reads it on the UI thread or off it.
-/// `pr_head` is the PR's own `(merge_base, head)`, resolved by the caller
-/// since a PR's range lives in app state; `None` rejects an unresolved PR,
-/// so it is never silently read as unchanged.
-/// `WorkingTree`, `Walkthrough`, and `Against` carry no pinned diff of their
-/// own and read back empty.
+/// The diff for a commit, range or PR source. `pr_head` is the PR's
+/// `(merge_base, head)`; `None` rejects the PR so it never reads as
+/// unchanged. Other sources read back empty.
 pub fn pinned_diff(
     vcs: &dyn Vcs,
     source: &ReviewSource,
@@ -129,30 +110,21 @@ pub struct Review {
     pub repo_root: PathBuf,
     pub vcs: Box<dyn Vcs>,
     pub status: StatusModel,
-    /// HEAD vs workdir+index including untracked: the review view. Computed
-    /// lazily on first [`Review::model`] access: the status screen is the
-    /// initial view and needs no working diff up front.
+    /// Computed on first [`Review::model`] access, since the status screen
+    /// opens first and needs no working diff.
     model: OnceCell<DiffModel>,
-    /// The working-tree review session, the default view.
+    /// The working-tree review session.
     pub session: Session,
-    /// Lazily-loaded sessions for non-working sources (commits, ranges), keyed
-    /// by [`ReviewSource::key`].
+    /// Sessions of every other source, keyed by [`ReviewSource::key`].
     sources: HashMap<String, (ReviewSource, Session)>,
-    /// Returned by [`Review::session_for`] for a source that has no review yet.
     empty: Session,
 }
 
 impl Review {
-    /// Open the git backend at [`DiffSettings::default`], load the persisted
-    /// session (if any), and compute the status sections. The working-tree
-    /// review diff is deferred until first [`Review::model`] access.
     pub fn open(repo_root: &Path) -> Result<Self, ReviewError> {
         Self::open_with_settings(repo_root, &DiffSettings::default())
     }
 
-    /// Like [`Review::open`] with a custom context, line-diff algorithm and
-    /// indent heuristic (config keys `ui.context_lines`, `diff.algorithm`,
-    /// `diff.indent_heuristic`).
     pub fn open_with_settings(
         repo_root: &Path,
         settings: &DiffSettings,
@@ -171,31 +143,25 @@ impl Review {
         })
     }
 
-    /// Switch the session's line-diff algorithm live, so every diff this
-    /// review's own backend computes afterward uses it.
     pub fn set_diff_algorithm(&self, algorithm: DiffAlgorithm, indent_heuristic: bool) {
         self.vcs.set_diff_algorithm(algorithm, indent_heuristic);
     }
 
-    /// The working-tree review diff, computed and cached on first access. A
-    /// backend error yields an empty diff rather than panicking; the next
-    /// [`Review::refresh`] gets another chance to compute it.
+    /// The working-tree diff, cached on first access. A backend error caches
+    /// an empty diff until the next [`Review::refresh`].
     pub fn model(&self) -> &DiffModel {
         self.model
             .get_or_init(|| self.vcs.working_tree_diff().unwrap_or_default())
     }
 
-    /// Mutable view of the working-tree review diff, computing it first if
-    /// needed. The TUI uses this to enrich a file with intra-line emphasis
-    /// just before rendering it.
     pub fn model_mut(&mut self) -> &mut DiffModel {
         self.model();
         #[allow(clippy::expect_used)]
         self.model.get_mut().expect("model just initialized")
     }
 
-    /// Recompute status + diff (the watcher calls this on changes) and drop
-    /// viewed marks for files that changed or left the diff.
+    /// Recompute status and diff, and drop viewed marks for files that changed
+    /// or left the diff.
     pub fn refresh(&mut self) -> Result<(), ReviewError> {
         self.status = self.vcs.status()?;
         let model = self.vcs.working_tree_diff()?;
@@ -203,12 +169,9 @@ impl Review {
         Ok(())
     }
 
-    /// Compute a refresh on a separate repo handle, so it can run off the UI
-    /// thread; the result is applied later with [`Review::install_refresh`].
-    /// `against` recomputes the open three-dot review in the same pass, since
-    /// it tracks edits and cannot be pinned like a commit's diff. `pinned`
-    /// additionally recomputes a commit, range, or PR source's diff on this
-    /// same backend (an algorithm switch re-diffing whatever source is open).
+    /// A refresh on its own repo handle, for a worker thread; apply it with
+    /// [`Review::install_refresh`]. `against` and `pinned` re-diff the open
+    /// three-dot or pinned source in the same pass.
     pub fn compute_refresh(
         repo_root: &Path,
         settings: &DiffSettings,
@@ -229,10 +192,9 @@ impl Review {
         })
     }
 
-    /// What the repo's git attributes declare about each of `paths`, for the
-    /// kinds sidebar. One attribute lookup walks the directory chain and the
-    /// global attribute files, so this is real IO per path and belongs on a
-    /// worker; paths the repo says nothing about are left out.
+    /// What the repo's git attributes declare about each of `paths`, leaving
+    /// out paths they say nothing about. Each lookup is real IO, so we run
+    /// this on a worker.
     pub fn compute_declared(
         repo_root: &Path,
         paths: &[String],
@@ -248,16 +210,8 @@ impl Review {
             .collect())
     }
 
-    /// Every requested file's content, from the copy `read_first` names and
-    /// else the other: the walkthrough's own `rev`, or the live worktree (the
-    /// only copy when `rev` is `None`, a walkthrough saved before it was
-    /// tracked). Opens its own backend so it runs on a worker thread like
-    /// [`Review::compute_refresh`]; a path neither the revision nor the
-    /// worktree can produce is left out rather than failing the whole read.
-    /// `rev` itself can also stop resolving (a squash, a rebase, a gc): that
-    /// is distinct from a path merely absent from a revision that still
-    /// resolves, so it comes back as `pin_broken` rather than folding into
-    /// the same silent worktree fallback.
+    /// Every requested file's content from the copy `read_first` names, else
+    /// the other. A path neither copy has is left out. Runs on a worker.
     pub fn compute_walkthrough_files(
         repo_root: &Path,
         rev: Option<&str>,
@@ -289,10 +243,9 @@ impl Review {
         }
     }
 
-    /// Both sides of a binary file as raw bytes, for the image preview: each
-    /// side from its blob, the new side from the worktree when the store has
-    /// no blob for it (a working-tree diff). A side over [`MAX_PREVIEW_BYTES`] comes
-    /// back as its size alone, so a huge asset never loads into memory.
+    /// Both sides of a binary file, each from its blob, the new side from the
+    /// worktree when the store has no blob for it. We check the size first so
+    /// a side over [`MAX_PREVIEW_BYTES`] never loads into memory.
     pub fn compute_binary_sides(
         repo_root: &Path,
         path: &str,
@@ -321,10 +274,8 @@ impl Review {
         }
     }
 
-    /// One file's worktree text and blame, for the file view. Opens its own
-    /// backend so it runs on a worker thread like [`Review::compute_refresh`].
-    /// A file git cannot blame (untracked, or newly staged) still loads: it
-    /// comes back with text and no spans.
+    /// One file's worktree text and blame, for a worker. A file git cannot
+    /// blame comes back with no spans.
     pub fn compute_file(repo_root: &Path, rel: &str) -> Result<FileSnapshot, ReviewError> {
         let vcs = repo::open(repo_root)?;
         let path = Path::new(rel);
@@ -336,7 +287,6 @@ impl Review {
         })
     }
 
-    /// Swap in freshly computed status + diff and reconcile viewed marks.
     pub fn install_refresh(&mut self, status: StatusModel, model: DiffModel) {
         self.status = status;
         self.session.reconcile(&model);
@@ -348,8 +298,8 @@ impl Review {
         Ok(())
     }
 
-    /// Load a non-working source's session into the cache if not already there.
-    /// Call before reading via [`Review::session_for`] for that source.
+    /// Load a source's session into the cache. Call before
+    /// [`Review::session_for`].
     pub fn ensure_source(&mut self, source: &ReviewSource) -> Result<(), ReviewError> {
         if matches!(source, ReviewSource::WorkingTree) {
             return Ok(());
@@ -362,9 +312,7 @@ impl Review {
         Ok(())
     }
 
-    /// The session for a source. The working tree is always present; other
-    /// sources must be [`Review::ensure_source`]d first, else an empty session
-    /// is returned.
+    /// Empty for a source not yet [`Review::ensure_source`]d.
     pub fn session_for(&self, source: &ReviewSource) -> &Session {
         match source {
             ReviewSource::WorkingTree => &self.session,
@@ -393,23 +341,19 @@ impl Review {
         Ok(())
     }
 
-    /// Forget a non-working source's cached session, after its file is
-    /// deleted from disk (e.g. a walkthrough removed for good), so a later
-    /// access reloads default state rather than serving stale memory.
+    /// Drop a source's cached session once its file is deleted, so a later
+    /// access reloads it.
     pub fn forget_source(&mut self, source: &ReviewSource) {
         self.sources.remove(&source.key());
     }
 
-    /// Every review across all sources, in-memory state overriding disk, sorted
-    /// by source key. Powers the agent-facing aggregate feed. A review file
-    /// that fails to parse is skipped rather than failing the whole call; see
-    /// [`Review::all_reviews_and_corrupt`] for the list of what was skipped.
+    /// Every review across all sources, in-memory state overriding disk,
+    /// sorted by source key. A review file that fails to parse is skipped.
     pub fn all_reviews(&self) -> Result<Vec<(ReviewSource, Session)>, ReviewError> {
         Ok(self.all_reviews_and_corrupt()?.0)
     }
 
-    /// [`Review::all_reviews`] plus the path of every review file that failed
-    /// to parse and was skipped, for a caller that wants to tell the reader.
+    /// [`Review::all_reviews`] plus the path of every review file skipped.
     pub fn all_reviews_and_corrupt(&self) -> Result<store::LoadedReviews, ReviewError> {
         let (loaded, corrupt) = store::load_all(&self.repo_root)?;
         let mut by_key: BTreeMap<String, (ReviewSource, Session)> = loaded
@@ -426,14 +370,12 @@ impl Review {
         Ok((by_key.into_values().collect(), corrupt))
     }
 
-    /// Swap a previously computed model back in. Used when a refresh proved
-    /// a no-op (same fingerprint): the old model carries render-time emphasis
-    /// the rebuilt one lacks.
+    /// Swap a previous model back in after a no-op refresh, since it carries
+    /// render-time emphasis the rebuilt one lacks.
     pub fn restore_model(&mut self, model: DiffModel) {
         self.model = OnceCell::from(model);
     }
 
-    /// Whether the working-tree model has been computed yet.
     #[cfg(test)]
     fn model_is_cached(&self) -> bool {
         self.model.get().is_some()
@@ -490,14 +432,12 @@ mod tests {
 
         let root = repo::discover(root).expect("discover");
         let review = Review::open(&root).expect("open");
-        // the status sections are computed eagerly; the review model is not
         assert!(
             !review.model_is_cached(),
             "open must not compute the working model"
         );
         assert_eq!(review.status.unstaged.files.len(), 1);
 
-        // first access computes it; it matches a fresh working_tree_diff
         let lazy = review.model().clone();
         assert!(review.model_is_cached(), "access caches the model");
         let eager = review.vcs.working_tree_diff().expect("diff");
@@ -526,7 +466,6 @@ mod tests {
         git(root, &["checkout", "-q", "-b", "feature"]);
         write(root, "committed.txt", "landed\n");
         commit_all(root, "feature work");
-        // main moves on after the fork: three-dot keeps it out of the diff
         git(root, &["checkout", "-q", "main"]);
         write(root, "elsewhere.txt", "not mine\n");
         commit_all(root, "base moved on");
@@ -561,11 +500,9 @@ mod tests {
         review.session.mark_viewed("a.py", "hash-working");
         review.save().expect("save working");
 
-        // the same path means different things per source
         assert!(review.session_for(&commit).is_viewed("a.py", "hash-commit"));
         assert!(!review.session.is_viewed("a.py", "hash-commit"));
 
-        // a fresh open reloads each source from its own file
         let mut reopened = Review::open(&root).expect("reopen");
         reopened.ensure_source(&commit).expect("ensure");
         assert!(
@@ -580,9 +517,6 @@ mod tests {
         assert_eq!(keys, ["commit-deadbeef", "working"]);
     }
 
-    /// A walkthrough pinned to a revision reads a file as that revision had
-    /// it, ignoring a dirty worktree, and falls back to the worktree for a
-    /// path the revision never had.
     #[test]
     fn compute_walkthrough_files_reads_the_pinned_revision_and_falls_back_for_the_rest() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -614,8 +548,6 @@ mod tests {
         assert!(!read.pin_broken, "the pin itself still resolves");
     }
 
-    /// No `rev` at all (a walkthrough saved before it was tracked) reads the
-    /// worktree directly.
     #[test]
     fn compute_walkthrough_files_with_no_revision_reads_the_worktree() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -638,10 +570,6 @@ mod tests {
         );
     }
 
-    /// A `rev` that no longer resolves (a squash, a rebase, a gc) is a
-    /// different fact than a path merely absent from a revision that does
-    /// resolve: every file still falls back to the worktree, but `pin_broken`
-    /// says so, so the reader is not shown live code believing it is pinned.
     #[test]
     fn compute_walkthrough_files_with_an_unresolvable_revision_reports_the_broken_pin() {
         let dir = tempfile::tempdir().expect("tempdir");

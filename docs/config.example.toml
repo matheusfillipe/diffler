@@ -32,9 +32,8 @@
 
 [diff]
 # The line-diff algorithm: "myers", "minimal" (slower, more minimal myers),
-# "patience", "histogram", or "structural" (histogram, plus a paired changed
-# line that is only reformatted renders dimmed, leaving red/green for an
-# actual change). Also switchable live from the diff screen (<c-a>).
+# "patience", "histogram", or "structural" (histogram, with lines that only
+# changed whitespace dimmed). <c-a> on the diff screen switches it live.
 # algorithm = "myers"
 # A heuristic that shifts ambiguous hunk boundaries to indentation, the way
 # modern git does by default.
@@ -90,11 +89,10 @@
 # Key remaps per screen: action name -> chord. Chords are single keys ("q",
 # "V"), ctrl combos ("<c-r>"), specials ("<cr>", "<tab>"), or two-key
 # sequences ("cc", "gg"). Unlisted actions keep their built-in binding;
-# `?` in the TUI shows the effective keymap.
+# `?` in the TUI shows the effective keymap of the screen you are on.
 #
 # Motions are omitted below: j / k / gg / G and the paging keys, / n N to
-# search, <c-k> for the command palette, ? for help, q to go back. `?` in the
-# TUI lists what the screen you are on binds.
+# search, <c-k> for the command palette, ? for help, q to go back.
 
 [keys.status]
 # palette = "<c-k>"   # fuzzy command palette, bound on every screen

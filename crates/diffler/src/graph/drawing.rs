@@ -1,8 +1,6 @@
-//! Every kind of figure a walkthrough card can draw, behind one shape: a
-//! navigable flowchart, or a static sequence diagram or callstack tree laid
-//! out once to the card's width. A ` ```mermaid ` fence picks between the
-//! first two by its own header line; a ` ```callstack ` fence is always the
-//! third.
+//! Every kind of figure a card can draw. A ` ```mermaid ` fence is a sequence
+//! diagram when its header says so and a flowchart otherwise; a
+//! ` ```callstack ` fence is a callstack tree.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -15,8 +13,6 @@ use crate::graph::text_figure::TextFigure;
 use crate::graph::theme::GraphTheme;
 use crate::graph::view::{Fit, GraphView};
 
-/// The fence language a stop body names, read straight off its opening
-/// ` ``` ` line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FenceKind {
     Mermaid,
@@ -24,8 +20,6 @@ pub enum FenceKind {
 }
 
 impl FenceKind {
-    /// The fence language on a ` ``` ` line, or `None` for prose (or a
-    /// language this figure system does not draw at all).
     pub fn of(line: &str) -> Option<Self> {
         let rest = line.trim_start().strip_prefix("```")?.trim();
         if rest.eq_ignore_ascii_case("mermaid") {
@@ -37,7 +31,6 @@ impl FenceKind {
         }
     }
 
-    /// [`Self::of`]'s inverse: the fence language a stop body opens with.
     pub fn lang(self) -> &'static str {
         match self {
             Self::Mermaid => "mermaid",
@@ -80,9 +73,6 @@ impl ParsedFigure {
     }
 }
 
-/// Whether a ` ```mermaid ` fence's first statement names a `sequenceDiagram`,
-/// since the two share one fence language: a match routes the fence to
-/// [`sequence::parse`], and a flowchart to [`mermaid::parse`].
 fn is_sequence_diagram(src: &str) -> bool {
     mermaid::statements(src)
         .next()
@@ -99,8 +89,6 @@ fn parse_fence(kind: FenceKind, src: &str, width: usize) -> Result<ParsedFigure,
     }
 }
 
-/// A figure ready to draw in a card: a navigable graph, or a sequence
-/// diagram or callstack tree already laid out as text.
 #[derive(Debug)]
 pub enum Drawing {
     Graph(Box<GraphView>),
@@ -129,9 +117,8 @@ impl Drawing {
         }
     }
 
-    /// The node a `<cr>` on this row of the drawing jumps to. A graph never
-    /// answers here: it is opened full-screen with `o` instead, where every
-    /// node is reachable directly.
+    /// The node a `<cr>` on this row jumps to. A graph has none, since we
+    /// open it full screen with `o` to reach its nodes.
     pub fn node_at_row(&self, row: u16) -> Option<&NodeId> {
         match self {
             Self::Graph(_) => None,
@@ -139,8 +126,6 @@ impl Drawing {
         }
     }
 
-    /// The graph model, for a host that opens it in a fresh full-screen
-    /// [`GraphView`]. `None` for a text figure, which has no full screen.
     pub fn model(&self) -> Option<&Model> {
         match self {
             Self::Graph(view) => Some(view.model()),
@@ -149,16 +134,12 @@ impl Drawing {
     }
 }
 
-/// A parsed [`Drawing`], its resolvable anchor targets, and how it fit its
-/// card.
 pub struct FigureResult {
     pub drawing: Drawing,
     pub anchors: Vec<(NodeId, String)>,
     pub fit: Fit,
 }
 
-/// Parse a fence's source into a card-ready [`FigureResult`] fit to `width`
-/// columns. `None` for a source this figure system cannot draw at all.
 pub fn figure(kind: FenceKind, src: &str, width: u16) -> Option<FigureResult> {
     let parsed = parse_fence(kind, src, usize::from(width)).ok()?;
     let anchors = parsed.anchors().to_vec();
@@ -166,8 +147,7 @@ pub fn figure(kind: FenceKind, src: &str, width: u16) -> Option<FigureResult> {
         ParsedFigure::Flowchart(figure) => {
             let mut view = GraphView::new();
             let fit = view.set_model_fit(figure.model, width);
-            // a card figure is a static picture, so it never asked for the
-            // default selection `set_model` just gave it
+            // a card figure is static, so we drop the selection `set_model` gave it
             view.clear_selection();
             return Some(FigureResult {
                 drawing: Drawing::Graph(Box::new(view)),
@@ -190,12 +170,10 @@ pub fn figure(kind: FenceKind, src: &str, width: u16) -> Option<FigureResult> {
     })
 }
 
-/// Figures `src` would draw, and what drawing them simplified: what the MCP
-/// write path answers with, so an agent learns the subset without the
-/// reader ever seeing a broken figure.
+/// Whether `src` draws, and what drawing it simplified, so the MCP reply
+/// teaches the agent the supported subset.
 pub fn validate_fence(kind: FenceKind, at: usize, src: &str) -> (bool, Vec<String>) {
-    // nobody sees this drawing, so we lay it out at zero width and skip
-    // widening lanes for its labels
+    // nobody sees this drawing, so we lay it out at zero width
     match parse_fence(kind, src, 0) {
         Ok(figure) => (
             true,
@@ -213,8 +191,6 @@ pub fn validate_fence(kind: FenceKind, at: usize, src: &str) -> (bool, Vec<Strin
 mod tests {
     use super::*;
 
-    /// A card with no width at all still lays every kind out without
-    /// panicking: it just crops to nothing.
     #[test]
     fn a_zero_width_card_does_not_panic_for_any_kind() {
         let flowchart =

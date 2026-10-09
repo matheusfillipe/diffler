@@ -1,8 +1,7 @@
 //! End-to-end config layering through the real binary's `config --dump`.
 //!
-//! Env vars are set on the child process only: edition 2024 makes
-//! `std::env::set_var` unsafe (and the workspace denies unsafe code), and
-//! per-child env needs no cross-test serialization.
+//! We set env vars on the child process only: edition 2024 makes
+//! `std::env::set_var` unsafe, and per-child env needs no test serialization.
 
 // helper fns run outside #[test] fns, where clippy's test allowances don't reach
 #![allow(clippy::expect_used)]
@@ -19,7 +18,6 @@ fn init_repo(dir: &Path) {
     git2::Repository::init(dir).expect("git init");
 }
 
-/// Run `diffler <repo> config --dump <extra>` with a controlled environment.
 fn dump(repo: &Path, xdg: Option<&Path>, home: Option<&Path>, extra: &[&str]) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_diffler"));
     cmd.arg(repo).arg("config").arg("--dump").args(extra);
@@ -101,8 +99,6 @@ fn precedence_global_project_cli_via_xdg() {
         None,
         &["--port", "9999", "--no-mcp"],
     ));
-    // per-field precedence: project beats global on theme, global survives on
-    // context_lines and the quit key, CLI beats both on port/enabled
     assert!(out.contains("theme = \"project-theme\""));
     assert!(out.contains("context_lines = 7"));
     assert!(out.contains("port = 9999"));
@@ -192,8 +188,6 @@ fn outside_a_repo_project_layer_is_skipped() {
     assert!(out.contains("theme = \"github-dark\""));
 }
 
-// A bad chord string must appear under ## warnings in
-// --dump output, naming the dotted key path so the user knows what to fix.
 #[test]
 fn bad_chord_appears_in_dump_warnings() {
     let repo = tempfile::tempdir().expect("repo dir");
@@ -217,6 +211,5 @@ fn bad_chord_appears_in_dump_warnings() {
         out.contains("<ctlr-r>"),
         "warning should quote the bad chord: {out}"
     );
-    // good chord is still stored (not warned about)
     assert!(out.contains("quit = \"q\""));
 }

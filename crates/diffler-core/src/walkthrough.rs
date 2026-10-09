@@ -1,10 +1,6 @@
-//! The walkthrough: the agent's own reading order for a review, one stop per
-//! real decision, each a span of code and a short reason. A stop is an agent
-//! comment carrying a title and an anchor, so the reader replies to it, the
-//! comments pane lists it and the card renderer draws it with no second
-//! system beside the first. A walkthrough is a review source of its own
-//! (`ReviewSource::Walkthrough`): every comment in that source's session is
-//! this walkthrough's, so nothing tracks ownership beyond `stops` itself.
+//! The agent's reading order for a review. A stop is an agent comment with a
+//! title and an anchor. A walkthrough is its own review source, so every
+//! comment in that source's session belongs to it.
 
 use serde::{Deserialize, Serialize};
 
@@ -12,8 +8,7 @@ use crate::session::Comment;
 use crate::source::ReviewSource;
 use crate::syntax::registry::REGISTRY;
 
-/// A rail against dumping the diff, not a target: the skill asks for one stop
-/// per real decision, which lands well under this.
+/// A cap against dumping the whole diff; real walkthroughs stay well under.
 pub const MAX_STOPS: usize = 20;
 pub const BODY_MAX_BYTES: usize = 8 * 1024;
 pub const TOTAL_MAX_BYTES: usize = 64 * 1024;
@@ -26,37 +21,27 @@ pub struct Walkthrough {
     pub at: u64,
     /// The comment ids of the stops, in reading order.
     pub stops: Vec<String>,
-    /// One line on what the agent left out and why. Surfaced, never hidden.
+    /// One line on what the agent left out and why.
     #[serde(default)]
     pub skipped: Option<String>,
-    /// The walkthrough's own overview: a markdown body exactly like a stop's,
-    /// shown as the sidebar's leading slide. `None` for a walkthrough with no
-    /// summary, which leaves the sidebar starting at the first stop.
+    /// Markdown overview, shown as the sidebar's leading slide.
     #[serde(default)]
     pub summary: Option<String>,
-    /// The full oid of `HEAD` when this walkthrough was published, so its
-    /// anchors can be resolved against the code they actually describe once
-    /// the checkout moves on. `None` for a walkthrough saved before this
-    /// existed; its anchors resolve against the live worktree.
+    /// Full oid of `HEAD` at publish time, so anchors resolve against the code
+    /// they describe after the checkout moves. `None` resolves against the
+    /// worktree.
     #[serde(default)]
     pub rev: Option<String>,
-    /// The review this walkthrough describes: the working tree, or the
-    /// commit/range/PR the human had open when it was published. Its diff is
-    /// what a stop's anchor resolves against and what opening the walkthrough
-    /// renders. Defaults to the working tree for a walkthrough saved before
-    /// this existed, and for a publish with no other review open.
+    /// The review this walkthrough describes; its diff is what stops resolve
+    /// against.
     #[serde(default)]
     pub about: ReviewSource,
 }
 
 impl Walkthrough {
-    /// The notes of each stop, in stop order: every comment of the walkthrough's
-    /// own session that names no title (so it is a note, not a stop), carries
-    /// an anchor of its own (a human comment never does), and whose own anchor
-    /// falls inside that stop's region. A note whose region matches more than
-    /// one stop goes to the first, the way the agent wrote it; one matching
-    /// none (a stop and its own anchor both absent) is not grouped, though it
-    /// still exists as a comment.
+    /// The note ids of each stop, in stop order. A note is a titleless comment
+    /// with an `anchor_ref` inside a stop's region; it goes to the first stop
+    /// that holds it.
     pub fn notes_by_stop(&self, comments: &[Comment]) -> Vec<Vec<String>> {
         let mut groups: Vec<Vec<String>> = self.stops.iter().map(|_| Vec::new()).collect();
         for comment in comments {
@@ -80,11 +65,8 @@ impl Walkthrough {
     }
 }
 
-/// Whether `other`'s own anchored line (or line end) falls inside `region`'s
-/// span, on the same file and side. Two file-level anchors (no line at all)
-/// count as matching, the way a stop with no line holds every other file-level
-/// note of the same file. Shared with `store`'s legacy-walkthrough split,
-/// which uses the same containment to decide what moves with a stop.
+/// Whether `other`'s line (or line end) falls inside `region`'s span, on the
+/// same file and side. Two file-level anchors match.
 pub(crate) fn region_contains(
     region: &crate::session::Anchor,
     other: &crate::session::Anchor,
@@ -107,19 +89,16 @@ pub enum ReceiptCode {
     BodyTooLong,
     TotalTooLong,
     AnchorUnparsed,
-    /// A stop's anchor names a file this review has no honest way to reach:
-    /// not in the diff, and not readable on disk either.
+    /// A stop's anchor names a file neither in the diff nor on disk.
     AnchorFileMissing,
-    /// No stop names a file and the diff itself is empty, so an anchorless
-    /// stop has nothing real to fall back on.
+    /// No stop names a file and the diff is empty.
     NothingToAnchor,
     NoteOutsideStop,
     DuplicateId,
 }
 
 impl ReceiptCode {
-    /// The name serde gives this code on the wire, so a diagnostic printed
-    /// for a human matches what an agent reads back from the tool call.
+    /// The serde wire name.
     pub fn name(self) -> &'static str {
         match self {
             Self::TooManyStops => "too_many_stops",
@@ -142,31 +121,25 @@ pub struct Receipt {
     pub detail: String,
 }
 
-/// The outcome of pointing a target at a file's current contents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Located {
-    /// The rows the reference covers, 1-based and inclusive. A reference to a
-    /// single line is a span of one, so the reader always gets a segment.
-    Found { line: u32, end: u32 },
-    /// A whole-file target: the file, at no particular line.
+    /// 1-based inclusive rows; a single line is a span of one.
+    Found {
+        line: u32,
+        end: u32,
+    },
     Whole,
-    /// The file was read, but the symbol or line the target names is gone
-    /// from it.
+    /// The file was read, but the symbol or line is gone from it.
     Lost,
-    /// The file itself could not be read at all: absent from the revision
-    /// the target was resolved against (or, with none pinned, from the
-    /// worktree). Distinguished from `Lost` so the reader is told which one
-    /// happened.
+    /// The file could not be read at all.
     FileMissing,
 }
 
-/// Where a figure's node, or a stop's anchor, points. Resolution happens
-/// when it is drawn, never when it is written, so it keeps pointing at the
-/// right code after an edit moves it.
+/// Where a figure's node or a stop's anchor points. We resolve it at draw
+/// time so it follows the code after an edit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
-    /// `path#symbol`, resolved through the file's definition spans. The form
-    /// to prefer: it survives the symbol moving.
+    /// `path#symbol`, resolved through the file's definition spans.
     Symbol {
         path: String,
         symbol: String,
@@ -184,8 +157,7 @@ pub enum Target {
 
 impl Target {
     /// `#` wins over `:`, and both win over a bare path, so a file whose name
-    /// contains either is unaddressable. Naming a symbol is worth more than
-    /// serving a path POSIX allows and no repo uses.
+    /// contains either is unaddressable.
     pub fn parse(raw: &str) -> Self {
         let raw = raw.trim();
         if let Some((path, symbol)) = raw.split_once('#')
@@ -216,18 +188,12 @@ impl Target {
         }
     }
 
-    /// Where in `content` the target lands, in one pass: `Found(line)` for a
-    /// target that names a line, `Whole` for a file, `Lost` for a symbol the
-    /// file no longer defines. One call, since resolving a symbol parses the
-    /// file and asking twice parses it twice.
     pub fn locate(&self, content: &str) -> Located {
         let rows = content.lines().count();
         match self {
             Self::File { .. } => Located::Whole,
             Self::Line { line, end, .. } => {
                 if (*line as usize) <= rows {
-                    // a range running off the end still opens, clamped: the
-                    // file shrank under the reference, it did not move
                     Located::Found {
                         line: *line,
                         end: (*end).min(u32::try_from(rows).unwrap_or(*end)).max(*line),
@@ -250,8 +216,8 @@ impl Target {
     }
 }
 
-/// `12` or `12-40`, both 1-based and inclusive. A reversed or absent end
-/// collapses to the start, so every accepted form yields a usable span.
+/// `12` or `12-40`, 1-based and inclusive. A reversed end collapses to the
+/// start.
 fn parse_rows(raw: &str) -> Option<(u32, u32)> {
     let (start, end) = raw.split_once('-').unwrap_or((raw, raw));
     let start = start.parse::<u32>().ok().filter(|line| *line > 0)?;
@@ -299,8 +265,6 @@ mod tests {
         assert_eq!(w, back);
     }
 
-    /// A walkthrough saved before `rev` existed has no such key at all; it
-    /// still loads, with `rev` defaulting to `None`.
     #[test]
     fn a_walkthrough_with_no_rev_field_deserializes_to_none() {
         let json = r#"{"id":"w1","title":"tour","author":"agent","at":1,"stops":["c1"]}"#;
@@ -308,9 +272,6 @@ mod tests {
         assert_eq!(w.rev, None);
     }
 
-    /// A walkthrough saved before `about` existed has no such key at all; it
-    /// still loads, describing the working tree, exactly what every
-    /// walkthrough described before this field existed.
     #[test]
     fn a_walkthrough_with_no_about_field_deserializes_to_the_working_tree() {
         let json = r#"{"id":"w1","title":"tour","author":"agent","at":1,"stops":["c1"]}"#;
@@ -348,7 +309,6 @@ mod tests {
         }
     }
 
-    /// A note belongs to the stop whose region its own anchor falls inside.
     #[test]
     fn notes_group_under_the_stop_whose_region_holds_them() {
         let w = Walkthrough {
@@ -374,8 +334,6 @@ mod tests {
         );
     }
 
-    /// A human comment carries no `anchor_ref`, so it is never mistaken for a
-    /// note even when it sits inside a stop's own region.
     #[test]
     fn a_human_comment_in_a_stops_region_is_never_counted_as_a_note() {
         let w = Walkthrough {
@@ -422,8 +380,6 @@ mod tests {
         );
     }
 
-    /// A windows path, and a trailing colon with no number, are files: a bad
-    /// split would point the node at a path that does not exist.
     #[test]
     fn a_colon_that_is_not_a_line_number_stays_in_the_path() {
         assert_eq!(
@@ -440,8 +396,6 @@ mod tests {
         );
     }
 
-    /// `path:start-end` is how an agent points at a segment it can see but
-    /// cannot name: a block inside a function, a stanza of config.
     #[test]
     fn a_line_range_parses_and_clamps_to_the_file() {
         assert_eq!(
@@ -452,7 +406,6 @@ mod tests {
                 end: 20
             }
         );
-        // a reversed range is the reader's typo, not a reason to refuse
         assert_eq!(
             Target::parse("src/config.rs:20-10"),
             Target::Line {
@@ -472,16 +425,12 @@ mod tests {
     #[test]
     fn a_symbol_resolves_to_the_line_that_defines_it() {
         let content = "fn first() {}\n\nfn merge(a: u8) -> u8 {\n    a\n}\n";
-        // the span runs to the end of the definition, so opening it shows the
-        // whole function rather than seating a cursor on its signature
         assert_eq!(
             Target::parse("lib.rs#merge").locate(content),
             Located::Found { line: 3, end: 5 }
         );
     }
 
-    /// The point of anchoring to a symbol: an edit above it moves the line and
-    /// the target still finds it.
     #[test]
     fn a_symbol_survives_an_edit_above_it() {
         let before = "fn merge() {}\n";

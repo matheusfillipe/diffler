@@ -13,7 +13,6 @@ use crate::theme::Theme;
 use crate::ui::Hint;
 use crate::ui::{commit_meta_spans, cursor_line, status_bar};
 
-/// Hint entries, rendered against the live keymap so remaps show.
 const HINTS: &[Hint] = &[
     Hint::Leaf(&[Action::Open], "open commit"),
     Hint::Leaf(&[Action::VisualSelect], "select range"),

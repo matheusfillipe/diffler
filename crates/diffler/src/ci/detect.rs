@@ -1,22 +1,18 @@
-//! Pick the CI provider for a repo: the git remote host first, then a config
-//! file fallback. A self-hosted GitLab host is carried through so adapters can
-//! target it. Network probing for ambiguous self-hosted hosts is a later
-//! refinement; an explicit config override always wins upstream.
+//! Picks the CI provider for a repo from the remote host, then from which CI
+//! config files exist. A configured provider wins over both.
 
 use std::path::Path;
 
 use crate::ci::provider::ProviderKind;
 
-/// Detected provider plus an optional self-hosted host override (set only when
-/// the remote isn't a known `SaaS` host).
+/// `host` is set only for a self-hosted forge.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Detected {
     pub kind: ProviderKind,
     pub host: Option<String>,
 }
 
-/// Detect from the repo on disk. `remote_host` is the host of the repo's `origin`
-/// remote (e.g. `github.com`); `forced` is a config override of the kind.
+/// `forced` is the configured provider kind.
 pub fn detect(
     repo_root: &Path,
     remote_host: Option<&str>,
@@ -27,8 +23,6 @@ pub fn detect(
     classify(remote_host, has_gh, has_gitlab, forced)
 }
 
-/// Pure classification from the gathered signals, so it can be tested without a
-/// filesystem.
 fn classify(
     remote_host: Option<&str>,
     has_gh_workflows: bool,
@@ -40,7 +34,7 @@ fn classify(
             .map(str::to_owned)
     };
 
-    // a forced kind takes the host from config (`[ci.<p>] host`), not the remote
+    // a forced kind takes its host from `[ci.<provider>] host`
     if let Some(kind) = forced {
         return Some(Detected { kind, host: None });
     }

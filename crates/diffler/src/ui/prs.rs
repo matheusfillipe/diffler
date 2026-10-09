@@ -1,5 +1,4 @@
-//! The pull-request list: open PRs of the repo's forge. Enter reviews the
-//! selected PR in place (no checkout needed); `b` checks its branch out.
+//! The list of the forge's open pull requests.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;

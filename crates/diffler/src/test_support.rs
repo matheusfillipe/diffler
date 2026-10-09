@@ -1,6 +1,5 @@
-//! Shared test fixtures: deterministic git repos for App and render tests.
-//! Snapshots depend on the commit oid, so commits use a fixed signature time
-//! and the repo lives in a fixed-name subdirectory of the tempdir.
+//! Deterministic git repos for App and render tests. Snapshots depend on the
+//! commit oid, so commits use a fixed time and the repo a fixed directory name.
 
 // fixture helpers run outside #[test] fns, where clippy's test allowances don't reach
 #![allow(clippy::expect_used)]
@@ -27,8 +26,8 @@ impl Fixture {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path().join("fixture");
         std::fs::create_dir(&root).expect("repo dir");
-        // Windows autocrlf re-CRLFs on discard, so a stale checkout still reads
-        // dirty; init_repo pins core.autocrlf/eol to keep it byte-exact.
+        // init_repo pins core.autocrlf/eol, since Windows re-CRLFs on discard
+        // and a stale checkout would still read dirty
         let repo = diffler_core::test_git::init_repo(&root, Some("main"));
         Self {
             _dir: dir,
@@ -51,9 +50,6 @@ impl Fixture {
         index.write().expect("index write");
     }
 
-    /// Delete a tracked file and commit the removal, so `rel` is gone from
-    /// both HEAD's tree and the worktree: a revision moved on from code a
-    /// walkthrough was pinned to.
     pub(crate) fn remove_and_commit(&self, rel: &str, message: &str) {
         std::fs::remove_file(self.root.join(rel)).expect("remove");
         let mut index = self.repo.index().expect("index");
@@ -69,7 +65,6 @@ impl Fixture {
         diffler_core::test_git::commit_all(&self.repo, message, &sig);
     }
 
-    /// Commit with an explicit timestamp, for tests that assert on commit time.
     pub(crate) fn commit_all_at(&self, message: &str, unix: i64) {
         let time = git2::Time::new(unix, 0);
         let sig = git2::Signature::new("test", "test@test", &time).expect("sig");
@@ -93,8 +88,7 @@ impl Fixture {
         self.repo.branch(name, &head, false).expect("branch");
     }
 
-    /// Point HEAD at an existing branch. The fixture's branches share one
-    /// worktree, so nothing needs checking out.
+    /// Moves HEAD only; the fixture's branches share one worktree.
     pub(crate) fn checkout(&self, name: &str) {
         self.repo
             .set_head(&format!("refs/heads/{name}"))
@@ -106,8 +100,7 @@ impl Fixture {
     }
 }
 
-/// A `main` base commit, a `feature` branch one commit ahead of it, and an
-/// uncommitted file on top: what a three-dot review against the base shows.
+/// `main`, a `feature` branch one commit ahead, and an uncommitted file on top.
 pub(crate) fn branch_fixture() -> Fixture {
     let fixture = Fixture::new();
     fixture.write("base.rs", "pub fn base() {}\n");
@@ -120,12 +113,8 @@ pub(crate) fn branch_fixture() -> Fixture {
     fixture
 }
 
-/// Populate `session` with a walkthrough over `stops`, each
-/// `(title, anchor, body)`, as the agent comments a stop is. Ids and times
-/// are fixed so a snapshot never churns on them, and the anchors stay
-/// unresolved until the worker answers, exactly as a fresh publish leaves
-/// them. `session` is the caller's own choice, but only a session for a
-/// `ReviewSource::Walkthrough` means anything once seated.
+/// Each stop is `(title, anchor, body)`. Ids and times are fixed so snapshots
+/// never churn, and anchors stay unresolved, as a fresh publish leaves them.
 pub(crate) fn seat_walkthrough_session(
     session: &mut diffler_core::session::Session,
     id: &str,
@@ -182,8 +171,6 @@ pub(crate) fn seat_walkthrough_session(
     });
 }
 
-/// Give the open walkthrough source `id` a summary, the way a revision that
-/// passes `summary` would.
 pub(crate) fn set_walkthrough_summary(app: &mut App, id: &str, summary: &str) {
     let source = diffler_core::source::ReviewSource::walkthrough(id);
     if let Some(walkthrough) = app.review.session_for_mut(&source).walkthrough.as_mut() {
@@ -192,10 +179,8 @@ pub(crate) fn set_walkthrough_summary(app: &mut App, id: &str, summary: &str) {
     app.review.save_for(&source).expect("save walkthrough");
 }
 
-/// Seat a walkthrough as its own review source (id `w1`), the way a fresh
-/// `publish_walkthrough` leaves one, and refresh the status screen's cached
-/// listing of walkthroughs so it shows up there too. Returns the source, for
-/// a caller that goes on to open it.
+/// Seats walkthrough `w1` as a fresh publish leaves it and reloads the status
+/// screen's listing.
 pub(crate) fn seat_walkthrough(
     app: &mut App,
     title: &str,
@@ -204,8 +189,6 @@ pub(crate) fn seat_walkthrough(
     seat_walkthrough_at(app, "w1", title, stops)
 }
 
-/// Like [`seat_walkthrough`], naming the walkthrough's id, for a test that
-/// needs more than one.
 pub(crate) fn seat_walkthrough_at(
     app: &mut App,
     id: &str,
@@ -222,8 +205,7 @@ pub(crate) fn seat_walkthrough_at(
     source
 }
 
-/// One untracked + one modified-unstaged + one staged-new file, exactly the
-/// shape the snapshot tests assert.
+/// One untracked, one modified-unstaged and one staged-new file.
 pub(crate) fn standard_fixture() -> Fixture {
     let fixture = Fixture::new();
     fixture.write("src/lib.rs", "pub fn answer() -> u32 {\n    41\n}\n");
@@ -236,17 +218,15 @@ pub(crate) fn standard_fixture() -> Fixture {
     fixture
 }
 
-/// [`standard_fixture`] colocated with jj, so [`Fixture::review`] opens the
-/// jj backend. We colocate only after the fixed-time git history exists, so
-/// no jj-authored timestamp reaches a snapshot.
+/// We colocate jj after the fixed-time git history exists, so no jj-authored
+/// timestamp reaches a snapshot.
 pub(crate) fn jj_fixture() -> Fixture {
     let fixture = standard_fixture();
     diffler_core::test_git::colocate_jj(&fixture.root);
     fixture
 }
 
-/// One committed 20-line file with unstaged edits at both ends, far enough
-/// apart (context is 3 lines) to produce exactly two hunks.
+/// A 20-line file edited at both ends, far enough apart for exactly two hunks.
 pub(crate) fn two_hunk_fixture() -> Fixture {
     let fixture = Fixture::new();
     let lines: Vec<String> = (1..=20).map(|i| format!("line {i}")).collect();
@@ -260,9 +240,8 @@ pub(crate) fn two_hunk_fixture() -> Fixture {
     fixture
 }
 
-/// A 200-line file with one line changed near the middle, far enough from
-/// both ends that a walkthrough stop's window has real, bounded context on
-/// both sides rather than running into the file's edges.
+/// A 200-line file with line 100 changed, so a stop's window has bounded
+/// context on both sides.
 pub(crate) fn big_file_fixture() -> Fixture {
     let fixture = Fixture::new();
     let lines: Vec<String> = (1..=200).map(|i| format!("line {i}")).collect();
@@ -274,8 +253,7 @@ pub(crate) fn big_file_fixture() -> Fixture {
     fixture
 }
 
-/// A 200-line file with 70 contiguous lines (51-120) rewritten: one big
-/// change wide enough that a stop spanning it exceeds a window's row budget.
+/// Lines 51-120 rewritten, so a stop spanning them exceeds a window's row budget.
 pub(crate) fn huge_span_fixture() -> Fixture {
     let fixture = Fixture::new();
     let lines: Vec<String> = (1..=200).map(|i| format!("line {i}")).collect();
@@ -289,7 +267,7 @@ pub(crate) fn huge_span_fixture() -> Fixture {
     fixture
 }
 
-/// Plain key press; `\t` and `\n` map to Tab/Enter.
+/// `\t` and `\n` map to Tab and Enter.
 pub(crate) fn key(c: char) -> AppEvent {
     let code = match c {
         '\t' => KeyCode::Tab,
@@ -355,11 +333,8 @@ pub(crate) fn mouse_drag(col: u16, row: u16) -> AppEvent {
     })
 }
 
-/// Render through the top-level draw so modal overlays and screen switching
-/// are covered too. The first draw only queues enrichment (intra-line
-/// emphasis, syntax highlight) and an image file's preview; run both and draw
-/// again so the snapshot captures the settled frame, as the real app
-/// converges to.
+/// The first draw only queues enrichment and image previews, so we run both
+/// and draw again to snapshot the settled frame.
 pub(crate) fn render(app: &mut App) -> Terminal<TestBackend> {
     let backend = TestBackend::new(120, 40);
     let mut terminal = Terminal::new(backend).expect("terminal");
@@ -384,8 +359,7 @@ pub(crate) fn mouse_right_click(col: u16, row: u16) -> AppEvent {
     })
 }
 
-/// Settle a composer submit before reading positions off the fresh rows, the
-/// way a render between keystrokes would.
+/// Rebuilds rows after a composer submit, as a render between keystrokes would.
 pub(crate) fn settle_submit(app: &mut App) {
     app.diff.as_mut().unwrap().ensure_rows(&app.review);
 }

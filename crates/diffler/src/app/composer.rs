@@ -56,9 +56,8 @@ impl Composer {
         text_edit::Edit::Consumed
     }
 
-    /// Move the caret one drawn row, holding its column where the destination
-    /// is long enough. The rows a writer sees are wrapped, so a paragraph too
-    /// long for one row is several rows to move through.
+    /// Move the caret one drawn (wrapped) row, holding its column where the
+    /// destination is long enough.
     fn step_visual_row(&mut self, row_width: u16, down: bool) {
         let rows = wrap_rows(&self.buffer, card_budget(row_width));
         let caret = self.caret_line(row_width);
@@ -82,8 +81,7 @@ impl Composer {
     }
 
     /// The rows this composer draws, wrapped to the card's text budget. The
-    /// buffer wraps verbatim: a live editor has to keep every character where
-    /// the writer put it, so the cursor lands where they expect.
+    /// buffer wraps verbatim so every caret position maps back to a character.
     pub fn display(&self, row_width: u16) -> Vec<ComposerLine> {
         let budget = card_budget(row_width);
         let mut lines = vec![ComposerLine::Header];
@@ -130,8 +128,6 @@ impl Composer {
 }
 
 impl App {
-    /// Open the composer over the diff pane. It takes the keyboard until it
-    /// submits or cancels.
     pub(crate) fn open_composer(&mut self, kind: ComposerKind, buffer: String) {
         self.message = None;
         let Some(diff) = self.diff.as_mut() else {
@@ -152,9 +148,8 @@ impl App {
         diff.ensure_rows(&self.review);
     }
 
-    /// A left click outside the open composer keeps its text aside, closes
-    /// it, and then lands like any click; a click on the composer itself
-    /// does nothing.
+    /// A left click outside the open composer parks its text, closes it, and
+    /// then acts as an ordinary click.
     pub(super) fn composer_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
         use crossterm::event::{MouseButton, MouseEventKind};
         if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
@@ -232,8 +227,8 @@ impl App {
         Flow::Continue
     }
 
-    /// Drop the draft and rebuild at once: rows holding a composer that is no
-    /// longer open would misroute the next key that reads them.
+    /// Drop the draft and rebuild at once, since stale composer rows would
+    /// misroute the next key.
     fn close_composer(&mut self) {
         let review = &self.review;
         if let Some(diff) = self.diff.as_mut() {
@@ -243,8 +238,7 @@ impl App {
         }
     }
 
-    /// Persist the draft. An empty buffer leaves as a cancel: a comment has to
-    /// say something to be worth keeping.
+    /// Persist the draft. An empty buffer acts as a cancel.
     fn submit_composer(&mut self) {
         let Some(composer) = self.diff.as_ref().and_then(|d| d.composer.clone()) else {
             return;
@@ -289,8 +283,8 @@ impl App {
     }
 }
 
-/// How many rows the card draws and which one holds the caret. The pane only
-/// has to rebuild when this pair moves.
+/// How many rows the card draws and which one holds the caret. The pane
+/// rebuilds only when this pair changes.
 fn shape(composer: &Composer, width: u16) -> (usize, usize) {
     let lines = composer.display(width);
     let caret = lines
@@ -314,10 +308,7 @@ pub fn card_budget(row_width: u16) -> usize {
     (row_width.saturating_sub(4) as usize).max(8)
 }
 
-/// Break `buffer` into visual rows of at most `budget` columns, splitting on
-/// its newlines first and then on width. The cursor rides along to the row and
-/// column it lands on; sitting at the end of a full row it moves to the next,
-/// which is where the next character will appear.
+/// [`wrap_rows`] with the cursor placed on its row and column.
 fn wrap_with_cursor(buffer: &str, cursor: usize, budget: usize) -> Vec<ComposerLine> {
     let wrapped = wrap_rows(buffer, budget);
     let mut placed = false;
@@ -327,7 +318,7 @@ fn wrap_with_cursor(buffer: &str, cursor: usize, budget: usize) -> Vec<ComposerL
         .map(|(index, row)| {
             let end = row.start + row.text.chars().count();
             // a cursor at the end of a full row belongs to the next one, where
-            // the character it types will appear
+            // the next typed character appears
             let last = index + 1 == wrapped.len();
             let holds = cursor >= row.start && (cursor < end || (last && cursor == end));
             placed |= holds;
@@ -344,7 +335,6 @@ fn wrap_with_cursor(buffer: &str, cursor: usize, budget: usize) -> Vec<ComposerL
     rows
 }
 
-/// One drawn row of the wrapped buffer and the char index it starts at.
 struct WrappedRow {
     text: String,
     start: usize,

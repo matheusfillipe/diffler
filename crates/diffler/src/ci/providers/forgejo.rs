@@ -1,7 +1,5 @@
-//! Forgejo/Codeberg adapter. Forgejo exposes a GitHub-shaped Actions REST API,
-//! fetched with `curl` through the same `CommandRunner` seam the other adapters
-//! use: a public repo needs no token; a PAT is read from the environment.
-//! Job logs and the dependency DAG aren't wired yet; `Capabilities` says so.
+//! Forgejo and Codeberg over their GitHub-shaped REST API, fetched with `curl`.
+//! A public repo needs no token; a PAT comes from the environment.
 
 use std::collections::HashMap;
 
@@ -17,9 +15,8 @@ use crate::ci::provider::{ForgeProvider, NewPrComment, NewPrReview, ProviderKind
 
 pub struct ForgejoProvider {
     runner: Box<dyn CommandRunner>,
-    /// `None` when no host could be resolved (no configured `[ci.forgejo]
-    /// host` and no parseable remote); every call then fails closed instead
-    /// of guessing a host to send the token to.
+    /// `None` when no host resolved; every call then fails, so the token never
+    /// reaches a guessed host.
     host: Option<String>,
     /// `owner/name`.
     repo: String,
@@ -48,13 +45,11 @@ impl ForgejoProvider {
         self.call(path, &[]).await
     }
 
-    /// POST `body` as JSON. Forgejo answers with the created resource.
     async fn post(&self, path: &str, body: &serde_json::Value) -> Result<String> {
         self.send("POST", path, body).await
     }
 
-    /// Send `body` as JSON with `verb`. The response is returned unparsed, so a
-    /// caller expecting an empty 204 can drop it.
+    /// Unparsed, so a caller expecting an empty 204 can drop it.
     async fn send(&self, verb: &str, path: &str, body: &serde_json::Value) -> Result<String> {
         self.call(
             path,
@@ -70,9 +65,7 @@ impl ForgejoProvider {
         .await
     }
 
-    /// One forge comment by its id, carrying the review, path and anchor a
-    /// reply or a delete has to repeat. Forgejo exposes no per-comment
-    /// endpoint, so this reads the PR's comments and picks the row.
+    /// Forgejo has no per-comment endpoint, so we read the PR's comments and pick the row.
     async fn find_pr_comment(&self, number: u64, remote_id: &str) -> Result<PrComment> {
         self.pr_comments(number)
             .await?
@@ -88,8 +81,7 @@ impl ForgejoProvider {
             .ok_or_else(|| CiError::NotFound("no Forgejo host configured".to_owned()))?;
         let mut args = vec![
             "-sS".to_owned(),
-            // not `--fail`: a 422's reason lives in the response body, which
-            // that flag throws away
+            // keeps a 422's reason, which lives in the response body
             "--fail-with-body".to_owned(),
             "--max-time".to_owned(),
             "20".to_owned(),
@@ -102,8 +94,7 @@ impl ForgejoProvider {
         }
         args.extend_from_slice(extra);
         args.push(format!("https://{host}/api/v1/repos/{}/{path}", self.repo));
-        // a failed exec embeds the argv in the error, which the status bar
-        // renders: never let the token through
+        // the status bar renders a failed exec's argv, so we mask the token
         self.runner.run("curl", &args).await.map_err(|err| {
             let Some(token) = &self.token else { return err };
             match err {
@@ -145,8 +136,7 @@ impl ForgeProvider for ForgejoProvider {
             .into_iter()
             .find(|r| &r.id == run)
             .ok_or_else(|| CiError::NotFound(format!("run {}", run.0)))?;
-        // no run-jobs endpoint on current Forgejo: this run's jobs are the
-        // tasks sharing its run number
+        // Forgejo has no run-jobs endpoint: a run's jobs are the tasks sharing its run number
         let body = self.get("actions/tasks?limit=50").await?;
         let tasks: TasksResponse = parse_json("forgejo tasks", &body)?;
         let jobs: Vec<CiJob> = tasks
@@ -160,9 +150,7 @@ impl ForgeProvider for ForgejoProvider {
                 // Forgejo's task list carries no timings
                 duration_secs: None,
                 needs: Vec::new(),
-                // one task per run-job already, matrix legs included: there's
-                // no workflow YAML parsed here to fold several tasks under a
-                // shared job id, so each leg stays its own plain node
+                // with no workflow YAML to fold them, each matrix leg is its own node
                 legs: Vec::new(),
             })
             .collect();
@@ -224,7 +212,7 @@ impl ForgeProvider for ForgejoProvider {
                 break;
             }
         }
-        // a `REQUEST_REVIEW` row is a review request, not a review
+        // a `REQUEST_REVIEW` row is a review request
         let paths: Vec<String> = reviews
             .iter()
             .filter(|review| review.comments_count > 0 && review.state != "REQUEST_REVIEW")
@@ -241,7 +229,7 @@ impl ForgeProvider for ForgejoProvider {
             })
             .collect();
         let mut items = Vec::new();
-        // one call per review: serially they'd stall the pane
+        // we fetch reviews concurrently, since serial calls stall the pane
         for page in futures_util::future::join_all(paths.iter().map(|path| self.get(path))).await {
             let page: Vec<ReviewCommentItem> = parse_json("pr review comments", &page?)?;
             items.extend(page);
@@ -261,7 +249,7 @@ impl ForgeProvider for ForgejoProvider {
         let raw = self
             .post(&format!("pulls/{}/reviews", new.number), &payload)
             .await?;
-        // the submit answers with the review, not the comment it created
+        // the submit answers with the review, so we fetch the comment it created
         let review: ReviewItem = parse_json("pr review", &raw)?;
         let raw = self
             .get(&format!(
@@ -328,7 +316,7 @@ impl ForgeProvider for ForgejoProvider {
             .thread_id
             .ok_or_else(|| CiError::NotFound(format!("the review owning comment {remote_id}")))?;
         // `DELETE /issues/comments/{id}` answers 204 and leaves a code comment
-        // in place; only the review-scoped route actually removes one
+        // in place; the review-scoped route removes it
         self.call(
             &format!("pulls/{number}/reviews/{review}/comments/{remote_id}"),
             &["-X".to_owned(), "DELETE".to_owned()],
@@ -342,8 +330,7 @@ impl ForgeProvider for ForgejoProvider {
             return Ok(None);
         };
         let raw = self.get("pulls?state=open&limit=50").await?;
-        // a malformed response must propagate, same as `list_prs`: treating
-        // it as "no PR" would look like a normal, PR-less branch
+        // a malformed response is an error, so it never reads as a PR-less branch
         let pulls: Vec<PullItem> = parse_json("pr list", &raw)?;
         Ok(pulls
             .into_iter()
@@ -396,7 +383,6 @@ struct PullSide {
 /// Forgejo caps a page at its instance `max_response_items`, 50 on Codeberg.
 const PAGE_SIZE: usize = 50;
 
-/// One review from `/pulls/{n}/reviews`.
 #[derive(Deserialize)]
 struct ReviewItem {
     id: u64,
@@ -406,9 +392,8 @@ struct ReviewItem {
     comments_count: u64,
 }
 
-/// One code comment from `/pulls/{n}/reviews/{id}/comments`. `position` is the
-/// absolute new-file line and `original_position` the old-file one, `0` meaning
-/// "not this side"; `extra_lines_count` counts the lines after the anchor.
+/// `position` is the new-file line and `original_position` the old-file one,
+/// `0` meaning "not this side"; `extra_lines_count` counts lines after the anchor.
 #[derive(Deserialize)]
 struct ReviewCommentItem {
     id: u64,
@@ -426,7 +411,7 @@ struct ReviewCommentItem {
     body: String,
     #[serde(default)]
     user: ForgejoUser,
-    /// Who resolved the thread this comment roots; `null` while it is open.
+    /// `null` while the thread is open.
     #[serde(default)]
     resolver: Option<ForgejoUser>,
     #[serde(default)]
@@ -459,17 +444,15 @@ impl ReviewCommentItem {
     }
 }
 
-/// Attach each comment to its thread. Forgejo carries no parent id: a thread is
-/// the comments sharing a review, a path and a signed line, and its root is the
-/// lowest id among them. The API's own order is nondeterministic across groups.
+/// Forgejo carries no parent id: a thread is the comments sharing a review, a
+/// path and a signed line, rooted at the lowest id. We sort, since the API's
+/// order across groups is nondeterministic.
 fn into_threads(mut items: Vec<ReviewCommentItem>) -> Vec<PrComment> {
     items.sort_by_key(|item| item.id);
     let mut roots: HashMap<(u64, String, u32, u32, u32), u64> = HashMap::new();
     let mut comments = Vec::with_capacity(items.len());
     for item in items {
-        // the span belongs in the key: a reply repeats its parent's anchor
-        // exactly, so two rows differing in span are separate comments that
-        // happen to start on one line
+        // a reply repeats its parent's span exactly, so a different span is a different thread
         let key = (
             item.pull_request_review_id,
             item.path.clone(),
@@ -488,9 +471,8 @@ fn into_threads(mut items: Vec<ReviewCommentItem>) -> Vec<PrComment> {
     comments
 }
 
-/// One comment in Forgejo's wire shape. The anchor is an absolute 1-based file
-/// line on exactly one side (`0` means "not this side") plus the count of lines
-/// *after* it, where diffler's `line` is the range's last line.
+/// Forgejo anchors at a range's first line and counts the lines after it;
+/// diffler's `line` is the range's last line.
 fn anchored(
     path: &str,
     body: &str,
@@ -508,10 +490,7 @@ fn anchored(
     })
 }
 
-/// Forgejo has no whole-file review comment: every entry anchors to a line, so
-/// a line-less comment (a whole-file one, from a forge that allows it) has
-/// nothing to translate to here and fails the review rather than dropping it
-/// silently.
+/// Forgejo has no whole-file review comment, so one fails the review loudly.
 fn review_payload(review: &NewPrReview) -> Result<serde_json::Value> {
     let event = match review.verdict {
         // the API spells approval `APPROVED`; an unrecognised event quietly
@@ -544,8 +523,7 @@ struct RunsResponse {
     workflow_runs: Vec<RunItem>,
 }
 
-/// One run from `/actions/runs`. `index_in_repo` is the human run number the
-/// tasks reference and the web URL uses; it becomes the `RunId`.
+/// `index_in_repo` is the run number tasks and the web URL use, so it becomes the `RunId`.
 #[derive(Deserialize)]
 struct RunItem {
     index_in_repo: u64,
@@ -588,8 +566,7 @@ struct TasksResponse {
     workflow_runs: Vec<WorkflowRun>,
 }
 
-/// One run from `/actions/tasks` (GitHub `workflow_run`-shaped). Every field is
-/// optional so a forge that omits one degrades to a blank, not a parse failure.
+/// Fields default so a forge that omits one shows a blank and still parses.
 #[derive(Deserialize)]
 struct WorkflowRun {
     id: u64,
@@ -608,9 +585,6 @@ fn parse_ts(iso: &str) -> Option<time::OffsetDateTime> {
 }
 
 fn map_status(status: &str, conclusion: Option<&str>) -> JobStatus {
-    // Forgejo's Actions API mirrors GitHub's `conclusion` vocabulary
-    // (`crate::ci::map_conclusion` covers both); only the in-progress/no-conclusion
-    // status strings are forge-specific
     crate::ci::map_conclusion(conclusion).unwrap_or(match status {
         "running" | "in_progress" => JobStatus::Running,
         "success" => JobStatus::Ok,
@@ -744,8 +718,7 @@ mod review_tests {
         {"id":500,"state":"COMMENT","comments_count":4},
         {"id":501,"state":"REQUEST_REVIEW","comments_count":0}]"#;
 
-    /// Two threads on one review plus a reply, deliberately out of id order:
-    /// the API's group order is nondeterministic.
+    /// Out of id order on purpose, since the API's group order is nondeterministic.
     const COMMENTS: &str = r#"[
         {"id":31,"pull_request_review_id":500,"path":"src.rs","position":5,
          "original_position":0,"extra_lines_count":1,"body":"the range",
@@ -871,21 +844,16 @@ mod review_tests {
         let call = runner.calls().remove(0);
         assert!(call.contains(r#""event":"APPROVED""#), "{call}");
         assert!(call.contains(r#""commit_id":"abc""#), "{call}");
-        // the range anchors at its first line with the rest counted after it
         assert!(
             call.contains(r#""extra_lines_count":1,"new_position":5,"old_position":0"#),
             "{call}"
         );
-        // exactly one side is set
         assert!(
             call.contains(r#""extra_lines_count":0,"new_position":0,"old_position":2"#),
             "{call}"
         );
     }
 
-    /// Forgejo's review comments are line-anchored only: a whole-file
-    /// comment has nothing to translate to, so posting one fails rather than
-    /// silently dropping it or landing on the wrong line.
     #[tokio::test]
     async fn a_whole_file_comment_is_rejected_not_silently_dropped() {
         let runner = Arc::new(RecordingRunner::new(&[("reviews", "{}")]));
@@ -942,7 +910,6 @@ mod review_tests {
             .into_iter()
             .find(|call| call.contains("-X DELETE"))
             .expect("a delete was sent");
-        // `issues/comments/{id}` answers 204 and deletes nothing
         assert!(
             deleted.contains("pulls/7/reviews/500/comments/31"),
             "{deleted}"

@@ -1,6 +1,5 @@
-# PTY end-to-end harness: pexpect drives the compiled diffler binary inside
-# a virtual terminal, pyte turns the ANSI stream into an assertable screen
-# buffer, and plain `git` CLI builds the fixture repos.
+# PTY end-to-end harness: pexpect drives the diffler binary and pyte renders
+# its output into an assertable screen.
 import codecs
 import os
 import subprocess
@@ -25,12 +24,10 @@ class Tui:
     def __init__(self, cmd, cwd=None, env=None, cols=DEFAULT_COLS, rows=DEFAULT_ROWS):
         self.cols = cols
         self.rows = rows
-        # raw bytes are kept verbatim: OSC sequences (e.g. OSC52 clipboard)
-        # address the terminal emulator and never land in the screen grid
+        # we keep raw bytes because OSC sequences (OSC52 clipboard) never reach the screen grid
         self.raw = b""
-        # an incremental decoder buffers a multibyte char split across two
-        # reads; decoding each chunk independently would emit `�` and desync
-        # pyte's column tracking (box-drawing chars are 3 bytes each)
+        # a multibyte char can split across two reads, and decoding each chunk
+        # alone would emit `�` and desync pyte's columns
         self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
         self.screen = pyte.Screen(cols, rows)
         self.stream = pyte.Stream(self.screen)
@@ -43,8 +40,7 @@ class Tui:
             encoding=None,
             timeout=5,
         )
-        # answer device status reports (the app queries the cursor position
-        # when re-initializing the terminal after an editor suspend)
+        # the app queries the cursor position when it restores the terminal after an editor
         self.screen.write_process_input = self.child.send
 
     def _feed(self, timeout=0.2):
@@ -119,10 +115,8 @@ class Tui:
 
 
 def tui_env(home, **extra):
-    """Isolated environment for the spawned binary: config layering reads
-    $XDG_CONFIG_HOME and $HOME, so both point into the test's tmp dir. PATH
-    passes through so editor commands resolve. EDITOR/DIFFLER_EDITOR are
-    only present when a test sets them."""
+    """Environment with $HOME and $XDG_CONFIG_HOME in the test's tmp dir, so
+    no developer config leaks in."""
     home = Path(home)
     config = home / ".config"
     config.mkdir(parents=True, exist_ok=True)
@@ -179,10 +173,8 @@ def make_repo(root):
 
 
 def jj(repo, *args):
-    """Run a jj command in `repo`, isolated from the developer's config. jj's
-    own per-user config lives beside the repo: pointing HOME at the repo
-    itself would leave `.config/jj/` as untracked content in the very tree
-    diffler is reviewing."""
+    """Run a jj command in `repo`, isolated from the developer's config. HOME
+    sits beside the repo so jj's `.config/jj/` stays out of the reviewed tree."""
     home = Path(repo).parent / "jjhome"
     home.mkdir(exist_ok=True)
     env = {
@@ -200,9 +192,7 @@ def jj(repo, *args):
 
 
 def make_jj_repo(root):
-    """`make_repo`'s fixture, colocated with jj: the commit and the
-    uncommitted app.txt edit and untracked notes.txt are all plain git, and
-    jj is introduced only afterward for its working-copy snapshot."""
+    """`make_repo`'s fixture, colocated with jj."""
     root = make_repo(root)
     jj(root, "git", "init", "--colocate")
     jj(root, "config", "set", "--repo", "user.name", "reviewer")

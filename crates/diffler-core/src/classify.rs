@@ -1,16 +1,11 @@
-//! Which bucket a changed file belongs to, from its path alone. The rule order
-//! is the design: Generated outranks Tests so a generated fixture reads as
-//! noise, and Build outranks Config so `Cargo.toml` reads as a manifest.
-//!
-//! [`Rules`] layers the two things a repo can say for itself over the built-in
-//! table: the reader's own globs, then git's `linguist-*` attributes.
+//! Which bucket a changed file belongs to, from its path alone. Rule order
+//! matters: Generated outranks Tests so a generated fixture reads as noise,
+//! and Build outranks Config so `Cargo.toml` reads as a manifest.
 
 use std::path::Path;
 
 use crate::syntax::registry::REGISTRY;
 
-/// A sidebar bucket. The set is fixed across repos so the reader's muscle
-/// memory carries between them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Kind {
     Source,
@@ -24,8 +19,7 @@ pub enum Kind {
 }
 
 impl Kind {
-    /// Display order in the sidebar: what the reader came to review first,
-    /// what they came to skip last.
+    /// Sidebar display order.
     pub const ALL: [Self; 8] = [
         Self::Source,
         Self::Tests,
@@ -51,10 +45,10 @@ impl Kind {
     }
 }
 
-/// The built-in table plus whatever the repo says for itself.
+/// The reader's globs, then git's `linguist-*` attributes, then the built-in
+/// table.
 #[derive(Debug, Clone, Default)]
 pub struct Rules {
-    /// Glob patterns per bucket, in the order they are consulted.
     overrides: Vec<(Kind, Vec<String>)>,
 }
 
@@ -63,8 +57,7 @@ impl Rules {
         Self { overrides }
     }
 
-    /// The bucket for `path`. `declared` is what git's `linguist-*` attributes
-    /// say, which the reader's own globs still outrank.
+    /// `declared` is what git's `linguist-*` attributes say.
     pub fn kind(&self, path: &str, declared: Option<Kind>) -> Kind {
         for (kind, patterns) in &self.overrides {
             if patterns.iter().any(|pattern| glob_match(pattern, path)) {
@@ -75,9 +68,8 @@ impl Rules {
     }
 }
 
-/// What a repo declares about a path through the `linguist-*` git attributes
-/// forges already honour, given a reader for one attribute. Vendored code
-/// joins Generated: both mean the reader did not write it.
+/// The bucket the `linguist-*` git attributes declare. Vendored code counts
+/// as Generated.
 pub fn declared(attr: impl Fn(&str) -> bool) -> Option<Kind> {
     if attr("linguist-generated") || attr("linguist-vendored") {
         Some(Kind::Generated)
@@ -116,8 +108,7 @@ fn basename(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
-/// Extension without the dot, empty for a file that has none. A dotfile with
-/// no second dot (`.gitignore`) has no extension, matching how git names it.
+/// Extension without the dot; `.gitignore` has none.
 fn extension(name: &str) -> &str {
     Path::new(name)
         .extension()
@@ -133,8 +124,6 @@ fn has_segment(path: &str, wanted: &[&str]) -> bool {
     segments(path).any(|segment| wanted.contains(&segment))
 }
 
-/// Trees nobody wrote by hand: vendored dependencies, build output, and the
-/// caches tools leave behind.
 const GENERATED_DIRS: &[&str] = &[
     "node_modules",
     "vendor",
@@ -153,7 +142,6 @@ const GENERATED_DIRS: &[&str] = &[
     ".terraform",
 ];
 
-/// Suffixes a code generator stamps on its output.
 const GENERATED_SUFFIXES: &[&str] = &[
     ".min.js",
     ".min.css",
@@ -178,9 +166,6 @@ const GENERATED_FILES: &[&str] = &[
     "packages.lock.json",
 ];
 
-/// Every shape a dependency lockfile takes: an extension (`Cargo.lock`,
-/// `bun.lockb`), an infix before another one (`pnpm-lock.yaml`,
-/// `.terraform.lock.hcl`).
 fn lockfile(name: &str, ext: &str) -> bool {
     matches!(ext, "lock" | "lockb") || name.contains("-lock.") || name.contains(".lock.")
 }
@@ -206,19 +191,16 @@ const TEST_DIRS: &[&str] = &[
     "cypress",
 ];
 
-/// Affixes that name a test in the languages that have a convention. Checked
-/// against the basename with its extension stripped, so one entry covers every
-/// language sharing the affix. The separator is part of the affix: without it
-/// `latest.rs` and `protest.rs` read as tests.
+/// Matched against the lowercased stem. The separator is part of the affix so
+/// `latest.rs` and `protest.rs` stay source.
 const TEST_AFFIXES: &[&str] = &["_test", "_tests", "_spec", "-test", ".test", ".spec"];
 
-/// The camel-cased conventions, checked against the untouched basename: the
-/// lowercased one cannot see the hump that makes `UserTest` a test and
-/// `latest` a word.
+/// Matched against the original-case stem, since lowercasing loses the hump
+/// that separates `UserTest` from `latest`.
 const TEST_CAMEL_AFFIXES: &[&str] = &["Test", "Tests"];
 
-/// `FooSpec` is scalatest, and only there: elsewhere the camel form names an
-/// API contract, as in `OpenApiSpec.ts`.
+/// `FooSpec` is a test only in scalatest; elsewhere it names an API contract
+/// like `OpenApiSpec.ts`.
 const SPEC_EXTENSIONS: &[&str] = &["scala", "kt", "groovy"];
 
 fn stem<'a>(name: &'a str, ext: &str) -> &'a str {
@@ -293,9 +275,7 @@ const DOC_DIRS: &[&str] = &["docs", "doc", "man"];
 
 const DOC_EXTENSIONS: &[&str] = &["md", "mdx", "rst", "adoc", "org", "txt", "1"];
 
-/// The files a repo keeps at its root with no extension at all. They are
-/// matched only when the extension is empty: `src/security.rs` and
-/// `models/license.rb` are code that happens to share the word.
+/// Matched only without an extension, so `src/security.rs` stays source.
 pub(crate) const DOC_NAMES: &[&str] = &[
     "readme",
     "license",
@@ -343,8 +323,7 @@ const ASSET_EXTENSIONS: &[&str] = &[
     "bz2", "xz", "7z",
 ];
 
-/// Code the bundled grammars do not cover: the registry answers for everything
-/// diffler can highlight, this list keeps the rest out of Other.
+/// Source languages the bundled grammars lack, so they stay out of Other.
 const SOURCE_EXTENSIONS: &[&str] = &[
     "kt", "kts", "pl", "pm", "r", "jl", "erl", "hrl", "clj", "cljs", "cljc", "fs", "fsi", "fsx",
     "vb", "groovy", "proto", "graphql", "gql", "vue", "astro", "scss", "sass", "less", "styl",
@@ -355,12 +334,9 @@ fn source(path: &str, ext: &str) -> bool {
     SOURCE_EXTENSIONS.contains(&ext) || REGISTRY.for_path(path).is_some()
 }
 
-/// Gitignore-flavoured glob: `*` and `?` stay inside one path segment, `**`
-/// spans any number of them, and a pattern with no `/` matches the basename at
-/// any depth. The shapes a reader carries over from `.gitignore` are honoured
-/// rather than silently matching nothing: a leading `/` is the anchoring a
-/// pattern with a slash already has, and a trailing `/` names a directory's
-/// whole subtree.
+/// Gitignore-flavoured glob: `*` and `?` stay inside one segment, `**` spans
+/// any number, a pattern with no `/` matches the basename at any depth, a
+/// leading `/` anchors, and a trailing `/` names a subtree.
 pub(crate) fn glob_match(pattern: &str, path: &str) -> bool {
     let pattern = pattern.trim_start_matches("./");
     if let Some(dir) = pattern.strip_suffix('/') {

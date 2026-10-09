@@ -1,8 +1,5 @@
-//! Graph screen chrome: a hint line, the embedded `crate::graph::GraphView`,
-//! and a status bar. The component draws the graph body; the host draws the
-//! chrome and supplies the palette. When the open run has artifacts or
-//! annotations, a read-only panel for them is carved off the bottom of the body.
-//! The graph keeps the full body otherwise, so it renders exactly as before.
+//! CI run graph screen: chrome around `crate::graph::GraphView`, plus a
+//! bottom panel for the run's artifacts and annotations when it has any.
 
 use crate::ci::{AnnotationLevel, RunExtras};
 use ratatui::Frame;
@@ -16,8 +13,6 @@ use crate::app::App;
 use crate::keymap::Action;
 use crate::theme::Theme;
 
-/// Body rows below which the extras panel is suppressed, so a short terminal
-/// leaves the whole body to the graph.
 const MIN_BODY_FOR_PANEL: u16 = 9;
 
 const GRAPH_HINTS: &[Hint] = &[
@@ -76,8 +71,6 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     );
 }
 
-/// One-line provenance for the open run: where it ran, which workflow,
-/// what commit: the graph alone doesn't say what you're looking at.
 pub(crate) fn run_header(app: &App, theme: &Theme) -> Line<'static> {
     let Some(run) = app.open_run_summary() else {
         return Line::default();
@@ -99,9 +92,6 @@ pub(crate) fn run_header(app: &App, theme: &Theme) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Split `body` into the graph area and, when the open run has extras and the
-/// body is tall enough, a bottom panel rect with its rendered lines. With no
-/// extras the graph keeps the whole body, so the DAG renders exactly as before.
 fn carve_panel(app: &App, body: Rect) -> (Rect, Option<(Rect, Vec<Line<'static>>)>) {
     let lines = app
         .extras
@@ -192,7 +182,6 @@ fn annotation_text(annotation: &crate::ci::Annotation) -> String {
     body.lines().next().unwrap_or_default().to_owned()
 }
 
-/// Bytes as a compact `1.2 KB` / `3.4 MB`, matching how forges list artifacts.
 // the f64 cast only feeds a one-decimal display, so mantissa loss is moot
 #[allow(clippy::cast_precision_loss)]
 pub(super) fn human_size(bytes: u64) -> String {

@@ -11,8 +11,7 @@ use crate::keymap::Action;
 use crate::tree::{TreeNode, TreeRow};
 
 /// The row `<tab>` folds when the cursor sits on `at`: that row when it is a
-/// header, otherwise the header it sits under. Most rows are files, and
-/// collapsing the group you are inside is what the key is for.
+/// header, otherwise the header it sits under.
 fn foldable_at(rows: &[TreeRow], at: usize) -> Option<usize> {
     let row = rows.get(at)?;
     let header = TreeNode::is_group;
@@ -49,8 +48,7 @@ impl App {
         } else {
             return;
         }
-        // a quick file switch works from either pane, keeping focus, walking
-        // the tree's file rows so it tracks the sidebar order
+        // a file switch works from either pane and follows the sidebar order
         match action {
             Action::NextFile => return self.diff_step_file(true),
             Action::PrevFile => return self.diff_step_file(false),
@@ -64,8 +62,7 @@ impl App {
                 }
                 return self.diff_jump_unviewed();
             }
-            // each list regroups only while it has the keyboard, so `t` never
-            // reshuffles a list the reader is not looking at
+            // each list regroups only while it has the keyboard
             Action::CycleSidebarMode => {
                 match self.diff.as_ref().map(|d| d.focus) {
                     Some(Pane::Comments) => self.cycle_comment_grouping(),
@@ -77,8 +74,6 @@ impl App {
             Action::MoveLeft => return self.diff_focus(self.pane_left()),
             Action::MoveRight => return self.diff_focus(self.pane_right()),
             Action::ToggleSideBySide => return self.toggle_side_by_side(),
-            // comment walk works from either pane; land in the diff pane on the
-            // comment so it can be read and replied to
             Action::SubmitReview => return self.submit_pr_review(),
             Action::NextComment => {
                 self.diff_focus(Pane::Diff);
@@ -100,8 +95,7 @@ impl App {
     }
 
     /// The references sidebar. Moving its selection seats the diff on that
-    /// use, so the diff pane's own verbs reach it the way they reach a
-    /// comment the comments sidebar selects.
+    /// use, so the diff pane's own verbs reach it.
     fn dispatch_references(&mut self, action: Action) {
         match action {
             Action::MoveDown => self.refs_step(1, false),
@@ -143,11 +137,10 @@ impl App {
         }
     }
 
-    /// The comments sidebar. Its selection drives the diff cursor onto the
-    /// comment, so every comment verb (reply, resolve, delete, claim, yank)
-    /// is the pane's own and works here untouched. A header selects no
-    /// comment, and an orphan seats no cursor and no file: delete and claim
-    /// address the selection by id, and everything else declines.
+    /// The comments sidebar. Its selection seats the diff cursor on the
+    /// comment, so the diff pane's comment verbs work here. A header or an
+    /// orphan seats nothing: delete and claim address the selection by id,
+    /// and everything else declines.
     fn dispatch_comments(&mut self, action: Action) {
         if Self::needs_a_selected_comment(action) {
             match self.selected_comment_id() {
@@ -167,14 +160,12 @@ impl App {
             Action::HalfPageUp => self.comments_step(-self.comments_page(false)),
             Action::FullPageDown => self.comments_step(self.comments_page(true)),
             Action::FullPageUp => self.comments_step(-self.comments_page(true)),
-            // `[`/`]` step group headers; `tab`/`za` fold the one the cursor
-            // sits in. A flat list has neither, so both are no-ops there.
+            // a flat list has no headers, so these do nothing there
             Action::NextHunk => self.comments_jump_header(true),
             Action::PrevHunk => self.comments_jump_header(false),
             Action::ToggleFold => self.comments_toggle_fold(),
-            // stepping out either side is a focus move, but `<cr>` means take
-            // me to this comment: the diff cursor may sit anywhere if the
-            // reader focused away and came back without moving the selection
+            // the diff cursor may have moved since the selection seated it, so
+            // `<cr>` seats it again
             Action::Open => {
                 self.seat_cursor_on_selected_comment();
                 self.diff_focus(Pane::Diff);
@@ -186,10 +177,8 @@ impl App {
         }
     }
 
-    /// Verbs that read the diff cursor or the selected file: a header or an
-    /// orphan seats neither, so these decline instead of reaching whatever
-    /// the diff cursor was last left on. The review-wide verbs need no row
-    /// and are not in this list.
+    /// Verbs that read the diff cursor or the selected file, which decline on
+    /// a header or an orphan since those seat neither.
     fn needs_a_selected_comment(action: Action) -> bool {
         matches!(
             action,
@@ -211,29 +200,24 @@ impl App {
             Action::GoBottom => self.diff_tree_to(usize::MAX),
             Action::NextHunk => self.diff_tree_jump(true),
             Action::PrevHunk => self.diff_tree_jump(false),
-            // the paging keys move the pane that has the keyboard, so here they
-            // walk the file list by a screenful
             Action::HalfPageDown => self.diff_tree_step(self.tree_page(false)),
             Action::HalfPageUp => self.diff_tree_step(-self.tree_page(false)),
             Action::FullPageDown => self.diff_tree_step(self.tree_page(true)),
             Action::FullPageUp => self.diff_tree_step(-self.tree_page(true)),
-            // <cr> focuses the pane on a file row, folds/unfolds a dir row
             Action::Open => self.diff_tree_activate(),
             Action::ToggleFold => self.diff_toggle_dir_fold(),
             Action::MarkViewed => self.diff_toggle_viewed(),
             Action::UnviewAll => self.diff_unview_all(),
             Action::OpenEditor => self.editor_at_diff_cursor(),
-            // the sidebar addresses paths, not lines, so it yanks what the row
-            // names the way the status screen's list does
+            // the sidebar yanks the path its row names
             Action::CopyFileFeedback => self.copy_at_diff_tree_cursor(),
             Action::CopyAllFeedback => self.copy_feedback(false),
             Action::DeleteAllComments => self.delete_all_comments_start(),
             Action::ClaimAllComments => self.claim_all_comments_start(),
-            // a file in the sidebar takes a whole-file comment; the line-scoped
-            // actions still need the diff pane
+            // a file in the sidebar takes a whole-file comment
             Action::Comment => self.comment_on_selected_file(),
-            // the walkthrough layout's leading row and stop rows take `d` as
-            // their own delete; everywhere else it keeps its usual meaning
+            // the walkthrough layout's summary and stop rows take `d` as their
+            // own delete
             Action::DeleteComment => match self.walkthrough_row_at_tree_cursor() {
                 Some(WalkthroughSidebarRow::Summary) => {
                     if let Some(id) = self.active_walkthrough().map(|w| w.id.clone()) {
@@ -274,8 +258,8 @@ impl App {
             Action::CollapseContext => self.collapse_context(),
             Action::ExpandWholeFile => self.expand_whole_file(),
             Action::Open => self.open_figure_jump_or_focus_list(),
-            // side-by-side is a read-only view; commenting and selection stay
-            // in the unified pane, reachable by toggling back with `|`
+            // side-by-side is read-only; commenting and selection need the
+            // unified pane
             Action::Comment
             | Action::VisualSelect
             | Action::Reply
@@ -305,7 +289,7 @@ impl App {
             Action::OpenAllFolds => self.diff_open_all_folds(),
             Action::FoldAll => self.diff_fold_all(),
             other => {
-                self.info(format!("{} is not implemented yet", other.name()));
+                self.info(format!("{} does nothing on this screen", other.name()));
             }
         }
     }
@@ -378,10 +362,8 @@ impl App {
         }
     }
 
-    /// `<cr>` in the diff pane: on a figure row whose drawing names a
-    /// resolved node (a callstack frame, a sequence message's receiving
-    /// participant), jump straight to that code; anywhere else, `<cr>`
-    /// moves the keyboard to the sidebar.
+    /// `<cr>` in the diff pane: on a figure row naming a resolved node, jump
+    /// to that code; anywhere else, move the keyboard to the sidebar.
     fn open_figure_jump_or_focus_list(&mut self) {
         match self.figure_jump_at_cursor() {
             Some((path, line, end)) => self.open_file(&path, Some((line, end)), false),
@@ -400,8 +382,6 @@ impl App {
         match gesture {
             MouseGesture::Scroll { col, down, .. } => {
                 let delta = if down { 3 } else { -3 };
-                // the sidebar fills the left columns; scroll whichever pane the
-                // pointer sits over
                 let in_sidebar = self.diff.as_ref().is_some_and(|d| col < d.pane.x);
                 let in_comments = self.comments_col(col);
                 if self.refs_col(col) {
@@ -422,8 +402,8 @@ impl App {
     }
 
     /// Single-click: select the sidebar file under the pointer, or move the
-    /// pane cursor to the clicked line, dropping any selection.
-    /// A click in the diff screen; `fold` lets a click on a folder fold it.
+    /// pane cursor to the clicked line, dropping any selection. `fold` lets a
+    /// click on a folder fold it.
     fn diff_press_at(&mut self, col: u16, row: u16, fold: bool) {
         if let Some(index) = self.refs_row_at(col, row) {
             self.diff_focus(Pane::References);
@@ -485,8 +465,6 @@ impl App {
         if let Some(index) = self.diff_pane_row_at(col, row)
             && let Some(diff) = self.diff.as_mut()
         {
-            // the press set the cursor; the first drag anchors the selection
-            // there, then each drag extends the cursor end
             if diff.visual_anchor.is_none() {
                 diff.visual_anchor = Some(diff.cursor);
             }
@@ -526,8 +504,7 @@ impl App {
 
     /// Place the tree cursor at `target` (clamped), updating the pane's file
     /// when the row is a file. A dir row leaves the pane on its last file.
-    /// Every way of reaching a row goes through here, motion and search alike,
-    /// so landing on a file always opens it.
+    /// Motion and search both go through here, so landing on a file opens it.
     pub(crate) fn diff_tree_to(&mut self, target: usize) {
         let review = &self.review;
         let Some(diff) = self.diff.as_mut() else {
@@ -565,8 +542,7 @@ impl App {
     }
 
     /// The walkthrough row under the sidebar cursor, when the layout is on
-    /// screen and the cursor sits on its leading row or a stop: `None`
-    /// everywhere else, so `d` keeps its ordinary meaning.
+    /// screen and the cursor sits on its leading row or a stop.
     fn walkthrough_row_at_tree_cursor(&self) -> Option<WalkthroughSidebarRow> {
         let diff = self.diff.as_ref()?;
         if diff.layout != FileLayout::Walkthrough {
@@ -581,12 +557,10 @@ impl App {
     }
 
     /// Selecting a stop puts the reader where the agent pointed: the comment's
-    /// file, the cursor on the first row of its span, the whole span banded.
-    /// A stop whose file this diff does not carry leaves the pane alone, since
-    /// jumping somewhere arbitrary is worse than staying put. The window is
-    /// keyed off the tree cursor, not the selected file, so it has to move
-    /// here even when two stops share a file and `select` would otherwise see
-    /// no file change and skip the rebuild.
+    /// file, the cursor on the first row of its span. A stop whose file this
+    /// diff does not carry leaves the pane alone. The window is keyed off the
+    /// tree cursor, so we rebuild here even when two stops share a file and
+    /// `select` would skip the rebuild.
     pub(crate) fn seat_stop(&mut self, index: usize) {
         let review = &self.review;
         let Some(diff) = self.diff.as_mut() else {
@@ -623,7 +597,6 @@ impl App {
             return;
         };
         let Some((line, end)) = anchor.span() else {
-            // a stop with nothing to sit on is prose: its card is the view
             diff.seat_on(
                 review,
                 file,
@@ -641,14 +614,13 @@ impl App {
                 .and_then(|dl| dl.new_no)
                 .is_some_and(|no| line <= no && no <= end)
         };
-        // a slide shows the stop's region and nothing else of the file, so
-        // banding that region would colour every code row and read as a
-        // selection; the seat is what says where the reader is standing
+        // a slide shows only the stop's region, so banding it would colour
+        // every code row and read as a selection
         diff.seat_on(review, file, covered);
     }
 
     /// Selecting the leading summary row: the walkthrough's own summary, one
-    /// card and no code. No single span to band, since no comment sits behind it.
+    /// card and no code.
     pub(crate) fn seat_summary(&mut self) {
         let review = &self.review;
         let Some(diff) = self.diff.as_mut() else {
@@ -734,8 +706,7 @@ impl App {
         };
         let rows = sidebar_rows(diff, review);
         let Some(target) = foldable_at(&rows, diff.tree_cursor) else {
-            // a file at the repo root sits in no folder, and a key that does
-            // nothing has to say so
+            // a file at the repo root sits in no folder
             self.info("nothing to fold here");
             return;
         };
@@ -749,8 +720,7 @@ impl App {
             Some(TreeNode::Section { bucket, .. }) => diff.bucket_folds.toggle_fold(*bucket),
             _ => return,
         }
-        // the row that folded is the one to stand on, and folding past the
-        // cursor shrinks the tree
+        // we seat the cursor on the row that folded, since the tree shrank
         let rows = sidebar_rows(diff, review);
         diff.tree_cursor = target.min(rows.len().saturating_sub(1));
     }
@@ -783,8 +753,8 @@ impl App {
         }
     }
 
-    /// `t`: cycle the sidebar layout (tree → review), keeping the
-    /// pane's file and re-seating the tree cursor on its row when visible.
+    /// `t`: cycle the sidebar layout, keeping the pane's file and re-seating
+    /// the tree cursor on its row when visible.
     fn diff_cycle_sidebar_mode(&mut self) {
         let review = &self.review;
         let Some(diff) = self.diff.as_mut() else {
@@ -805,9 +775,8 @@ impl App {
         }
         let rows = sidebar_rows(diff, review);
         diff.reseat_tree_cursor(&rows);
-        // the stop list lists stops, so arriving on one has to seat the reader
-        // where it points the way moving onto it does; row 0 is the summary's
-        // where the walkthrough has one, else a stop's own row already
+        // arriving on the stop list seats the reader on its first row: the
+        // summary where the walkthrough has one, else the first stop
         let offset = diff
             .active_walkthrough(review.session_for(&diff.source))
             .map_or(0, super::stop_row_offset);
@@ -824,9 +793,6 @@ impl App {
         self.info(format!("sidebar: {layout}"));
     }
 
-    /// `e`: open the selected file in the editor: at the line for diff line
-    /// rows (new side, old side for deletions), at the anchor for comment
-    /// rows, at the top otherwise (hunk header, or focus on the list).
     /// `y` in the file sidebar: the repo-relative path the row names, a file's
     /// or a folder's. A section header groups files without naming a path.
     fn copy_at_diff_tree_cursor(&mut self) {
@@ -922,9 +888,8 @@ impl App {
         isize::try_from(page_step(height, full)).unwrap_or(20)
     }
 
-    /// Comments a paging key covers. A card is several rows tall and they
-    /// differ, so the step is how many the pane's rows hold on average, which
-    /// keeps paging up and down symmetric.
+    /// Comments a paging key covers: how many cards the pane holds on
+    /// average, which keeps paging up and down symmetric.
     fn comments_page(&self, full: bool) -> isize {
         /// Before the first render there is no pane to measure.
         const UNMEASURED: usize = 5;
@@ -943,10 +908,8 @@ impl App {
     }
 
     /// Jump the pane cursor to the next/previous comment block, landing on its
-    /// header row (`line == 0`) so multi-line comments are stepped as one. The
-    /// walkthrough layout shows one slide at a time, so there the walk runs
-    /// over the slides and stepping past a slide's last comment enters the
-    /// next one.
+    /// header row (`line == 0`). In the walkthrough layout the walk runs over
+    /// the slides.
     fn diff_jump_comment(&mut self, forward: bool) {
         if self
             .diff
@@ -996,9 +959,8 @@ impl App {
     }
 
     /// Step the slide walk one comment either way, entering the slide that
-    /// holds where it lands. The summary has no comment behind it, so it
-    /// sits before every entry `order` carries: stepping forward off it
-    /// reaches the first one, and stepping back onto the first one reaches it.
+    /// holds where it lands. The summary sits before the first entry of
+    /// `order`.
     fn walk_slide_comments(&mut self, forward: bool) {
         let on_summary = matches!(
             self.diff.as_ref().map(|diff| &diff.slide),
@@ -1052,8 +1014,7 @@ impl App {
     }
 
     /// Jump to the next/previous definition start in the diff, one a fold
-    /// hides included, using the tree-sitter scope index the breadcrumb
-    /// already maintains.
+    /// hides included, using the breadcrumb's scope index.
     fn diff_jump_function(&mut self, forward: bool) {
         let Some(diff) = self.diff.as_ref() else {
             return;
@@ -1129,9 +1090,7 @@ impl App {
         }
     }
 
-    /// `[`/`]` in the file sidebar: the previous/next group header, whichever
-    /// the layout draws, so a long tree steps folder by folder the way the
-    /// status screen steps its sections.
+    /// `[`/`]` in the file sidebar: the previous/next group header.
     fn diff_tree_jump(&mut self, forward: bool) {
         let review = &self.review;
         let Some(diff) = self.diff.as_ref() else {
@@ -1177,8 +1136,7 @@ impl App {
         diff.ensure_rows(review);
     }
 
-    /// `V`: reuse the shared row-selection toggle every other screen uses, so
-    /// a selection can start on any row kind, a card or the summary included.
+    /// `V`: start or end a selection, on any row kind.
     fn toggle_visual(&mut self) {
         if let Some(diff) = self.diff.as_mut() {
             RowSelect::toggle_visual(diff);

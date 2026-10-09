@@ -1,5 +1,4 @@
-//! The language breakdown: one row per language, GitHub's colours, ordered by
-//! the column the reader picked.
+//! The language breakdown table.
 
 use diffler_core::stats::{LanguageCount, RepoStats};
 use ratatui::Frame;
@@ -19,8 +18,6 @@ const HINTS: &[Hint] = &[
     Hint::Leaf(&[Action::Help], "help"),
 ];
 
-/// Cells the share bar occupies. Wide enough to separate a 2% language from a
-/// 20% one, narrow enough to leave the numbers room.
 const BAR_CELLS: usize = 18;
 
 pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
@@ -29,8 +26,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
     frame.render_widget(Paragraph::new(super::status_bar(app, bar.width)), bar);
 }
 
-/// Rows the table spends on something other than a language: the column
-/// header, the rule, the totals, and the line naming what the scan left out.
+/// Header, rule, totals, and the left-out line.
 const CHROME_ROWS: usize = 4;
 
 fn draw_table(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
@@ -60,8 +56,6 @@ fn draw_table(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let totals = stats.totals();
     let widest = rows.iter().map(|row| row.code).max().unwrap_or(1).max(1);
     let cursor = view.cursor.min(rows.len().saturating_sub(1));
-    // a polyglot monorepo outruns the screen, so the language rows scroll under
-    // the header while the totals stay pinned to the bottom
     let window = (area.height as usize).saturating_sub(CHROME_ROWS).max(1);
     let scroll = super::scroll_to_cursor(cursor, view.scroll, window, rows.len());
     let mut lines = vec![header_line(theme, view.sort)];
@@ -121,8 +115,6 @@ fn language_line(
     let dim = Style::new().fg(theme.dim).bg(bg);
     let plain = Style::new().fg(theme.fg).bg(bg);
     let hue = super::language_color(theme, row.color);
-    // the bar is relative to the biggest language, and the smallest one keeps
-    // a cell of its own
     let filled = (row.code * BAR_CELLS).div_ceil(widest).clamp(1, BAR_CELLS);
     let share = percent_tenths(row.code, total_code);
     Line::from(vec![
@@ -147,13 +139,12 @@ fn language_line(
     ])
 }
 
-/// `part` of `whole` as a percentage with one decimal, in integer arithmetic,
-/// since a line count can outrun what a float holds exactly.
+/// Integer arithmetic, since a line count can outrun what a float holds
+/// exactly.
 pub(super) fn percent_tenths(part: usize, whole: usize) -> String {
     if whole == 0 {
         return "0.0".to_owned();
     }
-    // rounded, so a table of shares adds up to about a hundred
     let tenths = (part * 1000 + whole / 2) / whole;
     format!("{}.{}", tenths / 10, tenths % 10)
 }
@@ -178,18 +169,13 @@ fn totals_line(theme: &Theme, totals: &LanguageCount) -> Line<'static> {
     ])
 }
 
-/// What the scan did not count, so a reader can tell a missing language from a
-/// deliberate omission.
 fn left_out_line(theme: &Theme, stats: &RepoStats) -> Option<Line<'static>> {
     let mut parts = Vec::new();
     if stats.generated_files > 0 {
         parts.push(format!("{} generated", stats.generated_files));
     }
     if stats.unknown_files > 0 {
-        parts.push(format!(
-            "{} in no language diffler names",
-            stats.unknown_files
-        ));
+        parts.push(format!("{} in unknown languages", stats.unknown_files));
     }
     if stats.skipped_files > 0 {
         parts.push(format!("{} binary or oversized", stats.skipped_files));
@@ -203,7 +189,6 @@ fn left_out_line(theme: &Theme, stats: &RepoStats) -> Option<Line<'static>> {
     ))
 }
 
-/// `49314` reads as `49,314`: the columns are for comparing magnitudes.
 pub(super) fn thousands(value: usize) -> String {
     let digits = value.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
@@ -267,8 +252,6 @@ mod tests {
         insta::assert_snapshot!(render(&mut app).backend());
     }
 
-    /// A polyglot monorepo has more languages than a terminal has rows; the
-    /// cursor has to stay on screen the way it does on every other list.
     #[test]
     fn the_table_scrolls_to_keep_the_cursor_in_view() {
         let fixture = polyglot();

@@ -1,9 +1,7 @@
 use serde::de::DeserializeOwned;
 use thiserror::Error;
 
-/// Failures from acquiring CI data. Adapters surface these; the host maps them
-/// to a status-bar message and degrades (no runs / no DAG / no logs) rather than
-/// crashing.
+/// The host shows these as a status-bar message and degrades the screen.
 #[derive(Debug, Error)]
 pub enum CiError {
     #[error("the `{0}` CLI is not installed or not on PATH")]
@@ -20,9 +18,7 @@ pub enum CiError {
 
 pub type Result<T> = std::result::Result<T, CiError>;
 
-/// Deserialize a forge response, wrapping a failure as [`CiError::Parse`] with
-/// `what` describing the payload for the status-bar message. Every adapter
-/// parses forge JSON through this instead of repeating the `map_err`.
+/// `what` names the payload in the status-bar message.
 pub(super) fn parse_json<T: DeserializeOwned>(what: &str, raw: &str) -> Result<T> {
     serde_json::from_str(raw).map_err(|e| CiError::Parse {
         what: what.to_owned(),

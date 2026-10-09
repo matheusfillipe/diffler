@@ -1,5 +1,4 @@
-//! Review session: comments and per-file viewed marks, reconciled against
-//! fresh diff models. Persistence lives in `store`.
+//! Review session: comments and per-file viewed marks.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -39,24 +38,20 @@ pub struct Anchor {
     pub line_end: Option<u32>,
     #[serde(default)]
     pub on_old_side: bool,
-    /// Snapshot of the anchored line's text, so the UI can mark the
-    /// comment outdated when the agent rewrites the line.
+    /// Snapshot of the anchored line's text, so we can mark the comment
+    /// outdated when the line changes.
     #[serde(default)]
     pub line_text: Option<String>,
 }
 
 impl Anchor {
-    /// The rows this anchor covers, on whichever side it names: `line`
-    /// through `line_end` (or just `line` for a point anchor). `None` for a
-    /// file-level anchor with no line at all.
+    /// `(line, line_end)`, `None` for a file-level anchor.
     pub fn span(&self) -> Option<(u32, u32)> {
         self.line.map(|line| (line, self.line_end.unwrap_or(line)))
     }
 
-    /// Whether the anchor no longer matches the model. Range comments
-    /// anchor to their end line: that is the line whose disappearance or
-    /// `line_text` drift marks them outdated. A line-less anchor is
-    /// outdated only once the whole file leaves the diff.
+    /// A range anchor is judged on its end line. A line-less anchor is
+    /// outdated once its file leaves the diff.
     pub fn is_outdated(&self, model: &DiffModel) -> bool {
         match self.line_end.or(self.line) {
             Some(line) => match model.find_line(&self.file, line, self.on_old_side) {
@@ -78,17 +73,15 @@ pub struct Comment {
     /// Forge-side id once synced/posted; `None` for purely local comments.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_id: Option<String>,
-    /// The forge's review-thread handle, where the forge has one: what
-    /// thread resolution posts against.
+    /// The forge's review-thread handle, used to resolve the thread.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread_id: Option<String>,
     pub anchor: Anchor,
-    /// The agent's own name for this comment: a walkthrough stop's title,
-    /// set when it is published.
+    /// A walkthrough stop's title.
     #[serde(default)]
     pub title: Option<String>,
     /// The anchor an agent wrote (`path#symbol`, `path:start-end`, `path`),
-    /// kept so the worker can resolve it again after the code moves.
+    /// kept so we can resolve it again after the code moves.
     #[serde(default)]
     pub anchor_ref: Option<String>,
     pub body: String,
@@ -102,19 +95,15 @@ pub struct Comment {
 pub struct Session {
     #[serde(default)]
     pub comments: Vec<Comment>,
-    /// Per-file viewed marks: path -> content hash of the new side at the
-    /// time of marking. A changed hash means the file needs re-review.
+    /// Path to the new side's content hash when marked. A changed hash means
+    /// the file needs re-review.
     #[serde(default)]
     pub viewed: BTreeMap<String, String>,
-    /// The walkthrough this session is, when its source is
-    /// `ReviewSource::Walkthrough`. Every comment in `comments` above is this
-    /// walkthrough's: its stops, their notes, and every human reply made on
-    /// it. `None` for every other source.
+    /// Set only for a `ReviewSource::Walkthrough` session.
     #[serde(default)]
     pub walkthrough: Option<Walkthrough>,
-    /// Walkthrough stops (comment ids) the reader has marked read. Pruned to
-    /// the current walkthrough's `stops` on every change, so a stop id from a
-    /// superseded revision never lingers.
+    /// Stop ids the reader has marked read, pruned to the walkthrough's
+    /// `stops` on every change.
     #[serde(default)]
     pub seen_stops: BTreeSet<String>,
 }
@@ -125,9 +114,8 @@ pub fn now_unix() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-/// Unix milliseconds, for a stamp that also has to order two things made in
-/// the same second. A stamp in seconds is smaller than any of these, so the
-/// two sort together and the older one still reads as older.
+/// Unix milliseconds, to order two things made in the same second. Any
+/// seconds stamp is smaller, so mixed stamps still sort oldest first.
 pub fn now_unix_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -149,7 +137,6 @@ impl Session {
             replies: Vec::new(),
             at: now_unix(),
         });
-        // just pushed, so the vec is non-empty
         #[allow(clippy::expect_used)]
         self.comments.last().expect("just pushed")
     }
@@ -158,15 +145,13 @@ impl Session {
         self.comments.iter_mut().find(|c| c.id == comment_id)
     }
 
-    /// Set this session's walkthrough, replacing whatever it held before,
-    /// and prune seen marks for stops it no longer carries.
     pub fn set_walkthrough(&mut self, walkthrough: Walkthrough) {
         self.walkthrough = Some(walkthrough);
         self.prune_seen_stops();
     }
 
-    /// Remove one stop and its notes, keeping the walkthrough and its other
-    /// stops. `false` when there is no walkthrough or `index` is out of range.
+    /// Remove one stop and its notes. `false` when there is no walkthrough or
+    /// `index` is out of range.
     pub fn delete_stop(&mut self, index: usize) -> bool {
         let Some(walkthrough) = self.walkthrough.as_ref() else {
             return false;
@@ -191,9 +176,6 @@ impl Session {
         true
     }
 
-    /// Drop a seen mark for a stop the walkthrough no longer carries: a stop
-    /// id from a superseded revision would otherwise linger in `seen_stops`
-    /// forever.
     fn prune_seen_stops(&mut self) {
         let stops: BTreeSet<&str> = self
             .walkthrough
@@ -203,7 +185,6 @@ impl Session {
         self.seen_stops.retain(|id| stops.contains(id.as_str()));
     }
 
-    /// Mark a walkthrough stop read.
     pub fn mark_stop_seen(&mut self, id: &str) {
         self.seen_stops.insert(id.to_owned());
     }
@@ -216,7 +197,6 @@ impl Session {
         self.seen_stops.contains(id)
     }
 
-    /// Remove the comment with `id`; `true` when something was deleted.
     pub fn delete_comment(&mut self, id: &str) -> bool {
         let before = self.comments.len();
         self.comments.retain(|c| c.id != id);
@@ -240,9 +220,7 @@ impl Session {
         self.comments.iter().find(|comment| comment.id == id)
     }
 
-    /// Flag a comment as addressed without writing anything into the thread.
-    /// An agent that already answered has said its piece; a second summary of
-    /// it is noise in the card.
+    /// Flag a comment as addressed, writing nothing into the thread.
     pub fn mark_replied(&mut self, comment_id: &str) -> bool {
         let Some(comment) = self.comment_mut(comment_id) else {
             return false;
@@ -261,9 +239,8 @@ impl Session {
         true
     }
 
-    /// Replace a comment's body in place (status, replies, and anchor are
-    /// kept). No author: an edit corrects the existing comment, it doesn't
-    /// attribute a new one.
+    /// Replace a comment's body, keeping its author, status, replies and
+    /// anchor.
     pub fn edit_comment(&mut self, comment_id: &str, body: &str) -> bool {
         let Some(comment) = self.comment_mut(comment_id) else {
             return false;
@@ -280,20 +257,17 @@ impl Session {
         self.viewed.remove(path);
     }
 
-    /// Drop every viewed mark, sending all files back to the review pile.
     pub fn clear_viewed(&mut self) {
         self.viewed.clear();
     }
 
-    /// A stale hash means the file changed since it was marked: not viewed
-    /// anymore (auto-reset semantics).
+    /// A stale hash means the file changed since it was marked.
     pub fn is_viewed(&self, path: &str, current_hash: &str) -> bool {
         self.viewed.get(path).is_some_and(|h| h == current_hash)
     }
 
-    /// Drop viewed marks for files that left the diff or whose content
-    /// changed since marking. Comments are kept: they stay useful (possibly
-    /// flagged outdated) even when their file moves on.
+    /// Drop viewed marks for files that left the diff or changed. Comments
+    /// stay, flagged outdated where they drifted.
     pub fn reconcile(&mut self, model: &DiffModel) {
         let live: BTreeMap<&str, String> = model
             .files
@@ -397,9 +371,6 @@ mod tests {
         assert_eq!(back.comments[0].anchor.line_end, Some(7));
     }
 
-    /// A review file written before the walkthrough field existed still
-    /// loads, with none, so an old `.diffler/reviews/*.json` keeps working
-    /// after an upgrade.
     #[test]
     fn a_session_with_the_old_boards_key_and_no_walkthrough_key_loads_with_none() {
         let json = r#"{"comments":[],"viewed":{},"boards":[]}"#;
@@ -407,9 +378,6 @@ mod tests {
         assert!(s.walkthrough.is_none());
     }
 
-    /// A dedicated walkthrough session deserializes its walkthrough directly;
-    /// an older `comments` field on the object (the pre-source owned-id list)
-    /// is simply unknown and ignored.
     #[test]
     fn a_walkthrough_session_deserializes_its_walkthrough_and_ignores_a_stale_comments_field() {
         let json = r#"{"comments":[],"viewed":{},"walkthrough":{"id":"w1","title":"tour","author":"agent","at":1,"stops":["stop-0"],"comments":["stop-0"]}}"#;
@@ -417,8 +385,6 @@ mod tests {
         assert_eq!(s.walkthrough.expect("walkthrough").id, "w1");
     }
 
-    /// A review file written before seen marks existed carries no
-    /// `seen_stops` key at all, and still has to load.
     #[test]
     fn a_session_with_no_seen_stops_key_loads_empty() {
         let json = r#"{"comments":[],"viewed":{}}"#;
@@ -450,8 +416,6 @@ mod tests {
         }
     }
 
-    /// Setting a walkthrough drops a seen mark for a stop it no longer
-    /// carries, so a superseded stop id never lingers.
     #[test]
     fn set_walkthrough_prunes_seen_marks_for_dropped_stops() {
         let mut s = Session::default();
@@ -462,8 +426,6 @@ mod tests {
         assert!(s.is_stop_seen("stop-1"), "stop-1 survives the revision");
     }
 
-    /// Setting a walkthrough replaces whatever this session held before, in
-    /// place: there is only ever one.
     #[test]
     fn set_walkthrough_replaces_whatever_was_there() {
         let mut s = Session::default();
@@ -501,9 +463,6 @@ mod tests {
         }
     }
 
-    /// Deleting one stop drops its primary and every note anchored in its
-    /// region, keeps the rest of the walkthrough, and never touches a human
-    /// comment in the same spot.
     #[test]
     fn delete_stop_removes_its_primary_and_notes_but_keeps_a_human_comment_there() {
         let mut s = Session::default();
@@ -600,7 +559,6 @@ mod tests {
         let mut a = anchor("src/auth.py", Some(2));
         a.line_text = Some("TWO".to_owned());
         assert!(!a.is_outdated(&hunked_model()));
-        // without a snapshot, a present line counts as current
         a.line_text = None;
         assert!(!a.is_outdated(&hunked_model()));
     }
@@ -664,7 +622,6 @@ mod tests {
         assert!(s.viewed.contains_key("kept.txt"));
         assert!(!s.viewed.contains_key("changed.txt"));
         assert!(!s.viewed.contains_key("departed.txt"));
-        // comments survive reconciliation untouched
         assert_eq!(s.comments.len(), 1);
     }
 }

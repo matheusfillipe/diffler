@@ -1,16 +1,13 @@
-//! Markdown export of review feedback: comments with diff context, ready
-//! to paste into any agent prompt.
+//! Markdown export of review comments with their diff context.
 
-// writing into a String is infallible, so the `write!` results are discarded
+// writing into a String is infallible, so we discard the `write!` results
 use std::fmt::Write as _;
 
 use crate::model::{DiffLine, DiffModel};
 use crate::session::{Comment, CommentStatus, Session};
 
 pub struct FeedbackOptions<'a> {
-    /// Header text; the caller builds it (repo/branch/count need `HeadInfo`).
     pub title: &'a str,
-    /// When set, only comments anchored to this file are exported.
     pub file_filter: Option<&'a str>,
     pub include_resolved: bool,
 }
@@ -44,8 +41,7 @@ fn render_comment(out: &mut String, comment: &Comment, model: &DiffModel, includ
     if let Some(line) = anchor.line {
         match context_snippet(model, &anchor.file, line, anchor.on_old_side) {
             Some(snippet) => {
-                // a fence longer than any backtick run in the snippet, so
-                // diff content containing ``` can't break out of it
+                // we outrun every backtick run so diff content can't close the fence
                 let longest_run = snippet
                     .iter()
                     .map(|(_, text)| longest_backtick_run(text))
@@ -81,10 +77,8 @@ fn render_comment(out: &mut String, comment: &Comment, model: &DiffModel, includ
     }
 }
 
-/// The anchored line plus its immediate neighbors within the same hunk,
-/// each tagged with its diff origin char (' ', '-', '+'). `None` when the
-/// file or line has left the model (the comment is outdated). Shared by
-/// the markdown export and the MCP comment payloads.
+/// The anchored line and its neighbours in the same hunk, each with its diff
+/// origin char. `None` when the line has left the model.
 pub fn context_snippet(
     model: &DiffModel,
     file: &str,

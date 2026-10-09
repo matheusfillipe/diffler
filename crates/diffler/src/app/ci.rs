@@ -5,8 +5,6 @@ use super::{App, CiRequest, Screen, page_step};
 use crate::keymap::Action;
 
 impl App {
-    /// A second left-press at (about) the same cell within the double-click
-    /// window. Resets after firing so a third press starts fresh.
     pub(super) fn open_runs(&mut self) {
         if self.ci_remotes.is_empty() {
             self.info("no CI provider detected for this repo");
@@ -17,8 +15,6 @@ impl App {
         self.pending_ci = Some(CiRequest::Runs);
     }
 
-    /// Open the selected run's graph: fetch its detail, which arrives as
-    /// `AppEvent::CiRunDetail` and feeds the graph view.
     pub(super) fn open_selected_run(&mut self) {
         let Some(run) = self.runs.get(self.runs_cursor) else {
             return;
@@ -32,14 +28,11 @@ impl App {
         self.pending_ci = Some(CiRequest::Detail(id));
     }
 
-    /// Fold a branch-scoped runs poll into the inline section, then resolve the
-    /// branch's PR once (not every poll), and refresh the open-PRs group while
-    /// it is on screen, via the single `pending_ci` slot. A folded group costs
-    /// nothing: the list is only worth re-fetching where someone can see it.
+    /// Take a runs poll, then resolve the branch's PR once and refresh the
+    /// open-PRs group while it is unfolded.
     pub(super) fn on_ci_runs(&mut self, runs: Vec<crate::ci::CiRun>) {
-        // runs nest under whatever commit, branch or PR they belong to, so a
-        // poll that changes their count moves every row below them: the cursor
-        // has to be re-seated by what it was on, never by its index
+        // a poll that changes the run count shifts every row below the runs,
+        // so we re-seat the cursor by identity
         let anchor = self.status_cursor_anchor();
         self.runs = runs;
         self.runs_cursor = self.runs_cursor.min(self.runs.len().saturating_sub(1));
@@ -51,9 +44,9 @@ impl App {
         }
     }
 
-    /// Fold a run's detail into the graph, then queue its extras once: a single
-    /// `pending_ci` slot means the extras request only displaces a run-detail
-    /// poll until the extras land, after which the poll keeps the slot.
+    /// Load a run's detail into the graph, then queue its extras once. The
+    /// extras request displaces the detail poll from `pending_ci` only until
+    /// the extras arrive.
     pub(super) fn on_run_detail(&mut self, detail: &crate::ci::RunDetail) {
         let model = crate::ci::to_model(detail);
         if let Some(graph) = self.graph.as_mut() {
@@ -67,10 +60,8 @@ impl App {
         }
     }
 
-    /// Queue the poll for the active CI screen onto `pending_ci`.
     pub(super) fn queue_ci_poll(&mut self) {
         self.pending_ci = match self.screen() {
-            // the Status screen shows an inline CI-runs section, kept live
             Screen::Status | Screen::Runs => Some(CiRequest::Runs),
             Screen::Graph => self.open_run.clone().map(CiRequest::Detail),
             // stop once the log is complete (a dump provider sends it all at once)
@@ -94,8 +85,6 @@ impl App {
         };
     }
 
-    /// While the runs screen is up: navigate the list, Enter opens a run.
-    /// The runs list from keymap actions: standard list motions plus Enter.
     pub(super) fn dispatch_runs(&mut self, action: Action) {
         let last = self.runs.len().saturating_sub(1);
         match action {
@@ -120,9 +109,7 @@ impl App {
         }
     }
 
-    /// Keymap actions on the graph screen. Search, help, and back are handled
-    /// by the shared dispatch; `n`/`N` arrive as SearchNext/Prev and fall back
-    /// to edge-follow there when no search is up.
+    /// Search, help, and back go through the shared dispatch.
     pub(super) fn dispatch_graph(&mut self, action: Action) {
         use crate::graph::Dir;
         let Some(graph) = self.graph.as_mut() else {
@@ -150,8 +137,7 @@ impl App {
             }
             _ => {}
         }
-        // folds and zooms relayout the placements the committed match rows
-        // index into; recompute so highlights and n/N track the live nodes
+        // folds and zooms move the nodes the search matches point at
         if self.search.is_some() {
             let rows = self.focused_search_rows();
             if let Some(search) = self.search.as_mut() {
@@ -160,10 +146,8 @@ impl App {
         }
     }
 
-    /// React to a [`crate::graph::GraphAction`] from the component: activating
-    /// a node opens that job's log for a CI run, or jumps to the code a card
-    /// figure's node resolved to when it is one of those instead. A node with
-    /// no resolved anchor does nothing.
+    /// Activating a node opens that job's log for a CI run, or jumps to the
+    /// code a figure's node resolved to.
     pub(super) fn on_graph_action(&mut self, action: &crate::graph::GraphAction) {
         match action {
             crate::graph::GraphAction::Activated(id) => {

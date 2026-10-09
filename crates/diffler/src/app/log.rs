@@ -113,7 +113,7 @@ impl App {
                 self.yank_rows("yanked commits");
             }
             other => {
-                self.info(format!("{} is not implemented yet", other.name()));
+                self.info(format!("{} does nothing on this screen", other.name()));
             }
         }
     }

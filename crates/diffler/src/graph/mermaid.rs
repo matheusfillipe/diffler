@@ -1,19 +1,15 @@
 //! Mermaid `flowchart` into a [`Model`], for graphs an agent writes.
 //!
-//! Best effort by design: agents reach for mermaid without being taught it, so
-//! anything the layered engine cannot draw is simplified and reported rather
-//! than refused. Only a diagram with no node-and-edge shape at all (a class or
-//! state diagram) comes back as an error; a `sequenceDiagram` never reaches
-//! this parser, [`crate::graph::sequence`] draws it. The notes travel to the author, so
-//! it learns what was dropped without the reader ever seeing a broken figure.
+//! Agents write mermaid untaught, so we simplify what the layered engine
+//! cannot draw and report it in the notes. Only a diagram with no
+//! node-and-edge shape (a class or state diagram) is an error.
 
 use crate::graph::model::{Edge, Model, Node, NodeId, NodeStatus, RankDir, Subgraph};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Figure {
     pub model: Model,
-    /// Node id paired with the anchor its `click` named, still unresolved: the
-    /// text the agent wrote, not a line.
+    /// Each node's unresolved `click` anchor, as the agent wrote it.
     pub anchors: Vec<(NodeId, String)>,
     pub notes: Vec<String>,
 }
@@ -28,12 +24,9 @@ pub enum MermaidError {
     Empty,
 }
 
-/// Nodes one figure may hold. A graph past this is unreadable in a terminal
-/// and its layout is what an agent-supplied body could otherwise spend the
-/// main thread on.
+/// Layout runs on the UI thread over agent-supplied text, so we cap it.
 pub const MAX_NODES: usize = 60;
 
-/// Directives that only style, dropped whole.
 const IGNORED: &[&str] = &["style", "classdef", "class", "linkstyle", "direction"];
 
 pub fn parse(src: &str) -> Result<Figure, MermaidError> {
@@ -71,9 +64,7 @@ fn strip_comment(line: &str) -> &str {
     line.split_once("%%").map_or(line, |(head, _)| head)
 }
 
-/// `src`'s statements: each line with a `%%` comment stripped, trimmed, and
-/// blank lines dropped. Every mermaid-family parser (flowchart, sequence
-/// diagram) and the fence sniffer that routes between them read this stream.
+/// Each non-blank line, trimmed, with its `%%` comment stripped.
 pub(crate) fn statements(src: &str) -> impl Iterator<Item = &str> {
     src.lines()
         .map(strip_comment)
@@ -81,8 +72,6 @@ pub(crate) fn statements(src: &str) -> impl Iterator<Item = &str> {
         .filter(|line| !line.is_empty())
 }
 
-/// Whether a mermaid fence's first statement's header names `sequenceDiagram`,
-/// distinguishing it from a `flowchart`/`graph` header.
 pub(crate) fn is_sequence_header(first: &str) -> bool {
     first
         .split_whitespace()
@@ -117,14 +106,13 @@ fn header_rankdir(header: &str, notes: &mut Vec<String>) -> Result<RankDir, Merm
 #[derive(Default)]
 struct Parsed {
     model: Model,
-    /// Collected as they are read and applied once the diagram is whole: a
-    /// `click` may name a node the next line declares.
+    /// Applied once the diagram is whole, since a `click` may name a node a
+    /// later line declares.
     clicks: Vec<(NodeId, String)>,
     anchors: Vec<(NodeId, String)>,
     notes: Vec<String>,
-    /// Nested `subgraph`/`end` blocks, outermost first: only the outermost
-    /// earns an outline, so a node inside a deeper one is still tagged with
-    /// its outermost ancestor's id, never its own.
+    /// Open `subgraph` blocks, outermost first. We tag every node with the
+    /// outermost id, since only the outermost gets an outline.
     subgraph_stack: Vec<String>,
 }
 
@@ -154,10 +142,6 @@ impl Parsed {
         }
     }
 
-    /// `subgraph <id>[<title>]` or bare `subgraph <title>`: pushes a level
-    /// onto the nesting stack so every node declared until the matching `end`
-    /// tags itself with the outermost one. A nested one is noted, since only
-    /// the outermost is ever drawn.
     fn subgraph(&mut self, line: &str) {
         if !self.subgraph_stack.is_empty() {
             self.note_once("nested subgraphs draw only the outermost".to_owned());
@@ -175,14 +159,12 @@ impl Parsed {
             }
             self.subgraph_stack.push(id);
         } else {
-            // a nested level still pushes, so its own `end` pairs correctly,
-            // but names no id: nodes inside stay tagged with the outer one
+            // we push an empty level so its `end` still pairs
             self.subgraph_stack.push(String::new());
         }
     }
 
-    /// `click <id> "<target>"`, with mermaid's optional `href`/`call` keyword
-    /// and trailing tooltip both skipped.
+    /// `click <id> [href|call] "<target>" [tooltip]`.
     fn click(&mut self, line: &str) {
         let mut words = line.split_whitespace().skip(1);
         let Some(id) = words.next() else { return };
@@ -211,8 +193,8 @@ impl Parsed {
         }
     }
 
-    /// One `A --> B --> C` line: alternating node specs and links, where a
-    /// text run between an open link and a closed one is the edge's label.
+    /// One `A --> B --> C` line. Text between an open link and a closed one is
+    /// the edge's label.
     fn chain(&mut self, line: &str) {
         let segments = split_links(line);
         let mut pending: Option<NodeId> = None;
@@ -259,11 +241,9 @@ impl Parsed {
         }
     }
 
-    /// Add the node a spec names, keeping the first label seen for it. Returns
-    /// `None` for a spec that holds no id at all.
+    /// Keeps the first label seen for a node.
     fn declare(&mut self, spec: &str) -> Option<NodeId> {
         let (id, label, shape) = node_spec(spec)?;
-        // `{ }` draws with its own marker, so it earns no "drawn as a box" note
         let decision = shape == Some("{ }");
         if let Some(shape) = shape
             && !decision
@@ -285,8 +265,8 @@ impl Parsed {
                         node.label = label;
                     }
                     node.decision |= decision;
-                    // mermaid places a node inside the first subgraph that
-                    // mentions it, even one first named on an edge above it
+                    // mermaid places a node in the first subgraph that mentions
+                    // it, even when an edge above named it first
                     if node.subgraph.is_none() {
                         node.subgraph = subgraph;
                     }
@@ -306,8 +286,8 @@ impl Parsed {
     }
 }
 
-/// `subgraph id[Title]`, `subgraph id["Title with spaces"]`, or a bare
-/// `subgraph Title`, which doubles as its own id.
+/// `subgraph id[Title]`, `subgraph id["Title"]`, or a bare `subgraph Title`
+/// that doubles as its own id.
 fn subgraph_header(rest: &str) -> (String, String) {
     let rest = rest.trim();
     if let Some(open) = rest.find('[') {
@@ -325,7 +305,6 @@ fn subgraph_header(rest: &str) -> (String, String) {
 /// The third field names the shape when it is not a plain box.
 fn node_spec(spec: &str) -> Option<(String, Option<String>, Option<&'static str>)> {
     let spec = spec.trim();
-    // a bare id, or a spec that opens with a bracket and so names nothing
     let Some(open) = spec.find(['[', '(', '{', '>']).filter(|at| *at > 0) else {
         return (!spec.is_empty()).then(|| (spec.to_owned(), None, None));
     };
@@ -352,17 +331,10 @@ fn node_spec(spec: &str) -> Option<(String, Option<String>, Option<&'static str>
     ))
 }
 
-/// Columns a node label's line may run before it wraps. At an 80-column
-/// terminal, the narrowest a card realistically gets, the figure's own
-/// drawing area is ~46 columns (`card_budget` minus the card's frame); a
-/// line past this cap would alone force a box wider than that, so it wraps
-/// on a word boundary and keeps the whole figure at its own width.
+/// An 80-column terminal leaves a card figure ~46 columns, so we wrap label
+/// lines short enough that one box never forces the figure wider.
 const MAX_LABEL_LINE: usize = 32;
 
-/// Wrap every line of `label` on word boundaries to [`MAX_LABEL_LINE`]
-/// columns, joining wrapped lines back with `\n` alongside any the label
-/// already had from [`break_lines`]. A single word longer than the cap stays
-/// whole on its own line.
 fn wrap_label(label: &str) -> String {
     label
         .split('\n')
@@ -389,8 +361,7 @@ fn wrap_line(line: &str, cap: usize) -> Vec<String> {
     lines
 }
 
-/// Mermaid's own line break inside a label, `<br>`/`<br/>`/`<br />`, any case
-/// and any inner spacing, becomes the `\n` a node box draws as another line.
+/// `<br>`, `<br/>` and `<br />` in any case become `\n`.
 fn break_lines(label: &str) -> String {
     let chars: Vec<char> = label.chars().collect();
     let mut out = String::with_capacity(label.len());
@@ -407,7 +378,6 @@ fn break_lines(label: &str) -> String {
     out
 }
 
-/// The index just past a `<br...>` tag starting at `at`, if there is one.
 fn br_tag_end(chars: &[char], at: usize) -> Option<usize> {
     let is = |i: usize, c: char| chars.get(i).is_some_and(|x| x.eq_ignore_ascii_case(&c));
     if !is(at, '<') || !is(at + 1, 'b') || !is(at + 2, 'r') {
@@ -427,8 +397,6 @@ fn br_tag_end(chars: &[char], at: usize) -> Option<usize> {
     (chars.get(end) == Some(&'>')).then_some(end + 1)
 }
 
-/// The first double-quoted run, wherever it sits: mermaid puts an optional
-/// `href`/`call` keyword before a `click` target.
 fn quoted(text: &str) -> Option<String> {
     let (_, rest) = text.split_once('"')?;
     let (inside, _) = rest.split_once('"')?;
@@ -444,14 +412,12 @@ enum Segment {
 #[derive(Debug, PartialEq, Eq)]
 struct Link {
     raw: String,
-    /// An arrowhead: `-->` connects, `--` opens a labelled link that the next
-    /// link closes.
+    /// `-->` connects; `--` opens a labelled link the next link closes.
     closed: bool,
     label: Option<String>,
 }
 
-/// Split a statement into node specs and the links between them. Bracket and
-/// quote depth is tracked so a hyphen inside a label is not read as a link.
+/// We track bracket and quote depth so a hyphen inside a label stays text.
 fn split_links(line: &str) -> Vec<Segment> {
     let chars: Vec<char> = line.chars().collect();
     let mut segments = Vec::new();
@@ -494,8 +460,7 @@ fn split_links(line: &str) -> Vec<Segment> {
     segments
 }
 
-/// The link starting at `at`, and where it ends. `--` alone is a link only
-/// when a second dash follows, so a hyphenated bare id stays one token.
+/// A link needs two dashes, so a hyphenated bare id stays one token.
 fn link_at(chars: &[char], at: usize) -> Option<(Link, usize)> {
     let mut end = at;
     while matches!(chars.get(end), Some('-' | '.' | '=' | '~')) {
@@ -510,8 +475,8 @@ fn link_at(chars: &[char], at: usize) -> Option<(Link, usize)> {
             closed = true;
             end += 1;
         }
-        // `--x` and `--o` are arrowheads only when a separator follows; an
-        // identifier may legitimately start with either letter
+        // `x` and `o` are arrowheads only before a separator, since an id may
+        // start with either letter
         Some(&c @ ('x' | 'o'))
             if chars
                 .get(end + 1)
@@ -528,7 +493,7 @@ fn link_at(chars: &[char], at: usize) -> Option<(Link, usize)> {
     Some((Link { raw, closed, label }, end))
 }
 
-/// `-->|text|`: the label mermaid puts straight after the arrow.
+/// `-->|text|`.
 fn inline_label(chars: &[char], at: usize) -> (Option<String>, usize) {
     let mut cursor = at;
     while matches!(chars.get(cursor), Some(c) if c.is_whitespace()) {
@@ -620,8 +585,6 @@ mod tests {
         }
     }
 
-    /// A hyphen inside a label or an id is not a link; splitting on it would
-    /// invent nodes out of half a word.
     #[test]
     fn a_hyphen_inside_a_label_is_not_a_link() {
         let figure = figure("flowchart LR\n  merge-cfg[merge the well-known keys] --> out");
@@ -660,8 +623,6 @@ mod tests {
         assert_eq!(figure.notes, ["`(( ))` shapes are drawn as boxes"]);
     }
 
-    /// A `{decision}` node gets its own marker and earns no "drawn as a box"
-    /// note, unlike every other shape the layered engine cannot draw.
     #[test]
     fn a_decision_shape_is_marked_not_noted() {
         let figure = figure("flowchart TD\n  a{is it set?} --> b[done]");
@@ -744,17 +705,12 @@ mod tests {
         assert_eq!(labels(&figure), ["a", "b"]);
     }
 
-    /// Mermaid lets a node appear in an edge before it is labelled, so a later
-    /// declaration fills the label in; a label already given is not replaced.
     #[test]
     fn a_later_declaration_supplies_a_missing_label() {
         let figure = figure("flowchart LR\n  a --> b[merge]\n  b --> c\n  a[load]\n  b[other]");
         assert_eq!(labels(&figure), ["load", "merge", "c"]);
     }
 
-    /// Mermaid's own line break inside a label becomes `\n`, in any of its
-    /// three spellings and any case, so the node box draws it as a second
-    /// line.
     #[test]
     fn a_br_tag_becomes_a_line_break() {
         let figure = figure(
@@ -766,15 +722,12 @@ mod tests {
         );
     }
 
-    /// A label with no `<br>` at all passes through untouched.
     #[test]
     fn a_label_without_a_break_is_unchanged() {
         let figure = figure("flowchart LR\n  a[plain label] --> b");
         assert_eq!(labels(&figure), ["plain label", "b"]);
     }
 
-    /// A label line past the cap wraps on word boundaries into further lines,
-    /// so a long sentence grows the box taller.
     #[test]
     fn a_long_label_wraps_on_word_boundaries() {
         let figure = figure(
@@ -792,7 +745,6 @@ mod tests {
         );
     }
 
-    /// A single word longer than the cap is left whole on its own line.
     #[test]
     fn a_word_longer_than_the_cap_is_not_broken() {
         let long_word = "a".repeat(MAX_LABEL_LINE + 10);
@@ -837,8 +789,6 @@ mod more_tests {
 
     use super::*;
 
-    /// A `click` may precede the line that declares its node, the way a label
-    /// may arrive after an edge already used the id.
     #[test]
     fn a_click_before_its_node_still_attaches() {
         let figure =

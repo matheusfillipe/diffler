@@ -1,10 +1,8 @@
 //! Reading the walkthrough an agent wrote about the open review: parsing each
 //! stop's markdown into blocks, and resolving the code its anchors name.
 //!
-//! A body parses into blocks the moment the view is built, which is pure work
-//! over a string. Anchors are a different matter: resolving one reads its file
-//! and parses it, so it runs on the blocking pool like enrichment and the
-//! stops render unseated until the answer lands.
+//! Resolving an anchor reads and parses its file, so it runs on the blocking
+//! pool and the stops render unseated until the answer arrives.
 
 use std::collections::{HashMap, HashSet};
 
@@ -44,8 +42,7 @@ pub struct FigureBlock {
 }
 
 impl FigureBlock {
-    /// Nodes whose anchor stopped resolving, counted for the figure header so
-    /// a walkthrough that has aged says so.
+    /// Nodes whose anchor fails to resolve, counted in the figure header.
     pub fn stale(&self) -> usize {
         self.resolved
             .values()
@@ -54,8 +51,8 @@ impl FigureBlock {
     }
 
     /// Terminal rows the figure occupies: its header, the graph itself, and
-    /// one more when it was redrawn or cropped to fit and has to say so. Row
-    /// building and rendering both read it, so they cannot disagree.
+    /// one more when it was redrawn or cropped to fit. Row building and
+    /// rendering both read it, so they agree.
     pub fn rows(&self) -> usize {
         1 + usize::from(self.drawn_rows()) + usize::from(self.fit != Fit::AsDrawn)
     }
@@ -80,21 +77,18 @@ impl FigureBlock {
 /// it.
 pub const FIGURE_MAX_ROWS: u16 = 32;
 
-/// One comment body already split into blocks, so a `mermaid` fence is parsed
-/// once rather than on every frame that draws a row of it. `hash` covers the
-/// body and the width it was wrapped to, which are the two things that make
-/// it stale.
+/// One comment body already split into blocks, so we parse a `mermaid` fence
+/// once. `hash` covers the body and the wrap width.
 #[derive(Debug)]
 pub struct CachedBody {
     pub hash: u64,
     pub blocks: Vec<Block>,
 }
 
-/// Every comment body that holds a figure, by comment id. Bodies without one
-/// are absent: they render straight from markdown and cost nothing to keep.
+/// Every comment body that holds a figure, by comment id.
 pub type FigureCache = std::collections::HashMap<String, CachedBody>;
 
-/// Whether a body holds a diagram at all, which is what earns it a cache entry.
+/// Whether a body holds a diagram, which gives it a cache entry.
 pub fn has_figure(body: &str) -> bool {
     body.lines().any(|line| FenceKind::of(line).is_some())
 }
@@ -160,7 +154,7 @@ fn chunks(body: &str) -> Vec<Chunk> {
             }
         }
     }
-    // an unterminated fence is prose: its source is more use than a gap
+    // an unterminated fence is prose
     if let Some((_, unterminated)) = fence {
         prose.push_str(&unterminated);
     }
@@ -179,7 +173,7 @@ pub fn blocks(body: &str, width: usize) -> Vec<Block> {
                     push_prose(&mut blocks, &mut prose, width);
                     blocks.push(figure);
                 } else {
-                    // a diagram we cannot draw still has to reach the reader
+                    // we show a diagram we cannot draw as its source
                     use std::fmt::Write as _;
                     let _ = writeln!(prose, "```{}", kind.lang());
                     prose.push_str(&src);
@@ -192,9 +186,8 @@ pub fn blocks(body: &str, width: usize) -> Vec<Block> {
     blocks
 }
 
-/// Figures a body would draw, and what drawing them simplified. What the MCP
-/// write path answers with, so an agent learns the subset without the reader
-/// ever seeing a broken figure.
+/// Figures a body would draw, and what drawing them simplified. The MCP write
+/// path replies with it so the agent learns the supported subset.
 pub fn validate(body: &str) -> (usize, Vec<String>) {
     let mut figures = 0;
     let mut notes = Vec::new();
@@ -230,10 +223,9 @@ fn push_prose(blocks: &mut Vec<Block>, prose: &mut String, width: usize) {
     prose.clear();
 }
 
-/// Lay a fence's figure out to fit `width` columns: a flowchart draws the
-/// direction its author chose if that fits, top-down if it does not (a chain
-/// always fits a card's width running downward), cropped as a last resort; a
-/// sequence diagram or callstack tree, already vertical, only ever crops.
+/// Lay a fence's figure out to fit `width` columns: a flowchart keeps its
+/// author's direction if that fits, else draws top-down, else crops; a
+/// sequence diagram or callstack tree only crops.
 fn figure_block(kind: FenceKind, src: &str, width: usize) -> Option<Block> {
     let result = crate::graph::figure(kind, src, u16::try_from(width).unwrap_or(u16::MAX))?;
     let targets: Vec<(NodeId, Target)> = result
@@ -272,8 +264,8 @@ fn figure_anchor_targets(figure: &FigureBlock) -> HashMap<NodeId, (String, u32, 
 
 /// The comments one slide holds, in reading order: its primary and everything
 /// anchored inside the region that primary covers. A primary with no line
-/// holds the other file-level cards of its file, since a slide is what the
-/// pane shows and those sit in the same place.
+/// holds the other file-level cards of its file, since the pane draws them in
+/// the same place.
 pub fn slide_comments(session: &Session, primary: usize) -> Vec<usize> {
     let Some(anchor) = session.comments.get(primary).map(|c| &c.anchor) else {
         return Vec::new();
@@ -314,8 +306,8 @@ pub fn slide_comments(session: &Session, primary: usize) -> Vec<usize> {
 }
 
 /// One `FileDiff` for a stop or note anchored at a file the diff itself does
-/// not carry: a single hunk of context lines, so the walkthrough layout can
-/// window to it exactly as it windows to a file the diff does carry.
+/// not carry: a single hunk of context lines the walkthrough layout can
+/// window to.
 fn context_file_diff(path: &str, content: &str) -> FileDiff {
     let lines: Vec<DiffLine> = content
         .lines()
@@ -327,8 +319,6 @@ fn context_file_diff(path: &str, content: &str) -> FileDiff {
         .collect();
     let line_count = u32::try_from(lines.len()).unwrap_or(u32::MAX);
     let hunk = Hunk {
-        // the only hunk this synthetic file ever carries, so it needs no
-        // disambiguation against a sibling
         id: hunk_id(path, &lines, 0),
         old_start: 1,
         old_lines: line_count,
@@ -364,9 +354,8 @@ pub fn stop_title(comment: &Comment) -> String {
 }
 
 /// One line under a stop or note's body explaining why it has no code to
-/// show: the file itself is missing, or the file is there but the symbol or
-/// line the anchor names is gone from it. `None` for `Found`/`Whole`, which
-/// are not failures.
+/// show: the file is missing, or the symbol or line the anchor names is gone
+/// from it. `None` for `Found`/`Whole`.
 pub fn unresolved_explanation(file: &str, reason: Located) -> Option<String> {
     match reason {
         Located::FileMissing => Some(format!(
@@ -380,8 +369,7 @@ pub fn unresolved_explanation(file: &str, reason: Located) -> Option<String> {
 }
 
 /// How much of the walkthrough has been read, for any header that counts its
-/// stops: `seen/total` once at least one is marked, else just the total, the
-/// way every other group header counts what it holds.
+/// stops: `seen/total` once at least one is marked, else the total.
 pub fn progress_label(session: &Session, walkthrough: &Walkthrough) -> String {
     let total = walkthrough.stops.len();
     let seen = walkthrough
@@ -404,11 +392,9 @@ impl App {
         self.review.session_for(&diff.source).walkthrough.as_ref()
     }
 
-    /// The review the walkthrough `id` describes: the source
-    /// `publish_walkthrough` recorded when it was published, `WorkingTree`
-    /// for one saved before that existed, one loaded from nothing at all, or
-    /// (defensively; this should never be written) one that names a
-    /// walkthrough, which would recurse into [`App::source_model`] forever.
+    /// The review the walkthrough `id` describes, `WorkingTree` when it names
+    /// none or names a walkthrough, which would recurse forever in
+    /// [`App::source_model`].
     pub(crate) fn walkthrough_about(&mut self, id: &str) -> ReviewSource {
         let source = ReviewSource::Walkthrough { id: id.to_owned() };
         if self.review.ensure_source(&source).is_err() {
@@ -430,9 +416,8 @@ impl App {
     }
 
     /// `<cr>` on a status row: open the walkthrough `id` names, in its own
-    /// order, seated on `slide`. A walkthrough about a PR still resolving
-    /// its range stashes `(id, slide)` and returns without touching the
-    /// screen; the resolution's continuation calls this again once it lands.
+    /// order, seated on `slide`. For a PR still resolving its range we stash
+    /// `(id, slide)` and the resolution calls this again when it finishes.
     pub(crate) fn open_walkthrough(&mut self, id: &str, slide: Slide) {
         if !self.open_walkthrough_diff(id) {
             self.pending_walkthrough_open = Some((id.to_owned(), slide));
@@ -486,10 +471,7 @@ impl App {
     /// `o` in the diff pane: open the figure under the cursor full-screen on
     /// the Graph screen, its default selection restored (a card figure
     /// clears its own) and every resolved `click` anchor ready for `<cr>`.
-    /// `q`/back pops back to this same slide and cursor, since nothing here
-    /// touches the diff view's own state. A sequence diagram or a callstack
-    /// tree has no full-screen graph to open; `<cr>` on its own row reaches
-    /// the code directly instead.
+    /// A sequence diagram or a callstack tree has no full-screen graph.
     pub(crate) fn open_figure_graph_at_cursor(&mut self) {
         let Some((key, block, _row)) = self.figure_row_at_cursor() else {
             self.info("no figure under the cursor");
@@ -503,7 +485,7 @@ impl App {
             return;
         };
         let Some(model) = figure.view.model() else {
-            self.info("no full graph for this figure, <cr> on a row to jump to its code");
+            self.info("no full graph for this figure, press <cr> on a row to jump to its code");
             return;
         };
         let mut view = GraphView::new();
@@ -532,10 +514,9 @@ impl App {
         }
     }
 
-    /// Notice the open source's walkthrough being revised under a reader, so
-    /// an agent's republish shows without a restart. The row build is what
-    /// parses the bodies, so run it here too and let a figure that only
-    /// appeared there have its files read as well.
+    /// Rebuild the view when the agent revises the open walkthrough. The row
+    /// build parses the bodies, so we run it here to queue reads for any new
+    /// figure's files.
     pub(crate) fn ensure_walkthrough_view(&mut self) {
         let review = &self.review;
         let Some(diff) = self.diff.as_mut() else {
@@ -558,11 +539,8 @@ impl App {
         }
     }
 
-    /// Every distinct file the open source's own comments anchor to, and the
-    /// `click` targets of every figure alike: one read serves both. Every
-    /// comment in a walkthrough source's session is that walkthrough's, so no
-    /// further filtering is needed; a human comment (no `anchor_ref`) drops
-    /// out on its own.
+    /// Every distinct file the open source's comments and figure `click`
+    /// targets anchor to.
     fn anchored_files(&self) -> Vec<String> {
         let session = self.review.session_for(&self.active_review_source());
         let mut files: Vec<String> = session
@@ -613,9 +591,8 @@ impl App {
     }
 
     /// Fold the worker's file reads into every stop comment's anchor and every
-    /// figure's node table. A stop then carries the anchor fields every other
-    /// comment has, so outdated detection and card placement are the ones the
-    /// review already runs.
+    /// figure's node table, so stops share the review's outdated detection
+    /// and card placement.
     pub(crate) fn on_walkthrough_anchors(
         &mut self,
         contents: &HashMap<String, String>,
@@ -627,9 +604,8 @@ impl App {
         }
         let source = self.active_review_source();
         let model = self.source_model(&source);
-        // a file the diff carries shows its new side on the slide, which is
-        // often uncommitted work the pinned commit never saw, so its anchors
-        // resolve against that side; the worker's read covers the rest
+        // a file the diff carries shows its new side, often uncommitted work
+        // the pinned commit never saw, so we resolve its anchors against it
         let mut contents = contents.clone();
         for file in &model.files {
             if let Some(text) = &file.new_text {
@@ -637,8 +613,7 @@ impl App {
             }
         }
         // only the file read can tell an absent file from a symbol gone from
-        // a file that is still there: `Target::locate` only ever runs once
-        // content is in hand, so it never has to guess which one happened
+        // a file that is still there
         let locate = |target: &Target| {
             contents
                 .get(target.path())
@@ -651,24 +626,22 @@ impl App {
         let session = self.review.session_for_mut(&source);
         let owned: Vec<String> = session.comments.iter().map(|c| c.id.clone()).collect();
         let mut unresolved = HashMap::new();
-        // every path an owned comment anchors to, whether or not the diff
-        // itself carries it: `context_files` below fills in the ones it does
-        // not, so a stop can still window to them
+        // `context_files` below fills in the paths the diff does not carry
         let mut context_paths = HashSet::new();
         for id in owned {
             let Some(comment) = session.comments.iter_mut().find(|c| c.id == id) else {
                 continue;
             };
-            // an anchor-less stop still needs its own (fallback) file found
-            // in the model, or its card has nowhere to seat either
+            // an anchor-less stop still needs its fallback file in the model,
+            // or its card has nowhere to seat
             context_paths.insert(comment.anchor.file.clone());
             let Some(anchor_ref) = comment.anchor_ref.clone() else {
                 continue;
             };
             let target = Target::parse(&anchor_ref);
             context_paths.insert(target.path().to_owned());
-            // a note marks a point inside its stop's region rather than a
-            // second span, and one with no anchor of its own rides the stop's
+            // a note marks a point inside its stop's region, and one with no
+            // anchor of its own uses the stop's
             let point = !stops.contains(&id);
             comment.anchor.on_old_side = false;
             match locate(&target) {
@@ -700,10 +673,8 @@ impl App {
             return Flow::Continue;
         };
         diff.pin_broken = pin_broken;
-        // a path with no content read (the file exists nowhere reachable)
-        // still gets an (empty) context file, so its comment's own file is
-        // always found in the model: a slide never comes up with no card to
-        // show for it, only nothing to show under it
+        // an unreadable path still gets an empty context file, so its
+        // comment's card always has a file to seat on
         diff.context_files = context_paths
             .into_iter()
             .map(|path| {
@@ -725,11 +696,9 @@ impl App {
             }
         }
         diff.unresolved_anchors = unresolved;
-        // where a card sits depends on where its anchor landed
         diff.mark_rows_dirty();
-        // the reader is already standing on a slide that had nothing to seat
-        // on, so its span has to appear under them rather than on the next
-        // visit
+        // the reader may already be on a slide that had nothing to seat on,
+        // so we reseat it now
         let slide =
             (diff.layout == crate::config::FileLayout::Walkthrough).then(|| diff.slide.clone());
         match slide {
@@ -861,7 +830,7 @@ The fourth is the one this diff changes.
         assert_eq!(figure.stale(), 0, "nothing is stale before resolving");
     }
 
-    /// A code sample is not a diagram: only a mermaid fence becomes a figure.
+    /// Only a mermaid fence becomes a figure; a code sample stays prose.
     #[test]
     fn an_ordinary_code_fence_stays_prose() {
         let blocks = blocks("text\n\n```rust\nfn main() {}\n```\n", 80);
@@ -871,7 +840,7 @@ The fourth is the one this diff changes.
         );
     }
 
-    /// A diagram we cannot draw still has to reach the reader, as its source.
+    /// A diagram we cannot draw shows as its source.
     #[test]
     fn an_unusable_diagram_falls_back_to_its_source() {
         let blocks = blocks("```mermaid\nclassDiagram\n  Animal <|-- Dog\n```\n", 80);
@@ -931,8 +900,7 @@ The fourth is the one this diff changes.
         );
     }
 
-    /// A diagram we cannot draw is the one case that reads as a failure, and
-    /// the note has to say what to do instead.
+    /// For a diagram we cannot draw, the note says what to write.
     #[test]
     fn validate_names_a_diagram_it_cannot_draw() {
         let (figures, notes) = validate("```mermaid\nclassDiagram\n  Animal <|-- Dog\n```\n");
@@ -950,8 +918,7 @@ The fourth is the one this diff changes.
     }
 
     /// A five-node `flowchart LR` with long labels overflows a narrow card
-    /// laid out left to right, so it is redrawn top-down instead, and every
-    /// node then fits the width it was given.
+    /// laid out left to right, so we redraw it top-down, where every node fits.
     #[test]
     fn a_wide_flowchart_redraws_top_down_to_fit_a_narrow_card() {
         let body = "\
@@ -987,10 +954,8 @@ flowchart LR
         assert_eq!(figure.fit, Fit::AsDrawn);
     }
 
-    /// A sequence diagram or a callstack tree lays out to the card's width
-    /// and has no other direction to redraw in: it crops only when what it
-    /// cannot elide, a participant box or a tree's own indent, is wider than
-    /// the card.
+    /// A sequence diagram or a callstack tree lays out to the card's width and
+    /// crops only when a participant box or the tree's indent is wider.
     #[test]
     fn a_sequence_diagram_crops_when_too_wide_and_fits_when_not() {
         let body = "\
@@ -1032,8 +997,7 @@ sequenceDiagram
         assert_eq!(deep.fit, Fit::Cropped);
     }
 
-    /// The reader is told which of the two happened: a missing file reads
-    /// differently from a file that is there but has lost the anchor.
+    /// A missing file and a lost anchor explain themselves differently.
     #[test]
     fn the_two_unresolved_reasons_read_differently() {
         let missing =
@@ -1042,7 +1006,7 @@ sequenceDiagram
         assert_ne!(missing, lost);
     }
 
-    /// `Found` and `Whole` are not failures: nothing to explain.
+    /// `Found` and `Whole` need no explanation.
     #[test]
     fn a_resolved_anchor_has_no_explanation() {
         assert_eq!(
@@ -1120,10 +1084,8 @@ flowchart LR
         });
     }
 
-    /// The point of the symbol anchor: the stop finds its definition's whole
-    /// span, and the reader lands on the segment rather than a line. It lands
-    /// in the comment's own anchor fields, so the review's outdated detection
-    /// and card placement need to know nothing about walkthroughs.
+    /// A symbol anchor resolves to its definition's whole span, written into
+    /// the comment's own anchor fields.
     #[test]
     fn a_stops_symbol_anchor_resolves_into_its_comments_anchor() {
         let fixture = standard_fixture();
@@ -1142,9 +1104,8 @@ flowchart LR
         assert_eq!(stop_anchor(&app, 1), (None, None), "nowhere to land");
     }
 
-    /// An agent most often walks through work it has not committed, so the
-    /// anchors have to resolve against the code on disk, the code the slides
-    /// show, and not the last commit's.
+    /// An agent most often walks through uncommitted work, so anchors resolve
+    /// against the code on disk, the code the slides show.
     #[test]
     fn a_walkthrough_of_uncommitted_work_resolves_against_the_working_tree() {
         let fixture = Fixture::new();
@@ -1250,8 +1211,7 @@ flowchart LR
 
     /// `o` opens the figure under the cursor full-screen on the Graph screen
     /// carrying its own nodes, with the default selection a card clears
-    /// restored; back returns to the same slide and cursor row, since
-    /// opening it never touches the diff view's own state.
+    /// restored; back returns to the same slide and cursor row.
     #[test]
     fn o_opens_the_figures_graph_and_back_returns_to_the_same_slide_and_cursor() {
         let fixture = standard_fixture();
@@ -1296,8 +1256,8 @@ flowchart LR
         assert_eq!(diff.slide, slide_before, "the same slide is still open");
     }
 
-    /// A callstack frame naming a symbol the file no longer defines counts
-    /// as stale, the same as a flowchart node's `click` would.
+    /// A callstack frame naming a symbol the file lacks counts as stale, like
+    /// a flowchart node's `click`.
     #[test]
     fn a_callstack_frame_with_a_gone_symbol_counts_as_stale() {
         let fixture = standard_fixture();
@@ -1324,8 +1284,7 @@ flowchart LR
         assert_eq!(figure.stale(), 1);
     }
 
-    /// A callstack (or sequence) figure has no full-screen graph: `o` on it
-    /// stays put and tells the reader `<cr>` is the way to its code instead.
+    /// `o` on a callstack or sequence figure stays put and names `<cr>`.
     #[test]
     fn o_on_a_non_graph_figure_shows_an_info_message_and_opens_nothing() {
         let fixture = standard_fixture();
@@ -1379,8 +1338,7 @@ flowchart LR
         );
     }
 
-    /// A callstack fence has no full-screen graph to open with `o`; instead
-    /// `<cr>` on its own anchored frame row resolves straight to the code.
+    /// `<cr>` on a callstack's anchored frame row jumps to its code.
     #[test]
     fn cr_on_a_callstack_frame_jumps_to_its_anchor() {
         let fixture = standard_fixture();
@@ -1420,9 +1378,8 @@ flowchart LR
         }
     }
 
-    /// Resolution lands after the reader is already standing on a stop, so
-    /// the answer has to reach the open view: the span appears where they
-    /// are, rather than on the next visit.
+    /// Resolution that finishes while the reader is on a stop shows its span
+    /// at once.
     #[test]
     fn anchors_landing_seat_the_stop_the_reader_already_stands_on() {
         let fixture = standard_fixture();
@@ -1467,8 +1424,8 @@ flowchart LR
         assert_eq!(lines, [1, 2, 3], "the windowed rows carry the whole span");
     }
 
-    /// A body's figures are parsed once and kept, so drawing a card does not
-    /// re-parse a diagram every frame; a rewritten body drops the old parse.
+    /// A body's figures are parsed once and kept; a rewritten body drops the
+    /// old parse.
     #[test]
     fn a_figure_is_parsed_once_per_body_and_dropped_when_it_is_rewritten() {
         let fixture = standard_fixture();
@@ -1503,8 +1460,7 @@ flowchart LR
         );
     }
 
-    /// An agent revising the walkthrough under a reader has to show, so the
-    /// rows are keyed by what identifies one rather than built once.
+    /// An agent's revision of the open walkthrough rebuilds its rows.
     #[test]
     fn a_republished_walkthrough_rebuilds_the_rows() {
         let fixture = standard_fixture();
@@ -1533,9 +1489,8 @@ flowchart LR
         );
     }
 
-    /// A revision can shrink the walkthrough out from under the reader. A
-    /// stop index that no longer exists must not be left dangling: the pane
-    /// keeps windowed to a real slide on its own, with no keypress needed.
+    /// A revision that drops the slide on screen moves the pane to a real
+    /// slide with no keypress.
     #[test]
     fn republishing_with_fewer_stops_clamps_a_dangling_slide() {
         let fixture = standard_fixture();
@@ -1582,8 +1537,7 @@ flowchart LR
         );
     }
 
-    /// Deleting the ad hoc comment on screen must not leave the pane
-    /// windowed to a comment that no longer exists.
+    /// Deleting the ad hoc comment on screen moves the pane off its slide.
     #[test]
     fn deleting_the_open_ad_hoc_comment_leaves_a_valid_slide() {
         let fixture = standard_fixture();
@@ -1635,8 +1589,7 @@ flowchart LR
     }
 
     /// Every code line the slide shows, as text, read through the model that
-    /// also carries the walkthrough's own files, since a stop outside the diff
-    /// has nothing to show against otherwise.
+    /// also carries the walkthrough's context files.
     fn slide_line_texts(app: &App) -> Vec<String> {
         let diff = app.diff.as_ref().expect("diff view");
         let model =
@@ -1661,8 +1614,7 @@ flowchart LR
 
     /// A stop anchored to a file the working-tree diff does not carry (it is
     /// committed and untouched) still gets a slide: the anchor worker's read
-    /// becomes a context file, and the span and card render against it the
-    /// same as they would inside the diff.
+    /// becomes a context file the span and card render against.
     #[test]
     fn a_stop_anchored_outside_the_diff_renders_its_span_and_card() {
         let fixture = standard_fixture();
@@ -1801,8 +1753,8 @@ flowchart LR
 
     /// A walkthrough pinned to the revision it was published against still
     /// shows a stop's code once the checkout has moved past that revision
-    /// and the file is gone from the worktree entirely: the anchor worker
-    /// reads the pinned revision instead of coming up with nothing.
+    /// and the file is gone from the worktree: the anchor worker reads the
+    /// pinned revision.
     #[test]
     fn a_stop_pinned_to_a_gone_revision_still_shows_its_code() {
         let fixture = Fixture::new();
@@ -1835,7 +1787,7 @@ flowchart LR
     }
 
     /// A stop whose file is there but whose symbol is gone still renders its
-    /// card, never an empty pane, with the explanation as one more line.
+    /// card, with the explanation as one more line.
     #[test]
     fn a_stop_whose_symbol_is_gone_still_shows_its_card_and_says_why() {
         let fixture = standard_fixture();
@@ -1924,10 +1876,9 @@ flowchart LR
         diff.cursor = position;
     }
 
-    /// `c` on a code line inside a stop's slide is the reader answering the
-    /// stop about that code: the composer opens anchored to the slide's own
-    /// file and line, not "no file under the cursor", and the saved comment
-    /// carries them into the walkthrough's own review.
+    /// `c` on a code line inside a stop's slide opens the composer anchored
+    /// to that file and line, and the saved comment goes into the
+    /// walkthrough's own review.
     #[test]
     fn c_on_a_slide_line_opens_a_composer_anchored_there_and_saves_the_comment() {
         let fixture = standard_fixture();
@@ -2050,9 +2001,8 @@ flowchart LR
     }
 
     /// A walkthrough is pinned to the revision it was published against, so
-    /// a stop can point at code the worktree no longer carries at all. `e`
-    /// there has nothing to edit, and says so instead of handing the editor
-    /// an empty buffer.
+    /// a stop can point at code the worktree lacks. `e` there says it has
+    /// nothing to edit.
     #[test]
     fn e_on_a_slide_line_whose_file_left_the_worktree_says_so_and_opens_nothing() {
         let fixture = Fixture::new();
@@ -2098,8 +2048,7 @@ flowchart LR
         );
     }
 
-    /// A comment made on a slide line is not a detour into some other view:
-    /// it renders in the same slide once the card is saved.
+    /// A comment made on a slide line renders in the same slide once saved.
     #[test]
     fn a_comment_made_on_a_slide_line_shows_in_the_slide_afterwards() {
         let fixture = standard_fixture();

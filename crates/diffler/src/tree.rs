@@ -1,17 +1,8 @@
-//! The shared sidebar row vocabulary (`TreeRow`/`TreeNode`) and pure
-//! directory-trie flattening, used by the diff sidebar and the status
-//! sections. `visible_rows` turns a file list (repo-relative paths, in input
-//! order) into visible rows honoring fold state: directories before files at
-//! each level, input order preserved within a kind, folded directories hiding
-//! their subtree. It only ever emits Dir and File rows; Section rows are
-//! composed by the diff sidebar's review layout on top of the same vocabulary.
-//! No rendering and no app state, so the navigation math is fully
-//! unit-testable.
+//! Sidebar rows and the directory-trie flattening behind them, with no
+//! rendering or app state so the navigation math stays unit-testable.
 
 use std::collections::BTreeSet;
 
-/// What a section header stands for: review progress (still to review, already
-/// viewed) in the review layout, or what the files are in the kinds layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Bucket {
     ToReview,
@@ -29,17 +20,15 @@ impl Bucket {
     }
 }
 
-/// One node in a flattened tree row: a directory (carrying its full path as the
-/// fold key, and the last path segment as its display name), a file (carrying
-/// its index into the source path slice, and its basename), or a review-mode
-/// bucket header. Sections are composed by the diff sidebar's review layout;
-/// the trie flattening below never produces them.
+/// The trie flattening emits only `Dir` and `File`; the grouped layouts add the rest.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TreeNode {
+    /// `path` is the fold key.
     Dir {
         path: String,
         name: String,
     },
+    /// `index` points into the source path slice.
     File {
         index: usize,
         name: String,
@@ -49,40 +38,31 @@ pub enum TreeNode {
         count: usize,
         folded: bool,
     },
-    /// One stop of the review's walkthrough, by its position in it. The row
-    /// carries no title: the walkthrough is the session's, and the renderer
-    /// already reads it.
+    /// Carries no title, since the renderer reads the session's walkthrough.
     Stop {
         index: usize,
     },
-    /// The walkthrough layout's leading row: the walkthrough's own summary,
-    /// shown only where the walkthrough has one. The row carries no title
-    /// either, for the same reason.
     WalkthroughSummary,
 }
 
 impl TreeNode {
-    /// Whether this row folds: a folder or a section header.
     pub fn is_group(&self) -> bool {
         matches!(self, Self::Dir { .. } | Self::Section { .. })
     }
 }
 
-/// A flattened tree row: a node and its indentation depth (0 at the root).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TreeRow {
     pub depth: usize,
     pub node: TreeNode,
 }
 
-/// An entry under a directory while the trie is built, before flattening.
 enum Entry {
     Dir(Node),
     File { index: usize, name: String },
 }
 
-/// A directory's children, kept in insertion order so input order survives
-/// within a kind; directories are pulled ahead of files only at flatten time.
+/// Children keep insertion order; directories move ahead of files only at flatten time.
 struct Node {
     path: String,
     name: String,
@@ -98,10 +78,7 @@ impl Node {
         }
     }
 
-    /// Find the index of the child directory named `name`, creating it if
-    /// absent. New directories carry the full path so they can serve as fold
-    /// keys. Returning the index (not a reference) lets the caller re-borrow
-    /// `children` to descend, keeping the build panic-free.
+    /// Returns an index so the caller can re-borrow `children` to descend.
     fn dir_child_index(&mut self, name: &str) -> usize {
         if let Some(position) = self
             .children
@@ -124,8 +101,6 @@ impl Node {
     }
 }
 
-/// Insert one file path (its components) under `root`, recording the index it
-/// occupies in the source slice on the leaf.
 fn insert(root: &mut Node, path: &str, index: usize) {
     let mut node = root;
     let mut components = path.split('/').peekable();
@@ -145,14 +120,8 @@ fn insert(root: &mut Node, path: &str, index: usize) {
     }
 }
 
-/// Append a node's children to `rows`, directories first then files, recursing
-/// into expanded directories. A folded directory contributes its own row but
-/// none of its descendants.
-/// Collapse a chain of single-directory children into one row, neo-tree style:
-/// `a/b/c` where each level holds exactly one subdirectory becomes a single
-/// `a/b/c` node. Returns the joined display name and the deepest node (whose
-/// path is the fold key and whose children are rendered beneath the row). The
-/// chain stops at the first directory that holds a file or more than one child.
+/// Joins a chain of lone subdirectories into one `a/b/c` row, neo-tree style;
+/// the deepest node's path is the fold key.
 fn collapse_chain(dir: &Node) -> (String, &Node) {
     let mut name = dir.name.clone();
     let mut node = dir;
@@ -197,8 +166,7 @@ fn flatten(
             Entry::Dir(_) => None,
         })
         .collect();
-    // stable, so promoted files keep their order among themselves and the rest
-    // keep theirs: the list a reader learns stays learnable
+    // a stable sort, so both groups keep the order the reader already learned
     files.sort_by_key(|&(index, _)| !promote(index));
     rows.extend(files.into_iter().map(|(index, name)| TreeRow {
         depth,
@@ -209,18 +177,12 @@ fn flatten(
     }));
 }
 
-/// Build the flattened, fold-respecting visible rows for `paths` (each a
-/// file's repo-relative path, in input order). `folded` holds folded directory
-/// paths. Directories are sorted before files at each level; entries keep input
-/// order within a kind. A directory not in `folded` is expanded.
+/// Directories come before files at each level, and each kind keeps input order.
 pub fn visible_rows(paths: &[&str], folded: &BTreeSet<String>) -> Vec<TreeRow> {
     visible_rows_promoting(paths, folded, &|_| false)
 }
 
-/// [`visible_rows`], with the files `promote` accepts (by their index into
-/// `paths`) listed first inside each directory. The diff sidebar promotes the
-/// files already viewed, so a directory reads as what is done over what is
-/// left.
+/// [`visible_rows`], with the files `promote` accepts listed first in each directory.
 pub fn visible_rows_promoting(
     paths: &[&str],
     folded: &BTreeSet<String>,
@@ -235,10 +197,7 @@ pub fn visible_rows_promoting(
     rows
 }
 
-/// The flat-list rows for `paths`: one `File` row per entry, depth 0, full
-/// path as its name, index into the source slice. A degenerate tree (no
-/// `Dir` rows) so callers can drive the same cursor and file-navigation
-/// logic over the flat list and the tree layout alike.
+/// A tree with no `Dir` rows, so one cursor logic drives both layouts.
 pub fn flat_rows(paths: &[&str]) -> Vec<TreeRow> {
     paths
         .iter()
@@ -261,7 +220,6 @@ mod tests {
         BTreeSet::new()
     }
 
-    /// Compact `(depth, kind, name)` view of a row for terse assertions.
     fn shape(row: &TreeRow) -> (usize, &'static str, String) {
         match &row.node {
             TreeNode::Dir { name, .. } => (row.depth, "dir", name.clone()),
@@ -278,7 +236,6 @@ mod tests {
 
     #[test]
     fn single_directory_chains_collapse_into_one_row() {
-        // a/b/c/d each hold exactly one subdirectory → one joined row
         let rows = visible_rows(&["a/b/c/d/file.rs"], &no_folds());
         assert_eq!(
             shapes(&rows),
@@ -291,8 +248,6 @@ mod tests {
 
     #[test]
     fn a_chain_stops_collapsing_where_a_directory_branches() {
-        // top/ holds one dir (mid/) → collapses to top/mid; mid/ branches
-        // (a dir and a file) so it stops there
         let rows = visible_rows(&["top/mid/sub/x.rs", "top/mid/y.rs"], &no_folds());
         assert_eq!(
             shapes(&rows),
@@ -348,14 +303,12 @@ mod tests {
 
     #[test]
     fn dirs_sort_before_files_with_stable_order_within_a_kind() {
-        // input order: a root file, then a dir's file, then another root file
         let rows = visible_rows(&["z_root.rs", "pkg/inner.rs", "a_root.rs"], &no_folds());
         assert_eq!(
             shapes(&rows),
             vec![
                 (0, "dir", "pkg".to_owned()),
                 (1, "file", "inner.rs".to_owned()),
-                // root files keep their input order, after the dir
                 (0, "file", "z_root.rs".to_owned()),
                 (0, "file", "a_root.rs".to_owned()),
             ]
@@ -365,7 +318,6 @@ mod tests {
     #[test]
     fn promoted_files_lead_each_directory_without_disturbing_the_rest() {
         let paths = ["src/a.rs", "src/b.rs", "src/c.rs", "top.rs", "other.rs"];
-        // b.rs and other.rs are promoted, in different directories
         let rows = visible_rows_promoting(&paths, &no_folds(), &|index| index == 1 || index == 4);
         assert_eq!(
             shapes(&rows),

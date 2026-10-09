@@ -1,10 +1,5 @@
-//! Layout + render engines behind one trait, so the renderer is swappable
-//! (ego-centric/radial later) without touching the view.
-//! The view consumes an owned [`Layout`] (no engine lifetimes leak out).
-//!
-//! `Layered` is the favoured engine: longest-path layering assigns each node a
-//! column, then it draws the GitHub-style look: outlined rounded boxes laid out
-//! left-to-right, wired by clean orthogonal rails.
+//! Graph layout engines. `Layered` ranks nodes by longest path and draws
+//! rounded boxes wired by orthogonal rails.
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -14,8 +9,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::graph::model::{Model, NodeId, NodeStatus, RankDir};
 use crate::graph::text_figure;
 
-/// An owned node rectangle in layout-grid cells, plus what the view needs to
-/// color it.
+/// A node rectangle in layout-grid cells.
 #[derive(Debug, Clone)]
 pub struct Placement {
     pub id: NodeId,
@@ -24,20 +18,14 @@ pub struct Placement {
     pub y: u16,
     pub w: u16,
     pub h: u16,
-    /// A group container (its members are drawn inside). The view colors only
-    /// its border, leaving the member boxes their own colors.
     pub container: bool,
-    /// A top-level nav gate (ordinary node or container). Horizontal moves and
-    /// `g`/`G` only land on these: crossing columns enters a group at its
-    /// container, never a leg.
+    /// Horizontal moves and `g`/`G` land only on these, so crossing columns
+    /// enters a group at its container.
     pub selectable: bool,
-    /// A group leg drawn inside a container. Reachable by vertical moves (enter
-    /// the group with `j`/`k`) and by clicking it directly.
+    /// A group leg, reached with `j`/`k` or a click.
     pub member: bool,
 }
 
-/// Engine output: the rendered art grid plus node placements, all owned so the
-/// view holds it across frames without borrowing the engine.
 #[derive(Debug, Clone, Default)]
 pub struct Layout {
     pub lines: Vec<String>,
@@ -51,9 +39,8 @@ pub trait GraphEngine {
     fn lay_out(&self, model: &Model, zoom: Zoom) -> Layout;
 }
 
-/// Level-of-detail. Terminal cells can't sub-cell scale, so "zoom" trades box
-/// size + label detail for how much graph fits: out = compact overview, in =
-/// roomy boxes with a status line.
+/// Level of detail: zooming trades box size and label detail for how much
+/// graph fits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Zoom {
     Compact,
@@ -108,12 +95,7 @@ impl Zoom {
     }
 }
 
-/// Which screen direction a layered pass advances ranks along: `Horizontal`
-/// draws the GitHub-style columns left to right, `Vertical` stacks ranks
-/// downward instead, which a mermaid `flowchart TD` asks for directly and a
-/// `flowchart LR` falls back to when its columns run wider than its card.
-/// Sizing (a box's own width and height) never depends on this; only where a
-/// rank's extent and a fork's spread land on screen does.
+/// The screen direction ranks advance along. Box sizing never depends on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Axis {
     Horizontal,
@@ -128,9 +110,8 @@ impl Axis {
         }
     }
 
-    /// Real grid `(x, y)` for a point `forward` along the rank axis and
-    /// `spread` along the cross axis. The swap is its own inverse, so the
-    /// same call recovers `(forward, spread)` from a real `(x, y)`.
+    /// Grid `(x, y)` for a `(forward, spread)` point. The swap is its own
+    /// inverse, so the same call converts back.
     fn xy(self, forward: usize, spread: usize) -> (usize, usize) {
         match self {
             Self::Horizontal => (forward, spread),
@@ -138,8 +119,6 @@ impl Axis {
         }
     }
 
-    /// Direction a rank advances in: right for a horizontal flow, down for a
-    /// vertical one.
     fn forward(self) -> u8 {
         match self {
             Self::Horizontal => Dir::R,
@@ -154,7 +133,7 @@ impl Axis {
         }
     }
 
-    /// Direction a fork spreads its children in, toward a later sibling.
+    /// Toward a later sibling.
     fn spread_pos(self) -> u8 {
         match self {
             Self::Horizontal => Dir::D,
@@ -169,18 +148,15 @@ impl Axis {
         }
     }
 
-    /// A forward edge's arrowhead, entering a child from its near edge.
     fn forward_arrow(self) -> char {
         match self {
             Self::Horizontal => '▸',
-            // the half-height `▾` sits on the text baseline and reads as a
-            // speck at the end of a vertical rail, where `▼` fills the cell
+            // the half-height `▾` reads as a speck at the end of a vertical rail
             Self::Vertical => '▼',
         }
     }
 
-    /// A back edge's arrowhead: it always re-enters the target from the rail
-    /// side, moving in the spread-negative direction.
+    /// A back edge re-enters its target from the rail side.
     fn spread_neg_arrow(self) -> char {
         match self {
             Self::Horizontal => '▴',
@@ -189,9 +165,6 @@ impl Axis {
     }
 }
 
-/// GitHub-style layered renderer: longest-path layering ranks the nodes, then
-/// draws rounded outlined boxes and routes orthogonal rails between them,
-/// along whichever [`Axis`] the model's [`RankDir`] names.
 pub struct Layered;
 
 impl GraphEngine for Layered {
@@ -205,11 +178,9 @@ impl GraphEngine for Layered {
     }
 }
 
-/// Per-node `(column, row-within-column)` from a layered pass: the column is the
-/// longest path from a source; within a column, nodes keep declaration order.
-/// Only flow nodes (ordinary + group roots) are ranked: group members live
-/// inside their root's container, not in the column flow. Cycles (call/reference
-/// graphs) are tolerated: a back-edge to a node already on the path adds no depth.
+/// Per-node `(column, row-within-column)`: the column is the longest path from
+/// a source, and rows keep declaration order. Group members sit inside their
+/// root's container, so we rank only flow nodes.
 fn rank_nodes(model: &Model) -> Vec<(usize, usize)> {
     let is_flow = |index: usize| model.nodes.get(index).is_some_and(|n| n.group.is_none());
 
@@ -248,8 +219,7 @@ fn rank_nodes(model: &Model) -> Vec<(usize, usize)> {
     ranks
 }
 
-/// Longest path from a source to `node`, memoized into `level`. A predecessor
-/// already on the current `path` is a cycle back-edge and contributes no depth.
+/// A predecessor already on `path` is a back-edge and adds no depth.
 fn longest_path(
     node: usize,
     preds: &HashMap<usize, Vec<usize>>,
@@ -273,13 +243,11 @@ fn longest_path(
     depth
 }
 
-// cohesive layout pass: size nodes, place columns, place container members,
-// route, draw: splitting it would only scatter the shared coordinate maps
+// splitting this pass would only scatter the coordinate maps its steps share
 #[allow(clippy::too_many_lines)]
 fn place_and_draw(model: &Model, ranks: &[(usize, usize)], zoom: Zoom) -> Layout {
     let (box_h, row_gap, col_gap) = zoom.metrics();
-    // the gaps are named for a left-to-right flow: going down, a rank step is a
-    // row and the spread between siblings is a column, so the two trade places
+    // the gaps are named for a left-to-right flow, so going down they trade places
     let (forward_gap, cross_gap) = match Axis::of(model.rankdir) {
         Axis::Horizontal => (col_gap, row_gap),
         Axis::Vertical => (row_gap.max(1) + 2, col_gap),
@@ -292,7 +260,6 @@ fn place_and_draw(model: &Model, ranks: &[(usize, usize)], zoom: Zoom) -> Layout
         .map(|n| label_lines(&n.label, n.status, n.decision, zoom))
         .collect();
     let line_width = |lines: &[String]| lines.iter().map(|l| l.width()).max().unwrap_or(0);
-    // members per group root, in model order
     let mut members: std::collections::HashMap<String, Vec<usize>> =
         std::collections::HashMap::new();
     for (index, node) in model.nodes.iter().enumerate() {
@@ -309,8 +276,6 @@ fn place_and_draw(model: &Model, ranks: &[(usize, usize)], zoom: Zoom) -> Layout
             .map_or(&[][..], Vec::as_slice)
     };
 
-    // size every node: members get a plain box; a flow node is either a box or,
-    // when it has present members, a container sized to hold them stacked
     let mut size = vec![(0usize, 0usize); model.nodes.len()];
     for (index, lines) in text.iter().enumerate() {
         if let Some(slot) = size.get_mut(index) {
@@ -338,8 +303,7 @@ fn place_and_draw(model: &Model, ranks: &[(usize, usize)], zoom: Zoom) -> Layout
     let axis = Axis::of(model.rankdir);
     let size_of = |index: usize| size.get(index).copied().unwrap_or_default();
 
-    // ranks over flow nodes; a rank shares its widest unit's extent along the
-    // rank axis (width for a horizontal flow, height for a vertical one)
+    // a rank takes its widest node's extent along the rank axis
     let rank_count = flow.iter().map(|&i| col_of(i) + 1).max().unwrap_or(1);
     let mut rank_extent = vec![0usize; rank_count];
     for &index in &flow {
@@ -357,7 +321,6 @@ fn place_and_draw(model: &Model, ranks: &[(usize, usize)], zoom: Zoom) -> Layout
         })
         .collect();
 
-    // stack each rank's units along the cross axis (cumulative, units vary)
     let mut order = flow.clone();
     order.sort_by_key(|&i| ranks.get(i).copied().unwrap_or_default());
     let mut node_box = vec![(0usize, 0usize); model.nodes.len()];
@@ -387,11 +350,8 @@ fn place_and_draw(model: &Model, ranks: &[(usize, usize)], zoom: Zoom) -> Layout
         total_secondary,
     );
 
-    // position members inside their container: a screen-relative offset
-    // (right, then down), the same regardless of the flow's own axis. Every
-    // leg is spaced by the flat box_h, not its own wrapped height: only
-    // mermaid labels wrap and only CI nodes are members, so no member's
-    // label wraps today, but one that did would overlap its neighbour here.
+    // we space legs by the flat box_h, which holds only while members (CI
+    // legs) never have wrapped labels; a wrapped one would overlap the next
     for &index in &flow {
         let legs = members_of(index);
         let (cx, cy) = node_box.get(index).copied().unwrap_or_default();
@@ -406,7 +366,7 @@ fn place_and_draw(model: &Model, ranks: &[(usize, usize)], zoom: Zoom) -> Layout
 
     let margin = subgraph_margin(model, &mut node_box);
 
-    // two extra cells past the cross axis carry the return rail for back edges
+    // two extra cross-axis cells hold the back edges' return rail
     let (grid_w, grid_h) = axis.xy(total_primary + 2 * margin, total_secondary + 2 + 2 * margin);
     let mut grid = Grid::new(grid_w, grid_h);
     // we draw outlines first so an edge crossing one merges into a junction
@@ -434,8 +394,7 @@ fn place_and_draw(model: &Model, ranks: &[(usize, usize)], zoom: Zoom) -> Layout
         let lines = text.get(index).unwrap_or(&empty);
         let is_container = !members_of(index).is_empty();
         if is_container {
-            // a foldable group's root is a CI concept, never a mermaid one,
-            // so its title is always one line
+            // only CI groups fold, so a container title is always one line
             let title = lines.first().map_or("", String::as_str);
             grid.draw_cluster(x, y, w, h, title);
         } else {
@@ -463,12 +422,6 @@ fn place_and_draw(model: &Model, ranks: &[(usize, usize)], zoom: Zoom) -> Layout
     }
 }
 
-/// The box label as its drawn lines: the node label's own `\n`-separated
-/// lines (mermaid's `<br>`), each elided to the zoom's max width (compact
-/// only) so overview boxes stay small, with the status glyph on the last one.
-/// A decision node's first line leads with `◇`, so a branch reads apart from
-/// the flow around it: the terminal grid cannot actually draw the diamond
-/// shape itself.
 fn label_lines(label: &str, status: NodeStatus, decision: bool, zoom: Zoom) -> Vec<String> {
     let mut lines: Vec<String> = label.split('\n').map(|line| elide(line, zoom)).collect();
     if lines.is_empty() {
@@ -494,23 +447,16 @@ fn elide(line: &str, zoom: Zoom) -> String {
     }
 }
 
-/// A box's total row count for `lines` content rows, given the zoom's
-/// baseline `box_h` for a single-line label (1 = compact bracket, 3 = a
-/// bordered box, 4 = bordered with a status-word row). Every extra line
-/// costs one more row; a multi-line label always gets at least a minimal
-/// bordered box, since the borderless compact style has nowhere to put a
-/// second line.
+/// A multi-line label always gets a bordered box, since the compact
+/// `[ label ]` style has no room for a second line.
 fn box_height(lines: usize, box_h: usize) -> usize {
     let overhead = box_h.saturating_sub(1);
     let overhead = if lines > 1 { overhead.max(2) } else { overhead };
     lines.max(1) + overhead
 }
 
-/// A subgraph outline needs a cell of margin outside its members, which the
-/// layout otherwise reserves nowhere: shifting the whole graph by one cell
-/// gives every edge that margin, at no cost to a diagram with no subgraph at
-/// all. Returns the margin applied (0 or 1), for the caller to grow the grid
-/// and the back-edge rail to match.
+/// Shift the graph one cell to leave room for subgraph outlines, only when
+/// the model has any. Returns the margin applied.
 fn subgraph_margin(model: &Model, node_box: &mut [(usize, usize)]) -> usize {
     let margin = usize::from(!model.subgraphs.is_empty());
     if margin > 0 {
@@ -522,16 +468,11 @@ fn subgraph_margin(model: &Model, node_box: &mut [(usize, usize)]) -> usize {
     margin
 }
 
-/// A drawn subgraph outline, `(x, y, w, h)`, and the title still to set into
-/// its top border.
 type Outline<'a> = ((usize, usize, usize, usize), &'a str);
 
-/// Outline each subgraph whose members land contiguous: their bounding box,
-/// margined by one cell, holds no other node's box and meets no outline
-/// already drawn. A subgraph whose members scattered across the layout gets
-/// no outline; its nodes already sit exactly where ordinary ranking put them,
-/// so "flattened" costs nothing further to draw. The titles come back
-/// unwritten, for [`Grid::set_title`] once the edges are down.
+/// Outline each subgraph whose margined bounding box holds no foreign node
+/// and meets no earlier outline. We return the titles unwritten so the caller
+/// sets them after the edges.
 fn draw_subgraph_outlines<'a>(
     grid: &mut Grid,
     model: &'a Model,
@@ -596,10 +537,9 @@ fn status_word(status: NodeStatus) -> &'static str {
     }
 }
 
-/// Route every edge: group forward edges by parent into one clean fork each;
-/// back edges (cycles) loop past the boxes via the return rail at `rail`, a
-/// cross-axis coordinate beyond every one of them.
-// geometry inputs for one routing pass: a self-contained set, not worth a struct
+/// Forward edges become one fork per parent; back edges loop around every box
+/// through the cross-axis `rail`.
+// these are one routing pass's geometry inputs, not worth a struct
 #[allow(clippy::too_many_arguments)]
 fn route_edges(
     grid: &mut Grid,
@@ -621,7 +561,6 @@ fn route_edges(
         let (w, h) = node_size.get(index).copied().unwrap_or_default();
         axis.xy(w, h)
     };
-    // an edge connects at a node's cross-axis centre (containers are tall)
     let spread_center = |index: usize| fwd_spread(index).1 + own_extent(index).1 / 2;
 
     let mut forward: Vec<Vec<usize>> = vec![Vec::new(); model.nodes.len()];
@@ -660,11 +599,8 @@ fn route_edges(
     }
 }
 
-/// Draw one parent's fan-out as a single fork: a stub out of the parent to a
-/// shared channel, one junction there (├ ┬ ┤ …), then a cross-axis jog to
-/// each child's rank and a stub into it with an arrowhead. One junction per
-/// parent: no independent crossings, no stray stubs (corners terminate every
-/// rail). `parent`/`targets` are `(forward, spread)` points.
+/// One parent's fan-out through a single junction in a shared channel.
+/// `parent`/`targets` are `(forward, spread)` points.
 fn draw_fork(
     grid: &mut Grid,
     axis: Axis,
@@ -718,9 +654,8 @@ fn draw_fork(
     grid.line_on(axis, channel, ss, fork);
 }
 
-/// A rank's boxes vary in size, so their centres only line up when each rank is
-/// centred on the widest one. An edge joins two centres, so off-centre ranks
-/// make every edge leave its box, jog sideways and come back.
+/// Edges join box centres, so we centre every rank on the widest one to keep
+/// rails straight.
 fn centre_ranks(
     order: &[usize],
     rank_cursor: &[usize],
@@ -746,10 +681,8 @@ fn centre_ranks(
     }
 }
 
-/// A cycle's back edge: from the parent's far cross-axis edge to a rail past
-/// every box, along the rail, back into the child's far cross-axis edge.
 /// `from`/`to` are `(forward, spread)` points at each box's near corner.
-// endpoints + sizes + rail: a self-contained orthogonal route, not worth a struct
+// these are one route's endpoints, sizes and rail, not worth a struct
 #[allow(clippy::too_many_arguments)]
 fn route_back_edge(
     grid: &mut Grid,
@@ -795,9 +728,8 @@ impl Dir {
 }
 
 impl Grid {
-    /// Marks the trailing column of a two-cell-wide glyph, so [`Self::into_lines`]
-    /// can drop it: emitting a real cell there would shift everything after
-    /// it one column to the right.
+    /// Marks the trailing column of a wide glyph so [`Self::into_lines`] drops
+    /// it; a real cell there would shift the rest of the row right.
     const WIDE_CONT: char = '\u{e000}';
 
     fn new(width: usize, height: usize) -> Self {
@@ -812,9 +744,7 @@ impl Grid {
         }
     }
 
-    /// Write `text` starting at `x`, advancing by each glyph's terminal width
-    /// and stopping before `limit`, so a wide glyph never
-    /// spills into the following column of a border or a neighbouring label.
+    /// Stops before `limit` so a wide glyph never spills onto a border.
     fn put_run(&mut self, mut x: usize, y: usize, text: &str, limit: usize) {
         for ch in text.chars() {
             let w = ch.width().unwrap_or(0);
@@ -832,8 +762,7 @@ impl Grid {
         }
     }
 
-    /// Plot a line segment, merging with any line already there so crossings and
-    /// branches render as proper junctions (├ ┬ ┼ …).
+    /// Merges with any line already in the cell so crossings become junctions.
     fn line(&mut self, x: usize, y: usize, mask: u8) {
         let Some(cell) = self.cells.get_mut(y).and_then(|row| row.get_mut(x)) else {
             return;
@@ -842,23 +771,17 @@ impl Grid {
         *cell = mask_to_char(merged);
     }
 
-    /// [`Self::line`] at a rank-axis `forward`/cross-axis `spread` point,
-    /// converted to a real cell through `axis`.
     fn line_on(&mut self, axis: Axis, forward: usize, spread: usize, mask: u8) {
         let (x, y) = axis.xy(forward, spread);
         self.line(x, y, mask);
     }
 
-    /// [`Self::put`] at a rank-axis `forward`/cross-axis `spread` point.
     fn put_on(&mut self, axis: Axis, forward: usize, spread: usize, ch: char) {
         let (x, y) = axis.xy(forward, spread);
         self.put(x, y, ch);
     }
 
-    /// Draw a node box `box_h` rows tall. `box_h == 1` is the compact overview
-    /// form `[ label ]` (no top/bottom rule, one line only); taller boxes are
-    /// rounded outlines with `lines` filling the content rows top to bottom
-    /// and `meta`, if given, on the row after them.
+    /// `box_h == 1` draws the compact one-line `[ label ]` form.
     fn draw_box(
         &mut self,
         x: usize,
@@ -905,8 +828,6 @@ impl Grid {
         }
     }
 
-    /// Draw a group container: a rounded outline with `title` set into the top
-    /// border (`╭─ ▾ test × ─╮`). Member boxes are drawn separately inside it.
     fn draw_cluster(&mut self, x: usize, y: usize, w: usize, h: usize, title: &str) {
         if w < 2 || h < 2 {
             return;
@@ -927,11 +848,9 @@ impl Grid {
         self.set_title((x, y, w, h), title);
     }
 
-    /// Set `title` into the border of the outline `(x, y, w, h)`: the top
-    /// border's leftmost run with room for it, else the bottom's. A run may
-    /// cover an edge crossing the border but never an arrowhead, so the
-    /// reader still sees where every edge lands. A title too long for the
-    /// border is elided to it.
+    /// Set `title` into the first top or bottom border run with room for it.
+    /// A run may cover an edge crossing but never an arrowhead, so every edge
+    /// still shows where it lands.
     fn set_title(&mut self, (x, y, w, h): (usize, usize, usize, usize), title: &str) {
         if title.is_empty() || w < 4 {
             return;
@@ -947,8 +866,6 @@ impl Grid {
         }
     }
 
-    /// Cells on row `y` from `x` up to `to` that are border line or an edge
-    /// crossing it.
     fn border_run(&self, x: usize, y: usize, to: usize) -> usize {
         let row = self.cells.get(y).map_or(&[][..], Vec::as_slice);
         row.get(x..to.min(row.len())).map_or(0, |cells| {
@@ -956,7 +873,6 @@ impl Grid {
         })
     }
 
-    /// Center `text` within the box interior (`w - 2`) on row `y`.
     fn write_centered(&mut self, x: usize, y: usize, w: usize, text: &str) {
         let pad = (w.saturating_sub(2)).saturating_sub(text.width()) / 2;
         self.put_run(x + 1 + pad, y, text, x + w - 1);
@@ -1025,7 +941,6 @@ mod tests {
             "rounded boxes drawn"
         );
         assert!(art.contains('▸'), "edges have arrowheads");
-        // every placement's top-left cell is a box corner
         for p in &layout.placements {
             let row: Vec<char> = layout.lines[p.y as usize].chars().collect();
             assert_eq!(
@@ -1037,8 +952,6 @@ mod tests {
         }
     }
 
-    /// A `\n` in a label (mermaid's own `<br>`) draws as a second line and
-    /// grows the box by one row; a label with none draws exactly as before.
     #[test]
     fn a_multi_line_label_grows_the_box_by_its_extra_lines() {
         use crate::graph::model::{Node, RankDir};
@@ -1100,9 +1013,6 @@ mod tests {
         assert!(art.contains('▼'), "the fork points down, not right: {art}");
     }
 
-    /// Going down, a rank step costs rows, so it takes the small gap and the
-    /// spread between siblings takes the wide one. A five-step chain then fits
-    /// the rows a card gives a figure.
     #[test]
     fn a_chain_drawn_downward_fits_the_rows_a_card_gives_it() {
         use crate::graph::model::{Edge, Node, RankDir};
@@ -1134,9 +1044,6 @@ mod tests {
         );
     }
 
-    /// Boxes in a chain differ in width, so their centres only meet when every
-    /// rank is centred: an off-centre rank makes each edge leave its box, jog
-    /// sideways and come back.
     #[test]
     fn a_downward_chain_of_uneven_boxes_draws_straight() {
         use crate::graph::model::{Edge, Node, RankDir};
@@ -1174,9 +1081,6 @@ mod tests {
         );
     }
 
-    /// The left-to-right mirror: a wrapped label varies a box's height, so
-    /// centring has to run for `Axis::Horizontal` too, keeping a horizontal
-    /// chain's rails level.
     #[test]
     fn a_left_to_right_chain_of_uneven_boxes_draws_straight() {
         use crate::graph::model::{Edge, Node, RankDir};
@@ -1201,7 +1105,6 @@ mod tests {
 
         let layout = Layered.lay_out(&model, Zoom::Normal);
 
-        // one `▸` per edge; centred boxes put every one on the same row
         let rows: Vec<usize> = layout
             .lines
             .iter()
@@ -1250,8 +1153,7 @@ mod tests {
         use crate::graph::model::{Edge, Node, RankDir};
         let mut model = Model::new(RankDir::LeftRight);
         let n = |id: &str| Node::leaf(id, NodeStatus::Neutral);
-        // d has no edges at all; c has two parents at different depths (via b,
-        // and directly from d) so it must take the longer of the two
+        // c has parents at two depths (b and d), so it takes the longer path
         model.nodes = vec![n("a"), n("b"), n("c"), n("d")];
         let e = |a: &str, b: &str| Edge {
             from: NodeId::new(a),
@@ -1285,9 +1187,6 @@ mod tests {
         };
         model.edges = vec![e("a", "b"), e("b", "a")];
         let ranks = rank_nodes(&model);
-        // a is visited first: descending into b's predecessor (a itself,
-        // already on the path) contributes no depth, so b lands at 0 and a's
-        // hop through it lands at 1: the cycle never inflates either depth
         assert_eq!(ranks[0], (1, 0), "a: one real hop through b");
         assert_eq!(
             ranks[1],
@@ -1298,9 +1197,7 @@ mod tests {
 
     #[test]
     fn draw_fork_draws_one_junction_with_a_stub_and_arrow_per_child() {
-        // a parent box ending at x=2, mid-row 2, forking to a child level with
-        // it (row 2) and a child two rows below (row 6), the level+drop mix
-        // that a single junction has to carry
+        // a parent ending at x=2 on row 2 forks to a level child and one on row 6
         let mut grid = Grid::new(12, 8);
         draw_fork(&mut grid, Axis::Horizontal, (0, 2), 2, &[(8, 2), (8, 6)]);
         let lines = grid.into_lines();
@@ -1339,8 +1236,6 @@ mod tests {
         assert_eq!(cell(1, 2), '▴', "the arrowhead points back into the target");
     }
 
-    /// The same route, top-down: the rail runs beside the ranks (a column,
-    /// not a row below them), since the boxes' forward axis is now `y`.
     #[test]
     fn route_back_edge_top_down_loops_beside_the_ranks() {
         let mut grid = Grid::new(7, 10);
@@ -1407,9 +1302,6 @@ mod tests {
         assert!(art.contains("parse"), "the subgraph title is drawn: {art}");
     }
 
-    /// A member scattered onto the same rank as a foreign node draws no
-    /// outline: the two boxes sit right beside each other, so any box around
-    /// one member would also enclose the stranger.
     #[test]
     fn a_scattered_subgraph_draws_no_outline() {
         use crate::graph::model::{Node, RankDir, Subgraph};

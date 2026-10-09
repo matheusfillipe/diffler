@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "diffler",
-  "description": "Live code review for AI agents: a terminal diff UI the human drives, an MCP server the agent answers to.",
+  "description": "Live code review for AI agents: a terminal diff UI the human drives, an MCP server the agent replies through.",
   "owner": {
     "name": "Matheus Fillipe",
     "url": "https://github.com/matheusfillipe"

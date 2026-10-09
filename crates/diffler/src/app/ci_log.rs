@@ -3,8 +3,8 @@
 //! `<job>\t<step>\t<timestamp>` form). No API exposes per-step log content, so
 //! lines are bucketed into the step metadata (name/status/timing from the jobs
 //! API) by timestamp: a line belongs to the last step whose start it's at or
-//! after. Without step metadata (e.g. GitLab) it falls back to the runner's
-//! `##[group]` markers. Folded by default; keymap-driven like the diff.
+//! after. Without step metadata (e.g. GitLab) we group by the runner's
+//! `##[group]` markers.
 
 use ratatui::layout::Rect;
 
@@ -13,8 +13,8 @@ use super::{App, CiRequest, MouseGesture, Screen, hit_index, page_step};
 use crate::ci::{JobStatus, LogStepMeta, ts_sort_key};
 use crate::keymap::Action;
 
-/// One collapsible step: its name, status, run time, and log lines. `name` is
-/// empty (and `status` `None`) for the leading section of pre-step output.
+/// `name` is empty (and `status` `None`) for the leading section of pre-step
+/// output.
 pub struct CiLogStep {
     pub name: String,
     pub status: Option<JobStatus>,
@@ -23,14 +23,12 @@ pub struct CiLogStep {
     pub folded: bool,
 }
 
-/// A cursor-addressable row of the log view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CiLogRow {
     Step(usize),
     Line { step: usize, line: usize },
 }
 
-/// State for the CI logs screen.
 pub struct CiLogView {
     pub steps: Vec<CiLogStep>,
     pub cursor: usize,
@@ -41,9 +39,6 @@ pub struct CiLogView {
 }
 
 impl CiLogView {
-    /// Group a job's log into folded steps. With step metadata, lines are
-    /// bucketed by timestamp into the real steps; without it, sections come from
-    /// `##[group]` markers. Folded by default.
     pub fn parse(raw: &str, metas: &[LogStepMeta]) -> Self {
         let steps = if metas.is_empty() {
             sections_by_group(raw)
@@ -60,15 +55,13 @@ impl CiLogView {
         }
     }
 
-    /// Carry the prior view's cursor, scroll, viewport, visual selection, and
-    /// per-step fold state (matched by step name) onto a freshly-parsed view, so
-    /// a re-poll that appends lines doesn't reset what the user folded or where
-    /// they are. New steps keep the default folded state.
+    /// Carry the prior view's position and per-step folds onto a re-parsed
+    /// view, so a re-poll that appends lines keeps where the reader was.
     #[must_use]
     pub fn carry_into(self, mut next: CiLogView) -> CiLogView {
         for step in &mut next.steps {
-            // match by name, skipping the empty name: the leading section
-            // and an unlabeled `##[group]` would otherwise share fold state
+            // the leading section and an unlabeled `##[group]` share the empty
+            // name, so we never match on it
             if step.name.is_empty() {
                 continue;
             }
@@ -85,7 +78,6 @@ impl CiLogView {
         next
     }
 
-    /// Flattened cursor-addressable rows given the current fold state.
     pub fn rows(&self) -> Vec<CiLogRow> {
         let mut rows = Vec::new();
         for (s, step) in self.steps.iter().enumerate() {
@@ -97,7 +89,6 @@ impl CiLogView {
         rows
     }
 
-    /// Display text of a row (the step name, or a log line), for search/render.
     pub fn line_text(&self, row: CiLogRow) -> &str {
         match row {
             CiLogRow::Step(s) => self.steps.get(s).map_or("", |st| st.name.as_str()),
@@ -109,8 +100,6 @@ impl CiLogView {
         }
     }
 
-    /// Toggle the step the cursor is on (a header, or a line under a step), and
-    /// re-seat the cursor on that step's header.
     pub fn toggle_fold_at_cursor(&mut self) {
         let rows = self.rows();
         let Some(step) = rows.get(self.cursor).map(|row| match row {
@@ -125,8 +114,7 @@ impl CiLogView {
         if let Some(pos) = self.rows().iter().position(|r| *r == CiLogRow::Step(step)) {
             self.cursor = pos;
         }
-        // a collapse can drop rows out from under an anchor set in the now-folded
-        // step; keep the selection inside the new row range
+        // a collapse can drop the rows an anchor sat on
         self.clamp_anchor(last);
     }
 }
@@ -159,10 +147,8 @@ impl RowText for CiLogView {
 }
 
 impl App {
-    /// Open a job's log view from a graph node activation. Declines instead of
-    /// opening onto a screen that can only ever show "waiting for logs…": a
-    /// provider with `LogMode::None` (e.g. Forgejo, whose job-log endpoint
-    /// isn't wired up) would otherwise error on every poll forever.
+    /// Open a job's log view. A provider with `LogMode::None` (Forgejo) would
+    /// fail every poll, so we decline there.
     pub(super) fn open_ci_log(&mut self, job: crate::ci::JobId) {
         let Some(run) = self.open_run.clone() else {
             return;
@@ -188,8 +174,6 @@ impl App {
         });
     }
 
-    /// Append a job-log chunk, refresh the step metadata, and rebuild the
-    /// foldable view, carrying the prior fold state across the re-poll.
     pub(super) fn on_ci_log(
         &mut self,
         text: &str,
@@ -246,8 +230,6 @@ impl App {
         }
     }
 
-    /// Drive the foldable CI-log view from a keymap [`Action`]: motions, fold,
-    /// visual select, and yank. The `CiLog` screen reuses the diff/log keymap.
     pub(super) fn dispatch_ci_log(&mut self, action: Action) {
         let Some(view) = self.ci_log.as_mut() else {
             return;
@@ -271,7 +253,6 @@ impl App {
         }
     }
 
-    /// Half/full-page cursor jump over the CI-log view, mirroring `log_page`.
     pub(super) fn ci_log_page(&mut self, up: bool, full: bool) {
         let Some(view) = self.ci_log.as_mut() else {
             return;
@@ -286,15 +267,14 @@ impl App {
     }
 }
 
-/// Bucket lines into the job's real steps by timestamp: a line joins the last
-/// step whose start it's at or after; earlier lines form a leading section.
+/// Lines before the first step form a leading section.
 fn sections_by_step(raw: &str, metas: &[LogStepMeta]) -> Vec<CiLogStep> {
     let mut leading: Vec<String> = Vec::new();
     let mut buckets: Vec<Vec<String>> = vec![Vec::new(); metas.len()];
     for raw_line in raw.lines() {
         let (key, content) = line_key_and_content(raw_line);
-        // a line joins the last step that *ran* (key > 0) at or before it; skipped
-        // steps (key 0) claim nothing, and started steps are in ascending order
+        // a skipped step has key 0 and claims nothing; started steps come in
+        // ascending order
         match metas
             .iter()
             .enumerate()
@@ -332,8 +312,6 @@ fn sections_by_step(raw: &str, metas: &[LogStepMeta]) -> Vec<CiLogStep> {
     steps
 }
 
-/// Fallback grouping by the runner's `##[group]`/`##[endgroup]` markers, for
-/// providers that don't expose step metadata.
 fn sections_by_group(raw: &str) -> Vec<CiLogStep> {
     let mut steps: Vec<CiLogStep> = Vec::new();
     let mut leading: Vec<String> = Vec::new();
@@ -372,9 +350,8 @@ fn sections_by_group(raw: &str) -> Vec<CiLogStep> {
     steps
 }
 
-/// A `gh --log` line `<job>\t<step>\t<timestamp> <text>` split into its
-/// timestamp sort key (for step bucketing) and display text (prefix, timestamp,
-/// and ANSI removed). A line without the tab/timestamp structure keys to 0.
+/// Split a `<job>\t<step>\t<timestamp> <text>` line into its timestamp sort
+/// key and display text. A line with no timestamp keys to 0.
 fn line_key_and_content(line: &str) -> (u64, String) {
     let field = line.splitn(3, '\t').nth(2).unwrap_or(line);
     match field.split_once(' ') {
@@ -389,7 +366,6 @@ fn line_key_and_content(line: &str) -> (u64, String) {
     }
 }
 
-/// Remove ANSI CSI escape sequences (colors, cursor moves) for plain display.
 pub fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars();
@@ -416,8 +392,6 @@ mod tests {
 
     #[test]
     fn open_ci_log_declines_when_the_provider_has_no_logs() {
-        // Forgejo's job-log endpoint isn't wired up (`LogMode::None`); opening
-        // the log screen anyway would poll a request that fails forever
         let fixture = standard_fixture();
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         app.ci_remotes = vec![CiRemote {

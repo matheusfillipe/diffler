@@ -40,8 +40,8 @@ impl App {
         }
     }
 
-    /// `n`/`N`: step the committed search, or follow an edge on the graph,
-    /// where the same keys walk edges when no search is up.
+    /// `n`/`N`: step the committed search. With no search up, they step the
+    /// symbol lens on the diff and follow an edge on the graph.
     pub(super) fn search_step_or_follow(&mut self, forward: bool) {
         if self.search.is_none() && self.screen() == Screen::Diff && self.lens_active() {
             self.lens_step(forward);
@@ -89,8 +89,8 @@ impl App {
     }
 
     /// A committed search that lands on a diff fold row opens it and moves
-    /// onto the hidden line that matched. While the query is still being
-    /// typed we leave folds shut, so each keystroke never opens another one.
+    /// onto the hidden line that matched. We leave folds shut while the query
+    /// is still being typed, so each keystroke opens nothing.
     fn open_searched_fold(&mut self, forward: bool) {
         if self.screen() != Screen::Diff {
             return;
@@ -215,9 +215,8 @@ impl App {
                 .enumerate()
                 .map(|(i, r)| (i, tree_row_label(&r.node)))
                 .collect(),
-            // the comments sidebar lists rows under its own grouping, so that
-            // is what it searches: a header by its label, a comment the way
-            // it always has
+            // we search the sidebar's own rows: a header by its label, a
+            // comment by its location and body
             Pane::Comments => {
                 let session = self.review.session_for(&diff.source);
                 self.comment_rows()
@@ -262,7 +261,7 @@ impl App {
                     l.cursor = row;
                 }
             }
-            // the sidebars select as they move, so a search jump lands through
+            // the sidebars select as they move, so a search jump goes through
             // the same call a motion key makes
             Screen::Diff => match self.diff.as_ref().map(|d| d.focus) {
                 Some(Pane::List) => self.diff_tree_to(row),
@@ -382,8 +381,6 @@ mod tests {
         );
     }
 
-    /// The comments sidebar lists comments, so it searches comments and its
-    /// jump seats the diff cursor on the one it finds.
     #[test]
     fn search_in_the_comments_sidebar_walks_comments_and_selects_them() {
         let (_fixture, mut app) = app();

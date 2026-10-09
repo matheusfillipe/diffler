@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
-# Cut a release. The version lives in the package manifests (Cargo.toml and the
-# npm package), this script is the only thing that changes it: bumping both in
-# lockstep, gating on a green build, then committing, tagging, and pushing. CI
-# builds the binaries and publishes crates.io + npm from the committed versions,
-# never by parsing the tag.
+# Bump the version in every manifest, gate on `just ci`, then commit, tag and
+# push. CI publishes from the committed manifest versions.
 #
 # Usage: scripts/release.sh <patch|minor|major>
 set -euo pipefail
@@ -17,7 +14,6 @@ case "$bump" in
     ;;
 esac
 
-# --- prechecks: a release must come from clean, pushed, in-sync main ---
 if [ "$(git branch --show-current)" != "main" ]; then
   echo "release: must be on main" >&2
   exit 1
@@ -32,7 +28,6 @@ if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
   exit 1
 fi
 
-# --- compute the next version from the current Cargo.toml version ---
 cur=$(grep -m1 -E '^version = "' Cargo.toml | sed -E 's/^version = "([^"]+)"/\1/')
 IFS=. read -r major minor patch <<<"$cur"
 case "$bump" in
@@ -47,19 +42,15 @@ if git rev-parse "v$new" >/dev/null 2>&1; then
 fi
 echo "release: $cur -> $new"
 
-# --- bump in lockstep: workspace version, every internal crate dep, the npm pkg ---
 perl -0pi -e "s/^version = \"\Q$cur\E\"/version = \"$new\"/m" Cargo.toml
 perl -0pi -e "s/(diffler-\w+ = \{ path = \"[^\"]+\", version = )\"\Q$cur\E\"/\${1}\"$new\"/g" Cargo.toml
 perl -0pi -e "s/(\"version\": )\"[^\"]*\"/\${1}\"$new\"/" npm/diffler/package.json
 perl -0pi -e "s/(\"version\": )\"[^\"]*\"/\${1}\"$new\"/" npm/diffler-mcp/package.json
 
-# --- gate: full build/lint/test (also syncs Cargo.lock to the new version) ---
+# `just ci` also syncs Cargo.lock to the new version.
 just ci
-# a crate carries only its own directory, so a file it reaches outside one
-# builds here and fails at publish, after the tag is already public
 just package-check
 
-# --- commit, tag, push; CI does the rest ---
 git add Cargo.toml Cargo.lock npm/diffler/package.json npm/diffler-mcp/package.json
 git commit -m "Release $new"
 git tag "v$new"

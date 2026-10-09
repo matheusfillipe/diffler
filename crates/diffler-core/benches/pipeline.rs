@@ -1,6 +1,5 @@
-//! Hot-path benches for the diff pipeline: what runs when the user opens or
-//! switches files in the diff screen. Run `just bench`; CI records main-branch
-//! results so regressions show against history.
+//! Benches for the diff pipeline that runs when a file opens in the diff
+//! screen. Run `just bench`.
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use diffler_core::highlight::{Highlighter, SyntaxTheme};
@@ -39,7 +38,7 @@ fn edited(src: &str, every: usize) -> String {
         + "\n"
 }
 
-/// A `FileDiff` equivalent to what git.rs builds: full texts + line hunks.
+/// A `FileDiff` shaped like the one git.rs builds.
 fn file_diff(old: &str, new: &str) -> FileDiff {
     let diff = TextDiff::from_lines(old, new);
     let mut lines = Vec::new();

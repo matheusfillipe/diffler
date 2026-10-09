@@ -268,8 +268,6 @@ impl App {
             }
             PrField::Cancel => self.modal = None,
             PrField::Base => self.open_pr_base_list(draft),
-            // title and body edit the same way; the body just wraps. `e` is
-            // what reaches for $EDITOR, as it does everywhere else
             PrField::Title | PrField::Body => {
                 let buffer = if field == PrField::Body {
                     draft.body.clone()
@@ -292,7 +290,7 @@ impl App {
         use crate::app::pr_create::PrTextField;
         let Some(text_field) = draft.field.as_text() else {
             self.modal = Some(Modal::CreatePr { draft });
-            self.info("only the title and body open in the editor");
+            self.info("move to the title or body to edit it in $EDITOR");
             return;
         };
         let template = match text_field {
@@ -310,8 +308,7 @@ impl App {
         }
     }
 
-    /// Open the text-input modal with the cursor at the end of `buffer` (so a
-    /// prefilled edit lands ready to append). An empty buffer starts at column 0.
+    /// Open the text-input modal with the cursor at the end of `buffer`.
     pub(crate) fn open_input(&mut self, title: String, buffer: String, on_submit: InputOp) {
         self.modal = Some(Modal::Input {
             cursor: buffer.chars().count(),
@@ -321,10 +318,8 @@ impl App {
         });
     }
 
-    /// An empty buffer submits as a cancel: comments and replies must say
-    /// something to be worth persisting.
-    /// Leave the input. A field of the create form hands its draft back, so
-    /// one abandoned edit keeps the rest of the form.
+    /// Leave the input. A field of the create form gets its draft back, so one
+    /// abandoned edit keeps the rest of the form.
     pub(super) fn cancel_input(&mut self) {
         if let Some(Modal::Input {
             on_submit: InputOp::PrField { draft, .. },
@@ -335,6 +330,8 @@ impl App {
         }
     }
 
+    /// An empty buffer submits as a cancel, since an empty comment or reply is
+    /// not worth persisting.
     pub(super) fn submit_input(&mut self) {
         let Some(Modal::Input {
             buffer, on_submit, ..
@@ -356,8 +353,8 @@ impl App {
             InputOp::PrField { mut draft, field } => {
                 use crate::app::pr_create::PrField;
                 match field {
-                    // a base is chosen from a list, so an empty answer is a
-                    // cancel; a body may legitimately be cleared
+                    // a base comes from a list, so an empty answer is a
+                    // cancel; a body may be cleared
                     PrField::Base if !body.is_empty() => body.clone_into(&mut draft.base),
                     PrField::Body => body.clone_into(&mut draft.body),
                     PrField::Title if !body.is_empty() => body.clone_into(&mut draft.title),
@@ -554,8 +551,9 @@ impl App {
         self.open_against_diff(&rev);
     }
 
-    /// Delete one comment outright. Forge-owned comments decline: the next
-    /// sync would just re-import them.
+    /// Delete one comment. We delete a forge-owned one on the forge first and
+    /// drop the local copy when the forge confirms, since the forge refuses
+    /// someone else's comment.
     pub(super) fn delete_comment_by_id(&mut self, id: &str) -> bool {
         let source = self.active_review_source();
         let session = self.review.session_for_mut(&source);
@@ -564,8 +562,6 @@ impl App {
             .iter()
             .find(|c| c.id == id)
             .and_then(|c| c.remote_id.clone());
-        // a forge-owned comment deletes on the forge first; the local copy
-        // goes when the forge confirms (the forge 403s on others' comments)
         if let Some(remote_id) = remote {
             if let diffler_core::source::ReviewSource::Pr { number } = source {
                 self.queue_pr_comment_delete(number, id, &remote_id);
@@ -610,9 +606,7 @@ impl App {
     }
 
     /// Claim every agent comment of the active review as the human's own, so
-    /// they go out with the next submitted review. A synced forge comment is
-    /// never one of these, so it is left untouched like `delete_all_comments`
-    /// leaves it.
+    /// they go out with the next submitted review.
     pub(super) fn claim_all_comments(&mut self) {
         let source = self.active_review_source();
         let author = self.author.clone();
@@ -776,9 +770,6 @@ impl App {
         }
     }
 
-    /// Check out `name`, shared by the branch picker and a `<cr>` on a branch
-    /// row in the status screen's Branches section. Checking out the branch
-    /// already active is a no-op info message, not a git error.
     pub(super) fn checkout_branch(&mut self, name: &str) {
         if self.head.branch.as_deref() == Some(name) {
             self.info(format!("already on {name}"));

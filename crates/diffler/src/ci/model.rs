@@ -1,20 +1,15 @@
-//! The provider-agnostic CI model. Adapters normalize each forge's runs, jobs,
-//! dependency edges, and logs into these types; the host maps `RunDetail` onto a
-//! `crate::graph::Model` for rendering.
+//! The provider-agnostic CI model every forge adapter normalizes into.
 
 use time::OffsetDateTime;
 
-/// A run/pipeline id as the provider spells it (a GitHub run database id, a
-/// GitLab pipeline iid, …).
+/// A run or pipeline id as the provider spells it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RunId(pub String);
 
-/// A job id within a run.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct JobId(pub String);
 
-/// Normalized job/run state, driving color and glyph. Maps 1:1 to the graph
-/// component's `NodeStatus` at the host boundary.
+/// Maps 1:1 to the graph component's `NodeStatus`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JobStatus {
     Queued,
@@ -26,7 +21,6 @@ pub enum JobStatus {
 }
 
 impl JobStatus {
-    /// A compact status glyph for list/section rows.
     #[must_use]
     pub fn glyph(self) -> &'static str {
         match self {
@@ -39,8 +33,7 @@ impl JobStatus {
         }
     }
 
-    /// The more severe of two statuses, so one failing matrix leg dominates an
-    /// aggregate (a run's status, a collapsed group).
+    /// The more severe status, so one failing matrix leg marks the aggregate.
     #[must_use]
     pub fn worse(self, other: Self) -> Self {
         let rank = |s: Self| match s {
@@ -59,13 +52,11 @@ impl JobStatus {
     }
 }
 
-/// One run/pipeline as shown in the runs list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CiRun {
     pub id: RunId,
     pub name: String,
-    /// The run's headline (the triggering commit's subject), if the provider
-    /// exposes one.
+    /// The triggering commit's subject, where the provider exposes one.
     pub title: String,
     pub branch: String,
     pub commit: String,
@@ -73,31 +64,25 @@ pub struct CiRun {
     pub created: Option<OffsetDateTime>,
     pub status: JobStatus,
     pub url: Option<String>,
-    /// The git remote this run came from, set when several remotes are
-    /// aggregated; `None` for a single-remote repo.
+    /// Set only when several remotes are aggregated.
     pub remote: Option<String>,
 }
 
-/// One job within a run, with its upstream dependencies (the DAG edges).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CiJob {
     pub id: JobId,
     pub name: String,
     pub status: JobStatus,
     pub needs: Vec<JobId>,
-    /// How long the job took, or has been running so far. `None` where the
-    /// forge reports no times, or before it starts.
+    /// Time taken so far for a running job; `None` before it starts or where
+    /// the forge reports no times.
     pub duration_secs: Option<i64>,
-    /// The job's `strategy.matrix` legs, one per run the forge actually
-    /// reported under this job, when there was more than one; empty for a job
-    /// that ran once. `status` and `duration_secs` above stay the aggregate
-    /// across every leg, so a plain rendering (no fold container) still reads
-    /// correctly without looking at this field.
+    /// The matrix legs when there was more than one; `status` and
+    /// `duration_secs` stay the aggregate across them.
     pub legs: Vec<CiJobLeg>,
 }
 
-/// One matrix leg of a [`CiJob`]: its own display name (the leg's parameters,
-/// not the job's name repeated), status and duration.
+/// `name` holds the leg's matrix parameters alone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CiJobLeg {
     /// The run job this leg ran as, which its log is fetched by.
@@ -107,8 +92,7 @@ pub struct CiJobLeg {
     pub duration_secs: Option<i64>,
 }
 
-/// A span of time as `13s` or `1m03s`: how a job or step reads wherever one is
-/// shown.
+/// `13s` or `1m03s`.
 pub fn fmt_duration(secs: i64) -> String {
     let secs = secs.max(0);
     if secs < 60 {
@@ -118,30 +102,24 @@ pub fn fmt_duration(secs: i64) -> String {
     }
 }
 
-/// A run plus its jobs: `jobs` + each job's `needs` is the dependency graph.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunDetail {
     pub run: CiRun,
     pub jobs: Vec<CiJob>,
 }
 
-/// One step of a job, for grouping the log into the same collapsible units the
-/// forge UI shows. The public API exposes no per-step log *content*, so the host
-/// buckets log lines into steps by timestamp (`start_key` ≤ a line's timestamp).
+/// Forges expose no per-step log content, so the host buckets log lines into
+/// steps by timestamp (`start_key` ≤ a line's timestamp).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogStepMeta {
     pub name: String,
     pub status: JobStatus,
     /// [`ts_sort_key`] of the step's start, the lower bound of its log lines.
     pub start_key: u64,
-    /// Wall-clock seconds the step ran, when both endpoints are known.
     pub duration_secs: Option<i64>,
 }
 
-/// An incremental slice of a job log. `next_offset` is where the next poll
-/// resumes; `done` is set once the job has finished and the log is complete.
-/// `steps` carries the job's step boundaries when the provider exposes them
-/// (empty otherwise). This unifies streaming, polling, and one-shot-dump sources.
+/// `next_offset` is where the next poll resumes; `done` means the log is complete.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogChunk {
     pub text: String,
@@ -150,9 +128,9 @@ pub struct LogChunk {
     pub done: bool,
 }
 
-/// A coarse chronological sort key from an ISO-8601 timestamp: its first 14
-/// digits (`YYYYMMDDHHMMSS`), so a fractional-second line key compares against a
-/// second-resolution step key without parsing. `0` when there aren't 14 digits.
+/// The first 14 digits of an ISO-8601 timestamp (`YYYYMMDDHHMMSS`), so a
+/// fractional-second line key compares against a step key without parsing.
+/// `0` when there are fewer.
 #[must_use]
 pub fn ts_sort_key(iso: &str) -> u64 {
     let digits: String = iso.chars().filter(char::is_ascii_digit).take(14).collect();
@@ -163,23 +141,18 @@ pub fn ts_sort_key(iso: &str) -> u64 {
     }
 }
 
-/// The pull/merge request for the checked-out branch, shown beside the runs so
-/// the section reflects "the branch and PR I'm on", not just a workflow.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PullRequest {
     pub number: u64,
     pub title: String,
     pub url: Option<String>,
-    /// Branch the PR merges into.
     pub base_ref: String,
-    /// The PR's source branch.
     pub head_ref: String,
     /// The PR head commit at fetch time; the diff is `merge-base..head`.
     pub head_oid: String,
     pub author: String,
 }
 
-/// A line-anchored PR review comment from the forge.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrComment {
     pub id: String,
@@ -194,15 +167,13 @@ pub struct PrComment {
     pub author: String,
     /// Forge id of the comment this replies to; `None` for thread roots.
     pub reply_to: Option<String>,
-    /// The forge's thread handle, set on thread roots where the provider
-    /// exposes one; what `resolve_pr_thread` takes.
+    /// What `resolve_pr_thread` takes; set on thread roots where the forge has one.
     pub thread_id: Option<String>,
-    /// The thread is marked resolved on the forge (roots only).
+    /// Roots only.
     pub resolved: bool,
     pub at: u64,
 }
 
-/// A build artifact a run produced, as listed on the run page.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Artifact {
     pub name: String,
@@ -211,7 +182,6 @@ pub struct Artifact {
     pub expired: bool,
 }
 
-/// Severity of a run annotation, driving its glyph and color.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnnotationLevel {
     Notice,
@@ -219,8 +189,7 @@ pub enum AnnotationLevel {
     Failure,
 }
 
-/// One annotation a job emitted (a `::warning`/`::error` workflow command or a
-/// check failure), tied to a file location when the provider gives one.
+/// A `::warning`/`::error` workflow command or a check failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Annotation {
     pub level: AnnotationLevel,
@@ -230,50 +199,40 @@ pub struct Annotation {
     pub start_line: Option<u64>,
 }
 
-/// A run's page extras: the artifacts it produced and the annotations its jobs
-/// emitted. Shown below the DAG; empty for providers that don't expose them.
+/// Shown below the DAG; empty where the provider exposes neither.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RunExtras {
     pub artifacts: Vec<Artifact>,
     pub annotations: Vec<Annotation>,
 }
 
-/// What a provider can actually do, so the UI degrades honestly instead of
-/// failing at runtime (hide the graph when `DagSource::None`, the follow toggle
-/// when `LogMode::Dump`, …).
+/// The UI gates its affordances on these, so a missing feature hides rather than fails.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capabilities {
     pub dag: DagSource,
     pub logs: LogMode,
-    /// diffler can tell this forge a review thread is resolved. Where it
-    /// cannot, a resolution stays local to the review session.
+    /// Without it, a resolution stays local to the review session.
     pub resolve_threads: bool,
-    /// This forge can anchor a comment to a whole file instead of a line.
-    /// Where it can't, a line-less comment is held back from a submit.
+    /// Without it, a whole-file comment is held back from a submit.
     pub file_comments: bool,
 }
 
 /// Where a provider's dependency edges come from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DagSource {
-    /// Edges are in the run/job API response.
     RunApi,
-    /// Edges are only in the pipeline config file (parsed separately).
+    /// The pipeline config file, parsed separately.
     ConfigFile,
-    /// No dependency concept; render as a flat list.
+    /// Rendered as a flat list.
     None,
 }
 
-/// How a provider delivers logs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogMode {
-    /// A true follow/stream.
     Stream,
-    /// Offset/range polling.
     Poll,
-    /// Whole log available only once the job completes.
+    /// The whole log, once the job completes.
     Dump,
-    /// No log access.
     None,
 }
 

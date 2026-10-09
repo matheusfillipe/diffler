@@ -51,10 +51,8 @@ async function startBackend() {
   };
 }
 
-// Answers initialize and the first two tools/list calls (the connect
-// handshake's own liveness check, then the first tools/list this proxy
-// forwards) normally, then hangs on every tools/list after that: standing
-// in for a diffler that accepted the connection and then hung.
+// We answer two tools/list calls (the connect liveness check and the first
+// forwarded one) before hanging, like a diffler that connected and then hung.
 async function startBackendThatHangsOnASecondToolsList() {
   let toolsListCalls = 0;
   const http = createServer((req, res) => {
@@ -90,11 +88,8 @@ async function startBackendThatHangsOnASecondToolsList() {
   };
 }
 
-// Answers initialize and tools/list normally (so the proxy connects and caches
-// it) but never responds to a tools/call, standing in for a diffler that hung.
-// `hungSockets` names the exact connection each hung request arrived on, so a
-// test can prove the proxy closes that one rather than counting connections
-// in a pool the initialize handshake also uses.
+// We record each hung request's socket so a test can check the proxy closes
+// that exact connection, since the initialize handshake shares the pool.
 async function startHangingBackend() {
   const hungSockets = [];
   const http = createServer((req, res) => {
@@ -122,8 +117,7 @@ async function startHangingBackend() {
   return {
     port: http.address().port,
     hungSockets,
-    // The hung request's connection never ends on its own, so a graceful
-    // close() would wait on it forever; force it closed instead.
+    // The hung request's connection never ends, so a graceful close() would wait forever.
     close: () => {
       http.closeAllConnections();
       return new Promise((resolve) => http.close(resolve));
@@ -131,9 +125,8 @@ async function startHangingBackend() {
   };
 }
 
-// Every proxy gets its own empty registry dir unless the caller passes one,
-// so a test never sees (or pollutes) whatever real diffler happens to be
-// running on the machine this suite executes on.
+// We give every proxy its own empty registry dir so a test never sees a real
+// diffler running on this machine.
 function driveProxy(cwd, args = ["--repo", cwd], env = {}) {
   const ownedStateDir = env.DIFFLER_STATE_DIR ? null : mkdtempSync(join(tmpdir(), "diffler-mcp-state-"));
   const child = spawn(process.execPath, [PROXY, ...args], {
@@ -388,7 +381,6 @@ test("tools/list against a hung backend fails at the deadline too", async () => 
 
   const proxy = await handshake(driveProxy(repo, ["--repo", repo], { DIFFLER_MCP_CALL_DEADLINE_MS: "50" }));
   try {
-    // connects: the handshake's own liveness check is the backend's one live answer
     const first = await proxy.request("tools/list", {});
     assert.deepEqual(first.result.tools.map((t) => t.name), ["list_instances", "use_instance", "ping"]);
 

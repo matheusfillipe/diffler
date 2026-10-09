@@ -1,5 +1,4 @@
-//! Transient popup framework, neogit-style: an action popup rendered as a
-//! bottom split, plus confirm, input, and pick-one list modals.
+//! Neogit-style bottom popups and centred modal dialogs.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -11,8 +10,6 @@ use crate::app::WhichKey;
 use crate::theme::Theme;
 use crate::transient::Transient;
 
-/// Neogit-style action popup: a titled bottom panel listing
-/// `key → action` entries.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Popup {
     pub title: String,
@@ -22,17 +19,13 @@ pub struct Popup {
     pub summary: Vec<String>,
 }
 
-/// Cells between columns when the help popup wraps into multiple columns.
 const POPUP_COLUMN_GAP: usize = 2;
 
 impl Popup {
     pub fn render(&self, frame: &mut Frame<'_>, theme: &Theme) {
         let area = frame.area();
-        // rows available under the top border; entries wrap into columns to
-        // fit rather than overflowing off the top of the screen
         let body_rows = area.height.saturating_sub(1) as usize;
         let lines = self.lines(theme, body_rows.max(1));
-        // +1 for the top border carrying the title
         let height = (lines.len() as u16 + 1).min(area.height);
         let popup_area = Rect {
             x: area.x,
@@ -77,8 +70,6 @@ impl Popup {
             }
             return lines;
         }
-        // too tall for one column: wrap column-major into the fewest columns
-        // that fit the height, each padded to its own widest cell
         let columns = self.entries.len().div_ceil(rows);
         let per_column = self.entries.len().div_ceil(columns);
         let cell_width =
@@ -115,15 +106,10 @@ impl Popup {
     }
 }
 
-/// Cells of horizontal space between which-key columns.
 const WHICH_KEY_COL_SPACING: usize = 2;
-/// Cells between a key and its label within a column.
 const WHICH_KEY_KEY_SEP: usize = 2;
-/// Most rows the which-key panel uses, borrowed from the bottom of the screen.
 const WHICH_KEY_MAX_HEIGHT: u16 = 12;
 
-/// One column of the which-key panel: a group heading and its `(key, label)`
-/// entries. Width is computed once so packing stays pure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct WhichKeyColumn {
     heading: String,
@@ -147,10 +133,8 @@ impl WhichKeyColumn {
     }
 }
 
-/// Pack columns into bands (rows of column indices) so each band fits within
-/// `available` cells. Greedy left-to-right: a column starts a new band when it
-/// no longer fits, matching which-key.nvim's layout. A column wider than
-/// `available` still takes its own band. Pure, so the layout is unit-tested.
+/// Greedy left-to-right packing into bands of column indices, matching
+/// which-key.nvim. A column wider than `available` still takes its own band.
 fn pack_columns(widths: &[usize], available: usize) -> Vec<Vec<usize>> {
     let mut bands: Vec<Vec<usize>> = Vec::new();
     let mut used = 0usize;
@@ -174,8 +158,6 @@ fn pack_columns(widths: &[usize], available: usize) -> Vec<Vec<usize>> {
     bands
 }
 
-/// The which-key bottom panel: a transient's groups laid out as packed columns
-/// of `key  label`, revealed after the reveal timer elapses.
 #[derive(Debug, Clone)]
 pub struct WhichKeyPanel {
     title: String,
@@ -208,7 +190,6 @@ impl WhichKeyPanel {
         let available = (area.width as usize).saturating_sub(2).max(1);
         let bands = pack_columns(&widths, available);
         let lines = render_bands(columns, &bands, theme);
-        // +1 for the top border carrying the title
         let height = (lines.len() as u16 + 1)
             .min(WHICH_KEY_MAX_HEIGHT)
             .min(area.height);
@@ -255,8 +236,6 @@ fn transient_columns(transient: &Transient) -> Vec<WhichKeyColumn> {
         .collect()
 }
 
-/// Render packed bands to styled lines: each band shows its columns' headings
-/// on one row, then their entries row by row, padded to column width.
 fn render_bands(
     columns: &[WhichKeyColumn],
     bands: &[Vec<usize>],
@@ -310,19 +289,16 @@ fn render_bands(
     lines
 }
 
-/// Right-pad `text` to `width` cells.
 fn pad(text: &str, width: usize) -> String {
     let pad = width.saturating_sub(text.chars().count());
     format!("{text}{}", " ".repeat(pad))
 }
 
-/// The pull-request draft as a form, the field under the cursor marked.
 #[derive(Debug, Clone)]
 pub struct CreatePrForm<'a> {
     pub draft: &'a crate::app::pr_create::PrDraft,
 }
 
-/// Wide enough for a title and a branch pair.
 const CREATE_PR_WIDTH: u16 = 76;
 
 impl CreatePrForm<'_> {
@@ -380,8 +356,8 @@ impl CreatePrForm<'_> {
                 Span::styled(value, value_style),
             ]));
         }
-        // the buttons are rows in the same list, so a click and `j` reach them
-        // the way they reach a field; a gap here would break the row mapping
+        // the buttons are rows of the field list, so a blank line here would
+        // break the click row mapping
         for (field, text, colour) in [
             (PrField::Create, "[ Create ]", theme.added),
             (PrField::Cancel, "[ Cancel ]", theme.dim),
@@ -407,7 +383,7 @@ impl CreatePrForm<'_> {
         }
         lines.push(Line::styled(String::new(), dim));
         lines.push(Line::styled(
-            " j/k move   ⏎ edit   e editor   d draft   c create   esc cancel".to_owned(),
+            " j/k move  ⏎ edit  e open in editor  d toggle draft  c create  esc cancel".to_owned(),
             dim,
         ));
 
@@ -429,7 +405,6 @@ impl CreatePrForm<'_> {
     }
 }
 
-/// Yes/no question rendered as a small centered modal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfirmDialog {
     pub message: String,
@@ -459,21 +434,17 @@ impl ConfirmDialog {
     }
 }
 
-/// Multi-line text input modal with a visible cursor cell. The buffer may
-/// hold newlines; the modal grows with it up to a cap, then shows the tail
-/// (the cursor lives near the end while typing).
+/// Grows with its buffer up to a cap, then shows the tail.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputModal {
     pub title: String,
     pub buffer: String,
-    /// Cursor position as a character index into `buffer`.
+    /// A character index into `buffer`.
     pub cursor: usize,
 }
 
-/// Buffer lines visible at once before the modal stops growing.
 const INPUT_MAX_LINES: usize = 8;
 
-/// Width of the input box (clamped to the terminal), comfortable for prose.
 const INPUT_WIDTH: u16 = 72;
 
 impl InputModal {
@@ -481,14 +452,12 @@ impl InputModal {
         let box_w = INPUT_WIDTH.min(frame.area().width.max(8));
         let inner = (box_w as usize).saturating_sub(2).max(1);
         let mut lines = self.wrapped_lines(theme, inner);
-        // keep the tail visible (the cursor sits where you're typing)
         let overflow = lines.len().saturating_sub(INPUT_MAX_LINES);
         lines.drain(..overflow);
         lines.push(Line::styled(
-            "enter submit  ·  a-enter newline  ·  esc cancel",
+            "enter submit  ·  a-enter add newline  ·  esc cancel",
             Style::new().fg(theme.dim).bg(theme.panel),
         ));
-        // +1 for the top rule carrying the title
         let height = lines.len() as u16 + 1;
         let area = floating(frame, box_w, height);
         let block = dialog_block(theme, &format!(" {} ", self.title), Borders::TOP);
@@ -500,9 +469,7 @@ impl InputModal {
         );
     }
 
-    /// The buffer as display lines, each logical line word-wrapped to `width`,
-    /// with the cursor drawn as a highlighted cell at its char position. A
-    /// cursor at a line's end (on the newline) renders as a trailing cell.
+    /// A cursor on a line's newline renders as a trailing cell.
     fn wrapped_lines(&self, theme: &Theme, width: usize) -> Vec<Line<'static>> {
         let fg = Style::new().fg(theme.fg).bg(theme.panel);
         let cursor_cell = Style::new().fg(theme.bg).bg(theme.accent);
@@ -546,11 +513,8 @@ impl InputModal {
     }
 }
 
-/// Char ranges to break a logical line into display segments of at most `width`,
-/// preferring a break after the last space so words stay intact (long words hard
-/// break). Every char lands in exactly one range, so cursor offsets stay exact.
-/// An empty line yields a single empty range so it still renders (and can hold
-/// the cursor).
+/// Every char lands in exactly one range, so cursor offsets stay exact. An
+/// empty line yields one empty range so it can still hold the cursor.
 fn wrap_ranges(chars: &[char], width: usize) -> Vec<(usize, usize)> {
     let len = chars.len();
     if len == 0 {
@@ -564,7 +528,7 @@ fn wrap_ranges(chars: &[char], width: usize) -> Vec<(usize, usize)> {
             && let Some(space) = (start..end).rev().find(|&i| chars.get(i) == Some(&' '))
             && space > start
         {
-            end = space + 1; // keep the space on this line, wrap the next word
+            end = space + 1;
         }
         ranges.push((start, end));
         start = end;
@@ -572,23 +536,20 @@ fn wrap_ranges(chars: &[char], width: usize) -> Vec<(usize, usize)> {
     ranges
 }
 
-/// Centered fzf-style dialog: a query line, then ranked matches with an
-/// optional right-aligned column (chords), the selection highlighted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FuzzyModal {
     pub title: String,
     pub query: String,
-    /// Character index of the query cursor.
+    /// A character index into `query`.
     pub cursor: usize,
-    /// Input focus: the query line shows its cursor block.
     pub typing: bool,
     pub items: Vec<(String, String)>,
     pub selected: usize,
     pub footer: String,
 }
 
-/// Where a dialog put its rows this frame, so a click lands on the row under
-/// the pointer. `first_row` is the screen row of `first_index`.
+/// Where a dialog put its rows this frame, for mapping clicks. `first_row` is
+/// the screen row of `first_index`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ListHits {
     pub first_row: u16,
@@ -597,7 +558,6 @@ pub struct ListHits {
 }
 
 impl ListHits {
-    /// The list index under `row`, or `None` off the rows.
     pub fn index_at(&self, row: u16) -> Option<usize> {
         let offset = row.checked_sub(self.first_row)?;
         (offset < self.rows).then(|| self.first_index + offset as usize)
@@ -651,7 +611,6 @@ impl FuzzyModal {
             Span::styled(rest.as_str().to_owned(), fg),
         ])];
 
-        // keep the selection on screen when the list overflows
         let top = self.selected.saturating_sub(visible.saturating_sub(1));
         for (index, (left, right)) in self.items.iter().enumerate().skip(top).take(visible) {
             let bg = if index == self.selected {
@@ -691,9 +650,8 @@ impl FuzzyModal {
     }
 }
 
-/// A floating dialog's frame. Most carry a single top rule under their
-/// title, the way the which-key panel does; the confirm dialog keeps a full
-/// box because a question that blocks the keyboard should look enclosed.
+/// The confirm dialog keeps a full box because a question that blocks the
+/// keyboard should look enclosed.
 fn dialog_block(theme: &Theme, title: &str, borders: Borders) -> Block<'static> {
     Block::new()
         .borders(borders)
@@ -716,14 +674,11 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
     }
 }
 
-/// How far the screen behind a dialog is pushed toward black. Far enough that
-/// the brightest thing back there, a selection band over an emphasised line,
-/// still lands under the dialog's own surface; near enough that the shapes
-/// behind it read as the context the dialog is acting on.
+/// Dark enough that a selection band over an emphasised line still sits
+/// under the dialog's surface, light enough to keep the context readable.
 const SCRIM: u16 = 74;
 
-/// Placement for a centred dialog. Every one goes through here, so they dim
-/// their ground and float alike.
+/// Every centred dialog goes through here so they all dim the screen alike.
 fn floating(frame: &mut Frame<'_>, width: u16, height: u16) -> Rect {
     let full = frame.area();
     let buffer = frame.buffer_mut();
@@ -753,8 +708,7 @@ pub(super) mod tests {
 
     use super::*;
 
-    /// Render a widget over a themed background so the split/overlay
-    /// boundaries are visible in the snapshot.
+    /// The themed background keeps overlay boundaries visible in snapshots.
     pub(super) fn render(draw: impl Fn(&mut Frame<'_>, &Theme)) -> Terminal<TestBackend> {
         let theme = Theme::github_dark();
         let backend = TestBackend::new(120, 40);
@@ -967,7 +921,6 @@ pub(super) mod tests {
 
     #[test]
     fn input_modal_wraps_a_long_line_onto_multiple_rows() {
-        // a single logical line longer than the box wraps instead of overflowing
         let long = "the quick brown fox jumps over the lazy dog and then keeps on \
                     running well past the right edge of the comment box";
         let modal = InputModal {
@@ -977,7 +930,6 @@ pub(super) mod tests {
         };
         let terminal = render(|frame, theme| modal.render(frame, theme));
         let content = terminal.backend().to_string();
-        // the long line wrapped across rows with words kept intact
         assert!(content.contains("keeps on running"), "{content}");
         assert!(content.contains("well past the right edge"), "{content}");
         insta::assert_snapshot!(terminal.backend());

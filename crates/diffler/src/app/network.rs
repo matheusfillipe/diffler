@@ -1,6 +1,5 @@
 //! Push/pull orchestration: resolve the remote, ask before anything that could
-//! fail or destroy work, and turn a rejected push/pull into an actionable
-//! dialog instead of a dead error.
+//! fail or destroy work, and turn a rejected push/pull into a recovery dialog.
 
 use diffler_core::vcs::NetworkOp;
 
@@ -111,8 +110,8 @@ impl App {
         self.queue_network_op("pull", NetworkOp::PullMerge);
     }
 
-    /// Resolve `op`'s argv through the backend and queue it, showing its
-    /// decline (jj refuses every push/pull) as an error instead.
+    /// Resolve `op`'s argv through the backend and queue it. A backend that
+    /// declines (jj on push/pull) shows the error.
     pub(crate) fn queue_network_op(&mut self, label: impl Into<String>, op: NetworkOp) {
         match self.review.vcs.network_argv(op) {
             Ok(argv) => self.queue_network(label, argv),
@@ -131,11 +130,9 @@ impl App {
         self.pending_git = Some(GitOp { label, argv });
     }
 
-    /// Push and pull run the git CLI, which in a jj repo would move git's
-    /// HEAD and branches behind jj's back. Every push/pull variant declines
-    /// identically, so probing with a bare `Push` answers for all of them,
-    /// before a caller that must not show a confirm dialog or remote picker
-    /// for a repo that will only reject it ever resolves one.
+    /// Every push/pull variant declines the same way in a jj repo, so we
+    /// probe with a bare `Push` before showing a confirm dialog or a remote
+    /// picker.
     pub(super) fn declines_jj_network(&mut self) -> bool {
         match self.review.vcs.network_argv(NetworkOp::Push) {
             Ok(_) => false,

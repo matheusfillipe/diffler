@@ -1,31 +1,20 @@
-//! Intra-line diff: byte ranges of changed regions between a paired
-//! old/new line, used for word-level emphasis on top of line diffs.
+//! Intra-line diff: byte ranges that differ between a paired old/new line.
 
 use std::ops::Range;
 
 use similar::{ChangeTag, InlineChangeMode, InlineChangeOptions, TextDiff};
 
-/// Below this token-level similarity the pair reads better as plain +/-
-/// lines; the refinement falls back to unemphasized output under it.
+/// Below this token similarity we emphasize nothing.
 const MIN_INLINE_RATIO: f32 = 0.5;
 
-/// Emphasis runs separated by this many characters or fewer merge into one
-/// span: two highlights straddling a two-char gap read as noise, one reads
-/// as the edit. Merging happens before `pairing::MAX_EMPHASIS_RUNS` counts
-/// the runs. Tune the two together.
+/// We merge runs this close before `pairing::MAX_EMPHASIS_RUNS` counts them,
+/// so we tune the two together.
 const MAX_GAP_CHARS: usize = 2;
 
-/// Byte ranges (into each input) that differ between the two lines.
+/// `(old_emphasis, new_emphasis)` byte ranges, near-adjacent runs merged.
 ///
-/// Word-level, not char-level: lines tokenize into unicode words,
-/// punctuation, and whitespace (UAX #29), so unrelated tokens can never
-/// share a stray letter (`npm` → `bun` is a whole-token swap, not an edit
-/// around a common `n`). A semantic-cleanup pass absorbs coincidental
-/// matches and snaps boundaries to word edges, mirroring what GitHub-class
-/// diff viewers ship.
-///
-/// Returns `(old_emphasis, new_emphasis)`. Adjacent and near-adjacent
-/// ranges are merged.
+/// We diff UAX #29 word tokens so unrelated tokens never share a stray
+/// letter (`npm` → `bun` is a whole-token swap).
 ///
 /// ```
 /// use diffler_core::diff::intraline;
@@ -42,9 +31,8 @@ pub fn intraline(old: &str, new: &str) -> (Vec<Range<usize>>, Vec<Range<usize>>)
         .semantic_cleanup(true)
         .min_ratio(MIN_INLINE_RATIO);
 
-    // positions accumulate globally per side: `from_lines` splits on embedded
-    // `\r` too, and a fresh counter per segment would emit segment-local
-    // offsets where the caller expects offsets into the whole line
+    // `from_lines` splits on embedded `\r` too, so we keep one position per
+    // side across segments to emit offsets into the whole line
     let mut old_ranges: Vec<Range<usize>> = Vec::new();
     let mut new_ranges: Vec<Range<usize>> = Vec::new();
     let (mut old_pos, mut new_pos) = (0usize, 0usize);
@@ -75,10 +63,9 @@ pub fn intraline(old: &str, new: &str) -> (Vec<Range<usize>>, Vec<Range<usize>>)
     )
 }
 
-/// Leading-indentation-only emphasis is a reindent artifact: the AST engine
-/// (`syntax::intraline`) treats reformatting as unchanged, so this drops the
-/// same ranges. Whitespace changes inside or after content stay: a trailing
-/// space or a tab→space swap is invisible without the highlight.
+/// Drop emphasis on leading indentation, matching the AST engine. We keep
+/// whitespace changes after content, since a trailing space or a tab swap is
+/// invisible without the highlight.
 fn drop_indent_only(text: &str, ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
     ranges
         .into_iter()
@@ -90,7 +77,6 @@ fn drop_indent_only(text: &str, ranges: Vec<Range<usize>>) -> Vec<Range<usize>> 
         .collect()
 }
 
-/// Merge runs whose gap is `MAX_GAP_CHARS` characters or fewer.
 fn coalesce(text: &str, ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
     let mut out: Vec<Range<usize>> = Vec::new();
     for range in ranges {
@@ -146,8 +132,6 @@ mod tests {
 
     #[test]
     fn changed_word_is_emphasized_whole_never_fragmented() {
-        // char-level LCS latches onto the shared `n` of npm/bun; word-level
-        // must swap the whole token
         let old = "npm run lint";
         let new = "bun run lint";
         let (old_r, new_r) = intraline(old, new);
@@ -167,10 +151,9 @@ mod tests {
 
     #[test]
     fn dissimilar_lines_fall_back_to_no_emphasis() {
-        // token overlap below the ratio floor: whole-line rewrite, no confetti
         let (old, new) = intraline(
             "npm run migrate -w services/auth",
-            "bun run --filter '@syte-tech/auth-service' migrate",
+            "bun run --filter '@acme/auth-service' migrate",
         );
         assert!(old.is_empty(), "{old:?}");
         assert!(new.is_empty(), "{new:?}");
@@ -191,8 +174,6 @@ mod tests {
 
     #[test]
     fn combining_characters_stay_whole() {
-        // "e\u{301}" is one grapheme inside a word token; emphasis must
-        // cover it atomically
         let old_line = "drink cafe daily";
         let new_line = "drink cafe\u{301} daily";
         let (_, new) = intraline(old_line, new_line);
@@ -206,8 +187,6 @@ mod tests {
 
     #[test]
     fn indentation_only_changes_carry_no_emphasis() {
-        // a re-indented line pairs with its twin; the differing indent must
-        // not render as a phantom edit block
         let (old, new) = intraline("        openAPI(),", "            openAPI(),");
         assert!(old.is_empty(), "{old:?}");
         assert!(new.is_empty(), "{new:?}");
@@ -218,8 +197,6 @@ mod tests {
         let old = "foo  bar";
         let new = "foo bar baz";
         let (old_r, new_r) = intraline(old, new);
-        // the shrunk mid-line gap sits after content, so it may stay marked;
-        // only leading-indent emphasis is dropped
         assert!(old_r.iter().all(|r| r.start >= 3), "{old_r:?}");
         let joined: String = new_r.iter().map(|r| &new[r.clone()]).collect();
         assert!(joined.contains("baz"), "the added word survives: {new_r:?}");
@@ -227,7 +204,6 @@ mod tests {
 
     #[test]
     fn trailing_and_midline_whitespace_edits_stay_visible() {
-        // without the highlight these changes are invisible on screen
         let (_, new_r) = intraline("foo();", "foo(); ");
         assert_eq!(new_r, vec![6..7], "trailing space stays marked");
         let (old_r, new_r) = intraline("foo\tbar();", "foo    bar();");
@@ -246,8 +222,6 @@ mod tests {
 
     #[test]
     fn embedded_carriage_returns_keep_offsets_global() {
-        // a lone `\r` splits the text into segments internally; emphasis
-        // offsets must still address the whole line
         let old = "alpha\rfoo bar baz";
         let new = "alpha\rfoo QUX baz";
         let (old_r, new_r) = intraline(old, new);
@@ -256,7 +230,6 @@ mod tests {
         let covered: String = new_r.iter().map(|r| &new[r.clone()]).collect();
         assert_eq!(covered, "QUX", "{new_r:?}");
 
-        // multibyte text before the `\r` must not desync byte offsets
         let old = "héé\rfoo bar baz";
         let new = "héé\rfoo QUX baz";
         let (old_r, new_r) = intraline(old, new);
@@ -266,7 +239,6 @@ mod tests {
         let covered: String = new_r.iter().map(|r| &new[r.clone()]).collect();
         assert_eq!(covered, "QUX", "{new_r:?}");
 
-        // edits in two segments emphasize each in place, in order
         let old = "aa bb cc\rdd ee ff";
         let new = "aa XX cc\rdd YY ff";
         let (_, new_r) = intraline(old, new);

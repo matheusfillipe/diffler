@@ -1,9 +1,6 @@
 #!/usr/bin/env node
 "use strict";
 
-// Launcher shim: resolve the platform binary (fetching it on first run if the
-// postinstall step was skipped), then exec it with the caller's args/stdio.
-
 const { spawnSync } = require("node:child_process");
 const { ensureBinary } = require("../lib/resolve.js");
 

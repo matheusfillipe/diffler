@@ -258,7 +258,7 @@ impl App {
     }
 
     /// Whether the open diff shows a lens, which digits and `esc` then reach.
-    /// Side-by-side draws no lens, so there it is as good as closed.
+    /// Side-by-side draws no lens, so there it counts as closed.
     pub(crate) fn lens_active(&self) -> bool {
         self.diff
             .as_ref()
@@ -507,7 +507,7 @@ impl super::DiffView {
     }
 
     /// Hand the keyboard back to the diff when the sidebar holding it is
-    /// no longer on screen.
+    /// hidden.
     pub(crate) fn settle_focus(&mut self) {
         let hidden = match self.focus {
             Pane::References => !self.refs_visible(),
@@ -542,8 +542,8 @@ impl super::DiffView {
     }
 
     /// List the focused name's uses in diff order, one per line, and select
-    /// the one on the line the lens was opened on. The walkthrough layout
-    /// shows one slide at a time, so there it lists the slide's own file.
+    /// the one on the line the lens was opened on. In the walkthrough layout
+    /// it lists the slide's own file.
     fn order_refs(&mut self, review: &Review) {
         let refs = self.lens.as_ref().map_or_else(Vec::new, |lens| {
             let model = self.model_for_rows(review);

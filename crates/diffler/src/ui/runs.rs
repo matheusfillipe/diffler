@@ -1,5 +1,4 @@
-//! The CI runs start page: a hint line, the list of recent runs for the repo's
-//! provider, and the shared status bar. Selecting a run opens its graph.
+//! The list of recent CI runs.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -23,8 +22,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
     frame.render_widget(Paragraph::new(super::status_bar(app, bar.width)), bar);
 }
 
-/// Ranges within `[start, start+len)` of the search-row text, rebased to the
-/// segment, so each display column highlights its own slice of the match.
+/// Rebases search ranges onto the segment `[start, start+len)`.
 fn clip_ranges(
     ranges: &[(std::ops::Range<usize>, bool)],
     start: usize,
@@ -63,8 +61,7 @@ fn draw_list(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             let glyph = run.status.glyph();
             let color = super::ci_status_color(&app.theme, run.status);
             let short = run.commit.chars().take(7).collect::<String>();
-            // search rows are "{name} {title}": rebase the match ranges onto
-            // the two display segments so `/` highlights like other screens
+            // search rows are "{name} {title}", shown as two segments
             let ranges = app
                 .search
                 .as_ref()

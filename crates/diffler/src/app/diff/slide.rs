@@ -1,7 +1,5 @@
 //! The walkthrough layout's own view: which slide the pane windows to, and
-//! the row-narrowing that gets it there. Distinct from `app::walkthrough`,
-//! which publishes a walkthrough and resolves its anchors; this module only
-//! decides what the reader sees once one is open.
+//! the row-narrowing that gets it there.
 
 use std::borrow::Cow;
 use std::collections::HashSet;
@@ -20,8 +18,7 @@ use super::{DiffRow, DiffView, RowCopy, blocks_of, summary_display};
 pub(crate) enum Slide {
     /// A stop's own region, by index into the walkthrough's `stops`.
     Stop(usize),
-    /// A comment outside every stop's region, shown as a slide of its own so
-    /// reaching it never falls back to the whole file.
+    /// A comment outside every stop's region, shown as a slide of its own.
     AdHoc(String),
     /// The walkthrough's own summary: one card, no code rows, the sidebar's
     /// leading slide where the walkthrough has one.
@@ -33,9 +30,8 @@ thread_local! {
     static MERGE_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// How many times [`DiffView::model_with_context`] has actually cloned and
-/// merged a model on this thread: a render's own count must not grow, or it
-/// rebuilt what [`DiffView::ensure_rows`] already cached.
+/// How many times [`DiffView::model_with_context`] has cloned and merged a
+/// model on this thread, so a test can check a render reuses the cache.
 #[cfg(test)]
 pub(crate) fn merge_count() -> usize {
     MERGE_COUNT.with(std::cell::Cell::get)
@@ -43,13 +39,10 @@ pub(crate) fn merge_count() -> usize {
 
 impl DiffView {
     /// `base`'s files, plus `context_files` appended after them, a path
-    /// already in `base` never duplicated. A free-standing function (not a
-    /// `&self` method) so a caller already holding disjoint field borrows
-    /// (`commit_model`, `context_files`) can compose it without widening
-    /// them into a borrow of the whole view, which would collide with the
-    /// mutations `ensure_rows` makes right after reading the model. It clones
-    /// `base`'s files whenever there is anything to append, so a caller on the
-    /// render path wants the result cached rather than rebuilt per frame.
+    /// already in `base` never duplicated. Free-standing so a caller holding
+    /// disjoint field borrows can compose it while `ensure_rows` mutates the
+    /// view. It clones `base`'s files whenever there is anything to append, so
+    /// the render path reads the cached result.
     pub(crate) fn model_with_context<'a>(
         base: &'a DiffModel,
         context_files: &'a [FileDiff],
@@ -69,10 +62,8 @@ impl DiffView {
     }
 
     /// Parse the bodies that hold a figure, reusing what is already parsed for
-    /// the same body at the same width. Bodies without one are left out, so an
-    /// ordinary comment costs nothing here. The walkthrough's own summary is
-    /// one more such body, cached under `summary_figure_key` rather than a
-    /// comment id since it is not one.
+    /// the same body at the same width. The walkthrough's summary is cached
+    /// under `summary_figure_key`.
     pub(super) fn ensure_figures(&mut self, session: &Session) {
         let width = card_budget(self.wrap_width);
         let mut live = HashSet::new();
@@ -129,9 +120,8 @@ impl DiffView {
         std::mem::take(&mut self.figures_dirty)
     }
 
-    /// The walkthrough this layout shows: the one this source's session is.
-    /// Kept as a method (not a free function) so every call site reads the
-    /// same way regardless of what backs it.
+    /// The walkthrough this layout shows: the one in this source's session.
+    /// We keep it a method so every call site reads it off the view.
     #[allow(clippy::unused_self)]
     pub(crate) fn active_walkthrough<'a>(&self, session: &'a Session) -> Option<&'a Walkthrough> {
         session.walkthrough.as_ref()
@@ -139,8 +129,7 @@ impl DiffView {
 
     /// The comment the slide on screen is built around, by index into the
     /// session's comments: the ad hoc comment when one is open, else the
-    /// current stop. `Slide::Summary` has no comment behind it at all: its
-    /// card is built by `summary_rows` instead.
+    /// current stop. `Slide::Summary` has none.
     pub(crate) fn slide_primary(&self, session: &Session) -> Option<usize> {
         let walkthrough = self.active_walkthrough(session)?;
         let id: &str = match &self.slide {
@@ -152,10 +141,9 @@ impl DiffView {
         session.comments.iter().position(|comment| comment.id == id)
     }
 
-    /// Clamp a slide that no longer matches the session: a stop index past a
-    /// walkthrough that has shrunk falls back to its last stop, or to nothing
-    /// once it has none left, and an ad hoc comment that is gone falls back to
-    /// nothing rather than windowing to a comment that no longer exists.
+    /// Clamp a slide that the session has outgrown: a stop index past the end
+    /// falls back to the last stop, or to nothing when none are left, and a
+    /// deleted ad hoc comment falls back to nothing.
     pub(super) fn validate_slide(&mut self, session: &Session) {
         let Some(walkthrough) = self.active_walkthrough(session) else {
             self.slide = None;
@@ -172,11 +160,8 @@ impl DiffView {
         }
     }
 
-    /// Narrow the raw rows down to the slide on screen: `Slide::Summary` shows
-    /// the walkthrough's own summary card, built by `summary_rows`; every
-    /// other slide narrows to its single primary comment's region. Where the
-    /// review has no walkthrough at all, the layout falls back to the file
-    /// tree, so a file list windowed to nothing is a blank pane.
+    /// Narrow the raw rows down to the slide on screen: the summary card, or
+    /// the primary comment's region.
     pub(super) fn window_slide(
         &self,
         model: &DiffModel,
@@ -197,8 +182,7 @@ impl DiffView {
     }
 
     /// The walkthrough's own summary as the slide on screen: one card and no
-    /// code rows at all, the way a stop with no anchored line already shows
-    /// its own card alone.
+    /// code rows.
     fn summary_rows(&self, session: &Session) -> (Vec<DiffRow>, Vec<RowCopy>) {
         let Some(summary) = self
             .active_walkthrough(session)
@@ -224,11 +208,9 @@ impl DiffView {
 
     /// Narrow `rows` (already built for `file_index`) down to `primary`'s
     /// slide: the lines its span covers, the hunk headers they sit under,
-    /// every comment the region holds, and the open composer. Every other
-    /// row is dropped, so a slide reads as its own view rather than the
-    /// whole file scrolled to a bookmark. A primary with no line to sit on
-    /// shows the cards alone. `copy` is filtered by the same mask as `rows`
-    /// so the two never drift apart.
+    /// every comment the region holds, and the open composer. A primary with
+    /// no line shows the cards alone. `copy` is filtered by the same mask as
+    /// `rows`.
     fn slide_rows(
         model: &DiffModel,
         session: &Session,

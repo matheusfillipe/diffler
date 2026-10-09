@@ -174,9 +174,8 @@ fn modified_file_produces_hunk_with_line_numbers() {
 #[test]
 fn hunk_context_captures_the_enclosing_section() {
     let fx = Fixture::new();
-    // an enclosing function far enough above the change that git's default
-    // three context lines don't reach it: git then names the section in the
-    // hunk header, which we capture into `context`
+    // the function sits beyond the three context lines, so git names it in
+    // the hunk header
     let mut base = String::from("fn outer() {\n");
     for i in 1..=10 {
         writeln!(base, "    let v{i} = {i};").expect("write");
@@ -193,7 +192,6 @@ fn hunk_context_captures_the_enclosing_section() {
         "enclosing function captured as context: {:?}",
         hunk.context
     );
-    // context must not leak into the hunk id, which keys on lines alone
     let lines = hunk.lines.clone();
     let id = diffler_core::model::hunk_id("a.rs", &lines, 0);
     assert_eq!(id, hunk.id, "context does not perturb the hunk id");
@@ -212,8 +210,6 @@ fn two_hunks_with_identical_content_get_distinct_ids() {
     }
     fx.write("a.txt", &base);
     fx.commit_all("base");
-    // the same one-line edit, made twice, far enough apart with no context
-    // lines between the two hunks that their content is byte-identical
     fx.write("a.txt", &base.replace("dup\n", "changed\n"));
 
     let model = GitVcs::open_with_settings(fx.root(), &DiffSettings::with_context(0))
@@ -259,7 +255,6 @@ fn modified_line_pair_carries_intraline_emphasis() {
     fx.commit_all("base");
     fx.write("a.py", "value = new_name\nrest = 1\n");
     let mut model = vcs(&fx).working_tree_diff().expect("diff");
-    // emphasis is deferred out of the backend: enrich the file to assert on it
     diffler_core::pairing::enrich_file(&mut model.files[0]);
     let lines = &model.files[0].hunks[0].lines;
     let deleted = lines
@@ -272,7 +267,6 @@ fn modified_line_pair_carries_intraline_emphasis() {
         .expect("added line");
     assert_eq!(deleted.text, "value = old_name");
     assert_eq!(added.text, "value = new_name");
-    // substitution: both sides emphasize the swapped word
     assert!(!deleted.emphasis.is_empty());
     assert!(!added.emphasis.is_empty());
     let old_hl: String = deleted
@@ -285,7 +279,6 @@ fn modified_line_pair_carries_intraline_emphasis() {
         .iter()
         .map(|r| &added.text[r.clone()])
         .collect();
-    // word-level emphasis: the whole substituted token, never a fragment
     assert_eq!(old_hl, "old_name");
     assert_eq!(new_hl, "new_name");
 }
@@ -375,7 +368,6 @@ fn hunk_ids_survive_unrelated_edits() {
     fx.write("a.txt", &edit_one);
     let m1 = vcs(&fx).working_tree_diff().expect("diff");
     let id_before = m1.files[0].hunks[0].id.clone();
-    // unrelated edit far away creates a second hunk; first hunk id must not move
     let edit_two = edit_one.replace("line 35\n", "LINE THIRTY-FIVE\n");
     fx.write("a.txt", &edit_two);
     let m2 = vcs(&fx).working_tree_diff().expect("diff");
@@ -411,7 +403,6 @@ fn commit_diff_shows_only_that_commits_change() {
         .collect();
     assert_eq!(deleted, vec!["one"]);
 
-    // root commit diffs against the empty tree
     let root = v.commit_diff(&root_oid).expect("diff");
     assert_eq!(root.files.len(), 1);
     assert_eq!(root.files[0].status, FileStatus::Added);
@@ -431,8 +422,6 @@ fn range_diff_combines_two_commits() {
 
     let v = vcs(&fx);
     let model = v.range_diff(&oldest, &newest).expect("range diff");
-    // the base-to-oldest^ boundary excludes base.txt but folds both commits'
-    // additions into one diff
     let paths: Vec<&str> = model.files.iter().map(|f| f.path.as_str()).collect();
     assert_eq!(paths, vec!["a.txt", "b.txt"]);
     assert!(model.files.iter().all(|f| f.status == FileStatus::Added));
@@ -465,8 +454,6 @@ fn range_diff_over_a_root_commit_uses_the_empty_tree() {
 
     let v = vcs(&fx);
     let model = v.range_diff(&root, &newest).expect("range diff");
-    // oldest is the root commit: the range spans the empty tree to newest, so
-    // both files appear as additions
     let paths: Vec<&str> = model.files.iter().map(|f| f.path.as_str()).collect();
     assert_eq!(paths, vec!["a.txt", "b.txt"]);
     assert!(model.files.iter().all(|f| f.status == FileStatus::Added));
@@ -616,7 +603,6 @@ fn branch_reports_ahead_and_behind_relative_to_upstream() {
     let v = vcs(&fx);
     let branch_name = v.head().expect("head").branch.expect("on a branch");
 
-    // upstream gains a commit the local branch never gets
     fx.branch("remote-work");
     fx.checkout("remote-work");
     fx.write("upstream.txt", "only on remote\n");
@@ -625,7 +611,6 @@ fn branch_reports_ahead_and_behind_relative_to_upstream() {
     fx.checkout(&branch_name);
     fx.track(&branch_name, &remote_oid);
 
-    // local branch gains two commits the upstream never gets
     fx.write("a.txt", "two\n");
     fx.commit_all("second");
     fx.write("a.txt", "three\n");
@@ -646,8 +631,6 @@ fn branch_reports_ahead_and_behind_relative_to_upstream() {
     );
 }
 
-/// A listing resolves no upstream, so a repository carrying hundreds of
-/// branches pays for names and tips alone.
 #[test]
 fn listing_branches_asks_no_upstream() {
     let fx = Fixture::new();
@@ -983,9 +966,8 @@ fn discard_restores_modified_file() {
 
 #[test]
 fn discard_leaves_file_clean_under_autocrlf() {
-    // a Windows user with core.autocrlf=true: checkout smudges LF->CRLF, so the
-    // file on disk differs in size from the stored blob. discard must still
-    // leave the file reported as clean (matching `git status`), not phantom-dirty.
+    // checkout smudges LF->CRLF, so the file on disk differs in size from the
+    // stored blob
     let fx = Fixture::new();
     {
         let mut config = fx.repo.config().expect("config");
@@ -1080,7 +1062,6 @@ fn amend_rewrites_head_and_folds_in_the_index() {
     assert_eq!(entries.len(), 1, "amend replaces HEAD, no new parent");
     assert_eq!(entries[0].subject, "first amended");
     assert_eq!(entries[0].oid, oid);
-    // the staged file folded into the amended commit
     assert!(v.status().expect("status").staged.files.is_empty());
 }
 
@@ -1098,7 +1079,6 @@ fn extend_reuses_the_head_message() {
     let entries = v.log(10).expect("log");
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].subject, "keep this message", "message reused");
-    // b.txt is now part of HEAD: nothing left staged or changed
     assert!(v.working_tree_diff().expect("diff").files.is_empty());
 }
 
@@ -1109,14 +1089,12 @@ fn reword_changes_only_the_message_keeping_the_tree() {
     fx.commit_all("old subject");
 
     let v = vcs(&fx);
-    // a staged change must NOT enter a pure reword (use_index = false)
     fx.write("b.txt", "ignored by reword\n");
     v.stage(Path::new("b.txt")).expect("stage");
     v.amend(Some("new subject"), false).expect("reword");
 
     let entries = v.log(10).expect("log");
     assert_eq!(entries[0].subject, "new subject");
-    // the staged change is still staged: reword left the tree alone
     assert!(
         v.status()
             .expect("status")
@@ -1259,17 +1237,12 @@ fn workdir_is_the_repo_working_tree() {
     );
 }
 
-// amend on an unborn HEAD (zero commits) must return a clean error; the app
-// guards this at the UI layer, but the trait method must not panic
 #[test]
 fn amend_on_unborn_head_returns_error_not_panic() {
     let fx = Fixture::new();
-    // no commits: HEAD is unborn
     let err = vcs(&fx)
         .amend(Some("anything"), false)
         .expect_err("amend on unborn HEAD must fail");
-    // must be a VcsError (not a panic); the exact variant (Git or Rejected) is
-    // an implementation detail but it must not be a NoWorkdir
     assert!(
         !matches!(err, VcsError::NoWorkdir),
         "unborn HEAD is not a missing workdir: {err}"
@@ -1365,7 +1338,6 @@ fn stash_pop_that_conflicts_is_rejected() {
     fx.write("a.txt", "stashed change\n");
     let v = vcs(&fx);
     v.stash_push(None).expect("stash");
-    // an incompatible edit to the same line the stash also changed
     fx.write("a.txt", "conflicting change\n");
     let err = v.stash_pop().expect_err("conflicting pop");
     assert!(matches!(err, VcsError::Rejected(_)), "got {err:?}");
@@ -1507,8 +1479,6 @@ mod diff_algorithm {
         .expect("open")
     }
 
-    /// Myers and patience disagree on how to align a unique line that moved
-    /// past a run of repeated, non-unique ones: patience's own strength.
     #[test]
     fn patience_and_myers_disagree_on_a_classic_case() {
         let fx = Fixture::new();
@@ -1541,8 +1511,6 @@ mod diff_algorithm {
         );
     }
 
-    /// Histogram has no git2 flag at all; it must still produce a correct
-    /// line diff (not just "different from myers").
     #[test]
     fn histogram_finds_the_single_changed_line() {
         let fx = Fixture::new();
@@ -1572,10 +1540,6 @@ mod diff_algorithm {
         assert_eq!(added, vec!["LINE FIVE"]);
     }
 
-    /// Every algorithm stages exactly the hunk shown and nothing else, then
-    /// reverses cleanly on unstage: hunk ids are computed from the same
-    /// algorithm that produced them, so the id the reviewer picked is always
-    /// findable regardless of which one is active.
     #[test]
     fn staging_stays_correct_under_every_algorithm() {
         for algorithm in DiffAlgorithm::ALL {
@@ -1630,8 +1594,8 @@ mod diff_algorithm {
         }
     }
 
-    /// Stage hunk `pick` of `old` -> `new` alone and return the staged text,
-    /// after checking that unstaging the staged hunk empties the index again.
+    /// Stage hunk `pick` alone, check unstaging empties the index, and
+    /// return the staged text.
     #[allow(clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
     fn stage_alone(old: &str, new: &str, algorithm: DiffAlgorithm, pick: usize) -> String {
         let fx = Fixture::new();
@@ -1656,9 +1620,8 @@ mod diff_algorithm {
         staged
     }
 
-    /// We send the picked hunk without the ones above it, and a periodic
-    /// file matches its lines at a shifted offset too, so a hunk placed by
-    /// its own `+` start would land two lines early without complaint.
+    /// A periodic file matches the hunk at a shifted offset too, so a hunk
+    /// placed by its own `+` start would land two lines early silently.
     #[test]
     fn a_later_hunk_staged_alone_lands_where_it_is_shown() {
         let pairs = "a\nb\n".repeat(15);
@@ -1690,8 +1653,6 @@ mod diff_algorithm {
         }
     }
 
-    /// Histogram reads the worktree file raw, while git compares it through
-    /// its clean filter; autocrlf keeps git's own hunks and an LF index.
     #[test]
     fn histogram_keeps_gits_hunks_under_autocrlf() {
         let fx = Fixture::new();

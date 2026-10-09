@@ -47,8 +47,6 @@ impl App {
                 line_text: Some(line.text.clone()),
             });
         };
-        // visual range: gather the selected line numbers on the anchor
-        // line's side, restricted to the anchor's file
         let mut numbered: Vec<(u32, String)> = Vec::new();
         for index in start..=end {
             let Some(row) = diff.rows.get(index) else {
@@ -156,13 +154,10 @@ impl App {
         self.claim_comment(&id);
     }
 
-    /// Flip one comment between the agent's authorship and the human's: an
-    /// agent comment becomes the human's own, so it goes out with the next
-    /// submitted review, and a second press hands it back. Any other author
-    /// (a synced forge comment, say) is left alone. A walkthrough's own
-    /// comments are never posted anywhere, and claiming one would make it
-    /// invisible to the revision that is meant to prune it, so a walkthrough
-    /// source refuses the whole verb.
+    /// Flip one comment between the agent's authorship and the human's, so it
+    /// goes out with the next submitted review. Other authors stay as they
+    /// are. A walkthrough source refuses the verb, since a claimed stop would
+    /// escape the revision that prunes it.
     pub(crate) fn claim_comment(&mut self, id: &str) {
         let source = self.active_review_source();
         if matches!(source, ReviewSource::Walkthrough { .. }) {
@@ -198,8 +193,7 @@ impl App {
     }
 
     /// `A`: ask before claiming every agent comment of the active review as
-    /// the human's own, the way it goes out with a submitted review. A
-    /// walkthrough source refuses the same way `claim_comment` does.
+    /// the human's own. A walkthrough source refuses, like `claim_comment`.
     pub(super) fn claim_all_comments_start(&mut self) {
         let source = self.active_review_source();
         if matches!(source, ReviewSource::Walkthrough { .. }) {
@@ -312,9 +306,8 @@ impl App {
             return;
         };
         let viewed = self.review.session_for(&source).is_viewed(&path, &hash);
-        // marking walks the review file by file, so the cursor lands on the row
-        // listed under this one. Read before the toggle: marking sorts the file
-        // up into its group's viewed run, moving the rows underneath it
+        // we read the row below before the toggle, since marking sorts the
+        // file up into its group's viewed run
         let next = if viewed {
             None
         } else {
@@ -332,9 +325,8 @@ impl App {
         }
         match next {
             Some(index) => self.diff_select_file_index(index),
-            // nothing below to walk to. The file just sorted into its group's
-            // viewed run, so following it would throw the reader to wherever it
-            // landed; hold the row they were reading at instead
+            // with nothing below, we hold the row the reader was on, since the
+            // file just sorted up into its group's viewed run
             None if !viewed => {
                 self.diff_tree_to(anchor_row);
                 let (total, seen) = self.viewed_counts();
@@ -353,10 +345,8 @@ impl App {
         }
     }
 
-    /// `v` on any sidebar header marks everything it holds, so a whole subtree
-    /// or a whole kind clears in one keystroke. Reports whether it handled the
-    /// key. Already-viewed throughout means the press unmarks instead, matching
-    /// how a single file toggles.
+    /// `m` on a sidebar header marks everything under it viewed, or unmarks
+    /// it all once it is. Reports whether it handled the key.
     fn diff_toggle_group_viewed(&mut self) -> bool {
         let review = &self.review;
         let Some(diff) = self.diff.as_ref() else {
@@ -378,8 +368,7 @@ impl App {
                     .map(|file| (file.path.clone(), file.content_hash()))
                     .collect()
             }
-            // read from the bucket, not the rows: a folded header lists none of
-            // its files and still stands for all of them
+            // we read the bucket, since a folded header has no file rows
             Some(TreeNode::Section { bucket, .. }) => diff
                 .bucket_files(model, session, *bucket)
                 .into_iter()
@@ -444,8 +433,7 @@ impl App {
         self.info("cleared all viewed marks");
     }
 
-    /// The stop index of the slide currently open, when it is a stop's own
-    /// (not the all-slides view, an ad hoc comment, or nothing seated yet).
+    /// The stop index of the slide currently open, when it is a stop's own.
     fn current_stop_index(&self) -> Option<usize> {
         match self.diff.as_ref()?.slide {
             Some(Slide::Stop(index)) => Some(index),
@@ -454,8 +442,7 @@ impl App {
     }
 
     /// `m` in the walkthrough layout: toggle the current slide's seen mark,
-    /// then advance to the next slide the way `m` on a file advances to the
-    /// row below it. Unmarking holds still, matching the file behaviour.
+    /// then advance to the next slide. Unmarking holds still.
     pub(super) fn walkthrough_toggle_seen(&mut self) {
         let Some(index) = self.current_stop_index() else {
             return;
@@ -533,8 +520,7 @@ impl App {
     }
 
     /// Land the pane on the model file at `index` and seat the tree cursor on
-    /// its row. Used where a file is chosen by model index (the viewed walk,
-    /// scoped open) rather than by tree position.
+    /// its row.
     pub(super) fn diff_select_file_index(&mut self, index: usize) {
         let review = &self.review;
         if let Some(diff) = self.diff.as_mut() {
@@ -542,8 +528,6 @@ impl App {
             if count == 0 {
                 return;
             }
-            // select() rebuilds the rows; ensure_rows then re-seats the tree
-            // cursor onto the newly selected file
             diff.select(index.min(count - 1), review);
         }
     }
@@ -598,10 +582,8 @@ impl App {
         self.info(format!("copied {count} {noun} ({scope})"));
     }
 
-    /// `y`: with a visual selection, yank whatever rows it covers through the
-    /// shared row-text path every other screen uses; with none, keep the
-    /// review's own meaning for the key, exporting this file's comments as
-    /// markdown, since a reader relying on that fallback sees nothing change.
+    /// `y`: with a visual selection, yank the rows it covers; with none,
+    /// export this file's comments as markdown.
     pub(super) fn copy_file_or_selection(&mut self) {
         if self
             .diff

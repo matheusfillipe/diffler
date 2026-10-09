@@ -1,7 +1,4 @@
-//! The CI job-log view: the `gh ... --log` output as collapsible steps. Each
-//! step is a header row (▾/▸) with its lines underneath; folded by default. The
-//! screen reuses the diff/log keymap, so motions, search, visual select, and
-//! yank all behave as elsewhere.
+//! A CI job's log folded into its steps.
 
 use ratatui::Frame;
 use ratatui::style::Style;

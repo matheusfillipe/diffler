@@ -14,9 +14,7 @@ use crate::app::walkthrough::{Block, FigureCache, unresolved_explanation};
 
 /// One terminal row of the diff pane. Indices point into the model the view
 /// renders; the row list is rebuilt whenever the selected file, the model, or
-/// the session change, so they never dangle. The `file` field equals the
-/// selected file index everywhere except the walkthrough layout's all-slides
-/// view, which windows several files' rows one after another.
+/// the session change, so they never dangle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffRow {
     Hunk {
@@ -35,7 +33,7 @@ pub enum DiffRow {
         line: usize,
         outdated: bool,
     },
-    /// One display line of the open composer, sitting where its result will.
+    /// One display line of the open composer.
     Composer {
         line: usize,
     },
@@ -93,12 +91,10 @@ pub enum CommentLine {
     Footer,
 }
 
-/// What a visual selection yanks for one row, built alongside `rows` (which
-/// carries indices, not text) since [`crate::app::rowsel::RowText::row_text`]
-/// answers with no model or session in hand. A figure is the one row this
-/// cannot resolve here: its box-drawing depends on the theme-driven graph
-/// renderer that lives in `ui`, so it starts as a lookup key and the render
-/// pass that already draws the same figure patches the text in once it runs.
+/// What a visual selection yanks for one row, built alongside `rows` since
+/// [`crate::app::rowsel::RowText::row_text`] has no model or session in hand.
+/// A figure's box-drawing comes from the graph renderer in `ui`, so it starts
+/// as a lookup key and the render pass patches the text in.
 #[derive(Debug, Clone)]
 pub enum RowCopy {
     Text(String),
@@ -122,8 +118,7 @@ fn md_spans_text(spans: &[MdSpan]) -> String {
     spans.iter().map(|span| span.text.as_str()).collect()
 }
 
-/// The marker and text of one diff line, exactly as a plain-text buffer would
-/// hold it: `+`/`-`/` ` then the line's own text, gutter numbers left out.
+/// The marker and text of one diff line, with no gutter numbers.
 pub(super) fn line_row_text(line: &diffler_core::model::DiffLine) -> String {
     let marker = match line.kind {
         LineKind::Added => '+',
@@ -181,11 +176,8 @@ fn composer_line_text(line: &ComposerLine) -> String {
 }
 
 /// What one display line of a comment or summary card yanks: its prose for a
-/// body/note/reply line, so several selected rows read as the paragraph they
-/// look like; `header` for the header line (built by the caller, since a
-/// summary's is a bare title and a comment's carries status); nothing for the
-/// footer, a bar with no content; a figure key for the caller's render pass
-/// to resolve later.
+/// body, note or reply line, `header` for the header line, nothing for the
+/// footer, and a figure key for the render pass to resolve.
 pub(super) fn row_copy_for(line: &CommentLine, header: &str, key: &str) -> RowCopy {
     match line {
         CommentLine::Header => RowCopy::Text(header.to_owned()),
@@ -207,8 +199,7 @@ pub(super) fn row_copy_for(line: &CommentLine, header: &str, key: &str) -> RowCo
 /// rendered and long text wrapped to fit. `blocks` is the body already split
 /// around its `mermaid` fences, for a body that holds one; without it the
 /// whole body is prose. Shared by a comment's card and the walkthrough
-/// summary's, so a `mermaid` fence renders as a figure through the same path
-/// in both.
+/// summary's.
 fn body_display(
     body: &str,
     row_width: u16,
@@ -245,8 +236,7 @@ fn body_display(
     lines
 }
 
-/// Columns a reply by anyone but the reader is indented, so the two sides
-/// of a thread read apart at a glance.
+/// Columns a reply by anyone but the reader is indented.
 pub const REPLY_LANE: usize = 4;
 /// A closed thread folds the replies between its first comment and its
 /// latest reply once it has more than this many.
@@ -266,10 +256,9 @@ pub fn folded_replies_text(count: usize) -> String {
 }
 
 /// The terminal lines a comment occupies at `row_width` columns. Shared by
-/// row flattening (for counts) and rendering (for content) so they can never
-/// disagree. `unresolved` is the reason this comment's own anchor stopped
-/// resolving, when it did; it renders as one dim line under the body. A
-/// thread that is not `open` folds the replies before its latest one.
+/// row flattening and rendering so they agree. `unresolved` is why the
+/// comment's anchor failed to resolve, drawn as one dim line under the body.
+/// A thread that is not `open` folds the replies before its latest one.
 pub fn comment_display(
     comment: &Comment,
     row_width: u16,
@@ -333,9 +322,8 @@ pub fn comment_display(
     lines
 }
 
-/// The terminal lines the walkthrough's own summary occupies: the same
-/// header/body/figure/footer shape a comment's card gets, with no replies
-/// since nothing answers a summary directly.
+/// The terminal lines the walkthrough's own summary occupies, shaped like a
+/// comment's card with no replies.
 pub fn summary_display(
     body: &str,
     row_width: u16,
@@ -366,8 +354,8 @@ fn anchor_target(file: &FileDiff, anchor: &Anchor) -> Option<(usize, usize)> {
 }
 
 /// The open composer and the rows it draws, carried through row building so
-/// its rows land exactly where its result will. `lines` is computed once and
-/// doubles as the height, so text and count can never drift apart.
+/// its rows sit where its result will. `lines` doubles as the height, so text
+/// and count agree.
 struct Draft<'a> {
     composer: &'a Composer,
     lines: Vec<ComposerLine>,
@@ -408,12 +396,7 @@ impl Draft<'_> {
     }
 }
 
-/// The inputs a card row's build needs but that never vary within one row
-/// pass: the session its comments live in, the width bodies wrap to, the
-/// composer's open draft when there is one, the figure cache, and which
-/// comments' anchors stopped resolving. Bundled the way `TreeRowCtx` bundles
-/// a sidebar row's render inputs (`crate::ui::diff`), so they travel as one
-/// value through row building instead of as five separate parameters.
+/// The inputs a card row's build needs that stay fixed within one row pass.
 #[derive(Clone, Copy)]
 struct RowCtx<'a> {
     session: &'a Session,
@@ -423,7 +406,7 @@ struct RowCtx<'a> {
 }
 
 /// What the open view knows about its cards beyond the session: the figure
-/// cache, which comments' anchors stopped resolving, and which threads the
+/// cache, which comments' anchors failed to resolve, and which threads the
 /// reader opened.
 #[derive(Clone, Copy)]
 pub(crate) struct CardViews<'a> {
@@ -502,8 +485,8 @@ pub fn blocks_of<'a>(figures: &'a FigureCache, id: &str) -> Option<&'a [Block]> 
 }
 
 /// Bucket a file's comments by their `(hunk, line)` anchor for inline display.
-/// A line anchor that no longer exists is outdated, and a file-level comment
-/// has no line: both land in the unanchored list, rendered at the top.
+/// Outdated and file-level comments go in the unanchored list, rendered at
+/// the top.
 type CommentBuckets = (
     HashMap<(usize, usize), Vec<(usize, bool)>>,
     Vec<(usize, bool)>,
@@ -531,7 +514,7 @@ fn collect_comments(file: &FileDiff, session: &Session, model: &DiffModel) -> Co
 /// Build the diff-pane rows for one file: its hunks and lines, with comment
 /// blocks under their anchored line, file-level (or orphaned) comments first.
 /// `copy` is what a visual selection yanks for each row, built in the same
-/// pass so it can never disagree with what `rows` holds.
+/// pass.
 pub(super) fn build_rows(
     model: &DiffModel,
     session: &Session,

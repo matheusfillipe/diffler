@@ -1,5 +1,4 @@
-//! git2 backend for the [`Vcs`] trait: the only module that may touch git2
-//! (test fixtures aside).
+//! git2 backend for the [`Vcs`] trait.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -14,30 +13,23 @@ use crate::vcs::{
     BlameSpan, BranchInfo, HeadInfo, LogEntry, NetworkOp, StatusModel, Vcs, VcsError,
 };
 
-/// git's own default amount of context around hunks.
 pub const DEFAULT_CONTEXT_LINES: u32 = 3;
 
-/// git's own default: on, matching modern git's behaviour.
 pub const DEFAULT_INDENT_HEURISTIC: bool = true;
 
 pub struct GitVcs {
     repo: git2::Repository,
     context_lines: u32,
-    /// The session's current line-diff algorithm. A `Cell` so a live palette
-    /// switch (`Vcs::set_diff_algorithm`) reaches every diff this instance
-    /// computes afterward without needing `&mut self`.
+    /// A `Cell` so `Vcs::set_diff_algorithm` works through `&self`.
     algorithm: Cell<DiffAlgorithm>,
     indent_heuristic: Cell<bool>,
 }
 
 impl GitVcs {
-    /// Open at [`DiffSettings::default`].
     pub fn open(root: &Path) -> Result<Self, VcsError> {
         Self::open_with_settings(root, &DiffSettings::default())
     }
 
-    /// Open with a custom context, line-diff algorithm and indent heuristic
-    /// (config keys `ui.context_lines`, `diff.algorithm`, `diff.indent_heuristic`).
     pub fn open_with_settings(root: &Path, settings: &DiffSettings) -> Result<Self, VcsError> {
         let repo = git2::Repository::open(root)?;
         if repo.workdir().is_none() {
@@ -51,7 +43,7 @@ impl GitVcs {
         })
     }
 
-    /// HEAD tree, or `None` on an unborn branch (fresh repo).
+    /// `None` on an unborn branch.
     fn head_tree(&self) -> Result<Option<git2::Tree<'_>>, VcsError> {
         match self.repo.head() {
             Ok(head) => Ok(Some(head.peel_to_tree()?)),
@@ -64,8 +56,8 @@ impl GitVcs {
         self.repo.workdir().ok_or(VcsError::NoWorkdir)
     }
 
-    /// `base` tree vs workdir+index including untracked, renames folded in.
-    /// `None` is the empty tree (an unborn branch).
+    /// `base` tree vs index + worktree, untracked included, renames found.
+    /// `None` is the empty tree.
     fn workdir_diff(&self, base: Option<&git2::Tree<'_>>) -> Result<DiffModel, VcsError> {
         let mut diff = self
             .repo
@@ -76,8 +68,6 @@ impl GitVcs {
         self.diff_to_model(&mut diff)
     }
 
-    /// `git2::DiffOptions` for a tree-vs-tree or tree-vs-index diff at the
-    /// session's current context and algorithm.
     fn plain_diff_options(&self) -> git2::DiffOptions {
         let mut opts = git2::DiffOptions::new();
         opts.context_lines(self.context_lines);
@@ -85,8 +75,6 @@ impl GitVcs {
         opts
     }
 
-    /// Working-tree diff options (untracked files included) at the session's
-    /// current context and algorithm.
     fn workdir_diff_options(&self) -> git2::DiffOptions {
         let mut opts = self.plain_diff_options();
         opts.include_untracked(true)
@@ -95,9 +83,7 @@ impl GitVcs {
         opts
     }
 
-    /// Intra-line emphasis is a render-time concern: the TUI enriches the
-    /// file it is about to draw (see `crate::pairing::enrich_file`), so the
-    /// backend leaves `.emphasis` empty.
+    /// Leaves `.emphasis` empty; the TUI enriches a file when it draws it.
     fn diff_to_model(&self, diff: &mut git2::Diff<'_>) -> Result<DiffModel, VcsError> {
         let mut files = Vec::new();
         for idx in 0..diff.deltas().len() {
@@ -109,8 +95,8 @@ impl GitVcs {
     }
 
     /// A modified text file's hunks under histogram/structural, which libgit2
-    /// cannot compute; `None` keeps git2's own. Model building and hunk
-    /// staging both go through here, so the ids they derive agree.
+    /// lacks; `None` keeps git2's own. Model building and hunk staging both
+    /// call this so their hunk ids agree.
     fn imara_hunks(
         &self,
         delta: &git2::DiffDelta<'_>,
@@ -159,9 +145,7 @@ impl GitVcs {
         Ok(entries)
     }
 
-    /// Whether any tracked file differs from HEAD or the index, i.e. there is
-    /// something `git stash` would save. Untracked files don't count, matching
-    /// stash's default.
+    /// Whether `git stash` would save anything; untracked files don't count.
     fn has_tracked_changes(&self) -> Result<bool, VcsError> {
         let mut opts = git2::StatusOptions::new();
         opts.include_untracked(false).include_ignored(false);
@@ -180,8 +164,6 @@ impl Vcs for GitVcs {
     }
 
     fn git_dir(&self) -> Result<PathBuf, VcsError> {
-        // libgit2 resolves gitlink files, so linked worktrees come back as
-        // their external gitdir under the main repo's .git/worktrees/
         Ok(self.repo.path().to_path_buf())
     }
 
@@ -241,8 +223,7 @@ impl Vcs for GitVcs {
     }
 
     fn status(&self) -> Result<StatusModel, VcsError> {
-        // index vs workdir classifies "untracked" against the index, so a
-        // staged new file lands in staged only, not here
+        // we diff against the index so a staged new file lands in staged only
         let mut workdir = self
             .repo
             .diff_index_to_workdir(None, Some(&mut self.workdir_diff_options()))?;
@@ -280,7 +261,6 @@ impl Vcs for GitVcs {
         let oid = git2::Oid::from_str(oid)?;
         let commit = self.repo.find_commit(oid)?;
         let tree = commit.tree()?;
-        // root commit: first-parent tree is the empty tree
         let parent_tree = commit.parent(0).ok().map(|p| p.tree()).transpose()?;
         let mut diff = self.repo.diff_tree_to_tree(
             parent_tree.as_ref(),
@@ -318,9 +298,6 @@ impl Vcs for GitVcs {
         let oldest = self.repo.find_commit(git2::Oid::from_str(oldest_oid)?)?;
         let newest = self.repo.find_commit(git2::Oid::from_str(newest_oid)?)?;
         let newest_tree = newest.tree()?;
-        // the range starts before the oldest commit, so its base is that
-        // commit's first parent; a root commit has none and diffs against the
-        // empty tree, matching commit_diff
         let base_tree = oldest.parent(0).ok().map(|p| p.tree()).transpose()?;
         let mut diff = self.repo.diff_tree_to_tree(
             base_tree.as_ref(),
@@ -339,7 +316,6 @@ impl Vcs for GitVcs {
             let Ok(name) = reference.shorthand().map(str::to_owned) else {
                 continue;
             };
-            // peel through symbolic refs and annotated tags to the commit
             let Some(target) = reference.peel_to_commit().ok().map(|c| c.id()) else {
                 continue;
             };
@@ -367,13 +343,11 @@ impl Vcs for GitVcs {
     }
 
     fn default_branch(&self, remote: &str) -> Result<Option<String>, VcsError> {
-        // the remote's own HEAD is authoritative; it exists once the remote
-        // has been cloned or fetched with `--set-head`
         let head_ref = format!("refs/remotes/{remote}/HEAD");
         let prefix = format!("refs/remotes/{remote}/");
         if let Ok(reference) = self.repo.find_reference(&head_ref)
             && let Ok(Some(target)) = reference.symbolic_target()
-            // the whole remainder, so a branch named `release/2.x` survives
+            // we keep the whole remainder so `release/2.x` survives
             && let Some(name) = target.strip_prefix(prefix.as_str())
         {
             return Ok(Some(name.to_owned()));
@@ -416,8 +390,8 @@ impl Vcs for GitVcs {
         let mut remotes = 0;
         for reference in self.repo.references()? {
             let reference = reference?;
-            // a symbolic ref (origin/HEAD) has no target of its own and its
-            // destination is hidden anyway
+            // a symbolic ref (origin/HEAD) has no target, and its destination
+            // is hidden anyway
             if let (true, Some(oid)) = (reference.is_remote(), reference.target()) {
                 remotes += 1;
                 walk.hide(oid)?;
@@ -433,9 +407,8 @@ impl Vcs for GitVcs {
         let mut options = git2::BlameOptions::new();
         options.track_copies_same_file(true);
         let blame = self.repo.blame_file(rel, Some(&mut options))?;
-        // blame_file only knows committed content, so an edited worktree would
-        // report the wrong line for everything below the edit; blame_buffer
-        // re-maps the spans onto what is actually on disk.
+        // blame_file only knows committed content, so we remap the spans onto
+        // the worktree with blame_buffer
         let workdir = self.workdir()?.join(rel);
         let blame = match fs::read(&workdir) {
             Ok(bytes) => blame.blame_buffer(&bytes)?,
@@ -505,8 +478,7 @@ impl Vcs for GitVcs {
         let Ok(value) = self.repo.get_attr(rel, name, git2::AttrCheckFlags::empty()) else {
             return false;
         };
-        // both spellings are in the wild: a bare `linguist-generated` sets
-        // git's boolean, while the `=true` GitHub documents is a string value
+        // a bare `linguist-generated` is git's boolean, `=true` is a string
         matches!(
             git2::AttrValue::from_string(value),
             git2::AttrValue::True | git2::AttrValue::String("true")
@@ -553,7 +525,7 @@ impl Vcs for GitVcs {
             let Some(name) = branch.name()?.map(str::to_owned) else {
                 continue;
             };
-            // refs/remotes/<remote>/HEAD is a symbolic alias, not a branch
+            // refs/remotes/<remote>/HEAD is a symbolic alias
             if name.ends_with("/HEAD") {
                 continue;
             }
@@ -586,8 +558,7 @@ impl Vcs for GitVcs {
 
     fn stage_everything(&self) -> Result<(), VcsError> {
         let mut index = self.repo.index()?;
-        // update_all catches deletions and edits to files already tracked;
-        // add_all then picks up whatever is untracked
+        // update_all catches deletions, add_all catches untracked files
         index.update_all(["*"], None)?;
         index.add_all(["*"], git2::IndexAddOption::DEFAULT, None)?;
         index.write()?;
@@ -600,7 +571,6 @@ impl Vcs for GitVcs {
                 let target = head.peel(git2::ObjectType::Commit)?;
                 self.repo.reset_default(Some(&target), ["*"])?;
             }
-            // unborn branch: nothing in HEAD to restore, so empty the index
             Err(err) if err.code() == git2::ErrorCode::UnbornBranch => {
                 let mut index = self.repo.index()?;
                 index.clear()?;
@@ -617,7 +587,6 @@ impl Vcs for GitVcs {
                 let target = head.peel(git2::ObjectType::Commit)?;
                 self.repo.reset_default(Some(&target), [rel])?;
             }
-            // unborn branch: there is no HEAD entry to restore, drop from index
             Err(err) if err.code() == git2::ErrorCode::UnbornBranch => {
                 let mut index = self.repo.index()?;
                 index.remove_path(rel)?;
@@ -658,12 +627,9 @@ impl Vcs for GitVcs {
             fs::remove_file(self.workdir_path()?.join(rel))?;
             return Ok(());
         }
-        // refresh the index stat cache to match the file we just wrote. with
-        // autocrlf the checkout smudges LF->CRLF, growing the file; leaving the
-        // cached stat stale makes git report a phantom modification (size
-        // mismatch defeats the racy-clean check) even though the content is
-        // identical to HEAD. the file has no staged changes here, so the index
-        // blob already equals HEAD and updating it only corrects the metadata.
+        // we update the index stat cache too: under autocrlf the checkout
+        // grows the file, and a stale cached size makes git report a phantom
+        // modification. Nothing is staged here, so only metadata changes.
         let mut checkout = git2::build::CheckoutBuilder::new();
         checkout.path(rel).force().update_index(true);
         self.repo.checkout_head(Some(&mut checkout))?;
@@ -707,8 +673,6 @@ impl Vcs for GitVcs {
             return Err(VcsError::Rejected("empty commit message".into()));
         }
         let head = self.repo.head()?.peel_to_commit()?;
-        // extend/amend fold the staged index into the new tree; a pure reword
-        // keeps HEAD's tree so only the message changes
         let tree = if use_index {
             let mut index = self.repo.index()?;
             let tree_id = index.write_tree()?;
@@ -743,7 +707,7 @@ impl Vcs for GitVcs {
     fn checkout(&self, name: &str) -> Result<(), VcsError> {
         let branch = self.repo.find_branch(name, git2::BranchType::Local)?;
         let target = branch.get().peel(git2::ObjectType::Commit)?;
-        // safe (non-force) checkout: refuses to clobber local modifications
+        // a non-force checkout refuses to clobber local modifications
         self.repo.checkout_tree(&target, None)?;
         self.repo.set_head(&format!("refs/heads/{name}"))?;
         Ok(())
@@ -753,8 +717,8 @@ impl Vcs for GitVcs {
         if !self.has_tracked_changes()? {
             return Err(VcsError::Rejected("nothing to stash".into()));
         }
-        // git2 stash mutates the repo, but the trait is &self; a fresh handle on
-        // the same workdir gives the &mut without threading mutability everywhere
+        // git2's stash needs `&mut Repository` and the trait is `&self`, so we
+        // open a fresh handle
         let mut repo = git2::Repository::open(self.workdir_path()?)?;
         let signature = repo.signature()?;
         repo.stash_save2(&signature, message, None)?;
@@ -769,7 +733,7 @@ impl Vcs for GitVcs {
                 Err(VcsError::Rejected("no stash to pop".into()))
             }
             // a conflicting pop leaves the merge in the worktree and keeps the
-            // stash entry; say so rather than surfacing a bare libgit2 error
+            // stash entry
             Err(err) if err.code() == git2::ErrorCode::Conflict => Err(VcsError::Rejected(
                 "stash applied with conflicts; resolve them (the stash was kept)".into(),
             )),
@@ -778,8 +742,6 @@ impl Vcs for GitVcs {
     }
 
     fn network_argv(&self, op: NetworkOp) -> Result<Vec<String>, VcsError> {
-        // shelling to `git` (not git2) so the user's credential helper, SSH
-        // agent, and config drive auth
         let args: Vec<String> = match op {
             NetworkOp::Fetch => vec!["fetch".into()],
             NetworkOp::FetchAll => vec!["fetch".into(), "--all".into()],
@@ -801,7 +763,7 @@ impl Vcs for GitVcs {
 
     fn remote_url(&self, name: &str) -> Result<Option<String>, VcsError> {
         match self.repo.find_remote(name) {
-            // url() errs only on a non-UTF-8 remote URL; treat that as no URL
+            // url() errs only on a non-UTF-8 URL, which we treat as none
             Ok(remote) => Ok(remote.url().ok().map(str::to_owned)),
             Err(err) if err.code() == git2::ErrorCode::NotFound => Ok(None),
             Err(err) => Err(err.into()),
@@ -825,9 +787,8 @@ impl Vcs for GitVcs {
     }
 }
 
-/// `DiffOptions` flags for the git2-native algorithms (myers is git2's
-/// default, so it sets nothing); `Histogram`/`Structural` have no git2 flag
-/// and go through [`GitVcs::imara_hunks`] instead.
+/// Histogram and structural have no git2 flag; [`GitVcs::imara_hunks`]
+/// computes those.
 fn apply_git_algorithm(
     opts: &mut git2::DiffOptions,
     algorithm: DiffAlgorithm,
@@ -860,9 +821,8 @@ impl GitVcs {
             let Some(patch) = git2::Patch::from_diff(diff, idx)? else {
                 continue;
             };
-            // we take `delta` from the patch: loading the patch is what
-            // fills in the worktree side's id that `imara_hunks` checks
-            // against
+            // we take `delta` from the patch, since loading the patch fills in
+            // the worktree side's id that `imara_hunks` checks
             let delta = patch.delta();
             if delta.flags().is_binary() || delta_new_path(&delta) != rel {
                 continue;
@@ -898,7 +858,6 @@ impl GitVcs {
     ) -> Result<Option<FileDiff>, VcsError> {
         let repo = &self.repo;
         let Some(patch) = git2::Patch::from_diff(diff, idx)? else {
-            // binary or unreadable: fall back to delta metadata only
             return Ok(build_binary_file(diff, idx));
         };
         let delta = patch.delta();
@@ -950,9 +909,9 @@ fn render_hunk_patch(
     let deleted = status == git2::Delta::Deleted;
     let mut out = Vec::new();
     out.extend_from_slice(format!("diff --git a/{rel} b/{rel}\n").as_bytes());
-    // whole-file adds and deletes must keep that identity (with the sides
-    // swapped under reverse) so applying creates or drops the index entry
-    // instead of leaving an empty blob behind
+    // whole-file adds and deletes keep that identity (sides swapped under
+    // reverse) so applying creates or drops the index entry; otherwise git
+    // leaves an empty blob behind
     if (added && !reverse) || (deleted && reverse) {
         out.extend_from_slice(
             format!("new file mode 100644\n--- /dev/null\n+++ b/{rel}\n").as_bytes(),
@@ -972,9 +931,8 @@ fn render_hunk_patch(
             ' ' => LineKind::Context,
             '+' => LineKind::Added,
             '-' => LineKind::Deleted,
-            // EOF-newline markers already carry the full "\ No newline at
-            // end of file" text, including the newline that terminates the
-            // preceding unterminated line, so they ride along with that line
+            // an EOF-newline marker carries the "\ No newline" text and the
+            // newline ending the previous line, so we append it to that line
             '=' | '>' | '<' => {
                 if let Some((_, text)) = lines.last_mut() {
                     text.extend_from_slice(line.content());
@@ -995,9 +953,8 @@ fn render_hunk_patch(
     Ok(out)
 }
 
-/// One hunk's `@@` header (`old`/`new` are start and count, git's way) and
-/// lines, sent to libgit2 alone. Each line's bytes arrive terminated, an
-/// EOF-newline marker included.
+/// One hunk's `@@` header and lines. `old`/`new` are `(start, count)`; each
+/// line's bytes are already terminated.
 fn write_hunk(
     out: &mut Vec<u8>,
     old: (u32, u32),
@@ -1040,9 +997,8 @@ fn write_hunk(
     }
 }
 
-/// [`render_hunk_patch`] for a hunk of a modified file that imara-diff
-/// computed. Each line is copied from `old_text`/`new_text` byte for byte,
-/// its own terminator included, since the model's text has CR and LF
+/// [`render_hunk_patch`] for an imara-diff hunk. We copy each line's raw
+/// bytes from `old_text`/`new_text`, since the model's text has CR and LF
 /// stripped.
 fn render_hunk_patch_from_model(
     hunk: &Hunk,
@@ -1086,10 +1042,8 @@ fn short7(oid: &str) -> String {
     oid.get(..7).unwrap_or(oid).to_owned()
 }
 
-/// Re-diff a file's own old/new text at `context` lines of surrounding
-/// context (`u32::MAX` for the whole file) and `algorithm`, yielding the
-/// hunks the diff pane would show at that context. `None` for binary files or
-/// when a side's text is absent, so the caller keeps its current hunks.
+/// Re-diff a file's own old/new text at `context` lines (`u32::MAX` for the
+/// whole file). `None` for binary files or a missing side.
 pub fn rehunk_file(
     file: &FileDiff,
     context: u32,
@@ -1110,9 +1064,8 @@ pub fn rehunk_file(
         ));
     }
     let as_path = Path::new(&file.path);
-    // libgit2's context math overflows on a huge value (the whole-file
-    // sentinel u32::MAX), yielding zero context on some platforms; the line
-    // count is enough to show the whole file and stays in range everywhere
+    // libgit2's context math overflows on u32::MAX and yields zero context on
+    // some platforms, so we cap it at the line count
     let cap = u32::try_from(old.lines().count().max(new.lines().count())).unwrap_or(u32::MAX);
     let mut opts = git2::DiffOptions::new();
     opts.context_lines(context.min(cap));
@@ -1128,8 +1081,7 @@ pub fn rehunk_file(
     patch_hunks(&patch, &file.path).ok()
 }
 
-/// Assemble model hunks from a git2 patch. Shared by the initial diff and the
-/// context re-diff so line numbers, ids, and section headings can't drift.
+/// Shared by the initial diff and the context re-diff so their ids agree.
 fn patch_hunks(patch: &git2::Patch<'_>, file_path: &str) -> Result<Vec<Hunk>, VcsError> {
     let mut hunks = Vec::with_capacity(patch.num_hunks());
     let mut seen = HashMap::new();
@@ -1150,9 +1102,7 @@ fn patch_hunks(patch: &git2::Patch<'_>, file_path: &str) -> Result<Vec<Hunk>, Vc
     Ok(hunks)
 }
 
-/// git's section heading for a hunk: the text git appends after the second
-/// `@@` of the header (`@@ -a,b +c,d @@ <context>`), typically the enclosing
-/// function or section. Empty when git emits none (e.g. a top-of-file hunk).
+/// The text after the header's second `@@`, empty when git emits none.
 fn hunk_context(hunk: &git2::DiffHunk<'_>) -> String {
     let header = String::from_utf8_lossy(hunk.header());
     match header.split_once(" @@") {
@@ -1161,9 +1111,7 @@ fn hunk_context(hunk: &git2::DiffHunk<'_>) -> String {
     }
 }
 
-/// Content lines of one hunk as model lines (headers and EOF-newline markers
-/// excluded). Shared by model building and hunk lookup so the hunk ids
-/// computed in both places agree.
+/// Shared by model building and hunk lookup so their hunk ids agree.
 fn hunk_model_lines(patch: &git2::Patch<'_>, h: usize) -> Result<Vec<DiffLine>, VcsError> {
     let (_, line_count) = patch.hunk(h)?;
     let mut lines = Vec::with_capacity(line_count);
@@ -1173,7 +1121,6 @@ fn hunk_model_lines(patch: &git2::Patch<'_>, h: usize) -> Result<Vec<DiffLine>, 
             '-' => LineKind::Deleted,
             '+' => LineKind::Added,
             ' ' => LineKind::Context,
-            // headers, EOF-newline markers etc. are not content lines
             _ => continue,
         };
         let text = String::from_utf8_lossy(line.content())
@@ -1239,8 +1186,8 @@ fn blob_text(repo: &git2::Repository, oid: git2::Oid) -> Option<String> {
     String::from_utf8(blob.content().to_vec()).ok()
 }
 
-/// New-side content: the recorded blob when the diff target is a tree or the
-/// index (where the workdir may differ), the workdir file otherwise.
+/// The recorded blob when the diff target is a tree or the index, else the
+/// worktree file.
 fn new_side_text(
     repo: &git2::Repository,
     delta: &git2::DiffDelta<'_>,

@@ -1,6 +1,5 @@
-//! Backend-agnostic VCS interface. Everything above this trait consumes
-//! `dyn Vcs`; only the `git` and `repo` modules (and test fixtures) may
-//! import git2.
+//! Backend-agnostic VCS interface. Only the `git` and `repo` modules and test
+//! fixtures may import git2.
 
 use std::path::{Path, PathBuf};
 
@@ -11,7 +10,6 @@ use crate::model::{DiffModel, HunkId};
 
 #[derive(Debug, Error)]
 pub enum VcsError {
-    // acceptable for M1; rework when a second backend lands
     #[error(transparent)]
     Git(#[from] git2::Error),
     #[error("repository has no working directory")]
@@ -33,8 +31,7 @@ pub struct HeadInfo {
     pub subject: String,
     /// Upstream branch shorthand, if configured.
     pub upstream: Option<String>,
-    /// Commits on HEAD the upstream lacks, so work that exists only here is
-    /// visible without running `git status`. Zero without an upstream.
+    /// Commits on HEAD the upstream lacks. Zero without an upstream.
     pub ahead: usize,
     /// Commits on the upstream that HEAD lacks.
     pub behind: usize,
@@ -55,19 +52,15 @@ pub struct LogEntry {
 pub struct BranchInfo {
     pub name: String,
     pub is_head: bool,
-    /// Tip commit's time as a Unix timestamp, so callers can sort branches
-    /// newest-first and render an age.
     pub tip_unix: i64,
-    /// How far this branch stands from its upstream, as `(ahead, behind)`.
-    /// Resolving one costs a config read and a graph walk, so a listing leaves
-    /// it `None` and the caller asks [`Vcs::divergence`] for the branches it
-    /// actually shows.
+    /// `(ahead, behind)` against the upstream. Resolving one costs a graph
+    /// walk, so listings leave it `None` and callers ask
+    /// [`Vcs::divergence`] for the branches they show.
     pub divergence: Option<(usize, usize)>,
 }
 
-/// A network operation the binary runs by shelling out to the backend's CLI,
-/// so the user's existing auth (SSH agent, credential helper, tokens) applies
-/// without diffler holding any credentials.
+/// A network operation we run through the backend's CLI, so the user's own
+/// auth applies and diffler holds no credentials.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetworkOp {
     Fetch,
@@ -104,64 +97,47 @@ pub struct StatusModel {
 }
 
 pub trait Vcs: Send {
-    /// Resolved repository metadata directory. In a plain repo this is
-    /// `<root>/.git`; in a linked worktree `<root>/.git` is a gitlink file
-    /// and this resolves to the external gitdir it points at.
+    /// Resolved metadata directory. In a linked worktree this is the gitdir
+    /// the `.git` file points at.
     fn git_dir(&self) -> Result<PathBuf, VcsError>;
-    /// Current branch, commit, and upstream.
     fn head(&self) -> Result<HeadInfo, VcsError>;
-    /// Whether this backend has a staging area at all: true for git; jj has
-    /// none, so its whole working copy reads as [`StatusModel::staged`] and
-    /// the UI drops staging entirely.
+    /// Whether this backend has a staging area. jj has none, so its whole
+    /// working copy reads as [`StatusModel::staged`].
     fn has_index(&self) -> bool;
-    /// Untracked / unstaged / staged sections as separate diff models.
     fn status(&self) -> Result<StatusModel, VcsError>;
-    /// HEAD vs workdir+index including untracked files: the review view.
+    /// HEAD vs index + worktree, untracked files included.
     fn working_tree_diff(&self) -> Result<DiffModel, VcsError>;
-    /// [`Vcs::working_tree_diff`] taken from an arbitrary base commit instead
-    /// of HEAD, so uncommitted work shows alongside the commits since `base`.
+    /// [`Vcs::working_tree_diff`] taken from `base_oid`.
     fn tree_to_workdir_diff(&self, base_oid: &str) -> Result<DiffModel, VcsError>;
     /// Changes a single commit introduced over its first parent.
     fn commit_diff(&self, oid: &str) -> Result<DiffModel, VcsError>;
-    /// Combined diff of a contiguous commit range, from the first parent of
-    /// `oldest` to `newest` (`git diff <oldest>^..<newest>` semantics). When
-    /// `oldest` is a root commit its first-parent tree is the empty tree, so
-    /// the range includes everything `oldest` introduced.
+    /// `git diff <oldest>^..<newest>`. A root `oldest` diffs from the empty
+    /// tree.
     fn range_diff(&self, oldest_oid: &str, newest_oid: &str) -> Result<DiffModel, VcsError>;
-    /// Diff between two trees as-is (`git diff <base> <newest>` semantics);
-    /// with `base` a merge base this is a PR-style three-dot diff.
+    /// `git diff <base> <newest>`; with `base` a merge base this is a
+    /// three-dot diff.
     fn tree_diff(&self, base_oid: &str, newest_oid: &str) -> Result<DiffModel, VcsError>;
-    /// Best common ancestor of two commits.
     fn merge_base(&self, a: &str, b: &str) -> Result<String, VcsError>;
     /// Resolve a revision (oid, ref name, remote ref) to a full commit oid.
     fn resolve(&self, revision: &str) -> Result<String, VcsError>;
     /// History from HEAD, newest first.
     fn log(&self, limit: usize) -> Result<Vec<LogEntry>, VcsError>;
 
-    /// The branch a pull request merges into by default; `None` when the
-    /// repository offers no answer.
+    /// The branch a pull request merges into by default, if the repo says.
     fn default_branch(&self, remote: &str) -> Result<Option<String>, VcsError>;
 
-    /// Commits reachable from `head` but not `base`, newest first: what a
-    /// pull request from `head` would carry.
+    /// Commits reachable from `head` but not `base`, newest first.
     fn commits_between(&self, base: &str, head: &str) -> Result<Vec<LogEntry>, VcsError>;
     /// Commits on HEAD that no remote-tracking branch contains, newest first,
-    /// at most `limit` of them: work that exists only on this machine. `None`
-    /// when the repository has no remote-tracking refs, where being pushed has
-    /// no meaning yet. Asking the remotes rather than the configured upstream
-    /// is what makes the answer true: an upstream may be another local branch,
-    /// or a stale ref from before the last fetch. `limit` bounds a walk that is
-    /// otherwise the whole history whenever no remote ref sits on it.
+    /// at most `limit`. `None` when the repo has no remote-tracking refs. We
+    /// ask the remotes since a configured upstream may be a local branch or a
+    /// stale ref.
     fn unpushed(&self, limit: usize) -> Result<Option<Vec<LogEntry>>, VcsError>;
     /// Last commit to touch each line of `rel` as the worktree has it, in line
-    /// order. Lines the worktree added since the last commit come back as one
-    /// span of their own, owned by no commit.
+    /// order. Uncommitted lines come back as spans owned by no commit.
     fn blame(&self, rel: &Path) -> Result<Vec<BlameSpan>, VcsError>;
 
-    /// One file's content as recorded in `rev`'s tree, `None` when that tree
-    /// has no such path. Lets a review pinned to one tree (a commit, a
-    /// range's newest, a PR's head) resolve a walkthrough's anchors against
-    /// what it actually shows, rather than whatever the worktree holds now.
+    /// One file's content in `rev`'s tree, `None` when the tree lacks it.
     fn read_at(&self, rev: &str, path: &str) -> Result<Option<String>, VcsError>;
 
     /// A blob's raw bytes by its hex id (a [`crate::model::BlobIds`] side),
@@ -173,25 +149,22 @@ pub trait Vcs: Send {
     fn tracked_files(&self) -> Result<Vec<PathBuf>, VcsError>;
 
     /// Whether the repo's git attributes set `name` to true for `rel`.
-    /// Unreadable attribute files read as unset: the caller is refining a
-    /// guess, so there is nothing to report and nothing to recover.
+    /// Unreadable attribute files read as unset.
     fn attr(&self, rel: &Path, name: &str) -> bool;
 
     /// Local branches, their divergence left unresolved.
     fn branches(&self) -> Result<Vec<BranchInfo>, VcsError>;
 
-    /// How far `branch` stands from its upstream, as `(ahead, behind)`, or
-    /// `None` when it tracks nothing.
+    /// `(ahead, behind)` against the upstream, `None` when `branch` tracks
+    /// nothing.
     fn divergence(&self, branch: &str) -> Result<Option<(usize, usize)>, VcsError>;
-    /// Local and remote-tracking branch names, for pickers that name a
-    /// revision rather than check one out.
+    /// Local and remote-tracking branch names.
     fn all_branches(&self) -> Result<Vec<String>, VcsError>;
     /// Stage a whole file (worktree deletions become staged deletions).
     fn stage(&self, rel: &Path) -> Result<(), VcsError>;
 
     /// Stage every change in the worktree, deletions and untracked files
-    /// included. Resolved against the repository as it is now, so a file
-    /// edited since the caller last looked is still caught.
+    /// included.
     fn stage_everything(&self) -> Result<(), VcsError>;
 
     /// Reset the whole index back to HEAD, keeping the worktree.
@@ -211,41 +184,31 @@ pub trait Vcs: Send {
     fn head_message(&self) -> Result<String, VcsError>;
     /// Amend HEAD, returning the new commit id. `message` `None` reuses HEAD's
     /// message (extend); `Some` rewords it. `use_index` true folds the staged
-    /// index into the new tree (extend/amend); false keeps HEAD's tree (a
-    /// pure reword). Local-only: no network.
+    /// index into the new tree; false keeps HEAD's tree (a pure reword).
     fn amend(&self, message: Option<&str>, use_index: bool) -> Result<String, VcsError>;
     fn create_branch(&self, name: &str, checkout: bool) -> Result<(), VcsError>;
     /// Refused for the currently checked-out branch.
     fn delete_branch(&self, name: &str) -> Result<(), VcsError>;
     fn checkout(&self, name: &str) -> Result<(), VcsError>;
-    /// Whether a raw `git`/forge CLI command (`git switch`, `gh pr checkout`)
-    /// may check out a branch directly: true for plain git; jj's own
-    /// operation log and working-copy snapshot would never see a write made
-    /// this way, so a checkout there must go through [`Vcs::checkout`] instead.
+    /// Whether a raw `git`/forge CLI command may check out a branch. False for
+    /// jj, whose operation log would miss the write, so we go through
+    /// [`Vcs::checkout`] there.
     fn native_git_checkout(&self) -> bool;
-    /// Stash tracked changes (staged + unstaged), reverting the worktree to
-    /// HEAD; untracked files are left in place, matching `git stash`. `message`
-    /// `None` lets the backend label it. Local-only: no network.
+    /// Stash tracked changes, leaving untracked files in place like
+    /// `git stash`. `message` `None` lets the backend label it.
     fn stash_push(&self, message: Option<&str>) -> Result<(), VcsError>;
     /// Restore the most recent stash and drop it. Refused when there is no
     /// stash or the pop would conflict.
     fn stash_pop(&self) -> Result<(), VcsError>;
-    /// Argv to run for a network op, e.g. `["git", "push"]`. The binary runs
-    /// this in [`Vcs::workdir`] so the backend's own CLI handles credentials;
-    /// diffler never touches them. The jj backend returns `["jj", "git", …]`
-    /// for a fetch; push and pull would move git's refs behind jj's back, so
-    /// it rejects every push/pull variant instead.
+    /// Argv for a network op, run in [`Vcs::workdir`] so the backend's own CLI
+    /// handles credentials. jj rejects push and pull, since they would move
+    /// git's refs behind its back.
     fn network_argv(&self, op: NetworkOp) -> Result<Vec<String>, VcsError>;
-    /// Working directory to run [`Vcs::network_argv`] in.
     fn workdir(&self) -> Result<PathBuf, VcsError>;
-    /// URL of the named remote (e.g. `origin`), if it exists. Used to detect the
-    /// CI provider's host without shelling out.
     fn remote_url(&self, name: &str) -> Result<Option<String>, VcsError>;
-    /// Names of every configured remote, for multi-remote CI detection.
     fn remotes(&self) -> Result<Vec<String>, VcsError>;
 
-    /// Switch the line-diff algorithm every diff this instance computes from
-    /// now on uses (config keys `diff.algorithm`, `diff.indent_heuristic`).
+    /// Set the line-diff algorithm for every later diff of this instance.
     fn set_diff_algorithm(&self, algorithm: DiffAlgorithm, indent_heuristic: bool);
 }
 

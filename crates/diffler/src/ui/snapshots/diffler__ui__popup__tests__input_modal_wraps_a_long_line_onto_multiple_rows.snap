@@ -1,5 +1,6 @@
 ---
 source: crates/diffler/src/ui/popup.rs
+assertion_line: 936
 expression: terminal.backend()
 ---
 "status screen content behind the popup                                                                                  "
@@ -23,7 +24,7 @@ expression: terminal.backend()
 "                         Comment ───────────────────────────────────────────────────────────────                        "
 "                        the quick brown fox jumps over the lazy dog and then keeps on running                           "
 "                        well past the right edge of the comment box                                                     "
-"                        enter submit  ·  a-enter newline  ·  esc cancel                                                 "
+"                        enter submit  ·  a-enter add newline  ·  esc cancel                                             "
 "                                                                                                                        "
 "                                                                                                                        "
 "                                                                                                                        "

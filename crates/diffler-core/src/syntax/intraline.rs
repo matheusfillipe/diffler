@@ -1,7 +1,5 @@
-//! Char-precise intra-line change emphasis driven by an AST diff (syndiff),
-//! the structural counterpart to the textual engine in [`crate::pairing`].
-//! Only the byte ranges that differ structurally are emphasized, so a
-//! reformatted or re-wrapped block highlights just the tokens that changed.
+//! Intra-line emphasis from an AST diff (syndiff). [`crate::pairing`] holds
+//! the textual engine we fall back to.
 
 use std::ops::Range;
 
@@ -11,19 +9,15 @@ use crate::model::{FileDiff, Hunk, LineKind};
 use crate::syntax::registry::{LangEntry, LanguageRegistry};
 use crate::syntax::{MAX_PARSE_BYTES, line_bounds, parse, split_range_by_line};
 
-/// Emphasis byte ranges per line (one inner vec per source line).
 type LineEmphasis = Vec<Vec<Range<usize>>>;
 
-/// Bounds the AST-diff graph search so a huge, heavily rewritten file cannot
-/// stall the render thread; beyond it `diff_trees` returns `None` and the
-/// caller falls back to the textual engine. Well above any normal diff.
+/// We bound the AST-diff graph search so a huge rewrite cannot stall the
+/// render thread; past it the caller falls back to the textual engine.
 const GRAPH_LIMIT: usize = 250_000;
 
 impl LanguageRegistry {
-    /// Per-line emphasis byte ranges for both sides, from an AST diff of the
-    /// full old/new content. `None` (caller falls back to the textual engine)
-    /// when the language is unsupported, content is too large, parsing fails,
-    /// or the diff exceeds its graph budget.
+    /// `None` when the file cannot be parsed or the diff exceeds its graph
+    /// budget.
     fn line_emphasis(
         entry: &LangEntry,
         old_src: &str,
@@ -32,8 +26,8 @@ impl LanguageRegistry {
         if old_src.len() > MAX_PARSE_BYTES || new_src.len() > MAX_PARSE_BYTES {
             return None;
         }
-        // markdown's block tree is coarse (a paragraph is one opaque node); the
-        // textual word-diff emphasizes prose edits far better than an AST diff.
+        // markdown's block tree makes a paragraph one opaque node, so the
+        // textual word diff serves prose better
         if entry.name == "markdown" {
             return None;
         }
@@ -51,14 +45,10 @@ impl LanguageRegistry {
         ))
     }
 
-    /// Set char-precise emphasis on `file`'s diff lines from an AST diff of
-    /// both sides parsed as `entry`'s language.
-    /// `mark_reformat_only` additionally flags a paired deleted/added line the
-    /// AST diff found no structural difference on at all (a pure reformat)
-    /// for the structural algorithm's dimmed rendering. Returns `false` when
-    /// the syntactic engine is unavailable, so the caller can fall back to
-    /// the textual engine (and structural mode silently reads as a plain
-    /// histogram diff for that file).
+    /// Set emphasis on `file`'s diff lines from an AST diff of both sides.
+    /// `mark_reformat_only` also flags paired lines that differ in layout
+    /// alone. Returns `false` when the file cannot be diffed this way, so the
+    /// caller falls back to the textual engine.
     pub fn syntactic_emphasis(
         entry: Option<&LangEntry>,
         file: &mut FileDiff,
@@ -94,9 +84,9 @@ impl LanguageRegistry {
     }
 }
 
-/// Flag a paired deleted/added line as `reformat_only` when the two differ in
-/// whitespace alone and the AST diff found no token changed on either side,
-/// which keeps a whitespace edit inside a string literal a real change.
+/// Flag a paired line `reformat_only` when the two differ in whitespace alone
+/// and the AST diff found no token changed. We need both checks so a
+/// whitespace edit inside a string literal stays a real change.
 fn mark_reformat_pairs(hunk: &mut Hunk, old_emph: &LineEmphasis, new_emph: &LineEmphasis) {
     let unchanged = |emph: &LineEmphasis, number: Option<u32>| {
         number
@@ -123,14 +113,10 @@ fn mark_reformat_pairs(hunk: &mut Hunk, old_emph: &LineEmphasis, new_emph: &Line
     }
 }
 
-/// Where the AST diff flagged a *partial* line change (some token ranges, not
-/// the whole line and not a reformat), replace the coarse token ranges with a
-/// word-level diff of the paired lines, so only the tokens that actually
-/// changed are emphasized (an edit inside a string scalar shouldn't light up the
-/// whole scalar). Emphasis means "differs from the homolog": a line with no
-/// pair (wholly new or wholly gone) renders plain, keeping off the stray
-/// fragments the AST diff leaves when it matches a token of new code against
-/// something elsewhere in the old tree.
+/// Replace the AST diff's coarse token ranges on a partly changed pair with a
+/// word diff of the two lines, so an edit inside a string does not light up
+/// the whole string. Unpaired lines render plain, since the AST diff leaves
+/// stray fragments on them where it matched new code against old.
 fn refine_partial_changes(hunk: &mut Hunk) {
     let pairs = crate::pairing::paired_run_indices(&hunk.lines);
     let paired: std::collections::HashSet<usize> =
@@ -158,8 +144,6 @@ fn refine_partial_changes(hunk: &mut Hunk) {
         ) else {
             continue;
         };
-        // the same pair gate as the textual engine, so a refinement that
-        // comes back scattered or near-total drops to plain lines too
         let (old_emph, new_emph) = crate::pairing::gated_pair_emphasis(&old, &new);
         if let Some(line) = hunk.lines.get_mut(del_idx) {
             line.emphasis = old_emph;
@@ -170,7 +154,6 @@ fn refine_partial_changes(hunk: &mut Hunk) {
     }
 }
 
-/// Map whole-file changed byte ranges to the raw per-line, within-line ranges.
 fn per_line_emphasis(src: &str, ranges: &[Range<usize>]) -> LineEmphasis {
     let bounds = line_bounds(src);
     let starts: Vec<usize> = bounds.iter().map(|&(s, _)| s).collect();
@@ -185,9 +168,7 @@ fn per_line_emphasis(src: &str, ranges: &[Range<usize>]) -> LineEmphasis {
     out
 }
 
-/// Emphasis for an added/deleted `line` from its raw changed byte `ranges`.
-/// Every changed line keeps its full +/- background; emphasis only marks
-/// punctual edits: a line that changed mostly or entirely gets none, because
+/// A line that changed mostly or entirely gets no emphasis, since
 /// highlighting almost everything highlights nothing.
 fn classify_line(kind: LineKind, text: &str, ranges: &[Range<usize>]) -> Vec<Range<usize>> {
     let _ = kind;
@@ -198,7 +179,6 @@ fn classify_line(kind: LineKind, text: &str, ranges: &[Range<usize>]) -> Vec<Ran
     ranges
 }
 
-/// Clip ranges to the line's length and drop any that become empty.
 fn clamp(ranges: &[Range<usize>], len: usize) -> Vec<Range<usize>> {
     ranges
         .iter()
@@ -285,7 +265,6 @@ mod tests {
             .iter()
             .filter_map(|r| new_line.get(r.clone()))
             .collect();
-        // only the inserted run is emphasized, not the whole "foo/EXTRA/bar" token
         assert!(
             covered.contains("EXTRA"),
             "covers the insertion: {covered:?}"
@@ -296,7 +275,6 @@ mod tests {
         );
     }
 
-    /// The changed lines the structural algorithm flags reformat-only.
     fn reformat_flagged(path: &str, old: &str, new: &str) -> Vec<String> {
         let mut file = crate::model::FileDiff {
             path: path.into(),
@@ -363,9 +341,6 @@ mod tests {
         assert!(yaml.is_empty(), "nesting a key: {yaml:?}");
     }
 
-    /// A block of wholly-new code where the AST diff matches stray tokens
-    /// (a `}`, an identifier) against the old tree and would light up
-    /// fragments inside plain added lines.
     #[test]
     fn wholly_new_code_never_carries_fragment_emphasis() {
         use crate::model::{DiffLine, FileDiff, FileStatus, Hunk, HunkId, LineKind};
@@ -444,14 +419,12 @@ mod tests {
 
     #[test]
     fn classify_unchanged_line_gets_no_emphasis() {
-        // a reindent/move: nothing changed within the line, plain +/- bg
         let emph = classify_line(LineKind::Added, "    <Form>", &[]);
         assert!(emph.is_empty());
     }
 
     #[test]
     fn classify_whole_line_change_keeps_background_without_emphasis() {
-        // every non-whitespace byte changed -> full +/- bg, no char emphasis
         let text = "    let entirely_new = compute();";
         let ranges = [4..7, 8..20, 21..22, 23..text.len()];
         let emph = classify_line(LineKind::Added, text, &ranges);
@@ -463,7 +436,6 @@ mod tests {
 
     #[test]
     fn classify_mostly_changed_line_drops_emphasis() {
-        // more than the punctual share changed: highlighting it all says nothing
         let text = "    let entirely_new = compute();";
         let ranges = [4..7, 8..20, 23..30];
         let emph = classify_line(LineKind::Added, text, &ranges);
@@ -472,7 +444,6 @@ mod tests {
 
     #[test]
     fn classify_partial_change_keeps_emphasis() {
-        // only `2` changed in `    let x = 2;`
         let text = "    let x = 2;";
         let changed = 12..13;
         let emph = classify_line(LineKind::Added, text, std::slice::from_ref(&changed));

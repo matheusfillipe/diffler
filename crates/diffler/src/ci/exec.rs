@@ -1,29 +1,23 @@
-//! The subprocess seam. Adapters shell to `gh`/`glab`/`curl` through
-//! `CommandRunner` so tests can inject recorded output instead of running a live
-//! CLI, which is what makes the adapters fully unit-testable. The runner is
-//! async (tokio process) so adapter futures never block the executor.
+//! The subprocess seam: adapters shell out through `CommandRunner` so tests can
+//! inject recorded output.
 
 use async_trait::async_trait;
 use tokio::process::Command;
 
 use crate::ci::error::{CiError, Result};
 
-/// Runs a CLI and returns its stdout.
 #[async_trait]
 pub trait CommandRunner: Send + Sync {
-    /// `program` is a static name (e.g. `"gh"`) so a missing binary can be
-    /// reported precisely; `args` is the full argument vector.
+    /// `program` is static so a missing binary can be named precisely.
     async fn run(&self, program: &'static str, args: &[String]) -> Result<String>;
 
-    /// Stdout regardless of the exit status. `gh api` exits 1 on a `304 Not
-    /// Modified`, which is the successful answer to a conditional request, and
-    /// the response it wrote to stdout is the part that matters.
+    /// `gh api` exits 1 on a `304 Not Modified`, the successful answer to a
+    /// conditional request, so its stdout still counts.
     async fn run_ignoring_status(&self, program: &'static str, args: &[String]) -> Result<String> {
         self.run(program, args).await
     }
 }
 
-/// Spawns the real binary on `PATH`.
 pub struct RealRunner;
 
 #[async_trait]
@@ -63,9 +57,8 @@ impl CommandRunner for RealRunner {
     }
 }
 
-/// Both streams of a failed run, joined. `curl --fail-with-body` explains the
-/// exit code on stderr and carries the forge's rejection reason on stdout, so
-/// dropping either loses why a write was refused.
+/// `curl --fail-with-body` explains the exit on stderr and carries the forge's
+/// rejection reason on stdout, so we keep both.
 fn failure_message(stdout: &[u8], stderr: &[u8]) -> String {
     let stdout = String::from_utf8_lossy(stdout);
     let stderr = String::from_utf8_lossy(stderr);
@@ -82,10 +75,8 @@ pub(crate) mod test_support {
 
     use super::{CiError, CommandRunner, Result};
 
-    /// A `CommandRunner` that returns canned stdout for the first registered key
-    /// that appears as a substring of the joined command (e.g. `"run list"`,
-    /// `"run view"`, `"--log"`, `"api graphql"`). Keys are tried in insertion
-    /// order so the most specific can win.
+    /// Answers with the first key found as a substring of the joined command,
+    /// tried in insertion order so the most specific key goes first.
     pub struct RecordingRunner {
         responses: Vec<(&'static str, String)>,
         calls: std::sync::Mutex<Vec<String>>,
@@ -102,8 +93,6 @@ pub(crate) mod test_support {
             }
         }
 
-        /// Joined argv of every call, for asserting how often an endpoint
-        /// was actually hit.
         pub fn calls(&self) -> Vec<String> {
             self.calls.lock().map(|c| c.clone()).unwrap_or_default()
         }
@@ -128,8 +117,7 @@ pub(crate) mod test_support {
                 .iter()
                 .find(|(key, _)| joined.contains(key))
                 .map_or_else(String::new, |(_, value)| value.clone());
-            // a response written as `ERR:<reason>` fails the call, which is how
-            // a test reaches an adapter's error path
+            // a response written as `ERR:<reason>` fails the call
             match hit.strip_prefix("ERR:") {
                 Some(reason) => Err(CiError::Exec {
                     cmd: joined,

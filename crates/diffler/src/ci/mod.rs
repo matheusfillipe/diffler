@@ -1,7 +1,5 @@
-//! Provider-agnostic CI run/job/log acquisition, plus the host glue that picks a
-//! provider for the repo and maps a normalized `RunDetail` onto the graph model.
-//! Adapters (`providers/`) implement [`ForgeProvider`] over each forge (via
-//! `gh`/`glab`/`curl` through the [`CommandRunner`] seam) and never touch the terminal.
+//! CI and PR review across forges. Adapters implement [`ForgeProvider`] over
+//! `gh`/`glab`/`curl` through the [`CommandRunner`] seam and never touch the terminal.
 
 mod detect;
 mod error;
@@ -31,10 +29,7 @@ use std::path::Path;
 use crate::config::CiConfig;
 use crate::graph::{Edge, Model, Node, NodeId, NodeStatus, RankDir};
 
-/// Detect the repo's CI provider: the configured `provider` (or auto), the
-/// `origin` remote host (from `remote_url`), and config-file presence. A
-/// configured GitLab `host` overrides remote detection for a self-hosted
-/// instance.
+/// A configured `host` overrides remote detection for a self-hosted instance.
 pub fn detect_for_repo(
     repo_root: &Path,
     remote_url: Option<&str>,
@@ -61,9 +56,7 @@ pub fn detect_for_repo(
     Some(detected)
 }
 
-/// Whether the forge CLI a provider drives is installed, so detection can
-/// disable CI (hide the section, stop polling) instead of erroring on every
-/// poll when `gh`/`glab` isn't on the host.
+/// Without the forge CLI we disable CI, so no poll errors.
 pub fn provider_available(detected: &Detected) -> bool {
     let cli = match detected.kind {
         ProviderKind::GitHub => "gh",
@@ -73,15 +66,12 @@ pub fn provider_available(detected: &Detected) -> bool {
     std::env::var_os("PATH").is_some_and(|path| on_path(cli, &path))
 }
 
-/// Whether `program` resolves in one of `path`'s directories (with a `.exe`
-/// fallback on Windows). Split from [`provider_available`] for testability.
 pub(crate) fn on_path(program: &str, path: &std::ffi::OsStr) -> bool {
     std::env::split_paths(path)
         .any(|dir| dir.join(program).is_file() || dir.join(format!("{program}.exe")).is_file())
 }
 
-/// Pull the host out of a git remote URL: `git@host:owner/repo.git`,
-/// `https://host/owner/repo`, or `ssh://git@host:port/owner/repo`.
+/// `git@host:owner/repo.git`, `https://host/owner/repo`, or `ssh://git@host:port/owner/repo`.
 fn parse_host(url: &str) -> Option<String> {
     if let Some(rest) = url.strip_prefix("git@") {
         return rest.split(':').next().map(str::to_owned);
@@ -91,14 +81,8 @@ fn parse_host(url: &str) -> Option<String> {
     (!host.is_empty()).then(|| host.to_owned())
 }
 
-/// Construct the provider for a detected forge. GitLab targets the detected host;
-/// GitHub scopes the runs list to `branch` and carries every workflow YAML so
-/// each run's DAG is built from its own workflow. A Forgejo detection with no
-/// resolvable host (no `[ci.forgejo] host` and no parseable remote) passes
-/// through as `None`, never guessed as `codeberg.org`. `detect_for_repo`
-/// already returns `None` for that same no-signal case, so this keeps the
-/// same fail-closed shape: the built provider errors on every call, keeping
-/// the token off the wrong host.
+/// A Forgejo detection with no resolvable host passes through as `None`, so
+/// the provider errors on every call and the token never reaches a guessed host.
 pub fn build_provider(
     detected: &Detected,
     repo_root: &Path,
@@ -131,10 +115,8 @@ pub fn build_provider(
     }
 }
 
-/// The status vocabulary GitHub and Forgejo Actions share on `conclusion`
-/// (Forgejo mirrors GitHub's Actions REST shape here). `None` means the run
-/// hasn't concluded, so the caller falls back to its own in-progress/queued
-/// status strings, which the two forges do not report identically.
+/// GitHub and Forgejo Actions share this `conclusion` vocabulary. `None`
+/// means no conclusion yet, and the caller reads its forge's own status strings.
 pub(crate) fn map_conclusion(conclusion: Option<&str>) -> Option<JobStatus> {
     match conclusion? {
         "success" => Some(JobStatus::Ok),
@@ -145,8 +127,7 @@ pub(crate) fn map_conclusion(conclusion: Option<&str>) -> Option<JobStatus> {
     }
 }
 
-/// `owner/name` from a git remote URL: `git@host:owner/name.git` or
-/// `https://host/owner/name(.git)`. Extra path segments are dropped.
+/// `owner/name` from a remote URL; extra path segments are dropped.
 fn parse_owner_repo(url: &str) -> Option<String> {
     let path = if let Some(rest) = url.strip_prefix("git@") {
         rest.split_once(':').map(|(_, p)| p)?
@@ -167,7 +148,6 @@ fn forgejo_token() -> Option<String> {
         .ok()
 }
 
-/// Every `.github/workflows/*.{yml,yaml}` body, for per-run DAG matching.
 fn read_workflows(repo_root: &Path) -> Vec<String> {
     let dir = repo_root.join(".github/workflows");
     let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -185,11 +165,8 @@ fn read_workflows(repo_root: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Map a run's jobs + dependency edges onto a graph model, drawn the
-/// GitHub-style way: longest-path layering ranks the jobs, left to right. A
-/// job that fanned out into matrix legs becomes a foldable root plus one
-/// member node per leg; external edges always target the root, since `needs`
-/// is already resolved at the job level.
+/// A job with matrix legs becomes a foldable root with one member node per
+/// leg; edges always target the root, since `needs` resolves per job.
 pub fn to_model(detail: &RunDetail) -> Model {
     let mut model = Model::new(RankDir::LeftRight);
     for job in &detail.jobs {

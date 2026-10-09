@@ -1,5 +1,6 @@
 ---
 source: crates/diffler/src/ui/popup.rs
+assertion_line: 982
 expression: terminal.backend()
 ---
 "status screen content behind the popup                                                                                  "
@@ -26,7 +27,7 @@ expression: terminal.backend()
 "                       [ Create ]                                                                                       "
 "                       [ Cancel ]                                                                                       "
 "                                                                                                                        "
-"                       j/k move   ⏎ edit   e editor   d draft   c create   esc cancel                                   "
+"                       j/k move  ⏎ edit  e open in editor  d toggle draft  c create  esc cancel                         "
 "                                                                                                                        "
 "                                                                                                                        "
 "                                                                                                                        "

@@ -28,14 +28,7 @@ impl App {
         });
     }
 
-    // --- network ops (push/pull/fetch) ---
-
-    /// Queue a network git op: resolve its argv from the backend and set
-    /// `pending_git`, plus a "running …" status so the next draw shows it. The
-    /// main loop runs the process in the background and reports back through
-    /// [`AppEvent::GitDone`], so the event loop never freezes on the network.
-    /// `c c`: straight to the editor on a gitcommit-style message file when
-    /// something is staged.
+    /// `c c`: open the editor on a commit message when something is staged.
     pub(crate) fn commit_flow(&mut self) {
         let staged = &self.review.status.staged.files;
         if staged.is_empty() {
@@ -48,8 +41,7 @@ impl App {
         });
     }
 
-    /// `c e`: extend HEAD with the staged index, reusing its message (no
-    /// editor). Refused on an empty index (nothing to add) or unborn branch.
+    /// `c e`: extend HEAD with the staged index, reusing its message.
     pub(crate) fn commit_extend(&mut self) {
         if self.review.status.staged.files.is_empty() {
             self.info("nothing staged");
@@ -101,9 +93,8 @@ impl App {
     }
 
     /// Write `template` to `file_name` in the git dir and queue the editor on
-    /// it. The gitdir comes from libgit2 (not `<root>/.git`) so linked
-    /// worktrees work. Reports whether the editor was queued, so a caller
-    /// holding state for the round trip can put it back when it was not.
+    /// it. We ask libgit2 for the gitdir so linked worktrees work. Returns
+    /// whether the editor was queued, so a caller can restore its state.
     pub(super) fn queue_message_editor(
         &mut self,
         file_name: &str,
@@ -130,12 +121,8 @@ impl App {
         true
     }
 
-    /// Write `template` to a fresh scratch file and queue the editor on it,
-    /// the way [`Self::queue_message_editor`] does for a commit message.
-    /// Unlike that file, this one is temporary: nothing outside this one
-    /// round trip ever reads it, so [`Self::take_scratch_edit`] removes it
-    /// once the text is back. The name carries a fresh id so two diffler
-    /// instances editing at once never collide.
+    /// Write `template` to a uniquely named temp file and queue the editor on
+    /// it. [`Self::take_scratch_edit`] removes the file.
     pub(super) fn queue_scratch_editor(
         &mut self,
         template: &str,
@@ -154,12 +141,9 @@ impl App {
         true
     }
 
-    /// Read a scratch editor's file back and remove it, whatever the
-    /// outcome: nothing outside this one round trip needs the file once it
-    /// is read, and it must never linger. `None` for a cancelled edit, a
-    /// failed editor, or an unreadable file, so the caller's buffer stays
-    /// exactly as it was; `Some` carries the edited text with the editor's
-    /// own trailing newline trimmed.
+    /// Read a scratch editor's file back and remove it, whatever the outcome.
+    /// `None` for a cancelled edit, a failed editor, or an unreadable file, so
+    /// the caller keeps its buffer.
     pub(super) fn take_scratch_edit(
         &mut self,
         path: &Path,
@@ -189,8 +173,6 @@ impl App {
         }
     }
 
-    /// Write an externally edited text box's result back into the box it
-    /// came from.
     pub(super) fn apply_text_box_edit(
         &mut self,
         target: crate::editor::TextBoxTarget,
@@ -240,9 +222,7 @@ impl App {
         }
     }
 
-    /// Called by the main loop after the editor subprocess ended and the
-    /// terminal is back. `outcome` is the editor's success, or the spawn
-    /// failure message.
+    /// `outcome` is the editor's success, or the spawn failure message.
     pub fn editor_finished(&mut self, purpose: EditorPurpose, outcome: Result<bool, String>) {
         self.message = None;
         match purpose {
@@ -357,9 +337,6 @@ mod tests {
     use crate::config::LoadedConfig;
     use crate::test_support::standard_fixture;
 
-    /// A commit made through diffler's own flow reports the ordinary
-    /// "committed …" message: a walkthrough is its own review source now,
-    /// with nothing tying it to the working tree or the commit it becomes.
     #[test]
     fn committing_reports_the_ordinary_commit_message() {
         let fixture = standard_fixture();

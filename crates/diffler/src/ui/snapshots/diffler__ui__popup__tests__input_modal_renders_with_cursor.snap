@@ -1,5 +1,6 @@
 ---
 source: crates/diffler/src/ui/popup.rs
+assertion_line: 909
 expression: terminal.backend()
 ---
 "status screen content behind the popup                                                                                  "
@@ -22,7 +23,7 @@ expression: terminal.backend()
 "                                                                                                                        "
 "                         New branch ────────────────────────────────────────────────────────────                        "
 "                        feat/m1                                                                                         "
-"                        enter submit  ·  a-enter newline  ·  esc cancel                                                 "
+"                        enter submit  ·  a-enter add newline  ·  esc cancel                                             "
 "                                                                                                                        "
 "                                                                                                                        "
 "                                                                                                                        "

@@ -1,14 +1,8 @@
-//! GitLab CI and merge-request adapter (CLI-only via `glab api`, REST). The
-//! dependency graph is derived from pipeline stages (jobs in a stage depend on
-//! all jobs in the previous stage), GitLab's default pipeline view. The exact
-//! `needs` DAG is a GraphQL refinement left for later. Logs poll the job trace
-//! by offset.
+//! GitLab CI and merge requests through `glab api`. Jobs in a stage depend on
+//! every job in the previous stage, as GitLab's pipeline view draws them.
 //!
-//! Review state maps onto GitLab discussions: a thread is a discussion, its
-//! notes are the comments, and an anchored note carries a `position` naming the
-//! file, the line and the three shas the diff was taken against. A submitted
-//! review is a batch of draft notes published at once, so the author gets one
-//! notification instead of one per comment.
+//! A thread is a discussion and a comment is one of its notes; an anchored note
+//! carries a `position` naming the file, the line and the diff's three shas.
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -22,13 +16,10 @@ use crate::ci::provider::{ForgeProvider, NewPrComment, NewPrReview, ProviderKind
 
 const PAGE_SIZE: usize = 100;
 
-/// How many pages of discussions a single read walks.
+/// Stops a forge that answers every page identically from looping forever.
 const MAX_PAGES: usize = 20;
 
-/// Talks to GitLab through `glab api`. `glab` resolves the project from the
-/// repo via the `:fullpath` placeholder; an explicit `host` targets a
-/// self-hosted instance. `branch` names the checked-out branch, which is how
-/// the current merge request is found.
+/// `glab` resolves the project through the `:fullpath` placeholder.
 pub struct GitLabProvider {
     runner: Box<dyn CommandRunner>,
     host: Option<String>,
@@ -48,14 +39,12 @@ impl GitLabProvider {
         }
     }
 
-    /// `glab api <path>`, with `--hostname` when a self-hosted host is set.
     async fn api(&self, path: &str) -> Result<String> {
         self.call("GET", path, "--field", &[]).await
     }
 
-    /// A write carrying a note's `position`, sent as multipart form fields:
-    /// GitLab's REST layer unflattens bracketed keys (`position[new_line]`)
-    /// into nested parameters, and rejects the same shape sent as JSON.
+    /// GitLab unflattens `position[new_line]` into nested parameters only from
+    /// form fields, and rejects the same shape sent as JSON.
     async fn send_form(
         &self,
         verb: &str,
@@ -65,9 +54,8 @@ impl GitLabProvider {
         self.call(verb, path, "--form", fields).await
     }
 
-    /// A write of plain values, sent as JSON. `--form` reads a value beginning
-    /// with `@` as a filename, which is every comment that opens with a
-    /// mention, so text never travels that way.
+    /// `--form` reads a value starting with `@` as a filename, so comment text
+    /// always goes as JSON.
     async fn send_json(
         &self,
         verb: &str,
@@ -106,10 +94,7 @@ impl GitLabProvider {
         parse_json("glab merge request", &raw)
     }
 
-    /// Every discussion on the merge request. A long-lived one runs past a
-    /// single page, and a note left behind there is a reply or an edit that
-    /// cannot find its thread. The ceiling keeps a forge that answers every
-    /// page identically from looping forever.
+    /// We walk every page, or a reply or edit on a later page finds no thread.
     async fn discussions(&self, number: u64) -> Result<Vec<DiscussionItem>> {
         let mut all = Vec::new();
         for page in 1..=MAX_PAGES {
@@ -128,8 +113,8 @@ impl GitLabProvider {
         Ok(all)
     }
 
-    /// The discussion holding note `note_id`. A reply, an edit and a delete all
-    /// route through the thread, which a note id alone does not name.
+    /// Replies, edits and deletes route through the discussion, which a note id
+    /// alone does not name.
     async fn discussion_of(&self, number: u64, note_id: &str) -> Result<String> {
         self.discussions(number)
             .await?
@@ -144,8 +129,6 @@ impl GitLabProvider {
             .ok_or_else(|| CiError::NotFound(format!("note {note_id} on merge request !{number}")))
     }
 
-    /// The shas a comment's position is taken against, which every anchored
-    /// note has to repeat.
     async fn diff_refs(&self, number: u64) -> Result<DiffRefs> {
         self.merge_request(number)
             .await?
@@ -153,9 +136,8 @@ impl GitLabProvider {
             .ok_or_else(|| CiError::NotFound(format!("diff refs for merge request !{number}")))
     }
 
-    /// Best effort: a draft left behind after a failed submit would publish
-    /// alongside the retry as a duplicate, and there is nothing useful to say
-    /// when the cleanup itself fails.
+    /// A leftover draft would publish beside the retry as a duplicate. Best
+    /// effort, since a failed cleanup has nothing useful to report.
     async fn discard_drafts(&self, number: u64, ids: &[u64]) {
         for id in ids {
             let _ = self
@@ -168,9 +150,8 @@ impl GitLabProvider {
         }
     }
 
-    /// Open a thread on a diff line. The position has to ride a form field and
-    /// the body cannot, so a body `--form` would misread lands as a stub the
-    /// following edit replaces; the note keeps its anchor either way.
+    /// The position needs a form field, so a body `--form` would misread goes
+    /// out as a stub that the next edit replaces; the anchor holds either way.
     async fn post_discussion(&self, new: &NewPrComment) -> Result<DiscussionItem> {
         let refs = self.diff_refs(new.number).await?;
         let staged = form_hazard(&new.body);
@@ -255,9 +236,8 @@ impl ForgeProvider for GitLabProvider {
                     JobStatus::Ok | JobStatus::Failed | JobStatus::Skipped | JobStatus::Neutral
                 )
             });
-        // resume from the saved offset, clamped to the end and floored to a char
-        // boundary, so a multibyte split or a shrunk/replaced trace yields the
-        // correct tail (or empty) instead of re-emitting the whole trace
+        // we clamp the offset and floor it to a char boundary, so a shrunk trace
+        // or a multibyte split yields the right tail
         let mut start = usize::try_from(offset)
             .unwrap_or(usize::MAX)
             .min(trace.len());
@@ -272,7 +252,6 @@ impl ForgeProvider for GitLabProvider {
         })
     }
 
-    /// GitLab exposes neither run artifacts nor annotations through this adapter.
     async fn run_extras(&self, _run: &RunId) -> Result<RunExtras> {
         Ok(RunExtras::default())
     }
@@ -364,19 +343,17 @@ impl ForgeProvider for GitLabProvider {
         .map(|_| ())
     }
 
-    /// Draft notes published in one batch: GitLab has no review object, and
-    /// posting each comment on its own would send the author a notification
-    /// per line. The verdict rides the approval endpoints, the only review
-    /// state GitLab's REST API exposes.
+    /// GitLab has no review object, so we stage draft notes and publish them
+    /// in one batch for a single notification. The verdict goes through the
+    /// approval endpoints, the only review state its REST API records.
     async fn submit_pr_review(&self, review: &NewPrReview) -> Result<()> {
         let number = review.number;
         let refs = self.diff_refs(number).await?;
         let drafts = format!("projects/:fullpath/merge_requests/{number}/draft_notes");
         let mut staged: Vec<u64> = Vec::new();
         for (index, comment) in review.comments.iter().enumerate() {
-            // a draft's text can only be rewritten by dropping its position, so
-            // a body no form field can carry posts on its own instead: one
-            // extra notification beats an unanchored comment
+            // rewriting a draft drops its position, so a body no form field can
+            // carry posts on its own: one extra notification keeps the anchor
             if form_hazard(&comment.body) {
                 match self.post_discussion(comment).await {
                     Ok(_) => continue,
@@ -394,8 +371,7 @@ impl ForgeProvider for GitLabProvider {
                         staged.push(draft.id);
                     }
                 }
-                // a half-staged review would publish on the next submit as a
-                // duplicate, so the drafts already made go back
+                // we discard staged drafts so the next submit publishes no duplicate
                 Err(err) => {
                     self.discard_drafts(number, &staged).await;
                     return Err(CiError::Exec {
@@ -424,8 +400,7 @@ impl ForgeProvider for GitLabProvider {
         }
         let verdict = match review.verdict {
             ReviewVerdict::Approve => Some("approve"),
-            // GitLab's REST API has no request-changes state; withdrawing the
-            // approval is the nearest thing it can actually record
+            // GitLab has no request-changes state; withdrawing approval is the nearest
             ReviewVerdict::RequestChanges => Some("unapprove"),
             ReviewVerdict::Comment => None,
         };
@@ -491,18 +466,13 @@ impl ForgeProvider for GitLabProvider {
     }
 }
 
-/// A value `glab` would read as something other than itself: `--form` takes a
-/// leading `@` for a filename and a bare `-` for standard input.
+/// `--form` reads a leading `@` as a filename and a bare `-` as standard input.
 fn form_hazard(value: &str) -> bool {
     value.starts_with('@') || value == "-"
 }
 
-/// The `position[...]` fields an anchored note carries: the file, the shas the
-/// diff was taken against, and, for a line comment, the line on whichever
-/// side it sits on. A line both sides share names both, which is the only way
-/// GitLab resolves an unchanged line to a diff position. A whole-file comment
-/// (`new.line` is `None`) carries `position_type: file` and no line at all,
-/// GitLab's own equivalent of a line-less note.
+/// GitLab resolves an unchanged line only when the position names both sides.
+/// A whole-file comment carries `position_type: file` and no line.
 fn position_fields(refs: &DiffRefs, new: &NewPrComment) -> Vec<(String, String)> {
     let mut fields = vec![
         ("position[base_sha]".to_owned(), refs.base_sha.clone()),
@@ -545,7 +515,6 @@ fn position_fields(refs: &DiffRefs, new: &NewPrComment) -> Vec<(String, String)>
     fields
 }
 
-/// The merge-request url in `output`, which carries trailing chatter of its own.
 fn mr_url(output: &str) -> Option<&str> {
     output
         .split_whitespace()
@@ -553,14 +522,11 @@ fn mr_url(output: &str) -> Option<&str> {
         .find(|token| token.contains("/merge_requests/"))
 }
 
-/// The iid trailing a merge-request url (`.../-/merge_requests/7`).
 fn mr_iid_from_url(url: &str) -> Option<u64> {
     let (_, tail) = url.rsplit_once("/merge_requests/")?;
     tail.trim_end_matches('/').parse().ok()
 }
 
-/// Order jobs into stages (by first appearance) and link each job to every job
-/// in the previous stage, GitLab's stage-sequenced pipeline graph.
 fn jobs_with_stage_edges(raw: &[JobItem]) -> Vec<CiJob> {
     let mut stage_order: Vec<String> = Vec::new();
     for job in raw {
@@ -680,8 +646,7 @@ impl MergeRequestItem {
     }
 }
 
-/// The three commits a merge request's diff is taken against, which every
-/// anchored note has to repeat back.
+/// Every anchored note repeats these back.
 #[derive(Debug, Clone, Deserialize)]
 #[allow(clippy::struct_field_names)]
 struct DiffRefs {
@@ -707,10 +672,8 @@ struct DiscussionItem {
 }
 
 impl DiscussionItem {
-    /// The discussion's anchored notes, root first, each carrying the thread
-    /// handle. Notes GitLab wrote itself (a resolution, a force-push record)
-    /// are not review comments, and an unanchored note belongs to the merge
-    /// request rather than to a line.
+    /// Anchored notes only, root first. We skip GitLab's system notes and
+    /// unanchored notes, which belong to the merge request as a whole.
     fn into_comments(self) -> Vec<PrComment> {
         let mut root: Option<String> = None;
         let mut comments = Vec::new();
@@ -855,9 +818,7 @@ mod tests {
             .await
             .expect("detail");
         assert_eq!(detail.jobs.len(), 3);
-        // build is in the first stage → no upstream
         assert!(detail.jobs[0].needs.is_empty());
-        // test-stage jobs depend on the build-stage job
         assert_eq!(detail.jobs[1].needs, vec![JobId("1".into())]);
         assert_eq!(detail.jobs[2].needs, vec![JobId("1".into())]);
         assert_eq!(detail.jobs[1].status, JobStatus::Running);
@@ -1304,8 +1265,6 @@ mod tests {
         assert!(!post.contains("line_range"), "single line: {post}");
     }
 
-    /// GitLab's own equivalent of a file-level comment: `position_type: file`,
-    /// the file and the three shas, no line at all.
     #[tokio::test]
     async fn a_whole_file_comment_carries_position_type_file_and_no_line() {
         let (runner, provider) = provider_on(

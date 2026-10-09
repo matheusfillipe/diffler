@@ -34,14 +34,11 @@ use crate::event::AppEvent;
 /// Author label stamped on replies the agent writes through MCP.
 pub const AGENT_AUTHOR: &str = "agent";
 
-/// Claude Code cuts a request at 120 s, and a review pause easily outlasts
-/// that: a wait plus the app round trip it still owes must return well
-/// inside it. `MAX_WAIT_SECONDS` plus one `REQUEST_TIMEOUT` stays under it,
-/// and the caller polls again to keep waiting.
+/// Claude Code cuts a request at 120 s, so `MAX_WAIT_SECONDS` plus one
+/// `REQUEST_TIMEOUT` must stay under it; the caller polls again to keep waiting.
 const DEFAULT_WAIT_SECONDS: u64 = 25;
 const MAX_WAIT_SECONDS: u64 = 55;
-/// How long a tool call waits for the app to respond before giving up.
-/// The editor suspension is the main source of delays; 30 s is generous.
+/// The app stalls on a call mostly while `$EDITOR` holds the terminal.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// One agent tool call in flight: the app answers on `reply`. `project`
@@ -70,8 +67,6 @@ pub enum McpRequestKind {
     GetComments {
         status: Option<CommentStatus>,
     },
-    /// Every persisted review (working tree, commits, ranges) with its comment
-    /// counts, so the agent knows what the human reviewed and where from.
     ListReviews,
     ReplyComment {
         id: String,
@@ -84,9 +79,8 @@ pub enum McpRequestKind {
     MarkViewed {
         file: String,
     },
-    /// A new comment on `file` at `line` (through `line_end` for a range),
-    /// in the review the human is currently looking at. `as_human` decides
-    /// its author: the agent by default, the human when set.
+    /// A comment in the review the human has open; `as_human` makes the human
+    /// its author.
     AddComment {
         file: String,
         line: u32,
@@ -94,23 +88,20 @@ pub enum McpRequestKind {
         body: String,
         as_human: bool,
     },
-    /// Delete a comment the agent itself wrote. Refused for a human's own
-    /// comment, or a walkthrough stop or note (`publish_walkthrough` manages
-    /// those).
+    /// Refused for a human's comment and for a walkthrough stop or note,
+    /// which `publish_walkthrough` owns.
     DeleteComment {
         id: String,
     },
-    /// Replace the body of a comment the agent itself wrote, keeping its
-    /// status, replies and anchor. Same refusals as `DeleteComment`.
+    /// Keeps status, replies and anchor. Same refusals as `DeleteComment`.
     EditComment {
         id: String,
         body: String,
     },
     /// Open + replied comments for `wait_for_feedback` after an epoch bump.
     Feedback,
-    /// Revise the walkthrough `id` names, or publish a new one alongside any
-    /// others when `id` is `None`. Refused (as [`McpResponse::Error`]) when
-    /// `walkthrough_refusals` in `app/mcp.rs` finds a stop it cannot place.
+    /// Revises the walkthrough `id` names, or publishes a new one when `id`
+    /// is `None`.
     PublishWalkthrough {
         id: Option<String>,
         title: String,
@@ -122,14 +113,11 @@ pub enum McpRequestKind {
     GetWalkthrough {
         id: Option<String>,
     },
-    /// The agent's own words for what it's doing right now, overriding the
-    /// generic phrase `app/mcp.rs` would otherwise derive from the call
-    /// itself. Shown in the status bar until it or another call ages out.
+    /// The agent's own words for the status bar's activity indicator.
     ReportActivity {
         focus: String,
         file: Option<String>,
     },
-    /// Open the git repository at `path` as a project tab.
     OpenProject {
         path: String,
     },
@@ -153,8 +141,6 @@ pub enum McpResponse {
     WalkthroughPublished(WalkthroughPublished),
     Walkthrough(Option<WalkthroughInfo>),
     /// Answers [`McpRequestKind::Feedback`]: the open and replied comments.
-    /// A walkthrough stop is one of them, so its id is how the agent knows
-    /// which stop the human is talking about.
     Feedback {
         comments: Vec<CommentInfo>,
     },
@@ -227,7 +213,7 @@ pub struct ReviewSummary {
     /// The project this review belongs to, when more than one is open.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
-    /// Stable source key (e.g. "working", "commit-<oid>", "range-<a>-<b>").
+    /// Stable source key (e.g. `working`, `commit-<oid>`, `range-<a>-<b>`).
     pub source: String,
     /// Human-facing description (e.g. "commit a1b2c3", "range a1b2c3..d4e5f6").
     pub label: String,
@@ -550,11 +536,9 @@ pub struct WaitForFeedbackParams {
     pub timeout_seconds: Option<u64>,
 }
 
-/// Schema stand-in for every unsigned field in the tool types. `usize`/`u32`/
-/// `u64` derive `format: "uint"`/`"uint32"`/`"uint64"`, none of which JSON
-/// Schema registers, so strict validators warn on every tool schema. rmcp
-/// hardcodes its generator, leaving `#[schemars(with = "Count")]` (or
-/// `Option<Count>`, which keeps the field optional) as the per-field opt-out.
+/// Unsigned ints derive `format: "uint*"`, which JSON Schema does not register
+/// and strict validators warn on. rmcp hardcodes its generator, so we opt each
+/// field out with `#[schemars(with = "Count")]`.
 struct Count;
 
 impl schemars::JsonSchema for Count {
@@ -594,7 +578,6 @@ pub const fn file_status_name(status: FileStatus) -> &'static str {
     }
 }
 
-/// Unified-style text rendering of a diff model for `get_diff`.
 pub fn render_unified(model: &DiffModel, file: Option<&str>) -> Result<String, String> {
     use std::fmt::Write as _;
 
@@ -632,12 +615,10 @@ pub fn render_unified(model: &DiffModel, file: Option<&str>) -> Result<String, S
     Ok(out)
 }
 
-/// Agent-facing view of one comment, with context and outdated detection
-/// judged against the current diff model, tagged with its review source.
 pub fn comment_info(comment: &Comment, model: &DiffModel, source: &ReviewSource) -> CommentInfo {
     let anchor = &comment.anchor;
-    // range comments anchor to their END line (`Anchor::is_outdated`), but
-    // the context snippet renders from the START line so it reads naturally
+    // outdated detection reads a range's end line, but we start the snippet at
+    // its first line so it reads top-down
     let context = anchor
         .line
         .and_then(|line| feedback::context_snippet(model, &anchor.file, line, anchor.on_old_side))
@@ -1021,14 +1002,9 @@ impl DifflerMcp {
     }
 }
 
-/// The steps below a skill file's `---` frontmatter, trimmed. The `review`
-/// and `walkthrough` prompts below reuse `skills/df/SKILL.md` and
-/// `skills/dfa/SKILL.md` verbatim through this, so the prompt and the skill
-/// cannot drift apart.
-/// A skill file's prose, its YAML frontmatter dropped. A Windows checkout
-/// carries CRLF, so the newlines are normalised first: matching on `\n` alone
-/// finds no frontmatter there and ships the whole file, YAML header included,
-/// to the agent.
+/// A skill file's prose with its YAML frontmatter dropped. We normalise CRLF
+/// first, since on a Windows checkout `\n` matches no frontmatter and we would
+/// ship the YAML header to the agent.
 fn skill_body(doc: &str) -> String {
     let doc = doc.replace("\r\n", "\n");
     let body = doc
@@ -1046,9 +1022,6 @@ const DFA_SKILL: &str = include_str!("../prompts/dfa.md");
 
 const DFR_SKILL: &str = include_str!("../prompts/dfr.md");
 
-/// Clients surface MCP prompts as commands (Claude Code renders this as
-/// `/diffler:review`), so connected agents get a one-keystroke entry into
-/// the review loop.
 #[prompt_router]
 impl DifflerMcp {
     #[prompt(
@@ -1116,9 +1089,8 @@ fn bind_reusable(addr: SocketAddr) -> std::io::Result<tokio::net::TcpListener> {
     socket.listen(1024)
 }
 
-/// Serve the MCP tools over streamable HTTP at `127.0.0.1:{port}/mcp`.
-/// A taken port falls back to an ephemeral one instead of failing the TUI;
-/// the returned handle carries the port that actually bound.
+/// Serves `127.0.0.1:{port}/mcp`, or an ephemeral port when `port` is taken;
+/// the handle carries the port that bound.
 pub fn spawn_mcp(
     tx: UnboundedSender<AppEvent>,
     feedback_rx: watch::Receiver<u64>,
@@ -1146,7 +1118,6 @@ pub fn spawn_mcp(
     Ok(McpHandle { port, handle })
 }
 
-/// Repo-relative path of the endpoint discovery file an external proxy reads.
 const ENDPOINT_FILE: &str = "mcp.json";
 
 fn endpoint_path(repo_root: &Path) -> PathBuf {
@@ -1160,11 +1131,8 @@ struct EndpointFile {
     pid: u32,
 }
 
-/// Publish the live MCP endpoint to `.diffler/mcp.json` so a stdio proxy (the
-/// `npx` bridge) can discover the actual port, which may differ from the
-/// configured one after an ephemeral fallback. Also registers this instance
-/// under the per-user registry, so a proxy started from a directory that owns
-/// no repo of its own can still find it.
+/// The stdio proxy reads the bound port from `.diffler/mcp.json`, or from the
+/// per-user registry when it starts outside any repo.
 pub fn write_endpoint(repo_root: &Path, port: u16) -> std::io::Result<()> {
     let pid = std::process::id();
     let body = serde_json::to_string_pretty(&EndpointFile {
@@ -1178,10 +1146,8 @@ pub fn write_endpoint(repo_root: &Path, port: u16) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Remove the endpoint file on shutdown, but only when it still names this
-/// process's own port. A second diffler instance in the same repo overwrites
-/// the file with its own port; deleting unconditionally would let whichever
-/// process exits first destroy the still-running one's proxy discovery.
+/// We remove the file only while it names our port, since a second instance
+/// in the same repo overwrites it and still needs it after we exit.
 pub fn clear_endpoint(repo_root: &Path, port: u16) {
     let path = endpoint_path(repo_root);
     if let Ok(body) = std::fs::read_to_string(&path) {
@@ -1203,10 +1169,8 @@ struct RegistryEntry<'a> {
     url: String,
 }
 
-/// `$XDG_STATE_HOME/diffler/instances`, falling back to `~/.local/state` the
-/// way `config::load` falls back to `~/.config` for `XDG_CONFIG_HOME`.
-/// `DIFFLER_STATE_DIR` is a test-only override so registry tests never touch
-/// a developer's real home directory.
+/// `$XDG_STATE_HOME/diffler/instances`, defaulting to `~/.local/state`.
+/// Tests set `DIFFLER_STATE_DIR` so they never touch the real home directory.
 fn registry_dir() -> Option<PathBuf> {
     let base = if let Some(dir) = non_empty_env("DIFFLER_STATE_DIR") {
         PathBuf::from(dir)
@@ -1224,9 +1188,8 @@ fn non_empty_env(key: &str) -> Option<std::ffi::OsString> {
     std::env::var_os(key).filter(|v| !v.is_empty())
 }
 
-/// Best-effort: losing the registry entry only loses cross-directory
-/// discovery, never the local `.diffler/mcp.json` a same-repo proxy already
-/// relies on, so a write failure here is silent and non-fatal.
+/// Best-effort: a same-repo proxy still finds `.diffler/mcp.json`, so we
+/// ignore write failures here.
 fn write_registry_entry(repo_root: &Path, port: u16, pid: u32) {
     let Some(dir) = registry_dir() else {
         return;
@@ -1255,17 +1218,14 @@ pub(crate) fn canonical_repo(repo_root: &Path) -> PathBuf {
         .unwrap_or_else(|_| repo_root.to_path_buf())
 }
 
-/// One registry entry per project a diffler serves, since one diffler with
-/// several tabs serves them all on one port.
+/// One entry per project, since one diffler serves all its tabs on one port.
 fn registry_file(repo_root: &Path, port: u16) -> String {
     let mut hasher = std::hash::DefaultHasher::new();
     std::hash::Hash::hash(&canonical_repo(repo_root), &mut hasher);
     format!("{port}-{:016x}.json", std::hash::Hasher::finish(&hasher))
 }
 
-/// Mirrors `clear_endpoint`'s owner check: only remove the registry entry
-/// when it still names this process's own port, so a later instance that
-/// reused the same ephemeral port isn't torn down by an earlier one's exit.
+/// Same owner check as `clear_endpoint`.
 fn clear_registry_entry(repo_root: &Path, port: u16) {
     let Some(dir) = registry_dir() else {
         return;
@@ -1471,9 +1431,6 @@ mod tests {
         assert!(comment_info(&session.comments[1], &model, &ReviewSource::WorkingTree).outdated);
     }
 
-    // A range comment where start != end is NOT outdated when the end
-    // line still matches.  Only the end-line text is checked for drift; the
-    // context snippet is still rooted at the start line.
     #[test]
     fn range_comment_not_outdated_when_end_line_matches() {
         let mut session = Session::default();
@@ -1485,7 +1442,6 @@ mod tests {
             on_old_side: false,
             line_text: Some("three".to_owned()),
         };
-        // sanity: start text differs from end text
         assert_ne!(a.line_text.as_deref(), Some("one"));
         session.add_comment(a.clone(), "human", "range comment");
         let info = comment_info(
@@ -1497,7 +1453,6 @@ mod tests {
             !info.outdated,
             "end line text matches snapshot: must NOT be outdated"
         );
-        // change the snapshot to something that no longer matches line 3
         a.line_text = Some("changed".to_owned());
         session.comments[0].anchor = a;
         let info2 = comment_info(
@@ -1508,8 +1463,6 @@ mod tests {
         assert!(info2.outdated, "end line text drifted: must be outdated");
     }
 
-    // request_with_timeout returns a "busy" error when the reply
-    // channel is never answered within the deadline.
     #[tokio::test]
     async fn request_times_out_when_app_does_not_answer() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1529,9 +1482,7 @@ mod tests {
         );
     }
 
-    // The long-poll cap must hold even when the caller asks for more.
-    // Under tokio's paused clock the runtime auto-advances to the next
-    // timer, so the elapsed virtual time is exactly the effective timeout.
+    // a paused clock jumps to the next timer, so elapsed time is the effective timeout
     #[tokio::test(start_paused = true)]
     async fn wait_for_feedback_clamps_the_timeout_to_the_cap() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1573,8 +1524,6 @@ mod tests {
         );
     }
 
-    // The cap is chosen so even the worst case (a full wait, then the app
-    // round trip it still owes) stays under Claude Code's 120 s request cut.
     #[test]
     fn a_capped_wait_and_its_round_trip_fit_the_client_ceiling() {
         assert!(MAX_WAIT_SECONDS + REQUEST_TIMEOUT.as_secs() < 120);
@@ -1618,9 +1567,7 @@ mod tests {
         );
     }
 
-    // `DIFFLER_STATE_DIR` is process-global, so every test that touches the
-    // registry serializes on this lock and restores the previous value,
-    // keeping unrelated tests from reading a half-set env var mid-mutation.
+    // `DIFFLER_STATE_DIR` is process-global, so registry tests serialize on this lock.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[allow(unsafe_code)]
@@ -1683,8 +1630,7 @@ mod tests {
                 .join("diffler/instances")
                 .join(registry_file(dir.path(), 8417));
             let body = std::fs::read_to_string(&entry_path).expect("registry entry written");
-            // the entry is JSON, and a Windows path's separators are escaped in
-            // it, so the fields are read rather than matched as substrings
+            // we parse the entry because JSON escapes a Windows path's separators
             let entry: serde_json::Value =
                 serde_json::from_str(&body).expect("registry entry is json");
             let repo = dir.path().canonicalize().expect("canonicalize");
@@ -1743,8 +1689,6 @@ mod tests {
         });
     }
 
-    // Rust's integer formats ("uint", "uint32", "uint64") are not registered
-    // JSON Schema formats, and strict clients warn on every one they see.
     #[test]
     fn tool_schemas_use_no_unregistered_format() {
         for tool in DifflerMcp::tool_router().list_all() {
@@ -1763,10 +1707,8 @@ mod tests {
         }
     }
 
-    // spawn_mcp falls back to :0 only on AddrInUse, not on other errors.
     #[tokio::test]
     async fn spawn_mcp_fallback_on_addr_in_use() {
-        // grab a port and hold the listener so the configured port is busy
         let holder = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
             .unwrap();
@@ -1784,15 +1726,6 @@ mod tests {
 
 #[cfg(test)]
 mod agent_command_sync {
-    /// The review loop is written out for two agent harnesses. Only the
-    /// frontmatter differs (each host wants its own shape), so the numbered
-    /// steps have to stay identical or one harness quietly teaches a stale
-    /// loop. A wording fix that lands in one and not the other is invisible
-    /// without this.
-    /// A Windows checkout carries CRLF, so the newlines are normalised before
-    /// the frontmatter is found and the bodies are compared. Matching on `\n`
-    /// alone silently falls through to comparing the frontmatter, which does
-    /// differ, and fails on that platform only.
     fn body(doc: &str) -> String {
         let doc = doc.replace("\r\n", "\n");
         let after_frontmatter = doc
@@ -1802,8 +1735,6 @@ mod agent_command_sync {
         after_frontmatter.trim().to_owned()
     }
 
-    /// A Windows checkout carries CRLF, where matching the frontmatter on `\n`
-    /// alone finds none and ships the YAML header to the agent as prose.
     #[test]
     fn a_skill_loses_its_frontmatter_whatever_its_line_endings() {
         assert_eq!(
@@ -1816,8 +1747,8 @@ mod agent_command_sync {
         );
     }
 
-    /// Every agent command ships twice, as a Claude Code skill and an `OpenCode`
-    /// command, and the two must say the same thing.
+    /// Every agent command ships as a Claude Code skill, an `OpenCode` command
+    /// and a crate prompt, with only the frontmatter allowed to differ.
     #[test]
     fn both_agent_command_files_teach_the_same_loop() {
         const DF_SKILL: &str = include_str!(concat!(
@@ -1865,10 +1796,6 @@ mod agent_command_sync {
         }
     }
 
-    /// The section from a `## Write for the card` heading to the next `## `
-    /// heading or the end, trimmed. Each skill keeps its own steps and its
-    /// own reply/stop-specific bullets above this heading, but the writing
-    /// rules under it (voice, identifiers, tables) are shared verbatim.
     fn write_for_the_card(doc: &str) -> &str {
         const HEADING: &str = "## Write for the card";
         let Some(start) = doc.find(HEADING) else {
@@ -1881,10 +1808,7 @@ mod agent_command_sync {
         after[..end].trim()
     }
 
-    /// Answering a comment, writing a stop, and writing a review comment are
-    /// all a card in the same pane, so all three skills must teach the same
-    /// rules for it: first person plural, identifiers in backticks, plain
-    /// verbs and the no-metaphor list, and tables for comparisons.
+    /// All three skills write a card in the same pane, so they share its writing rules.
     #[test]
     fn every_skill_writes_the_card_the_same_way() {
         const DF_SKILL: &str = include_str!(concat!(
@@ -1916,11 +1840,7 @@ mod agent_command_sync {
         );
     }
 
-    /// The `review`, `walkthrough` and `critique` MCP prompts are generated
-    /// from `skills/df/SKILL.md`, `skills/dfa/SKILL.md` and
-    /// `skills/dfr/SKILL.md`, so this checks the wiring rather than the
-    /// wording: the prompt an agent receives over MCP must be that file's
-    /// numbered steps, verbatim.
+    /// Each MCP prompt must be its skill file's steps, verbatim.
     #[tokio::test]
     async fn the_prompts_are_their_skills_bodies() {
         const DF_SKILL: &str = include_str!(concat!(

@@ -23,7 +23,7 @@ diff and reply right there, while you watch it fix the code.
 - Let your agent answer your comments and walk you through its changes (optional)
 - Open several projects as tabs; your agent sees all of them through one connection
 - Works in git and jj repos
-- Shows changed images right in the terminal, before and after
+- Shows changed images in the terminal, before and after
 
 ## Install
 
@@ -238,7 +238,7 @@ full keymap of the screen you're on, and `<c-k>` fuzzy-finds any action.
 | `q` | back / quit |
 
 Every binding is remappable in [docs/config.example.toml](docs/config.example.toml).
-The mouse works too, over tmux included: click to select or fold, and
+The mouse works, over tmux too: click to select or fold, and
 right-click (or press and hold) a line, file or comment for what you can do
 with it.
 

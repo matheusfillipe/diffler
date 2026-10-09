@@ -66,8 +66,7 @@ pub enum ScrollAlign {
 }
 
 /// Which section headers are collapsed, across both layouts that have them.
-/// What the reader did not come to read starts folded: the viewed pile, and
-/// the two kinds nobody reviews by hand.
+/// Viewed, Generated and Assets start folded, since nobody reads them by hand.
 #[derive(Debug, Clone)]
 pub(crate) struct BucketFolds(BTreeSet<Bucket>);
 
@@ -102,8 +101,7 @@ impl BucketFolds {
 }
 
 /// Per-line syntax spans for both sides of one file, keyed by the
-/// both-sides content hash so edits to either side invalidate naturally.
-/// Filled by the background enrichment worker.
+/// both-sides content hash so an edit to either side invalidates it.
 #[derive(Debug, Clone)]
 pub struct FileHighlights {
     pub hash: String,
@@ -126,14 +124,12 @@ pub struct DiffView {
     /// `None` means the view reads the live `review.model`.
     pub(crate) commit_model: Option<DiffModel>,
     pub focus: Pane,
-    /// File-list layout for the sidebar: a flat list or a collapsible tree.
-    /// Pinned at open from `ui.diff_file_layout`.
+    /// Sidebar layout, pinned at open from `ui.diff_file_layout`.
     pub(crate) layout: FileLayout,
     /// Index into `model.files`: the file shown in the diff pane. Derived from
     /// the file under `tree_cursor` whenever that lands on a File row.
     pub selected: usize,
     /// Folded directory paths in the sidebar tree; persists across refresh.
-    /// Unused in the flat list (it has no directories).
     pub(crate) folded_dirs: BTreeSet<String>,
     /// Section-header folds, shared by the review and kinds layouts.
     pub(crate) bucket_folds: BucketFolds,
@@ -148,28 +144,24 @@ pub struct DiffView {
     pub(crate) tree_cursor: usize,
     /// Row within the selected file's rows.
     pub cursor: usize,
-    /// Rows a walkthrough stop's anchor covers, banded so a reference reads as
-    /// the segment it names rather than the line it starts on.
+    /// Rows a walkthrough stop's anchor covers, banded in the pane.
     pub(crate) referenced: Option<(usize, usize)>,
-    /// The slide the walkthrough layout is windowed to. `None` defaults to
-    /// the first stop, the way a freshly opened walkthrough view does.
+    /// The slide the walkthrough layout is windowed to; `None` means the
+    /// first stop.
     pub(crate) slide: Option<Slide>,
     /// Id and time of this source's walkthrough as the open rows were built
-    /// for it, so an agent revising it under a reader is noticed.
+    /// for it, so we notice an agent revising it while it is open.
     pub(crate) walkthrough_built: Option<(String, u64)>,
-    /// Parsed bodies of the comments that hold a figure, so a diagram is
-    /// parsed when it changes and not on every frame that draws a row of it.
+    /// Parsed bodies of the comments that hold a figure, so we parse a
+    /// diagram only when it changes.
     pub(crate) figures: FigureCache,
     /// A figure was parsed afresh, so its `click` targets still need reading.
     figures_dirty: bool,
-    /// Stop and note comments whose `anchor_ref` stopped resolving, and why:
-    /// the file itself is missing, or the symbol/line named inside it is
-    /// gone. Only the worker can tell one from the other, or from a comment
-    /// that has not been resolved yet at all.
+    /// Stop and note comments whose `anchor_ref` fails to resolve, and why.
+    /// Only the worker can tell a missing file from a missing symbol or line.
     pub(crate) unresolved_anchors: HashMap<String, Located>,
-    /// The walkthrough's own pin no longer resolves: the worker fell back to
-    /// the worktree for every file, and the reader is shown live code
-    /// believing it is pinned. Set by the last landed anchor resolution.
+    /// The walkthrough's pinned rev fails to resolve, so the worker read every
+    /// file from the worktree.
     pub(crate) pin_broken: bool,
     /// First visible row of the diff pane; the renderer keeps the cursor in
     /// view.
@@ -194,7 +186,7 @@ pub struct DiffView {
     pub(crate) sidebar_scroll: usize,
     pub(crate) pane: ratatui::layout::Rect,
     /// The comments sidebar: open state, which comment is selected, and the
-    /// last render's rect and scroll for hit-testing, mirroring the file list.
+    /// last render's rect and scroll for hit-testing.
     pub(crate) comments_open: bool,
     pub(crate) comments_cursor: usize,
     pub(crate) comments_scroll: usize,
@@ -207,15 +199,14 @@ pub struct DiffView {
     /// of the file sidebar's own layout.
     pub(crate) comment_grouping: CommentGrouping,
     /// Folded comments-pane group keys, namespaced per grouping (`file:`,
-    /// `author:`, `status:`) so switching grouping with `t` never confuses one
-    /// group's fold state for another's.
+    /// `author:`, `status:`) so each grouping keeps its own folds.
     pub(crate) comment_folds: BTreeSet<String>,
     /// Row where `V` started; `Some` means line selection is active.
     pub visual_anchor: Option<usize>,
     /// Body height of the last diff-pane render, drives half-page motions.
     pub(crate) viewport: u16,
-    /// The open in-place comment editor, if any. It owns the diff pane's keys
-    /// while it is up and occupies the rows its result will.
+    /// The open in-place comment editor. It takes the diff pane's keys while
+    /// open.
     pub(crate) composer: Option<Composer>,
     /// Drafts the reader clicked away from, each brought back when they open
     /// the composer on the same line, reply or edit again.
@@ -239,25 +230,19 @@ pub struct DiffView {
     pub(crate) split_rows: Vec<SplitRow>,
     pub(crate) highlights: HashMap<String, FileHighlights>,
     pub(crate) scopes: HashMap<String, FileScope>,
-    /// Paths whose intra-line emphasis has been computed, so the per-file
-    /// enrichment runs once. Cleared whenever the underlying model is
-    /// rebuilt (refresh) so a fresh unenriched file gets re-enriched.
+    /// Paths already enriched, cleared when a refresh rebuilds the model.
     enriched: HashSet<String>,
     /// Per-file diff context override (path -> git context lines, `u32::MAX`
     /// for the whole file). Absent means the source's default context.
     pub(crate) context: HashMap<String, u32>,
     /// One `Unchanged` file per stop or note the active walkthrough anchors
-    /// outside the diff, filled in once the anchor worker reads them. Read
-    /// only by the walkthrough layout, through [`DiffView::model_for_rows`]
-    /// and [`DiffView::model_for_layout`]; every other layout sees the diff
-    /// alone.
+    /// outside the diff, filled in by the anchor worker. Only the walkthrough
+    /// layout reads it.
     pub(crate) context_files: Vec<FileDiff>,
-    /// What [`Self::ensure_rows`] last merged `context_files` into: `Some`
-    /// when there was anything to append, `None` when the base model alone
-    /// covers the layout, so the render path (`draw_pane`, every frame) reads
-    /// this instead of rebuilding the merge itself. `on_enriched` mirrors a
-    /// landed file's hunks in here too, since the merge is a snapshot taken
-    /// before enrichment runs.
+    /// What [`Self::ensure_rows`] last merged `context_files` into, `None`
+    /// when the base model covers the layout, so the render path skips the
+    /// merge every frame. `on_enriched` copies enriched hunks in here too,
+    /// since the merge is a snapshot taken before enrichment.
     pub(crate) merged_model: Option<DiffModel>,
     /// The image file preview the pane draws, once the worker built it.
     pub(crate) image_preview: Option<crate::app::image::ImagePreview>,
@@ -359,14 +344,10 @@ impl DiffView {
         self.commit_model.as_ref().unwrap_or_else(|| review.model())
     }
 
-    /// The model every row index (`selected`, a `DiffRow`'s file index, a
-    /// comment's anchor path) resolves against for `layout`: `base` extended
-    /// with `context_files` where the walkthrough layout is windowing to
-    /// one, `base` alone everywhere else, since no other layout ever builds
-    /// a row against a context file. A free-standing function for the same
-    /// borrow-checker reason as `model_with_context`: composing it from
-    /// explicit field refs keeps a caller's other field borrows disjoint
-    /// from the model it still holds.
+    /// The model every row index resolves against for `layout`: `base` plus
+    /// `context_files` in the walkthrough layout, `base` alone elsewhere.
+    /// Free-standing, like `model_with_context`, so a caller's other field
+    /// borrows stay disjoint from the model it holds.
     pub(crate) fn model_for_layout<'a>(
         layout: FileLayout,
         base: &'a DiffModel,
@@ -380,12 +361,9 @@ impl DiffView {
         Self::model_with_context(base, context)
     }
 
-    /// What the last [`Self::ensure_rows`] merged, for a caller that must not
-    /// rebuild it: `cached` (the view's own `merged_model`) when it holds
-    /// one, `base` otherwise. Free-standing for the same borrow-checker
-    /// reason as `model_with_context`: the render path holds other disjoint
-    /// borrows of the view (and mutates several of its fields) while this
-    /// reference is still alive, which a `&self` method would collide with.
+    /// What the last [`Self::ensure_rows`] merged, else `base`. Free-standing
+    /// because the render path mutates other fields of the view while this
+    /// borrow is alive.
     pub(crate) fn rendered_model<'a>(
         cached: Option<&'a DiffModel>,
         base: &'a DiffModel,
@@ -393,17 +371,12 @@ impl DiffView {
         cached.unwrap_or(base)
     }
 
-    /// [`Self::model_for_layout`] against this view's own base and context,
-    /// for a caller that only reads: it borrows all of `self`, so a caller
-    /// that also mutates another field while the result is alive (building
-    /// rows, seating a stop) needs the free function above instead.
+    /// [`Self::model_for_layout`] for a caller that only reads, since it
+    /// borrows all of `self`.
     pub(crate) fn model_for_rows<'a>(&'a self, review: &'a Review) -> Cow<'a, DiffModel> {
         Self::model_for_layout(self.layout, self.model(review), &self.context_files)
     }
 
-    /// Attach intra-line emphasis to the selected file once, just before it
-    /// is rendered. `review_model` is the live working-tree model, used only
-    /// when this view is not pinned to an immutable commit model.
     pub(crate) fn is_enriched(&self, path: &str) -> bool {
         self.enriched.contains(path)
     }
@@ -498,9 +471,8 @@ impl DiffView {
     }
 
     /// Mark the row list stale so the next `ensure_rows` rebuilds it. The
-    /// cursor, the visual anchor and the banded span are each named by what
-    /// they sit on, so that rebuild finds every one of them again on its
-    /// own. Enrichment caches survive.
+    /// rebuild finds the cursor, visual anchor and band again by what they
+    /// sit on. Enrichment caches survive.
     pub(crate) fn mark_rows_dirty(&mut self) {
         self.rows_dirty = true;
     }
@@ -539,9 +511,8 @@ impl DiffView {
         let model: &DiffModel = &model_cow;
         self.selected = self.selected.min(model.files.len().saturating_sub(1));
         let composer = self.composer.as_ref();
-        // name what the cursor, the visual anchor and the banded span sit on
-        // now, while `self.rows` still holds the list they were seated
-        // against, so they can be found again once it is rebuilt
+        // we capture what the cursor, visual anchor and band sit on while
+        // `self.rows` still holds the list they were seated against
         let positions = self.capture_positions(review);
         let (rows, copy) = build_rows(
             model,
@@ -577,15 +548,11 @@ impl DiffView {
         self.split_rows = folds::apply_split(split_rows, model.files.get(self.selected), folded);
         self.fold_groups = fold_groups;
         self.rows_path = path;
-        // the file list may have shifted (refresh) or folds may hide the old
-        // cursor row: keep the tree cursor on the pane's file. A pure wrap
-        // re-flow changes neither, and must not move a browsing cursor. Read
-        // ahead of `merged_model` below: it is `model`'s last use, and that
-        // borrow has to end before `restore_positions`/`reseat_tree_cursor`
-        // can take `&mut self`.
+        // a refresh or a fold can move the pane's file in the sidebar, so we
+        // reseat the tree cursor; a pure wrap re-flow must leave it alone. We
+        // read this before `merged_model` below ends `model`'s borrow.
         let tree_rows = self.rows_dirty.then(|| self.tree_rows(model, session));
-        // stash what was just merged so the render path reads it instead of
-        // rebuilding it every frame
+        // we keep the merge so the render path skips rebuilding it every frame
         self.merged_model = match model_cow {
             Cow::Borrowed(_) => None,
             Cow::Owned(model) => Some(model),
@@ -679,9 +646,7 @@ impl DiffView {
 
     /// Select `file_index`, reveal it in the sidebar and rebuild the pane
     /// rows, then seat the cursor on the first row `matches` picks out.
-    /// Returns the matched span, first row to last, so a caller can band it
-    /// the way a stop's card does. Shared by `seat_stop` and `focus_comment`,
-    /// the two verbs that jump the diff cursor onto something found by id.
+    /// Returns the matched span, first row to last, so a caller can band it.
     pub(crate) fn seat_on(
         &mut self,
         review: &Review,
@@ -724,18 +689,9 @@ impl DiffView {
         Some((first, last))
     }
 
-    /// The flattened sidebar rows over the model's files. The tree layout
-    /// groups files under collapsible directory rows (honoring the folded
-    /// set). The review layout splits files into a to-review and a viewed
-    /// bucket under foldable Section rows; bucket membership reads the
-    /// hash-keyed viewed marks, so an edited file falls back into to-review by
-    /// itself. The kinds layout groups them by what they are. Files keep their
-    /// model index.
-    ///
-    /// Inside a group, whether a directory or a section, the files already
-    /// viewed come first: every layout sorts the same way the review layout's
-    /// buckets do, so what is left to read is one run at the bottom of each
-    /// group and marking a file moves it out of that run.
+    /// The flattened sidebar rows over the model's files, each keeping its
+    /// model index. Every group lists its viewed files first, so what is left
+    /// to read is one run at its bottom.
     pub(crate) fn tree_rows(&self, model: &DiffModel, session: &Session) -> Vec<TreeRow> {
         match self.layout {
             FileLayout::Review => self.section_rows(model, Self::review_groups(model, session)),
@@ -924,12 +880,10 @@ impl DiffView {
             .collect()
     }
 
-    /// Advance the sidebar layout: tree → review → kinds → walkthrough → tree.
-    /// The walkthrough is in the cycle only where the review has one, since a
-    /// layout with nothing to list is a dead stop in the rotation. Leaving it
-    /// for one of the file layouts is itself a dead stop when the diff has no
-    /// files of its own (`empty`): tree/review/kinds would list nothing, so
-    /// the walkthrough is the only content and stays put.
+    /// Advance the sidebar layout: tree, review, kinds, walkthrough. The
+    /// walkthrough joins the cycle only when the review has one, and when the
+    /// diff has no files of its own (`empty`) we stay on it, since the other
+    /// layouts would list nothing.
     pub(crate) fn cycle_layout(&mut self, has_walkthrough: bool, empty: bool) -> FileLayout {
         self.layout = match self.layout {
             FileLayout::Review => FileLayout::Kinds,
@@ -1485,8 +1439,8 @@ mod tests {
             .expect("the caret's own row")
     }
 
-    /// A review of nothing is a screen with no rows to read or comment on, so
-    /// the opener declines and the reader stays where the answer is.
+    /// An empty review has no rows to show, so the opener declines and the
+    /// reader stays put.
     #[test]
     fn opening_a_review_with_no_files_says_so_and_opens_nothing() {
         let fixture = Fixture::new();
@@ -1789,9 +1743,8 @@ flowchart TD
         assert_eq!(paths, ["todo.md", "src/lib.rs"]);
     }
 
-    /// A layout with nothing to list is a dead stop in the rotation: `t`
-    /// reaches it only on a walkthrough's own source, never on the working
-    /// tree even when a walkthrough exists elsewhere.
+    /// `t` reaches the walkthrough layout only on a walkthrough's own source,
+    /// even when a walkthrough exists elsewhere.
     #[test]
     fn t_cycles_into_the_walkthrough_only_on_its_own_source() {
         let fixture = standard_fixture();
@@ -1826,9 +1779,8 @@ flowchart TD
         );
     }
 
-    /// A clean tree has nothing of its own for tree/review/kinds to list;
-    /// leaving the walkthrough for one of them would strand the reader on an
-    /// empty sidebar, so `t` cycles back to it instead.
+    /// A clean tree gives tree/review/kinds nothing to list, so `t` cycles
+    /// back to the walkthrough.
     #[test]
     fn t_stays_on_the_walkthrough_when_the_diff_has_no_files_of_its_own() {
         let fixture = Fixture::new();
@@ -2001,8 +1953,8 @@ flowchart TD
         });
     }
 
-    /// The whole point of a stop: it seats the reader on the first row of the
-    /// span the agent named, in the file that holds it, and shows that span.
+    /// A stop seats the reader on the first row of the span the agent named,
+    /// in the file that holds it, and shows that span.
     #[test]
     fn moving_onto_a_stop_seats_the_cursor_on_its_span() {
         let fixture = standard_fixture();
@@ -2032,8 +1984,7 @@ flowchart TD
         assert_eq!(lines, [1, 2, 3], "the slide shows the whole definition");
     }
 
-    /// A stop with nothing to point at is prose, so it leaves the pane where
-    /// the reader had it rather than jumping somewhere arbitrary.
+    /// A stop with no anchor leaves the pane where the reader had it.
     #[test]
     fn an_anchorless_stop_leaves_the_pane_alone() {
         let fixture = standard_fixture();
@@ -2050,8 +2001,7 @@ flowchart TD
         );
     }
 
-    /// Talking back is how the walkthrough becomes a conversation, and a stop
-    /// is a comment, so `r` on its card answers it in its own thread.
+    /// A stop is a comment, so `r` on its card answers it in its own thread.
     #[test]
     fn r_on_a_stop_card_replies_to_that_stop() {
         let fixture = standard_fixture();
@@ -2149,9 +2099,7 @@ flowchart TD
         app.comments_to(at);
     }
 
-    /// The bug the slides exist to fix: reaching a comment from the comments
-    /// pane used to leave the pane on the whole file with the card parked at
-    /// the bottom. Selecting one enters the slide that holds it.
+    /// Selecting a comment in the comments pane enters the slide that holds it.
     #[test]
     fn selecting_a_comment_from_the_pane_enters_the_slide_that_holds_it() {
         let fixture = standard_fixture();
@@ -2173,8 +2121,7 @@ flowchart TD
         );
     }
 
-    /// A comment no stop's region holds is a slide of its own, so reaching it
-    /// still shows one thing rather than the whole file.
+    /// A comment no stop's region holds is a slide of its own.
     #[test]
     fn a_comment_outside_every_region_opens_as_its_own_slide() {
         let fixture = standard_fixture();
@@ -2191,10 +2138,9 @@ flowchart TD
         assert_eq!(shown_comment_ids(&app), vec![human]);
     }
 
-    /// A comment on a deleted line anchors old-side. Reaching it through the
-    /// comments pane must window the deleted row and its hunk header in, not
-    /// just the card: `window_slide` used to compare every span against the
-    /// new-side line only, so a deleted row never matched.
+    /// A comment on a deleted line anchors old-side, so reaching it through
+    /// the comments pane windows the deleted row and its hunk header in along
+    /// with the card.
     #[test]
     fn a_comment_on_a_deleted_line_bands_the_deleted_row_and_its_hunk() {
         let fixture = two_hunk_fixture();
@@ -2297,10 +2243,8 @@ flowchart TD
             .collect()
     }
 
-    /// The bug this layout exists to fix: a stop anchored deep in a large file
-    /// used to render the file's entire diff with the card parked partway
-    /// through. The window is exactly what the agent pointed at, its hunk
-    /// header and its card.
+    /// A stop anchored deep in a large file windows the pane to exactly the
+    /// span the agent pointed at, its hunk header and its card.
     #[test]
     fn a_stops_window_is_its_anchored_rows_its_hunk_header_and_its_card() {
         let fixture = big_file_fixture();
@@ -2322,8 +2266,7 @@ flowchart TD
         assert!(stop_card_rows(&app) > 0, "the card still draws");
     }
 
-    /// A wide span is what the agent chose, so the window shows all of it
-    /// rather than cutting it off at a row budget.
+    /// The window shows a wide span whole, with no row budget.
     #[test]
     fn a_wide_span_shows_every_row_it_covers() {
         let fixture = huge_span_fixture();
@@ -2442,7 +2385,7 @@ flowchart TD
     }
 
     /// The diff sidebar's own heading counts the walkthrough's stops seen so
-    /// far; the status screen's header counts walkthroughs, not stops.
+    /// far.
     #[test]
     fn seen_progress_shows_in_the_sidebar_heading_not_the_status_header() {
         let fixture = standard_fixture();
@@ -3354,8 +3297,6 @@ flowchart TD
         }
     }
 
-    /// `]` walks folder to folder in the tree layout, the way it walks
-    /// sections on the status screen.
     /// Four files in one group, so marking has somewhere to sort them to.
     fn flat_fixture() -> Fixture {
         let fixture = Fixture::new();
@@ -3369,9 +3310,8 @@ flowchart TD
         fixture
     }
 
-    /// Marking the last file in a group sorts it to the top of that group. The
-    /// reader must not be dragged up there with it: they stay on the row they
-    /// were reading, which is now the file that was above.
+    /// Marking the last file in a group sorts it to the top of that group,
+    /// and the cursor stays on its row, now the file that was above.
     #[test]
     fn marking_the_bottom_file_keeps_the_reader_at_the_bottom() {
         for layout in [
@@ -3398,8 +3338,7 @@ flowchart TD
         }
     }
 
-    /// Marking up the list from the bottom keeps walking the unviewed files
-    /// rather than bouncing off the top of the group each time.
+    /// Marking up the list from the bottom keeps walking the unviewed files.
     #[test]
     fn marking_from_the_bottom_walks_up_through_what_is_left() {
         let fixture = flat_fixture();
@@ -3458,8 +3397,7 @@ flowchart TD
         assert_eq!(tree_cursor_row(&app), "section Source");
     }
 
-    /// The last group has nothing after it, so the cursor stays put instead of
-    /// wrapping to the top.
+    /// The last group has nothing after it, so the cursor stays put.
     #[test]
     fn stepping_past_the_last_group_stands_still() {
         let fixture = nested_fixture();
@@ -3796,9 +3734,8 @@ flowchart TD
         );
     }
 
-    /// Folding a group is the reader saying "not this one", so the walk stops
-    /// at what is on screen and reports what it left behind. `u` is the key
-    /// that goes hunting.
+    /// The walk stops at what is on screen and reports the folded files it
+    /// skipped; `u` reaches them.
     #[test]
     fn the_walk_stops_at_a_folded_group_and_says_what_is_left() {
         let fixture = Fixture::new();
@@ -5301,9 +5238,9 @@ flowchart TD
         );
     }
 
-    /// A stop is never posted anywhere, and claiming it would hide it from
-    /// the revision logic that prunes superseded stops by their agent
-    /// authorship, so a walkthrough source refuses the verb outright.
+    /// A walkthrough source refuses the verb: claiming a stop would hide it
+    /// from the revision logic that prunes superseded stops by agent
+    /// authorship.
     #[test]
     fn claiming_a_stop_on_a_walkthrough_is_refused() {
         let fixture = standard_fixture();

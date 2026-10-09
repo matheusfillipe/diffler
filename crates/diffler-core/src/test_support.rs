@@ -1,5 +1,4 @@
-//! Shared test fixtures for review-state unit tests: anchor and file-diff
-//! builders reused by the session, store, and feedback test modules.
+//! Fixtures shared by review-state unit tests.
 
 use crate::model::{BlobIds, FileDiff, FileStatus, HashCache};
 use crate::session::Anchor;

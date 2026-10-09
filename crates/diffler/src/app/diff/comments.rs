@@ -1,7 +1,5 @@
-//! The comments sidebar: a navigator down the review's comments that drives
-//! the diff cursor. Selecting a comment seats the cursor on it, so the pane's
-//! own verbs (reply, resolve, delete, yank) act on the right one with no
-//! separate handling.
+//! The comments sidebar. Selecting a comment seats the diff cursor on it, so
+//! the diff pane's verbs act on it.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -10,9 +8,7 @@ use diffler_core::session::CommentStatus;
 use super::{DiffRow, Pane};
 use crate::app::App;
 
-/// The comments pane's four groupings, cycled by `t` while it holds focus.
-/// The file sidebar's own layout (`crate::config::FileLayout`) is untouched:
-/// this is a second, independent axis over the same review.
+/// The comments pane's groupings, cycled by `t` while it holds focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommentGrouping {
     File,
@@ -41,15 +37,11 @@ impl CommentGrouping {
     }
 }
 
-/// The group key `status` grouping folds by default, the way the review
-/// layout's viewed bucket starts folded: a finished thread is what the
-/// reader did not come to read.
+/// The group key `status` grouping folds by default.
 pub(crate) const RESOLVED_FOLD_KEY: &str = "status:resolved";
 
 /// One comment's grouping-relevant facts, independent of the session so
-/// rendering and cursor stepping bucket the same review the same way from
-/// either side (`crate::ui::diff` builds these from its own render context;
-/// `App::comment_rows` builds them from the session directly).
+/// rendering and cursor stepping group the review the same way.
 #[derive(Debug, Clone)]
 pub struct CommentFacts {
     pub id: String,
@@ -60,8 +52,7 @@ pub struct CommentFacts {
 }
 
 /// One row of the comments pane under a grouping: a header naming its group
-/// and how many comments it holds, or one comment. Mirrors the file
-/// sidebar's own header/file row split (`crate::tree::TreeNode`).
+/// and how many comments it holds, or one comment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommentPaneRow {
     Header {
@@ -93,10 +84,7 @@ fn status_label(status: CommentStatus) -> &'static str {
 }
 
 /// Bucket `items` under a header per distinct key, in the order each key
-/// first appears. `items` already carries the pane's base order (by file,
-/// then line), so grouping by file reads in diff order and grouping by
-/// author reads in the order each author's first comment appears; a group
-/// with nothing in it never gets a header.
+/// first appears in `items`, which is already ordered by file, then line.
 fn group_by(
     items: &[CommentFacts],
     folds: &BTreeSet<String>,
@@ -137,9 +125,7 @@ fn group_by(
     rows
 }
 
-/// Status groups in a fixed order (open, replied, resolved) rather than
-/// first appearance, so the pane reads the same way every time it groups by
-/// status.
+/// Status groups in a fixed order: open, replied, resolved.
 fn group_by_status(items: &[CommentFacts], folds: &BTreeSet<String>) -> Vec<CommentPaneRow> {
     let mut rows = Vec::new();
     for status in [
@@ -170,9 +156,7 @@ fn group_by_status(items: &[CommentFacts], folds: &BTreeSet<String>) -> Vec<Comm
     rows
 }
 
-/// The comments pane's rows under `grouping`: a flat list yields every
-/// comment with no header at all, the other three group it the way the file
-/// sidebar's review and kinds layouts group files (`DiffView::section_rows`).
+/// The comments pane's rows under `grouping`; a flat list has no headers.
 pub fn group_comment_rows(
     items: &[CommentFacts],
     grouping: CommentGrouping,
@@ -198,8 +182,7 @@ pub fn group_comment_rows(
 
 /// The row `<tab>`/`za` folds when the comments cursor sits at `at`: that
 /// row's index when it is a header, otherwise the index of the header above
-/// it. Mirrors `nav::foldable_at`, one level deep since a comment row nests
-/// under exactly one header.
+/// it.
 fn comment_foldable_at(rows: &[CommentPaneRow], at: usize) -> Option<usize> {
     let header = |row: &CommentPaneRow| matches!(row, CommentPaneRow::Header { .. });
     if header(rows.get(at)?) {
@@ -219,9 +202,8 @@ impl super::DiffView {
 }
 
 impl App {
-    /// Where a comment's file sits in the diff, `usize::MAX` when the diff no
-    /// longer carries it. Sorting the sidebar and asking whether a comment is
-    /// orphaned are the same question.
+    /// Where a comment's file sits in the diff, `usize::MAX` when the diff
+    /// lacks it, which makes the comment an orphan.
     fn file_rank(&self, path: &str) -> usize {
         self.diff.as_ref().map_or(usize::MAX, |diff| {
             diff.model_for_rows(&self.review)
@@ -250,8 +232,7 @@ impl App {
     }
 
     /// The pane's rows under its current grouping: headers and comments,
-    /// folded groups' items left out. `comments_cursor` indexes into this,
-    /// the way `tree_cursor` indexes into the file sidebar's own rows.
+    /// folded groups' items left out. `comments_cursor` indexes into this.
     pub(crate) fn comment_rows(&self) -> Vec<CommentPaneRow> {
         let Some(diff) = self.diff.as_ref() else {
             return Vec::new();
@@ -274,8 +255,6 @@ impl App {
         group_comment_rows(&facts, diff.comment_grouping, &diff.comment_folds)
     }
 
-    /// The sidebar is a pane of the diff screen, so it opens over a review
-    /// that is already on screen.
     pub(crate) fn toggle_comments_sidebar(&mut self) {
         let Some(diff) = self.diff.as_mut() else {
             return;
@@ -287,14 +266,13 @@ impl App {
             }
             return;
         }
-        // both sidebars take the same place, so we widen the lens back to every
-        // name it labels, which closes the references
+        // both sidebars take the same place, so we unfocus the lens, which
+        // closes the references
         if let Some(lens) = diff.lens.as_mut() {
             lens.view.widen();
         }
         diff.settle_focus();
         let count = self.comment_rows().len();
-        // an empty sidebar is an answer, so it opens with nothing to focus
         if count == 0 {
             return;
         }
@@ -332,8 +310,7 @@ impl App {
         self.seat_cursor_on_selected_comment();
     }
 
-    /// `[`/`]` in the comments pane: the previous/next group header, the way
-    /// `]`/`[` step the file sidebar's own headers.
+    /// `[`/`]` in the comments pane: the previous/next group header.
     pub(crate) fn comments_jump_header(&mut self, forward: bool) {
         let rows = self.comment_rows();
         let Some(diff) = self.diff.as_ref() else {
@@ -367,9 +344,7 @@ impl App {
         if !diff.comment_folds.remove(&key) {
             diff.comment_folds.insert(key);
         }
-        // the header that folded is the one to stand on, mirroring the file
-        // sidebar's own za/<tab>; folding never removes a header's own row,
-        // only what sits under it, so `target` always stays valid
+        // folding keeps the header's own row, so `target` stays valid
         let rows = self.comment_rows();
         if let Some(diff) = self.diff.as_mut() {
             diff.comments_cursor = target.min(rows.len().saturating_sub(1));
@@ -417,10 +392,8 @@ impl App {
         if !diff.comments_open {
             return;
         }
-        // the pane's own cursor holds its place, which is the next comment once
-        // the one it sat on is gone, and only follows through to the diff when
-        // the reader is standing in the pane: deleting from the diff would
-        // otherwise throw them onto whatever comment took the vacated row
+        // we move the diff cursor only when the reader is in the pane, so a
+        // delete from the diff keeps them on their row
         let follow = diff.focus == Pane::Comments;
         let index = diff.comments_cursor;
         if follow {
@@ -433,9 +406,7 @@ impl App {
         }
     }
 
-    /// The comment the sidebar has selected; `None` when it sits on a group
-    /// header instead, the same as the file sidebar's cursor landing on a
-    /// directory or section row.
+    /// The comment the sidebar has selected; `None` on a group header.
     pub(crate) fn selected_comment_id(&self) -> Option<String> {
         let diff = self.diff.as_ref()?;
         match self.comment_rows().get(diff.comments_cursor)? {
@@ -467,8 +438,8 @@ impl App {
         self.confirm_delete_comment(&id);
     }
 
-    /// Claim the comment the sidebar has selected, by id: an orphan has no
-    /// row for the cursor, the same reason delete addresses it this way.
+    /// Claim the comment the sidebar has selected, by id, since an orphan has
+    /// no row for the cursor.
     pub(crate) fn claim_selected_comment(&mut self) {
         let Some(id) = self.selected_comment_id() else {
             self.info("no comment selected");
@@ -500,9 +471,7 @@ impl App {
     }
 
     /// Move the diff cursor onto the selected comment, switching files when it
-    /// lives in another one. This is what makes the pane's verbs apply. A
-    /// header under the cursor selects no comment, so it seats nothing and
-    /// leaves the diff cursor exactly where it was.
+    /// lives in another one. A header seats nothing.
     pub(crate) fn seat_cursor_on_selected_comment(&mut self) {
         let Some(id) = self.selected_comment_id() else {
             return;
@@ -510,12 +479,10 @@ impl App {
         self.focus_comment(&id);
     }
 
-    /// Enter the slide that holds `id`, so the walkthrough layout never shows
-    /// a comment outside the slide on screen: the stop it is the primary of,
-    /// else the stop whose region covers it, else a slide of its own. A
-    /// comment reached this way always belongs to the open source's own
-    /// walkthrough, since that source carries no other. Every route into a
-    /// comment calls this; in any other layout it does nothing.
+    /// Enter the slide that holds `id`: the stop it is the primary of, else
+    /// the stop whose region covers it, else a slide of its own. Every route
+    /// into a comment calls this; outside the walkthrough layout it does
+    /// nothing.
     pub(crate) fn enter_slide_for_comment(&mut self, id: &str) {
         let Some(diff) = self.diff.as_ref() else {
             return;
@@ -544,8 +511,6 @@ impl App {
             .iter()
             .position(|stop| stop == id)
             .or_else(|| walkthrough.stops.iter().position(holds));
-        // the stop's own seating bands its region and opens its file, the
-        // same arrival the sidebar gives
         if let Some(index) = slide {
             self.seat_stop(index);
             return;
@@ -595,8 +560,8 @@ impl App {
                 matches!(row, DiffRow::Comment { comment, line: 0, .. } if *comment == comment_index)
             })
             .is_some();
-        // a jump lands on the card, so the lines it speaks about are banded to
-        // say which of the code around it the reader was sent to
+        // we band the lines the comment covers, since the cursor sits on its
+        // card
         diff.referenced =
             span.and_then(|(line, end)| diff.span_rows(review, file_index, line, end));
         seated
@@ -727,9 +692,8 @@ mod tests {
         assert_eq!(left, vec!["why 42?", "stale note"], "only the orphan went");
     }
 
-    /// A verb that reads the diff cursor or the selected file finds neither on
-    /// an orphan: `v` would mark a file the reader never opened as viewed, and
-    /// `y`/`e` would take a third, unrelated file.
+    /// A verb that reads the diff cursor or the selected file declines on an
+    /// orphan.
     #[test]
     fn an_orphaned_comment_declines_the_verbs_that_need_a_row() {
         for verb in ['r', 'R', 'c', 'V', 'v', 'y', 'e'] {
@@ -763,8 +727,7 @@ mod tests {
         }
     }
 
-    /// The review-wide verbs address the whole review, so an orphan sitting
-    /// under the cursor is no reason to refuse them.
+    /// The review-wide verbs work with an orphan under the cursor.
     #[test]
     fn an_orphaned_selection_still_allows_the_verbs_that_need_no_row() {
         let (_fixture, mut app) = app_with_comments();
@@ -959,10 +922,8 @@ mod tests {
             .collect()
     }
 
-    /// `<cr>` takes the reader to the comment the pane has selected, whether or
-    /// not they moved the selection. Moving seats the diff cursor as it goes,
-    /// so the bug this guards is the selection nobody moved: opening the pane
-    /// and pressing `<cr>` straight away, or leaving and coming back.
+    /// `<cr>` takes the reader to the selected comment even when nobody moved
+    /// the selection.
     #[test]
     fn enter_goes_to_the_selected_comment_without_moving_the_selection() {
         let (_fixture, mut app, _resolved) = app_with_grouped_comments();
@@ -1028,8 +989,7 @@ mod tests {
         );
     }
 
-    /// Deleting from the pane is the reader working through the list, so the
-    /// next comment is where they want to be, in both panes.
+    /// Deleting from the pane moves both panes to the next comment.
     #[test]
     fn deleting_from_the_pane_moves_to_the_next_comment() {
         let (_fixture, mut app, _resolved) = app_with_grouped_comments();

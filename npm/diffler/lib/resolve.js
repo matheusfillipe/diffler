@@ -1,9 +1,8 @@
 "use strict";
 
-// Resolve (and, if missing, fetch) the diffler binary for the current
-// platform. The npm package ships only this JS; the actual binary is pulled
-// from the matching GitHub release asset on install (and lazily on first run,
-// so `--ignore-scripts` installs still work).
+// The npm package ships only this JS. We fetch the binary from the matching
+// GitHub release on install, and again on first run so `--ignore-scripts`
+// installs still work.
 
 const fs = require("node:fs");
 const os = require("node:os");
@@ -17,7 +16,6 @@ const BASE =
   process.env.DIFFLER_DOWNLOAD_BASE ||
   `https://github.com/${REPO}/releases/download`;
 
-// node platform-arch -> { rust target triple, archive extension }
 const TARGETS = {
   "darwin-arm64": { target: "aarch64-apple-darwin", ext: "tar.gz" },
   "darwin-x64": { target: "x86_64-apple-darwin", ext: "tar.gz" },
@@ -88,8 +86,6 @@ function download(url, dest) {
 function extract(archive, ext, into) {
   fs.mkdirSync(into, { recursive: true });
   if (ext === "zip") {
-    // Expand-Archive is built into Windows PowerShell; the only platform that
-    // ships a .zip asset is win32
     execFileSync("powershell", [
       "-NoProfile",
       "-Command",

@@ -1,27 +1,23 @@
 //! The colors the graph renderer needs, supplied by the host so the component
-//! stays independent of any particular app's theme.
+//! stays independent of the app's theme.
 
 use ratatui::style::Color;
 
 #[derive(Debug, Clone, Copy)]
 pub struct GraphTheme {
-    /// Default background and node text/foreground.
     pub bg: Color,
     pub fg: Color,
     pub dim: Color,
-    /// Status colors for node borders/labels.
     pub ok: Color,
     pub failed: Color,
     pub running: Color,
     pub queued: Color,
-    /// Bottom-bar / panel background.
     pub panel: Color,
     /// Background for nodes matching an active `/` search.
     pub search: Color,
 }
 
 impl GraphTheme {
-    /// The color for a node status.
     pub(crate) fn status(&self, status: crate::graph::model::NodeStatus) -> Color {
         use crate::graph::model::NodeStatus;
         match status {

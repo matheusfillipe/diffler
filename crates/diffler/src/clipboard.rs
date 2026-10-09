@@ -1,22 +1,15 @@
-//! System clipboard. Two mechanisms, used together for reach without native
-//! build deps (so the static musl binaries stay clean): an OSC52 escape
-//! sequence (written to the terminal by the main loop after a draw, never
-//! from rendering) which the terminal forwards even over ssh/tmux; and a
-//! best-effort pipe to the platform clipboard CLI, covering terminals that
-//! don't honor OSC52.
+//! System clipboard with no native build deps, so the static musl binaries
+//! stay clean: OSC52, which terminals forward over ssh and tmux, plus a pipe to
+//! the platform clipboard CLI for terminals that ignore OSC52.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-/// Wrap `text` in an OSC52 set-clipboard sequence for the `c` selection.
 pub fn osc52(text: &str) -> String {
     format!("\x1b]52;c;{}\x07", base64(text.as_bytes()))
 }
 
-/// Pipe `text` to the first available platform clipboard tool. Best-effort: a
-/// host with none installed just relies on OSC52. `wl-copy`/`xclip`/`xsel`
-/// fork a daemon to own the X11/Wayland selection, so it persists after exit;
-/// `clip.exe` also covers WSL.
+/// Best-effort: a host with no tool relies on OSC52. `clip.exe` covers WSL.
 pub fn native_copy(text: &str) {
     let candidates: &[(&str, &[&str])] = if cfg!(target_os = "macos") {
         &[("pbcopy", &[])]
@@ -50,13 +43,12 @@ fn pipe_to(cmd: &str, args: &[&str], text: &str) -> bool {
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(text.as_bytes());
     }
-    // stdin drops here, signalling EOF; the tool reads it and (for the
-    // X11/Wayland ones) backgrounds itself, so the wait returns promptly
+    // dropping stdin sends EOF, and the X11/Wayland tools then background
+    // themselves to own the selection, so the wait returns promptly
     child.wait().is_ok()
 }
 
-/// Standard base64 with padding, hand-rolled to avoid a direct dependency
-/// for 25 testable lines.
+/// Hand-rolled to avoid a dependency for 25 testable lines.
 fn base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let symbol = |group: u32, shift: u32| -> char {

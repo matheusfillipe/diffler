@@ -1,7 +1,7 @@
-//! Tree-sitter foundation shared by highlighting, scope context, and the
-//! structural diff. Grammars are statically linked (no runtime loading, since
-//! musl-static binaries cannot `dlopen`); a parse failure or unknown language
-//! degrades silently to plain behavior so the UI is never blocked.
+//! Tree-sitter parsing shared by highlighting, scope context and the
+//! structural diff. We link grammars statically since musl-static binaries
+//! cannot `dlopen`. A parse failure or unknown language falls back to plain
+//! text.
 
 pub mod intraline;
 pub mod registry;
@@ -16,12 +16,9 @@ pub use registry::{HIGHLIGHT_NAMES, LangEntry, LanguageRegistry};
 pub use scope::ScopeIndex;
 pub use symbols::Ident;
 
-/// Files larger than this are not parsed (avoids pathological cost on
-/// generated/minified blobs); they degrade to plain rendering / textual diff.
+/// We skip parsing larger files, which are usually generated or minified.
 pub(crate) const MAX_PARSE_BYTES: usize = 2_000_000;
 
-/// Parse `src` with `entry`'s grammar. `None` on a language-setup or parse
-/// failure so callers degrade gracefully.
 pub(crate) fn parse(entry: &LangEntry, src: &str) -> Option<tree_sitter::Tree> {
     let mut parser = Parser::new();
     parser.set_language(&entry.language).ok()?;
@@ -29,8 +26,7 @@ pub(crate) fn parse(entry: &LangEntry, src: &str) -> Option<tree_sitter::Tree> {
 }
 
 /// `(start_byte, visible_end_byte)` per line, matching `str::lines()`: the
-/// visible end excludes the trailing `\n`/`\r\n`. Shared by highlighting and
-/// intra-line emphasis to map whole-file byte ranges onto individual lines.
+/// visible end excludes the trailing `\n`/`\r\n`.
 pub(crate) fn line_bounds(content: &str) -> Vec<(usize, usize)> {
     let bytes = content.as_bytes();
     let mut out = Vec::new();

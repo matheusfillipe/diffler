@@ -80,15 +80,12 @@ async fn main() -> color_eyre::Result<()> {
     }
 }
 
-/// Toggle click, drag and SGR mouse reporting, and focus reporting with them.
-/// A terminal without mouse support ignores the modes.
+/// Focus reporting rides along so the CI poll can idle while nobody looks.
 fn set_mouse_capture(on: bool) {
     use crossterm::event::{DisableFocusChange, EnableFocusChange};
     use std::io::Write as _;
     let mut out = std::io::stdout();
-    // we ask for clicks (1000), drags (1002) and SGR coordinates (1006), the
-    // set every multiplexer forwards; knowing when nobody is looking keeps the
-    // CI poll cheap
+    // clicks (1000), drags (1002) and SGR coordinates (1006): the set every multiplexer forwards
     let _ = if on {
         out.write_all(MOUSE_ON.as_bytes())
             .and_then(|()| crossterm::execute!(out, EnableFocusChange))
@@ -102,8 +99,7 @@ fn set_mouse_capture(on: bool) {
 const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1002h\x1b[?1006h";
 const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1002l\x1b[?1000l";
 
-/// Chain mouse-disable ahead of the existing (ratatui screen-restore) panic
-/// hook, so a crash doesn't leave the terminal emitting mouse escape codes.
+/// So a crash leaves no terminal emitting mouse escape codes.
 fn install_mouse_panic_hook() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -112,8 +108,7 @@ fn install_mouse_panic_hook() {
     }));
 }
 
-// a missing repository is user error, not a crash: a plain line and a hint beat
-// an eyre report with a source location pointing into our own main
+// a missing repository is user error, so we print a plain line and a hint
 #[allow(clippy::print_stderr)]
 fn exit_without_repo(err: &diffler_core::repo::RepoError, path: &str) -> ! {
     let shown = std::fs::canonicalize(path)
@@ -138,8 +133,7 @@ fn exit_without_repo(err: &diffler_core::repo::RepoError, path: &str) -> ! {
     std::process::exit(1)
 }
 
-// stdout is correct for a non-TUI subcommand; the workspace print_stdout lint
-// exists to keep the TUI screen intact, which never starts on this path
+// the TUI never starts on this path, so stdout is safe
 #[allow(clippy::print_stdout)]
 fn print_config_dump(loaded: &config::LoadedConfig) -> color_eyre::Result<()> {
     print!("{}", config::render_dump(loaded)?);
@@ -151,9 +145,7 @@ async fn run(
     mut app: App,
     overrides: config::CliOverrides,
 ) -> color_eyre::Result<()> {
-    // the query reads the terminal's answer from stdin, so it has to finish
-    // before the event pump starts reading keys; a terminal that answers
-    // nothing keeps the halfblocks picker `App::new` set
+    // the query reads the terminal's answer from stdin, so it runs before the event pump
     if let Ok(picker) = ratatui_image::picker::Picker::from_query_stdio() {
         app.image_picker = picker;
     }
@@ -165,19 +157,16 @@ async fn run(
     loop {
         if needs_draw {
             workspace.sync_strip();
-            // rendering writes to the tty and handling an event runs git: both
-            // block, so hand the worker back to the runtime for the duration or
-            // a slow repo stalls the MCP server and the watcher with it
+            // drawing and handling block, so we free the worker or a slow repo
+            // stalls the MCP server and the watcher
             tokio::task::block_in_place(|| {
                 terminal.draw(|frame| ui::draw(frame, workspace.active_mut()))
             })?;
             needs_draw = false;
         }
         if let Some(text) = workspace.take_clipboard() {
-            // OSC52 addresses the terminal emulator, not the screen: it must
-            // bypass ratatui's buffer and go out raw, right after the draw so
-            // it cannot interleave with one. The native CLI pipe (on a blocking
-            // thread, since it spawns a process) covers terminals without OSC52.
+            // OSC52 goes out raw right after the draw so it never interleaves
+            // with one; the native copy covers terminals without OSC52
             use std::io::Write as _;
             let mut out = std::io::stdout();
             out.write_all(clipboard::osc52(&text).as_bytes())?;
@@ -185,8 +174,7 @@ async fn run(
             tokio::task::spawn_blocking(move || clipboard::native_copy(&text));
         }
         if let Some((tab, request)) = workspace.take_editor() {
-            // the event pump must release the tty before the editor gets
-            // it, or both end up reading the same keystrokes
+            // the event pump releases the tty first, or both read the same keystrokes
             events.abort();
             let _ = (&mut events).await;
             set_mouse_capture(false);
@@ -201,7 +189,6 @@ async fn run(
             terminal.clear()?;
             events = spawn_input(&tx);
             workspace.editor_finished(tab, purpose, outcome);
-            // the screen came back blank from the suspend
             needs_draw = true;
             continue;
         }
@@ -214,9 +201,7 @@ async fn run(
             Flow::Continue => needs_draw = true,
             Flow::Idle => {}
         }
-        // drain whatever queued while handling so one draw covers the batch:
-        // held-down keys and watcher bursts otherwise pay a full draw (and its
-        // first-view enrichment) per event and the UI lags behind the input
+        // we drain the queue so one draw covers a burst of held keys or watcher events
         let mut quit = false;
         while let Ok(event) = rx.try_recv() {
             match tokio::task::block_in_place(|| workspace.handle(event)) {
@@ -243,19 +228,14 @@ async fn run(
     Ok(())
 }
 
-/// Start the terminal event pump, its events tagged as input.
 fn spawn_input(tx: &mpsc::UnboundedSender<WsEvent>) -> tokio::task::JoinHandle<()> {
     let (input_tx, _) = workspace::forward(tx, WsEvent::Input);
     event::spawn_event_loop(input_tx)
 }
 
-/// Run whatever one tab queued: its git process, its workers, its CI call.
-/// Each answers on the tab's own channel.
+/// Each worker answers on the tab's own channel.
 fn dispatch_tab(tab: &mut workspace::Tab) {
     if let Some(app::GitOp { label, argv }) = tab.app.pending_git.take() {
-        // the terminal stays up: spawn the process on a blocking thread
-        // with a tx clone so the result returns as an event and the loop
-        // keeps drawing the "running …" status meanwhile
         let repo_root = tab.app.review.repo_root.clone();
         let tx = tab.tx.clone();
         tokio::task::spawn_blocking(move || {
@@ -264,15 +244,11 @@ fn dispatch_tab(tab: &mut workspace::Tab) {
     }
     dispatch_workers(&mut tab.app, &tab.tx);
     if let Some(request) = tab.app.pending_ci.take() {
-        // service the CI provider call off-thread; the result returns as an
-        // event so the active CI screen stays live without blocking the loop
         dispatch_ci(&tab.app, request, &tab.tx);
     }
 }
 
-/// Spawn the MCP server when enabled and publish its endpoint into every
-/// open project for the stdio proxy to discover. A startup failure disables
-/// MCP for the session.
+/// A startup failure disables MCP for the session.
 fn start_mcp(
     workspace: &mut Workspace,
     tx: &mpsc::UnboundedSender<WsEvent>,
@@ -297,7 +273,6 @@ fn start_mcp(
     }
 }
 
-/// Start the off-thread repo refresh when one is queued and none is running.
 fn dispatch_refresh(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     if app.refresh_state != app::RefreshState::Queued {
         return;
@@ -319,8 +294,7 @@ fn dispatch_refresh(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     });
 }
 
-/// Load a requested file's text and blame off the main task, highlighting it
-/// on the same worker so the screen opens fully rendered.
+/// Highlights on the same worker so the screen opens fully rendered.
 fn dispatch_file(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     let Some(request) = app.pending_file.take() else {
         return;
@@ -350,9 +324,6 @@ fn dispatch_file(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     });
 }
 
-/// Read the git attributes of the kinds sidebar's files off the main task: one
-/// lookup walks the attribute files, so a whole diff's worth would stall the
-/// loop.
 fn dispatch_declared(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     let Some(request) = app.pending_declared.take() else {
         return;
@@ -369,16 +340,13 @@ fn dispatch_declared(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     });
 }
 
-/// Count the checkout off the main task: the scan reads every tracked file,
-/// which is milliseconds on a small repo and seconds on a large one.
 fn dispatch_stats(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     let Some(request) = app.pending_stats.take() else {
         return;
     };
     let tx = tx.clone();
     let root = app.review.repo_root.clone();
-    // what git tracks plus what the status screen shows as untracked, so a file
-    // written a minute ago counts like the rest of the checkout
+    // we count untracked files too, so a new file counts like the rest
     let untracked: Vec<String> = app
         .review
         .status
@@ -397,11 +365,8 @@ fn dispatch_stats(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     });
 }
 
-/// Read the files the walkthrough points at, so its stops and figure nodes
-/// can resolve to lines. One read and one parse per file, which is the same
-/// shape as enrichment and belongs on the same pool. Reads the copy
-/// `read_first` names, the pinned revision or the worktree, and falls back to
-/// the other.
+/// Reads the copy `read_first` names, the pinned revision or the worktree,
+/// and falls back to the other.
 fn dispatch_walkthrough(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     let Some(request) = app.pending_walkthrough.take() else {
         return;
@@ -423,9 +388,6 @@ fn dispatch_walkthrough(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     });
 }
 
-/// Read an image file's two sides and encode them for the terminal off the
-/// main task: decoding and resizing a large picture takes long enough to
-/// stall the loop.
 fn dispatch_image(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     let Some(request) = app.pending_image.take() else {
         return;
@@ -449,8 +411,6 @@ fn dispatch_image(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     });
 }
 
-/// Build a symbol lens off the main task: it parses both sides of every file
-/// in the diff.
 fn dispatch_lens(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     let Some(request) = app.pending_lens.take() else {
         return;
@@ -478,9 +438,8 @@ fn dispatch_workers(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     dispatch_rediff(app, tx);
 }
 
-/// Start the off-thread re-diff an algorithm switch queued, on a fresh backend
-/// in the blocking pool. It takes the refresh slot, so it never runs beside a
-/// refresh and whichever lands last carries the newest snapshot.
+/// The re-diff holds the refresh slot, so it never runs beside a refresh and
+/// whichever finishes last carries the newest snapshot.
 fn dispatch_rediff(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     let Some(request) = app.start_rediff() else {
         return;
@@ -497,8 +456,6 @@ fn dispatch_rediff(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     });
 }
 
-/// The provider for one detected remote, with the app context every adapter
-/// needs cloned in.
 fn provider_for(
     remote: &diffler::app::CiRemote,
     repo_root: &Path,
@@ -516,8 +473,6 @@ fn provider_for(
     )
 }
 
-/// Push each queued PR comment/reply to the forge via the primary remote's
-/// provider; results return as events that stamp the forge ids.
 fn dispatch_pr_posts(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     if app.pending_pr_posts.is_empty() {
         return;
@@ -585,8 +540,6 @@ fn dispatch_pr_posts(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     }
 }
 
-/// Spawn a blocking-pool worker per queued enrichment job; results return as
-/// events so the pane fills in without blocking input.
 fn dispatch_enrich(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     for job in app.pending_enrich.drain(..) {
         let tx = tx.clone();
@@ -598,11 +551,8 @@ fn dispatch_enrich(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     }
 }
 
-/// Service a CI provider request off the event loop, turning the result (or
-/// error) into the matching [`AppEvent`] the loop folds back into the screen.
-/// Spawn the off-thread provider call(s) for a CI request: `Runs` aggregates
-/// every remote (tagging each run when more than one); detail/log/extras route
-/// to the run's remote, `Pr` to the primary.
+/// `Runs` merges every remote, tagging runs when there are several;
+/// detail, log and extras go to the open run's remote, the rest to the primary.
 fn dispatch_ci(app: &App, request: CiRequest, tx: &mpsc::UnboundedSender<AppEvent>) {
     let remotes = app.ci_remotes();
     if remotes.is_empty() {
@@ -702,10 +652,7 @@ async fn run_ci_request(
     }
 }
 
-/// Run a network git op as a child process in `repo_root`, capturing its
-/// combined output. Runs on a blocking thread; the result is an [`AppEvent`]
-/// the run loop folds back into the status bar. Shelling to the user's `git`
-/// keeps credentials entirely out of diffler.
+/// We shell out to the user's `git` so credentials stay out of diffler.
 fn run_git(label: &str, argv: &[String], repo_root: &Path) -> AppEvent {
     let Some((program, rest)) = argv.split_first() else {
         return AppEvent::GitDone {

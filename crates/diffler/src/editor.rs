@@ -1,62 +1,51 @@
-//! $EDITOR integration. The TUI loop owns the terminal, so opening an
-//! editor is a request: `App` queues an [`EditorRequest`], the main loop
-//! suspends the terminal, runs the subprocess, restores the screen, and
-//! hands the outcome back to `App::editor_finished`.
+//! $EDITOR integration. The main loop owns the terminal, so `App` queues an
+//! [`EditorRequest`] and gets the outcome back in `App::editor_finished`.
 
 use std::path::Path;
 
 use diffler_core::model::{FileDiff, FileStatus};
 
-/// What to do with the editor's outcome once the terminal is back.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EditorPurpose {
-    /// Read the message file back and commit (gitcommit flow).
-    Commit { msg_path: std::path::PathBuf },
-    /// Read the message file back and amend HEAD. `use_index` folds the staged
-    /// index into the amended commit (amend); false keeps HEAD's tree (reword).
+    Commit {
+        msg_path: std::path::PathBuf,
+    },
+    /// `use_index` folds the staged index in (amend); false keeps HEAD's tree (reword).
     Amend {
         msg_path: std::path::PathBuf,
         use_index: bool,
     },
-    /// Read the file back into the named field and reopen the form.
     PrBody {
         msg_path: std::path::PathBuf,
         draft: Box<crate::app::pr_create::PrDraft>,
         field: crate::app::pr_create::PrTextField,
     },
-    /// Read a text box's scratch file back into the box it came from. The
-    /// file is temporary, so `App::take_scratch_edit` removes it once read,
-    /// whatever the outcome.
+    /// `App::take_scratch_edit` removes the scratch file once read, whatever the outcome.
     TextBox {
         path: std::path::PathBuf,
         target: TextBoxTarget,
     },
-    /// The human edited a file under review; refresh to pick up changes.
-    OpenFile { path: String },
+    /// The human edited a file under review.
+    OpenFile {
+        path: String,
+    },
 }
 
-/// Which text box a [`EditorPurpose::TextBox`] round trip writes back to.
-/// Both sit exactly where they were left while the editor runs, since the
-/// terminal stays fully suspended for the whole round trip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextBoxTarget {
-    /// The diff pane's comment/reply/edit composer.
     Composer,
-    /// The generic single- or multi-line input modal (branch name, PR field,
-    /// review summary, ...).
+    /// The input modal behind a branch name, a PR field or a review summary.
     Input,
 }
 
-/// A subprocess the main loop must run with the terminal suspended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditorRequest {
-    /// Full argv: program followed by its arguments.
     pub cmd: Vec<String>,
     pub purpose: EditorPurpose,
 }
 
-/// Editor command resolution: config → `$DIFFLER_EDITOR` → `$EDITOR` → `vi`.
-/// Env values are passed in (not read here) so precedence stays testable.
+/// Config, then `$DIFFLER_EDITOR`, then `$EDITOR`, then `vi`. The caller
+/// passes the env values in so the precedence stays testable.
 pub fn resolve(config: Option<&str>, diffler_editor: Option<&str>, editor: Option<&str>) -> String {
     [config, diffler_editor, editor]
         .into_iter()
@@ -67,9 +56,8 @@ pub fn resolve(config: Option<&str>, diffler_editor: Option<&str>, editor: Optio
         .to_owned()
 }
 
-/// Build the argv for opening `file` (optionally at `line`). The editor
-/// string may carry its own flags (e.g. `code --wait`); the line-jump
-/// syntax depends on the editor family, matched on the binary name.
+/// `editor` may carry its own flags (`code --wait`); the line-jump syntax
+/// follows the binary name's editor family.
 pub fn command_for(editor: &str, file: &Path, line: Option<u32>) -> Vec<String> {
     let mut argv: Vec<String> = editor.split_whitespace().map(str::to_owned).collect();
     if argv.is_empty() {
@@ -115,8 +103,7 @@ fn family(stem: &str) -> Family {
     }
 }
 
-/// Spawn the editor and wait. Blocking by design: the caller runs this on a
-/// blocking task while the TUI is suspended.
+/// Blocks; the caller runs it on a blocking task while the TUI is suspended.
 pub fn run(cmd: &[String]) -> std::io::Result<bool> {
     let (program, args) = cmd.split_first().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidInput, "empty editor command")
@@ -125,8 +112,6 @@ pub fn run(cmd: &[String]) -> std::io::Result<bool> {
     Ok(status.success())
 }
 
-/// Initial `COMMIT_EDITMSG` content: an empty message line followed by the
-/// usual git comment block listing what will be committed.
 pub fn commit_template(staged: &[FileDiff]) -> String {
     use std::fmt::Write as _;
 
@@ -143,9 +128,7 @@ pub fn commit_template(staged: &[FileDiff]) -> String {
     out
 }
 
-/// Initial amend/reword `COMMIT_EDITMSG` content: the existing message
-/// followed by the git comment block. `staged` is listed only when the amend
-/// folds the index in (an empty list for a pure reword).
+/// `staged` is empty for a reword.
 pub fn amend_template(existing: &str, staged: &[FileDiff]) -> String {
     use std::fmt::Write as _;
 
@@ -177,8 +160,7 @@ fn status_label(status: FileStatus) -> &'static str {
     }
 }
 
-/// Turn the edited message file into a commit message: comment lines go,
-/// trailing whitespace goes, and an effectively empty result is an abort.
+/// `None` when nothing but comments and whitespace remains, which aborts.
 pub fn strip_commit_message(raw: &str) -> Option<String> {
     let message = raw
         .lines()

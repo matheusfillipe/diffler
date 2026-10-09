@@ -1,16 +1,13 @@
-//! A ` ```callstack ` fence: the old versus new call path as one tree,
-//! diff-like so an agent already knows the syntax. One frame per line: an
-//! optional `+`/`-` marker, two-space indentation per depth, the frame's
-//! label, and an optional ` @ <anchor>` naming the code it calls into.
+//! A ` ```callstack ` fence: the old and new call path as one diff-like tree.
+//! One frame per line: an optional `+`/`-` marker, two-space indentation per
+//! depth, the label, and an optional ` @ <anchor>` naming the code it calls.
 
 use unicode_width::UnicodeWidthStr;
 
 use crate::graph::model::NodeId;
 use crate::graph::text_figure::{SpanKind, TextFigure, TextSpan, elide};
 
-/// Frames one tree may hold, mirroring [`crate::graph::mermaid::MAX_NODES`]:
-/// past this a terminal card cannot read it anyway, and the text the tree is
-/// built from comes from an agent.
+/// The text comes from an agent, so we cap what we lay out.
 pub(crate) const MAX_FRAMES: usize = 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,8 +38,6 @@ pub(crate) struct CallstackFigure {
     pub notes: Vec<String>,
 }
 
-/// Parse and draw a callstack tree, each label elided so its row fits
-/// `max_width` columns.
 pub(crate) fn parse(src: &str, max_width: usize) -> Result<CallstackFigure, CallstackError> {
     let mut frames = Vec::new();
     let mut notes = Vec::new();
@@ -62,9 +57,8 @@ pub(crate) fn parse(src: &str, max_width: usize) -> Result<CallstackFigure, Call
         frames.truncate(MAX_FRAMES);
         notes.push(format!("only the first {MAX_FRAMES} frames are drawn"));
     }
-    // a fence indented as a whole (inside a list, say) still roots at its
-    // least indented frame, and a depth jumping more than one level past its
-    // predecessor still attaches somewhere sane
+    // a fence indented as a whole roots at its least indented frame, and we
+    // clamp a depth that jumps more than one level to its predecessor's child
     let base = frames.iter().map(|f| f.depth).min().unwrap_or(0);
     let mut previous_depth: Option<usize> = None;
     for frame in &mut frames {
@@ -93,10 +87,9 @@ pub(crate) fn parse(src: &str, max_width: usize) -> Result<CallstackFigure, Call
     })
 }
 
-/// `[<marker> ]<label>[ @ <anchor>]`, indented two spaces per depth. A marker
-/// is only recognized as `+ `/`- ` (with the trailing space): a label that
-/// merely starts with either character stays a label. The frame's `depth`
-/// here is its raw indent in columns, a tab counting as one level.
+/// `[<marker> ]<label>[ @ <anchor>]`. A marker needs its trailing space, so a
+/// label starting with `+` or `-` stays a label. `depth` is the raw indent in
+/// columns, a tab counting as one level.
 fn parse_line(raw: &str) -> Option<Frame> {
     let trimmed_start = raw.trim_start_matches([' ', '\t']);
     let indent: usize = raw[..raw.len() - trimmed_start.len()]
@@ -125,8 +118,7 @@ fn parse_line(raw: &str) -> Option<Frame> {
     })
 }
 
-/// Whether each frame is the last child among its siblings: the nearest
-/// following frame at the same depth exists before one shallower.
+/// Whether each frame is the last child among its siblings.
 fn compute_last(frames: &[Frame]) -> Vec<bool> {
     (0..frames.len())
         .map(|index| {
@@ -142,8 +134,6 @@ fn compute_last(frames: &[Frame]) -> Vec<bool> {
         .collect()
 }
 
-/// Draw the tree with box-drawing connectors: `├─`/`└─` per frame, `│` for an
-/// ancestor level with more siblings still to come, blank where it does not.
 fn render(frames: &[Frame], row_nodes: Vec<Option<NodeId>>, max_width: usize) -> TextFigure {
     let is_last = compute_last(frames);
     let mut ancestor_last: Vec<bool> = Vec::new();
@@ -153,13 +143,10 @@ fn render(frames: &[Frame], row_nodes: Vec<Option<NodeId>>, max_width: usize) ->
     for (index, (frame, &last_child)) in frames.iter().zip(&is_last).enumerate() {
         let mut prefix = String::new();
         if frame.depth == 0 {
-            // a root draws no rail of its own; its children start clean
             ancestor_last.clear();
         } else {
-            // rails come from every ancestor strictly between the root and
-            // this frame's own parent; the loop above stops short of the
-            // immediate parent, whose own connector is drawn fresh for this
-            // frame
+            // we draw the parent's connector fresh below, so rails come only
+            // from the ancestors above it
             ancestor_last.truncate(frame.depth - 1);
             for &last in &ancestor_last {
                 prefix.push_str(if last { "   " } else { "│  " });
@@ -206,8 +193,6 @@ mod tests {
         parse(src, usize::MAX).expect("parsed")
     }
 
-    /// A fence indented as a whole roots at its least indented frame, and a
-    /// tab counts as one level.
     #[test]
     fn an_indented_fence_and_tabs_root_at_the_least_indented_frame() {
         let figure = figure("    main\n      first\n\t\t\t\tsecond");
@@ -228,10 +213,6 @@ mod tests {
         assert!(figure.text.lines[1].ends_with('…'));
     }
 
-    /// A CJK label is twice as wide on screen as it is long in characters, so
-    /// the figure's own `width` and the row's `TextSpan::len` have to reflect
-    /// display width, or the card crops nothing and a narrower card
-    /// overflows.
     #[test]
     fn a_cjk_label_is_sized_and_elided_by_display_width() {
         let figure = parse("main\n  部署完成流程说明", 12).expect("parsed");
@@ -296,8 +277,6 @@ mod tests {
     #[test]
     fn a_grandchild_keeps_the_rail_under_an_open_sibling() {
         let figure = figure("main\n  first\n    inner\n  second");
-        // `first` has a sibling after it (`second`), so its own child's row
-        // carries a continuing rail down through it
         assert_eq!(figure.text.lines[2], "│  └─ inner");
         assert_eq!(figure.text.lines[3], "└─ second");
     }

@@ -1,5 +1,4 @@
-//! Git2 repo scaffolding shared by fixture builders in this crate's and
-//! diffler's tests. Feature-gated so it never ships in a normal build.
+//! git2 repo scaffolding for this crate's and diffler's tests.
 
 // fixture helpers run outside #[test] fns, where clippy's test allowances don't reach
 #![allow(clippy::expect_used)]
@@ -24,8 +23,8 @@ pub fn init_repo(root: &Path, initial_branch: Option<&str>) -> git2::Repository 
     repo
 }
 
-/// Give `branch` an upstream at revision `at`. The remote-tracking ref is
-/// written locally, which is all git needs to count divergence.
+/// Give `branch` an upstream at revision `at`, written as a local
+/// remote-tracking ref.
 pub fn track(repo: &git2::Repository, branch: &str, at: &str) {
     // set_upstream resolves the ref back to a remote, so one has to exist
     if repo.find_remote("origin").is_err() {
@@ -55,8 +54,8 @@ pub fn commit_all(repo: &git2::Repository, message: &str, sig: &git2::Signature<
         .expect("commit");
 }
 
-/// Colocate the git repo at `root` with jj. jj keeps an identity apart from
-/// git's and warns on every write without one, so it gets the mock one here.
+/// Colocate the git repo at `root` with jj. We set a jj identity since jj
+/// warns on every write without one.
 pub fn colocate_jj(root: &Path) {
     jj(root, &["git", "init", "--colocate"]);
     jj(root, &["config", "set", "--repo", "user.name", "reviewer"]);
@@ -72,13 +71,9 @@ pub fn colocate_jj(root: &Path) {
     );
 }
 
-/// Run a jj subcommand in `root` and return its trimmed stdout, panicking on
-/// failure so a broken setup step fails at its call site. `HOME` points at a
-/// throwaway directory beside `root`, isolated from the developer's own jj
-/// config (`ui.editor`, `snapshot.auto-track`, signing, aliases): a test
-/// must not change behaviour depending on who runs it. Placed beside `root`,
-/// so `.config/jj/` never shows up as untracked content in the very tree the
-/// test is reviewing.
+/// Run jj in `root`, panicking on failure. We point `HOME` at a directory
+/// beside `root` so the developer's jj config never applies and
+/// `.config/jj/` never shows up as untracked in the tree under test.
 pub fn jj(root: &Path, args: &[&str]) -> String {
     let home = root.parent().expect("root has a parent").join("jjhome");
     std::fs::create_dir_all(&home).expect("jj home");

@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
-# Push the repo's packaging/aur/{PKGBUILD,.SRCINFO} to the AUR. Run locally: it
-# uses your aur@aur.archlinux.org SSH key. CI keeps those files version-synced on
-# every release; this publishes them whenever you choose.
+# Push packaging/aur/{PKGBUILD,.SRCINFO} to the AUR with your local AUR SSH key.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 ver=$(grep -m1 '^pkgver=' "$root/packaging/aur/PKGBUILD" | cut -d= -f2)
-# CI commits the rendered PKGBUILD to main after the tag push, so a checkout
-# that predates it would silently publish the previous version
+# CI commits the rendered PKGBUILD after the tag push, so an older checkout
+# would publish the previous version.
 latest=$(git -C "$root" tag --list 'v*' --sort=-v:refname | head -1)
 if [ "v$ver" != "$latest" ]; then
   echo "aur: PKGBUILD is $ver but the latest tag is $latest: git pull first" >&2

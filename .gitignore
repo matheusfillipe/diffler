@@ -10,15 +10,4 @@ __pycache__/
 result
 flake.lock
 *.bun-build
-.claude/
 .diffler/
-
-# local design docs / plans, not for the public repo
-docs/superpowers/
-target/criterion
-claudedocs/
-.desloppify/
-scorecard.png
-
-# knowledge-graph build output (graphify)
-graphify-out/

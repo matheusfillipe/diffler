@@ -1,9 +1,7 @@
-//! Session persistence: one file per review source under `.diffler/reviews/`,
-//! atomically written, self-gitignored. The legacy single-session file
-//! `.diffler/session.json` is read once and migrated to `reviews/working.json`.
-//! A file written before a walkthrough was a source of its own carries it
-//! embedded (`walkthroughs`, or the older singular `walkthrough`); reading
-//! any such file splits each one out into its own `walkthrough-<id>.json`.
+//! Session persistence: one file per review source under `.diffler/reviews/`.
+//! Legacy `.diffler/session.json` migrates to `reviews/working.json`, and a
+//! walkthrough embedded in an older review file splits into its own
+//! `walkthrough-<id>.json` on load.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -28,16 +26,15 @@ pub enum StoreError {
     Corrupt(PathBuf, serde_json::Error),
 }
 
-/// Every review [`load_all`] found, plus the path of any file it had to skip
-/// because it would not parse.
+/// Every review [`load_all`] found, plus the path of each file that would
+/// not parse.
 pub type LoadedReviews = (Vec<(ReviewSource, Session)>, Vec<PathBuf>);
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct OnDisk {
     version: u32,
-    /// Self-describes the file for `load_all`; lookups go by filename (the
-    /// source key), so the filename is authoritative. Absent in legacy files,
-    /// where the source is implicitly the working tree.
+    /// For `load_all` only; lookups go by filename. Absent in legacy files,
+    /// which are the working tree.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     source: Option<ReviewSource>,
     #[serde(flatten)]
@@ -56,9 +53,7 @@ fn legacy_path(repo_root: &Path) -> PathBuf {
     repo_root.join(DIR).join(LEGACY_FILE)
 }
 
-/// The pre-source shape of one embedded walkthrough. `comments` was the
-/// owned-id list (every stop and the notes hanging off them); splitting reads
-/// it to find what else to move, then drops the field for good.
+/// The legacy embedded walkthrough. `comments` lists the ids it owns.
 #[derive(Debug, serde::Deserialize)]
 struct LegacyWalkthrough {
     id: String,
@@ -73,10 +68,9 @@ struct LegacyWalkthrough {
     skipped: Option<String>,
 }
 
-/// The embedded walkthrough(s) a pre-source review file may carry: several
-/// under `walkthroughs`, or one under the older singular `walkthrough`. A
-/// permissive read alongside the real [`OnDisk`] parse, so an unknown key
-/// never fails the load.
+/// Walkthroughs a legacy review file embeds, under `walkthroughs` or the older
+/// singular `walkthrough`. We parse it leniently beside [`OnDisk`] so an
+/// unknown key never fails the load.
 #[derive(Debug, Default, serde::Deserialize)]
 struct LegacyEmbedded {
     #[serde(default)]
@@ -95,12 +89,9 @@ impl LegacyEmbedded {
     }
 }
 
-/// Split every walkthrough `raw` carries embedded out of `session` into its
-/// own `walkthrough-<id>.json`: its stops, and every comment anchored inside
-/// one of those stops' own regions (a human reply included, since a
-/// walkthrough is now its own world), move with it; the rest of `session`
-/// keeps what is left. Returns whether anything moved, so the caller knows
-/// whether the origin file needs resaving.
+/// Move each walkthrough embedded in `raw` out of `session` into its own
+/// `walkthrough-<id>.json`, with its stops and every comment inside their
+/// regions, human ones included. Returns whether anything moved.
 fn split_embedded_walkthroughs(
     repo_root: &Path,
     raw: &str,
@@ -161,11 +152,7 @@ fn split_embedded_walkthroughs(
                 stops: walkthrough.stops,
                 skipped: walkthrough.skipped,
                 summary: None,
-                // a walkthrough this old predates the field entirely, so its
-                // anchors resolve against the live worktree
                 rev: None,
-                // a walkthrough this old predates the field too, and only
-                // ever described the working tree
                 about: ReviewSource::WorkingTree,
             }),
             seen_stops: seen,
@@ -179,9 +166,8 @@ fn split_embedded_walkthroughs(
     Ok(true)
 }
 
-/// Read one file's session and its own declared source (`WorkingTree` for a
-/// file predating that field). A walkthrough's own file never carries an
-/// embedded one, so splitting only ever runs for every other source.
+/// One file's session and declared source, splitting out any embedded
+/// walkthrough.
 fn read_session(
     repo_root: &Path,
     path: &Path,
@@ -204,9 +190,8 @@ fn read_session(
     }
 }
 
-/// Load the session for one source. The working tree falls back to the legacy
-/// single-session file when no per-source file exists yet; the file is moved on
-/// the next [`save_source`].
+/// The working tree falls back to the legacy file, which the next
+/// [`save_source`] migrates.
 pub fn load_source(repo_root: &Path, source: &ReviewSource) -> Result<Session, StoreError> {
     if let Some((_, session)) = read_session(repo_root, &source_path(repo_root, source))? {
         return Ok(session);
@@ -219,8 +204,7 @@ pub fn load_source(repo_root: &Path, source: &ReviewSource) -> Result<Session, S
     Ok(Session::default())
 }
 
-/// Remove a source's review file entirely, e.g. deleting a walkthrough
-/// deletes its `walkthrough-<id>.json`. A missing file is not an error.
+/// Remove a source's review file. A missing file is fine.
 pub fn delete_source(repo_root: &Path, source: &ReviewSource) -> Result<(), StoreError> {
     match fs::remove_file(source_path(repo_root, source)) {
         Ok(()) => Ok(()),
@@ -229,8 +213,7 @@ pub fn delete_source(repo_root: &Path, source: &ReviewSource) -> Result<(), Stor
     }
 }
 
-/// Create `.diffler/`, ignoring itself so nothing in it reaches git, and
-/// return its path.
+/// Create `.diffler/` with a `.gitignore` that ignores everything in it.
 pub fn ensure_dir(repo_root: &Path) -> std::io::Result<PathBuf> {
     let dir = repo_root.join(DIR);
     fs::create_dir_all(&dir)?;
@@ -241,15 +224,13 @@ pub fn ensure_dir(repo_root: &Path) -> std::io::Result<PathBuf> {
     Ok(dir)
 }
 
-/// Replace `.diffler/<name>` with `contents` through [`write_atomic`].
 pub fn write_file(repo_root: &Path, name: &str, contents: &str) -> std::io::Result<()> {
     let dir = ensure_dir(repo_root)?;
     write_atomic(&dir.join(name), contents)
 }
 
-/// Replace `path` with `contents` atomically (temp file then rename), so a
-/// crash mid-write leaves the old file whole. We write through a symlink to
-/// the file it names and keep that file's permissions.
+/// Replace `path` through a temp file and rename. We write through a symlink
+/// to its target and keep the target's permissions.
 pub fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
     let (target, permissions) = match fs::canonicalize(path) {
         Ok(target) => {
@@ -271,8 +252,7 @@ pub fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Persist one source's session atomically (temp file then rename). Migrates
-/// the working tree off the legacy file by removing it once the new file lands.
+/// Saving the working tree removes the legacy file.
 pub fn save_source(
     repo_root: &Path,
     source: &ReviewSource,
@@ -297,13 +277,9 @@ pub fn save_source(
     Ok(())
 }
 
-/// Every persisted review, for aggregating across sources (e.g. the MCP feed),
-/// plus the path of any review file that failed to parse. Ordered by key for
-/// deterministic output. A corrupt file is skipped rather than failing the
-/// whole call, so one bad file never hides every other review; its path
-/// comes back in the second list, for a caller that wants to tell the
-/// reader. The directory listing is taken up front, so a split a file
-/// triggers mid-scan never feeds back into this same call.
+/// Every persisted review sorted by key, plus each corrupt file's path. We
+/// list the directory up front so a walkthrough split mid-scan stays out of
+/// this call.
 pub fn load_all(repo_root: &Path) -> Result<LoadedReviews, StoreError> {
     let mut reviews: Vec<(ReviewSource, Session)> = Vec::new();
     let mut corrupt: Vec<PathBuf> = Vec::new();
@@ -337,12 +313,10 @@ pub fn load_all(repo_root: &Path) -> Result<LoadedReviews, StoreError> {
     Ok((reviews, corrupt))
 }
 
-/// Working-tree session, the common case.
 pub fn load(repo_root: &Path) -> Result<Session, StoreError> {
     load_source(repo_root, &ReviewSource::WorkingTree)
 }
 
-/// Persist the working-tree session.
 pub fn save(repo_root: &Path, session: &Session) -> Result<(), StoreError> {
     save_source(repo_root, &ReviewSource::WorkingTree, session)
 }
@@ -429,7 +403,6 @@ mod tests {
             load_source(dir.path(), &ReviewSource::commit("abc")).expect("load commit"),
             commit
         );
-        // a path means different things per source; no collision
         assert!(
             load_source(dir.path(), &ReviewSource::commit("abc"))
                 .expect("load")
@@ -453,22 +426,15 @@ mod tests {
         )
         .expect("write legacy");
 
-        // read falls back to the legacy file
         let loaded = load(dir.path()).expect("load");
         assert!(loaded.is_viewed("a.txt", "h-legacy"));
 
-        // saving migrates: new file written, legacy removed
         save(dir.path(), &loaded).expect("save");
         assert!(!legacy.exists(), "legacy file removed after migration");
         assert!(dir.path().join(".diffler/reviews/working.json").exists());
         assert_eq!(load(dir.path()).expect("reload"), loaded);
     }
 
-    /// A `working.json` carrying the pre-source `walkthroughs` list splits
-    /// each entry into its own `walkthrough-<id>.json`: a stop's own comment,
-    /// a note the legacy `comments` list names, and a human reply anchored in
-    /// the stop's region all move; a comment untouched by any stop stays
-    /// with the working session.
     #[test]
     fn a_review_file_with_the_old_walkthroughs_list_splits_each_one_out() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -506,13 +472,10 @@ mod tests {
             "the stop and the human reply in its region both moved"
         );
 
-        // idempotent: loading again finds nothing left to split
         let reloaded = load(dir.path()).expect("reload");
         assert!(reloaded.walkthrough.is_none());
     }
 
-    /// The older singular `walkthrough` field (from before a review could
-    /// hold more than one) migrates the same way, as a one-element list.
     #[test]
     fn a_review_file_with_the_old_singular_walkthrough_key_splits_it_out() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -579,9 +542,6 @@ mod tests {
         assert!(corrupt.is_empty());
     }
 
-    /// A review file that fails to parse is skipped, not fatal: every other
-    /// review still loads, and the bad file's path comes back so a caller
-    /// can tell the reader.
     #[test]
     fn load_all_skips_a_corrupt_file_and_names_it() {
         let dir = tempfile::tempdir().expect("tempdir");

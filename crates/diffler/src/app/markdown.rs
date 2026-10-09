@@ -1,8 +1,7 @@
 //! Minimal `CommonMark` rendering for comment and reply bodies. Parses to
 //! theme-independent styled runs so the pure app layer stays free of ratatui
 //! and the theme; [`crate::ui`] maps the flags to concrete styles at draw time.
-//! Raw HTML is dropped rather than shown, so a stray tag in an agent reply does
-//! not leak into the card.
+//! We drop raw HTML so a stray tag in an agent reply stays out of the card.
 
 use diffler_core::highlight::{Highlighter, StyledRange};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
@@ -60,11 +59,10 @@ struct Table {
     row: Vec<Vec<MdSpan>>,
 }
 
-/// Columns narrower than this hold nothing readable, so the table is listed
-/// row by row instead.
+/// Columns narrower than this hold nothing readable, so we list the table row
+/// by row.
 const MIN_COLUMN: usize = 8;
-/// Blank columns between cells.
-/// A column separator is `" │ "`, so the gap between two columns is three.
+/// The width of the `" │ "` separator.
 const COLUMN_GAP: usize = 3;
 
 /// Parse markdown into logical lines of styled runs (unwrapped). Line breaks,
@@ -298,8 +296,8 @@ pub fn parse(src: &str, highlighter: Option<&Highlighter>, width: usize) -> Vec<
                 muted: true,
                 ..MdSpan::default()
             }),
-            // a review comment's own line breaks are meaningful (GitHub renders
-            // them), so a soft break starts a new line rather than a space
+            // GitHub renders a review comment's own line breaks, so a soft
+            // break starts a new line
             Event::End(TagEnd::Paragraph) | Event::SoftBreak | Event::HardBreak => {
                 flush(&mut line, &mut lines, quote_depth);
             }
@@ -313,7 +311,6 @@ pub fn parse(src: &str, highlighter: Option<&Highlighter>, width: usize) -> Vec<
     lines
 }
 
-/// Route a run to the cell it belongs to, or to the line being built.
 fn push_span(span: MdSpan, table: Option<&mut Table>, line: &mut Vec<MdSpan>) {
     match table {
         Some(table) => table.cell.push(span),
@@ -322,9 +319,8 @@ fn push_span(span: MdSpan, table: Option<&mut Table>, line: &mut Vec<MdSpan>) {
 }
 
 /// Open a line with the rail of the quote it sits in. Every completed line
-/// passes through here, so the rail reaches the ones nobody types by hand:
-/// list items, code, tables, rules. The rail inherits the line's `pre` flag,
-/// so a laid-out table row stays laid out with one in front.
+/// passes through here, list items, code, tables and rules included. The rail
+/// inherits the line's `pre` flag, so a laid-out table row stays laid out.
 fn quoted(mut spans: Vec<MdSpan>, depth: usize) -> Vec<MdSpan> {
     if depth == 0 {
         return spans;
@@ -342,21 +338,20 @@ fn quoted(mut spans: Vec<MdSpan>, depth: usize) -> Vec<MdSpan> {
     spans
 }
 
-/// Columns a quote's rail takes from the line, so what it wraps still fits.
 /// A line holding nothing but its quote rail, the margin a table leaves.
 fn is_blank(line: &[MdSpan]) -> bool {
     line.iter()
         .all(|span| span.text.trim_matches(['│', ' ']).is_empty())
 }
 
+/// Columns a quote's rail takes from the line, so what it wraps still fits.
 fn rail_width(depth: usize) -> usize {
     depth * 2
 }
 
 /// Lay a table out in columns: each is as wide as its widest cell, capped at
 /// the widest level that fits `width`, with cell text wrapping inside its own
-/// column. A table that cannot hold readable columns is listed row by row,
-/// which stays legible at any width.
+/// column. A table that cannot hold readable columns is listed row by row.
 fn table_lines(head: &[Vec<MdSpan>], rows: &[Vec<Vec<MdSpan>>], width: usize) -> Vec<Vec<MdSpan>> {
     let columns = head.len().max(rows.iter().map(Vec::len).max().unwrap_or(0));
     if columns == 0 {
@@ -761,9 +756,6 @@ mod tests {
         assert!(parse("> quoted")[0][0].muted);
     }
 
-    /// A quoted list is what an agent produces when it quotes the human back,
-    /// and the lines nobody types by hand (items, code, tables, rules) reach
-    /// the output by their own paths.
     #[test]
     fn a_quote_keeps_its_rail_around_every_kind_of_line() {
         assert_eq!(text(&parse("> - a\n> - b")), "│ • a\n│ • b");
@@ -814,8 +806,6 @@ mod tests {
         );
     }
 
-    /// The URL suffix belongs in the cell that carries the link, and a stray
-    /// one lands as its own line under the table.
     #[test]
     fn a_link_inside_a_table_keeps_its_url_in_the_cell() {
         let lines =

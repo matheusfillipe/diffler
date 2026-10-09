@@ -1,8 +1,6 @@
-//! Hunk folds in the diff pane. The fold unit is a hunk, the same thing
-//! `]`/`[` step through: a folded hunk shows as its own header row, now
-//! naming what it hides, so the bracket motions land on it folded or open.
-//! A fold is keyed by the hunk's id, so a hunk the agent edits comes back
-//! open, showing the change.
+//! Hunk folds in the diff pane. A folded hunk shows as its header row naming
+//! what it hides, so `]`/`[` land on it folded or open. A fold is keyed by the
+//! hunk's id, so a hunk the agent edits comes back open.
 
 use std::collections::HashSet;
 
@@ -62,8 +60,7 @@ pub(crate) fn fold_label(hunk: &Hunk, comments: usize) -> String {
 }
 
 /// The `DiffLine`s a fold row's own `(hunk, line)` pairs point to, paired
-/// with their position, so a yank, a search match and a search jump each
-/// read the one thing a fold row hides.
+/// with their position, for yank and search.
 pub(crate) fn resolve_hidden<'a>(
     file: &'a FileDiff,
     lines: &[(usize, usize)],
@@ -86,7 +83,7 @@ fn hidden_copy(file: &FileDiff, lines: &[(usize, usize)]) -> String {
 
 /// Replace every folded hunk of `rows` (its header and everything under it
 /// up to the next header) with one `DiffRow::Fold`. An open composer's rows
-/// stay on screen, since the reader is typing in them.
+/// stay on screen.
 pub(crate) fn apply(
     rows: &[DiffRow],
     copy: &[RowCopy],

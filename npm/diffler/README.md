@@ -1,10 +1,10 @@
 # diffler
 
-Terminal code review for AI coding agents. This package installs a launcher
-that runs the native binary from the matching `@diffler/<platform>` package.
+A magit-style git TUI and code reviewer. This package installs a launcher that
+downloads the prebuilt binary for your platform from the GitHub release.
 
 ```sh
-npm install -g diffler
+npm install -g @mattfillipe/diffler
 diffler
 ```
 

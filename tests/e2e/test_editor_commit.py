@@ -83,8 +83,6 @@ def test_e_passes_line_jump_argv_to_the_editor(spawn, repo, tmp_path):
 
 
 def test_ctrl_g_edits_the_comment_composer_and_removes_the_scratch_file(spawn, repo, tmp_path):
-    # the terminal is fully suspended and restored around the editor, same as
-    # the commit flow above, but here the box coming back is the composer
     initial = tmp_path / "initial.txt"
     scratch_path_file = tmp_path / "scratch_path.txt"
     editor = make_script(

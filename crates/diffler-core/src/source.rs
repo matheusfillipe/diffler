@@ -1,8 +1,4 @@
-//! What a review is *of*: the working tree, a single commit, a contiguous
-//! commit range, or everything since a named revision. A source has a
-//! deterministic, filesystem-safe persistence key and a human-facing label, so
-//! review state can be tracked per source and the agent can be told exactly
-//! what the human reviewed.
+//! What a review is of, with a filesystem-safe persistence key and a label.
 
 use serde::{Deserialize, Serialize};
 
@@ -21,20 +17,15 @@ pub enum ReviewSource {
         oldest: String,
         newest: String,
     },
-    /// A forge pull request. The diff renders as a range resolved at open
-    /// time, but review state keys on the PR number so it survives pushes.
+    /// Keyed on the number so review state survives pushes.
     Pr {
         number: u64,
     },
-    /// Everything the working tree carries over `rev`, three-dot. `rev` is
-    /// stored as the human named it and resolved at diff time, so the review
-    /// follows the ref as it moves.
+    /// The working tree three-dot against `rev`. We store `rev` as named and
+    /// resolve it at diff time, so the review follows the ref.
     Against {
         rev: String,
     },
-    /// An agent-published walkthrough: its own comments, its own viewed and
-    /// seen marks, nothing shared with the working tree, a PR, a commit or a
-    /// range review.
     Walkthrough {
         id: String,
     },
@@ -64,10 +55,8 @@ impl ReviewSource {
         Self::Walkthrough { id: id.into() }
     }
 
-    /// Stable persistence key, also the on-disk filename stem. The `-`
-    /// separator is unambiguous because git/jj oids are dash-free hex; every
-    /// character is filesystem-safe. A walkthrough id is agent-supplied text,
-    /// not an oid, so it goes through the same sanitising a ref name does.
+    /// Persistence key and filename stem. Oids are dash-free hex, so `-` is an
+    /// unambiguous separator; refs and walkthrough ids are sanitised.
     pub fn key(&self) -> String {
         match self {
             Self::WorkingTree => "working".to_owned(),
@@ -79,9 +68,7 @@ impl ReviewSource {
         }
     }
 
-    /// Human-facing description of what is being reviewed. A walkthrough's
-    /// title lives in its own session, out of reach here, so this names it
-    /// generically; a caller holding that session shows the title instead.
+    /// A walkthrough's title lives in its session, so it labels by id here.
     pub fn label(&self) -> String {
         match self {
             Self::WorkingTree => "working tree".to_owned(),
@@ -100,7 +87,6 @@ fn short(oid: &str) -> &str {
     oid.get(..SHORT_OID).unwrap_or(oid)
 }
 
-/// Characters of a walkthrough id shown in its fallback label.
 const SHORT_ID: usize = 8;
 
 fn short_id(id: &str) -> &str {
@@ -116,9 +102,7 @@ fn short_rev(rev: &str) -> &str {
     }
 }
 
-/// Ref names carry `/` and other characters a filename cannot, so they collapse
-/// to `-`. `feat/x` and `feat-x` therefore share one review file, the accepted
-/// cost of a flat key.
+/// Collapses unsafe characters to `-`, so `feat/x` and `feat-x` share a file.
 fn filename_safe(rev: &str) -> String {
     rev.chars()
         .map(|c| {
@@ -152,15 +136,12 @@ mod tests {
             "against-origin-main"
         );
         assert_eq!(ReviewSource::against("HEAD~1").key(), "against-HEAD-1");
-        // the documented collision: a flat key cannot tell these apart
         assert_eq!(
             ReviewSource::against("feat/x").key(),
             ReviewSource::against("feat-x").key()
         );
     }
 
-    /// An agent-supplied walkthrough id is arbitrary text, not an oid: a `/`
-    /// in it must not turn the key into a path with a missing directory.
     #[test]
     fn walkthrough_keys_are_filename_safe() {
         assert_eq!(

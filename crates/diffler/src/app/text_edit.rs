@@ -1,15 +1,11 @@
-//! The editing surface behind every multi-line text field: the readline/emacs
-//! key set over a `(buffer, char cursor)` pair. Shared by the input modal and
-//! the diff pane's inline comment composer, so both accept the same keys.
-//! Vertical movement lives with the field, which is the only thing that knows
-//! how its text wraps on screen.
+//! The readline/emacs key set over a `(buffer, char cursor)` pair, shared by
+//! the input modal and the comment composer. Vertical movement lives with the
+//! field, since only the field knows how its text wraps.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::byte_index;
 
-/// What a key meant to the field that owns the buffer. Editing keys are
-/// applied in place and report [`Edit::Consumed`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Edit {
     Consumed,
@@ -37,9 +33,7 @@ pub fn apply(buffer: &mut String, cursor: &mut usize, key: &KeyEvent) -> Edit {
     match key.code {
         KeyCode::Esc => return Edit::Cancel,
         KeyCode::Enter => return Edit::Submit,
-        // the readline/emacs set every shell input carries; these are
-        // widget-internal like Backspace and the arrows, not remappable
-        // screen actions
+        // the readline keys are fixed, like Backspace and the arrows
         KeyCode::Char('a') if ctrl => *cursor = line_start(buffer, *cursor),
         KeyCode::Char('e') if ctrl => *cursor = line_end(buffer, *cursor),
         KeyCode::Char('u') if ctrl => {
@@ -128,9 +122,7 @@ pub fn line_end(buffer: &str, cursor: usize) -> usize {
         .map_or_else(|| buffer.chars().count(), |(i, _)| i)
 }
 
-/// Char index of the previous word's start: skip whitespace back, then the
-/// word itself. One whitespace-word rule serves both the ctrl and meta ops,
-/// simpler than readline's split, and right for comment prose.
+/// Char index of the previous whitespace-delimited word's start.
 fn prev_word(buffer: &str, cursor: usize) -> usize {
     let chars: Vec<char> = buffer.chars().take(cursor).collect();
     let ws_at = |i: usize| chars.get(i).is_some_and(|c| c.is_whitespace());
@@ -144,7 +136,7 @@ fn prev_word(buffer: &str, cursor: usize) -> usize {
     i
 }
 
-/// Char index just past the next word: skip whitespace forward, then the word.
+/// Char index just past the next whitespace-delimited word.
 fn next_word(buffer: &str, cursor: usize) -> usize {
     let chars: Vec<char> = buffer.chars().collect();
     let ws_at = |i: usize| chars.get(i).is_some_and(|c| c.is_whitespace());

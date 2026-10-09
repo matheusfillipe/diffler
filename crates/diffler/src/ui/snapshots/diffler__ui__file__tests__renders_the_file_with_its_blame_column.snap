@@ -1,8 +1,9 @@
 ---
 source: crates/diffler/src/ui/file.rs
+assertion_line: 248
 expression: terminal.backend()
 ---
-" b toggle blame · <cr> open commit · e open editor · ? help             "
+" b toggle blame · <cr> open commit · e open in editor · ? help          "
 "  src/lib.rs  4 lines  ▸ aaaaaaa first                                  "
 "▌aaaaaaa reviewer      1mo    1 fn main() {                             "
 "                              2     let total = 1;                      "

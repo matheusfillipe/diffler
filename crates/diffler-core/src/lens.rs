@@ -1,9 +1,6 @@
-//! The symbol lens's model: the names on one diff line, how far each one
-//! reaches, and every use of them on a line the diff shows. A local name
-//! reaches as far as its enclosing function; a function, method or type (a
-//! definition, a call or a type position) reaches across every file of the
-//! diff. The names come from the parse tree, so only the identifiers of the
-//! code count.
+//! The symbol lens: the names on one diff line and their uses on lines the
+//! diff shows. A local reaches its enclosing function; a function, method or
+//! type reaches every file of the diff.
 
 use std::collections::{HashMap, HashSet};
 use std::ops::{Range, RangeInclusive};
@@ -12,10 +9,9 @@ use crate::model::{DiffModel, LineKind};
 use crate::syntax::registry::REGISTRY;
 use crate::syntax::{Ident, ScopeIndex};
 
-/// The most names one line's lens labels, one per digit key.
+/// One per digit key.
 pub const MAX_SYMBOLS: usize = 9;
 
-/// The diff line the lens was opened on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LensOrigin {
     pub path: String,
@@ -23,9 +19,8 @@ pub struct LensOrigin {
     pub line: u32,
 }
 
-/// One file of the diff, as the worker reads it: both sides' text and the
-/// line numbers the diff shows on each, a deleted line on the old side and an
-/// added or context line on the new one, so a context line counts once.
+/// Both sides' text and the lines the diff shows on each. A context line
+/// counts on the new side only, so it counts once.
 #[derive(Debug, Clone)]
 pub struct LensFile {
     pub path: String,
@@ -35,15 +30,13 @@ pub struct LensFile {
     pub new_lines: HashSet<u32>,
 }
 
-/// How far a symbol's uses are looked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reach {
-    /// A local name, inside the function named here.
+    /// A local of the named function.
     Function(String),
-    /// A name at the top level of its file, outside any function.
+    /// A top-level name of its file.
     File,
-    /// A function, method or type: a definition, a call or a type position,
-    /// linked across every file of the diff.
+    /// A definition, call or type position.
     Diff,
 }
 
@@ -53,7 +46,6 @@ pub struct LensSymbol {
     pub reach: Reach,
 }
 
-/// One use of a symbol on a line the diff shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LensUse {
     pub symbol: usize,
@@ -63,7 +55,6 @@ pub struct LensUse {
     pub range: Range<usize>,
 }
 
-/// One side of one file, parsed once for both its names and its scopes.
 struct Side {
     idents: Vec<Ident>,
     scope: ScopeIndex,
@@ -77,8 +68,7 @@ impl Side {
     }
 }
 
-/// Build the lens for `origin` over `files`. It parses both sides of every
-/// file, so it belongs on a worker thread.
+/// Parses both sides of every file, so we run it on a worker.
 pub fn compute(origin: &LensOrigin, files: &[LensFile]) -> LensData {
     let sides: Vec<(Option<Side>, Option<Side>)> = files
         .iter()
@@ -112,8 +102,6 @@ pub fn compute(origin: &LensOrigin, files: &[LensFile]) -> LensData {
     }
 }
 
-/// The names on the origin line, first appearance first, each with how far
-/// its uses are looked for.
 fn line_symbols(origin: &LensOrigin, origin_side: Option<&Side>) -> Vec<LensSymbol> {
     let origin_row = origin.line.saturating_sub(1) as usize;
     let mut names: Vec<String> = Vec::new();
@@ -133,8 +121,7 @@ fn line_symbols(origin: &LensOrigin, origin_side: Option<&Side>) -> Vec<LensSymb
     names
         .into_iter()
         .map(|name| {
-            // a local that only shares its name with some function elsewhere
-            // stays local: only a call, a definition or a type reaches out
+            // a local sharing a name with a function elsewhere stays local
             let reach = if items.contains(name.as_str()) {
                 Reach::Diff
             } else if let Some((function, _, _)) = enclosing {
@@ -147,7 +134,6 @@ fn line_symbols(origin: &LensOrigin, origin_side: Option<&Side>) -> Vec<LensSymb
         .collect()
 }
 
-/// Every use of `symbols` on a line the diff shows, within each one's reach.
 fn symbol_uses(
     origin: &LensOrigin,
     origin_span: Option<&RangeInclusive<usize>>,
@@ -208,7 +194,6 @@ fn symbol_uses(
     uses
 }
 
-/// The files of `model` as [`compute`] reads them.
 pub fn lens_files(model: &DiffModel) -> Vec<LensFile> {
     model
         .files
@@ -239,7 +224,6 @@ pub fn lens_files(model: &DiffModel) -> Vec<LensFile> {
         .collect()
 }
 
-/// A built lens: the line it was opened on, its names, and their uses.
 #[derive(Debug, Clone)]
 pub struct LensData {
     pub origin: LensOrigin,
@@ -251,8 +235,6 @@ pub struct LensData {
 mod tests {
     use super::*;
 
-    /// Two functions of one name in one file: a local of the second reaches
-    /// only the second.
     #[test]
     fn a_local_stays_in_the_function_its_line_sits_in() {
         let text = "fn f() {\n    let a = 1;\n}\n\nfn f() {\n    let a = 2;\n    a\n}\n";

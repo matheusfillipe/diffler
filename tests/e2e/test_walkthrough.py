@@ -62,8 +62,6 @@ def test_a_published_walkthrough_appears_on_the_status_screen(spawn):
     assert published["stops"] == 3
     assert published["receipts"] == []
 
-    # the header shows with no keypress: the reader sees it exists before
-    # going looking for it; unfolding it shows the row and its title
     tui.wait_for("Walkthroughs")
     tui.send("\t")
     tui.wait_for("Config layering")
@@ -231,9 +229,6 @@ def test_the_walkthrough_survives_a_restart(spawn):
 
 
 def test_publishing_keeps_stops_out_of_the_working_trees_comments(spawn):
-    # a walkthrough is its own review source: get_comments tags every stop
-    # with its own source, never "working", so the working-tree review never
-    # sees them
     tui = spawn("--port", str(free_port()))
     url = mcp_url(tui)
     publish(tui, url)
@@ -307,9 +302,7 @@ def test_a_stop_in_a_committed_file_opens_over_a_clean_tree(spawn, repo):
 
 
 def test_c_on_a_slide_line_opens_a_composer_anchored_to_the_code_under_it(spawn, repo):
-    # a clean tree: app.txt:1 is a stop pointing at a file the working-tree
-    # diff itself does not carry, exactly where a reader answering the stop
-    # about its code needs `c` to work
+    # we clean the tree so app.txt:1 points at a file outside the diff
     git(repo, "checkout", "--", "app.txt")
     (repo / "notes.txt").unlink()
 
@@ -355,8 +348,6 @@ def test_c_on_a_slide_line_opens_a_composer_anchored_to_the_code_under_it(spawn,
 
 
 def test_a_stop_pinned_before_a_removal_still_shows_its_code(spawn, repo):
-    # committed, then dropped by a later commit: a walkthrough published
-    # against the earlier one still has to show the code it pointed at
     write(repo / "gone.txt", "kept-line-one\nkept-line-two\nkept-line-three\n")
     git(repo, "add", "gone.txt")
     git(repo, "commit", "-m", "add gone.txt")

@@ -1,8 +1,5 @@
-//! Application state and event handling. `App::handle` is a pure-ish state
-//! transition (no terminal IO) so the whole shell is unit-testable; rendering
-//! reads the state in `ui::draw`. Per-screen state and handlers live in the
-//! `status`, `log`, `diff`, `ci` (runs + graph), `ci_log`, and `pr`
-//! submodules.
+//! Application state and event handling. `App::handle` does no terminal IO,
+//! so we can unit-test the whole shell; `ui::draw` renders the state.
 
 mod ci;
 pub mod ci_log;
@@ -71,27 +68,22 @@ use crate::transient::{Transient, TransientKind, TransientResolve};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Flow {
     Continue,
-    /// The event left the screen exactly as it was, so the loop can skip the
-    /// draw. A terminal nobody is reading fills up otherwise, and the writes
-    /// block the loop that answers the agent.
+    /// The event left the screen as it was, so the loop skips the draw. Writes
+    /// to a terminal nobody reads block the loop that answers the agent.
     Idle,
     Quit,
 }
 
-/// Screen stack entry. The per-screen state lives in `App::status`,
-/// `App::log`, and `App::diff`; the stack only decides which one is active.
+/// Screen stack entry. The per-screen state lives on `App`; the stack only
+/// decides which one is active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     Status,
     Log,
     Diff,
-    /// The CI runs start page (list of recent runs for the repo's provider).
     Runs,
-    /// The node-graph view of a CI run.
     Graph,
-    /// The open pull requests of the repo's forge.
     Prs,
-    /// A single job's log view.
     CiLog,
     /// One whole file, with or without its blame column.
     File,
@@ -128,32 +120,28 @@ pub struct StatusMessage {
     pub severity: Severity,
 }
 
-/// Deferred operation a modal confirms, kept as data (not a closure) so
-/// `App::handle` stays a pure state transition.
+/// Deferred operation a modal confirms, kept as data so `App::handle` stays a
+/// pure state transition.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PendingOp {
     Discard {
         path: String,
     },
     DeleteBranch(String),
-    /// Remove one comment (and its forge copy when synced) after confirm.
+    /// Also removes the forge copy when synced.
     DeleteComment(String),
-    /// Wipe every local comment of the active review.
     DeleteAllComments,
     /// Claim every agent comment of the active review as the human's own.
     ClaimAllComments,
-    /// Remove the named walkthrough and every comment it owns.
     DeleteWalkthrough(String),
-    /// Remove one stop (its primary and notes) of the active review's
-    /// walkthrough, keeping the rest of it.
+    /// One stop of the active review's walkthrough, its primary and notes.
     DeleteStop(usize),
-    /// Run a queued git op after the user confirms (set-upstream, force-push).
+    /// A set-upstream push or a force-push.
     RunGit {
         label: String,
         argv: Vec<String>,
     },
-    /// Discard local commits: reset --hard to `upstream`, after a destructive
-    /// confirm.
+    /// Discard local commits: reset --hard to `upstream`.
     ForcePull {
         upstream: String,
     },
@@ -165,8 +153,8 @@ pub enum InputOp {
     CreateBranch {
         checkout: bool,
     },
-    /// One text field of the pull request being composed; the draft rides
-    /// along so the form comes back with the rest of it intact.
+    /// One text field of the pull request being composed; we carry the draft
+    /// so the form reopens with the rest of it intact.
     PrField {
         draft: Box<crate::app::pr_create::PrDraft>,
         field: crate::app::pr_create::PrField,
@@ -198,7 +186,6 @@ pub enum Modal {
         cursor: usize,
         on_submit: InputOp,
     },
-    /// Branch picker feeding `action` with the selected name.
     BranchList {
         branches: Vec<BranchInfo>,
         list: fuzzy::FuzzyList,
@@ -210,42 +197,40 @@ pub enum Modal {
         entries: Vec<RevChoice>,
         list: fuzzy::FuzzyList,
     },
-    /// Fuzzy command palette over everything executable on this screen.
-    Palette { list: fuzzy::FuzzyList },
-    /// Fuzzy picker over a fixed named choice set (a theme, a line-diff
-    /// algorithm); applies the pick live.
+    Palette {
+        list: fuzzy::FuzzyList,
+    },
+    /// Fuzzy picker over a fixed named choice set; applies the pick live.
     Choice {
         kind: ChoiceKind,
         list: fuzzy::FuzzyList,
     },
-    /// Remote picker feeding `purpose` with the selected remote name.
     RemoteList {
         remotes: Vec<String>,
         list: fuzzy::FuzzyList,
         purpose: RemotePurpose,
     },
     /// Reconcile choice when a pull finds the branch diverged from `upstream`.
-    PullDiverged { upstream: String },
-    /// Verdict picker for a PR review submit: approve, request changes, or
-    /// comment only.
+    PullDiverged {
+        upstream: String,
+    },
     ReviewVerdict {
         number: u64,
         /// What the submit will send, resolved when the dialog opens.
         summary: Vec<String>,
     },
-    /// Compose a pull request for the checked-out branch.
     CreatePr {
         draft: Box<crate::app::pr_create::PrDraft>,
     },
-    /// Base-branch picker for the create form. The draft rides along so the
-    /// form comes back either way, with the choice or without it.
+    /// Base-branch picker for the create form. We carry the draft so the form
+    /// reopens whether or not a base was picked.
     PrBase {
         names: Vec<String>,
         list: fuzzy::FuzzyList,
         draft: Box<crate::app::pr_create::PrDraft>,
     },
-    /// Fuzzy picker over every tracked file: the one way to a file the review
-    /// does not touch.
+    /// Fuzzy picker over every tracked file, so the reader can reach a file
+    /// the review does not touch.
     FilePicker {
         paths: Vec<String>,
         list: fuzzy::FuzzyList,
@@ -257,7 +242,7 @@ pub enum Modal {
         scopes: Vec<language::LanguageScope>,
         list: fuzzy::FuzzyList,
     },
-    /// The context menu: the verbs that fit the thing under the pointer.
+    /// The context menu of verbs that fit the thing under the pointer.
     Menu {
         commands: Vec<commands::Command>,
         list: fuzzy::FuzzyList,
@@ -269,7 +254,6 @@ pub enum Modal {
         entries: Vec<String>,
         list: fuzzy::FuzzyList,
     },
-    /// Keymap listing for the screen the popup opened over.
     Help,
 }
 
@@ -311,14 +295,12 @@ pub struct RevChoice {
     pub label: String,
 }
 
-/// A network git op the main loop runs by shelling out, with the terminal kept
-/// up: it spawns a blocking task so the event loop keeps drawing, and the
-/// result returns as [`AppEvent::GitDone`]. Set by a push/pull/fetch leaf.
+/// A network git op the main loop runs on a blocking task, so the terminal
+/// keeps drawing; the result comes back as [`AppEvent::GitDone`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitOp {
-    /// Human label for the status bar, e.g. "push".
+    /// Status bar label, e.g. "push".
     pub label: String,
-    /// Full argv: program followed by its arguments.
     pub argv: Vec<String>,
 }
 
@@ -335,7 +317,6 @@ struct Keymaps {
 }
 
 impl Keymaps {
-    /// Build the per-context keymaps, draining any binding warnings into `sink`.
     fn build(keys: &crate::config::KeysConfig, sink: &mut Vec<String>) -> Self {
         let mut build = |context| {
             let (keymap, warnings) = Keymap::for_context(context, keys);
@@ -386,7 +367,6 @@ impl Transients {
 /// What the which-key panel lists.
 #[derive(Debug)]
 pub enum WhichKey<'a> {
-    /// An open transient's groups.
     Transient(&'a Transient),
     /// The keys that finish the chord `prefix` started, beside what each does.
     Chord {
@@ -413,16 +393,13 @@ const REFRESH_FLASH_TICKS: u8 = 4;
 const FALLBACK_REFRESH_TICKS: u32 = 20;
 /// How often (in 250ms ticks) the wall clock behind every rendered age moves.
 const CLOCK_TICKS: u32 = 40;
-/// How long the agent-activity indicator stays up after the last tool call,
-/// in 250ms ticks (45s): long enough to span an agent's ordinary pause
-/// between calls.
+/// 45s, long enough to span an agent's ordinary pause between calls.
 const AGENT_ACTIVITY_TTL_TICKS: u32 = 180;
 /// Cap on the agent's free-text focus and file, in chars.
 const AGENT_ACTIVITY_MAX_CHARS: usize = 160;
 
-/// `DIFFLER_ACTIVITY_TTL_MS` overrides [`AGENT_ACTIVITY_TTL_TICKS`] above, so
-/// a test doesn't have to sleep out 45 real seconds to see the indicator
-/// expire.
+/// `DIFFLER_ACTIVITY_TTL_MS` overrides [`AGENT_ACTIVITY_TTL_TICKS`], so a test
+/// can see the indicator expire without sleeping 45 seconds.
 fn agent_activity_ttl_ticks() -> u32 {
     std::env::var("DIFFLER_ACTIVITY_TTL_MS")
         .ok()
@@ -445,18 +422,15 @@ fn status_text(text: &str) -> String {
         .collect()
 }
 
-/// The most recently active MCP connection's status, for the status-bar
-/// indicator. Several sessions may be connected; the app just keeps the
-/// latest one and lets an older report be overwritten.
+/// The most recently active MCP connection's status. With several sessions
+/// connected we keep only the latest report.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentActivity {
     pub focus: String,
     pub file: Option<String>,
 }
 
-/// The status bar's live agent-activity indicator, owning its own expiry:
-/// what the most recently active MCP connection reported, when it was
-/// reported, and how long it stays up from there.
+/// The status bar's agent-activity indicator and its expiry.
 #[derive(Debug)]
 pub(crate) struct AgentActivityTracker {
     pub(crate) current: Option<AgentActivity>,
@@ -475,7 +449,6 @@ impl AgentActivityTracker {
         }
     }
 
-    /// Report fresh activity, up for `lasts` ticks from `now`.
     fn show(&mut self, focus: &str, file: Option<&str>, lasts: u32, now: u32) {
         self.current = Some(AgentActivity {
             focus: status_text(focus),
@@ -485,13 +458,11 @@ impl AgentActivityTracker {
         self.lasts = lasts;
     }
 
-    /// Report fresh activity at the tracker's own ttl.
     fn set(&mut self, focus: &str, file: Option<&str>, now: u32) {
         self.show(focus, file, self.ttl_ticks, now);
     }
 
-    /// Drop the indicator once `now` has outlived it. `true` when this call
-    /// dropped it, so the caller knows to redraw.
+    /// `true` when this call dropped the indicator, so the caller redraws.
     fn expire(&mut self, now: u32) -> bool {
         if self.current.is_some() && now.wrapping_sub(self.reported_at) >= self.lasts {
             self.current = None;
@@ -502,14 +473,12 @@ impl AgentActivityTracker {
     }
 }
 
-/// How much the CI poll slows while the terminal is unfocused. Focus regained
-/// polls at once, so the only cost of being wrong is a stale run list nobody
-/// is looking at.
+/// How much the CI poll slows while the terminal is unfocused. We poll at
+/// once when focus returns.
 const UNFOCUSED_POLL_FACTOR: u64 = 12;
 
-/// What the main loop should fetch from the CI provider off-thread. Mirrors
-/// `GitOp`/`pending_git`: set by the app, taken once by the loop, result
-/// returned as an `AppEvent`.
+/// What the main loop should fetch from the CI provider off-thread; the result
+/// comes back as an `AppEvent`.
 #[derive(Debug, Clone)]
 pub enum CiRequest {
     Runs,
@@ -593,14 +562,11 @@ pub struct CiRemote {
     pub url: Option<String>,
 }
 
-/// Detect a CI provider for every git remote (via the `Vcs` trait, not a
-/// subprocess), deduped so two remotes on the same forge yield one section. A
-/// forge whose CLI isn't installed degrades to no CI.
+/// Detect a CI provider for every git remote, one per forge. A forge whose CLI
+/// isn't installed has no CI.
 ///
-/// Order decides which remote the runs come from, and a fork has more than one
-/// answer: `ci.remote` when the reader named one, else the remote the branch
-/// pushes to, else `origin`. Pushing to your own fork of someone else's repo
-/// is the case that makes the tracking ref the better guess than the name.
+/// The first remote supplies the runs: `ci.remote`, else the remote the branch
+/// pushes to, since in a fork that is the reader's own, else `origin`.
 fn detect_ci_remotes(
     review: &Review,
     ci: &crate::config::CiConfig,
@@ -641,9 +607,7 @@ fn preferred_first(names: &mut [String], preferred: Option<&str>) {
 }
 
 /// The next row `target` accepts, scanning out from `at` in one direction.
-/// `None` when there is none, which leaves the cursor where it is. Shared by
-/// every bracket-pair motion: the status sections, the diff hunks, and the
-/// file sidebar's groups all step the same way over different rows.
+/// Every bracket-pair motion steps through this.
 pub(crate) fn step_to<T>(
     rows: &[T],
     at: usize,
@@ -659,8 +623,8 @@ pub(crate) fn step_to<T>(
     .map(|(index, _)| index)
 }
 
-/// Cursor step for half/full page motions. Before the first render the
-/// viewport is unknown; a typical terminal height is a fine guess.
+/// Cursor step for half/full page motions. Before the first render we guess a
+/// typical terminal height.
 pub(crate) fn page_step(viewport: u16, full: bool) -> usize {
     let lines = if viewport == 0 {
         40
@@ -678,9 +642,7 @@ pub struct App {
     pub review: Review,
     pub head: HeadInfo,
     pub theme: Theme,
-    /// Whole-file syntax highlighter, pinned to `theme`'s syntax palette at
-    /// construction. Shared (not rebuilt) with blocking-pool enrichment
-    /// workers, which clone the `Arc`.
+    /// Pinned to `theme`'s syntax palette; enrichment workers clone the `Arc`.
     pub highlighter: Arc<diffler_core::highlight::Highlighter>,
     pub config: Config,
     /// Author label stamped on comments and replies the human writes.
@@ -689,40 +651,30 @@ pub struct App {
     pub status: StatusView,
     pub log: Option<LogView>,
     pub diff: Option<DiffView>,
-    /// The embedded CI graph component, present while the Graph screen is up.
     pub graph: Option<crate::graph::GraphView>,
-    /// The `click` anchors of a card figure opened full-screen onto the Graph
-    /// screen, keyed by node: `(path, line, end)` for a node whose target
-    /// resolved. `None` while the Graph screen shows a CI run instead, whose
-    /// `<cr>` opens a job's log rather than jumping to code.
+    /// The resolved `click` anchors `(path, line, end)` of a card figure opened
+    /// full screen. `None` while the Graph screen shows a CI run.
     pub(crate) figure_graph_anchors:
         Option<std::collections::HashMap<crate::graph::NodeId, (String, u32, u32)>>,
-    /// CI remotes for the repo: one per distinct forge across all git remotes,
-    /// computed at startup. Empty when no provider could be determined.
+    /// One per distinct forge across the git remotes, computed at startup.
     pub(crate) ci_remotes: Vec<CiRemote>,
-    /// Immutable commit/range diff models the MCP handlers serve, computed
-    /// once per source (agent polls must not stall the render loop).
+    /// Commit/range diff models the MCP handlers serve, computed once per
+    /// source so agent polls never stall the render loop.
     source_models:
         std::collections::HashMap<String, std::sync::Arc<diffler_core::model::DiffModel>>,
-    /// Off-thread refresh lifecycle: repo changes queue one worker at a time.
     pub refresh_state: RefreshState,
-    /// Continuation the next landed refresh runs.
     pub(crate) after_refresh: Option<AfterRefresh>,
-    /// Enrichment jobs waiting for a blocking-pool worker; drained by the
-    /// main loop like the other pending slots.
     pub pending_enrich: Vec<enrich::EnrichJob>,
     /// Content hashes with a worker in flight, so bursts don't duplicate work.
     enrich_inflight: std::collections::HashSet<String>,
-    /// Fetched reusable-workflow YAML shared across per-request provider
-    /// rebuilds, so graph polls don't refetch immutable files.
+    /// Reusable-workflow YAML kept across provider rebuilds, so graph polls
+    /// don't refetch immutable files.
     pub ci_yaml_cache: crate::ci::YamlCache,
     /// Conditional-request state per CI endpoint, so a poll that finds nothing
     /// changed costs no rate limit.
     pub ci_etags: crate::ci::EtagCache,
-    /// Whether the terminal currently has focus. Terminals without focus
-    /// reporting never say otherwise, so this stays true for them.
+    /// Stays true on terminals without focus reporting.
     pub focused: bool,
-    /// Recent CI runs shown on the Runs screen.
     pub runs: Vec<crate::ci::CiRun>,
     /// The checked-out branch's PR, shown beside the runs section header.
     pub pr: Option<crate::ci::PullRequest>,
@@ -737,153 +689,113 @@ pub struct App {
     pub(crate) pending_walkthrough_open: Option<(String, diff::Slide)>,
     pub prs: Vec<crate::ci::PullRequest>,
     pub prs_cursor: usize,
-    /// Scroll offsets of the two full-screen lists, kept so the view holds
-    /// still until the cursor reaches its margin.
+    /// Scroll offsets of the two full-screen lists, so the view holds still
+    /// until the cursor reaches its margin.
     pub(crate) prs_scroll: usize,
     pub(crate) runs_scroll: usize,
     /// Outbound forge posts drained by the runtime each frame.
     pub pending_pr_posts: Vec<pr::PrPost>,
     pub(crate) pr_posts_inflight: std::collections::HashSet<String>,
-    /// Whether the PR has been resolved for the current branch, so it's fetched
-    /// once per branch instead of on every runs poll (reset on a repo change).
+    /// Whether the PR has been resolved for the current branch, so we fetch it
+    /// once per branch. A repo change resets it.
     pr_checked: bool,
     runs_cursor: usize,
     /// The run opened into the graph, re-polled for live status.
     open_run: Option<crate::ci::RunId>,
-    /// The remote the open run came from, so its detail/log/extras route to the
-    /// right forge (run ids aren't unique across forges).
+    /// Run ids aren't unique across forges, so we route by this remote.
     open_run_remote: Option<String>,
-    /// The open run's artifacts + annotations, shown below the DAG.
     pub extras: Option<crate::ci::RunExtras>,
-    /// The job whose log is on the `CiLog` screen.
     open_job: Option<crate::ci::JobId>,
-    /// Accumulated raw job-log text and the byte offset the next poll resumes
-    /// from. Parsed into [`ci_log`](Self::ci_log) for the foldable view.
+    /// Raw job-log text and the byte offset the next poll resumes from.
     log_text: String,
     log_offset: u64,
-    /// The opened job's step boundaries, used to bucket `log_text` into steps.
     log_steps: Vec<crate::ci::LogStepMeta>,
-    /// The foldable step view over `log_text`, present while the `CiLog` screen is up.
     pub ci_log: Option<ci_log::CiLogView>,
-    /// Set once a log chunk reports the job's log is complete, so polling stops
-    /// (a dump-mode provider returns the whole log in one chunk).
+    /// Stops polling; a dump-mode provider returns the whole log in one chunk.
     log_done: bool,
-    /// A CI provider call the main loop should run off-thread (mirrors `pending_git`).
     pub pending_ci: Option<CiRequest>,
-    /// The whole-file view, present while the `File` screen is up.
     pub file: Option<file::FileView>,
-    /// A file whose content and blame the main loop should load off-thread.
     pub pending_file: Option<file::FileOpen>,
-    /// Bumped per file request, so a load that outlives the user's interest is
-    /// recognised and dropped when it lands.
+    /// Bumped per file request, so we drop a load the reader has moved past.
     file_token: u64,
-    /// Paths the main loop should ask git's attributes about, off-thread, for
-    /// the kinds sidebar.
     pub pending_declared: Option<DeclaredRequest>,
-    /// Bumped per declared-kinds request, so an answer for a file list the
-    /// view has since replaced is dropped.
+    /// Bumped per request, so we drop an answer for a replaced file list.
     declared_token: u64,
-    /// A re-diff the main loop should run off-thread (an algorithm switch),
-    /// on a fresh backend of its own, separate from the render loop's.
+    /// Runs on a fresh backend of its own, separate from the render loop's.
     pub pending_rediff: Option<RediffRequest>,
-    /// Bumped per re-diff request, so a stale one landing after another
-    /// switch (or after the open view moved on) is dropped.
+    /// Bumped per request, so we drop a re-diff another switch superseded.
     rediff_token: u64,
-    /// The terminal's image protocol and cell size, asked once at startup;
-    /// halfblocks until then, and wherever the terminal answers nothing.
+    /// Asked once at startup; halfblocks until then, and wherever the
+    /// terminal answers nothing.
     pub image_picker: ratatui_image::picker::Picker,
-    /// An image preview the main loop should build off-thread.
     pub pending_image: Option<image::ImageRequest>,
-    /// Bumped per image request, so a preview for a file or size the pane
-    /// has moved past is dropped.
+    /// Bumped per request, so we drop a preview the pane has moved past.
     image_token: u64,
-    /// The preview on its way, so a draw does not ask for it twice.
+    /// So a draw does not ask for the same preview twice.
     image_in_flight: Option<image::ImageKey>,
-    /// A symbol lens the main loop should build off-thread.
     pub pending_lens: Option<LensRequest>,
-    /// The languages the reader picked with `gl` for this run, as anchored
-    /// globs, newest last.
+    /// `gl` picks for this run as anchored globs, newest last.
     language_picks: Vec<(String, String)>,
     /// Counts highlighter rebuilds, so we drop an enrichment an older one ran.
     highlighter_generation: u64,
     /// A left press not yet let go, which opens the context menu once held.
     held_press: Option<menu::HeldPress>,
-    /// A tab request for the workspace holding this app to carry out.
     pub pending_tab: Option<tabs::TabOp>,
-    /// The tab row to draw above the screen, set while several projects are
-    /// open.
+    /// Set while several projects are open.
     pub tab_strip: Option<tabs::TabStrip>,
     /// The width the last frame was drawn at, for a click on the tab row.
     pub frame_width: u16,
-    /// Bumped per lens request, so a lens for a line the reader left is dropped.
+    /// Bumped per request, so we drop a lens for a line the reader left.
     lens_token: u64,
-    /// The language breakdown screen, present only while it is open.
     pub stats: Option<stats::StatsView>,
-    /// A repo scan the main loop should run off-thread.
     pub pending_stats: Option<stats::StatsRequest>,
-    /// Bumped per scan, so an answer for a screen since closed is dropped.
+    /// Bumped per scan, so we drop an answer for a closed screen.
     stats_token: u64,
     /// Files the main loop should read so the walkthrough's anchors resolve.
     pub pending_walkthrough: Option<walkthrough::WalkthroughRequest>,
-    /// Bumped per rebuild, so an answer for a walkthrough the agent has
-    /// replaced is dropped.
+    /// Bumped per rebuild, so we drop an answer for a replaced walkthrough.
     walkthrough_token: u64,
     pub modal: Option<Modal>,
-    /// Where the open modal drew its rows, so a click finds the one under the
-    /// pointer. Written by the renderer each frame.
+    /// Where the renderer drew the open modal's rows, for a click to find one.
     pub modal_hits: Option<crate::ui::popup::ListHits>,
-    /// Active `/` search over the focused pane, if any. `search.open` means the
-    /// prompt is capturing input; otherwise highlights persist while `n`/`N`
-    /// navigate.
+    /// `search.open` means the prompt is capturing input; otherwise the
+    /// highlights stay while `n`/`N` navigate.
     pub search: Option<Search>,
     pub message: Option<StatusMessage>,
-    /// Text to put on the system clipboard. The main loop, after the next
-    /// draw, emits it as an OSC52 sequence (covers ssh/tmux) and also pipes it
-    /// to the platform clipboard tool, then clears.
+    /// After the next draw the main loop emits it as OSC52 (for ssh/tmux) and
+    /// also pipes it to the platform clipboard tool.
     pub pending_clipboard: Option<String>,
-    /// Editor subprocess the main loop runs with the terminal suspended,
-    /// then reports back through [`App::editor_finished`].
+    /// Runs with the terminal suspended and reports back through
+    /// [`App::editor_finished`].
     pub pending_editor: Option<EditorRequest>,
     /// A pull request waiting on its branch to reach the forge.
     pub pending_pr_create: Option<Box<crate::ci::NewPullRequest>>,
-    /// Network git op the main loop runs in the background (terminal stays up),
-    /// reporting back through [`AppEvent::GitDone`]. Set by a push/pull/fetch
-    /// transient leaf, taken once by the loop.
     pub pending_git: Option<GitOp>,
     /// Argv of the last push, so a rejection can offer a `--force-with-lease`
     /// retry against the same target.
     pub(crate) last_push_argv: Option<Vec<String>>,
-    /// Watcher health flag, set by `watch::spawn_watcher`. `None` (no
-    /// watcher) counts as unhealthy: the tick fallback polls instead.
+    /// `None` counts as unhealthy, so the tick fallback polls.
     pub watcher_healthy: Option<Arc<AtomicBool>>,
     /// Ticks left on the status-bar `↻` indicator after a repo change.
     pub refresh_flash: u8,
-    /// Feedback epoch counter, bumped when the human sends feedback (`Z`)
-    /// or touches a comment; the MCP `wait_for_feedback` long-poll holds
-    /// receivers on it.
+    /// Bumped when the human sends feedback (`Z`) or touches a comment; the
+    /// `wait_for_feedback` long-poll waits on it.
     pub feedback_tx: tokio::sync::watch::Sender<u64>,
-    /// Bound port of the embedded MCP server, if it started successfully.
     pub mcp_port: Option<u16>,
-    /// Live status of the most recently active MCP connection, shown in the
-    /// status bar.
     pub(crate) agent_activity: AgentActivityTracker,
     keymaps: Keymaps,
     transients: Transients,
-    /// The open transient, if any. Set when a top-level prefix fires; cleared
-    /// when a key resolves, Esc aborts, or an unknown key closes it.
     pub transient: Option<OpenTransient>,
     pending: Vec<KeyPress>,
     pending_ticks: u8,
     tick_count: u32,
     /// Time and cell of the last left-press, for double-click detection.
     last_click: Option<(std::time::Instant, u16, u16)>,
-    /// Wall-clock seconds, refreshed with the commit list, for rendering
-    /// commit ages ("3h ago"). A field so tests can pin it.
+    /// Wall-clock seconds behind every rendered age; a field so tests can pin it.
     pub now_unix: i64,
 }
 
-/// Current wall-clock time in unix seconds, or 0 if the clock is before the
-/// epoch (it never is).
+/// Current wall-clock time in unix seconds, or 0 before the epoch.
 pub(crate) fn now_unix() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -892,7 +804,6 @@ pub(crate) fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
-/// The rows of the diff algorithm picker, in `DiffAlgorithm::ALL` order.
 pub(crate) fn diff_algorithm_names() -> Vec<String> {
     diffler_core::diffalgo::DiffAlgorithm::ALL
         .iter()
@@ -900,8 +811,7 @@ pub(crate) fn diff_algorithm_names() -> Vec<String> {
         .collect()
 }
 
-/// A named choice set [`Modal::Choice`] can pick from: what titles the
-/// dialog, what rows it offers, and what applying a pick does.
+/// A named choice set [`Modal::Choice`] can pick from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChoiceKind {
     Theme,
@@ -945,7 +855,6 @@ impl ChoiceKind {
 }
 
 impl App {
-    // a flat constructor: one init line per field of owned state
     #[allow(clippy::too_many_lines)]
     pub fn new(review: Review, loaded: LoadedConfig) -> Self {
         let LoadedConfig {
@@ -953,8 +862,7 @@ impl App {
             warnings: mut startup_warnings,
             ..
         } = loaded;
-        // whatever settings the review's backend opened with, config is the
-        // source of truth: push it in now so the two can never diverge
+        // config is the source of truth, so we push it into the review's backend
         review.set_diff_algorithm(config.diff.algorithm, config.diff.indent_heuristic);
         let (theme, theme_warning) = Theme::from_name(&config.ui.theme);
         startup_warnings.extend(theme_warning);
@@ -1005,7 +913,6 @@ impl App {
         };
         let walkthroughs = status::load_walkthroughs(&review);
 
-        // `origin/main` names the remote in front of the slash
         let pushes_to = head
             .upstream
             .as_deref()
@@ -1019,8 +926,6 @@ impl App {
             theme,
             highlighter,
             config,
-            // git config user.name is not exposed through HeadInfo; $USER is
-            // a good-enough human label for feedback exports
             author: std::env::var("USER").unwrap_or_else(|_| "you".to_owned()),
             screens: vec![Screen::Status],
             status: StatusView::new(unpushed, recent, branches, walkthroughs),
@@ -1028,8 +933,7 @@ impl App {
             diff: None,
             graph: None,
             figure_graph_anchors: None,
-            // kick an initial CI fetch so the Status section populates at launch
-            // (evaluated before `ci_remotes` is moved into the struct below)
+            // must precede `ci_remotes`, which moves the vec
             pending_ci: (!ci_remotes.is_empty()).then_some(CiRequest::Runs),
             ci_remotes,
             source_models: std::collections::HashMap::new(),
@@ -1110,45 +1014,36 @@ impl App {
             last_click: None,
             now_unix: now_unix(),
         };
-        // the default cursor (0) can start on the repo-band divider when the
-        // branch band above it is empty; settle it on real content
+        // with an empty branch band, row 0 is the repo-band divider
         app.clamp_cursor();
         app
     }
 
-    /// The screen under the cursor; the stack is never empty because `Back`
-    /// on the last screen quits instead of popping.
+    /// The stack is never empty: `Back` on the last screen quits.
     pub fn screen(&self) -> Screen {
         self.screens.last().copied().unwrap_or(Screen::Status)
     }
 
-    /// Index of the selected run on the Runs screen.
     pub fn runs_selected(&self) -> usize {
         self.runs_cursor
     }
 
-    /// The accumulated job-log text on the `CiLog` screen.
     pub fn log_text(&self) -> &str {
         &self.log_text
     }
 
-    /// The foldable step view over the `CiLog` screen, once a log chunk arrived.
     pub fn ci_log(&self) -> Option<&ci_log::CiLogView> {
         self.ci_log.as_ref()
     }
 
-    /// The CI remotes for the repo (the main loop builds a provider per remote
-    /// to service a `pending_ci` request).
     pub fn ci_remotes(&self) -> Vec<CiRemote> {
         self.ci_remotes.clone()
     }
 
-    /// The job the `CiLog` screen is showing, for its header line.
     pub fn open_job_name(&self) -> Option<String> {
         self.open_job.as_ref().map(|job| job.0.clone())
     }
 
-    /// The run the Graph screen is showing, for its header line.
     pub fn open_run_summary(&self) -> Option<&crate::ci::CiRun> {
         let id = self.open_run.as_ref()?;
         self.runs
@@ -1156,8 +1051,7 @@ impl App {
             .find(|run| &run.id == id && run.remote == self.open_run_remote)
     }
 
-    /// The CI remote the open run came from (for routing its detail/log/extras),
-    /// or the primary remote when the run isn't tagged or none is open.
+    /// The CI remote the open run came from, else the primary one.
     pub fn ci_remote_for_open_run(&self) -> Option<CiRemote> {
         match &self.open_run_remote {
             Some(name) => self.ci_remotes.iter().find(|r| &r.name == name).cloned(),
@@ -1165,8 +1059,7 @@ impl App {
         }
     }
 
-    /// Keymap of the active screen, with config remaps applied: what the
-    /// hint lines and the help popup render from.
+    /// Keymap of the active screen, with config remaps applied.
     pub fn active_keymap(&self) -> &Keymap {
         match self.screen().context() {
             Context::Status => &self.keymaps.status,
@@ -1181,22 +1074,20 @@ impl App {
         }
     }
 
-    /// The project-tab keys, read by the tab layer above this app.
     pub fn tabs_keymap(&self) -> &Keymap {
         &self.keymaps.tabs
     }
 
-    /// Whether `key` resolves to `action` in the keymap of the screen
-    /// underneath: the composer and the input modal intercept every key
-    /// before that keymap ever sees it, so this is how they still honor a
-    /// configured remap.
+    /// Whether `key` resolves to `action` in the active keymap. The composer
+    /// and the input modal intercept every key first, so they ask this to
+    /// honor a configured remap.
     pub(crate) fn matches_action(&self, key: &KeyEvent, action: Action) -> bool {
         let press = keymap::press_from_event(key);
         self.active_keymap().resolve(&mut Vec::new(), press) == Resolved::Action(action)
     }
 
     /// Whether the path carries a current viewed mark, judged against the
-    /// review diff (the model viewed hashes are reconciled with).
+    /// working-tree diff.
     pub fn is_path_viewed(&self, path: &str) -> bool {
         self.review
             .model()
@@ -1235,7 +1126,7 @@ impl App {
         self.agent_activity.show(focus, file, lasts, now);
     }
 
-    #[allow(clippy::too_many_lines)] // one arm per event; a flat match reads best
+    #[allow(clippy::too_many_lines)] // one arm per event
     pub fn handle(&mut self, event: AppEvent) -> Flow {
         match event {
             AppEvent::Quit => Flow::Quit,
@@ -1257,8 +1148,6 @@ impl App {
             }
             AppEvent::Focus(focused) => {
                 self.focused = focused;
-                // catch up the moment someone looks again, so coming back
-                // never shows a stale run list
                 if focused {
                     self.queue_ci_poll();
                 }
@@ -1329,9 +1218,8 @@ impl App {
                 Flow::Continue
             }
             AppEvent::Mcp(request) => {
-                // a closed reply channel means the agent already gave up
-                // (e.g. timed out while an editor suspended the loop);
-                // acting on it would replay a stale mutation unseen
+                // the agent gave up (say, timed out while an editor held the
+                // loop), so we drop the request to avoid an unseen stale mutation
                 if request.reply.is_closed() {
                     self.info("dropped stale agent request");
                 } else {
@@ -1342,8 +1230,7 @@ impl App {
                 Flow::Continue
             }
             AppEvent::McpWaiting { until } => {
-                // a poll can outlast the ttl, so we hold the indicator until
-                // the poll's own deadline and age it out from there
+                // a poll can outlast the ttl, so we count the ttl from its deadline
                 let poll = ticks_in(until.saturating_duration_since(Instant::now()));
                 let lasts = poll.saturating_add(self.agent_activity.ttl_ticks);
                 self.show_agent_activity("waiting on you", None, lasts);
@@ -1353,8 +1240,6 @@ impl App {
                 self.git_finished(&label, ok, &output);
                 Flow::Continue
             }
-            // a dialog with rows takes the pointer for itself; a transient or
-            // the composer still owns input while open
             AppEvent::Mouse(mouse) if self.modal.is_some() => {
                 self.handle_modal_mouse(mouse);
                 Flow::Continue
@@ -1371,15 +1256,8 @@ impl App {
         }
     }
 
-    /// Translate a raw mouse event into a [`MouseGesture`] and dispatch it to
-    /// the active screen. Each screen implements `*_mouse(MouseGesture)` and
-    /// must handle every variant, so the `match self.screen()` here is the one
-    /// place that forces a new screen to wire up mouse support (it won't
-    /// compile without an arm), and the exhaustive gesture match in each
-    /// handler forces every interaction to be considered.
     fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
         use crossterm::event::{MouseButton, MouseEventKind};
-        // the graph view consumes raw mouse events itself
         if self.screen() == Screen::Graph {
             if let Some(action) = self.graph.as_mut().and_then(|g| g.on_mouse(mouse)) {
                 self.on_graph_action(&action);
@@ -1442,7 +1320,6 @@ impl App {
         self.mouse_gesture(gesture);
     }
 
-    /// Select the thing at `(col, row)` the way the active screen does.
     fn select_at(&mut self, col: u16, row: u16) {
         self.mouse_gesture(MouseGesture::Select { col, row });
     }
@@ -1453,14 +1330,10 @@ impl App {
             Screen::Diff => self.diff_mouse(gesture),
             Screen::Log => self.log_mouse(gesture),
             Screen::CiLog => self.ci_log_mouse(gesture),
-            // the Runs/Graph/File/Stats screens are keyboard-driven
             Screen::Graph | Screen::Runs | Screen::Prs | Screen::File | Screen::Stats => {}
         }
     }
 
-    /// Mouse on the logs screen: wheel scrolls the cursor, click positions it,
-    /// double-click folds the step, drag extends a selection, mirroring the
-    /// diff/log screens so the foldable log behaves the same under the pointer.
     fn register_click_is_double(&mut self, col: u16, row: u16) -> bool {
         let now = std::time::Instant::now();
         let double = self.last_click.is_some_and(|(at, c, r)| {
@@ -1476,8 +1349,7 @@ impl App {
             self.pending.clear();
             return Flow::Continue;
         }
-        // Esc leaves visual selection; it stays out of the keymap because it
-        // also drains pending chords and cancels modals everywhere else
+        // Esc stays out of the keymap since it also drains chords and cancels modals
         if key.code == KeyCode::Esc && self.visual_active() {
             if let Some(view) = self.row_select_mut() {
                 view.set_anchor(None);
@@ -1486,8 +1358,6 @@ impl App {
             return Flow::Continue;
         }
         if self.screen() == Screen::Diff && self.lens_active() && self.pending.is_empty() {
-            // the labels number the lens's names, so a digit picks one the way a
-            // numbered list does; esc drops the lens the way it drops a selection
             match key.code {
                 KeyCode::Esc => {
                     self.lens_clear();
@@ -1526,15 +1396,10 @@ impl App {
         });
     }
 
-    /// While a transient is armed it owns the keyboard: Esc/Backspace close it,
-    /// a leaf key fires and closes, an unknown key closes with a beep
-    /// (neogit-style).
     fn handle_transient_key(&mut self, key: &KeyEvent) -> Flow {
         let Some(open) = self.transient else {
             return Flow::Continue;
         };
-        // a single-level transient has nothing to pop, so Backspace and Esc
-        // both abort it without dispatching
         if matches!(key.code, KeyCode::Esc | KeyCode::Backspace) {
             self.transient = None;
             return Flow::Continue;
@@ -1545,22 +1410,19 @@ impl App {
         match resolved {
             TransientResolve::Action(action) => self.dispatch(action),
             TransientResolve::Unbound => {
-                // neogit beeps and closes on an unbound key in a transient
                 self.info("no such command");
                 Flow::Continue
             }
         }
     }
 
-    /// The built transient for `kind`, with config overrides applied: what
-    /// the help popup reads.
+    /// The built transient for `kind`, with config overrides applied.
     pub fn transient(&self, kind: TransientKind) -> &Transient {
         self.transients.get(kind)
     }
 
-    /// The which-key panel to reveal: an open transient's keys, or the keys
-    /// that finish a half-typed chord. `Some` once the reveal timer has
-    /// elapsed, so a fast second key never flashes it.
+    /// `Some` once the reveal timer has elapsed, so a fast second key never
+    /// flashes the panel.
     pub fn which_key_panel(&self) -> Option<WhichKey<'_>> {
         if let Some(open) = self.transient {
             return (self.tick_count.wrapping_sub(open.opened_at) >= WHICH_KEY_REVEAL_TICKS)
@@ -1575,35 +1437,28 @@ impl App {
         })
     }
 
-    /// While a modal is up it owns the keyboard.
     pub fn feedback_epoch(&self) -> u64 {
         *self.feedback_tx.borrow()
     }
 
-    /// The review source the user is currently looking at: the open diff's
-    /// source, or the working tree on the status screen.
+    /// The open diff's source, else the working tree.
     pub(crate) fn active_review_source(&self) -> ReviewSource {
         self.diff
             .as_ref()
             .map_or(ReviewSource::WorkingTree, |diff| diff.source.clone())
     }
 
-    /// Persist the session and invalidate comment-bearing rows after a
-    /// human comment change; also wakes agents waiting for feedback. Agent
-    /// mutations (see the `mcp` module) call [`App::persist_review_change`]
-    /// directly instead, so their own change never wakes their own
-    /// `wait_for_feedback` poll.
+    /// Persist a human comment change and wake agents waiting for feedback.
+    /// Agent mutations call [`App::persist_review_change`] so they never wake
+    /// their own `wait_for_feedback` poll.
     fn after_session_change(&mut self) {
         self.feedback_tx.send_modify(|epoch| *epoch += 1);
         let source = self.active_review_source();
         let _ = self.persist_review_change(&source);
     }
 
-    /// Persist `source`'s session and invalidate the open diff's cached rows
-    /// so a stale comment/viewed-mark render never survives the mutation.
-    /// Returns the save error, toasted here and also handed back so an MCP
-    /// caller whose response promises the write happened can say otherwise
-    /// when it did not.
+    /// Persist `source`'s session and invalidate the open diff's cached rows.
+    /// We toast a save error and also return it, so an MCP reply can report it.
     pub(crate) fn persist_review_change(&mut self, source: &ReviewSource) -> Result<(), String> {
         let result = self.review.save_for(source);
         if let Some(diff) = self.diff.as_mut() {
@@ -1615,16 +1470,11 @@ impl App {
         result.map_err(|err| err.to_string())
     }
 
-    /// One 250ms beat: age the timed UI state and re-poll what the screen is
-    /// watching. `Idle` when the beat left the screen untouched, so the loop
-    /// can skip a draw nobody would see.
-    /// Whether the open screen renders a time against `now_unix`. The diff,
-    /// graph, logs and PR list carry no ages, so the clock moving under them
-    /// changes nothing to look at.
     fn screen_shows_ages(&self) -> bool {
         matches!(self.screen(), Screen::Status | Screen::Log | Screen::Runs)
     }
 
+    /// `Idle` when the tick left the screen untouched, so the loop skips the draw.
     fn on_tick(&mut self) -> Flow {
         let which_key = self.which_key_panel().is_some();
         self.age_pending();
@@ -1632,41 +1482,30 @@ impl App {
         changed |= self.refresh_flash > 0;
         self.refresh_flash = self.refresh_flash.saturating_sub(1);
         self.tick_count = self.tick_count.wrapping_add(1);
-        // the which-key panel reveals on a tick count, so the tick that crosses
-        // its delay is the frame that shows it
         changed |= self.which_key_panel().is_some() != which_key;
         if self.tick_count.is_multiple_of(FALLBACK_REFRESH_TICKS) && self.watcher_unhealthy() {
             self.queue_refresh();
         }
-        // every age on screen is measured against this clock, so a stopped one
-        // reads "0s" for as long as nothing else refreshes. A coarse step keeps
-        // them honest without repainting every second, and only a screen that
-        // shows an age is worth the repaint.
+        // every rendered age reads this clock; we step it coarsely and repaint
+        // only a screen that shows an age
         if self.tick_count.is_multiple_of(CLOCK_TICKS) {
             let now = now_unix();
             changed |= now != self.now_unix && self.screen_shows_ages();
             self.now_unix = now;
         }
         changed |= self.agent_activity.expire(self.tick_count);
-        // re-poll the active CI screen on a relaxed cadence (250ms ticks);
-        // saturating + clamp so a pathological config can't zero or overflow it.
-        // Nobody watching means nobody to show it to, so an unfocused terminal
-        // drops to a heartbeat and catches up on the focus event.
         let seconds = if self.focused {
             self.config.ci.poll_seconds.max(1)
         } else {
             self.config.ci.poll_seconds.max(1) * UNFOCUSED_POLL_FACTOR
         };
         let poll_ticks = u32::try_from(seconds.saturating_mul(4)).unwrap_or(u32::MAX);
-        // the poll itself paints nothing; its answer arrives as an event
         if self.tick_count.is_multiple_of(poll_ticks) {
             self.queue_ci_poll();
         }
         if changed { Flow::Continue } else { Flow::Idle }
     }
 
-    /// Count the ticks a half-typed chord has waited; the which-key panel
-    /// lists its keys once that passes the reveal delay.
     fn age_pending(&mut self) {
         if !self.pending.is_empty() {
             self.pending_ticks = self.pending_ticks.saturating_add(1);
@@ -1678,7 +1517,6 @@ impl App {
         match action {
             Action::Quit => return Flow::Quit,
             Action::Back => return self.pop_screen(),
-            // the breakdown's own count is what a refresh means there
             Action::Refresh if self.screen() == Screen::Stats => self.rescan_stats(),
             Action::Refresh => self.queue_refresh(),
             Action::Help => self.modal = Some(Modal::Help),
@@ -1706,8 +1544,7 @@ impl App {
             Action::OpenFilePicker => self.open_file_picker(),
             Action::Blame => self.blame_focused(),
             Action::OpenStats => self.open_stats(),
-            // reaching `dispatch` at all means the composer and the input
-            // modal declined it: neither has the keyboard right now
+            // the composer and the input modal handle this key first
             Action::EditExternally => {
                 self.info("nothing here to edit; open a comment or a field first");
             }
@@ -1726,9 +1563,7 @@ impl App {
         Flow::Continue
     }
 
-    /// Open the CI runs start page for the repo's detected provider.
-    /// Enter a screen. Clears any search, whose matches are keyed to the
-    /// leaving screen's rows.
+    /// Clears any search, since its matches are keyed to the leaving screen's rows.
     pub(crate) fn push_screen(&mut self, screen: Screen) {
         self.search = None;
         self.screens.push(screen);
@@ -1739,8 +1574,7 @@ impl App {
             return Flow::Quit;
         }
         self.search = None;
-        // leaving a screen abandons the file it asked for, so a slow load
-        // cannot arrive later and push the file view over what replaced it
+        // so a slow file load cannot push the file view over what replaced it
         self.cancel_file_load();
         match self.screens.pop() {
             Some(Screen::Diff) => self.diff = None,
@@ -1782,8 +1616,6 @@ impl App {
         self.modal = Some(Modal::Choice { kind, list });
     }
 
-    /// Swap the active theme live: re-pin the syntax highlighter and drop the
-    /// cached highlights so the visible files re-enrich in the new palette.
     pub(crate) fn apply_theme(&mut self, name: &str) {
         let (theme, _) = Theme::from_name(name);
         self.theme = theme;
@@ -1792,10 +1624,8 @@ impl App {
         self.info(format!("theme: {name}"));
     }
 
-    /// Switch the line-diff algorithm live: the config (which every refresh
-    /// worker reads) and the review's own backend take it immediately; every
-    /// model already computed under the old one is re-diffed off-thread (see
-    /// [`Self::queue_rediff`]), so picking one never blocks the render loop.
+    /// Models already computed under the old algorithm are re-diffed
+    /// off-thread, so a switch never blocks the render loop.
     pub(crate) fn apply_diff_algorithm(&mut self, name: &str) {
         let Some(algorithm) = diffler_core::diffalgo::DiffAlgorithm::parse(name) else {
             return;
@@ -1808,9 +1638,8 @@ impl App {
         self.info(format!("diff algorithm: {algorithm}"));
     }
 
-    /// Queue an off-thread re-diff of the status sections, the working tree,
-    /// and whatever the open diff view is showing (a three-dot review or a
-    /// pinned commit/range/PR), under the settings current when it starts.
+    /// Queue a re-diff of the status sections, the working tree, and whatever
+    /// the open diff view shows.
     fn queue_rediff(&mut self) {
         let about = self
             .diff
@@ -1829,10 +1658,9 @@ impl App {
         });
     }
 
-    /// Take the queued re-diff once no refresh is running, holding the
-    /// refresh slot until [`Self::on_rediff_done`]: a re-diff and a refresh
-    /// then land in the order they snapshot the repo, so neither installs
-    /// an older working tree over a newer one.
+    /// Take the queued re-diff once no refresh is running. It holds the
+    /// refresh slot until `on_rediff_done`, so neither it nor a
+    /// refresh installs an older working tree over a newer one.
     pub fn start_rediff(&mut self) -> Option<RediffRequest> {
         if matches!(
             self.refresh_state,
@@ -1848,9 +1676,7 @@ impl App {
         Some(request)
     }
 
-    /// Run the queued re-diff inline, mirroring `dispatch_rediff` in the
-    /// runtime down to the guard: with nothing queued there is nothing to
-    /// settle, so a test that expects state to move has to have asked for it.
+    /// Run the queued re-diff inline, mirroring `dispatch_rediff` in the runtime.
     #[cfg(test)]
     pub(crate) fn settle_rediff(&mut self) {
         let Some(request) = self.start_rediff() else {
@@ -1860,10 +1686,8 @@ impl App {
         self.on_rediff_done(result, &request);
     }
 
-    /// Apply a landed [`Self::queue_rediff`] result: install the recomputed
-    /// status and working diff (an algorithm switch changes hunks the content
-    /// fingerprint cannot see), then rebuild the open view, swapping in its
-    /// recomputed model when it still shows the source the request named.
+    /// We install the result unconditionally, since an algorithm switch
+    /// changes hunks the content fingerprint cannot see.
     pub(crate) fn on_rediff_done(
         &mut self,
         result: Result<diffler_core::review::Refreshed, String>,
@@ -1885,8 +1709,7 @@ impl App {
                 return Flow::Continue;
             }
         };
-        // we name the cursor's rows now, while they and the models they were
-        // built on still agree
+        // we capture positions while the rows still match their model
         let positions = self
             .diff
             .as_ref()
@@ -1927,9 +1750,7 @@ impl App {
         Flow::Continue
     }
 
-    /// Every file of the diff on screen (the working tree's when no diff is
-    /// open) with the ids of its hunks, which change whenever an algorithm
-    /// splits or aligns them differently.
+    /// Every file of the diff on screen with its hunk ids.
     fn shown_hunks(&self) -> Vec<(String, Vec<diffler_core::model::HunkId>)> {
         let model = match self.diff.as_ref() {
             Some(diff) => diff.model(&self.review),
@@ -1945,8 +1766,8 @@ impl App {
             .collect()
     }
 
-    /// Say what an algorithm switch changed, since most diffs come out the
-    /// same under every algorithm and a silent switch reads as a broken one.
+    /// Most diffs come out the same under every algorithm, so we say what a
+    /// switch changed, else it looks broken.
     fn report_rediff(&mut self, before: &[(String, Vec<diffler_core::model::HunkId>)]) {
         let after = self.shown_hunks();
         let changed = after.iter().filter(|file| !before.contains(file)).count();
@@ -1961,11 +1782,8 @@ impl App {
         });
     }
 
-    /// The shared tail of every diff view model swap (a `<c-a>` algorithm
-    /// switch, re-opening the PR or three-dot review already on screen):
-    /// install the new model, invalidate, rebuild rows against it, then
-    /// resolve `positions` (captured with `DiffView::capture_positions`
-    /// before whatever produced `model`) back onto the rebuilt rows.
+    /// Install a new model into the open diff view and restore `positions`,
+    /// which the caller captured before producing `model`.
     pub(crate) fn finish_diff_swap(
         &mut self,
         positions: RowPositions,
@@ -1988,8 +1806,7 @@ impl App {
         });
     }
 
-    /// Put a resolved value on the clipboard, or name what had none. Only a
-    /// pull request can come back empty; a commit always has its sha.
+    /// Put a resolved value on the clipboard, or name what had none.
     pub(crate) fn copy_or_report(&mut self, value: Option<String>, missing: &str) {
         let Some(value) = value else {
             self.info(format!("no URL for {missing}"));
@@ -2006,8 +1823,6 @@ impl App {
         });
     }
 
-    /// Run a VCS mutation, then queue a refresh so the sections catch up with
-    /// reality.
     pub(crate) fn vcs_op(&mut self, op: impl FnOnce(&dyn Vcs) -> Result<(), VcsError>) {
         match op(self.review.vcs.as_ref()) {
             Ok(()) => self.queue_refresh(),
@@ -2015,16 +1830,13 @@ impl App {
         }
     }
 
-    /// Ask the runtime for a repo refresh. It runs on the blocking pool and
-    /// lands as [`AppEvent::RefreshDone`], so nothing after this call sees the
-    /// new state; work that needs it goes in `after_refresh`.
+    /// The refresh runs on the blocking pool, so nothing after this call sees
+    /// the new state; work that needs it goes in `after_refresh`.
     pub(crate) fn queue_refresh(&mut self) {
         self.refresh_state = self.refresh_state.queue();
     }
 
-    /// Run the queued refresh inline, mirroring `dispatch_refresh` in the
-    /// runtime down to the guard: with nothing queued there is nothing to
-    /// settle, so a test that expects state to move has to have asked for it.
+    /// Run the queued refresh inline, mirroring `dispatch_refresh` in the runtime.
     #[cfg(test)]
     pub(crate) fn settle_refresh(&mut self) {
         if self.refresh_state != RefreshState::Queued {
@@ -2053,7 +1865,6 @@ impl App {
         }
     }
 
-    /// Install a computed refresh.
     pub(crate) fn apply_refresh(&mut self, refreshed: diffler_core::review::Refreshed) {
         let diffler_core::review::Refreshed {
             status,
@@ -2064,19 +1875,13 @@ impl App {
         self.now_unix = now_unix();
         let status_anchor = self.status_cursor_anchor();
         let diff_anchor_path = self.diff_cursor_path();
-        // the model below is about to move out from under any open diff's
-        // rows: name what the cursor, the visual anchor and the banded span
-        // sit on now, while rows and model still agree, so `restore_positions`
-        // can find them again once `ensure_rows` has rebuilt against the new
-        // one. Capturing after the swap would read stale row indices
-        // against a model that already moved on, naming the wrong thing.
+        // we capture positions before the model swap, while rows still match it
         let diff_positions = self
             .diff
             .as_ref()
             .map(|diff| diff.capture_positions(&self.review));
-        // a no-op refresh (poll tick, watcher echo) keeps the old model: the
-        // rebuild carries no emphasis, so swapping it in would force the whole
-        // enrichment pipeline to re-run for nothing
+        // a no-op refresh keeps the old model, since the rebuild carries no
+        // emphasis and would re-run enrichment for nothing
         let unchanged = self.review.model().fingerprint() == model.fingerprint();
         if unchanged {
             self.review.status = status;
@@ -2113,7 +1918,6 @@ impl App {
             if let Some(model) = swap {
                 diff.commit_model = Some(model);
             }
-            // a no-op refresh must leave rows, emphasis, and memos alone
             if moved {
                 diff.clear_enriched();
                 diff.invalidate();
@@ -2121,9 +1925,7 @@ impl App {
             }
             diff.ensure_rows(&self.review);
         }
-        // a file that joined the diff has no attributes read yet, and the
-        // kinds sidebar would keep guessing at it for as long as the view
-        // stays open
+        // a file that joined the diff has no attributes read yet
         if moved {
             self.queue_declared();
         }
@@ -2133,9 +1935,8 @@ impl App {
         }
     }
 
-    /// The recomputed three-dot diff to swap into the open view. `None` when
-    /// the view moved on to another source, when the diff did not actually
-    /// change (a rebuild carries no emphasis), or when the recompute failed.
+    /// The recomputed three-dot diff to swap into the open view, `None` when
+    /// the view shows another source, the diff is unchanged, or it failed.
     fn against_swap(
         &mut self,
         rev: &str,
@@ -2160,8 +1961,6 @@ impl App {
             .as_ref()
             .is_none_or(|healthy| !healthy.load(Ordering::Relaxed))
     }
-
-    // --- branch transient flows ---
 
     pub(crate) fn request_network(&mut self, op: NetworkOp, label: &str) {
         let argv = match self.review.vcs.network_argv(op) {
@@ -2190,14 +1989,12 @@ impl App {
     }
 
     fn on_ci_prs_error(&mut self, message: String) -> Flow {
-        // a failed fetch frees the slot, so a later unfold can try again
         self.status.prs_in_flight = false;
         self.error(message);
         Flow::Continue
     }
 
-    /// Show `pr` as the branch's own, re-seating the cursor the way an arriving
-    /// poll does. What a PR opened from inside the session goes through.
+    /// Show `pr` as the branch's own, for a PR opened from inside the session.
     pub(crate) fn seat_branch_pr(&mut self, pr: crate::ci::PullRequest) {
         let anchor = self.status_cursor_anchor();
         self.pr = Some(pr);
@@ -2213,13 +2010,9 @@ impl App {
         Flow::Continue
     }
 
-    /// Report a finished network op: the first non-empty output line as a
-    /// success toast (label + summary), or as an error on failure. The queued
-    /// refresh (head/log/ahead-behind may have moved) lands after the toast, so
-    /// a refresh that fails replaces it with its error. A pending PR
-    /// open/switch routes to its own continuation, gated on the fetch's own
-    /// label, since several git ops can be in flight and an unrelated one
-    /// finishing first must not consume the continuation slots.
+    /// Toast a finished network op's first output line. We gate the PR
+    /// continuations on the fetch's own label, since several git ops can be
+    /// in flight and an unrelated one must not consume them.
     fn git_finished(&mut self, label: &str, ok: bool, output: &str) {
         if label == Self::PR_CREATE_PUSH {
             if ok {
@@ -2264,7 +2057,7 @@ impl App {
                 self.info(format!("{label}: {summary}"));
             }
         } else if self.network_recovery(label, output) {
-            // a recovery dialog now owns the screen; suppress the raw error
+            // the recovery dialog replaces the raw error
         } else if summary.is_empty() {
             self.error(format!("{label} failed"));
         } else {
@@ -2272,12 +2065,9 @@ impl App {
         }
     }
 
-    /// Finish a PR head fetch queued by `ensure_pr_range` (a plain PR open,
-    /// or a walkthrough resolving one via `resolve_walkthrough_pr`). `true`
-    /// means handled: `git_finished` returns without falling through to the
-    /// generic toast; `false` means the fetch failed and that toast should
-    /// report it, so a walkthrough waiting on it is dropped here rather than
-    /// retried into a fetch that just failed.
+    /// Finish a PR head fetch queued by `ensure_pr_range`. `false` means the
+    /// fetch failed and the generic toast reports it; we drop a waiting
+    /// walkthrough so it never retries a fetch that just failed.
     fn continue_pr_fetch(&mut self, pr: &crate::ci::PullRequest, ok: bool) -> bool {
         if !ok {
             self.pending_walkthrough_open = None;
@@ -2301,9 +2091,7 @@ fn tree_row_label(node: &crate::tree::TreeNode) -> String {
         crate::tree::TreeNode::Dir { name, .. } | crate::tree::TreeNode::File { name, .. } => {
             name.clone()
         }
-        // bucket headers are chrome, and a stop row's title lives in the
-        // session rather than the row: `/` never matches either, nor the
-        // walkthrough's own leading row
+        // a stop row's title lives in the session, so `/` skips these rows
         crate::tree::TreeNode::Section { .. }
         | crate::tree::TreeNode::Stop { .. }
         | crate::tree::TreeNode::WalkthroughSummary => String::new(),
@@ -2322,27 +2110,37 @@ fn byte_index(buffer: &str, chars: usize) -> usize {
 /// double-click.
 const DOUBLE_CLICK_WINDOW: std::time::Duration = std::time::Duration::from_millis(400);
 
-/// A resolved mouse interaction, screen-independent. Each screen's
-/// `*_mouse` handler matches this exhaustively, so adding an interaction means
-/// every screen is forced to decide how it responds.
+/// A screen-independent mouse interaction. Each screen's `*_mouse` handler
+/// matches it exhaustively, so a new gesture makes every screen decide.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MouseGesture {
-    /// Wheel notch over `(col, row)`.
-    Scroll { col: u16, row: u16, down: bool },
-    /// Single left-click: select the thing under the pointer, folding a
-    /// folder or a group header.
-    Press { col: u16, row: u16 },
-    /// Select the thing under the pointer and nothing else, for the context
-    /// menu to act on.
-    Select { col: u16, row: u16 },
-    /// Double left-click: activate it (open, like `<cr>`).
-    DoublePress { col: u16, row: u16 },
-    /// Left-drag: extend a selection to `(col, row)`.
-    Drag { col: u16, row: u16 },
+    Scroll {
+        col: u16,
+        row: u16,
+        down: bool,
+    },
+    /// Select the thing under the pointer, folding a folder or group header.
+    Press {
+        col: u16,
+        row: u16,
+    },
+    /// Select without folding, for the context menu to act on.
+    Select {
+        col: u16,
+        row: u16,
+    },
+    /// Activate, like `<cr>`.
+    DoublePress {
+        col: u16,
+        row: u16,
+    },
+    Drag {
+        col: u16,
+        row: u16,
+    },
 }
 
-/// Map a mouse point to a 0-based index into a list rendered in `area` with
-/// `scroll` rows hidden above the top; `None` when the point falls outside.
+/// Index into a list drawn in `area` with `scroll` rows hidden above the top.
 pub(crate) fn hit_index(
     area: ratatui::layout::Rect,
     scroll: usize,
@@ -2474,8 +2272,7 @@ mod tests {
     fn keymap_follows_the_top_screen() {
         let (_fixture, mut app) = app();
         app.open_working_tree_diff(None);
-        // `r` replies in the diff context; on a non-comment row it hints,
-        // instead of being swallowed by the status keymap
+        // `r` on a non-comment row hints
         app.handle(key('r'));
         let message = app.message.expect("message");
         assert!(message.text.contains("comment"));
@@ -2522,7 +2319,6 @@ mod tests {
         app.open_run = Some(RunId("1".into()));
         app.push_screen(Screen::Graph);
         assert_eq!(app.screen(), Screen::Graph);
-        // a run detail from the poll is mapped onto the live graph
         let detail = RunDetail {
             run: CiRun {
                 id: RunId("1".into()),
@@ -2547,7 +2343,6 @@ mod tests {
         };
         app.handle(AppEvent::CiRunDetail(detail));
         assert!(app.graph.is_some());
-        // q backs out and drops the graph state
         app.handle(key('q'));
         assert_eq!(app.screen(), Screen::Status);
         assert!(app.graph.is_none());
@@ -2781,7 +2576,6 @@ mod tests {
         let template = std::fs::read_to_string(msg_path).unwrap();
         assert!(template.contains("# Staged:"));
         assert!(template.contains("#\tnew file: ci.yml"));
-        // the editor opens the message file itself
         assert_eq!(request.cmd.last().map(String::as_str), msg_path.to_str());
     }
 
@@ -3183,7 +2977,6 @@ mod tests {
         fixture.branch("feat/dead");
         branch_list_cursor_to(&mut app, 'D', "feat/dead");
         app.handle(key('\n'));
-        // Enter should open the confirm modal, not delete immediately
         let Some(Modal::Confirm {
             message,
             on_confirm,
@@ -3193,7 +2986,6 @@ mod tests {
         };
         assert!(message.contains("feat/dead"));
         assert_eq!(*on_confirm, PendingOp::DeleteBranch("feat/dead".to_owned()));
-        // branch still exists before confirming
         let branches = app.review.vcs.branches().unwrap();
         assert!(branches.iter().any(|b| b.name == "feat/dead"));
     }
@@ -3229,7 +3021,6 @@ mod tests {
         let (_fixture, mut app) = app();
         branch_list_cursor_to(&mut app, 'D', "main");
         app.handle(key('\n'));
-        // confirm the deletion attempt
         app.handle(key('y'));
         let message = app.message.expect("message");
         assert_eq!(message.severity, Severity::Error);
@@ -3480,8 +3271,7 @@ mod tests {
             head_oid: String::new(),
             author: String::new(),
         });
-        // ops run detached, so a pull can finish while the PR fetch is still
-        // in flight. Its completion must not consume the continuation
+        // ops run detached, so a pull can finish while the PR fetch is in flight
         app.handle(AppEvent::GitDone {
             label: "pull".to_owned(),
             ok: true,

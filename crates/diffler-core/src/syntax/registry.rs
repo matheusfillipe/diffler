@@ -1,6 +1,5 @@
-//! Language registry: maps a file path to its tree-sitter grammar, a configured
-//! highlight configuration, and (where the grammar ships one) a tags query used
-//! for scope/definition lookup. Built once and reused.
+//! Maps a file path to its tree-sitter grammar, highlight configuration and
+//! tags query.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -13,9 +12,8 @@ use tree_sitter_highlight::HighlightConfiguration;
 
 use crate::syntax::MAX_PARSE_BYTES;
 
-/// Capture names recognized during highlighting. A grammar capture like
-/// `function.method` resolves to the longest matching prefix here (`function`),
-/// so listing the general categories is enough to color every grammar.
+/// A grammar capture like `function.method` resolves to its longest prefix
+/// here, so general categories color every grammar.
 pub const HIGHLIGHT_NAMES: &[&str] = &[
     "attribute",
     "boolean",
@@ -61,13 +59,10 @@ pub struct LangEntry {
     highlights: Cow<'static, str>,
     injections: Cow<'static, str>,
     tags_query: Option<Cow<'static, str>>,
-    /// This language's indentation or layout is syntax: re-indenting a line
-    /// there moves it between blocks, so the structural diff algorithm never
-    /// calls it a reformat, whatever the AST diff reports.
+    /// Indentation is syntax here, so a re-indent is never a reformat.
     pub layout_significant: bool,
-    /// Compiling a query costs ~15ms, so a grammar pays only once someone opens
-    /// a file in it. Both stay `None` when the grammar's query fails to
-    /// compile: the file renders plain instead of erroring.
+    /// Compiling a query costs ~15ms, so we compile on first use. `None` when
+    /// the query fails to compile, and the file renders plain.
     config: OnceLock<Option<HighlightConfiguration>>,
     tags: OnceLock<Option<Query>>,
 }
@@ -99,13 +94,9 @@ impl LangEntry {
     }
 }
 
-/// The grammars, built once for the process. Registration only records the
-/// grammar and its query text, so this costs microseconds; a theme switch
-/// rebuilds the palette and reuses these.
 pub static REGISTRY: LazyLock<LanguageRegistry> = LazyLock::new(LanguageRegistry::build);
 
-/// Suffixes a convention puts after a file's real extension, for a sample or
-/// a template of it (`config.yml.example`).
+/// Suffixes after a file's real extension, as in `config.yml.example`.
 const TEMPLATE_SUFFIXES: &[&str] = &[
     "example", "sample", "template", "tmpl", "tpl", "dist", "default", "local", "orig", "bak",
 ];
@@ -115,14 +106,12 @@ pub struct LanguageRegistry {
     by_ext: HashMap<&'static str, usize>,
     by_name: HashMap<&'static str, usize>,
     by_filename: HashMap<&'static str, usize>,
-    /// The inline markdown highlight query, applied by hand over the block
-    /// grammar's `(inline)` nodes: tree-sitter's generic injection does not
-    /// drive the split markdown grammar's inline pass.
+    /// We apply this by hand over the block grammar's `(inline)` nodes, since
+    /// tree-sitter's injection does not drive the split markdown grammar.
     markdown_inline_query: Option<Query>,
 }
 
 impl LanguageRegistry {
-    /// Build the registry with every bundled grammar, reused for the session.
     // flat per-language registration table
     #[allow(clippy::too_many_lines)]
     pub fn build() -> Self {
@@ -276,10 +265,9 @@ impl LanguageRegistry {
             None,
         );
         r.layout_significant();
-        // the grammar's own numeric patterns are guarded by Lua-style `%d`
-        // predicates that tree-sitter's regex engine never matches, leaving
-        // every number styled as a string; a later pattern wins, so this one
-        // restores number coloring
+        // the grammar guards its number patterns with Lua-style `%d`
+        // predicates tree-sitter never matches, so we append a pattern that
+        // wins over them
         r.add(
             "sql",
             &["sql"],
@@ -290,9 +278,7 @@ impl LanguageRegistry {
             ),
             None,
         );
-        // The block grammar highlights headings/markers and injects fenced code
-        // into its own language; inline emphasis, code spans, and links come from
-        // the by-hand inline pass below.
+        // inline emphasis, code spans and links come from markdown_inline_spans
         r.register(
             "markdown",
             &["md", "markdown"],
@@ -451,7 +437,6 @@ impl LanguageRegistry {
         r
     }
 
-    /// Route files a build tool names outright (`Makefile`, `Dockerfile`).
     fn name_files(&mut self, name: &'static str, filenames: &'static [&'static str]) {
         let Some(&idx) = self.by_name.get(name) else {
             return;
@@ -498,18 +483,15 @@ impl LanguageRegistry {
         }
     }
 
-    /// Flags the language just registered as layout-significant (see
-    /// [`LangEntry::layout_significant`]); called right after its `add`/
-    /// `register` so the flag travels with the entry itself.
+    /// Applies to the language registered last.
     fn layout_significant(&mut self) {
         if let Some(entry) = self.entries.last_mut() {
             entry.layout_significant = true;
         }
     }
 
-    /// Gives the language just registered JavaScript's tags plus its own
-    /// `tags`. TypeScript's tags query covers only what TypeScript adds to
-    /// JavaScript, so on its own it finds no plain function at all.
+    /// TypeScript's tags query covers only what it adds to JavaScript, so we
+    /// prepend JavaScript's to the language registered last.
     fn tags_over_javascript(&mut self, tags: &'static str) {
         if let Some(entry) = self.entries.last_mut() {
             entry.tags_query = Some(Cow::Owned(format!(
@@ -519,8 +501,7 @@ impl LanguageRegistry {
         }
     }
 
-    /// The entry whose grammar handles `path`, by its exact name (`Makefile`,
-    /// `.bashrc`) or its extension.
+    /// By exact file name, then extension.
     pub fn for_path(&self, path: &str) -> Option<&LangEntry> {
         let name = Path::new(path).file_name()?.to_str()?.to_ascii_lowercase();
         if let Some(&idx) = self.by_filename.get(name.as_str()) {
@@ -531,8 +512,7 @@ impl LanguageRegistry {
         self.entries.get(idx)
     }
 
-    /// The grammar to highlight `path` with: [`Self::for_path`], then a naming
-    /// convention, then the interpreter a `#!` first line names.
+    /// [`Self::for_path`], then a naming convention, then the `#!` line.
     pub fn for_file(&self, path: &str, content: &str) -> Option<&LangEntry> {
         self.for_path(path)
             .or_else(|| {
@@ -542,9 +522,8 @@ impl LanguageRegistry {
             .or_else(|| self.by_name(shebang_language(content.lines().next()?)?))
     }
 
-    /// The grammar a lowercase file name implies by convention: a known name
-    /// with a suffix (`dockerfile.prod`, `.env.local`), or a template suffix
-    /// after the real extension (`config.yml.example`).
+    /// A known name with a suffix (`dockerfile.prod`, `.env.local`), or a
+    /// template suffix (`config.yml.example`). `name` is lowercase.
     fn by_convention(&self, name: &str) -> Option<&LangEntry> {
         let prefix = name
             .get(1..)
@@ -560,22 +539,18 @@ impl LanguageRegistry {
         self.for_path(stem).or_else(|| self.by_convention(stem))
     }
 
-    /// The grammar called `name` (`rust`, `bash`), the names the picker and
-    /// the reader's rules use.
     pub fn by_name(&self, name: &str) -> Option<&LangEntry> {
         let &idx = self.by_name.get(name)?;
         self.entries.get(idx)
     }
 
-    /// Every bundled grammar's name, for the language picker.
     pub fn names(&self) -> Vec<&'static str> {
         let mut names: Vec<&'static str> = self.entries.iter().map(|entry| entry.name).collect();
         names.sort_unstable();
         names
     }
 
-    /// The entry for a markdown fence token (`rust`, `py`, `c++`, ...), matched
-    /// by grammar name then extension.
+    /// A markdown fence token, by grammar name then extension.
     pub fn for_token(&self, token: &str) -> Option<&LangEntry> {
         let token = token.trim().to_ascii_lowercase();
         let token = match token.as_str() {
@@ -593,17 +568,12 @@ impl LanguageRegistry {
         self.entries.get(idx)
     }
 
-    /// Highlight config for a tree-sitter injection language name (the inline
-    /// markdown grammar, or a fenced code block's language). `None` leaves the
-    /// injected region plain.
     pub fn config_for_injection(&self, lang: &str) -> Option<&HighlightConfiguration> {
         self.for_token(lang)?.config()
     }
 
-    /// Inline markdown captures (emphasis, code spans, links) as byte range plus
-    /// the recognized highlight name, narrowest span first so a first-match
-    /// renderer picks the most specific. The inline grammar parses only the
-    /// block grammar's `(inline)` node ranges, so block markers stay untouched.
+    /// Inline markdown captures with their highlight name, narrowest first so
+    /// a first-match renderer picks the most specific.
     pub fn markdown_inline_spans(&self, content: &str) -> Vec<(Range<usize>, &'static str)> {
         if content.len() > MAX_PARSE_BYTES {
             return Vec::new();
@@ -657,8 +627,6 @@ impl LanguageRegistry {
     }
 }
 
-/// Byte ranges of every `(inline)` node in a markdown block tree, in document
-/// order. These are the regions the inline grammar reparses.
 fn inline_node_ranges(tree: &Tree) -> Vec<tree_sitter::Range> {
     let mut ranges = Vec::new();
     let mut cursor = tree.walk();
@@ -682,7 +650,7 @@ fn inline_node_ranges(tree: &Tree) -> Vec<tree_sitter::Range> {
 }
 
 /// The longest `HIGHLIGHT_NAMES` entry that is a dotted prefix of `capture`,
-/// matching how tree-sitter resolves capture names to recognized highlights.
+/// the way tree-sitter resolves it.
 fn recognized_highlight(capture: &str) -> Option<&'static str> {
     HIGHLIGHT_NAMES
         .iter()
@@ -702,8 +670,6 @@ impl Default for LanguageRegistry {
     }
 }
 
-/// The grammar for the interpreter a `#!` line runs (`#!/usr/bin/env
-/// python3`, `#!/bin/sh`).
 fn shebang_language(line: &str) -> Option<&'static str> {
     let command = line.strip_prefix("#!")?.trim();
     let mut words = command.split_whitespace();
