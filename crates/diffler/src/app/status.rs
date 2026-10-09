@@ -862,7 +862,7 @@ impl App {
     /// only renders.
     pub(crate) fn queue_enrich_status_expanded(&mut self) {
         let semantic = self.config.ui.semantic_diff;
-        let algorithm = self.config.diff.algorithm;
+        let stamp = self.enrich_stamp();
         for section in Section::ALL {
             let index = section.index();
             let model = match section {
@@ -890,7 +890,7 @@ impl App {
                     &mut self.pending_enrich,
                     file,
                     semantic,
-                    algorithm,
+                    stamp,
                     ready,
                 );
             }

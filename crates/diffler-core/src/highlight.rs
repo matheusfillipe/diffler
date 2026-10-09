@@ -7,11 +7,15 @@ use std::ops::Range;
 
 use tree_sitter_highlight::{HighlightEvent, Highlighter as TsHighlighter};
 
+use crate::syntax::registry::LangEntry;
 use crate::syntax::{HIGHLIGHT_NAMES, LanguageRegistry};
 
 pub struct Highlighter {
     registry: &'static LanguageRegistry,
     theme: SyntaxTheme,
+    /// The reader's `glob = language` rules, most specific first, consulted
+    /// before anything the registry infers from a file's name or `#!` line.
+    rules: Vec<(String, String)>,
 }
 
 /// Syntax-highlight palette, paired with a UI theme so foreground colors stay
@@ -52,14 +56,32 @@ impl Highlighter {
         Self {
             registry: &crate::syntax::registry::REGISTRY,
             theme: syntax,
+            rules: Vec::new(),
         }
     }
 
-    /// Highlight `content` as the language guessed from `path`'s extension.
+    /// This highlighter with the reader's `glob = language` rules on top.
+    #[must_use]
+    pub fn with_rules(mut self, rules: Vec<(String, String)>) -> Self {
+        self.rules = rules;
+        self
+    }
+
+    /// The grammar `path` highlights as: the first rule whose glob matches it
+    /// and names a bundled grammar, else its name, else its `#!` line.
+    pub fn language(&self, path: &str, content: &str) -> Option<&'static LangEntry> {
+        self.rules
+            .iter()
+            .filter(|(glob, _)| crate::classify::glob_match(glob, path))
+            .find_map(|(_, name)| self.registry.by_name(name))
+            .or_else(|| self.registry.for_file(path, content))
+    }
+
+    /// Highlight `content` as the language [`Self::language`] picks.
     /// Returns one `Vec<StyledRange>` per line (without trailing newlines).
     /// Unknown languages produce empty ranges per line (plain rendering).
     pub fn highlight(&self, path: &str, content: &str) -> Vec<Vec<StyledRange>> {
-        self.highlight_entry(self.registry.for_path(path), content)
+        self.highlight_entry(self.language(path, content), content)
     }
 
     /// Highlight `content` as a markdown fence token (`rust`, `py`, ...).
@@ -128,7 +150,7 @@ impl Highlighter {
     /// Definition breadcrumb index for `content`, computed via the same grammar
     /// registry used for highlighting. Empty for unsupported languages.
     pub fn scope_index(&self, path: &str, content: &str) -> crate::syntax::ScopeIndex {
-        self.registry.scope_index(path, content)
+        LanguageRegistry::scope_index_as(self.language(path, content), content)
     }
 
     /// Set AST-diff char-precise emphasis on `file`. Returns `false` (caller
@@ -140,7 +162,8 @@ impl Highlighter {
         file: &mut crate::model::FileDiff,
         mark_reformat_only: bool,
     ) -> bool {
-        self.registry.syntactic_emphasis(file, mark_reformat_only)
+        let entry = self.language(&file.path, file.new_text.as_deref().unwrap_or_default());
+        LanguageRegistry::syntactic_emphasis_as(entry, file, mark_reformat_only)
     }
 }
 
@@ -340,6 +363,31 @@ mod tests {
     /// Every registered grammar must colour a representative snippet: a crate
     /// that ships a parser with a broken or absent highlight query would
     /// otherwise link fine and render plain.
+    #[test]
+    fn the_readers_rules_outrank_what_the_registry_infers() {
+        let rules = |rules: &[(&str, &str)]| {
+            Highlighter::default().with_rules(
+                rules
+                    .iter()
+                    .map(|&(glob, lang)| (glob.to_owned(), lang.to_owned()))
+                    .collect(),
+            )
+        };
+        let name = |hl: &Highlighter, path| hl.language(path, "").map(|entry| entry.name);
+        let hl = rules(&[("/main.rs", "toml"), ("*.tpl", "nope"), ("*.tpl", "yaml")]);
+        assert_eq!(name(&hl, "main.rs"), Some("toml"));
+        assert_eq!(
+            name(&hl, "src/main.rs"),
+            Some("rust"),
+            "a leading / anchors"
+        );
+        assert_eq!(
+            name(&hl, "chart/values.tpl"),
+            Some("yaml"),
+            "an unknown name is skipped"
+        );
+    }
+
     #[test]
     fn every_language_colours_a_sample() {
         let samples: &[(&str, &str)] = &[

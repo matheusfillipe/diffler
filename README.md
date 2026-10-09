@@ -229,6 +229,7 @@ full keymap of the screen you're on, and `<c-k>` fuzzy-finds any action.
 | `C` | open the comments list |
 | `S` | submit PR comments as one review |
 | `gf` | open any file in the repo |
+| `gl` | set the language a file highlights as, for now or saved to the project |
 | `alt-n` | open another project as a tab |
 | `alt-h` / `alt-l` | previous / next project tab (`alt-1`-`alt-9` jumps to one) |
 | `alt-w` | close this project tab |

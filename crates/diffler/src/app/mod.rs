@@ -16,6 +16,7 @@ mod expand;
 pub mod file;
 pub(crate) mod fuzzy;
 pub mod image;
+pub mod language;
 mod log;
 pub mod markdown;
 mod mcp;
@@ -249,6 +250,19 @@ pub enum Modal {
         paths: Vec<String>,
         list: fuzzy::FuzzyList,
     },
+    /// Fuzzy picker over every bundled grammar, for the file at `path`.
+    LanguagePick {
+        path: String,
+        names: Vec<String>,
+        list: fuzzy::FuzzyList,
+    },
+    /// How long a picked language holds for `path`.
+    LanguageScope {
+        path: String,
+        language: String,
+        scopes: Vec<language::LanguageScope>,
+        list: fuzzy::FuzzyList,
+    },
     /// The context menu: the verbs that fit the thing under the pointer.
     Menu {
         commands: Vec<commands::Command>,
@@ -277,6 +291,8 @@ impl Modal {
             | Self::FilePicker { list, .. }
             | Self::AddProject { list, .. }
             | Self::Menu { list, .. }
+            | Self::LanguagePick { list, .. }
+            | Self::LanguageScope { list, .. }
             | Self::RemoteList { list, .. } => Some(list),
             Self::Confirm { .. }
             | Self::Input { .. }
@@ -782,6 +798,12 @@ pub struct App {
     image_in_flight: Option<image::ImageKey>,
     /// A symbol lens the main loop should build off-thread.
     pub pending_lens: Option<LensRequest>,
+    /// Languages picked for this run, and whether the rules changed.
+    /// The languages the reader picked with `gl` for this run, as anchored
+    /// globs, newest last.
+    language_picks: Vec<(String, String)>,
+    /// Counts highlighter rebuilds, so an enrichment from an older one drops.
+    highlighter_generation: u64,
     /// A left press not yet let go, which opens the context menu once held.
     held_press: Option<menu::HeldPress>,
     /// A tab request for the workspace holding this app to carry out.
@@ -929,7 +951,7 @@ impl App {
         review.set_diff_algorithm(config.diff.algorithm, config.diff.indent_heuristic);
         let (theme, theme_warning) = Theme::from_name(&config.ui.theme);
         startup_warnings.extend(theme_warning);
-        let highlighter = Arc::new(diffler_core::highlight::Highlighter::new(theme.syntax));
+        let highlighter = Arc::new(language::highlighter(theme.syntax, &[], &config.syntax));
         let keymaps = Keymaps::build(&config.keys, &mut startup_warnings);
         let transients = build_transients(&config.keys, &mut startup_warnings);
 
@@ -1056,6 +1078,8 @@ impl App {
             pending_lens: None,
             pending_tab: None,
             held_press: None,
+            language_picks: Vec::new(),
+            highlighter_generation: 0,
             tab_strip: None,
             frame_width: 0,
             lens_token: 0,
@@ -1647,6 +1671,7 @@ impl App {
             Action::Refresh if self.screen() == Screen::Stats => self.rescan_stats(),
             Action::Refresh => self.queue_refresh(),
             Action::Help => self.modal = Some(Modal::Help),
+            Action::SetLanguage => self.open_language_picker(),
             action if tabs::tab_op(action).is_some() => self.request_tab(action),
             Action::Palette => {
                 let (_, haystack) = self.command_index_haystack();
@@ -1747,15 +1772,9 @@ impl App {
     /// cached highlights so the visible files re-enrich in the new palette.
     pub(crate) fn apply_theme(&mut self, name: &str) {
         let (theme, _) = Theme::from_name(name);
-        self.highlighter = Arc::new(diffler_core::highlight::Highlighter::new(theme.syntax));
         self.theme = theme;
         name.clone_into(&mut self.config.ui.theme);
-        if let Some(diff) = self.diff.as_mut() {
-            diff.highlights.clear();
-            diff.clear_enriched();
-            diff.invalidate();
-        }
-        self.queue_enrich_selected();
+        self.rebuild_highlighter();
         self.info(format!("theme: {name}"));
     }
 

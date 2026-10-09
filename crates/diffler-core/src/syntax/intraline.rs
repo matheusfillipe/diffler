@@ -8,7 +8,7 @@ use std::ops::Range;
 use syndiff::{SyntaxDiffOptions, build_tree, diff_trees};
 
 use crate::model::{FileDiff, Hunk, LineKind};
-use crate::syntax::registry::LanguageRegistry;
+use crate::syntax::registry::{LangEntry, LanguageRegistry};
 use crate::syntax::{MAX_PARSE_BYTES, line_bounds, parse, split_range_by_line};
 
 /// Emphasis byte ranges per line (one inner vec per source line).
@@ -25,15 +25,13 @@ impl LanguageRegistry {
     /// when the language is unsupported, content is too large, parsing fails,
     /// or the diff exceeds its graph budget.
     fn line_emphasis(
-        &self,
-        path: &str,
+        entry: &LangEntry,
         old_src: &str,
         new_src: &str,
     ) -> Option<(LineEmphasis, LineEmphasis)> {
         if old_src.len() > MAX_PARSE_BYTES || new_src.len() > MAX_PARSE_BYTES {
             return None;
         }
-        let entry = self.for_path(path)?;
         // markdown's block tree is coarse (a paragraph is one opaque node); the
         // textual word-diff emphasizes prose edits far better than an AST diff.
         if entry.name == "markdown" {
@@ -61,17 +59,27 @@ impl LanguageRegistry {
     /// the textual engine (and structural mode silently reads as a plain
     /// histogram diff for that file).
     pub fn syntactic_emphasis(&self, file: &mut FileDiff, mark_reformat_only: bool) -> bool {
+        let entry = self.for_file(&file.path, file.new_text.as_deref().unwrap_or_default());
+        Self::syntactic_emphasis_as(entry, file, mark_reformat_only)
+    }
+
+    /// [`Self::syntactic_emphasis`] with both sides parsed as `entry`'s language.
+    pub fn syntactic_emphasis_as(
+        entry: Option<&LangEntry>,
+        file: &mut FileDiff,
+        mark_reformat_only: bool,
+    ) -> bool {
+        let Some(entry) = entry else {
+            return false;
+        };
         let emphasis = match (file.old_text.as_deref(), file.new_text.as_deref()) {
-            (Some(old), Some(new)) => self.line_emphasis(&file.path, old, new),
+            (Some(old), Some(new)) => Self::line_emphasis(entry, old, new),
             _ => None,
         };
         let Some((old_emph, new_emph)) = emphasis else {
             return false;
         };
-        let mark_reformat_only = mark_reformat_only
-            && self
-                .for_path(&file.path)
-                .is_some_and(|entry| !entry.layout_significant);
+        let mark_reformat_only = mark_reformat_only && !entry.layout_significant;
         for hunk in &mut file.hunks {
             for line in &mut hunk.lines {
                 let ranges = match (line.new_no, line.old_no) {
@@ -221,7 +229,9 @@ mod tests {
         let reg = LanguageRegistry::build();
         let old = "fn f() {\n    let x = compute();\n    use_it(x);\n}\n";
         let new = "fn f() {\n        let x = compute();\n        use_it(x);\n}\n";
-        let (_, new_e) = reg.line_emphasis("a.rs", old, new).expect("rust parses");
+        let (_, new_e) =
+            LanguageRegistry::line_emphasis(reg.for_path("a.rs").expect("bundled"), old, new)
+                .expect("rust parses");
         assert!(
             new_e.iter().all(Vec::is_empty),
             "reindentation must produce no emphasis, got {new_e:?}"
@@ -233,7 +243,9 @@ mod tests {
         let reg = LanguageRegistry::build();
         let old = "fn f() {\n    let x = 1;\n}\n";
         let new = "fn f() {\n    let x = 2;\n}\n";
-        let (_, new_e) = reg.line_emphasis("a.rs", old, new).expect("rust parses");
+        let (_, new_e) =
+            LanguageRegistry::line_emphasis(reg.for_path("a.rs").expect("bundled"), old, new)
+                .expect("rust parses");
         let changed = line_with(new, "let x = 2");
         let signature = line_with(new, "fn f()");
         assert!(!new_e[changed].is_empty(), "the changed line is emphasized");
@@ -419,7 +431,9 @@ mod tests {
         let reg = LanguageRegistry::build();
         let old = "<Form>\n  <Button onClick={onApply}>Apply</Button>\n</Form>\n";
         let new = "{(values) => (\n  <Form>\n    <Button onClick={() => apply(values)}>Apply</Button>\n  </Form>\n)}\n";
-        let (_, new_e) = reg.line_emphasis("a.tsx", old, new).expect("tsx parses");
+        let (_, new_e) =
+            LanguageRegistry::line_emphasis(reg.for_path("a.tsx").expect("bundled"), old, new)
+                .expect("tsx parses");
         let reindented = line_with(new, "<Form>");
         let changed = line_with(new, "apply(values)");
         assert!(
@@ -431,12 +445,6 @@ mod tests {
             !new_e[changed].is_empty(),
             "the structurally changed line is emphasized"
         );
-    }
-
-    #[test]
-    fn unsupported_language_returns_none() {
-        let reg = LanguageRegistry::build();
-        assert!(reg.line_emphasis("a.zzz", "a\n", "b\n").is_none());
     }
 
     #[test]

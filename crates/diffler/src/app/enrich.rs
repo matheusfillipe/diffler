@@ -20,8 +20,18 @@ pub struct EnrichJob {
     pub new_text: Option<String>,
     pub hunks: Vec<Hunk>,
     pub semantic: bool,
-    /// The algorithm that produced `hunks`.
+    pub stamp: EnrichStamp,
+}
+
+/// What an enrichment is computed under. The file's hash cannot tell two
+/// algorithms' hunks or two highlighters' colours apart, so we drop an
+/// outcome whose stamp no longer matches the app's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EnrichStamp {
+    /// The algorithm that produced the job's hunks.
     pub algorithm: DiffAlgorithm,
+    /// Which of the app's highlighters ran it, counted up on every rebuild.
+    pub highlighter: u64,
 }
 
 /// The computed result, installed back into the caches if still current.
@@ -32,7 +42,7 @@ pub struct EnrichOutcome {
     pub hunks: Vec<Hunk>,
     pub highlights: FileHighlights,
     pub scope: FileScope,
-    pub algorithm: DiffAlgorithm,
+    pub stamp: EnrichStamp,
 }
 
 /// Queue `file` for enrichment unless the caller's own cache says it's
@@ -47,7 +57,7 @@ pub(super) fn queue_if_stale(
     pending: &mut Vec<EnrichJob>,
     file: &FileDiff,
     semantic: bool,
-    algorithm: DiffAlgorithm,
+    stamp: EnrichStamp,
     ready: bool,
 ) {
     if ready {
@@ -64,7 +74,7 @@ pub(super) fn queue_if_stale(
         new_text: file.new_text.clone(),
         hunks: file.hunks.clone(),
         semantic,
-        algorithm,
+        stamp,
     });
 }
 
@@ -81,7 +91,7 @@ pub fn run_enrich(highlighter: &Highlighter, job: EnrichJob) -> EnrichOutcome {
         hashes: HashCache::default(),
         blobs: BlobIds::default(),
     };
-    let structural = job.algorithm == DiffAlgorithm::Structural;
+    let structural = job.stamp.algorithm == DiffAlgorithm::Structural;
     if !(job.semantic && highlighter.syntactic_emphasis(&mut file, structural)) {
         pairing::enrich_file(&mut file);
     }
@@ -109,7 +119,7 @@ pub fn run_enrich(highlighter: &Highlighter, job: EnrichJob) -> EnrichOutcome {
         hunks: file.hunks,
         highlights,
         scope,
-        algorithm: job.algorithm,
+        stamp: job.stamp,
     }
 }
 
@@ -160,7 +170,7 @@ impl App {
     /// The walkthrough's own files, the ones its stops name and the diff does
     /// not carry, highlight like any other: they are few and deduped by hash.
     fn queue_enrich_context_files(&mut self) {
-        let algorithm = self.config.diff.algorithm;
+        let stamp = self.enrich_stamp();
         let Some(diff) = self.diff.as_ref() else {
             return;
         };
@@ -174,7 +184,7 @@ impl App {
                 &mut self.pending_enrich,
                 file,
                 false,
-                algorithm,
+                stamp,
                 ready,
             );
         }
@@ -182,7 +192,7 @@ impl App {
 
     fn queue_enrich_file(&mut self, index: usize) {
         let semantic = self.config.ui.semantic_diff;
-        let algorithm = self.config.diff.algorithm;
+        let stamp = self.enrich_stamp();
         let Some(diff) = self.diff.as_ref() else {
             return;
         };
@@ -206,7 +216,7 @@ impl App {
             &mut self.pending_enrich,
             file,
             semantic,
-            algorithm,
+            stamp,
             ready,
         );
     }
@@ -218,10 +228,7 @@ impl App {
     /// next frame re-queues against the new content.
     pub(crate) fn on_enriched(&mut self, outcome: EnrichOutcome) {
         self.enrich_inflight.remove(&outcome.hash);
-        // a job queued before an algorithm switch carries the old hunks, and
-        // the file's hash cannot tell them apart; we drop it so the next
-        // frame queues the file again
-        if outcome.algorithm != self.config.diff.algorithm {
+        if outcome.stamp != self.enrich_stamp() {
             return;
         }
         self.install_status_enrichment(&outcome);

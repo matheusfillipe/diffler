@@ -229,6 +229,28 @@ pub fn delete_source(repo_root: &Path, source: &ReviewSource) -> Result<(), Stor
     }
 }
 
+/// Create `.diffler/`, ignoring itself so nothing in it reaches git, and
+/// return its path.
+pub fn ensure_dir(repo_root: &Path) -> std::io::Result<PathBuf> {
+    let dir = repo_root.join(DIR);
+    fs::create_dir_all(&dir)?;
+    let gitignore = dir.join(".gitignore");
+    if !gitignore.exists() {
+        fs::write(&gitignore, "*\n")?;
+    }
+    Ok(dir)
+}
+
+/// Replace `.diffler/<name>` with `contents` atomically (temp file then
+/// rename), so a crash mid-write leaves the old file whole.
+pub fn write_file(repo_root: &Path, name: &str, contents: &str) -> std::io::Result<()> {
+    let dir = ensure_dir(repo_root)?;
+    let mut tmp = tempfile::NamedTempFile::new_in(&dir)?;
+    tmp.write_all(contents.as_bytes())?;
+    tmp.persist(dir.join(name)).map_err(|e| e.error)?;
+    Ok(())
+}
+
 /// Persist one source's session atomically (temp file then rename). Migrates
 /// the working tree off the legacy file by removing it once the new file lands.
 pub fn save_source(
@@ -236,12 +258,9 @@ pub fn save_source(
     source: &ReviewSource,
     session: &Session,
 ) -> Result<(), StoreError> {
+    ensure_dir(repo_root)?;
     let dir = reviews_dir(repo_root);
     fs::create_dir_all(&dir)?;
-    let gitignore = repo_root.join(DIR).join(".gitignore");
-    if !gitignore.exists() {
-        fs::write(&gitignore, "*\n")?;
-    }
     let on_disk = OnDisk {
         version: 1,
         source: Some(source.clone()),

@@ -1166,12 +1166,7 @@ struct EndpointFile {
 /// under the per-user registry, so a proxy started from a directory that owns
 /// no repo of its own can still find it.
 pub fn write_endpoint(repo_root: &Path, port: u16) -> std::io::Result<()> {
-    let dir = repo_root.join(".diffler");
-    std::fs::create_dir_all(&dir)?;
-    let gitignore = dir.join(".gitignore");
-    if !gitignore.exists() {
-        std::fs::write(&gitignore, "*\n")?;
-    }
+    diffler_core::store::ensure_dir(repo_root)?;
     let pid = std::process::id();
     let body = serde_json::to_string_pretty(&EndpointFile {
         port,

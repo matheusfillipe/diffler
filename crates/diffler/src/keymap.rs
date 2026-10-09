@@ -116,6 +116,7 @@ pub enum Action {
     Palette,
     Quit,
     Back,
+    SetLanguage,
     NextTab,
     PrevTab,
     AddProject,
@@ -237,6 +238,7 @@ impl Action {
             Self::Palette => "palette",
             Self::Quit => "quit",
             Self::Back => "back",
+            Self::SetLanguage => "set_language",
             Self::NextTab => "next_tab",
             Self::PrevTab => "prev_tab",
             Self::AddProject => "add_project",
@@ -360,6 +362,7 @@ impl Action {
             Self::Palette => "search all commands",
             Self::Quit => "quit",
             Self::Back => "go back",
+            Self::SetLanguage => "set the language this file highlights as",
             Self::NextTab => "switch to the next project",
             Self::PrevTab => "switch to the previous project",
             Self::AddProject => "add a project as a tab",
@@ -376,7 +379,7 @@ impl Action {
         }
     }
 
-    pub(crate) const ALL: [Self; 114] = [
+    pub(crate) const ALL: [Self; 115] = [
         Self::CenterCursor,
         Self::CursorTop,
         Self::CursorBottom,
@@ -478,6 +481,7 @@ impl Action {
         Self::Palette,
         Self::Quit,
         Self::Back,
+        Self::SetLanguage,
         Self::NextTab,
         Self::PrevTab,
         Self::AddProject,
@@ -664,6 +668,7 @@ const DIFF_DEFAULTS: &[(&str, Action)] = &[
     ("<c-k>", Action::Palette),
     ("?", Action::Help),
     ("q", Action::Back),
+    ("gl", Action::SetLanguage),
 ];
 
 const FILE_DEFAULTS: &[(&str, Action)] = &[
@@ -696,6 +701,7 @@ const FILE_DEFAULTS: &[(&str, Action)] = &[
     ("<c-k>", Action::Palette),
     ("?", Action::Help),
     ("q", Action::Back),
+    ("gl", Action::SetLanguage),
 ];
 
 const LOG_DEFAULTS: &[(&str, Action)] = &[

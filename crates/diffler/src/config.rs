@@ -28,6 +28,9 @@ pub struct Config {
     pub editor: EditorConfig,
     pub ci: CiConfig,
     pub classify: ClassifyConfig,
+    /// The reader's own `glob = language` rules for highlighting, ahead of
+    /// what the file's name and first line imply.
+    pub syntax: BTreeMap<String, String>,
     pub keys: KeysConfig,
 }
 
@@ -304,6 +307,78 @@ impl KeysConfig {
     }
 }
 
+fn project_config_path(repo_root: &Path) -> PathBuf {
+    repo_root.join(".diffler").join(PROJECT_CONFIG)
+}
+
+const PROJECT_CONFIG: &str = "config.toml";
+
+/// Set `"glob" = "language"` under `[syntax]` in the project's own config,
+/// keeping every other line as the reader wrote it.
+pub fn save_syntax_rule(repo_root: &Path, glob: &str, language: &str) -> std::io::Result<()> {
+    let text = match std::fs::read_to_string(project_config_path(repo_root)) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(err),
+    };
+    let edited = with_syntax_rule(&text, glob, language).ok_or_else(|| {
+        std::io::Error::other("edit the [syntax] section of .diffler/config.toml by hand")
+    })?;
+    diffler_core::store::write_file(repo_root, PROJECT_CONFIG, &edited)
+}
+
+/// `text` with the `[syntax]` rule for `glob` set to `language`, or `None`
+/// when `text` spells its rules in a shape we cannot edit line by line.
+fn with_syntax_rule(text: &str, glob: &str, language: &str) -> Option<String> {
+    let rule = format!("{} = {}", toml_string(glob), toml_string(language));
+    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+    if let Some(header) = lines
+        .iter()
+        .position(|line| is_table_header(line, "syntax"))
+    {
+        let end = lines
+            .iter()
+            .skip(header + 1)
+            .position(|line| line.trim_start().starts_with('['))
+            .map_or(lines.len(), |at| header + 1 + at);
+        let existing =
+            (header + 1..end).find(|&at| lines.get(at).is_some_and(|line| sets_key(line, glob)));
+        match existing.and_then(|at| lines.get_mut(at)) {
+            Some(line) => *line = rule,
+            None => lines.insert(header + 1, rule),
+        }
+    } else {
+        if lines.last().is_some_and(|line| !line.trim().is_empty()) {
+            lines.push(String::new());
+        }
+        lines.push("[syntax]".to_owned());
+        lines.push(rule);
+    }
+    let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let edited = lines.join(newline) + newline;
+    let parsed: toml::Table = toml::from_str(&edited).ok()?;
+    let saved = parsed.get("syntax")?.get(glob)?.as_str()?;
+    (saved == language).then_some(edited)
+}
+
+/// Whether `line` opens the `[name]` table, however it is spaced or commented.
+fn is_table_header(line: &str, name: &str) -> bool {
+    line.trim_start().starts_with('[')
+        && toml::from_str::<toml::Table>(line).is_ok_and(|table| {
+            table.len() == 1 && table.get(name).is_some_and(toml::Value::is_table)
+        })
+}
+
+/// Whether `line` assigns `key`, in any of TOML's spellings of it.
+fn sets_key(line: &str, key: &str) -> bool {
+    toml::from_str::<toml::Table>(line).is_ok_and(|table| table.contains_key(key))
+}
+
+/// `value` as a TOML basic string.
+fn toml_string(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
 /// CLI flags that override file layers. Every flag maps to a config key.
 #[derive(Debug, Clone, Default)]
 pub struct CliOverrides {
@@ -363,7 +438,7 @@ pub fn load(repo_root: Option<&Path>, cli: &CliOverrides) -> Result<LoadedConfig
         std::env::var_os("XDG_CONFIG_HOME"),
         std::env::var_os("HOME"),
     );
-    let project = repo_root.map(|root| root.join(".diffler").join("config.toml"));
+    let project = repo_root.map(project_config_path);
     load_layers(global.as_deref(), project.as_deref(), cli)
 }
 
@@ -423,6 +498,7 @@ struct PartialConfig {
     editor: PartialEditor,
     ci: PartialCi,
     classify: ClassifyConfig,
+    syntax: BTreeMap<String, String>,
     keys: KeysConfig,
 }
 
@@ -720,6 +796,20 @@ fn apply_layer(
         }
         origins.insert(format!("classify.{bucket}"), origin.clone());
         *target = globs;
+    }
+
+    for (glob, language) in layer.syntax {
+        if diffler_core::syntax::registry::REGISTRY
+            .by_name(&language)
+            .is_none()
+        {
+            warnings.push(format!(
+                "syntax.\"{glob}\": no bundled language \"{language}\""
+            ));
+            continue;
+        }
+        origins.insert(format!("syntax.{glob}"), origin.clone());
+        config.syntax.insert(glob, language);
     }
 
     let key_sections = [
@@ -1483,6 +1573,42 @@ mod tests {
             w.contains("<ctlr-r>"),
             "warning should quote the bad chord: {w}"
         );
+    }
+
+    #[test]
+    fn a_syntax_rule_lands_in_its_section_and_leaves_the_rest_alone() {
+        let edit = |text, glob| with_syntax_rule(text, glob, "bash").expect("editable");
+        assert_eq!(edit("", "*.env"), "[syntax]\n\"*.env\" = \"bash\"\n");
+
+        let existing = "[ui]\ntheme = \"nord\"\n\n[ syntax ] # mine\n'*.env'=\"toml\"\nJenkinsfile = \"groovy\"\n\n[mcp]\nport = 1\n";
+        let replaced = edit(existing, "*.env");
+        assert_eq!(replaced.matches("*.env").count(), 1, "{replaced}");
+        assert!(!replaced.contains("toml") && replaced.contains("port = 1"));
+        assert!(edit(existing, "Jenkinsfile").contains("Jenkinsfile\" = \"bash\""));
+
+        let added = edit(existing, "Makefile.in");
+        let rule = added.find("Makefile.in").expect("added");
+        assert!(rule < added.find("[mcp]").expect("kept"), "{added}");
+
+        assert!(edit("[ui]\r\ntheme = \"nord\"\r\n", "*.env").ends_with("\"bash\"\r\n"));
+        assert_eq!(
+            with_syntax_rule("syntax = { \"*.env\" = \"toml\" }\n", "*.env", "bash"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_syntax_rule_naming_no_bundled_language_is_dropped_with_a_warning() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "[syntax]\n\"*.tpl\" = \"yaml\"\n\"*.x\" = \"yml\"\n").expect("write");
+        let loaded = load_layers(None, Some(&path), &CliOverrides::default()).expect("load");
+        assert_eq!(
+            loaded.config.syntax.get("*.tpl").map(String::as_str),
+            Some("yaml")
+        );
+        assert!(!loaded.config.syntax.contains_key("*.x"));
+        assert_eq!(loaded.warnings.len(), 1, "{:?}", loaded.warnings);
     }
 
     // Good chords in keys sections are stored and not warned about.

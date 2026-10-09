@@ -271,6 +271,8 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) -> Option<popup::ListHits> {
             | Modal::FilePicker { .. }
             | Modal::AddProject { .. }
             | Modal::Menu { .. }
+            | Modal::LanguagePick { .. }
+            | Modal::LanguageScope { .. }
             | Modal::RemoteList { .. },
         ) => fuzzy_modal(app).map(|modal| modal.render(frame, &app.theme)),
         Some(Modal::PullDiverged { upstream }) => {
@@ -318,6 +320,33 @@ fn footer_for(list: &fuzzy::FuzzyList, list_keys: &str, verb: &str) -> String {
         fuzzy::FuzzyFocus::Input => {
             format!(" type to filter · enter{verb} · tab list · esc close ")
         }
+    }
+}
+
+/// The language picker and the question of how long its choice holds.
+fn language_modal(modal: &Modal) -> Option<popup::FuzzyModal> {
+    match modal {
+        Modal::LanguagePick { path, names, list } => Some(plain_list(
+            format!("Pick a language for {path}"),
+            list,
+            names,
+            " use",
+        )),
+        Modal::LanguageScope {
+            language,
+            scopes,
+            list,
+            ..
+        } => {
+            let labels = crate::app::language::scope_labels(scopes);
+            Some(plain_list(
+                format!("Use {language}"),
+                list,
+                &labels,
+                " choose",
+            ))
+        }
+        _ => None,
     }
 }
 
@@ -446,6 +475,9 @@ fn fuzzy_modal(app: &App) -> Option<popup::FuzzyModal> {
             list,
             " j/k move · enter run · esc close ".to_owned(),
         )),
+        Some(modal @ (Modal::LanguagePick { .. } | Modal::LanguageScope { .. })) => {
+            language_modal(modal)
+        }
         Some(Modal::AddProject { entries, list, .. }) => {
             let mut modal = plain_list("Add project".to_owned(), list, entries, " open");
             " type a name or a path · tab complete · enter open · esc close "

@@ -77,6 +77,16 @@
 # generated = ["schema/*.json"]
 # docs = ["notes/**"]
 
+[syntax]
+# The language a file highlights as, by glob, ahead of what its name and its
+# `#!` line imply. Same glob shape as [classify]; a leading / anchors the glob
+# at the repository root, and a rule for one file beats a rule with a
+# wildcard. `gl` in the diff or file view picks one on the fly and can save
+# it here, in the project's own .diffler/config.toml. The names are the
+# bundled grammars `gl` lists.
+# "templates/*.tpl" = "yaml"
+# "/tools/build.cfg" = "toml"
+
 # Key remaps per screen: action name -> chord. Chords are single keys ("q",
 # "V"), ctrl combos ("<c-r>"), specials ("<cr>", "<tab>"), or two-key
 # sequences ("cc", "gg"). Unlisted actions keep their built-in binding;
@@ -168,6 +178,7 @@
 # open_figure_graph = "o"  # open the diagram under the cursor full screen
 # symbol_lens = "*"       # find references to a symbol on the line; again or 1-9 picks which, n/N walks them, esc closes
 # symbol_lens_back = "#"  # the same, picking from the last symbol backwards
+# set_language = "gl"     # pick the language this file highlights as
 # blame = "B"
 # open = "<cr>"
 # refresh = "<c-r>"
@@ -186,6 +197,7 @@
 # open = "<cr>"            # review the commit that wrote this line
 # open_editor = "e"
 # open_file_picker = "gf"
+# set_language = "gl"
 # center_cursor = "zz"
 # cursor_top = "zt"
 # cursor_bottom = "zb"

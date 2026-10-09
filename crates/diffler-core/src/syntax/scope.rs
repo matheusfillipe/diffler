@@ -6,7 +6,7 @@ use std::collections::HashSet;
 
 use tree_sitter::{Node, Query, QueryCursor, StreamingIterator, Tree};
 
-use crate::syntax::registry::LanguageRegistry;
+use crate::syntax::registry::{LangEntry, LanguageRegistry};
 use crate::syntax::{MAX_PARSE_BYTES, parse};
 
 /// Definition spans for a file, queried per line for the enclosing-definition
@@ -79,10 +79,15 @@ impl LanguageRegistry {
     /// an empty index when the language is unsupported, has no tags query, the
     /// file is too large, or parsing fails, so callers show no breadcrumb.
     pub fn scope_index(&self, path: &str, content: &str) -> ScopeIndex {
+        Self::scope_index_as(self.for_file(path, content), content)
+    }
+
+    /// [`Self::scope_index`] with `content` parsed as `entry`'s language.
+    pub fn scope_index_as(entry: Option<&LangEntry>, content: &str) -> ScopeIndex {
         if content.len() > MAX_PARSE_BYTES {
             return ScopeIndex::default();
         }
-        let Some(entry) = self.for_path(path) else {
+        let Some(entry) = entry else {
             return ScopeIndex::default();
         };
         let Some(query) = entry.tags() else {

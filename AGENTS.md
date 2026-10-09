@@ -233,6 +233,21 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   `c`, `svelte` over `html`, `tsx` over `js`+`ts`): register the concatenation
   or the query silently matches almost nothing. `every_language_colours_a_sample`
   in `highlight.rs` is the guard.
+  A path finds its grammar in this order: the reader's rules, the exact file
+  name, a name prefix (`Dockerfile.*`, `Makefile.*`, `.env.*`), the
+  extension, the extension under a template suffix (`config.yml.example`),
+  and, where the text is at hand (`for_file`), the interpreter a `#!` line
+  names. The rules live on each tab's own `Highlighter` (`with_rules`), so
+  one project's rules never colour another's files: the `gl` picks for this
+  run, then `[syntax]` globs with a wildcard-free or slashed glob ahead of a
+  bare wildcard. A rule change rebuilds the highlighter the way a theme
+  switch does (`App::rebuild_highlighter`), and `EnrichStamp` drops any
+  enrichment the old one ran. `gl`'s saved scopes write the rule into the
+  project's `.diffler/config.toml` (`config::save_syntax_rule`), editing the
+  `[syntax]` section line by line and refusing an edit that would not parse
+  back to the rule. The rules reach highlighting, scope breadcrumbs and
+  intraline emphasis; the kinds sidebar, the Stats screen and the symbol
+  lens read the registry alone.
 - **TUI.** neogit/doom keybindings, every binding configurable. Screens: Status
   (the branch band, a rule, then the repo band; stage/unstage/
   discard/commit/branch), Log, Diff/review (file sidebar + pane, unified or

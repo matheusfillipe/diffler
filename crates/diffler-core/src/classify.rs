@@ -361,12 +361,14 @@ fn source(path: &str, ext: &str) -> bool {
 /// rather than silently matching nothing: a leading `/` is the anchoring a
 /// pattern with a slash already has, and a trailing `/` names a directory's
 /// whole subtree.
-fn glob_match(pattern: &str, path: &str) -> bool {
-    let pattern = pattern.trim_start_matches("./").trim_start_matches('/');
+pub(crate) fn glob_match(pattern: &str, path: &str) -> bool {
+    let pattern = pattern.trim_start_matches("./");
     if let Some(dir) = pattern.strip_suffix('/') {
         return glob_match(&format!("{dir}/**"), path);
     }
-    if pattern.contains('/') {
+    let anchored = pattern.starts_with('/');
+    let pattern = pattern.trim_start_matches('/');
+    if anchored || pattern.contains('/') {
         let pattern: Vec<&str> = segments(pattern).collect();
         let path: Vec<&str> = segments(path).collect();
         match_segments(&pattern, &path)

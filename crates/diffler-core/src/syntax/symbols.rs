@@ -26,7 +26,7 @@ impl LanguageRegistry {
     /// ones inside strings and comments.
     pub fn symbols(&self, path: &str, content: &str) -> (Vec<Ident>, ScopeIndex) {
         let entry = (content.len() <= MAX_PARSE_BYTES)
-            .then(|| self.for_path(path))
+            .then(|| self.for_file(path, content))
             .flatten();
         let Some((entry, tree)) = entry.and_then(|entry| Some((entry, parse(entry, content)?)))
         else {

@@ -104,6 +104,12 @@ impl LangEntry {
 /// rebuilds the palette and reuses these.
 pub static REGISTRY: LazyLock<LanguageRegistry> = LazyLock::new(LanguageRegistry::build);
 
+/// Suffixes a convention puts after a file's real extension, for a sample or
+/// a template of it (`config.yml.example`).
+const TEMPLATE_SUFFIXES: &[&str] = &[
+    "example", "sample", "template", "tmpl", "tpl", "dist", "default", "local", "orig", "bak",
+];
+
 pub struct LanguageRegistry {
     entries: Vec<LangEntry>,
     by_ext: HashMap<&'static str, usize>,
@@ -235,7 +241,7 @@ impl LanguageRegistry {
         );
         r.add(
             "bash",
-            &["sh", "bash", "zsh"],
+            &["sh", "bash", "zsh", "env"],
             tree_sitter_bash::LANGUAGE.into(),
             tree_sitter_bash::HIGHLIGHT_QUERY,
             None,
@@ -425,6 +431,22 @@ impl LanguageRegistry {
         );
         r.name_files("make", &["makefile", "gnumakefile"]);
         r.name_files("dockerfile", &["dockerfile", "containerfile"]);
+        r.name_files(
+            "bash",
+            &[
+                ".env",
+                ".envrc",
+                ".bashrc",
+                ".bash_profile",
+                ".bash_aliases",
+                ".bash_logout",
+                ".profile",
+                ".zshrc",
+                ".zprofile",
+                ".zshenv",
+                ".zlogin",
+            ],
+        );
 
         r
     }
@@ -497,16 +519,49 @@ impl LanguageRegistry {
         }
     }
 
-    /// The entry whose grammar handles `path`, by extension or, for the files
-    /// a build tool names outright (`Makefile`, `Dockerfile`), by basename.
+    /// The entry whose grammar handles `path`: by its exact name
+    /// (`Makefile`, `.bashrc`), a name prefix (`Dockerfile.prod`), its
+    /// extension, or the extension under a template suffix (`a.yml.example`).
     pub fn for_path(&self, path: &str) -> Option<&LangEntry> {
         let name = Path::new(path).file_name()?.to_str()?.to_ascii_lowercase();
         if let Some(&idx) = self.by_filename.get(name.as_str()) {
             return self.entries.get(idx);
         }
+        if let Some(entry) = name_pattern(&name).and_then(|lang| self.by_name(lang)) {
+            return Some(entry);
+        }
         let ext = Path::new(path).extension()?.to_str()?;
-        let &idx = self.by_ext.get(ext)?;
+        if let Some(&idx) = self.by_ext.get(ext) {
+            return self.entries.get(idx);
+        }
+        let stem = name.strip_suffix(ext)?.strip_suffix('.')?;
+        TEMPLATE_SUFFIXES
+            .contains(&ext.to_ascii_lowercase().as_str())
+            .then(|| self.for_path(stem))
+            .flatten()
+    }
+
+    /// [`Self::for_path`], falling back to the interpreter a `#!` first line
+    /// names, for a script with no telling name.
+    pub fn for_file(&self, path: &str, content: &str) -> Option<&LangEntry> {
+        self.for_path(path).or_else(|| {
+            let first = content.lines().next()?;
+            self.by_name(shebang_language(first)?)
+        })
+    }
+
+    /// The grammar called `name` (`rust`, `bash`), the names the picker and
+    /// the reader's rules use.
+    pub fn by_name(&self, name: &str) -> Option<&LangEntry> {
+        let &idx = self.by_name.get(name)?;
         self.entries.get(idx)
+    }
+
+    /// Every bundled grammar's name, for the language picker.
+    pub fn names(&self) -> Vec<&'static str> {
+        let mut names: Vec<&'static str> = self.entries.iter().map(|entry| entry.name).collect();
+        names.sort_unstable();
+        names
     }
 
     /// The entry for a markdown fence token (`rust`, `py`, `c++`, ...), matched
@@ -637,8 +692,105 @@ impl Default for LanguageRegistry {
     }
 }
 
+/// The grammar a prefix of a file's name implies: `Dockerfile.prod`,
+/// `Makefile.local`, `.env.local`.
+fn name_pattern(name: &str) -> Option<&'static str> {
+    let lang = match name.split_once('.')?.0 {
+        "dockerfile" | "containerfile" => "dockerfile",
+        "makefile" | "gnumakefile" => "make",
+        "" if name.starts_with(".env.") => "bash",
+        _ => return None,
+    };
+    Some(lang)
+}
+
+/// The grammar for the interpreter a `#!` line runs (`#!/usr/bin/env
+/// python3`, `#!/bin/sh`).
+fn shebang_language(line: &str) -> Option<&'static str> {
+    let command = line.strip_prefix("#!")?.trim();
+    let mut words = command.split_whitespace();
+    let program = words.next()?;
+    let program = if program.ends_with("/env") {
+        words.find(|word| !word.starts_with('-'))?
+    } else {
+        program
+    };
+    let name = program.rsplit('/').next()?;
+    let name = name.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
+    let lang = match name {
+        "python" | "pypy" => "python",
+        "bash" | "sh" | "zsh" | "dash" | "ksh" | "ash" => "bash",
+        "node" | "nodejs" | "deno" | "bun" => "javascript",
+        "ruby" => "ruby",
+        "php" => "php",
+        "lua" | "luajit" => "lua",
+        "pwsh" => "powershell",
+        "elixir" => "elixir",
+        _ => return None,
+    };
+    Some(lang)
+}
+
 #[cfg(test)]
 mod tests {
+    use super::REGISTRY;
+
+    fn lang(path: &str) -> Option<&'static str> {
+        REGISTRY.for_path(path).map(|entry| entry.name)
+    }
+
+    #[test]
+    fn convention_names_pick_their_grammar() {
+        assert_eq!(lang("deploy/Dockerfile.prod"), Some("dockerfile"));
+        assert_eq!(lang("api.dockerfile"), Some("dockerfile"));
+        assert_eq!(lang(".env"), Some("bash"));
+        assert_eq!(lang("app/.env.example"), Some("bash"));
+        assert_eq!(lang("Makefile.local"), Some("make"));
+        assert_eq!(lang(".zshrc"), Some("bash"));
+    }
+
+    #[test]
+    fn a_template_suffix_falls_back_to_the_real_extension() {
+        assert_eq!(lang("config.yml.example"), Some("yaml"));
+        assert_eq!(lang("settings.json.dist"), Some("json"));
+        assert_eq!(lang("notes.example"), None, "nothing under the suffix");
+    }
+
+    #[test]
+    fn a_shebang_names_the_language_of_a_script_with_no_extension() {
+        let script = "#!/usr/bin/env python3\nprint(1)\n";
+        assert_eq!(
+            REGISTRY.for_file("bin/tool", script).map(|e| e.name),
+            Some("python")
+        );
+        let shell = "#!/bin/sh -e\necho hi\n";
+        assert_eq!(
+            REGISTRY.for_file("run", shell).map(|e| e.name),
+            Some("bash")
+        );
+        assert_eq!(
+            REGISTRY.for_file("README", "plain text\n").map(|e| e.name),
+            None
+        );
+    }
+
+    #[test]
+    fn every_name_the_registry_infers_is_a_bundled_grammar() {
+        let inferred = ["Dockerfile.x", "Makefile.x", ".env.x"]
+            .into_iter()
+            .filter_map(|name| super::name_pattern(&name.to_ascii_lowercase()))
+            .chain(
+                [
+                    "python", "sh", "node", "ruby", "php", "lua", "pwsh", "elixir",
+                ]
+                .into_iter()
+                .filter_map(|program| super::shebang_language(&format!("#!/bin/{program}"))),
+            );
+        for name in inferred {
+            assert!(REGISTRY.by_name(name).is_some(), "{name} is no grammar");
+        }
+    }
+
     #[test]
     fn exactly_the_layout_languages_are_layout_significant() {
         let flagged: Vec<_> = super::REGISTRY
