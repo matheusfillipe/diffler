@@ -217,6 +217,9 @@ pub struct DiffView {
     /// The open in-place comment editor, if any. It owns the diff pane's keys
     /// while it is up and occupies the rows its result will.
     pub(crate) composer: Option<Composer>,
+    /// A draft the reader clicked away from, brought back when they open the
+    /// composer on the same line, reply or edit again.
+    pub(crate) parked_draft: Option<Composer>,
     /// Rows for the selected file only.
     pub(crate) rows: Vec<DiffRow>,
     /// What a visual selection yanks for each of `rows`, same length, built
@@ -289,6 +292,7 @@ impl DiffView {
     ) -> Self {
         let mut view = Self {
             composer: None,
+            parked_draft: None,
             source,
             commit_model,
             focus: Pane::List,
@@ -1020,6 +1024,32 @@ impl DiffView {
         }
         self.mark_rows_dirty();
         true
+    }
+
+    /// The unified pane row under a screen point, through the line table the
+    /// last frame recorded. `None` in split mode, whose paired rows don't map
+    /// one to one.
+    pub(crate) fn row_at_point(&self, col: u16, row: u16) -> Option<usize> {
+        if self.side_by_side {
+            return None;
+        }
+        let pane = self.pane;
+        let inside = col >= pane.x
+            && col < pane.x + pane.width
+            && row >= pane.y
+            && row < pane.y + pane.height;
+        if !inside {
+            return None;
+        }
+        self.line_rows
+            .get((row - pane.y) as usize)
+            .copied()
+            .flatten()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sidebar_tree(&self, review: &Review) -> Vec<TreeRow> {
+        sidebar_rows(self, review)
     }
 
     pub(crate) fn card_views(&self) -> rows::CardViews<'_> {

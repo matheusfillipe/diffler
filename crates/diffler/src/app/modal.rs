@@ -44,6 +44,7 @@ impl App {
             Some(Modal::Palette { .. }) => return self.handle_palette_key(key),
             Some(Modal::FilePicker { .. }) => return self.handle_file_picker_key(key),
             Some(Modal::AddProject { .. }) => return self.handle_add_project_key(key),
+            Some(Modal::Menu { .. }) => return self.handle_menu_key(key),
             Some(Modal::Choice { .. }) => self.handle_choice_key(key),
             Some(Modal::RemoteList { .. }) => self.handle_remote_list_key(key),
             Some(Modal::PullDiverged { .. }) => self.handle_pull_diverged_key(key),
@@ -127,6 +128,19 @@ impl App {
         match mouse.kind {
             MouseEventKind::ScrollDown => self.step_modal(true),
             MouseEventKind::ScrollUp => self.step_modal(false),
+            // the menu runs an entry on one click and closes on a click
+            // anywhere else, the way a desktop menu does
+            MouseEventKind::Down(MouseButton::Left)
+                if matches!(self.modal, Some(Modal::Menu { .. })) =>
+            {
+                match self.modal_hits.and_then(|hits| hits.index_at(row)) {
+                    Some(index) => {
+                        self.point_modal_at(index);
+                        self.activate_modal();
+                    }
+                    None => self.cancel_modal(),
+                }
+            }
             MouseEventKind::Down(MouseButton::Left) => {
                 let Some(index) = self.modal_hits.and_then(|hits| hits.index_at(row)) else {
                     return;
@@ -179,6 +193,24 @@ impl App {
     }
 
     /// Take the selected row, as Enter would.
+    fn handle_menu_key(&mut self, key: &KeyEvent) -> Flow {
+        let Some(Modal::Menu { actions, list, .. }) = self.modal.as_mut() else {
+            return Flow::Continue;
+        };
+        match list.feed(key) {
+            FuzzyKey::Submit => {
+                let chosen = selected(list, actions).copied();
+                self.modal = None;
+                if let Some(action) = chosen {
+                    return self.dispatch(action);
+                }
+            }
+            FuzzyKey::Cancel => self.modal = None,
+            FuzzyKey::Edited | FuzzyKey::Consumed | FuzzyKey::Other => {}
+        }
+        Flow::Continue
+    }
+
     fn activate_modal(&mut self) {
         let enter = KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::NONE);
         self.handle_modal_key(&enter);

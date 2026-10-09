@@ -376,7 +376,7 @@ impl App {
         });
     }
 
-    fn diff_focus(&mut self, pane: Pane) {
+    pub(crate) fn diff_focus(&mut self, pane: Pane) {
         if let Some(diff) = self.diff.as_mut() {
             diff.focus = pane;
         }
@@ -421,11 +421,6 @@ impl App {
             MouseGesture::Press { col, row } => self.diff_press_at(col, row),
             MouseGesture::DoublePress { col, row } => self.diff_activate_at(col, row),
             MouseGesture::Drag { col, row } => self.diff_drag_to(col, row),
-            MouseGesture::Cancel => {
-                if let Some(diff) = self.diff.as_mut() {
-                    diff.visual_anchor = None;
-                }
-            }
         }
     }
 
@@ -444,6 +439,9 @@ impl App {
         }
         if let Some(index) = self.diff_sidebar_row_at(col, row) {
             self.diff_tree_to(index);
+            if self.tree_cursor_on_group() {
+                self.diff_toggle_dir_fold();
+            }
             return;
         }
         if let Some(index) = self.diff_pane_row_at(col, row)
@@ -459,8 +457,11 @@ impl App {
     /// diff line (like `c`).
     fn diff_activate_at(&mut self, col: u16, row: u16) {
         if let Some(index) = self.diff_sidebar_row_at(col, row) {
+            // the first click of the pair already folded a folder
             self.diff_tree_to(index);
-            self.diff_tree_activate();
+            if !self.tree_cursor_on_group() {
+                self.diff_tree_activate();
+            }
             return;
         }
         if let Some(index) = self.diff_pane_row_at(col, row) {
@@ -503,22 +504,7 @@ impl App {
     /// Unified pane row index under `(col, row)`. `None` in split mode, whose
     /// paired rows don't map 1:1: mouse line ops stay in the unified view.
     fn diff_pane_row_at(&self, col: u16, row: u16) -> Option<usize> {
-        let diff = self.diff.as_ref()?;
-        if diff.side_by_side {
-            return None;
-        }
-        let pane = diff.pane;
-        let inside = col >= pane.x
-            && col < pane.x + pane.width
-            && row >= pane.y
-            && row < pane.y + pane.height;
-        if !inside {
-            return None;
-        }
-        diff.line_rows
-            .get((row - pane.y) as usize)
-            .copied()
-            .flatten()
+        self.diff.as_ref()?.row_at_point(col, row)
     }
 
     /// Move the sidebar tree cursor by `delta` over the visible rows (dirs and
@@ -677,6 +663,18 @@ impl App {
 
     /// `<cr>` on the tree cursor: focus the diff pane on a file row, or toggle
     /// the fold on a directory or bucket row.
+    /// Whether the sidebar cursor sits on a folder or a section header.
+    fn tree_cursor_on_group(&self) -> bool {
+        self.diff.as_ref().is_some_and(|diff| {
+            matches!(
+                sidebar_rows(diff, &self.review)
+                    .get(diff.tree_cursor)
+                    .map(|row| &row.node),
+                Some(TreeNode::Dir { .. } | TreeNode::Section { .. })
+            )
+        })
+    }
+
     fn diff_tree_activate(&mut self) {
         let review = &self.review;
         let Some(diff) = self.diff.as_mut() else {

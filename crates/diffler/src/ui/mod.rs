@@ -123,7 +123,10 @@ fn tab_row(app: &App, strip: &crate::app::tabs::TabStrip, width: u16) -> Line<'s
         } else {
             Style::new().fg(theme.dim).bg(bg)
         };
-        spans.push(Span::styled(format!(" {} {name} ", index + 1), style));
+        spans.push(Span::styled(
+            crate::app::tabs::TabStrip::label(index, name),
+            style,
+        ));
         spans.push(Span::styled(" ".to_owned(), Style::new().bg(bg)));
     }
     let tail: Vec<Span<'static>> = app
@@ -133,7 +136,7 @@ fn tab_row(app: &App, strip: &crate::app::tabs::TabStrip, width: u16) -> Line<'s
             vec![
                 Span::styled(chord, Style::new().fg(theme.fg).bg(bg)),
                 Span::styled(
-                    " add project ".to_owned(),
+                    crate::app::tabs::ADD_HINT.to_owned(),
                     Style::new().fg(theme.dim).bg(bg),
                 ),
             ]
@@ -266,6 +269,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) -> Option<popup::ListHits> {
             | Modal::Choice { .. }
             | Modal::FilePicker { .. }
             | Modal::AddProject { .. }
+            | Modal::Menu { .. }
             | Modal::RemoteList { .. },
         ) => fuzzy_modal(app).map(|modal| modal.render(frame, &app.theme)),
         Some(Modal::PullDiverged { upstream }) => {
@@ -421,6 +425,11 @@ fn fuzzy_modal(app: &App) -> Option<popup::FuzzyModal> {
                 " open",
             );
             modal.footer = footer_for(list, " · b blame · e editor", " open");
+            Some(modal)
+        }
+        Some(Modal::Menu { labels, list, .. }) => {
+            let mut modal = plain_list("Actions".to_owned(), list, labels, " run");
+            " j/k move · enter run · esc close ".clone_into(&mut modal.footer);
             Some(modal)
         }
         Some(Modal::AddProject { entries, list, .. }) => {

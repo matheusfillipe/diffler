@@ -4093,20 +4093,94 @@ flowchart LR
     }
 
     #[test]
-    fn right_click_cancels_a_pane_selection() {
+    fn a_click_outside_the_comment_box_keeps_the_draft_for_reopening() {
+        let (_fixture, mut app) = diff_app();
+        open_lib_diff(&mut app);
+        render(&mut app);
+        let (x, y0, ..) = first_two_pane_lines(&app);
+        app.handle(mouse_click(x, y0));
+        app.handle(mouse_click(x, y0));
+        for c in "half a thought".chars() {
+            app.handle(key(c));
+        }
+        let kind = app
+            .diff
+            .as_ref()
+            .unwrap()
+            .composer
+            .as_ref()
+            .unwrap()
+            .kind
+            .clone();
+        render(&mut app);
+        let sidebar = app.diff.as_ref().unwrap().sidebar;
+        app.handle(mouse_click(sidebar.x + 1, sidebar.y));
+        assert!(!app.composer_open(), "the click closed the box");
+        app.open_composer(kind, String::new());
+        let reopened = app.diff.as_ref().unwrap().composer.as_ref().unwrap();
+        assert_eq!(reopened.buffer, "half a thought", "the draft came back");
+    }
+
+    #[test]
+    fn a_click_on_a_folder_folds_it() {
+        let (_fixture, mut app) = diff_app();
+        open_lib_diff(&mut app);
+        render(&mut app);
+        let diff = app.diff.as_ref().unwrap();
+        let rows = diff.sidebar_tree(&app.review);
+        let folder = rows
+            .iter()
+            .position(|row| matches!(row.node, crate::tree::TreeNode::Dir { .. }))
+            .expect("a folder row");
+        let before = rows.len();
+        let y = diff.sidebar.y + u16::try_from(folder - diff.sidebar_scroll).unwrap();
+        let x = diff.sidebar.x + 2;
+        app.handle(mouse_click(x, y));
+        let after = app.diff.as_ref().unwrap().sidebar_tree(&app.review).len();
+        assert!(
+            after < before,
+            "the folder's files are hidden: {before} -> {after}"
+        );
+    }
+
+    #[test]
+    fn right_click_over_a_selection_offers_to_comment_on_the_range() {
         let (_fixture, mut app) = diff_app();
         open_lib_diff(&mut app);
         render(&mut app);
         let (x, y0, y1, ..) = first_two_pane_lines(&app);
         app.handle(mouse_click(x, y0));
         app.handle(mouse_drag(x, y1));
-        assert!(app.diff.as_ref().unwrap().visual_anchor.is_some());
         app.handle(mouse_right_click(x, y0));
-        assert_eq!(
-            app.diff.as_ref().unwrap().visual_anchor,
-            None,
-            "right-click dropped the selection"
+        assert!(
+            app.diff.as_ref().unwrap().visual_anchor.is_some(),
+            "the selection stays for the menu to act on"
         );
+        let Some(crate::app::Modal::Menu { actions, .. }) = &app.modal else {
+            panic!("a menu opened");
+        };
+        assert_eq!(actions.first(), Some(&crate::keymap::Action::Comment));
+    }
+
+    #[test]
+    fn right_click_on_a_line_lists_its_verbs_and_a_click_runs_one() {
+        let (_fixture, mut app) = diff_app();
+        open_lib_diff(&mut app);
+        render(&mut app);
+        let (x, y0, ..) = first_two_pane_lines(&app);
+        app.handle(mouse_right_click(x, y0));
+        let Some(crate::app::Modal::Menu { labels, .. }) = &app.modal else {
+            panic!("a menu opened");
+        };
+        assert!(
+            labels
+                .iter()
+                .any(|label| label.starts_with("comment on this line")),
+            "{labels:?}"
+        );
+        insta::assert_snapshot!(render(&mut app).backend());
+        app.handle(key('\n'));
+        assert!(app.composer_open(), "the first entry, comment, ran");
     }
 
     #[test]
@@ -4816,7 +4890,7 @@ flowchart LR
     }
 
     #[test]
-    fn a_click_cannot_reach_past_an_open_composer() {
+    fn stray_clicks_never_lose_a_draft() {
         let (_fixture, mut app) = diff_app();
         open_lib_diff(&mut app);
         cursor_to_added_line(&mut app);
@@ -4825,18 +4899,18 @@ flowchart LR
             app.handle(key(c));
         }
         render(&mut app);
-        // the gesture that opens a fresh composer over this one, and the one
-        // that would switch files out from under it
+        // a double-click that opens a composer on another line, then a click
+        // on the file sidebar
         let (x, y0, ..) = first_two_pane_lines(&app);
         app.handle(mouse_click(x, y0));
         app.handle(mouse_click(x, y0));
         app.handle(mouse_click(1, 3));
-        let composer = app
-            .diff
-            .as_ref()
-            .and_then(|d| d.composer.as_ref())
-            .expect("the draft survives stray clicks");
-        assert_eq!(composer.buffer, "half written");
+        let diff = app.diff.as_ref().unwrap();
+        let kept = [diff.composer.as_ref(), diff.parked_draft.as_ref()]
+            .into_iter()
+            .flatten()
+            .any(|draft| draft.buffer == "half written");
+        assert!(kept, "the draft is open or kept aside for reopening");
     }
 
     #[test]

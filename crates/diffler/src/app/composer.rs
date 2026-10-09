@@ -5,7 +5,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use diffler_core::session::Anchor;
 use unicode_width::UnicodeWidthChar;
 
-use super::{App, Flow, text_edit};
+use super::{App, DiffRow, Flow, text_edit};
 use crate::editor::{EditorPurpose, TextBoxTarget};
 use crate::keymap::Action;
 
@@ -137,10 +137,44 @@ impl App {
         let Some(diff) = self.diff.as_mut() else {
             return;
         };
-        diff.composer = Some(Composer::new(kind, buffer));
+        let parked = diff.parked_draft.take_if(|draft| draft.kind == kind);
+        diff.composer = Some(match parked {
+            Some(draft) if buffer.is_empty() => draft,
+            _ => Composer::new(kind, buffer),
+        });
         diff.visual_anchor = None;
         diff.mark_reflow();
         diff.ensure_rows(&self.review);
+    }
+
+    /// A left click outside the open composer keeps its text aside, closes
+    /// it, and then lands like any click; a click on the composer itself
+    /// does nothing.
+    pub(super) fn composer_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
+        use crossterm::event::{MouseButton, MouseEventKind};
+        if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+            return;
+        }
+        let Some(diff) = self.diff.as_mut() else {
+            return;
+        };
+        let on_composer = diff
+            .row_at_point(mouse.column, mouse.row)
+            .is_some_and(|row| matches!(diff.rows().get(row), Some(DiffRow::Composer { .. })));
+        if on_composer {
+            return;
+        }
+        if let Some(draft) = diff.composer.take() {
+            if !draft.buffer.trim().is_empty() {
+                diff.parked_draft = Some(draft);
+                self.info("draft kept: open the comment again to continue it");
+            }
+            if let Some(diff) = self.diff.as_mut() {
+                diff.mark_reflow();
+                diff.ensure_rows(&self.review);
+            }
+        }
+        self.handle_mouse(mouse);
     }
 
     pub(crate) fn composer_open(&self) -> bool {

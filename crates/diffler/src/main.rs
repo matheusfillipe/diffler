@@ -84,18 +84,26 @@ async fn main() -> color_eyre::Result<()> {
 /// apps that request it). Best-effort: a terminal without mouse support just
 /// ignores it.
 fn set_mouse_capture(on: bool) {
-    use crossterm::event::{
-        DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture,
-    };
+    use crossterm::event::{DisableFocusChange, EnableFocusChange};
+    use std::io::Write as _;
     let mut out = std::io::stdout();
-    // focus reporting rides along: a terminal without it ignores the private
-    // mode, and knowing when nobody is looking is what keeps the CI poll cheap
+    // we ask for clicks (1000), drags (1002) and SGR coordinates (1006) only,
+    // the set every multiplexer forwards; any-motion tracking is noise we
+    // never read. Focus reporting rides along: a terminal without it ignores
+    // the private mode, and knowing when nobody is looking keeps the CI poll
+    // cheap
     let _ = if on {
-        crossterm::execute!(out, EnableMouseCapture, EnableFocusChange)
+        out.write_all(MOUSE_ON.as_bytes())
+            .and_then(|()| crossterm::execute!(out, EnableFocusChange))
     } else {
-        crossterm::execute!(out, DisableMouseCapture, DisableFocusChange)
+        out.write_all(MOUSE_OFF.as_bytes())
+            .and_then(|()| crossterm::execute!(out, DisableFocusChange))
     };
+    let _ = out.flush();
 }
+
+const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1002h\x1b[?1006h";
+const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1002l\x1b[?1000l";
 
 /// Chain mouse-disable ahead of the existing (ratatui screen-restore) panic
 /// hook, so a crash doesn't leave the terminal emitting mouse escape codes.

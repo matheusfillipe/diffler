@@ -6,6 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use crossterm::event::{KeyCode, KeyEvent};
+use unicode_width::UnicodeWidthStr;
 
 use super::fuzzy::{FuzzyKey, FuzzyList, name_haystack, selected};
 use super::{App, Flow, Modal};
@@ -16,6 +17,35 @@ use crate::keymap::Action;
 pub struct TabStrip {
     pub names: Vec<String>,
     pub active: usize,
+}
+
+/// The words after the add-project key at the tab row's right edge.
+pub const ADD_HINT: &str = " add project ";
+
+impl TabStrip {
+    /// One tab's label as the tab row draws it.
+    pub fn label(index: usize, name: &str) -> String {
+        format!(" {} {name} ", index + 1)
+    }
+
+    /// The tab request a click on column `col` of the tab row stands for:
+    /// a tab's label switches to it, and the add hint at the right edge of a
+    /// row `width` wide, `add_width` columns long, opens the picker.
+    pub fn hit(&self, col: u16, width: u16, add_width: u16) -> Option<TabOp> {
+        if add_width > 0 && col >= width.saturating_sub(add_width) {
+            return Some(TabOp::Pick);
+        }
+        let mut start = 0u16;
+        for (index, name) in self.names.iter().enumerate() {
+            let label = u16::try_from(Self::label(index, name).width()).unwrap_or(u16::MAX);
+            if col >= start && col < start.saturating_add(label) {
+                return Some(TabOp::Go(index));
+            }
+            // one blank column separates two labels
+            start = start.saturating_add(label).saturating_add(1);
+        }
+        None
+    }
 }
 
 /// A request only the workspace holding the tabs can carry out.
@@ -221,6 +251,27 @@ mod tests {
             3,
             "a trailing slash lists the folder, hidden ones left out"
         );
+    }
+
+    #[test]
+    fn a_click_on_the_tab_row_picks_the_tab_or_the_add_hint() {
+        let strip = TabStrip {
+            names: vec!["api".to_owned(), "web".to_owned()],
+            active: 0,
+        };
+        assert_eq!(
+            strip.hit(1, 80, 18),
+            Some(TabOp::Go(0)),
+            "inside \" 1 api \""
+        );
+        assert_eq!(strip.hit(7, 80, 18), None, "the gap between labels");
+        assert_eq!(
+            strip.hit(9, 80, 18),
+            Some(TabOp::Go(1)),
+            "inside \" 2 web \""
+        );
+        assert_eq!(strip.hit(70, 80, 18), Some(TabOp::Pick), "the add hint");
+        assert_eq!(strip.hit(40, 80, 18), None, "empty row");
     }
 
     #[test]

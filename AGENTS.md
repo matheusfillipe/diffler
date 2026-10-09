@@ -312,6 +312,15 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   a folded Generated marks the files it hides. `u` hunts the next unviewed anywhere, reading
   `DiffView::display_order`, the same order with nothing folded. Both read the
   sidebar's order, since the diff's file order is a different order on screen.
+  The mouse asks the terminal for clicks, drags and SGR coordinates only
+  (`set_mouse_capture`), the modes every multiplexer forwards. A click
+  selects a row and folds a folder or a group header; a double-click opens
+  what a click selected. A right-click, or a left press held still for half a
+  second (`app/menu.rs`), opens a menu of the verbs that fit the row under
+  the pointer, each entry naming its key and running the same action, over
+  an open selection acting on the whole range. A click outside an open
+  composer keeps its text aside (`DiffView::parked_draft`) and closes it;
+  opening the composer on the same line, reply or edit brings the text back.
   The status screen keeps the flat magit list. OSC52 clipboard works over
   ssh/tmux.
   The diff pane folds hunks (`app/diff/folds.rs`), the same unit `]`/`[`

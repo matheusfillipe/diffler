@@ -243,7 +243,6 @@ impl App {
                     view.cursor = i;
                 }
             }
-            MouseGesture::Cancel => view.visual_anchor = None,
         }
     }
 
@@ -611,18 +610,6 @@ mod tests {
             "drag anchors at the prior cursor"
         );
         assert_eq!(view.cursor, 2);
-    }
-
-    #[test]
-    fn ci_log_mouse_cancel_drops_the_visual_anchor() {
-        let fixture = standard_fixture();
-        let mut app = App::new(fixture.review(), LoadedConfig::default());
-        let mut view = CiLogView::parse(RAW, &[]);
-        view.visual_anchor = Some(0);
-        app.ci_log = Some(view);
-
-        app.ci_log_mouse(MouseGesture::Cancel);
-        assert!(app.ci_log.as_ref().unwrap().visual_anchor.is_none());
     }
 
     #[test]

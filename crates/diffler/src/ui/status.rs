@@ -1117,7 +1117,7 @@ mod tests {
     }
 
     #[test]
-    fn single_click_on_a_section_header_only_selects() {
+    fn single_click_on_a_section_header_folds_it() {
         let fixture = standard_fixture();
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         render(&mut app);
@@ -1128,7 +1128,11 @@ mod tests {
         let (x, y) = screen_pos(&app, 0);
         app.handle(mouse_click(x, y));
         assert_eq!(app.status.cursor, 0);
-        assert_eq!(app.is_folded(section), folded, "single click does not fold");
+        assert_ne!(
+            app.is_folded(section),
+            folded,
+            "a single click folds the header"
+        );
     }
 
     #[test]

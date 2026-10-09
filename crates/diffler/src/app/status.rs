@@ -963,19 +963,19 @@ impl App {
                 let target = self.status.cursor.saturating_add_signed(delta).min(last);
                 self.status.cursor = nearest_selectable(&rows, target, down);
             }
-            // single-click selects; double-click activates (open file/commit,
-            // or fold the section/dir/recent header), like `<cr>`/`<tab>`
+            // a click selects and folds a group header; a double-click opens a
+            // file or commit, like `<cr>`, and leaves the header the first
+            // click already folded
             MouseGesture::Press { col, row } => {
-                self.status_select_at(col, row);
+                if self.status_select_at(col, row) && self.cursor_on_group() {
+                    self.toggle_fold();
+                }
             }
             MouseGesture::DoublePress { col, row } => {
-                if self.status_select_at(col, row) {
+                if self.status_select_at(col, row) && !self.cursor_on_group() {
                     self.status_activate_cursor();
                 }
             }
-            // a right-click cancels what is in progress, which here is a run of
-            // rows the reader was selecting
-            MouseGesture::Cancel => self.status.set_anchor(None),
             MouseGesture::Drag { .. } => {}
         }
     }
@@ -998,6 +998,14 @@ impl App {
         self.status.set_anchor(None);
         self.status.cursor = index;
         true
+    }
+
+    /// Whether the cursor sits on a row that folds: a group header or a folder.
+    fn cursor_on_group(&self) -> bool {
+        self.cursor_row().is_some_and(|row| {
+            is_section_header(&row)
+                || matches!(row, Row::Dir { .. } | Row::WalkthroughHeader { .. })
+        })
     }
 
     fn status_activate_cursor(&mut self) {

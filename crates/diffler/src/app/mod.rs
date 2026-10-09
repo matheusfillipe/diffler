@@ -18,6 +18,7 @@ pub mod image;
 mod log;
 pub mod markdown;
 mod mcp;
+mod menu;
 mod modal;
 mod network;
 pub mod pr;
@@ -247,6 +248,12 @@ pub enum Modal {
         paths: Vec<String>,
         list: fuzzy::FuzzyList,
     },
+    /// The context menu: the verbs that fit the thing under the pointer.
+    Menu {
+        actions: Vec<Action>,
+        labels: Vec<String>,
+        list: fuzzy::FuzzyList,
+    },
     /// Fuzzy picker for a project to open as a tab: the repositories near
     /// the open ones, or the folders a typed path completes to.
     AddProject {
@@ -269,6 +276,7 @@ impl Modal {
             | Self::Choice { list, .. }
             | Self::FilePicker { list, .. }
             | Self::AddProject { list, .. }
+            | Self::Menu { list, .. }
             | Self::RemoteList { list, .. } => Some(list),
             Self::Confirm { .. }
             | Self::Input { .. }
@@ -774,6 +782,8 @@ pub struct App {
     image_in_flight: Option<image::ImageKey>,
     /// A symbol lens the main loop should build off-thread.
     pub pending_lens: Option<LensRequest>,
+    /// A left press not yet let go, which opens the context menu once held.
+    held_press: Option<menu::HeldPress>,
     /// A tab request for the workspace holding this app to carry out.
     pub pending_tab: Option<tabs::TabOp>,
     /// The tab row to draw above the screen, set while several projects are
@@ -1043,6 +1053,7 @@ impl App {
             image_in_flight: None,
             pending_lens: None,
             pending_tab: None,
+            held_press: None,
             tab_strip: None,
             lens_token: 0,
             file_token: 0,
@@ -1313,7 +1324,11 @@ impl App {
                 self.handle_modal_mouse(mouse);
                 Flow::Continue
             }
-            AppEvent::Mouse(mouse) if self.transient.is_none() && !self.composer_open() => {
+            AppEvent::Mouse(mouse) if self.composer_open() => {
+                self.composer_mouse(mouse);
+                Flow::Continue
+            }
+            AppEvent::Mouse(mouse) if self.transient.is_none() => {
                 self.handle_mouse(mouse);
                 Flow::Continue
             }
@@ -1349,16 +1364,37 @@ impl App {
                 down: false,
             },
             MouseEventKind::Down(MouseButton::Left) => {
+                self.held_press = Some(menu::HeldPress::new(col, row));
                 if self.register_click_is_double(col, row) {
                     MouseGesture::DoublePress { col, row }
                 } else {
                     MouseGesture::Press { col, row }
                 }
             }
-            MouseEventKind::Drag(MouseButton::Left) => MouseGesture::Drag { col, row },
-            MouseEventKind::Down(MouseButton::Right) => MouseGesture::Cancel,
+            MouseEventKind::Drag(MouseButton::Left) => {
+                self.held_press = None;
+                MouseGesture::Drag { col, row }
+            }
+            MouseEventKind::Down(MouseButton::Right) => {
+                self.held_press = None;
+                self.open_context_menu(col, row);
+                return;
+            }
+            MouseEventKind::Up(_) => {
+                self.held_press = None;
+                return;
+            }
             _ => return,
         };
+        self.mouse_gesture(gesture);
+    }
+
+    /// A click at `(col, row)`, the way the active screen takes one.
+    fn press_at(&mut self, col: u16, row: u16) {
+        self.mouse_gesture(MouseGesture::Press { col, row });
+    }
+
+    fn mouse_gesture(&mut self, gesture: MouseGesture) {
         match self.screen() {
             Screen::Status => self.status_mouse(gesture),
             Screen::Diff => self.diff_mouse(gesture),
@@ -1382,6 +1418,7 @@ impl App {
     }
 
     fn handle_key(&mut self, key: &KeyEvent) -> Flow {
+        self.held_press = None;
         // Esc leaves visual selection; it stays out of the keymap because it
         // also drains pending chords and cancels modals everywhere else
         if key.code == KeyCode::Esc && self.visual_active() {
@@ -1527,6 +1564,7 @@ impl App {
 
     fn on_tick(&mut self) -> Flow {
         let mut changed = self.expire_pending();
+        changed |= self.check_held_press();
         changed |= self.refresh_flash > 0;
         let which_key = self.which_key_panel().is_some();
         self.refresh_flash = self.refresh_flash.saturating_sub(1);
@@ -2243,8 +2281,6 @@ pub(crate) enum MouseGesture {
     DoublePress { col: u16, row: u16 },
     /// Left-drag: extend a selection to `(col, row)`.
     Drag { col: u16, row: u16 },
-    /// Right-click: cancel the in-progress interaction (e.g. drop a selection).
-    Cancel,
 }
 
 /// Map a mouse point to a 0-based index into a list rendered in `area` with

@@ -179,11 +179,6 @@ impl App {
                     log.cursor = index;
                 }
             }
-            MouseGesture::Cancel => {
-                if let Some(log) = self.log.as_mut() {
-                    log.visual_anchor = None;
-                }
-            }
         }
     }
 
