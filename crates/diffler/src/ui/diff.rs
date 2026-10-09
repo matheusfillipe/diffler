@@ -4164,6 +4164,27 @@ flowchart LR
     }
 
     #[test]
+    fn t_regroups_only_the_list_that_has_the_keyboard() {
+        let (_fixture, mut app) = diff_app();
+        open_lib_diff(&mut app);
+        let before = app.diff.as_ref().unwrap().layout;
+        app.diff.as_mut().unwrap().focus = Pane::Diff;
+        app.handle(key('t'));
+        assert_eq!(
+            app.diff.as_ref().unwrap().layout,
+            before,
+            "the diff pane leaves it"
+        );
+        app.diff.as_mut().unwrap().focus = Pane::List;
+        app.handle(key('t'));
+        assert_ne!(
+            app.diff.as_ref().unwrap().layout,
+            before,
+            "the file list regroups"
+        );
+    }
+
+    #[test]
     fn a_click_on_a_folder_folds_it() {
         let (_fixture, mut app) = diff_app();
         open_lib_diff(&mut app);

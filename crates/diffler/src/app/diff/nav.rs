@@ -64,17 +64,13 @@ impl App {
                 }
                 return self.diff_jump_unviewed();
             }
-            // the comments pane cycles its own grouping; every other pane
-            // keeps cycling the file sidebar's layout
+            // each list regroups only while it has the keyboard, so `t` never
+            // reshuffles a list the reader is not looking at
             Action::CycleSidebarMode => {
-                if self
-                    .diff
-                    .as_ref()
-                    .is_some_and(|d| d.focus == Pane::Comments)
-                {
-                    self.cycle_comment_grouping();
-                } else {
-                    self.diff_cycle_sidebar_mode();
+                match self.diff.as_ref().map(|d| d.focus) {
+                    Some(Pane::Comments) => self.cycle_comment_grouping(),
+                    Some(Pane::List) => self.diff_cycle_sidebar_mode(),
+                    _ => self.info("move into the file list to change how it groups files"),
                 }
                 return;
             }
