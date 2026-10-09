@@ -80,10 +80,10 @@
 [syntax]
 # The language a file highlights as, by glob, ahead of what its name and its
 # `#!` line imply. Same glob shape as [classify]; a leading / anchors the glob
-# at the repository root, and a rule for one file beats a rule with a
-# wildcard. `gl` in the diff or file view picks one on the fly and can save
-# it here, in the project's own .diffler/config.toml. The names are the
-# bundled grammars `gl` lists.
+# at the repository root. A rule without a wildcard comes first, then the
+# longer glob before the shorter. `gl` in the diff or file view picks one on
+# the fly and can save it here, in the project's own .diffler/config.toml.
+# The names are the bundled grammars `gl` lists.
 # "templates/*.tpl" = "yaml"
 # "/tools/build.cfg" = "toml"
 

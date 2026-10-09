@@ -250,12 +250,6 @@ pub enum Modal {
         paths: Vec<String>,
         list: fuzzy::FuzzyList,
     },
-    /// Fuzzy picker over every bundled grammar, for the file at `path`.
-    LanguagePick {
-        path: String,
-        names: Vec<String>,
-        list: fuzzy::FuzzyList,
-    },
     /// How long a picked language holds for `path`.
     LanguageScope {
         path: String,
@@ -291,7 +285,6 @@ impl Modal {
             | Self::FilePicker { list, .. }
             | Self::AddProject { list, .. }
             | Self::Menu { list, .. }
-            | Self::LanguagePick { list, .. }
             | Self::LanguageScope { list, .. }
             | Self::RemoteList { list, .. } => Some(list),
             Self::Confirm { .. }
@@ -798,11 +791,10 @@ pub struct App {
     image_in_flight: Option<image::ImageKey>,
     /// A symbol lens the main loop should build off-thread.
     pub pending_lens: Option<LensRequest>,
-    /// Languages picked for this run, and whether the rules changed.
     /// The languages the reader picked with `gl` for this run, as anchored
     /// globs, newest last.
     language_picks: Vec<(String, String)>,
-    /// Counts highlighter rebuilds, so an enrichment from an older one drops.
+    /// Counts highlighter rebuilds, so we drop an enrichment an older one ran.
     highlighter_generation: u64,
     /// A left press not yet let go, which opens the context menu once held.
     held_press: Option<menu::HeldPress>,
@@ -904,6 +896,7 @@ pub(crate) fn diff_algorithm_names() -> Vec<String> {
 pub enum ChoiceKind {
     Theme,
     DiffAlgorithm,
+    Language,
 }
 
 impl ChoiceKind {
@@ -911,6 +904,7 @@ impl ChoiceKind {
         match self {
             Self::Theme => "Theme",
             Self::DiffAlgorithm => "Diff algorithm",
+            Self::Language => "Language",
         }
     }
 
@@ -918,6 +912,7 @@ impl ChoiceKind {
         match self {
             Self::Theme => crate::theme::names(),
             Self::DiffAlgorithm => diff_algorithm_names(),
+            Self::Language => language::names(),
         }
     }
 
@@ -926,6 +921,7 @@ impl ChoiceKind {
         match self {
             Self::Theme => app.config.ui.theme.clone(),
             Self::DiffAlgorithm => app.config.diff.algorithm.to_string(),
+            Self::Language => app.language_on_screen().unwrap_or_default(),
         }
     }
 
@@ -933,6 +929,7 @@ impl ChoiceKind {
         match self {
             Self::Theme => app.apply_theme(name),
             Self::DiffAlgorithm => app.apply_diff_algorithm(name),
+            Self::Language => app.open_scope_picker(name),
         }
     }
 }
@@ -1272,8 +1269,9 @@ impl App {
             AppEvent::FileLoaded {
                 result,
                 span,
+                reload,
                 token,
-            } => self.on_file_loaded(*result, span, token),
+            } => self.on_file_loaded(*result, span, reload, token),
             AppEvent::DeclaredKinds { kinds, token } => self.on_declared_kinds(kinds, token),
             AppEvent::RepoStats { stats, token } => self.on_repo_stats(*stats, token),
             AppEvent::WalkthroughAnchors {
@@ -1755,10 +1753,13 @@ impl App {
         Flow::Continue
     }
 
-    fn open_choice_picker(&mut self, kind: ChoiceKind) {
+    pub(crate) fn open_choice_picker(&mut self, kind: ChoiceKind) {
         let names = kind.names();
         let current = kind.current(self);
-        let mut list = fuzzy::FuzzyList::default();
+        let mut list = match kind {
+            ChoiceKind::Language => fuzzy::FuzzyList::typing(),
+            ChoiceKind::Theme | ChoiceKind::DiffAlgorithm => fuzzy::FuzzyList::default(),
+        };
         list.rerank(&names);
         list.selected = list
             .matches

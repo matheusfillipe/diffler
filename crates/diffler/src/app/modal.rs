@@ -45,7 +45,7 @@ impl App {
             Some(Modal::FilePicker { .. }) => return self.handle_file_picker_key(key),
             Some(Modal::AddProject { .. }) => return self.handle_add_project_key(key),
             Some(Modal::Menu { .. }) => return self.handle_menu_key(key),
-            Some(Modal::LanguagePick { .. } | Modal::LanguageScope { .. }) => {
+            Some(Modal::LanguageScope { .. }) => {
                 return self.handle_language_key(key);
             }
             Some(Modal::Choice { .. }) => self.handle_choice_key(key),

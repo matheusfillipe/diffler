@@ -376,7 +376,7 @@ fn sets_key(line: &str, key: &str) -> bool {
 
 /// `value` as a TOML basic string.
 fn toml_string(value: &str) -> String {
-    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+    toml::Value::from(value).to_string()
 }
 
 /// CLI flags that override file layers. Every flag maps to a config key.

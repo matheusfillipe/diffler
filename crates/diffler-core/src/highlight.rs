@@ -13,8 +13,8 @@ use crate::syntax::{HIGHLIGHT_NAMES, LanguageRegistry};
 pub struct Highlighter {
     registry: &'static LanguageRegistry,
     theme: SyntaxTheme,
-    /// The reader's `glob = language` rules, most specific first, consulted
-    /// before anything the registry infers from a file's name or `#!` line.
+    /// The reader's `glob = language` rules, in the order we try them, ahead
+    /// of anything the registry infers from a file's name or `#!` line.
     rules: Vec<(String, String)>,
 }
 
@@ -163,7 +163,7 @@ impl Highlighter {
         mark_reformat_only: bool,
     ) -> bool {
         let entry = self.language(&file.path, file.new_text.as_deref().unwrap_or_default());
-        LanguageRegistry::syntactic_emphasis_as(entry, file, mark_reformat_only)
+        LanguageRegistry::syntactic_emphasis(entry, file, mark_reformat_only)
     }
 }
 
@@ -360,9 +360,6 @@ impl SyntaxTheme {
 mod tests {
     use super::*;
 
-    /// Every registered grammar must colour a representative snippet: a crate
-    /// that ships a parser with a broken or absent highlight query would
-    /// otherwise link fine and render plain.
     #[test]
     fn the_readers_rules_outrank_what_the_registry_infers() {
         let rules = |rules: &[(&str, &str)]| {
@@ -388,6 +385,9 @@ mod tests {
         );
     }
 
+    /// Every registered grammar must colour a representative snippet: a crate
+    /// that ships a parser with a broken or absent highlight query would
+    /// otherwise link fine and render plain.
     #[test]
     fn every_language_colours_a_sample() {
         let samples: &[(&str, &str)] = &[

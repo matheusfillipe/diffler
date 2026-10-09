@@ -10,8 +10,8 @@ use diffler_core::highlight::{Highlighter, SyntaxTheme};
 use diffler_core::syntax::registry::REGISTRY;
 
 use super::enrich::EnrichStamp;
-use super::fuzzy::{FuzzyKey, FuzzyList, name_haystack, selected};
-use super::{App, Flow, Modal, Screen};
+use super::fuzzy::{FuzzyKey, FuzzyList, selected};
+use super::{App, ChoiceKind, Flow, Modal, Screen};
 
 /// How long a picked language holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,55 +22,74 @@ pub enum LanguageScope {
     Saved(String),
 }
 
+impl LanguageScope {
+    /// The scope as the picker lists it.
+    pub fn label(&self) -> String {
+        match self {
+            Self::Session => "use it until diffler quits".to_owned(),
+            Self::Saved(glob) => format!("save it for {glob} in this project"),
+        }
+    }
+}
+
+/// Every bundled grammar's name, as the picker lists them.
+pub fn names() -> Vec<String> {
+    REGISTRY.names().into_iter().map(str::to_owned).collect()
+}
+
 impl App {
     /// `gl`: pick the language the file on screen highlights as.
     pub(crate) fn open_language_picker(&mut self) {
-        let Some(path) = self.file_on_screen() else {
+        if self.file_on_screen().is_none() {
             self.info("open a file to set its language");
             return;
-        };
-        let names: Vec<String> = REGISTRY.names().into_iter().map(str::to_owned).collect();
-        let mut list = FuzzyList::typing();
-        list.rerank(&name_haystack(&names));
-        self.modal = Some(Modal::LanguagePick { path, names, list });
+        }
+        self.open_choice_picker(ChoiceKind::Language);
     }
 
     pub(super) fn handle_language_key(&mut self, key: &KeyEvent) -> Flow {
-        match self.modal.as_mut() {
-            Some(Modal::LanguagePick { path, names, list }) => match list.feed(key) {
-                FuzzyKey::Submit => {
-                    if let Some(language) = selected(list, names).cloned() {
-                        let path = path.clone();
-                        self.open_scope_picker(path, language);
-                    }
+        let Some(Modal::LanguageScope {
+            path,
+            language,
+            scopes,
+            list,
+        }) = self.modal.as_mut()
+        else {
+            return Flow::Continue;
+        };
+        match list.feed(key) {
+            FuzzyKey::Submit => {
+                if let Some(scope) = selected(list, scopes).cloned() {
+                    let (path, language) = (path.clone(), language.clone());
+                    self.modal = None;
+                    self.set_language(&path, &language, scope);
                 }
-                FuzzyKey::Cancel => self.modal = None,
-                FuzzyKey::Edited => list.rerank(&name_haystack(names)),
-                FuzzyKey::Consumed | FuzzyKey::Other => {}
-            },
-            Some(Modal::LanguageScope {
-                path,
-                language,
-                scopes,
-                list,
-            }) => match list.feed(key) {
-                FuzzyKey::Submit => {
-                    if let Some(scope) = selected(list, scopes).cloned() {
-                        let (path, language) = (path.clone(), language.clone());
-                        self.modal = None;
-                        self.set_language(&path, &language, scope);
-                    }
-                }
-                FuzzyKey::Cancel => self.modal = None,
-                FuzzyKey::Edited | FuzzyKey::Consumed | FuzzyKey::Other => {}
-            },
-            _ => {}
+            }
+            FuzzyKey::Cancel => self.modal = None,
+            FuzzyKey::Edited | FuzzyKey::Consumed | FuzzyKey::Other => {}
         }
         Flow::Continue
     }
 
-    /// Ask how long `language` holds for `path`.
-    fn open_scope_picker(&mut self, path: String, language: String) {
+    /// The language the file on screen highlights as now.
+    pub(crate) fn language_on_screen(&self) -> Option<String> {
+        let path = self.file_on_screen()?;
+        let first_line = match self.screen() {
+            Screen::File => self.file.as_ref()?.lines.first().cloned(),
+            _ => None,
+        };
+        let entry = self
+            .highlighter
+            .language(&path, first_line.as_deref().unwrap_or_default())?;
+        Some(entry.name.to_owned())
+    }
+
+    /// Ask how long `language` holds for the file on screen.
+    pub(crate) fn open_scope_picker(&mut self, language: &str) {
+        let Some(path) = self.file_on_screen() else {
+            return;
+        };
+        let language = language.to_owned();
         let mut scopes = vec![
             LanguageScope::Session,
             LanguageScope::Saved(anchored(&path)),
@@ -79,7 +98,7 @@ impl App {
             scopes.push(LanguageScope::Saved(glob));
         }
         let mut list = FuzzyList::default();
-        list.rerank(&scope_labels(&scopes));
+        list.rerank(&scopes.iter().map(LanguageScope::label).collect::<Vec<_>>());
         self.modal = Some(Modal::LanguageScope {
             path,
             language,
@@ -97,6 +116,8 @@ impl App {
                 self.info(format!("set {path} to {language} until diffler quits"));
             }
             LanguageScope::Saved(glob) => {
+                let own = anchored(path);
+                self.language_picks.retain(|(picked, _)| *picked != own);
                 if let Err(err) =
                     crate::config::save_syntax_rule(&self.review.repo_root, &glob, language)
                 {
@@ -120,16 +141,13 @@ impl App {
         ));
         self.highlighter_generation += 1;
         self.enrich_inflight.clear();
+        self.pending_enrich.clear();
         if let Some(diff) = self.diff.as_mut() {
             diff.highlights.clear();
             diff.invalidate();
         }
         self.status.highlights.clear();
-        if let Some(view) = self.file.as_mut() {
-            view.highlights = self
-                .highlighter
-                .highlight(&view.path, &view.lines.join("\n"));
-        }
+        self.reload_file();
         self.queue_enrich_selected();
     }
 
@@ -151,15 +169,19 @@ impl App {
 }
 
 /// A highlighter for `syntax`'s palette under the reader's rules: the
-/// languages picked this run, then the config's globs, the more specific
-/// first, so a rule for one file beats one for its whole extension.
+/// languages picked this run, newest first, then the config's globs, those
+/// without a wildcard first and then the longer before the shorter, so a
+/// rule for one file beats one for its folder or its extension.
 pub fn highlighter(
     syntax: SyntaxTheme,
     picks: &[(String, String)],
     config: &BTreeMap<String, String>,
 ) -> Highlighter {
     let mut saved: Vec<(String, String)> = config.clone().into_iter().collect();
-    saved.sort_by_key(|(glob, _)| (glob.contains(['*', '?']), !glob.contains('/')));
+    saved.sort_by_key(|(glob, _)| {
+        let broad = glob.contains(['*', '?']) || glob.ends_with('/');
+        (broad, std::cmp::Reverse(glob.len()))
+    });
     Highlighter::new(syntax).with_rules(picks.iter().rev().cloned().chain(saved).collect())
 }
 
@@ -178,17 +200,6 @@ fn sibling_glob(path: &str) -> Option<String> {
     }
 }
 
-/// Each scope as the picker lists it.
-pub fn scope_labels(scopes: &[LanguageScope]) -> Vec<String> {
-    scopes
-        .iter()
-        .map(|scope| match scope {
-            LanguageScope::Session => "use it until diffler quits".to_owned(),
-            LanguageScope::Saved(glob) => format!("save it for {glob} in this project"),
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use crossterm::event::KeyCode;
@@ -203,11 +214,15 @@ mod tests {
         let config = BTreeMap::from([
             ("*.yml".to_owned(), "toml".to_owned()),
             ("/ci/a.yml".to_owned(), "bash".to_owned()),
+            ("ci/".to_owned(), "json".to_owned()),
+            ("ci/*.yml".to_owned(), "python".to_owned()),
         ]);
         let hl = highlighter(SyntaxTheme::default(), &[], &config);
         let name = |path| hl.language(path, "").map(|entry| entry.name);
         assert_eq!(name("ci/a.yml"), Some("bash"));
-        assert_eq!(name("ci/b.yml"), Some("toml"));
+        assert_eq!(name("ci/b.yml"), Some("python"));
+        assert_eq!(name("ci/c.txt"), Some("json"));
+        assert_eq!(name("b.yml"), Some("toml"));
     }
 
     #[test]
@@ -225,6 +240,11 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         press(&mut app, KeyCode::Char('j'));
         press(&mut app, KeyCode::Enter);
+        assert!(
+            app.pending_enrich
+                .iter()
+                .all(|job| job.stamp == app.enrich_stamp())
+        );
         let saved = std::fs::read_to_string(fixture.root.join(".diffler/config.toml"))
             .expect("the project config");
         assert!(saved.contains("\"/a.txt\" = \"yaml\""), "{saved}");

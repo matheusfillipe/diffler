@@ -241,13 +241,33 @@ pub fn ensure_dir(repo_root: &Path) -> std::io::Result<PathBuf> {
     Ok(dir)
 }
 
-/// Replace `.diffler/<name>` with `contents` atomically (temp file then
-/// rename), so a crash mid-write leaves the old file whole.
+/// Replace `.diffler/<name>` with `contents` through [`write_atomic`].
 pub fn write_file(repo_root: &Path, name: &str, contents: &str) -> std::io::Result<()> {
     let dir = ensure_dir(repo_root)?;
-    let mut tmp = tempfile::NamedTempFile::new_in(&dir)?;
+    write_atomic(&dir.join(name), contents)
+}
+
+/// Replace `path` with `contents` atomically (temp file then rename), so a
+/// crash mid-write leaves the old file whole. We write through a symlink to
+/// the file it names and keep that file's permissions.
+pub fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
+    let (target, permissions) = match fs::canonicalize(path) {
+        Ok(target) => {
+            let permissions = fs::metadata(&target)?.permissions();
+            (target, Some(permissions))
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => (path.to_owned(), None),
+        Err(err) => return Err(err),
+    };
+    let dir = target
+        .parent()
+        .ok_or_else(|| std::io::Error::other(format!("{} has no folder", target.display())))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
     tmp.write_all(contents.as_bytes())?;
-    tmp.persist(dir.join(name)).map_err(|e| e.error)?;
+    if let Some(permissions) = permissions {
+        tmp.as_file().set_permissions(permissions)?;
+    }
+    tmp.persist(&target).map_err(|err| err.error)?;
     Ok(())
 }
 
@@ -267,10 +287,7 @@ pub fn save_source(
         session: session.clone(),
     };
     let json = serde_json::to_string_pretty(&on_disk).map_err(std::io::Error::other)?;
-    let mut tmp = tempfile::NamedTempFile::new_in(&dir)?;
-    tmp.write_all(json.as_bytes())?;
-    tmp.persist(source_path(repo_root, source))
-        .map_err(|e| StoreError::Io(e.error))?;
+    write_atomic(&source_path(repo_root, source), &json)?;
     if matches!(source, ReviewSource::WorkingTree) {
         let legacy = legacy_path(repo_root);
         if legacy.exists() {
@@ -360,6 +377,28 @@ mod tests {
         save(dir.path(), &Session::default()).expect("save");
         let gi = std::fs::read_to_string(dir.path().join(".diffler/.gitignore")).expect("read");
         assert_eq!(gi, "*\n");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn an_atomic_write_keeps_the_files_permissions_and_its_symlink() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let real = dir.path().join("real.toml");
+        std::fs::write(&real, "old").expect("write");
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+        let link = dir.path().join("link.toml");
+        symlink(&real, &link).expect("symlink");
+        write_atomic(&link, "new").expect("write");
+        assert!(
+            link.symlink_metadata()
+                .expect("meta")
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read_to_string(&real).expect("read"), "new");
+        let mode = std::fs::metadata(&real).expect("meta").permissions().mode();
+        assert_eq!(mode & 0o777, 0o644);
     }
 
     #[test]

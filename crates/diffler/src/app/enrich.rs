@@ -91,6 +91,12 @@ pub fn run_enrich(highlighter: &Highlighter, job: EnrichJob) -> EnrichOutcome {
         hashes: HashCache::default(),
         blobs: BlobIds::default(),
     };
+    // a rule or theme change enriches hunks an earlier grammar already
+    // marked, so we clear those marks before this one sets its own
+    for line in file.hunks.iter_mut().flat_map(|hunk| &mut hunk.lines) {
+        line.emphasis.clear();
+        line.reformat_only = false;
+    }
     let structural = job.stamp.algorithm == DiffAlgorithm::Structural;
     if !(job.semantic && highlighter.syntactic_emphasis(&mut file, structural)) {
         pairing::enrich_file(&mut file);
@@ -227,7 +233,11 @@ impl App {
     /// A stale outcome (the file changed mid-flight) installs nothing; the
     /// next frame re-queues against the new content.
     pub(crate) fn on_enriched(&mut self, outcome: EnrichOutcome) {
-        self.enrich_inflight.remove(&outcome.hash);
+        // a highlighter rebuild clears every marker, and the hash may since
+        // mark a fresh job for the same content, so we leave that one alone
+        if outcome.stamp.highlighter == self.highlighter_generation {
+            self.enrich_inflight.remove(&outcome.hash);
+        }
         if outcome.stamp != self.enrich_stamp() {
             return;
         }
@@ -290,5 +300,43 @@ impl App {
             let outcome = run_enrich(&self.highlighter, job);
             self.on_enriched(outcome);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use diffler_core::model::{DiffLine, HunkId, LineKind};
+
+    use super::*;
+
+    #[test]
+    fn enriching_again_drops_the_marks_an_earlier_grammar_set() {
+        let mut line = DiffLine::new(LineKind::Added, None, Some(1), "  a: 1".to_owned());
+        line.emphasis.push(0..2);
+        line.reformat_only = true;
+        let job = EnrichJob {
+            path: "a.yml".to_owned(),
+            hash: "h".to_owned(),
+            old_text: None,
+            new_text: Some("  a: 1\n".to_owned()),
+            hunks: vec![Hunk {
+                id: HunkId("h".to_owned()),
+                old_start: 0,
+                old_lines: 0,
+                new_start: 1,
+                new_lines: 1,
+                context: String::new(),
+                lines: vec![line],
+            }],
+            semantic: true,
+            stamp: EnrichStamp {
+                algorithm: DiffAlgorithm::Structural,
+                highlighter: 0,
+            },
+        };
+        let outcome = run_enrich(&Highlighter::default(), job);
+        let line = &outcome.hunks[0].lines[0];
+        assert!(!line.reformat_only);
+        assert!(line.emphasis.is_empty());
     }
 }

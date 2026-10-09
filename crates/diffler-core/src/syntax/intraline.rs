@@ -51,20 +51,15 @@ impl LanguageRegistry {
         ))
     }
 
-    /// Set char-precise emphasis on `file`'s diff lines from the AST diff.
+    /// Set char-precise emphasis on `file`'s diff lines from an AST diff of
+    /// both sides parsed as `entry`'s language.
     /// `mark_reformat_only` additionally flags a paired deleted/added line the
     /// AST diff found no structural difference on at all (a pure reformat)
     /// for the structural algorithm's dimmed rendering. Returns `false` when
     /// the syntactic engine is unavailable, so the caller can fall back to
     /// the textual engine (and structural mode silently reads as a plain
     /// histogram diff for that file).
-    pub fn syntactic_emphasis(&self, file: &mut FileDiff, mark_reformat_only: bool) -> bool {
-        let entry = self.for_file(&file.path, file.new_text.as_deref().unwrap_or_default());
-        Self::syntactic_emphasis_as(entry, file, mark_reformat_only)
-    }
-
-    /// [`Self::syntactic_emphasis`] with both sides parsed as `entry`'s language.
-    pub fn syntactic_emphasis_as(
+    pub fn syntactic_emphasis(
         entry: Option<&LangEntry>,
         file: &mut FileDiff,
         mark_reformat_only: bool,
@@ -282,7 +277,7 @@ mod tests {
             hashes: crate::model::HashCache::default(),
             blobs: crate::model::BlobIds::default(),
         };
-        assert!(LanguageRegistry::build().syntactic_emphasis(&mut file, false));
+        assert!(crate::highlight::Highlighter::default().syntactic_emphasis(&mut file, false));
         let added = &file.hunks[0].lines[1];
         assert!(!added.emphasis.is_empty(), "the changed line is emphasized");
         let covered: String = added
@@ -314,7 +309,7 @@ mod tests {
             hashes: crate::model::HashCache::default(),
             blobs: crate::model::BlobIds::default(),
         };
-        assert!(LanguageRegistry::build().syntactic_emphasis(&mut file, true));
+        assert!(crate::highlight::Highlighter::default().syntactic_emphasis(&mut file, true));
         file.hunks
             .iter()
             .flat_map(|h| &h.lines)
@@ -415,7 +410,7 @@ mod tests {
             hashes: crate::model::HashCache::default(),
             blobs: crate::model::BlobIds::default(),
         };
-        assert!(LanguageRegistry::build().syntactic_emphasis(&mut file, false));
+        assert!(crate::highlight::Highlighter::default().syntactic_emphasis(&mut file, false));
         for line in &file.hunks[0].lines {
             assert!(
                 line.emphasis.is_empty(),

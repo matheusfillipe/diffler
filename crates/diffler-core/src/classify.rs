@@ -605,6 +605,11 @@ mod tests {
 
     #[test]
     fn globs_honour_the_shapes_a_gitignore_reader_writes() {
+        assert!(glob_match("/a.rs", "a.rs"));
+        assert!(
+            !glob_match("/a.rs", "src/a.rs"),
+            "a leading / anchors at the root"
+        );
         assert!(glob_match("/src/**", "src/lib.rs"), "leading slash anchors");
         assert!(glob_match("/src/*.rs", "src/lib.rs"));
         assert!(

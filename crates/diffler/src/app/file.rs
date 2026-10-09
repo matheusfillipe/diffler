@@ -26,6 +26,9 @@ pub struct FileOpen {
     /// the first and the view marks the whole span.
     pub span: Option<(u32, u32)>,
     pub blame: bool,
+    /// Whether this load colours the open view again, keeping the reader's
+    /// place in it.
+    pub reload: bool,
     /// The request this load answers. A result whose token no longer matches
     /// the app's is an answer to a question the user has moved on from, and
     /// installing it would resurrect a screen they left.
@@ -172,9 +175,26 @@ impl App {
             path: path.to_owned(),
             span,
             blame,
+            reload: false,
             token: self.file_token,
         });
         self.info(format!("opening {path}"));
+    }
+
+    /// Load the open file again, so the worker highlights it under the
+    /// current highlighter.
+    pub(crate) fn reload_file(&mut self) {
+        let Some(view) = self.file.as_ref() else {
+            return;
+        };
+        self.file_token += 1;
+        self.pending_file = Some(FileOpen {
+            path: view.path.clone(),
+            span: None,
+            blame: view.show_blame,
+            reload: true,
+            token: self.file_token,
+        });
     }
 
     /// Abandon whatever file load is in flight, so its answer never lands on a
@@ -211,12 +231,14 @@ impl App {
         &mut self,
         result: Result<FileView, String>,
         span: Option<(u32, u32)>,
+        reload: bool,
         token: u64,
     ) -> Flow {
         if token != self.file_token {
             return Flow::Idle;
         }
         match result {
+            Ok(view) if reload => self.install_reloaded_file(view),
             Ok(view) => self.install_file(view, span),
             Err(err) => self.error(err),
         }
@@ -236,6 +258,18 @@ impl App {
         if self.screen() != Screen::File {
             self.push_screen(Screen::File);
         }
+    }
+
+    fn install_reloaded_file(&mut self, mut view: FileView) {
+        if let Some(old) = self.file.take().filter(|old| old.path == view.path) {
+            let last = view.lines.len().saturating_sub(1);
+            view.cursor = old.cursor.min(last);
+            view.scroll = old.scroll.min(last);
+            view.referenced = old.referenced;
+            view.visual_anchor = old.visual_anchor.map(|anchor| anchor.min(last));
+            view.viewport = old.viewport;
+        }
+        self.file = Some(view);
     }
 
     pub(super) fn dispatch_file(&mut self, action: Action) {
@@ -572,7 +606,12 @@ mod tests {
         // back to the status screen while the load is still in flight
         app.handle(key('q'));
 
-        let flow = app.on_file_loaded(Ok(view("one\n", vec![span(1, 1, true)])), None, stale);
+        let flow = app.on_file_loaded(
+            Ok(view("one\n", vec![span(1, 1, true)])),
+            None,
+            false,
+            stale,
+        );
         assert_eq!(flow, Flow::Idle, "a stale load draws nothing");
         assert!(app.file.is_none());
         assert_eq!(
@@ -583,6 +622,22 @@ mod tests {
     }
 
     #[test]
+    fn a_reload_keeps_the_readers_place_in_the_open_file() {
+        let (_fixture, mut app) = app();
+        app.open_file("a.txt", None, false);
+        let opened = app.pending_file.as_ref().expect("a queued file").token;
+        app.on_file_loaded(Ok(view("a\nb\nc\n", Vec::new())), None, false, opened);
+        app.file.as_mut().expect("view").cursor = 2;
+        let depth = app.screens.len();
+
+        app.reload_file();
+        let reload = app.pending_file.as_ref().expect("a queued reload").token;
+        app.on_file_loaded(Ok(view("a\nb\nc\n", Vec::new())), None, true, reload);
+        assert_eq!(app.file.as_ref().expect("view").cursor, 2);
+        assert_eq!(app.screens.len(), depth, "a reload opens no screen");
+    }
+
+    #[test]
     fn the_newest_request_wins_when_two_loads_are_in_flight() {
         let (_fixture, mut app) = app();
         app.open_file("a.txt", None, false);
@@ -590,8 +645,18 @@ mod tests {
         app.open_file("b.txt", None, false);
         let second = app.pending_file.as_ref().expect("a queued file").token;
 
-        app.on_file_loaded(Ok(view("second\n", vec![span(1, 1, true)])), None, second);
-        app.on_file_loaded(Ok(view("first\n", vec![span(1, 1, true)])), None, first);
+        app.on_file_loaded(
+            Ok(view("second\n", vec![span(1, 1, true)])),
+            None,
+            false,
+            second,
+        );
+        app.on_file_loaded(
+            Ok(view("first\n", vec![span(1, 1, true)])),
+            None,
+            false,
+            first,
+        );
         assert_eq!(
             app.file.as_ref().expect("view").lines,
             vec!["second"],

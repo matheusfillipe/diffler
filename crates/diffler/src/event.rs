@@ -29,6 +29,7 @@ pub enum AppEvent {
         result: Box<Result<crate::app::file::FileView, String>>,
         /// Rows the request pointed at, 1-based and inclusive.
         span: Option<(u32, u32)>,
+        reload: bool,
         /// The request this answers; a stale one is dropped on arrival.
         token: u64,
     },

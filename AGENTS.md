@@ -234,20 +234,26 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   or the query silently matches almost nothing. `every_language_colours_a_sample`
   in `highlight.rs` is the guard.
   A path finds its grammar in this order: the reader's rules, the exact file
-  name, a name prefix (`Dockerfile.*`, `Makefile.*`, `.env.*`), the
-  extension, the extension under a template suffix (`config.yml.example`),
-  and, where the text is at hand (`for_file`), the interpreter a `#!` line
-  names. The rules live on each tab's own `Highlighter` (`with_rules`), so
-  one project's rules never colour another's files: the `gl` picks for this
-  run, then `[syntax]` globs with a wildcard-free or slashed glob ahead of a
-  bare wildcard. A rule change rebuilds the highlighter the way a theme
-  switch does (`App::rebuild_highlighter`), and `EnrichStamp` drops any
-  enrichment the old one ran. `gl`'s saved scopes write the rule into the
-  project's `.diffler/config.toml` (`config::save_syntax_rule`), editing the
+  name or the extension (`LanguageRegistry::for_path`), then, for
+  highlighting (`for_file`), a known name with a suffix (`Dockerfile.prod`,
+  `.env.local`), the extension under a template suffix
+  (`config.yml.example`), and the interpreter a `#!` line names. The kinds
+  sidebar and the Stats screen read `for_path` alone, so a backup or a
+  sample file keeps its kind. The rules live on each tab's own `Highlighter`
+  (`with_rules`), so each project's rules apply to its own files: the `gl`
+  picks for this run, newest first, then `[syntax]` globs, the ones without
+  a wildcard first and then the longer before the shorter. A rule change
+  rebuilds the highlighter the way a theme switch does
+  (`App::rebuild_highlighter`): it reloads the file view through its worker,
+  keeping the cursor, and `EnrichStamp` drops any enrichment the old one ran.
+  `gl` opens the choice picker on the file's current language, then asks
+  how long the pick holds; saving it for the file drops a pick made for this
+  run. The saved scopes write the rule into the project's
+  `.diffler/config.toml` (`config::save_syntax_rule`), editing the
   `[syntax]` section line by line and refusing an edit that would not parse
   back to the rule. The rules reach highlighting, scope breadcrumbs and
-  intraline emphasis; the kinds sidebar, the Stats screen and the symbol
-  lens read the registry alone.
+  intraline emphasis; the kinds sidebar, the Stats screen, the symbol lens
+  and walkthrough anchors read the registry alone.
 - **TUI.** neogit/doom keybindings, every binding configurable. Screens: Status
   (the branch band, a rule, then the repo band; stage/unstage/
   discard/commit/branch), Log, Diff/review (file sidebar + pane, unified or

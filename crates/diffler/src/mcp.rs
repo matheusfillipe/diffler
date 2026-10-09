@@ -1166,7 +1166,6 @@ struct EndpointFile {
 /// under the per-user registry, so a proxy started from a directory that owns
 /// no repo of its own can still find it.
 pub fn write_endpoint(repo_root: &Path, port: u16) -> std::io::Result<()> {
-    diffler_core::store::ensure_dir(repo_root)?;
     let pid = std::process::id();
     let body = serde_json::to_string_pretty(&EndpointFile {
         port,
@@ -1174,7 +1173,7 @@ pub fn write_endpoint(repo_root: &Path, port: u16) -> std::io::Result<()> {
         pid,
     })
     .map_err(std::io::Error::other)?;
-    std::fs::write(endpoint_path(repo_root), body)?;
+    diffler_core::store::write_file(repo_root, ENDPOINT_FILE, &body)?;
     write_registry_entry(repo_root, port, pid);
     Ok(())
 }

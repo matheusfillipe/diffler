@@ -344,6 +344,7 @@ fn dispatch_file(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
         let _ = tx.send(AppEvent::FileLoaded {
             result: Box::new(result),
             span: request.span,
+            reload: request.reload,
             token: request.token,
         });
     });
