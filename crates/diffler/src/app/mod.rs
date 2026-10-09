@@ -383,6 +383,18 @@ impl Transients {
     }
 }
 
+/// What the which-key panel lists.
+#[derive(Debug)]
+pub enum WhichKey<'a> {
+    /// An open transient's groups.
+    Transient(&'a Transient),
+    /// The keys that finish the chord `prefix` started, beside what each does.
+    Chord {
+        prefix: String,
+        rest: Vec<(String, &'static str)>,
+    },
+}
+
 /// An open transient awaiting its next key. `opened_at` is a tick count so the
 /// which-key reveal timer never reads a wall clock in render.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -395,8 +407,6 @@ pub struct OpenTransient {
 /// revealed, so a fast resolving key never flashes the panel.
 const WHICH_KEY_REVEAL_TICKS: u32 = 1;
 
-/// Pending multi-key sequences die after this many 250ms ticks.
-const PENDING_TIMEOUT_TICKS: u8 = 4;
 /// How long the post-refresh `↻` status-bar indicator stays up.
 const REFRESH_FLASH_TICKS: u8 = 4;
 /// Poll interval (in 250ms ticks) when the watcher is missing or broken.
@@ -1462,6 +1472,10 @@ impl App {
 
     fn handle_key(&mut self, key: &KeyEvent) -> Flow {
         self.held_press = None;
+        if key.code == KeyCode::Esc && !self.pending.is_empty() {
+            self.pending.clear();
+            return Flow::Continue;
+        }
         // Esc leaves visual selection; it stays out of the keymap because it
         // also drains pending chords and cancels modals everywhere else
         if key.code == KeyCode::Esc && self.visual_active() {
@@ -1544,15 +1558,21 @@ impl App {
         self.transients.get(kind)
     }
 
-    /// The transient panel to reveal: `Some` once the reveal timer has elapsed
-    /// since the transient opened, so a fast resolving key never flashes it.
-    pub fn which_key_panel(&self) -> Option<&Transient> {
-        let open = self.transient?;
-        if self.tick_count.wrapping_sub(open.opened_at) >= WHICH_KEY_REVEAL_TICKS {
-            Some(self.transients.get(open.kind))
-        } else {
-            None
+    /// The which-key panel to reveal: an open transient's keys, or the keys
+    /// that finish a half-typed chord. `Some` once the reveal timer has
+    /// elapsed, so a fast second key never flashes it.
+    pub fn which_key_panel(&self) -> Option<WhichKey<'_>> {
+        if let Some(open) = self.transient {
+            return (self.tick_count.wrapping_sub(open.opened_at) >= WHICH_KEY_REVEAL_TICKS)
+                .then(|| WhichKey::Transient(self.transients.get(open.kind)));
         }
+        if self.pending.is_empty() || u32::from(self.pending_ticks) < WHICH_KEY_REVEAL_TICKS {
+            return None;
+        }
+        Some(WhichKey::Chord {
+            prefix: keymap::render_chord(&self.pending),
+            rest: self.active_keymap().continuations(&self.pending),
+        })
     }
 
     /// While a modal is up it owns the keyboard.
@@ -1606,10 +1626,10 @@ impl App {
     }
 
     fn on_tick(&mut self) -> Flow {
-        let mut changed = self.expire_pending();
-        changed |= self.check_held_press();
-        changed |= self.refresh_flash > 0;
         let which_key = self.which_key_panel().is_some();
+        self.age_pending();
+        let mut changed = self.check_held_press();
+        changed |= self.refresh_flash > 0;
         self.refresh_flash = self.refresh_flash.saturating_sub(1);
         self.tick_count = self.tick_count.wrapping_add(1);
         // the which-key panel reveals on a tick count, so the tick that crosses
@@ -1645,19 +1665,12 @@ impl App {
         if changed { Flow::Continue } else { Flow::Idle }
     }
 
-    /// True when the wait dropped the half-typed chord, so the caller can tell
-    /// the keymap state moved on.
-    fn expire_pending(&mut self) -> bool {
-        if self.pending.is_empty() {
-            return false;
+    /// Count the ticks a half-typed chord has waited; the which-key panel
+    /// lists its keys once that passes the reveal delay.
+    fn age_pending(&mut self) {
+        if !self.pending.is_empty() {
+            self.pending_ticks = self.pending_ticks.saturating_add(1);
         }
-        self.pending_ticks += 1;
-        if self.pending_ticks < PENDING_TIMEOUT_TICKS {
-            return false;
-        }
-        self.pending.clear();
-        self.pending_ticks = 0;
-        true
     }
 
     pub(crate) fn dispatch(&mut self, action: Action) -> Flow {
@@ -3548,17 +3561,19 @@ mod tests {
     }
 
     #[test]
-    fn an_expiring_chord_asks_for_a_draw_because_the_hint_row_shows_it() {
+    fn the_tick_that_reveals_a_chords_keys_asks_for_a_draw() {
         let (_fixture, mut app) = app();
         while app.handle(AppEvent::Tick) == Flow::Continue {}
         app.handle(key('g')); // half of `gg`
-        assert!(!app.pending.is_empty());
         let mut ticks = 0;
         while app.handle(AppEvent::Tick) == Flow::Idle {
             ticks += 1;
-            assert!(ticks < 20, "the chord never expired");
+            assert!(ticks < 20, "the panel never revealed");
         }
-        assert!(app.pending.is_empty());
+        assert!(matches!(
+            app.which_key_panel(),
+            Some(WhichKey::Chord { .. })
+        ));
     }
 
     #[test]
@@ -3711,15 +3726,21 @@ mod tests {
     }
 
     #[test]
-    fn pending_chord_expires_after_the_timeout() {
+    fn a_half_typed_chord_lists_the_keys_that_finish_it_until_esc() {
         let (_fixture, mut app) = app();
-        app.handle(key('c'));
-        for _ in 0..PENDING_TIMEOUT_TICKS {
+        app.handle(key('g'));
+        assert!(app.which_key_panel().is_none(), "no flash before the tick");
+        for _ in 0..8 {
             app.handle(AppEvent::Tick);
         }
-        // the second `c` starts a fresh sequence instead of completing `cc`
-        app.handle(key('c'));
-        assert_eq!(app.message, None);
+        let Some(WhichKey::Chord { prefix, rest }) = app.which_key_panel() else {
+            panic!("the chord panel is up");
+        };
+        assert_eq!(prefix, "g");
+        assert!(rest.iter().any(|(keys, _)| keys == "f"), "{rest:?}");
+        app.handle(AppEvent::Key(KeyEvent::from(KeyCode::Esc)));
+        assert!(app.which_key_panel().is_none());
+        assert_eq!(app.screen(), Screen::Status, "esc only drops the chord");
     }
 
     #[test]

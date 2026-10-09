@@ -7,6 +7,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
+use crate::app::WhichKey;
 use crate::theme::Theme;
 use crate::transient::Transient;
 
@@ -176,18 +177,37 @@ fn pack_columns(widths: &[usize], available: usize) -> Vec<Vec<usize>> {
 /// The which-key bottom panel: a transient's groups laid out as packed columns
 /// of `key  label`, revealed after the reveal timer elapses.
 #[derive(Debug, Clone)]
-pub struct WhichKeyPanel<'a> {
-    pub transient: &'a Transient,
+pub struct WhichKeyPanel {
+    title: String,
+    columns: Vec<WhichKeyColumn>,
 }
 
-impl WhichKeyPanel<'_> {
+impl WhichKeyPanel {
+    pub fn new(which_key: &WhichKey<'_>) -> Self {
+        match which_key {
+            WhichKey::Transient(transient) => Self {
+                title: transient.kind.title().to_owned(),
+                columns: transient_columns(transient),
+            },
+            WhichKey::Chord { prefix, rest } => Self {
+                title: format!("{prefix}…"),
+                columns: vec![WhichKeyColumn::new(
+                    String::new(),
+                    rest.iter()
+                        .map(|(keys, label)| (keys.clone(), (*label).to_owned()))
+                        .collect(),
+                )],
+            },
+        }
+    }
+
     pub fn render(&self, frame: &mut Frame<'_>, theme: &Theme) {
         let area = frame.area();
-        let columns = self.columns();
+        let columns = &self.columns;
         let widths: Vec<usize> = columns.iter().map(|c| c.width).collect();
         let available = (area.width as usize).saturating_sub(2).max(1);
         let bands = pack_columns(&widths, available);
-        let lines = render_bands(&columns, &bands, theme);
+        let lines = render_bands(columns, &bands, theme);
         // +1 for the top border carrying the title
         let height = (lines.len() as u16 + 1)
             .min(WHICH_KEY_MAX_HEIGHT)
@@ -203,7 +223,7 @@ impl WhichKeyPanel<'_> {
             .borders(Borders::TOP)
             .border_style(Style::new().fg(theme.border).bg(theme.panel))
             .title(Span::styled(
-                format!(" {} ", self.transient.kind.title()),
+                format!(" {} ", self.title),
                 Style::new().fg(theme.accent).bg(theme.panel),
             ));
         frame.render_widget(
@@ -213,26 +233,26 @@ impl WhichKeyPanel<'_> {
             panel_area,
         );
     }
+}
 
-    fn columns(&self) -> Vec<WhichKeyColumn> {
-        self.transient
-            .groups
-            .iter()
-            .map(|group| {
-                let entries = group
-                    .entries
-                    .iter()
-                    .map(|entry| {
-                        (
-                            crate::keymap::render_chord(std::slice::from_ref(&entry.key)),
-                            entry.label.to_owned(),
-                        )
-                    })
-                    .collect();
-                WhichKeyColumn::new(group.heading.to_owned(), entries)
-            })
-            .collect()
-    }
+fn transient_columns(transient: &Transient) -> Vec<WhichKeyColumn> {
+    transient
+        .groups
+        .iter()
+        .map(|group| {
+            let entries = group
+                .entries
+                .iter()
+                .map(|entry| {
+                    (
+                        crate::keymap::render_chord(std::slice::from_ref(&entry.key)),
+                        entry.label.to_owned(),
+                    )
+                })
+                .collect();
+            WhichKeyColumn::new(group.heading.to_owned(), entries)
+        })
+        .collect()
 }
 
 /// Render packed bands to styled lines: each band shows its columns' headings
@@ -258,7 +278,9 @@ fn render_bands(
             }
             heading.push(Span::styled(pad(&column.heading, column.width), dim));
         }
-        lines.push(Line::from(heading));
+        if band_columns.iter().any(|column| !column.heading.is_empty()) {
+            lines.push(Line::from(heading));
+        }
 
         let rows = band_columns
             .iter()
@@ -796,10 +818,7 @@ pub(super) mod tests {
         );
         assert!(warnings.is_empty());
         let terminal = render(|frame, theme| {
-            WhichKeyPanel {
-                transient: &transient,
-            }
-            .render(frame, theme);
+            WhichKeyPanel::new(&WhichKey::Transient(&transient)).render(frame, theme);
         });
         insta::assert_snapshot!(terminal.backend());
     }
@@ -812,11 +831,21 @@ pub(super) mod tests {
         );
         assert!(warnings.is_empty());
         let terminal = render(|frame, theme| {
-            WhichKeyPanel {
-                transient: &transient,
-            }
-            .render(frame, theme);
+            WhichKeyPanel::new(&WhichKey::Transient(&transient)).render(frame, theme);
         });
+        insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn which_key_panel_renders_the_keys_that_finish_a_chord() {
+        let which_key = WhichKey::Chord {
+            prefix: "g".to_owned(),
+            rest: vec![
+                ("g".to_owned(), "go to the top"),
+                ("f".to_owned(), "open any file in the repo"),
+            ],
+        };
+        let terminal = render(|frame, theme| WhichKeyPanel::new(&which_key).render(frame, theme));
         insta::assert_snapshot!(terminal.backend());
     }
 

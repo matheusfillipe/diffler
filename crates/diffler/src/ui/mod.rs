@@ -211,9 +211,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     // the which-key panel is a transient overlay, not a modal: it draws only
     // once the reveal timer has elapsed and never over a modal
     if app.modal.is_none()
-        && let Some(transient) = app.which_key_panel()
+        && let Some(which_key) = app.which_key_panel()
     {
-        popup::WhichKeyPanel { transient }.render(frame, &app.theme);
+        popup::WhichKeyPanel::new(&which_key).render(frame, &app.theme);
     }
 }
 

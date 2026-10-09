@@ -1142,6 +1142,22 @@ impl Keymap {
             .map(|(chord, _)| render_chord(chord))
     }
 
+    /// The rest of every chord that starts with `prefix`, rendered, beside
+    /// what it does, in binding order.
+    pub fn continuations(&self, prefix: &[KeyPress]) -> Vec<(String, &'static str)> {
+        let mut rest: Vec<(String, &'static str)> = Vec::new();
+        for (chord, action) in &self.bindings {
+            let Some(tail) = chord.strip_prefix(prefix).filter(|tail| !tail.is_empty()) else {
+                continue;
+            };
+            let keys = render_chord(tail);
+            if !rest.iter().any(|(seen, _)| *seen == keys) {
+                rest.push((keys, action.label()));
+            }
+        }
+        rest
+    }
+
     fn lookup(&self, seq: &[KeyPress]) -> Lookup {
         if let Some((_, action)) = self.bindings.iter().find(|(chord, _)| chord == seq) {
             return Lookup::Exact(*action);
