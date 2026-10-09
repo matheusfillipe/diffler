@@ -189,6 +189,7 @@ pub(super) fn screen_chrome_with_header(
 }
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
+    app.frame_width = frame.area().width;
     match app.screen() {
         Screen::Status => {
             // enrichment (emphasis/highlight) runs on the blocking pool; this
@@ -320,6 +321,29 @@ fn footer_for(list: &fuzzy::FuzzyList, list_keys: &str, verb: &str) -> String {
     }
 }
 
+/// A dialog listing commands, each label beside its key.
+fn command_modal(
+    title: &str,
+    commands: &[crate::app::Command],
+    list: &fuzzy::FuzzyList,
+    footer: String,
+) -> popup::FuzzyModal {
+    popup::FuzzyModal {
+        title: title.to_owned(),
+        query: list.query.clone(),
+        cursor: list.cursor,
+        typing: matches!(list.focus, fuzzy::FuzzyFocus::Input),
+        items: list
+            .matches
+            .iter()
+            .filter_map(|index| commands.get(*index))
+            .map(|c| (c.label.to_owned(), c.chord.clone()))
+            .collect(),
+        selected: list.selected,
+        footer,
+    }
+}
+
 /// A dialog whose rows are plain labels, ranked through the list's matches.
 fn plain_list(
     title: String,
@@ -388,23 +412,12 @@ fn fuzzy_modal(app: &App) -> Option<popup::FuzzyModal> {
             names,
             " set base",
         )),
-        Some(Modal::Palette { list }) => {
-            let commands = app.command_index();
-            Some(popup::FuzzyModal {
-                title: "Commands".to_owned(),
-                query: list.query.clone(),
-                cursor: list.cursor,
-                typing: matches!(list.focus, fuzzy::FuzzyFocus::Input),
-                items: list
-                    .matches
-                    .iter()
-                    .filter_map(|index| commands.get(*index))
-                    .map(|c| (c.label.to_owned(), c.chord.clone()))
-                    .collect(),
-                selected: list.selected,
-                footer: footer_for(list, "", " run"),
-            })
-        }
+        Some(Modal::Palette { list }) => Some(command_modal(
+            "Commands",
+            &app.command_index(),
+            list,
+            footer_for(list, "", " run"),
+        )),
         Some(Modal::Choice { kind, list }) => {
             let current = kind.current(app);
             let labels: Vec<String> = kind
@@ -427,11 +440,12 @@ fn fuzzy_modal(app: &App) -> Option<popup::FuzzyModal> {
             modal.footer = footer_for(list, " · b blame · e editor", " open");
             Some(modal)
         }
-        Some(Modal::Menu { labels, list, .. }) => {
-            let mut modal = plain_list("Actions".to_owned(), list, labels, " run");
-            " j/k move · enter run · esc close ".clone_into(&mut modal.footer);
-            Some(modal)
-        }
+        Some(Modal::Menu { commands, list }) => Some(command_modal(
+            "Actions",
+            commands,
+            list,
+            " j/k move · enter run · esc close ".to_owned(),
+        )),
         Some(Modal::AddProject { entries, list, .. }) => {
             let mut modal = plain_list("Add project".to_owned(), list, entries, " open");
             " type a name or a path · tab complete · enter open · esc close "

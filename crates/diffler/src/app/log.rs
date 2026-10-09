@@ -151,7 +151,7 @@ impl App {
                     log.cursor = log.cursor.saturating_add_signed(delta).min(last);
                 }
             }
-            MouseGesture::Press { col, row } => {
+            MouseGesture::Press { col, row } | MouseGesture::Select { col, row } => {
                 if let Some(index) = self.log_row_at(col, row)
                     && let Some(log) = self.log.as_mut()
                 {

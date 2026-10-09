@@ -220,7 +220,7 @@ impl App {
                 let delta = if down { 3 } else { -3 };
                 view.cursor = view.cursor.saturating_add_signed(delta).min(last);
             }
-            MouseGesture::Press { col, row } => {
+            MouseGesture::Press { col, row } | MouseGesture::Select { col, row } => {
                 if let Some(i) = hit_index(view.body, view.scroll, col, row).filter(|i| *i <= last)
                 {
                     view.cursor = i;

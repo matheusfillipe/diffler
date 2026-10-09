@@ -128,8 +128,6 @@ impl App {
         match mouse.kind {
             MouseEventKind::ScrollDown => self.step_modal(true),
             MouseEventKind::ScrollUp => self.step_modal(false),
-            // the menu runs an entry on one click and closes on a click
-            // anywhere else, the way a desktop menu does
             MouseEventKind::Down(MouseButton::Left)
                 if matches!(self.modal, Some(Modal::Menu { .. })) =>
             {
@@ -192,14 +190,13 @@ impl App {
         }
     }
 
-    /// Take the selected row, as Enter would.
     fn handle_menu_key(&mut self, key: &KeyEvent) -> Flow {
-        let Some(Modal::Menu { actions, list, .. }) = self.modal.as_mut() else {
+        let Some(Modal::Menu { commands, list }) = self.modal.as_mut() else {
             return Flow::Continue;
         };
         match list.feed(key) {
             FuzzyKey::Submit => {
-                let chosen = selected(list, actions).copied();
+                let chosen = selected(list, commands).map(|command| command.action);
                 self.modal = None;
                 if let Some(action) = chosen {
                     return self.dispatch(action);
@@ -211,6 +208,7 @@ impl App {
         Flow::Continue
     }
 
+    /// Take the selected row, as Enter would.
     fn activate_modal(&mut self) {
         let enter = KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::NONE);
         self.handle_modal_key(&enter);

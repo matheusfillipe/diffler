@@ -7,6 +7,7 @@
 mod ci;
 pub mod ci_log;
 mod commands;
+pub use commands::Command;
 mod commit;
 pub mod composer;
 mod diff;
@@ -250,8 +251,7 @@ pub enum Modal {
     },
     /// The context menu: the verbs that fit the thing under the pointer.
     Menu {
-        actions: Vec<Action>,
-        labels: Vec<String>,
+        commands: Vec<commands::Command>,
         list: fuzzy::FuzzyList,
     },
     /// Fuzzy picker for a project to open as a tab: the repositories near
@@ -789,6 +789,8 @@ pub struct App {
     /// The tab row to draw above the screen, set while several projects are
     /// open.
     pub tab_strip: Option<tabs::TabStrip>,
+    /// The width the last frame was drawn at, for a click on the tab row.
+    pub frame_width: u16,
     /// Bumped per lens request, so a lens for a line the reader left is dropped.
     lens_token: u64,
     /// The language breakdown screen, present only while it is open.
@@ -1055,6 +1057,7 @@ impl App {
             pending_tab: None,
             held_press: None,
             tab_strip: None,
+            frame_width: 0,
             lens_token: 0,
             file_token: 0,
             pending_clipboard: None,
@@ -1352,6 +1355,24 @@ impl App {
             return;
         }
         let (col, row) = (mouse.column, mouse.row);
+        if row == 0
+            && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+            && let Some(strip) = &self.tab_strip
+        {
+            let add_width = self
+                .tabs_keymap()
+                .chord_for(Action::AddProject)
+                .map_or(0, |chord| {
+                    unicode_width::UnicodeWidthStr::width(chord.as_str())
+                        + unicode_width::UnicodeWidthStr::width(tabs::ADD_HINT)
+                });
+            self.pending_tab = strip.hit(
+                col,
+                self.frame_width,
+                u16::try_from(add_width).unwrap_or(u16::MAX),
+            );
+            return;
+        }
         let gesture = match mouse.kind {
             MouseEventKind::ScrollDown => MouseGesture::Scroll {
                 col,
@@ -1377,7 +1398,7 @@ impl App {
             }
             MouseEventKind::Down(MouseButton::Right) => {
                 self.held_press = None;
-                self.open_context_menu(col, row);
+                self.open_context_menu(col, row, true);
                 return;
             }
             MouseEventKind::Up(_) => {
@@ -1389,9 +1410,9 @@ impl App {
         self.mouse_gesture(gesture);
     }
 
-    /// A click at `(col, row)`, the way the active screen takes one.
-    fn press_at(&mut self, col: u16, row: u16) {
-        self.mouse_gesture(MouseGesture::Press { col, row });
+    /// Select the thing at `(col, row)` the way the active screen does.
+    fn select_at(&mut self, col: u16, row: u16) {
+        self.mouse_gesture(MouseGesture::Select { col, row });
     }
 
     fn mouse_gesture(&mut self, gesture: MouseGesture) {
@@ -2275,8 +2296,12 @@ const DOUBLE_CLICK_WINDOW: std::time::Duration = std::time::Duration::from_milli
 pub(crate) enum MouseGesture {
     /// Wheel notch over `(col, row)`.
     Scroll { col: u16, row: u16, down: bool },
-    /// Single left-click: select the thing under the pointer.
+    /// Single left-click: select the thing under the pointer, folding a
+    /// folder or a group header.
     Press { col: u16, row: u16 },
+    /// Select the thing under the pointer and nothing else, for the context
+    /// menu to act on.
+    Select { col: u16, row: u16 },
     /// Double left-click: activate it (open, like `<cr>`).
     DoublePress { col: u16, row: u16 },
     /// Left-drag: extend a selection to `(col, row)`.

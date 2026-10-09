@@ -4122,6 +4122,48 @@ flowchart LR
     }
 
     #[test]
+    fn a_right_click_on_a_folder_leaves_it_open() {
+        let (_fixture, mut app) = diff_app();
+        open_lib_diff(&mut app);
+        render(&mut app);
+        let diff = app.diff.as_ref().unwrap();
+        let rows = diff.sidebar_tree(&app.review);
+        let folder = rows
+            .iter()
+            .position(|row| row.node.is_group())
+            .expect("a folder row");
+        let before = rows.len();
+        let y = diff.sidebar.y + u16::try_from(folder - diff.sidebar_scroll).unwrap();
+        app.handle(mouse_right_click(diff.sidebar.x + 2, y));
+        let after = app.diff.as_ref().unwrap().sidebar_tree(&app.review).len();
+        assert_eq!(
+            after, before,
+            "the menu acts on the folder without folding it"
+        );
+    }
+
+    #[test]
+    fn a_kept_edit_draft_comes_back_over_the_original_text() {
+        let (_fixture, mut app) = diff_app();
+        open_lib_diff(&mut app);
+        let kind = crate::app::composer::ComposerKind::Edit {
+            comment_id: "c1".to_owned(),
+        };
+        let edited = crate::app::composer::Composer::new(kind.clone(), "edited".to_owned());
+        let other = crate::app::composer::Composer::new(
+            crate::app::composer::ComposerKind::Reply {
+                comment_id: "c2".to_owned(),
+            },
+            "a reply".to_owned(),
+        );
+        app.diff.as_mut().unwrap().parked_drafts = vec![edited, other];
+        app.open_composer(kind, "original".to_owned());
+        let diff = app.diff.as_ref().unwrap();
+        assert_eq!(diff.composer.as_ref().unwrap().buffer, "edited");
+        assert_eq!(diff.parked_drafts.len(), 1, "the other draft is still kept");
+    }
+
+    #[test]
     fn a_click_on_a_folder_folds_it() {
         let (_fixture, mut app) = diff_app();
         open_lib_diff(&mut app);
@@ -4156,10 +4198,13 @@ flowchart LR
             app.diff.as_ref().unwrap().visual_anchor.is_some(),
             "the selection stays for the menu to act on"
         );
-        let Some(crate::app::Modal::Menu { actions, .. }) = &app.modal else {
+        let Some(crate::app::Modal::Menu { commands, .. }) = &app.modal else {
             panic!("a menu opened");
         };
-        assert_eq!(actions.first(), Some(&crate::keymap::Action::Comment));
+        assert_eq!(
+            commands.first().map(|command| command.action),
+            Some(crate::keymap::Action::Comment)
+        );
     }
 
     #[test]
@@ -4169,14 +4214,14 @@ flowchart LR
         render(&mut app);
         let (x, y0, ..) = first_two_pane_lines(&app);
         app.handle(mouse_right_click(x, y0));
-        let Some(crate::app::Modal::Menu { labels, .. }) = &app.modal else {
+        let Some(crate::app::Modal::Menu { commands, .. }) = &app.modal else {
             panic!("a menu opened");
         };
         assert!(
-            labels
+            commands
                 .iter()
-                .any(|label| label.starts_with("comment on this line")),
-            "{labels:?}"
+                .any(|command| command.label == "comment on this line"),
+            "{commands:?}"
         );
         insta::assert_snapshot!(render(&mut app).backend());
         app.handle(key('\n'));
@@ -4906,9 +4951,10 @@ flowchart LR
         app.handle(mouse_click(x, y0));
         app.handle(mouse_click(1, 3));
         let diff = app.diff.as_ref().unwrap();
-        let kept = [diff.composer.as_ref(), diff.parked_draft.as_ref()]
-            .into_iter()
-            .flatten()
+        let kept = diff
+            .composer
+            .iter()
+            .chain(&diff.parked_drafts)
             .any(|draft| draft.buffer == "half written");
         assert!(kept, "the draft is open or kept aside for reopening");
     }

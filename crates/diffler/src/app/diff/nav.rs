@@ -15,7 +15,7 @@ use crate::tree::{TreeNode, TreeRow};
 /// collapsing the group you are inside is what the key is for.
 fn foldable_at(rows: &[TreeRow], at: usize) -> Option<usize> {
     let row = rows.get(at)?;
-    let header = |node: &TreeNode| matches!(node, TreeNode::Dir { .. } | TreeNode::Section { .. });
+    let header = TreeNode::is_group;
     if header(&row.node) {
         return Some(at);
     }
@@ -376,7 +376,7 @@ impl App {
         });
     }
 
-    pub(crate) fn diff_focus(&mut self, pane: Pane) {
+    fn diff_focus(&mut self, pane: Pane) {
         if let Some(diff) = self.diff.as_mut() {
             diff.focus = pane;
         }
@@ -418,7 +418,8 @@ impl App {
                     self.diff_move(delta);
                 }
             }
-            MouseGesture::Press { col, row } => self.diff_press_at(col, row),
+            MouseGesture::Press { col, row } => self.diff_press_at(col, row, true),
+            MouseGesture::Select { col, row } => self.diff_press_at(col, row, false),
             MouseGesture::DoublePress { col, row } => self.diff_activate_at(col, row),
             MouseGesture::Drag { col, row } => self.diff_drag_to(col, row),
         }
@@ -426,7 +427,8 @@ impl App {
 
     /// Single-click: select the sidebar file under the pointer, or move the
     /// pane cursor to the clicked line, dropping any selection.
-    fn diff_press_at(&mut self, col: u16, row: u16) {
+    /// A click in the diff screen; `fold` lets a click on a folder fold it.
+    fn diff_press_at(&mut self, col: u16, row: u16, fold: bool) {
         if let Some(index) = self.refs_row_at(col, row) {
             self.diff_focus(Pane::References);
             self.refs_to(index);
@@ -438,17 +440,19 @@ impl App {
             return;
         }
         if let Some(index) = self.diff_sidebar_row_at(col, row) {
+            self.diff_focus(Pane::List);
             self.diff_tree_to(index);
-            if self.tree_cursor_on_group() {
+            if fold && self.tree_cursor_on_group() {
                 self.diff_toggle_dir_fold();
             }
             return;
         }
-        if let Some(index) = self.diff_pane_row_at(col, row)
-            && let Some(diff) = self.diff.as_mut()
-        {
-            diff.cursor = index;
-            diff.visual_anchor = None;
+        if let Some(index) = self.diff_pane_row_at(col, row) {
+            self.diff_focus(Pane::Diff);
+            if let Some(diff) = self.diff.as_mut() {
+                diff.cursor = index;
+                diff.visual_anchor = None;
+            }
         }
     }
 
@@ -457,7 +461,7 @@ impl App {
     /// diff line (like `c`).
     fn diff_activate_at(&mut self, col: u16, row: u16) {
         if let Some(index) = self.diff_sidebar_row_at(col, row) {
-            // the first click of the pair already folded a folder
+            // we skip a folder because the pair's first click already folded it
             self.diff_tree_to(index);
             if !self.tree_cursor_on_group() {
                 self.diff_tree_activate();
@@ -661,20 +665,56 @@ impl App {
         diff.ensure_rows(review);
     }
 
-    /// `<cr>` on the tree cursor: focus the diff pane on a file row, or toggle
-    /// the fold on a directory or bucket row.
     /// Whether the sidebar cursor sits on a folder or a section header.
     fn tree_cursor_on_group(&self) -> bool {
         self.diff.as_ref().is_some_and(|diff| {
-            matches!(
-                sidebar_rows(diff, &self.review)
-                    .get(diff.tree_cursor)
-                    .map(|row| &row.node),
-                Some(TreeNode::Dir { .. } | TreeNode::Section { .. })
-            )
+            sidebar_rows(diff, &self.review)
+                .get(diff.tree_cursor)
+                .is_some_and(|row| row.node.is_group())
         })
     }
 
+    /// The context menu's verbs for the pane in focus and the row under its
+    /// cursor.
+    pub(crate) fn diff_menu_actions(&self) -> Vec<Action> {
+        let Some(diff) = self.diff.as_ref() else {
+            return Vec::new();
+        };
+        let comment = vec![
+            Action::Reply,
+            Action::Resolve,
+            Action::DeleteComment,
+            Action::ClaimComment,
+            Action::ToggleFold,
+        ];
+        let on_comment = matches!(diff.rows().get(diff.cursor), Some(DiffRow::Comment { .. }));
+        match diff.focus {
+            Pane::List => vec![
+                Action::Open,
+                Action::MarkViewed,
+                Action::OpenEditor,
+                Action::Blame,
+                Action::CopyFileFeedback,
+            ],
+            Pane::Comments => comment,
+            Pane::Diff | Pane::References if on_comment => comment,
+            Pane::Diff | Pane::References if diff.visual_anchor.is_some() => {
+                vec![Action::Comment, Action::CopyFileFeedback]
+            }
+            Pane::Diff | Pane::References => vec![
+                Action::Comment,
+                Action::VisualSelect,
+                Action::SymbolLens,
+                Action::OpenEditor,
+                Action::Blame,
+                Action::MarkViewed,
+                Action::CopyFileFeedback,
+            ],
+        }
+    }
+
+    /// `<cr>` on the tree cursor: focus the diff pane on a file row, or toggle
+    /// the fold on a directory or bucket row.
     fn diff_tree_activate(&mut self) {
         let review = &self.review;
         let Some(diff) = self.diff.as_mut() else {

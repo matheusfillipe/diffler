@@ -7,7 +7,7 @@ use crate::transient::TransientKind;
 use super::{App, Screen};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Command {
+pub struct Command {
     pub action: Action,
     pub label: &'static str,
     /// Full chord path for which-key leaves, e.g. "c a".

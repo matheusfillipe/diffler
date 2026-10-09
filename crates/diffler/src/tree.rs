@@ -61,6 +61,13 @@ pub enum TreeNode {
     WalkthroughSummary,
 }
 
+impl TreeNode {
+    /// Whether this row folds: a folder or a section header.
+    pub fn is_group(&self) -> bool {
+        matches!(self, Self::Dir { .. } | Self::Section { .. })
+    }
+}
+
 /// A flattened tree row: a node and its indentation depth (0 at the root).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TreeRow {

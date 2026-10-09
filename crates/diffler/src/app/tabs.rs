@@ -30,11 +30,9 @@ impl TabStrip {
 
     /// The tab request a click on column `col` of the tab row stands for:
     /// a tab's label switches to it, and the add hint at the right edge of a
-    /// row `width` wide, `add_width` columns long, opens the picker.
+    /// row `width` wide, `add_width` columns long, opens the picker while the
+    /// labels leave it room to show.
     pub fn hit(&self, col: u16, width: u16, add_width: u16) -> Option<TabOp> {
-        if add_width > 0 && col >= width.saturating_sub(add_width) {
-            return Some(TabOp::Pick);
-        }
         let mut start = 0u16;
         for (index, name) in self.names.iter().enumerate() {
             let label = u16::try_from(Self::label(index, name).width()).unwrap_or(u16::MAX);
@@ -44,7 +42,8 @@ impl TabStrip {
             // one blank column separates two labels
             start = start.saturating_add(label).saturating_add(1);
         }
-        None
+        let hint = width.saturating_sub(add_width);
+        (add_width > 0 && start <= hint && col >= hint).then_some(TabOp::Pick)
     }
 }
 
@@ -272,6 +271,19 @@ mod tests {
         );
         assert_eq!(strip.hit(70, 80, 18), Some(TabOp::Pick), "the add hint");
         assert_eq!(strip.hit(40, 80, 18), None, "empty row");
+    }
+
+    #[test]
+    fn an_overflowing_tab_row_sends_no_click_to_the_hidden_hint() {
+        let strip = TabStrip {
+            names: (0..8).map(|n| format!("project-{n}")).collect(),
+            active: 0,
+        };
+        assert_eq!(
+            strip.hit(75, 80, 18),
+            Some(TabOp::Go(5)),
+            "the label drawn there"
+        );
     }
 
     #[test]

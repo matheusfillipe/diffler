@@ -137,10 +137,15 @@ impl App {
         let Some(diff) = self.diff.as_mut() else {
             return;
         };
-        let parked = diff.parked_draft.take_if(|draft| draft.kind == kind);
+        // a kept draft is newer than any seed text, an edit's original body
+        // included
+        let parked = diff
+            .parked_drafts
+            .iter()
+            .position(|draft| draft.kind == kind);
         diff.composer = Some(match parked {
-            Some(draft) if buffer.is_empty() => draft,
-            _ => Composer::new(kind, buffer),
+            Some(index) => diff.parked_drafts.remove(index),
+            None => Composer::new(kind, buffer),
         });
         diff.visual_anchor = None;
         diff.mark_reflow();
@@ -166,8 +171,9 @@ impl App {
         }
         if let Some(draft) = diff.composer.take() {
             if !draft.buffer.trim().is_empty() {
-                diff.parked_draft = Some(draft);
-                self.info("draft kept: open the comment again to continue it");
+                diff.parked_drafts.retain(|kept| kept.kind != draft.kind);
+                diff.parked_drafts.push(draft);
+                self.info("reopen the comment to continue your draft");
             }
             if let Some(diff) = self.diff.as_mut() {
                 diff.mark_reflow();

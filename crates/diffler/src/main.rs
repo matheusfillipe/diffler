@@ -80,18 +80,15 @@ async fn main() -> color_eyre::Result<()> {
     }
 }
 
-/// Toggle SGR mouse reporting (crossterm uses mode 1006, which tmux forwards to
-/// apps that request it). Best-effort: a terminal without mouse support just
-/// ignores it.
+/// Toggle click, drag and SGR mouse reporting, and focus reporting with them.
+/// A terminal without mouse support ignores the modes.
 fn set_mouse_capture(on: bool) {
     use crossterm::event::{DisableFocusChange, EnableFocusChange};
     use std::io::Write as _;
     let mut out = std::io::stdout();
-    // we ask for clicks (1000), drags (1002) and SGR coordinates (1006) only,
-    // the set every multiplexer forwards; any-motion tracking is noise we
-    // never read. Focus reporting rides along: a terminal without it ignores
-    // the private mode, and knowing when nobody is looking keeps the CI poll
-    // cheap
+    // we ask for clicks (1000), drags (1002) and SGR coordinates (1006), the
+    // set every multiplexer forwards; knowing when nobody is looking keeps the
+    // CI poll cheap
     let _ = if on {
         out.write_all(MOUSE_ON.as_bytes())
             .and_then(|()| crossterm::execute!(out, EnableFocusChange))

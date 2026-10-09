@@ -963,13 +963,15 @@ impl App {
                 let target = self.status.cursor.saturating_add_signed(delta).min(last);
                 self.status.cursor = nearest_selectable(&rows, target, down);
             }
-            // a click selects and folds a group header; a double-click opens a
-            // file or commit, like `<cr>`, and leaves the header the first
-            // click already folded
+            // we skip a header on a double-click because its first click
+            // already folded it
             MouseGesture::Press { col, row } => {
                 if self.status_select_at(col, row) && self.cursor_on_group() {
                     self.toggle_fold();
                 }
+            }
+            MouseGesture::Select { col, row } => {
+                self.status_select_at(col, row);
             }
             MouseGesture::DoublePress { col, row } => {
                 if self.status_select_at(col, row) && !self.cursor_on_group() {
@@ -1000,12 +1002,27 @@ impl App {
         true
     }
 
+    /// The context menu's verbs for the row under the cursor.
+    pub(super) fn status_menu_actions(&self) -> Vec<Action> {
+        match self.cursor_row() {
+            Some(Row::File { .. }) => vec![
+                Action::Open,
+                Action::Stage,
+                Action::Unstage,
+                Action::Discard,
+                Action::OpenEditor,
+                Action::Blame,
+                Action::CopyUrl,
+            ],
+            Some(row) if folds(&row) => vec![Action::ToggleFold],
+            Some(_) => vec![Action::Open, Action::CopyUrl],
+            None => Vec::new(),
+        }
+    }
+
     /// Whether the cursor sits on a row that folds: a group header or a folder.
     fn cursor_on_group(&self) -> bool {
-        self.cursor_row().is_some_and(|row| {
-            is_section_header(&row)
-                || matches!(row, Row::Dir { .. } | Row::WalkthroughHeader { .. })
-        })
+        self.cursor_row().is_some_and(|row| folds(&row))
     }
 
     fn status_activate_cursor(&mut self) {
@@ -1969,6 +1986,11 @@ fn indexed_or_header(
 
 fn is_hunk_header(row: &Row) -> bool {
     matches!(row, Row::HunkHeader { .. })
+}
+
+/// Whether `row` folds: a group header or a folder.
+fn folds(row: &Row) -> bool {
+    is_section_header(row) || matches!(row, Row::Dir { .. })
 }
 
 fn is_section_header(row: &Row) -> bool {

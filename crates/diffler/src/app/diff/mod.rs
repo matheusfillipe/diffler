@@ -217,9 +217,9 @@ pub struct DiffView {
     /// The open in-place comment editor, if any. It owns the diff pane's keys
     /// while it is up and occupies the rows its result will.
     pub(crate) composer: Option<Composer>,
-    /// A draft the reader clicked away from, brought back when they open the
-    /// composer on the same line, reply or edit again.
-    pub(crate) parked_draft: Option<Composer>,
+    /// Drafts the reader clicked away from, each brought back when they open
+    /// the composer on the same line, reply or edit again.
+    pub(crate) parked_drafts: Vec<Composer>,
     /// Rows for the selected file only.
     pub(crate) rows: Vec<DiffRow>,
     /// What a visual selection yanks for each of `rows`, same length, built
@@ -292,7 +292,7 @@ impl DiffView {
     ) -> Self {
         let mut view = Self {
             composer: None,
-            parked_draft: None,
+            parked_drafts: Vec::new(),
             source,
             commit_model,
             focus: Pane::List,

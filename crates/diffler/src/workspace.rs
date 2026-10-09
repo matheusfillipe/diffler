@@ -11,16 +11,13 @@ use diffler_core::review::Review;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
-use crate::app::tabs::{ADD_HINT, TabOp, TabStrip, expand_home, nearby_repos};
+use crate::app::tabs::{TabOp, TabStrip, expand_home, nearby_repos};
 use crate::app::{App, Flow};
 use crate::config::{self, CliOverrides};
 use crate::editor::{EditorPurpose, EditorRequest};
 use crate::event::AppEvent;
-use crate::keymap::Action;
 use crate::keymap::{self, Resolved};
 use crate::mcp::{self, McpRequest, McpRequestKind, McpResponse};
-use crossterm::event::{MouseButton, MouseEventKind};
-use unicode_width::UnicodeWidthStr;
 
 /// One event for the workspace, tagged with where it came from.
 #[derive(Debug)]
@@ -262,13 +259,6 @@ impl Workspace {
         let flow = match event {
             WsEvent::Input(AppEvent::Quit) => return Flow::Quit,
             WsEvent::Input(AppEvent::Key(key)) => self.handle_key(key),
-            WsEvent::Input(AppEvent::Mouse(mouse))
-                if self.tabs.len() > 1
-                    && mouse.row == 0
-                    && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) =>
-            {
-                self.click_tab_row(mouse.column)
-            }
             WsEvent::Input(AppEvent::Focus(focused)) => {
                 self.focused = focused;
                 self.active_mut().handle(AppEvent::Focus(focused))
@@ -319,24 +309,6 @@ impl Workspace {
             return Flow::Continue;
         }
         self.active_mut().handle(AppEvent::Key(key))
-    }
-
-    /// A click on the tab row: a tab's label switches to it, the add hint
-    /// opens the picker.
-    fn click_tab_row(&mut self, col: u16) -> Flow {
-        let width = crossterm::terminal::size().map_or(u16::MAX, |(width, _)| width);
-        let add_width = self
-            .active()
-            .tabs_keymap()
-            .chord_for(Action::AddProject)
-            .map_or(0, |chord| chord.width() + ADD_HINT.width());
-        let strip = TabStrip {
-            names: self.tabs.iter().map(|tab| tab.app.project_name()).collect(),
-            active: self.active,
-        };
-        let op = strip.hit(col, width, u16::try_from(add_width).unwrap_or(u16::MAX));
-        self.active_mut().pending_tab = op;
-        Flow::Continue
     }
 
     /// Carry out the tab request the tab in front left, if any.
@@ -609,7 +581,7 @@ fn publish_endpoint(app: &mut App, port: u16) {
 
 #[cfg(test)]
 mod tests {
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
     use tokio::sync::oneshot;
 
     use super::*;
@@ -813,6 +785,7 @@ mod tests {
         let (first, second) = (changed_repo(), changed_repo());
         let (mut workspace, _rx) = workspace(&first);
         workspace.open(&second.root).expect("second project");
+        workspace.sync_strip();
         let label = TabStrip::label(0, &workspace.active().project_name()).len();
         let click = crossterm::event::MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
