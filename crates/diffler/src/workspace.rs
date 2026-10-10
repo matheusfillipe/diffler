@@ -14,7 +14,7 @@ use crate::config::{self, CliOverrides};
 use crate::editor::{EditorPurpose, EditorRequest};
 use crate::event::AppEvent;
 use crate::keymap::{self, Resolved};
-use crate::mcp::{self, McpRequest, McpRequestKind, McpResponse};
+use crate::mcp::{self, FocusTarget, McpRequest, McpRequestKind, McpResponse};
 
 #[derive(Debug)]
 pub enum WsEvent {
@@ -326,6 +326,14 @@ impl Workspace {
         Flow::Continue
     }
 
+    fn activate(&mut self, index: usize) {
+        let left = self.active;
+        self.active = index;
+        if left != index {
+            self.hand_over_focus(left);
+        }
+    }
+
     /// A background tab polls the way an unfocused one does.
     fn hand_over_focus(&mut self, left: usize) {
         if let Some(tab) = self.tabs.get_mut(left) {
@@ -375,6 +383,10 @@ impl Workspace {
         }
         let response = match kind {
             McpRequestKind::OpenProject { path } => self.agent_open_project(&path),
+            McpRequestKind::Focus { .. } => match self.target_tab(&kind, project.as_deref()) {
+                Ok(index) => self.agent_focus_in(index, kind),
+                Err(err) => McpResponse::Error(err),
+            },
             McpRequestKind::ReviewStatus => self.status_across_tabs(),
             McpRequestKind::GetComments { .. }
             | McpRequestKind::Feedback
@@ -416,7 +428,11 @@ impl Workspace {
             | McpRequestKind::DeleteComment { id }
             | McpRequestKind::EditComment { id, .. }
             | McpRequestKind::GetWalkthrough { id: Some(id) }
-            | McpRequestKind::PublishWalkthrough { id: Some(id), .. } => Some(id.as_str()),
+            | McpRequestKind::PublishWalkthrough { id: Some(id), .. }
+            | McpRequestKind::Focus {
+                target: FocusTarget::Id(id),
+                ..
+            } => Some(id.as_str()),
             _ => None,
         };
         if let Some(id) = id
@@ -503,6 +519,22 @@ impl Workspace {
             McpRequestKind::ListReviews => McpResponse::Reviews(reviews),
             _ => McpResponse::Comments(comments),
         }
+    }
+
+    /// Moves the human to the tab the focus lands in. A draft in the tab in
+    /// front keeps the human there, since switching would hide it.
+    fn agent_focus_in(&mut self, index: usize, kind: McpRequestKind) -> McpResponse {
+        if index != self.active && self.active().busy_typing() {
+            return McpResponse::Error(crate::app::TYPING_REFUSAL.to_owned());
+        }
+        let Some(tab) = self.tabs.get_mut(index) else {
+            return McpResponse::Error("no such project tab".to_owned());
+        };
+        let response = tab.app.handle_mcp(kind);
+        if !matches!(response, McpResponse::Error(_)) {
+            self.activate(index);
+        }
+        response
     }
 
     /// Opens behind the human's own tab.
@@ -674,6 +706,49 @@ mod tests {
             workspace.tabs[1].app.owns_id(&id),
             "the reply found the second project"
         );
+    }
+
+    #[tokio::test]
+    async fn focusing_a_comment_brings_its_project_to_the_front_on_its_card() {
+        let (first, second) = (changed_repo(), changed_repo());
+        let (mut workspace, _rx) = workspace(&first);
+        workspace.open(&second.root).expect("second project");
+        let id = comment_on(&mut workspace, &second.root, "look at this");
+        assert_eq!(root(&workspace), canon(&first.root));
+
+        let focus = McpRequestKind::Focus {
+            target: FocusTarget::Id(id.clone()),
+            note: None,
+        };
+        let McpResponse::Focused(focused) = call(&mut workspace, None, focus) else {
+            panic!("the focus was refused");
+        };
+        assert_eq!(focused.view, crate::mcp::FocusView::Diff);
+        assert_eq!(root(&workspace), canon(&second.root), "the tab switched");
+        assert_eq!(workspace.active().screen(), Screen::Diff);
+        assert!(
+            workspace.tabs[0].app.diff.is_none(),
+            "the first tab stayed put"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_draft_in_the_tab_in_front_keeps_the_human_there() {
+        let (first, second) = (changed_repo(), changed_repo());
+        let (mut workspace, _rx) = workspace(&first);
+        workspace.open(&second.root).expect("second project");
+        let id = comment_on(&mut workspace, &second.root, "look at this");
+        workspace.active_mut().open_file_picker();
+
+        let focus = McpRequestKind::Focus {
+            target: FocusTarget::Id(id),
+            note: None,
+        };
+        assert!(matches!(
+            call(&mut workspace, None, focus),
+            McpResponse::Error(_)
+        ));
+        assert_eq!(root(&workspace), canon(&first.root));
     }
 
     #[tokio::test]

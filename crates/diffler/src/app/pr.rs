@@ -183,6 +183,7 @@ impl App {
         if let Some((id, slide)) = self.pending_walkthrough_open.take() {
             self.open_walkthrough(&id, slide);
         }
+        self.retry_focus();
         super::Flow::Continue
     }
 

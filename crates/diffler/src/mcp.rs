@@ -121,6 +121,23 @@ pub enum McpRequestKind {
     OpenProject {
         path: String,
     },
+    /// Takes the human to `target`, with `note` in the status line.
+    Focus {
+        target: FocusTarget,
+        note: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FocusTarget {
+    /// A comment id or a walkthrough id.
+    Id(String),
+    Code {
+        file: String,
+        line: Option<u32>,
+        line_end: Option<u32>,
+        review: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,6 +163,32 @@ pub enum McpResponse {
     },
     /// Answers [`McpRequestKind::OpenProject`]: the tab now showing it.
     ProjectOpened(ProjectInfo),
+    Focused(FocusResponse),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum FocusView {
+    Diff,
+    File,
+    /// diffler is fetching what the review needs; the human's view moves
+    /// once it arrives.
+    Waiting,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+pub struct FocusResponse {
+    pub project: String,
+    /// The review on screen, e.g. "working tree" or "PR #12"; absent when
+    /// the file view shows the file as it is on disk.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review: Option<String>,
+    pub view: FocusView,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<Count>")]
+    pub line: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
@@ -506,6 +549,34 @@ pub struct PublishWalkthroughParams {
 pub struct OpenProjectParams {
     /// Path of a git repository, absolute or starting with `~`.
     pub path: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct FocusParams {
+    /// A comment id (from `get_comments`, `add_comment` or `get_walkthrough`) or a
+    /// walkthrough id. Takes the human to it in whichever review holds it.
+    pub id: Option<String>,
+    /// Repo-relative path to show, when you pass no `id`.
+    pub file: Option<String>,
+    /// New-side line to put the cursor on; omit for the top of the file.
+    #[schemars(with = "Option<Count>")]
+    pub line: Option<u32>,
+    /// Last line of an inclusive range starting at `line`, banded on screen.
+    #[schemars(with = "Option<Count>")]
+    pub line_end: Option<u32>,
+    /// The review to show `file` in: `working`, `commit:<rev>`,
+    /// `range:<oldest>..<newest>` (both commits included), `pr:<number>`,
+    /// `against:<rev>`, or a `source` from `list_reviews`. Omit it to use the
+    /// review on screen when it holds the file, else the working tree, else
+    /// the file as it is on disk.
+    pub review: Option<String>,
+    /// A few words the human reads as their view moves, e.g. "the retry loop
+    /// you asked about".
+    pub note: Option<String>,
+    /// The project to act on: its folder name from `review_status`, or its
+    /// path. Omit it for the project the human is looking at; an `id` finds
+    /// its own project.
+    pub project: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -951,6 +1022,35 @@ impl DifflerMcp {
     }
 
     #[tool(
+        description = "Take the human's diffler to a place: a comment or a walkthrough by `id`, or a `file` and line range in any review (the working tree, a commit, a range, a PR). It switches to the project's tab and opens that review the way the human would, with the cursor on the place. Use it when the human asks where something is: show them rather than describe it. To point at code with a remark, call add_comment and then focus the id it returns; add_comment writes into the review on screen, so focus the file in a commit or PR first to comment there. After publish_walkthrough, focus its id to open it. Refused while the human is typing a comment or answering a dialog."
+    )]
+    async fn focus(
+        &self,
+        Parameters(params): Parameters<FocusParams>,
+    ) -> Result<Json<FocusResponse>, ErrorData> {
+        let target = match (params.id, params.file) {
+            (Some(id), None) => FocusTarget::Id(id),
+            (None, Some(file)) => FocusTarget::Code {
+                file,
+                line: params.line,
+                line_end: params.line_end,
+                review: params.review,
+            },
+            _ => {
+                return Err(ErrorData::invalid_params("pass either id or file", None));
+            }
+        };
+        let kind = McpRequestKind::Focus {
+            target,
+            note: params.note,
+        };
+        match self.request_in(params.project, kind).await? {
+            McpResponse::Focused(focused) => Ok(Json(focused)),
+            _ => Err(mismatch()),
+        }
+    }
+
+    #[tool(
         description = "Long-poll until the human sends feedback (comments, replies, or the send key). Returns the new epoch and all open/replied comments, or timed_out. A timed_out result means the human is still reviewing: call again with the epoch it returned to keep waiting. A comment on a walkthrough stop arrives as a reply on that stop's own comment, so its id names the stop."
     )]
     async fn wait_for_feedback(
@@ -1066,8 +1166,10 @@ impl ServerHandler for DifflerMcp {
              wait_for_feedback long-polls until the human sends \
              new feedback. open_project opens another repository you \
              changed as a tab in the same diffler; comments and feedback \
-             cover every open project, each tagged with its project. The \
-             review prompt packages that loop as a command.",
+             cover every open project, each tagged with its project. focus \
+             takes the human to a comment, a walkthrough, or a file and \
+             line in any review. The review prompt packages that loop as a \
+             command.",
         )
     }
 }

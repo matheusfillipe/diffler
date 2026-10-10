@@ -415,6 +415,24 @@ impl App {
             .comment(id)
     }
 
+    /// Where a walkthrough opens: its summary when it has one, else its first
+    /// stop.
+    pub(crate) fn opening_slide(&mut self, id: &str) -> Slide {
+        let source = ReviewSource::walkthrough(id);
+        let has_summary = self.review.ensure_source(&source).is_ok()
+            && self
+                .review
+                .session_for(&source)
+                .walkthrough
+                .as_ref()
+                .is_some_and(|walkthrough| walkthrough.summary.is_some());
+        if has_summary {
+            Slide::Summary
+        } else {
+            Slide::Stop(0)
+        }
+    }
+
     /// `<cr>` on a status row: open the walkthrough `id` names, in its own
     /// order, seated on `slide`. For a PR still resolving its range we stash
     /// `(id, slide)` and the resolution calls this again when it finishes.

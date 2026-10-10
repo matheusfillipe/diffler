@@ -1375,16 +1375,7 @@ impl App {
             }
             Row::Pr => self.open_pr_review(),
             Row::Walkthrough { id } => {
-                let has_summary = self
-                    .status
-                    .walkthroughs
-                    .iter()
-                    .any(|w| w.id == *id && w.has_summary);
-                let slide = if has_summary {
-                    crate::app::diff::Slide::Summary
-                } else {
-                    crate::app::diff::Slide::Stop(0)
-                };
+                let slide = self.opening_slide(id);
                 self.open_walkthrough(id, slide);
             }
             Row::OpenPr { index } => {
@@ -1518,12 +1509,8 @@ impl App {
                 self.toggle_group(Group::Prs, |row| matches!(row, Row::PrsHeader { .. }));
                 // we fetch only on the first unfold; the CI poll refreshes it
                 // after that
-                if !self.is_group_folded(Group::Prs)
-                    && !self.status.prs_loaded
-                    && !self.status.prs_in_flight
-                {
-                    self.status.prs_in_flight = true;
-                    self.pending_ci = Some(super::CiRequest::Prs);
+                if !self.is_group_folded(Group::Prs) && !self.status.prs_loaded {
+                    self.request_pr_list();
                 }
             }
             Row::RecentHeader { .. } => {

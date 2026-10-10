@@ -7,6 +7,14 @@ use diffler_core::source::ReviewSource;
 use super::{DiffView, Pane};
 use crate::app::{App, Screen};
 
+pub(crate) enum PrLookup {
+    Known(crate::ci::PullRequest),
+    /// The forge's open list came back without it.
+    NotOpen,
+    NoForge,
+    Loading,
+}
+
 impl App {
     /// Open the full working-tree diff with the sidebar focused at the first
     /// file (`D` / section headers / commit-from-log model).
@@ -263,34 +271,60 @@ impl App {
 
     /// The PR the branch's own current review or the fetched open-PRs list
     /// already knows about, if either names `number`.
-    fn known_pr(&self, number: u64) -> Option<crate::ci::PullRequest> {
+    pub(crate) fn known_pr(&self, number: u64) -> Option<crate::ci::PullRequest> {
         self.pr
             .clone()
             .filter(|pr| pr.number == number)
             .or_else(|| self.prs.iter().find(|pr| pr.number == number).cloned())
     }
 
+    /// The PR `number` names among the ones this session knows, asking the
+    /// forge for the open list when it has not answered yet.
+    pub(crate) fn find_pr(&mut self, number: u64) -> PrLookup {
+        if let Some(pr) = self.known_pr(number) {
+            return PrLookup::Known(pr);
+        }
+        if self.status.prs_loaded {
+            return PrLookup::NotOpen;
+        }
+        if self.ci_remotes.is_empty() {
+            return PrLookup::NoForge;
+        }
+        self.request_pr_list();
+        PrLookup::Loading
+    }
+
+    pub(crate) fn request_pr_list(&mut self) {
+        if !self.status.prs_in_flight {
+            self.status.prs_in_flight = true;
+            self.pending_ci = Some(crate::app::CiRequest::Prs);
+        }
+    }
+
     /// Make sure `pr_ranges` holds `number`, queueing a head fetch or the
     /// open-PRs list when needed. `false` means resolution is still in flight
     /// and the caller retries once it completes.
     pub(crate) fn resolve_walkthrough_pr(&mut self, number: u64) -> bool {
-        let Some(pr) = self.known_pr(number) else {
-            if self.status.prs_loaded {
+        let pr = match self.find_pr(number) {
+            PrLookup::Known(pr) => pr,
+            PrLookup::NotOpen => {
                 self.error(format!(
                     "PR #{number} isn't among the repo's open pull requests; \
                      this walkthrough's diff can't be resolved"
                 ));
-            } else if self.ci_remotes.is_empty() {
+                return false;
+            }
+            PrLookup::NoForge => {
                 self.error(format!(
                     "no CI provider detected for this repo; \
                      can't resolve PR #{number} for this walkthrough"
                 ));
-            } else if !self.status.prs_in_flight {
-                self.status.prs_in_flight = true;
-                self.pending_ci = Some(crate::app::CiRequest::Prs);
-                self.info(format!("loading PR #{number} for this walkthrough"));
+                return false;
             }
-            return false;
+            PrLookup::Loading => {
+                self.info(format!("loading PR #{number} for this walkthrough"));
+                return false;
+            }
         };
         if let Some((base, head)) = self.ensure_pr_range(pr) {
             self.pr_ranges.insert(number, (base, head));

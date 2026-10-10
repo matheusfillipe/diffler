@@ -81,7 +81,7 @@ impl App {
         let Some(op) = tab_op(action) else {
             return;
         };
-        if op == TabOp::Close && (self.composer_open() || self.modal.is_some()) {
+        if op == TabOp::Close && self.busy_typing() {
             self.info("finish or cancel the draft before closing the tab");
             return;
         }

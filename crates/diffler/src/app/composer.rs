@@ -182,6 +182,11 @@ impl App {
         self.diff.as_ref().is_some_and(|d| d.composer.is_some())
     }
 
+    /// A composer or a dialog holds what the human is typing.
+    pub(crate) fn busy_typing(&self) -> bool {
+        self.composer_open() || self.modal.is_some()
+    }
+
     /// `ctrl+g`: hand the composer's buffer to `$EDITOR` on a scratch file,
     /// left in place until the terminal is back.
     fn edit_composer_externally(&mut self) {

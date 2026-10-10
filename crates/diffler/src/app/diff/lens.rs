@@ -409,15 +409,8 @@ impl App {
         else {
             return;
         };
-        let Some((file, at)) = diff.locate(review, &entry.path, entry.on_old_side, entry.line)
-        else {
-            return;
-        };
-        if diff.selected != file {
-            diff.select(file, review);
-            diff.reveal_selected(review);
-        }
-        diff.reveal_line(review, at);
+        let (path, on_old_side, line) = (entry.path.clone(), entry.on_old_side, entry.line);
+        diff.seat_line(review, &path, on_old_side, line);
     }
 
     /// `n`/`N` with a lens up: the next or previous use of what it shows, in
@@ -522,28 +515,6 @@ impl super::DiffView {
         if hidden {
             self.focus = Pane::Diff;
         }
-    }
-
-    /// The file and (hunk, line) of `path`'s line `number` on the named side.
-    fn locate(
-        &self,
-        review: &Review,
-        path: &str,
-        on_old_side: bool,
-        number: u32,
-    ) -> Option<(usize, (usize, usize))> {
-        let model = self.model_for_rows(review);
-        let file_at = model.files.iter().position(|file| file.path == path)?;
-        let file = model.files.get(file_at)?;
-        file.hunks.iter().enumerate().find_map(|(hunk_at, hunk)| {
-            hunk.lines
-                .iter()
-                .position(|line| {
-                    (line.kind == LineKind::Deleted) == on_old_side
-                        && line.number_on(on_old_side) == Some(number)
-                })
-                .map(|line_at| (file_at, (hunk_at, line_at)))
-        })
     }
 
     /// List the focused name's uses in diff order, one per line, and select

@@ -32,6 +32,9 @@ Every diffler tool call already shows in the human's status bar. Before a
 stretch of work no tool call covers, such as editing the code a comment asks
 about, call `report_activity` with a few words for it.
 
+When the human asks where something is, call `focus` to take them there:
+a comment or a walkthrough by its `id`, or a `file` and `line` in any review.
+
 ## Write every reply like this
 
 - Say what you changed and why, in two to four short sentences or bullets.

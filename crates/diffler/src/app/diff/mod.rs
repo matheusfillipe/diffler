@@ -4,6 +4,7 @@
 //! materializes the visible slice.
 
 mod comments;
+mod focus;
 mod folds;
 pub(super) mod lens;
 mod nav;
@@ -13,12 +14,14 @@ mod rowref;
 mod rows;
 mod slide;
 
+pub(crate) use focus::{PendingFocus, TYPING_REFUSAL};
+
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use diffler_core::classify::{Kind, Rules};
 use diffler_core::highlight::StyledRange;
-use diffler_core::model::{DiffLine, DiffModel, FileDiff};
+use diffler_core::model::{DiffLine, DiffModel, FileDiff, LineKind};
 use diffler_core::review::Review;
 use diffler_core::session::Session;
 use diffler_core::source::ReviewSource;
@@ -687,6 +690,44 @@ impl DiffView {
         let first = self.rows.iter().position(covered)?;
         let last = self.rows.iter().rposition(covered).unwrap_or(first);
         Some((first, last))
+    }
+
+    /// The file and (hunk, line) of `path`'s line `number` on the named side.
+    pub(crate) fn locate(
+        &self,
+        review: &Review,
+        path: &str,
+        on_old_side: bool,
+        number: u32,
+    ) -> Option<(usize, (usize, usize))> {
+        let model = self.model_for_rows(review);
+        let file_at = model.files.iter().position(|file| file.path == path)?;
+        let file = model.files.get(file_at)?;
+        file.hunks.iter().enumerate().find_map(|(hunk_at, hunk)| {
+            hunk.lines
+                .iter()
+                .position(|line| {
+                    (line.kind == LineKind::Deleted) == on_old_side
+                        && line.number_on(on_old_side) == Some(number)
+                })
+                .map(|line_at| (file_at, (hunk_at, line_at)))
+        })
+    }
+
+    /// Seat the cursor on `path`'s line `number` on the named side, moving to
+    /// its file and opening the fold that hides it. Returns the file's index.
+    pub(crate) fn seat_line(
+        &mut self,
+        review: &Review,
+        path: &str,
+        on_old_side: bool,
+        number: u32,
+    ) -> Option<usize> {
+        let (file, at) = self.locate(review, path, on_old_side, number)?;
+        self.select(file, review);
+        self.reveal_selected(review);
+        self.reveal_line(review, at);
+        Some(file)
     }
 
     /// The flattened sidebar rows over the model's files, each keeping its

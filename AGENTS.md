@@ -797,7 +797,7 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   `get_comments`, `list_reviews`, `reply_comment`, `propose_resolve`,
   `mark_viewed`, `add_comment`, `delete_comment`, `edit_comment`,
   `report_activity`, `wait_for_feedback`, `publish_walkthrough`,
-  `get_walkthrough`. `add_comment`
+  `get_walkthrough`, `open_project`, `focus`. `add_comment`
   writes a new comment on a line or an inclusive line range of the review the
   human is currently looking at, anchored exactly the way a human's own
   comment is; authored as the agent by default, or as the human when
@@ -813,6 +813,24 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   since a reply lives inside its comment and would otherwise disappear with
   it unseen; `edit_comment` never touches replies, so it carries no such
   refusal.
+  `focus` (`app/diff/focus.rs`) moves the human's view: to a comment or a
+  walkthrough by id, found in whichever review source holds it, or to a file
+  and line range in a named review (`working`, `commit:<rev>`,
+  `range:<oldest>..<newest>`, `pr:<n>`, `against:<rev>`, or a stored source
+  key), else the review on screen when it holds the file, else the working
+  tree, else the file view. It runs the same opens and seats the keys do
+  (`open_commit_diff`, `open_pr_review_for`, `open_walkthrough`,
+  `focus_comment`, `reveal_line`), popping the stack back to its root first
+  so repeated jumps never pile screens up, and a line no hunk shows opens the
+  file view there. The workspace routes an id to the tab owning it and brings
+  that tab to the front. It refuses while a composer or a dialog is open, in
+  the tab in front or the target one, since a jump would hide the draft, and
+  while the open view holds a parked draft it would have to replace, since
+  popping that view drops the draft. A PR the list has not loaded or whose
+  head is not fetched answers `waiting` and parks the focus in
+  `App::pending_focus`, the one slot it waits in (it takes back the
+  `pending_walkthrough_open` a walkthrough about a PR sets); the PR list and
+  the head fetch retry it, and a failed list drops it.
   `report_activity` names the agent's own focus (and the file it's about, if
   any) for the status bar's live indicator; every other tool call already
   counts as activity on its own, mapped to a plain phrase (`app/mcp.rs`'s

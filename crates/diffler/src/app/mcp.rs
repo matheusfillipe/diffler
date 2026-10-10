@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use diffler_core::model::DiffModel;
-use diffler_core::session::{Anchor, Comment, CommentStatus, now_unix};
+use diffler_core::session::{Anchor, Comment, CommentStatus, Session, now_unix};
 use diffler_core::source::ReviewSource;
 use diffler_core::vcs::VcsError;
 use diffler_core::walkthrough::{
@@ -15,10 +15,10 @@ use diffler_core::walkthrough::{
 
 use super::App;
 use crate::mcp::{
-    AGENT_AUTHOR, CommentInfo, FileEntry, McpRequestKind, McpResponse, NoteInfo, NoteParams,
-    ProjectInfo, ReceiptInfo, ReviewStatusResponse, ReviewSummary, StopInfo, StopParams,
-    WalkthroughInfo, WalkthroughPublished, WalkthroughSummary, comment_info, comment_status_name,
-    file_status_name, render_unified,
+    AGENT_AUTHOR, CommentInfo, FileEntry, FocusTarget, McpRequestKind, McpResponse, NoteInfo,
+    NoteParams, ProjectInfo, ReceiptInfo, ReviewStatusResponse, ReviewSummary, StopInfo,
+    StopParams, WalkthroughInfo, WalkthroughPublished, WalkthroughSummary, comment_info,
+    comment_status_name, file_status_name, render_unified,
 };
 
 impl App {
@@ -68,6 +68,7 @@ impl App {
             McpRequestKind::OpenProject { .. } => {
                 McpResponse::Error("only the workspace holding the tabs opens a project".to_owned())
             }
+            McpRequestKind::Focus { target, note } => self.agent_focus(target, note),
         }
     }
 
@@ -90,6 +91,13 @@ impl App {
             McpRequestKind::PublishWalkthrough { .. } => ("publishing a walkthrough", None),
             McpRequestKind::GetWalkthrough { .. } => ("reading the walkthrough", None),
             McpRequestKind::OpenProject { .. } => ("opening a project", None),
+            McpRequestKind::Focus { target, .. } => (
+                "showing you a place",
+                match target {
+                    FocusTarget::Code { file, .. } => Some(file.as_str()),
+                    FocusTarget::Id(_) => None,
+                },
+            ),
         };
         self.set_agent_activity(focus, file);
     }
@@ -160,12 +168,20 @@ impl App {
     }
 
     pub(crate) fn owns_id(&self, id: &str) -> bool {
-        self.review.all_reviews().is_ok_and(|reviews| {
-            reviews.iter().any(|(source, session)| {
+        self.owner_of_id(id).is_some()
+    }
+
+    /// The walkthrough source `id` names, or the review holding the comment
+    /// `id` names, with its session.
+    pub(crate) fn owner_of_id(&self, id: &str) -> Option<(ReviewSource, Session)> {
+        self.review
+            .all_reviews()
+            .ok()?
+            .into_iter()
+            .find(|(source, session)| {
                 matches!(source, ReviewSource::Walkthrough { id: own } if own == id)
-                    || session.comments.iter().any(|comment| comment.id == id)
+                    || session.comment(id).is_some()
             })
-        })
     }
 
     fn walkthrough_summaries(&self) -> Vec<WalkthroughSummary> {

@@ -35,6 +35,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 pub(crate) use diff::RowPositions;
+pub(crate) use diff::TYPING_REFUSAL;
 pub use diff::lens::{Lens, LensRequest, PreviewLine, RefEntry, compute_lens};
 #[cfg(test)]
 pub(crate) use diff::merge_count;
@@ -687,6 +688,8 @@ pub struct App {
     /// A walkthrough about a PR still resolving its range, with the slide it
     /// was opened on; retried once the PR fetch or list lands.
     pub(crate) pending_walkthrough_open: Option<(String, diff::Slide)>,
+    /// The agent's focus on a review still fetching.
+    pub(crate) pending_focus: Option<diff::PendingFocus>,
     pub prs: Vec<crate::ci::PullRequest>,
     pub prs_cursor: usize,
     /// Scroll offsets of the two full-screen lists, so the view holds still
@@ -951,6 +954,7 @@ impl App {
             pending_pr_open: None,
             pending_pr_switch: None,
             pending_walkthrough_open: None,
+            pending_focus: None,
             prs: Vec::new(),
             prs_cursor: 0,
             pending_pr_posts: Vec::new(),
@@ -1990,6 +1994,9 @@ impl App {
 
     fn on_ci_prs_error(&mut self, message: String) -> Flow {
         self.status.prs_in_flight = false;
+        // whatever waited on the list would otherwise fire on the next one
+        self.pending_walkthrough_open = None;
+        self.pending_focus = None;
         self.error(message);
         Flow::Continue
     }
@@ -2071,6 +2078,7 @@ impl App {
     fn continue_pr_fetch(&mut self, pr: &crate::ci::PullRequest, ok: bool) -> bool {
         if !ok {
             self.pending_walkthrough_open = None;
+            self.pending_focus = None;
             return false;
         }
         if let Some((base, head)) = self.resolve_pr_range(pr) {
@@ -2078,8 +2086,10 @@ impl App {
             if let Some((id, slide)) = self.pending_walkthrough_open.take() {
                 self.open_walkthrough(&id, slide);
             }
+            self.retry_focus();
         } else {
             self.pending_walkthrough_open = None;
+            self.pending_focus = None;
             self.error("PR head still missing after fetch");
         }
         true
