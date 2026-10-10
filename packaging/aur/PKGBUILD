@@ -1,6 +1,6 @@
 # Maintainer: Matheus Fillipe <matheus.fillipe@syte.ms>
 pkgname=diffler-bin
-pkgver=0.18.0
+pkgver=0.19.0
 pkgrel=1
 pkgdesc="Terminal code review for AI coding agents"
 arch=('x86_64' 'aarch64')
@@ -8,10 +8,10 @@ url="https://github.com/matheusfillipe/diffler"
 license=('MIT' 'Apache-2.0')
 provides=('diffler')
 conflicts=('diffler')
-source_x86_64=("diffler-$pkgver-x86_64.tar.gz::https://github.com/matheusfillipe/diffler/releases/download/v0.18.0/diffler-v0.18.0-x86_64-unknown-linux-musl.tar.gz")
-source_aarch64=("diffler-$pkgver-aarch64.tar.gz::https://github.com/matheusfillipe/diffler/releases/download/v0.18.0/diffler-v0.18.0-aarch64-unknown-linux-musl.tar.gz")
-sha256sums_x86_64=('702d0cd19766ae0ca03182126524c3cac00b9276fda221011661d2759cc945bb')
-sha256sums_aarch64=('c409a246349e5344c002bcdc7484a5f2f68a8cf2093d87a56dffe4daaef27bfd')
+source_x86_64=("diffler-$pkgver-x86_64.tar.gz::https://github.com/matheusfillipe/diffler/releases/download/v0.19.0/diffler-v0.19.0-x86_64-unknown-linux-musl.tar.gz")
+source_aarch64=("diffler-$pkgver-aarch64.tar.gz::https://github.com/matheusfillipe/diffler/releases/download/v0.19.0/diffler-v0.19.0-aarch64-unknown-linux-musl.tar.gz")
+sha256sums_x86_64=('7dbdca8f05cda2d037541aa638b6027e011553ecf61c679cc8412b3fe818f733')
+sha256sums_aarch64=('c02e79bdd166b0de9ba25c21e6a2fed227f2acad353e6a6e00acfd2f0d58f97c')
 
 package() {
   local triple
@@ -19,7 +19,7 @@ package() {
     x86_64) triple="x86_64-unknown-linux-musl" ;;
     aarch64) triple="aarch64-unknown-linux-musl" ;;
   esac
-  install -Dm755 "diffler-v0.18.0-$triple/diffler" "$pkgdir/usr/bin/diffler"
-  install -Dm644 "diffler-v0.18.0-$triple/LICENSE-MIT" "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
-  install -Dm644 "diffler-v0.18.0-$triple/LICENSE-APACHE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+  install -Dm755 "diffler-v0.19.0-$triple/diffler" "$pkgdir/usr/bin/diffler"
+  install -Dm644 "diffler-v0.19.0-$triple/LICENSE-MIT" "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
+  install -Dm644 "diffler-v0.19.0-$triple/LICENSE-APACHE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
 }
