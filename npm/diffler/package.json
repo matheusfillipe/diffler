@@ -1,6 +1,6 @@
 {
   "name": "@mattfillipe/diffler",
-  "version": "0.18.0",
+  "version": "0.19.0",
   "description": "Standalone magit-style git TUI and code reviewer, on its own or with your coding agent",
   "license": "(MIT OR Apache-2.0)",
   "repository": {
