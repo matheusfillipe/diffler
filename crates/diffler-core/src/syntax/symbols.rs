@@ -2,7 +2,7 @@
 
 use std::ops::Range;
 
-use crate::syntax::registry::LanguageRegistry;
+use crate::syntax::registry::{LangEntry, LanguageRegistry};
 use crate::syntax::scope::tag_pass;
 use crate::syntax::{MAX_PARSE_BYTES, ScopeIndex, parse};
 
@@ -21,9 +21,12 @@ impl LanguageRegistry {
     /// parse. Without a parse we fall back to plain words, strings and
     /// comments included.
     pub fn symbols(&self, path: &str, content: &str) -> (Vec<Ident>, ScopeIndex) {
-        let entry = (content.len() <= MAX_PARSE_BYTES)
-            .then(|| self.for_file(path, content))
-            .flatten();
+        Self::symbols_as(self.for_file(path, content), content)
+    }
+
+    /// [`Self::symbols`] with `content` parsed as `entry`'s language.
+    pub fn symbols_as(entry: Option<&LangEntry>, content: &str) -> (Vec<Ident>, ScopeIndex) {
+        let entry = entry.filter(|_| content.len() <= MAX_PARSE_BYTES);
         let Some((entry, tree)) = entry.and_then(|entry| Some((entry, parse(entry, content)?)))
         else {
             return (words(content), ScopeIndex::default());

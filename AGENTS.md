@@ -251,9 +251,10 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   run. The saved scopes write the rule into the project's
   `.diffler/config.toml` (`config::save_syntax_rule`), editing the
   `[syntax]` section line by line and refusing an edit that would not parse
-  back to the rule. The rules reach highlighting, scope breadcrumbs and
-  intraline emphasis; the kinds sidebar, the Stats screen, the symbol lens
-  and walkthrough anchors read the registry alone.
+  back to the rule. The rules reach highlighting, scope breadcrumbs,
+  intraline emphasis, the symbol lens and walkthrough anchors; a rule change
+  drops an open lens and resolves the anchors again. The kinds sidebar and
+  the Stats screen read the registry alone.
 - **TUI.** neogit/doom keybindings, every binding configurable. Screens: Status
   (the branch band, a rule, then the repo band; stage/unstage/
   discard/commit/branch), Log, Diff/review (file sidebar + pane, unified or

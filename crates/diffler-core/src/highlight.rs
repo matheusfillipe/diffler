@@ -141,6 +141,15 @@ impl Highlighter {
         LanguageRegistry::scope_index_as(self.language(path, content), content)
     }
 
+    /// See [`LanguageRegistry::symbols`].
+    pub fn symbols(
+        &self,
+        path: &str,
+        content: &str,
+    ) -> (Vec<crate::syntax::Ident>, crate::syntax::ScopeIndex) {
+        LanguageRegistry::symbols_as(self.language(path, content), content)
+    }
+
     /// See [`LanguageRegistry::syntactic_emphasis`].
     pub fn syntactic_emphasis(
         &self,

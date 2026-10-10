@@ -416,8 +416,9 @@ fn dispatch_lens(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
         return;
     };
     let tx = tx.clone();
+    let highlighter = std::sync::Arc::clone(&app.highlighter);
     tokio::task::spawn_blocking(move || {
-        let lens = app::compute_lens(&request);
+        let lens = app::compute_lens(&highlighter, &request);
         let _ = tx.send(AppEvent::Lens {
             token: request.token,
             lens: Box::new(lens),

@@ -5,6 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
+use diffler_core::highlight::Highlighter;
 use diffler_core::lens::{LensData, LensFile, LensOrigin, lens_files};
 use diffler_core::model::{DiffModel, LineKind};
 use diffler_core::review::Review;
@@ -179,8 +180,12 @@ impl Lens {
 
 /// Build the lens `request` asks for. Runs on the blocking pool, since it
 /// parses both sides of every file in the diff.
-pub fn compute_lens(request: &LensRequest) -> Lens {
-    Lens::new(diffler_core::lens::compute(&request.origin, &request.files))
+pub fn compute_lens(highlighter: &Highlighter, request: &LensRequest) -> Lens {
+    Lens::new(diffler_core::lens::compute(
+        highlighter,
+        &request.origin,
+        &request.files,
+    ))
 }
 
 /// Hunk lines a reference's preview shows on each side of the use.
@@ -482,7 +487,7 @@ impl App {
     #[cfg(test)]
     pub(crate) fn settle_lens(&mut self) {
         if let Some(request) = self.pending_lens.take() {
-            let lens = compute_lens(&request);
+            let lens = compute_lens(&self.highlighter, &request);
             self.on_lens(request.token, lens);
         }
     }
@@ -1017,7 +1022,7 @@ mod tests {
         let request = app.pending_lens.take().expect("a request");
         app.open_working_tree_diff(None);
         assert_eq!(
-            app.on_lens(request.token, compute_lens(&request)),
+            app.on_lens(request.token, compute_lens(&app.highlighter, &request)),
             Flow::Idle
         );
         assert!(!app.lens_active(), "the new view never asked for it");

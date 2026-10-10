@@ -5,8 +5,8 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::{Range, RangeInclusive};
 
+use crate::highlight::Highlighter;
 use crate::model::{DiffModel, LineKind};
-use crate::syntax::registry::REGISTRY;
 use crate::syntax::{Ident, ScopeIndex};
 
 /// One per digit key.
@@ -61,21 +61,21 @@ struct Side {
 }
 
 impl Side {
-    fn read(path: &str, text: Option<&str>) -> Option<Self> {
+    fn read(highlighter: &Highlighter, path: &str, text: Option<&str>) -> Option<Self> {
         let text = text?;
-        let (idents, scope) = REGISTRY.symbols(path, text);
+        let (idents, scope) = highlighter.symbols(path, text);
         Some(Self { idents, scope })
     }
 }
 
 /// Parses both sides of every file, so we run it on a worker.
-pub fn compute(origin: &LensOrigin, files: &[LensFile]) -> LensData {
+pub fn compute(highlighter: &Highlighter, origin: &LensOrigin, files: &[LensFile]) -> LensData {
     let sides: Vec<(Option<Side>, Option<Side>)> = files
         .iter()
         .map(|file| {
             (
-                Side::read(&file.path, file.old_text.as_deref()),
-                Side::read(&file.path, file.new_text.as_deref()),
+                Side::read(highlighter, &file.path, file.old_text.as_deref()),
+                Side::read(highlighter, &file.path, file.new_text.as_deref()),
             )
         })
         .collect();
@@ -235,33 +235,51 @@ pub struct LensData {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_local_stays_in_the_function_its_line_sits_in() {
+    /// The lines the lens finds `a` on from line 6 of two functions that
+    /// each bind their own `a`.
+    fn uses_of_a(highlighter: &Highlighter, path: &str) -> Vec<u32> {
         let text = "fn f() {\n    let a = 1;\n}\n\nfn f() {\n    let a = 2;\n    a\n}\n";
         let file = LensFile {
-            path: "a.rs".to_owned(),
+            path: path.to_owned(),
             old_text: None,
             new_text: Some(text.to_owned()),
             old_lines: HashSet::new(),
             new_lines: (1..=8).collect(),
         };
         let origin = LensOrigin {
-            path: "a.rs".to_owned(),
+            path: path.to_owned(),
             on_old_side: false,
             line: 6,
         };
-        let lens = compute(&origin, &[file]);
+        let lens = compute(highlighter, &origin, &[file]);
         let a = lens
             .symbols
             .iter()
             .position(|symbol| symbol.name == "a")
             .expect("a is named on the line");
-        let lines: Vec<u32> = lens
-            .uses
+        lens.uses
             .iter()
             .filter(|found| found.symbol == a)
             .map(|found| found.line)
-            .collect();
-        assert_eq!(lines, [6, 7]);
+            .collect()
+    }
+
+    #[test]
+    fn a_local_stays_in_the_function_its_line_sits_in() {
+        assert_eq!(uses_of_a(&Highlighter::default(), "a.rs"), [6, 7]);
+    }
+
+    #[test]
+    fn the_readers_language_rule_gives_the_lens_its_grammar() {
+        assert_eq!(
+            uses_of_a(&Highlighter::default(), "a.inc"),
+            [2, 6, 7],
+            "plain words reach the whole file"
+        );
+        let rules = vec![("*.inc".to_owned(), "rust".to_owned())];
+        assert_eq!(
+            uses_of_a(&Highlighter::default().with_rules(rules), "a.inc"),
+            [6, 7]
+        );
     }
 }

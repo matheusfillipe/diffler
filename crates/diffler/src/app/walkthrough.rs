@@ -614,10 +614,13 @@ impl App {
         }
         // only the file read can tell an absent file from a symbol gone from
         // a file that is still there
+        let highlighter = std::sync::Arc::clone(&self.highlighter);
         let locate = |target: &Target| {
             contents
                 .get(target.path())
-                .map_or(Located::FileMissing, |content| target.locate(content))
+                .map_or(Located::FileMissing, |content| {
+                    target.locate(content, &highlighter)
+                })
         };
 
         let stops = self

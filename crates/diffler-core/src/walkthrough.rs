@@ -4,9 +4,9 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::highlight::Highlighter;
 use crate::session::Comment;
 use crate::source::ReviewSource;
-use crate::syntax::registry::REGISTRY;
 
 /// A cap against dumping the whole diff; real walkthroughs stay well under.
 pub const MAX_STOPS: usize = 20;
@@ -188,7 +188,7 @@ impl Target {
         }
     }
 
-    pub fn locate(&self, content: &str) -> Located {
+    pub fn locate(&self, content: &str, highlighter: &Highlighter) -> Located {
         let rows = content.lines().count();
         match self {
             Self::File { .. } => Located::Whole,
@@ -202,7 +202,7 @@ impl Target {
                     Located::Lost
                 }
             }
-            Self::Symbol { path, symbol } => REGISTRY
+            Self::Symbol { path, symbol } => highlighter
                 .scope_index(path, content)
                 .def_span(symbol)
                 .and_then(|(start, end)| {
@@ -416,7 +416,7 @@ mod tests {
         );
         let content = "a\nb\nc\n";
         assert_eq!(
-            Target::parse("lib.rs:2-99").locate(content),
+            Target::parse("lib.rs:2-99").locate(content, &Highlighter::default()),
             Located::Found { line: 2, end: 3 },
             "a range past the end clamps instead of going Lost"
         );
@@ -426,7 +426,22 @@ mod tests {
     fn a_symbol_resolves_to_the_line_that_defines_it() {
         let content = "fn first() {}\n\nfn merge(a: u8) -> u8 {\n    a\n}\n";
         assert_eq!(
-            Target::parse("lib.rs#merge").locate(content),
+            Target::parse("lib.rs#merge").locate(content, &Highlighter::default()),
+            Located::Found { line: 3, end: 5 }
+        );
+    }
+
+    #[test]
+    fn a_symbol_resolves_through_the_readers_language_rule() {
+        let content = "fn first() {}\n\nfn merge(a: u8) -> u8 {\n    a\n}\n";
+        let target = Target::parse("lib.inc#merge");
+        assert_eq!(
+            target.locate(content, &Highlighter::default()),
+            Located::Lost
+        );
+        let rules = vec![("*.inc".to_owned(), "rust".to_owned())];
+        assert_eq!(
+            target.locate(content, &Highlighter::default().with_rules(rules)),
             Located::Found { line: 3, end: 5 }
         );
     }
@@ -436,14 +451,20 @@ mod tests {
         let before = "fn merge() {}\n";
         let after = "use std::fmt;\n\nfn helper() {}\n\nfn merge() {}\n";
         let target = Target::parse("lib.rs#merge");
-        assert_eq!(target.locate(before), Located::Found { line: 1, end: 1 });
-        assert_eq!(target.locate(after), Located::Found { line: 5, end: 5 });
+        assert_eq!(
+            target.locate(before, &Highlighter::default()),
+            Located::Found { line: 1, end: 1 }
+        );
+        assert_eq!(
+            target.locate(after, &Highlighter::default()),
+            Located::Found { line: 5, end: 5 }
+        );
     }
 
     #[test]
     fn a_symbol_the_file_lost_stops_resolving() {
         assert_eq!(
-            Target::parse("lib.rs#gone").locate("fn merge() {}\n"),
+            Target::parse("lib.rs#gone").locate("fn merge() {}\n", &Highlighter::default()),
             Located::Lost
         );
     }
@@ -451,11 +472,11 @@ mod tests {
     #[test]
     fn a_line_past_the_end_stops_resolving() {
         assert_eq!(
-            Target::parse("lib.rs:400").locate("fn merge() {}\n"),
+            Target::parse("lib.rs:400").locate("fn merge() {}\n", &Highlighter::default()),
             Located::Lost
         );
         assert_eq!(
-            Target::parse("lib.rs:1").locate("fn merge() {}\n"),
+            Target::parse("lib.rs:1").locate("fn merge() {}\n", &Highlighter::default()),
             Located::Found { line: 1, end: 1 }
         );
     }
@@ -463,7 +484,7 @@ mod tests {
     #[test]
     fn a_whole_file_target_locates_the_file_and_no_line() {
         assert_eq!(
-            Target::parse("lib.rs").locate("fn merge() {}\n"),
+            Target::parse("lib.rs").locate("fn merge() {}\n", &Highlighter::default()),
             Located::Whole
         );
     }

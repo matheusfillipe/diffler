@@ -129,6 +129,11 @@ impl App {
             }
         }
         self.rebuild_highlighter();
+        // we parsed the lens and the walkthrough anchors under the old grammar
+        if let Some(diff) = self.diff.as_mut() {
+            diff.drop_lens();
+        }
+        self.queue_walkthrough_anchors();
     }
 
     /// Build the highlighter again from the theme and the rules as they
