@@ -153,7 +153,7 @@ fn project_entries(query: &str, nearby: &[String]) -> Vec<String> {
         query.to_owned()
     };
     let typed = expand_home(query);
-    let (dir, prefix) = if query.ends_with('/') {
+    let (dir, prefix) = if query.ends_with(std::path::is_separator) {
         (typed.as_path(), String::new())
     } else {
         (
@@ -168,7 +168,7 @@ fn project_entries(query: &str, nearby: &[String]) -> Vec<String> {
         return Vec::new();
     };
     let shown_dir = query
-        .rfind('/')
+        .rfind(std::path::is_separator)
         .map_or_else(String::new, |at| query[..=at].to_owned());
     let mut folders: Vec<String> = read
         .filter_map(Result::ok)
@@ -183,7 +183,7 @@ fn project_entries(query: &str, nearby: &[String]) -> Vec<String> {
 }
 
 fn looks_like_path(query: &str) -> bool {
-    query.starts_with('/') || query.starts_with('~') || query.starts_with('.')
+    query.starts_with(['/', '~', '.']) || Path::new(query).is_absolute()
 }
 
 pub fn expand_home(path: &str) -> PathBuf {
