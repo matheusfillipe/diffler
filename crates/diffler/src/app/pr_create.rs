@@ -257,6 +257,7 @@ mod tests {
             oid: "0".repeat(40),
             oid7: "0000000".to_owned(),
             refs: Vec::new(),
+            parents: Vec::new(),
             subject: subject.to_owned(),
             author: "reviewer".to_owned(),
             time_unix: 0,

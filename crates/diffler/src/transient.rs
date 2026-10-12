@@ -135,7 +135,10 @@ const DIFF_GROUPS: &[DefaultGroup] = &[(
 
 const LOG_GROUPS: &[DefaultGroup] = &[(
     "Log",
-    &[("current", "l", Action::LogView, "Current branch")],
+    &[
+        ("current", "l", Action::LogView, "Current branch"),
+        ("all", "b", Action::LogAllBranches, "All branches"),
+    ],
 )];
 
 const PUSH_GROUPS: &[DefaultGroup] = &[(

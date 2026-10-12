@@ -469,7 +469,7 @@ fn log_is_newest_first_with_decorations() {
     fx.commit_all("second");
 
     let v = vcs(&fx);
-    let entries = v.log(10).expect("log");
+    let entries = v.log(10, false).expect("log");
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].subject, "second");
     assert_eq!(entries[1].subject, "first");
@@ -482,13 +482,40 @@ fn log_is_newest_first_with_decorations() {
     assert!(entries[0].refs.contains(&branch));
     assert!(entries[1].refs.contains(&"marker".to_owned()));
 
-    assert_eq!(v.log(1).expect("log").len(), 1);
+    assert_eq!(v.log(1, false).expect("log").len(), 1);
+}
+
+#[test]
+fn log_of_every_branch_reaches_a_branch_head_does_not() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\n");
+    fx.commit_all("base");
+    let trunk = vcs(&fx).head().expect("head").branch.expect("on a branch");
+    fx.branch("side");
+    fx.checkout("side");
+    fx.write("a.txt", "side\n");
+    fx.commit_all("on the side");
+    fx.checkout(&trunk);
+
+    let v = vcs(&fx);
+    let subjects = |all| -> Vec<String> {
+        v.log(10, all)
+            .expect("log")
+            .into_iter()
+            .map(|e| e.subject)
+            .collect()
+    };
+    assert_eq!(subjects(false), ["base"]);
+    let every = v.log(10, true).expect("log");
+    assert_eq!(every[0].subject, "on the side");
+    assert_eq!(every[0].parents, [every[1].oid.clone()]);
+    assert!(every[1].parents.is_empty());
 }
 
 #[test]
 fn log_on_unborn_repo_is_empty() {
     let fx = Fixture::new();
-    assert!(vcs(&fx).log(10).expect("log").is_empty());
+    assert!(vcs(&fx).log(10, false).expect("log").is_empty());
 }
 
 #[test]
@@ -1029,7 +1056,7 @@ fn commit_creates_commit_and_clears_staged() {
     assert_eq!(oid.len(), 40);
 
     assert!(v.status().expect("status").staged.files.is_empty());
-    let entries = v.log(10).expect("log");
+    let entries = v.log(10, false).expect("log");
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].subject, "change a");
     assert_eq!(entries[0].oid, oid);
@@ -1058,7 +1085,7 @@ fn amend_rewrites_head_and_folds_in_the_index() {
     v.stage(Path::new("b.txt")).expect("stage");
     let oid = v.amend(Some("first amended"), true).expect("amend");
 
-    let entries = v.log(10).expect("log");
+    let entries = v.log(10, false).expect("log");
     assert_eq!(entries.len(), 1, "amend replaces HEAD, no new parent");
     assert_eq!(entries[0].subject, "first amended");
     assert_eq!(entries[0].oid, oid);
@@ -1076,7 +1103,7 @@ fn extend_reuses_the_head_message() {
     v.stage(Path::new("b.txt")).expect("stage");
     v.amend(None, true).expect("extend");
 
-    let entries = v.log(10).expect("log");
+    let entries = v.log(10, false).expect("log");
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].subject, "keep this message", "message reused");
     assert!(v.working_tree_diff().expect("diff").files.is_empty());
@@ -1093,7 +1120,7 @@ fn reword_changes_only_the_message_keeping_the_tree() {
     v.stage(Path::new("b.txt")).expect("stage");
     v.amend(Some("new subject"), false).expect("reword");
 
-    let entries = v.log(10).expect("log");
+    let entries = v.log(10, false).expect("log");
     assert_eq!(entries[0].subject, "new subject");
     assert!(
         v.status()

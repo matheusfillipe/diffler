@@ -1,10 +1,11 @@
 ---
 source: crates/diffler/src/ui/log.rs
+assertion_line: 270
 expression: terminal.backend()
 ---
-" <cr> open commit · V select range · ? help                                                                             "
-" d9516cb [feat/topic main] add beta note                                                                       test  1h "
-"▌c1ac28f initial commit                                                                                        test  1h "
+" <cr> open commit · V select range · ]/[ step branch tips · ? help                                                      "
+" ◉  d9516cb [HEAD → main feat/topic] add beta note                                                             test  1h "
+"▌●  c1ac28f initial commit                                                                                     test  1h "
 "                                                                                                                        "
 "                                                                                                                        "
 "                                                                                                                        "

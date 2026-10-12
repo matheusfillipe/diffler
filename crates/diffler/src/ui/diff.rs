@@ -377,7 +377,7 @@ fn draw_references(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff:
         frame.render_widget(Paragraph::new(vec![hint]), inner);
         return;
     }
-    let color = lens_color(theme, slot);
+    let color = slot_color(theme, slot);
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut owners: Vec<Option<usize>> = Vec::new();
     let mut selected_span = (0, 1);
@@ -756,17 +756,18 @@ fn lens_marks(
     let mut marks: Vec<_> = lens
         .marks(&file.path, on_old_side, number)
         .into_iter()
-        .map(|(range, symbol)| (range, Mark::Lens(lens_color(theme, symbol))))
+        .map(|(range, symbol)| (range, Mark::Lens(slot_color(theme, symbol))))
         .collect();
     marks.extend(
         lens.labels(&file.path, on_old_side, number, &line.text)
             .into_iter()
-            .map(|(range, digit, symbol)| (range, Mark::Label(digit, lens_color(theme, symbol)))),
+            .map(|(range, digit, symbol)| (range, Mark::Label(digit, slot_color(theme, symbol)))),
     );
     marks
 }
 
-fn lens_color(theme: &Theme, slot: usize) -> Color {
+/// A distinct, readable colour for the `slot`th thing a screen tells apart.
+pub(super) fn slot_color(theme: &Theme, slot: usize) -> Color {
     #[allow(clippy::cast_precision_loss)] // a hue only needs to look distinct, not be exact
     let hue = (slot as f32 * HUE_STEP + 25.0).rem_euclid(360.0);
     let (r, g, b) = hsl_to_rgb(hue, 0.7, 0.55);

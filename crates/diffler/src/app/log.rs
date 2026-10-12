@@ -1,7 +1,8 @@
-//! Log screen state and handlers: a flat list of commits, `<cr>` opens the
-//! commit's diff in the diff view.
+//! Log screen state and handlers: commits with their branch graph, `<cr>`
+//! opens the commit's diff in the diff view.
 
-use diffler_core::vcs::LogEntry;
+use diffler_core::loggraph::{self, Cell};
+use diffler_core::vcs::{LogEntry, VcsError};
 
 use super::App;
 use super::rowsel::{RowSelect, RowText};
@@ -10,8 +11,23 @@ use crate::keymap::Action;
 /// How much history one log screen loads (neogit's default max-count).
 pub(super) const LOG_LIMIT: usize = 256;
 
+struct LogHistory {
+    entries: Vec<LogEntry>,
+    graph: Vec<Vec<Cell>>,
+    head: Option<String>,
+    remotes: Vec<String>,
+}
+
 pub struct LogView {
     pub entries: Vec<LogEntry>,
+    /// The graph cells beside each entry.
+    pub graph: Vec<Vec<Cell>>,
+    /// HEAD's full oid, the commit the graph marks as checked out.
+    pub head: Option<String>,
+    /// Whether the log walks every branch or only HEAD's history.
+    pub all_branches: bool,
+    /// Remote names, so a ref like `origin/main` reads as a remote branch.
+    pub remotes: Vec<String>,
     pub cursor: usize,
     /// First visible entry; the renderer keeps the cursor in view.
     pub scroll: usize,
@@ -51,11 +67,26 @@ impl RowText for LogView {
 }
 
 impl App {
-    pub(crate) fn open_log(&mut self) {
-        match self.review.vcs.log(LOG_LIMIT) {
-            Ok(entries) => {
+    fn load_log(&self, all_branches: bool) -> Result<LogHistory, VcsError> {
+        let entries = self.review.vcs.log(LOG_LIMIT, all_branches)?;
+        let head = self.review.vcs.resolve("HEAD").ok();
+        Ok(LogHistory {
+            graph: loggraph::layout(&entries, head.as_deref()),
+            entries,
+            head,
+            remotes: self.review.vcs.remotes().unwrap_or_default(),
+        })
+    }
+
+    pub(crate) fn open_log(&mut self, all_branches: bool) {
+        match self.load_log(all_branches) {
+            Ok(history) => {
                 self.log = Some(LogView {
-                    entries,
+                    graph: history.graph,
+                    entries: history.entries,
+                    head: history.head,
+                    all_branches,
+                    remotes: history.remotes,
                     cursor: 0,
                     scroll: 0,
                     visual_anchor: None,
@@ -70,12 +101,19 @@ impl App {
 
     /// Reload entries after a repo change, keeping the cursor in bounds.
     pub(super) fn refresh_log(&mut self) {
+        let Some(all_branches) = self.log.as_ref().map(|log| log.all_branches) else {
+            return;
+        };
+        let loaded = self.load_log(all_branches);
         let Some(log) = self.log.as_mut() else {
             return;
         };
-        match self.review.vcs.log(LOG_LIMIT) {
-            Ok(entries) => {
-                log.entries = entries;
+        match loaded {
+            Ok(history) => {
+                log.graph = history.graph;
+                log.entries = history.entries;
+                log.head = history.head;
+                log.remotes = history.remotes;
                 log.cursor = log.cursor.min(log.entries.len().saturating_sub(1));
                 // anchors are row indices; new history would dangle them
                 log.visual_anchor = None;
@@ -107,6 +145,14 @@ impl App {
             Action::HalfPageUp => log.cursor = log.cursor.saturating_sub(half),
             Action::FullPageDown => log.cursor = (log.cursor + full).min(last),
             Action::FullPageUp => log.cursor = log.cursor.saturating_sub(full),
+            Action::NextSection | Action::PrevSection => {
+                let forward = action == Action::NextSection;
+                if let Some(index) =
+                    super::step_to(&log.entries, log.cursor, forward, |e| !e.refs.is_empty())
+                {
+                    log.cursor = index;
+                }
+            }
             // V toggles a range selection anchored at the cursor commit
             Action::VisualSelect => log.toggle_visual(),
             Action::CopyFileFeedback | Action::CopyAllFeedback => {

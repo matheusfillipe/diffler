@@ -1,8 +1,10 @@
-//! Log screen: `oid7 [refs] subject` rows, neogit's `l l` view.
+//! Log screen: `graph oid7 [refs] subject` rows, neogit's `l l` and `l b`
+//! views.
 
+use diffler_core::loggraph::{Cell, Lane};
 use diffler_core::vcs::LogEntry;
 use ratatui::Frame;
-use ratatui::style::Style;
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
@@ -16,13 +18,31 @@ use crate::ui::{commit_meta_spans, cursor_line, status_bar};
 const HINTS: &[Hint] = &[
     Hint::Leaf(&[Action::Open], "open commit"),
     Hint::Leaf(&[Action::VisualSelect], "select range"),
+    Hint::Leaf(
+        &[Action::NextSection, Action::PrevSection],
+        "step branch tips",
+    ),
     Hint::Leaf(&[Action::Help], "help"),
 ];
+
+/// Lanes past this many draw as one `…`, so a repo with dozens of open
+/// branches keeps room for the subjects.
+const MAX_LANES: usize = 12;
+
+struct RowCtx<'a> {
+    theme: &'a Theme,
+    now: i64,
+    width: u16,
+    head: Option<&'a str>,
+    branch: Option<&'a str>,
+    remotes: &'a [String],
+    /// The widest graph on screen, so every subject starts in one column.
+    lanes: usize,
+}
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let (body, bar) = super::screen_chrome(frame, app, HINTS);
 
-    let now = app.now_unix;
     let search = app.search.as_ref();
     if let Some(log) = app.log.as_mut() {
         log.viewport = body.height;
@@ -32,6 +52,23 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         let selection = log.selection();
         let selected =
             |index: usize| selection.is_some_and(|(start, end)| index >= start && index <= end);
+        let ctx = RowCtx {
+            theme: &app.theme,
+            now: app.now_unix,
+            width: body.width,
+            head: log.head.as_deref(),
+            branch: app.head.branch.as_deref(),
+            remotes: &log.remotes,
+            lanes: log
+                .graph
+                .iter()
+                .skip(log.scroll)
+                .take(height)
+                .map(Vec::len)
+                .max()
+                .unwrap_or(0)
+                .min(MAX_LANES + 1),
+        };
         let lines: Vec<Line<'static>> = log
             .entries
             .iter()
@@ -40,7 +77,8 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             .take(height)
             .map(|(index, entry)| {
                 let ranges = search.map(|s| s.ranges_for(index)).unwrap_or_default();
-                let line = entry_line(&app.theme, entry, now, body.width, &ranges);
+                let graph = log.graph.get(index).map_or(&[][..], Vec::as_slice);
+                let line = entry_line(&ctx, entry, graph, &ranges);
                 if index == log.cursor || selected(index) {
                     cursor_line(line, &app.theme, body.width)
                 } else {
@@ -58,19 +96,22 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
 }
 
 fn entry_line(
-    theme: &Theme,
+    ctx: &RowCtx<'_>,
     entry: &LogEntry,
-    now: i64,
-    width: u16,
+    graph: &[Cell],
     search: &[(std::ops::Range<usize>, bool)],
 ) -> Line<'static> {
-    let mut spans = vec![Span::styled(format!(" {} ", entry.oid7), theme.dim_style())];
-    if !entry.refs.is_empty() {
-        spans.push(Span::styled(
-            format!("[{}] ", entry.refs.join(" ")),
-            Style::new().fg(theme.accent).bg(theme.bg),
-        ));
-    }
+    let theme = ctx.theme;
+    let mut spans = vec![Span::raw(" ")];
+    spans.extend(graph_spans(
+        theme,
+        graph,
+        ctx.head == Some(entry.oid.as_str()),
+    ));
+    let drawn = graph.len().min(MAX_LANES + 1);
+    spans.push(Span::raw("  ".repeat(ctx.lanes.saturating_sub(drawn))));
+    spans.push(Span::styled(format!(" {} ", entry.oid7), theme.dim_style()));
+    spans.extend(ref_spans(ctx, entry));
     spans.extend(super::highlight_spans(
         &entry.subject,
         theme.base(),
@@ -82,11 +123,94 @@ fn entry_line(
         theme,
         &entry.author,
         entry.time_unix,
-        now,
+        ctx.now,
         used,
-        width as usize,
+        ctx.width as usize,
     ));
     Line::from(spans)
+}
+
+fn lane_color(theme: &Theme, lane: Option<Lane>) -> Color {
+    match lane {
+        Some(Lane { head: true, .. }) => theme.accent,
+        Some(Lane { id, .. }) => super::diff::slot_color(theme, id + 1),
+        None => theme.dim,
+    }
+}
+
+/// The graph's cells, the checked-out commit's dot drawn hollow and bold.
+fn graph_spans(theme: &Theme, graph: &[Cell], is_head: bool) -> Vec<Span<'static>> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for cell in graph.iter().take(MAX_LANES) {
+        let mut style = Style::new()
+            .fg(lane_color(theme, cell.glyph_lane))
+            .bg(theme.bg);
+        let glyph = if cell.glyph == '●' && is_head {
+            style = style.add_modifier(Modifier::BOLD);
+            '◉'
+        } else {
+            cell.glyph
+        };
+        spans.push(Span::styled(glyph.to_string(), style));
+        spans.push(Span::styled(
+            cell.fill.to_string(),
+            Style::new()
+                .fg(lane_color(theme, cell.fill_lane))
+                .bg(theme.bg),
+        ));
+    }
+    if graph.len() > MAX_LANES {
+        spans.push(Span::styled("… ", theme.dim_style()));
+    }
+    spans
+}
+
+/// The branch checked out leads as `HEAD → name` in the accent, local
+/// branches and tags follow in purple, remote branches dimmed.
+fn ref_spans(ctx: &RowCtx<'_>, entry: &LogEntry) -> Vec<Span<'static>> {
+    if entry.refs.is_empty() && ctx.head != Some(entry.oid.as_str()) {
+        return Vec::new();
+    }
+    let theme = ctx.theme;
+    let bracket = theme.dim_style();
+    let mut names: Vec<Span<'static>> = Vec::new();
+    if ctx.head == Some(entry.oid.as_str()) {
+        let label = match ctx.branch.filter(|b| entry.refs.iter().any(|r| r == b)) {
+            Some(branch) => format!("HEAD → {branch}"),
+            None => "HEAD".to_owned(),
+        };
+        names.push(Span::styled(
+            label,
+            Style::new()
+                .fg(theme.accent)
+                .bg(theme.bg)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    for name in &entry.refs {
+        if Some(name.as_str()) == ctx.branch && ctx.head == Some(entry.oid.as_str()) {
+            continue;
+        }
+        let remote = ctx.remotes.iter().any(|remote| {
+            name.strip_prefix(remote.as_str())
+                .is_some_and(|rest| rest.starts_with('/'))
+        });
+        let style = if remote {
+            theme.dim_style()
+        } else {
+            super::status::branch_name_style(theme)
+        };
+        names.push(Span::styled(name.clone(), style));
+    }
+    let mut spans = vec![Span::styled("[", bracket)];
+    for (index, name) in names.into_iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled(" ", bracket));
+        }
+        spans.push(name);
+    }
+    spans.push(Span::styled("] ", bracket));
+    spans
 }
 
 #[cfg(test)]
@@ -155,6 +279,58 @@ mod tests {
         assert!(content.contains("feat/topic"), "refs decorate: {content}");
         assert!(content.contains("1h"), "commit age renders: {content}");
         insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn every_branch_log_draws_the_fork_and_marks_head() {
+        let fixture = standard_fixture();
+        fixture.branch("feature");
+        fixture.checkout("feature");
+        fixture.write("feature.txt", "side\n");
+        fixture.commit_all_at("work on the feature", 1_700_000_100);
+        fixture.checkout("main");
+        fixture.write("main.txt", "trunk\n");
+        fixture.commit_all_at("work on main", 1_700_000_200);
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.handle(key('l'));
+        app.handle(key('b'));
+        app.now_unix = newest_commit(&app) + 3661;
+        let terminal = render(&mut app);
+        let content = terminal.backend().to_string();
+        assert!(content.contains("◉"), "HEAD's dot: {content}");
+        assert!(content.contains("HEAD → main"), "{content}");
+        assert!(content.contains("●─╯"), "the fork closes: {content}");
+        insta::assert_snapshot!(terminal.backend());
+
+        app.handle(key('q'));
+        app.handle(key('l'));
+        app.handle(key('l'));
+        let current = app.log.as_ref().unwrap();
+        assert!(
+            current
+                .entries
+                .iter()
+                .all(|e| e.subject != "work on the feature"),
+            "l l walks HEAD's history alone"
+        );
+    }
+
+    #[test]
+    fn brackets_step_between_decorated_commits() {
+        let fixture = standard_fixture();
+        fixture.branch("old");
+        fixture.write("notes.txt", "a\n");
+        fixture.commit_all("second");
+        fixture.write("notes.txt", "a\nb\n");
+        fixture.commit_all("third");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.handle(key('l'));
+        app.handle(key('l'));
+        app.handle(key(']'));
+        let log = app.log.as_ref().unwrap();
+        assert_eq!(log.entries[log.cursor].refs, ["old"]);
+        app.handle(key('['));
+        assert_eq!(app.log.as_ref().unwrap().cursor, 0);
     }
 
     #[test]

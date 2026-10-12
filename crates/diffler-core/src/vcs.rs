@@ -43,6 +43,8 @@ pub struct LogEntry {
     pub oid7: String,
     /// Shorthand names of references pointing at this commit.
     pub refs: Vec<String>,
+    /// Full parent oids, first parent first.
+    pub parents: Vec<String>,
     pub subject: String,
     pub author: String,
     pub time_unix: i64,
@@ -120,8 +122,9 @@ pub trait Vcs: Send {
     fn merge_base(&self, a: &str, b: &str) -> Result<String, VcsError>;
     /// Resolve a revision (oid, ref name, remote ref) to a full commit oid.
     fn resolve(&self, revision: &str) -> Result<String, VcsError>;
-    /// History from HEAD, newest first.
-    fn log(&self, limit: usize) -> Result<Vec<LogEntry>, VcsError>;
+    /// History from HEAD, or from every branch, remote branch and tag with
+    /// `all_branches`, newest first and each commit before its parents.
+    fn log(&self, limit: usize, all_branches: bool) -> Result<Vec<LogEntry>, VcsError>;
 
     /// The branch a pull request merges into by default, if the repo says.
     fn default_branch(&self, remote: &str) -> Result<Option<String>, VcsError>;

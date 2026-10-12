@@ -137,6 +137,7 @@ impl GitVcs {
                 oid7: short7(&full),
                 oid: full,
                 refs: Vec::new(),
+                parents: commit.parent_ids().map(|id| id.to_string()).collect(),
                 subject: commit.summary()?.unwrap_or_default().to_owned(),
                 author: commit.author().name().unwrap_or_default().to_owned(),
                 time_unix: commit.time().seconds(),
@@ -307,7 +308,7 @@ impl Vcs for GitVcs {
         self.diff_to_model(&mut diff)
     }
 
-    fn log(&self, limit: usize) -> Result<Vec<LogEntry>, VcsError> {
+    fn log(&self, limit: usize, all_branches: bool) -> Result<Vec<LogEntry>, VcsError> {
         if self.head_tree()?.is_none() {
             return Ok(Vec::new());
         }
@@ -325,19 +326,19 @@ impl Vcs for GitVcs {
         let mut walk = self.repo.revwalk()?;
         walk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)?;
         walk.push_head()?;
-        let mut entries = Vec::new();
-        for oid in walk.take(limit) {
-            let oid = oid?;
-            let commit = self.repo.find_commit(oid)?;
-            let full = oid.to_string();
-            entries.push(LogEntry {
-                oid7: short7(&full),
-                oid: full,
-                refs: refs_by_oid.get(&oid).cloned().unwrap_or_default(),
-                subject: commit.summary()?.unwrap_or_default().to_owned(),
-                author: commit.author().name().unwrap_or_default().to_owned(),
-                time_unix: commit.time().seconds(),
-            });
+        if all_branches {
+            for glob in ["refs/heads", "refs/remotes", "refs/tags"] {
+                walk.push_glob(glob)?;
+            }
+        }
+        let mut entries = self.walk_entries(walk, limit)?;
+        for entry in &mut entries {
+            if let Some(refs) = git2::Oid::from_str(&entry.oid)
+                .ok()
+                .and_then(|oid| refs_by_oid.remove(&oid))
+            {
+                entry.refs = refs;
+            }
         }
         Ok(entries)
     }

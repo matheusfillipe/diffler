@@ -257,7 +257,11 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   the Stats screen read the registry alone.
 - **TUI.** neogit/doom keybindings, every binding configurable. Screens: Status
   (the branch band, a rule, then the repo band; stage/unstage/
-  discard/commit/branch), Log, Diff/review (file sidebar + pane, unified or
+  discard/commit/branch), Log (`l l` HEAD's history, `l b` every branch,
+  remote branch and tag; both draw `diffler_core::loggraph`'s lanes, one row
+  per commit so a merge or fork draws its connector on the commit's own row,
+  HEAD's first-parent line in the accent; `]`/`[` step commits that carry a
+  name), Diff/review (file sidebar + pane, unified or
   `|`-toggled side-by-side; `c` comment, `V` visual select, `r` reply/resolve,
   `m` viewed, `y`/`Y` yank feedback as markdown, `e` `$EDITOR` jump). Every motion, the
   paging keys included, moves the pane holding the keyboard: `<c-d>` walks the

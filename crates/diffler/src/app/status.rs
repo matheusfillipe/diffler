@@ -388,7 +388,7 @@ pub(super) fn load_commit_lists(
     let ahead = unpushed
         .as_ref()
         .map_or(&[][..], |unpushed| unpushed.commits.as_slice());
-    let mut recent = vcs.log(limit + ahead.len())?;
+    let mut recent = vcs.log(limit + ahead.len(), false)?;
     recent.retain(|entry| !ahead.iter().any(|local| local.oid == entry.oid));
     recent.truncate(limit);
     Ok((unpushed, recent))
@@ -978,7 +978,8 @@ impl App {
             Action::DiffBranch => self.diff_against_branch(),
             Action::DiffCommit => self.diff_against_commit(),
             Action::MarkViewed => self.toggle_viewed(),
-            Action::LogView => self.open_log(),
+            Action::LogView => self.open_log(false),
+            Action::LogAllBranches => self.open_log(true),
             Action::CommitFlow => self.commit_flow(),
             Action::CommitExtend => self.commit_extend(),
             Action::CommitAmend => self.commit_amend(),
@@ -1034,7 +1035,7 @@ impl App {
     }
 
     fn diff_against_commit(&mut self) {
-        match self.review.vcs.log(super::log::LOG_LIMIT) {
+        match self.review.vcs.log(super::log::LOG_LIMIT, false) {
             Ok(entries) => {
                 let entries = entries
                     .into_iter()
@@ -1397,7 +1398,7 @@ impl App {
                 self.open_selected_run();
             }
             Row::CiHeader { .. } => self.open_runs(),
-            Row::RecentHeader { .. } => self.open_log(),
+            Row::RecentHeader { .. } => self.open_log(false),
             Row::SectionHeader { section, .. } => {
                 let section = *section;
                 let review_model = self.review.model();

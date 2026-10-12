@@ -132,8 +132,8 @@ impl Vcs for JjVcs {
         self.git.resolve(revision)
     }
 
-    fn log(&self, limit: usize) -> Result<Vec<LogEntry>, VcsError> {
-        self.git.log(limit)
+    fn log(&self, limit: usize, all_branches: bool) -> Result<Vec<LogEntry>, VcsError> {
+        self.git.log(limit, all_branches)
     }
 
     fn default_branch(&self, remote: &str) -> Result<Option<String>, VcsError> {

@@ -60,6 +60,7 @@ pub enum Action {
     BranchCreate,
     BranchDelete,
     LogView,
+    LogAllBranches,
     Push,
     PushSetUpstream,
     Pull,
@@ -184,6 +185,7 @@ impl Action {
             Self::BranchCreate => "branch_create",
             Self::BranchDelete => "branch_delete",
             Self::LogView => "log_view",
+            Self::LogAllBranches => "log_all_branches",
             Self::Push => "push",
             Self::PushSetUpstream => "push_set_upstream",
             Self::Pull => "pull",
@@ -307,6 +309,7 @@ impl Action {
             Self::BranchCreate => "create a branch",
             Self::BranchDelete => "delete a branch",
             Self::LogView => "see the commit log",
+            Self::LogAllBranches => "see every branch's log as a graph",
             Self::Push => "push to upstream",
             Self::PushSetUpstream => "push and set upstream",
             Self::Pull => "pull from upstream",
@@ -380,7 +383,7 @@ impl Action {
         }
     }
 
-    pub(crate) const ALL: [Self; 116] = [
+    pub(crate) const ALL: [Self; 117] = [
         Self::CenterCursor,
         Self::CursorTop,
         Self::CursorBottom,
@@ -443,6 +446,7 @@ impl Action {
         Self::BranchCreate,
         Self::BranchDelete,
         Self::LogView,
+        Self::LogAllBranches,
         Self::Push,
         Self::PushSetUpstream,
         Self::Pull,
@@ -707,6 +711,8 @@ const LOG_DEFAULTS: &[(&str, Action)] = &[
     ("V", Action::VisualSelect),
     ("<cr>", Action::Open),
     ("<c-r>", Action::Refresh),
+    ("]", Action::NextSection),
+    ("[", Action::PrevSection),
     ("gf", Action::OpenFilePicker),
     ("/", Action::Search),
     ("n", Action::SearchNext),

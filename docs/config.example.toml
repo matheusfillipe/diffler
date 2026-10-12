@@ -184,6 +184,8 @@
 [keys.log]
 # visual_select = "V"
 # open = "<cr>"
+# next_section = "]"       # next commit carrying a branch or tag name
+# prev_section = "["
 # open_file_picker = "gf"
 # refresh = "<c-r>"
 
@@ -262,6 +264,7 @@
 
 [keys.log_menu]
 # current = "l"
+# all = "b"                # every branch, remote branch and tag, as a graph
 
 [keys.push]
 # push = "p"

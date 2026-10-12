@@ -312,7 +312,7 @@ fn log_reads_through_the_colocated_git_repo() {
     let fx = JjFixture::new();
     fx.write("a.txt", "v1\n");
     vcs(&fx).commit("add a").expect("commit");
-    let entries = vcs(&fx).log(10).expect("log");
+    let entries = vcs(&fx).log(10, false).expect("log");
     let subjects: Vec<&str> = entries.iter().map(|e| e.subject.as_str()).collect();
     assert!(subjects.contains(&"add a"), "{subjects:?}");
     assert!(subjects.contains(&"initial"), "{subjects:?}");

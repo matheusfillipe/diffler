@@ -246,7 +246,7 @@ fn divergence_spans(theme: &Theme, ahead: usize, behind: usize) -> Vec<Span<'sta
     spans
 }
 
-fn branch_name_style(theme: &Theme) -> Style {
+pub(super) fn branch_name_style(theme: &Theme) -> Style {
     Style::new().fg(theme.purple).bg(theme.bg)
 }
 
