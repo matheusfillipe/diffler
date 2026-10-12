@@ -291,6 +291,8 @@ impl App {
             Action::CopyFileFeedback | Action::CopyAllFeedback => {
                 self.yank_rows("yanked lines");
             }
+            Action::CopyUrl => self.copy_file_link(),
+            Action::OpenUrl => self.open_file_link(),
             Action::Open => self.open_cursor_commit(),
             Action::OpenEditor => {
                 let (path, line) = (view.path.clone(), view.cursor as u32 + 1);
@@ -298,6 +300,81 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn copy_file_link(&mut self) {
+        match self.file_link() {
+            Ok(url) => {
+                self.info(format!("copied {url}"));
+                self.pending_clipboard = Some(url);
+                if let Some(view) = self.file.as_mut() {
+                    view.visual_anchor = None;
+                }
+            }
+            Err(err) => self.info(err),
+        }
+    }
+
+    fn open_file_link(&mut self) {
+        match self.file_link() {
+            Ok(url) => match crate::proc::open_in_browser(&url) {
+                Ok(()) => self.info(format!("opened {url}")),
+                Err(err) => self.error(format!("cannot open the browser: {err}")),
+            },
+            Err(err) => self.info(err),
+        }
+    }
+
+    /// The forge page for the selected lines: on the branch when it is pushed
+    /// with nothing ahead, else on the remote's default branch.
+    fn file_link(&self) -> Result<String, String> {
+        let view = self.file.as_ref().ok_or("open a file first")?;
+        let (first, last) = view.selection().unwrap_or((view.cursor, view.cursor));
+        let vcs = &self.review.vcs;
+        let remotes = vcs.remotes().unwrap_or_default();
+        let pushed = self
+            .head
+            .upstream
+            .as_deref()
+            .filter(|_| self.head.ahead == 0)
+            .and_then(|upstream| {
+                remotes.iter().find_map(|remote| {
+                    let branch = upstream.strip_prefix(remote.as_str())?.strip_prefix('/')?;
+                    Some((remote.clone(), branch.to_owned()))
+                })
+            });
+        let (remote, rev) = if let Some(found) = pushed {
+            found
+        } else {
+            let remote = remotes
+                .iter()
+                .find(|name| *name == "origin")
+                .or_else(|| remotes.first())
+                .ok_or("add a git remote to link to")?
+                .clone();
+            let rev = vcs
+                .default_branch(&remote)
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| "main".to_owned());
+            (remote, rev)
+        };
+        let url = vcs
+            .remote_url(&remote)
+            .ok()
+            .flatten()
+            .ok_or_else(|| format!("remote {remote} has no url"))?;
+        crate::ci::detect_for_repo(&self.review.repo_root, Some(&url), &self.config.ci)
+            .and_then(|detected| {
+                crate::ci::blob_url(
+                    &detected,
+                    &url,
+                    &rev,
+                    &view.path,
+                    (first as u32 + 1, last as u32 + 1),
+                )
+            })
+            .ok_or_else(|| format!("no known forge serves {url}"))
     }
 
     /// Enter on a blamed line reviews the commit that wrote it.
@@ -458,6 +535,36 @@ mod tests {
             "the editor never loads the view"
         );
         assert!(app.pending_editor.is_some());
+    }
+
+    #[test]
+    fn shift_y_copies_the_forge_link_to_the_selected_lines() {
+        let fixture = standard_fixture();
+        fixture.remote("origin", "git@github.com:acme/widgets.git");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.install_file(view("one\ntwo\nthree\n", Vec::new()), None);
+        app.handle(key('j'));
+        app.handle(key('V'));
+        app.handle(key('j'));
+        app.handle(key('Y'));
+        assert_eq!(
+            app.pending_clipboard.as_deref(),
+            Some("https://github.com/acme/widgets/blob/main/src/lib.rs#L2-L3")
+        );
+        assert!(app.file.as_ref().is_some_and(|v| v.anchor().is_none()));
+    }
+
+    #[test]
+    fn shift_y_without_a_remote_says_what_to_add() {
+        let (_fixture, mut app) = app();
+        app.install_file(view("one\n", Vec::new()), None);
+        app.handle(key('Y'));
+        assert_eq!(app.pending_clipboard, None);
+        assert!(
+            app.message
+                .as_ref()
+                .is_some_and(|m| m.text.contains("add a git remote"))
+        );
     }
 
     #[test]

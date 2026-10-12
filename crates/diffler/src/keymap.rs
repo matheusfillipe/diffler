@@ -97,6 +97,7 @@ pub enum Action {
     CopyFileFeedback,
     CopyAllFeedback,
     CopyUrl,
+    OpenUrl,
     Search,
     SearchNext,
     SearchPrev,
@@ -220,6 +221,7 @@ impl Action {
             Self::CopyFileFeedback => "copy_file_feedback",
             Self::CopyAllFeedback => "copy_all_feedback",
             Self::CopyUrl => "copy_url",
+            Self::OpenUrl => "open_url",
             Self::Search => "search",
             Self::SearchNext => "search_next",
             Self::SearchPrev => "search_prev",
@@ -342,6 +344,7 @@ impl Action {
             Self::CopyFileFeedback => "copy this file's comments as markdown, or the selection",
             Self::CopyAllFeedback => "copy every comment as markdown",
             Self::CopyUrl => "copy the web link",
+            Self::OpenUrl => "open the web link in the browser",
             Self::Search => "search",
             Self::SearchNext => "go to the next match",
             Self::SearchPrev => "go to the previous match",
@@ -377,7 +380,7 @@ impl Action {
         }
     }
 
-    pub(crate) const ALL: [Self; 115] = [
+    pub(crate) const ALL: [Self; 116] = [
         Self::CenterCursor,
         Self::CursorTop,
         Self::CursorBottom,
@@ -463,6 +466,7 @@ impl Action {
         Self::CopyFileFeedback,
         Self::CopyAllFeedback,
         Self::CopyUrl,
+        Self::OpenUrl,
         Self::Search,
         Self::SearchNext,
         Self::SearchPrev,
@@ -678,7 +682,8 @@ const FILE_DEFAULTS: &[(&str, Action)] = &[
     ("e", Action::OpenEditor),
     ("V", Action::VisualSelect),
     ("y", Action::CopyFileFeedback),
-    ("Y", Action::CopyAllFeedback),
+    ("Y", Action::CopyUrl),
+    ("gx", Action::OpenUrl),
     ("T", Action::SwitchTheme),
     ("gf", Action::OpenFilePicker),
     ("/", Action::Search),

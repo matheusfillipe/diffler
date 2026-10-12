@@ -449,7 +449,11 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   file under the cursor (status or diff), or `gf`, the fuzzy picker over
   `Vcs::tracked_files`: the diff screens list only changed files, so the picker
   is the one way to a file the review does not touch, and it also sends one
-  straight to `$EDITOR`.
+  straight to `$EDITOR`. `y` copies the selected lines' text; `Y` copies the
+  forge's link to them (`ci::blob_url`, GitHub/GitLab/Forgejo line-range
+  anchors) and `gx` opens that link in the default browser. The link names the
+  branch when it is pushed with nothing ahead, else the remote's default
+  branch, since a link to commits the forge lacks would 404.
 - **Status bands.** The branch band leads with the branch's own PR when it has
   one, since that is what the branch is for, then the repo's walkthroughs
   when it has any (a header counting them, one row per walkthrough, folded

@@ -141,6 +141,66 @@ fn parse_owner_repo(url: &str) -> Option<String> {
     (!owner.is_empty() && !name.is_empty()).then(|| format!("{owner}/{name}"))
 }
 
+/// The forge's web page for `path` at `rev`, its 1-based inclusive `lines`
+/// marked the way that forge marks a range.
+pub fn blob_url(
+    detected: &Detected,
+    remote_url: &str,
+    rev: &str,
+    path: &str,
+    (first, last): (u32, u32),
+) -> Option<String> {
+    let host = match detected.kind {
+        ProviderKind::GitHub => "github.com".to_owned(),
+        ProviderKind::GitLab | ProviderKind::Forgejo => {
+            detected.host.clone().or_else(|| parse_host(remote_url))?
+        }
+    };
+    let repo = parse_repo_path(remote_url)?;
+    let path = encode_path(path);
+    let span = |sep: &str| {
+        if first == last {
+            format!("L{first}")
+        } else {
+            format!("L{first}-{sep}{last}")
+        }
+    };
+    Some(match detected.kind {
+        ProviderKind::GitHub => format!("https://{host}/{repo}/blob/{rev}/{path}#{}", span("L")),
+        ProviderKind::GitLab => format!("https://{host}/{repo}/-/blob/{rev}/{path}#{}", span("")),
+        ProviderKind::Forgejo => {
+            format!(
+                "https://{host}/{repo}/src/branch/{rev}/{path}#{}",
+                span("L")
+            )
+        }
+    })
+}
+
+/// Every path segment after the host, so a GitLab subgroup survives.
+fn parse_repo_path(url: &str) -> Option<String> {
+    let path = if let Some(rest) = url.strip_prefix("git@") {
+        rest.split_once(':').map(|(_, p)| p)?
+    } else {
+        url.split("://").nth(1)?.split_once('/').map(|(_, p)| p)?
+    };
+    let path = path.trim_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    path.contains('/').then(|| path.to_owned())
+}
+
+fn encode_path(path: &str) -> String {
+    path.bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() || b"/-._~".contains(&byte) {
+                char::from(byte).to_string()
+            } else {
+                format!("%{byte:02X}")
+            }
+        })
+        .collect()
+}
+
 /// A Forgejo PAT for private repos; public repos need none.
 fn forgejo_token() -> Option<String> {
     std::env::var("FORGEJO_TOKEN")
@@ -311,6 +371,66 @@ mod tests {
             map_conclusion(Some("neutral")),
             None,
             "an unrecognized value falls back to the forge's own status strings"
+        );
+    }
+
+    #[test]
+    fn blob_url_marks_the_line_range_the_way_each_forge_does() {
+        let github = Detected {
+            kind: ProviderKind::GitHub,
+            host: None,
+        };
+        assert_eq!(
+            blob_url(
+                &github,
+                "git@github.com:acme/widgets.git",
+                "main",
+                "src/a b.ts",
+                (77, 106)
+            )
+            .as_deref(),
+            Some("https://github.com/acme/widgets/blob/main/src/a%20b.ts#L77-L106")
+        );
+        assert_eq!(
+            blob_url(
+                &github,
+                "https://github.com/acme/widgets",
+                "main",
+                "a.rs",
+                (5, 5)
+            )
+            .as_deref(),
+            Some("https://github.com/acme/widgets/blob/main/a.rs#L5")
+        );
+        let gitlab = Detected {
+            kind: ProviderKind::GitLab,
+            host: None,
+        };
+        assert_eq!(
+            blob_url(
+                &gitlab,
+                "ssh://git@gitlab.com:2222/acme/sub/widgets.git",
+                "dev",
+                "a.rs",
+                (2, 4)
+            )
+            .as_deref(),
+            Some("https://gitlab.com/acme/sub/widgets/-/blob/dev/a.rs#L2-4")
+        );
+        let forgejo = Detected {
+            kind: ProviderKind::Forgejo,
+            host: Some("codeberg.org".to_owned()),
+        };
+        assert_eq!(
+            blob_url(
+                &forgejo,
+                "git@codeberg.org:acme/widgets.git",
+                "main",
+                "a.rs",
+                (2, 4)
+            )
+            .as_deref(),
+            Some("https://codeberg.org/acme/widgets/src/branch/main/a.rs#L2-L4")
         );
     }
 

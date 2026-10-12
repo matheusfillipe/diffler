@@ -194,6 +194,8 @@
 # prev_section = "["
 # open = "<cr>"            # review the commit that wrote this line
 # open_editor = "e"
+# copy_url = "Y"           # the forge link to the line or selection
+# open_url = "gx"          # the same link, in the browser
 # open_file_picker = "gf"
 # set_language = "gl"
 # center_cursor = "zz"
