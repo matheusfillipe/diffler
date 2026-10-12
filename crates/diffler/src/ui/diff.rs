@@ -53,7 +53,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let open_figure_hint = app.active_keymap().chord_for(Action::OpenFigureGraph);
     app.queue_enrich_selected();
     // comment bodies are parsed to this width, so we set it before anything reads them
-    let pane_width = body.width.saturating_sub(sidebar_width(body.width) + 2);
+    let right = app.diff.as_ref().map_or(0, |diff| {
+        comments_width(body.width, diff.comments_open || diff.refs_visible())
+    });
+    let pane_width = pane_width(body.width, right);
     if let Some(diff) = app.diff.as_mut() {
         diff.set_wrap_width(pane_width);
     }
@@ -421,6 +424,13 @@ fn draw_references(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff:
         Paragraph::new(visible).style(Style::new().bg(surface)),
         inner,
     );
+}
+
+/// The diff pane's width once the file sidebar and a `right` pane of that
+/// width take their columns, matching `draw_body`'s layout.
+fn pane_width(total: u16, right: u16) -> u16 {
+    let right = if right == 0 { 0 } else { right + PANE_GAP };
+    total.saturating_sub(sidebar_width(total) + 1 + PANE_GAP + right)
 }
 
 fn comments_width(total: u16, open: bool) -> u16 {
@@ -1249,10 +1259,26 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
         starts.push(total);
         total += h;
     }
-    let (cur_start, cur_height) = match (starts.get(cursor), heights.get(cursor)) {
+    let (cur_start, mut cur_height) = match (starts.get(cursor), heights.get(cursor)) {
         (Some(s), Some(h)) => (*s, *h),
         _ => (0, 1),
     };
+    // the comments pane walks whole cards and never the rows inside one, so
+    // we keep its card in view as far as the pane allows
+    if diff.focus == Pane::Comments
+        && let Some(DiffRow::Comment { comment, .. }) = rows.get(cursor)
+    {
+        let card: usize = rows
+            .iter()
+            .zip(&heights)
+            .skip(cursor)
+            .take_while(
+                |(row, _)| matches!(row, DiffRow::Comment { comment: c, .. } if c == comment),
+            )
+            .map(|(_, h)| h)
+            .sum();
+        cur_height = card.min(height.saturating_sub(2 * super::SCROLLOFF).max(1));
+    }
     let base = diff.scroll_align.take().map_or(diff.scroll, |a| {
         align_scroll(a, cur_start, cur_height, height)
     });
@@ -4334,6 +4360,27 @@ flowchart LR
         app.diff.as_mut().unwrap().invalidate();
         let terminal = render(&mut app);
         insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn a_card_keeps_its_last_line_beside_the_comments_pane() {
+        let (_fixture, mut app) = diff_app();
+        open_lib_diff(&mut app);
+        app.review.session.add_comment(
+            diffler_core::session::Anchor {
+                file: "src/lib.rs".to_owned(),
+                line: Some(2),
+                line_end: None,
+                on_old_side: false,
+                line_text: Some("    42".to_owned()),
+            },
+            "reviewer",
+            &format!("{} END-MARKER", "word ".repeat(40)),
+        );
+        app.diff.as_mut().unwrap().invalidate();
+        app.handle(key('C'));
+        let text = render(&mut app).backend().to_string();
+        assert!(text.contains("END-MARKER"), "{text}");
     }
 
     #[test]
