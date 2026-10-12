@@ -811,11 +811,13 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   comment is; authored as the agent by default, or as the human when
   `as_human` is set, so it goes out untouched with their next submitted
   review. `delete_comment` and
-  `edit_comment` are the agent's only way to take one back or rewrite it, so a
-  comment that has drifted or turned out wrong need not sit answered by
-  another comment stacked on top; both refuse a comment they did not author
-  (`comment.author`) and a walkthrough stop or note (`comment.anchor_ref` set)
-  regardless of author, since those two live and die with
+  `edit_comment` take back or rewrite any local comment, the human's
+  included (so the agent can redraft what the human asked it to), keeping
+  its author, so a comment that has drifted or turned out wrong need not sit
+  answered by another comment stacked on top; both refuse one already on the
+  forge (`comment.remote_id` set), since the next sync puts the forge's text
+  back, and a walkthrough stop or note (`comment.anchor_ref` set), since
+  those two live and die with
   `publish_walkthrough`, which already tracks their ids and threads across a
   revision. `delete_comment` also refuses one someone else has replied to,
   since a reply lives inside its comment and would otherwise disappear with

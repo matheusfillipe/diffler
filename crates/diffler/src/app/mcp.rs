@@ -661,17 +661,16 @@ impl App {
         McpResponse::Added { id }
     }
 
-    /// Refuses another author's comment, and a walkthrough stop or note,
-    /// since `publish_walkthrough` tracks those ids.
-    fn check_own_editable_comment(&self, source: &ReviewSource, id: &str) -> Option<McpResponse> {
+    /// Refuses a comment already on the forge, since a sync would put its
+    /// forge text back, and a walkthrough stop or note, since
+    /// `publish_walkthrough` tracks those ids.
+    fn check_editable_comment(&self, source: &ReviewSource, id: &str) -> Option<McpResponse> {
         let Some(comment) = self.review.session_for(source).comment(id) else {
             return Some(McpResponse::Error(format!("unknown comment id: {id}")));
         };
-        if comment.author != AGENT_AUTHOR {
+        if comment.remote_id.is_some() {
             return Some(McpResponse::Error(format!(
-                "comment {id} is {}'s, not the agent's; only its own comments can be changed \
-                 this way",
-                comment.author
+                "comment {id} is already posted to the forge; ask the human to change it there"
             )));
         }
         if comment.anchor_ref.is_some() {
@@ -702,7 +701,7 @@ impl App {
         if let Err(err) = self.review.ensure_source(&source) {
             return McpResponse::Error(err.to_string());
         }
-        if let Some(response) = self.check_own_editable_comment(&source, id) {
+        if let Some(response) = self.check_editable_comment(&source, id) {
             return response;
         }
         if let Some(response) = self.check_no_foreign_reply(&source, id) {
@@ -712,7 +711,7 @@ impl App {
         if let Err(err) = self.persist_review_change(&source) {
             return McpResponse::Error(err);
         }
-        self.info("agent deleted its own comment");
+        self.info("agent deleted a comment");
         McpResponse::Ok
     }
 
@@ -733,14 +732,14 @@ impl App {
         if let Err(err) = self.review.ensure_source(&source) {
             return McpResponse::Error(err.to_string());
         }
-        if let Some(response) = self.check_own_editable_comment(&source, id) {
+        if let Some(response) = self.check_editable_comment(&source, id) {
             return response;
         }
         self.review.session_for_mut(&source).edit_comment(id, body);
         if let Err(err) = self.persist_review_change(&source) {
             return McpResponse::Error(err);
         }
-        self.info("agent edited its own comment");
+        self.info("agent edited a comment");
         McpResponse::Ok
     }
 }
@@ -1568,27 +1567,46 @@ mod tests {
     }
 
     #[test]
-    fn delete_and_edit_comment_refuse_a_humans_own_comment() {
+    fn delete_and_edit_comment_reach_a_humans_comment() {
         let (_fixture, mut app, human_id) = app_with_comment();
 
         let edit = app.handle_mcp(McpRequestKind::EditComment {
             id: human_id.clone(),
             body: "rewritten by the agent".to_owned(),
         });
-        assert!(matches!(edit, McpResponse::Error(_)), "{edit:?}");
-        assert_eq!(
-            app.review.session.comment(&human_id).unwrap().body,
-            "why 42?",
-            "the human's comment is untouched"
-        );
+        assert!(matches!(edit, McpResponse::Ok), "{edit:?}");
+        let comment = app.review.session.comment(&human_id).unwrap();
+        assert_eq!(comment.body, "rewritten by the agent");
+        assert_ne!(comment.author, AGENT_AUTHOR, "the human keeps authorship");
 
         let delete = app.handle_mcp(McpRequestKind::DeleteComment {
             id: human_id.clone(),
         });
+        assert!(matches!(delete, McpResponse::Ok), "{delete:?}");
+        assert!(app.review.session.comment(&human_id).is_none());
+    }
+
+    #[test]
+    fn delete_and_edit_comment_refuse_a_comment_on_the_forge() {
+        let (_fixture, mut app, human_id) = app_with_comment();
+        app.review
+            .session
+            .comments
+            .iter_mut()
+            .for_each(|c| c.remote_id = Some("100".to_owned()));
+
+        let edit = app.handle_mcp(McpRequestKind::EditComment {
+            id: human_id.clone(),
+            body: "rewritten by the agent".to_owned(),
+        });
+        assert!(matches!(edit, McpResponse::Error(_)), "{edit:?}");
+        let delete = app.handle_mcp(McpRequestKind::DeleteComment {
+            id: human_id.clone(),
+        });
         assert!(matches!(delete, McpResponse::Error(_)), "{delete:?}");
-        assert!(
-            app.review.session.comment(&human_id).is_some(),
-            "the human's comment survives"
+        assert_eq!(
+            app.review.session.comment(&human_id).unwrap().body,
+            "why 42?"
         );
     }
 

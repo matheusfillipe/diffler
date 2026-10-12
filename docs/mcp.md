@@ -26,13 +26,13 @@ You can open several repositories as tabs in one diffler, and the agent reaches 
   Authored as the agent by default, so the human answers it in the thread;
   pass `as_human` to author it as the human's own instead, so it goes out
   untouched with their next submitted review.
-- **delete_comment**: delete a comment you wrote with `add_comment`. Refused
-  for a human's own comment, for a walkthrough stop or note (revise or
-  drop those with `publish_walkthrough`), and for one someone else has
-  replied to, since deleting a comment deletes its replies (edit the body
-  instead).
-- **edit_comment**: replace the body of a comment you wrote with
-  `add_comment`, keeping its status, replies, and anchor. Same refusals as
+- **delete_comment**: delete a comment, the agent's or the human's. Refused
+  for one already posted to the forge, for a walkthrough stop or note
+  (revise or drop those with `publish_walkthrough`), and for one someone
+  other than the agent has replied to, since deleting a comment deletes its
+  replies (edit the body instead).
+- **edit_comment**: replace the body of a comment, keeping its author,
+  status, replies, and anchor. Same refusals as
   `delete_comment` except the reply one, since editing never touches replies.
 - **reply_comment**: answer a comment in place; you see the reply immediately.
 - **propose_resolve**: tell you a comment is dealt with, by marking it replied. Its optional note goes into the thread only when the agent has not replied there yet, so an answered comment keeps just the answer. Only you resolve it, in the TUI.

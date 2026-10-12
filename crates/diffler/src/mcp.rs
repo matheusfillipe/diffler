@@ -922,7 +922,7 @@ impl DifflerMcp {
     }
 
     #[tool(
-        description = "Delete a comment you wrote with add_comment. Refused for a human's own comment, and for a walkthrough stop or note (revise or drop those with publish_walkthrough instead)."
+        description = "Delete a comment, yours or the human's. Refused for one already posted to the forge, for one someone else replied to, and for a walkthrough stop or note (revise or drop those with publish_walkthrough instead)."
     )]
     async fn delete_comment(
         &self,
@@ -936,7 +936,7 @@ impl DifflerMcp {
     }
 
     #[tool(
-        description = "Replace the body of a comment you wrote with add_comment, keeping its status, replies and anchor. Refused for a human's own comment, and for a walkthrough stop or note (revise those with publish_walkthrough instead)."
+        description = "Replace the body of a comment, yours or the human's (a draft they asked you to rewrite), keeping its author, status, replies and anchor. Refused for one already posted to the forge, and for a walkthrough stop or note (revise those with publish_walkthrough instead)."
     )]
     async fn edit_comment(
         &self,
