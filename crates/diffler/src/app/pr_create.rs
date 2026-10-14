@@ -261,6 +261,7 @@ mod tests {
             subject: subject.to_owned(),
             author: "reviewer".to_owned(),
             time_unix: 0,
+            change_id: None,
         }
     }
 

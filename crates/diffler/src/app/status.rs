@@ -8,7 +8,7 @@ use std::path::Path;
 use diffler_core::model::FileDiff;
 use diffler_core::review::Review;
 use diffler_core::source::ReviewSource;
-use diffler_core::vcs::{BranchInfo, LogEntry, NetworkOp, Vcs, VcsError};
+use diffler_core::vcs::{BranchInfo, CommitLists, LogEntry, NetworkOp, Vcs, VcsError};
 
 use super::enrich::EnrichOutcome;
 use super::rowsel::RowSelect;
@@ -373,25 +373,13 @@ impl StatusView {
     }
 }
 
-/// Returns `(unpushed, recent)`. Recent is filtered against unpushed, so
-/// callers must apply both or neither, or a commit goes missing from both
-/// sections.
-pub(super) fn load_commit_lists(
-    vcs: &dyn Vcs,
-    limit: usize,
-    unpushed_limit: usize,
-) -> Result<(Option<Unpushed>, Vec<LogEntry>), VcsError> {
-    let unpushed = vcs.unpushed(unpushed_limit)?.map(|commits| Unpushed {
-        capped: commits.len() == unpushed_limit,
+/// Returns `(unpushed, recent)`, which callers apply together.
+pub(super) fn commit_sections(lists: CommitLists) -> (Option<Unpushed>, Vec<LogEntry>) {
+    let unpushed = lists.unpushed.map(|commits| Unpushed {
+        capped: commits.len() == UNPUSHED_LIMIT,
         commits,
     });
-    let ahead = unpushed
-        .as_ref()
-        .map_or(&[][..], |unpushed| unpushed.commits.as_slice());
-    let mut recent = vcs.log(limit + ahead.len(), false)?;
-    recent.retain(|entry| !ahead.iter().any(|local| local.oid == entry.oid));
-    recent.truncate(limit);
-    Ok((unpushed, recent))
+    (unpushed, lists.recent)
 }
 
 /// Head first, so the inline cap never cuts the checked-out branch, then
@@ -1040,7 +1028,7 @@ impl App {
                 let entries = entries
                     .into_iter()
                     .map(|entry| super::RevChoice {
-                        label: format!("{} {}", entry.oid7, entry.subject),
+                        label: format!("{} {}", entry.short_id(), entry.subject),
                         rev: entry.oid,
                     })
                     .collect();
@@ -1880,6 +1868,35 @@ mod tests {
         let fixture = standard_fixture();
         let app = App::new(fixture.review(), LoadedConfig::default());
         (fixture, app)
+    }
+
+    #[test]
+    fn a_repo_without_git_lists_jj_bookmarks_in_branches_and_the_log() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("fixture");
+        std::fs::create_dir(&root).expect("repo dir");
+        let jj = |args: &[&str]| diffler_core::test_git::jj(&root, args);
+        jj(&["git", "init", "--no-colocate"]);
+        std::fs::write(root.join("a.txt"), "one\n").expect("write");
+        jj(&["commit", "--message=initial"]);
+        jj(&["bookmark", "create", "topic", "-r", "@-"]);
+        let mut app = App::new(
+            diffler_core::review::Review::open(&root).expect("review"),
+            LoadedConfig::default(),
+        );
+        let names = |app: &App| -> Vec<String> {
+            app.status.branches.iter().map(|b| b.name.clone()).collect()
+        };
+        assert_eq!(names(&app), ["topic"]);
+        jj(&["bookmark", "create", "later", "-r", "@-"]);
+        app.queue_refresh();
+        app.settle_refresh();
+        assert_eq!(names(&app), ["later", "topic"]);
+        app.handle(key('l'));
+        app.handle(key('l'));
+        let log = app.log.as_ref().expect("log");
+        assert_eq!(log.entries[0].subject, "initial");
+        assert_eq!(log.entries[0].refs, ["later", "topic"]);
     }
 
     /// `data.txt` unfolded with the cursor on a line inside it.

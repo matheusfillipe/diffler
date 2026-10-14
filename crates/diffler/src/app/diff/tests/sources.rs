@@ -149,6 +149,9 @@ fn a_refresh_answering_for_another_rev_leaves_the_open_review_alone() {
         model: DiffModel::default(),
         against: Some(("develop".to_owned(), Ok(DiffModel::default()))),
         pinned: None,
+        head: Ok(app.head.clone()),
+        commits: Ok(diffler_core::vcs::CommitLists::default()),
+        jj: Ok(None),
     });
     assert_eq!(against_paths(&app), ["dirty.rs", "landed.rs"]);
 }

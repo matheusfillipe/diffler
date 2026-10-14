@@ -75,13 +75,17 @@ pub fn spawn_watcher(
 }
 
 /// We filter `.diffler/`, git's lockfiles and object database, and `.jj/`,
-/// which every jj command rewrites; that same command moves `.git/HEAD` and
-/// `.git/refs`, which carry the real signal. Project lockfiles stay relevant.
+/// which every jj command rewrites, except `.jj/repo/op_heads`, where each
+/// operation lands and a repo with no `.git` has no other signal. Project
+/// lockfiles stay relevant.
 fn relevant(path: &Path, repo_root: &Path, git_dir: &Path) -> bool {
     if let Ok(rel) = path.strip_prefix(git_dir) {
         return !(is_lockfile(path) || rel.starts_with("objects"));
     }
     let rel = path.strip_prefix(repo_root).unwrap_or(path);
+    if rel.starts_with(".jj/repo/op_heads") {
+        return true;
+    }
     if rel.starts_with(".git") && is_lockfile(path) {
         return false;
     }
@@ -123,6 +127,24 @@ mod tests {
         assert!(!relevant_in("/repo", ".jj/working_copy/tree_state"));
         assert!(!relevant_in("/repo", ".jj/repo/op_store/operations/abc123"));
         assert!(!relevant_in("/repo", ".jj/repo/index/segments"));
+    }
+
+    #[test]
+    fn a_jj_operation_surfaces_through_op_heads() {
+        assert!(relevant_in("/repo", ".jj/repo/op_heads/heads/abc123"));
+    }
+
+    #[test]
+    fn a_jj_operation_surfaces_when_the_git_store_sits_inside_jj() {
+        let root = Path::new("/repo");
+        let store = root.join(".jj/repo/store/git");
+        assert!(relevant(
+            &root.join(".jj/repo/op_heads/heads/abc123"),
+            root,
+            &store
+        ));
+        assert!(relevant(&store.join("refs/heads/topic"), root, &store));
+        assert!(!relevant(&store.join("objects/ab/cdef"), root, &store));
     }
 
     #[test]

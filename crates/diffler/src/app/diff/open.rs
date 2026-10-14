@@ -233,6 +233,9 @@ impl App {
         if let Some(range) = self.resolve_pr_range(&pr) {
             return Some(range);
         }
+        if self.declines_pr_fetch() {
+            return None;
+        }
         let (remote, refspec) = self.pr_head_source(pr.number);
         let base_ref = pr.base_ref.clone();
         let label = Self::pr_fetch_label(pr.number);

@@ -23,6 +23,18 @@ pub struct GitVcs {
     /// A `Cell` so `Vcs::set_diff_algorithm` works through `&self`.
     algorithm: Cell<DiffAlgorithm>,
     indent_heuristic: Cell<bool>,
+    /// False for a jj repo's own store, which has no index to read.
+    indexed: bool,
+    /// The commit every read of HEAD means. A jj store's own HEAD never
+    /// moves, so jj sets this to `@-`.
+    base: Cell<Base>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Base {
+    FollowHead,
+    Unborn,
+    At(git2::Oid),
 }
 
 impl GitVcs {
@@ -40,16 +52,103 @@ impl GitVcs {
             context_lines: settings.context_lines,
             algorithm: Cell::new(settings.algorithm),
             indent_heuristic: Cell::new(settings.indent_heuristic),
+            indexed: true,
+            base: Cell::new(Base::FollowHead),
         })
+    }
+
+    /// The bare git store of a jj repo with no `.git` of its own, its
+    /// worktree set to `root`.
+    pub fn open_jj_store(
+        git_dir: &Path,
+        root: &Path,
+        settings: &DiffSettings,
+    ) -> Result<Self, VcsError> {
+        let repo = git2::Repository::open_bare(git_dir)?;
+        repo.set_workdir(root, false)?;
+        // jj keeps its own state in `.jj` and, with no `.git`, writes no ignore file there
+        repo.add_ignore_rule(".jj/")?;
+        Ok(Self {
+            repo,
+            context_lines: settings.context_lines,
+            algorithm: Cell::new(settings.algorithm),
+            indent_heuristic: Cell::new(settings.indent_heuristic),
+            indexed: false,
+            base: Cell::new(Base::Unborn),
+        })
+    }
+
+    /// Read every later "HEAD" as `base`, `None` being an unborn one.
+    pub(crate) fn set_base(&self, base: Option<&str>) -> Result<(), VcsError> {
+        self.base.set(match base {
+            Some(oid) => Base::At(git2::Oid::from_str(oid)?),
+            None => Base::Unborn,
+        });
+        Ok(())
+    }
+
+    /// `None` on an unborn branch or base.
+    fn head_commit(&self) -> Result<Option<git2::Commit<'_>>, VcsError> {
+        match self.base.get() {
+            Base::At(oid) => Ok(Some(self.repo.find_commit(oid)?)),
+            Base::Unborn => Ok(None),
+            Base::FollowHead => match self.repo.head() {
+                Ok(head) => Ok(Some(head.peel_to_commit()?)),
+                Err(err) if err.code() == git2::ErrorCode::UnbornBranch => Ok(None),
+                Err(err) => Err(err.into()),
+            },
+        }
+    }
+
+    fn head_commit_or_unborn(&self) -> Result<git2::Commit<'_>, VcsError> {
+        self.head_commit()?.ok_or_else(|| {
+            git2::Error::new(
+                git2::ErrorCode::UnbornBranch,
+                git2::ErrorClass::Reference,
+                "HEAD has no commit yet",
+            )
+            .into()
+        })
+    }
+
+    /// `rev`, with a leading `HEAD` (`HEAD`, `HEAD~2`, `HEAD^`) read as the
+    /// base when one is set.
+    fn revparse(&self, rev: &str) -> Result<git2::Object<'_>, VcsError> {
+        let head_relative = rev
+            .strip_prefix("HEAD")
+            .filter(|rest| rest.is_empty() || rest.starts_with(['~', '^']));
+        match (self.base.get(), head_relative) {
+            (Base::At(_) | Base::Unborn, Some(rest)) => {
+                let oid = self.head_commit_or_unborn()?.id();
+                Ok(self.repo.revparse_single(&format!("{oid}{rest}"))?)
+            }
+            _ => Ok(self.repo.revparse_single(rev)?),
+        }
+    }
+
+    fn tree_files(&self) -> Result<Vec<PathBuf>, VcsError> {
+        let Some(tree) = self.head_tree()? else {
+            return Ok(Vec::new());
+        };
+        let mut out = Vec::new();
+        tree.walk(git2::TreeWalkMode::PreOrder, |dir, entry| {
+            if entry.kind() == Some(git2::ObjectType::Blob)
+                && let Ok(name) = entry.name()
+            {
+                out.push(PathBuf::from(format!("{dir}{name}")));
+            }
+            git2::TreeWalkResult::Ok
+        })?;
+        out.sort_unstable();
+        Ok(out)
     }
 
     /// `None` on an unborn branch.
     fn head_tree(&self) -> Result<Option<git2::Tree<'_>>, VcsError> {
-        match self.repo.head() {
-            Ok(head) => Ok(Some(head.peel_to_tree()?)),
-            Err(err) if err.code() == git2::ErrorCode::UnbornBranch => Ok(None),
-            Err(err) => Err(err.into()),
-        }
+        Ok(self
+            .head_commit()?
+            .map(|commit| commit.tree())
+            .transpose()?)
     }
 
     fn workdir_path(&self) -> Result<&Path, VcsError> {
@@ -59,13 +158,26 @@ impl GitVcs {
     /// `base` tree vs index + worktree, untracked included, renames found.
     /// `None` is the empty tree.
     fn workdir_diff(&self, base: Option<&git2::Tree<'_>>) -> Result<DiffModel, VcsError> {
-        let mut diff = self
-            .repo
-            .diff_tree_to_workdir_with_index(base, Some(&mut self.workdir_diff_options()))?;
+        let mut options = self.workdir_diff_options();
+        let mut diff = if self.indexed {
+            self.repo
+                .diff_tree_to_workdir_with_index(base, Some(&mut options))?
+        } else {
+            self.repo.diff_tree_to_workdir(base, Some(&mut options))?
+        };
         let mut find = git2::DiffFindOptions::new();
         find.renames(true);
         diff.find_similar(Some(&mut find))?;
-        self.diff_to_model(&mut diff)
+        let mut model = self.diff_to_model(&mut diff)?;
+        if !self.indexed {
+            // jj tracks every file of the working copy that no ignore rule names
+            for file in &mut model.files {
+                if file.status == FileStatus::Untracked {
+                    file.status = FileStatus::Added;
+                }
+            }
+        }
+        Ok(model)
     }
 
     fn plain_diff_options(&self) -> git2::DiffOptions {
@@ -141,9 +253,66 @@ impl GitVcs {
                 subject: commit.summary()?.unwrap_or_default().to_owned(),
                 author: commit.author().name().unwrap_or_default().to_owned(),
                 time_unix: commit.time().seconds(),
+                change_id: None,
             });
         }
         Ok(entries)
+    }
+
+    /// [`Vcs::log`], with `all_branches` also walking `tips`, the commits jj
+    /// bookmarks that the git store holds no ref for.
+    pub(crate) fn log_from(
+        &self,
+        limit: usize,
+        all_branches: bool,
+        tips: &[&str],
+    ) -> Result<Vec<LogEntry>, VcsError> {
+        let Some(head) = self.head_commit()? else {
+            return Ok(Vec::new());
+        };
+        let mut refs_by_oid: HashMap<git2::Oid, Vec<String>> = HashMap::new();
+        for reference in self.repo.references()?.flatten() {
+            let Ok(name) = reference.shorthand().map(str::to_owned) else {
+                continue;
+            };
+            let Some(target) = reference.peel_to_commit().ok().map(|c| c.id()) else {
+                continue;
+            };
+            refs_by_oid.entry(target).or_default().push(name);
+        }
+
+        let mut walk = self.repo.revwalk()?;
+        walk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)?;
+        walk.push(head.id())?;
+        if all_branches {
+            for glob in ["refs/heads", "refs/remotes", "refs/tags"] {
+                walk.push_glob(glob)?;
+            }
+            for tip in tips {
+                walk.push(git2::Oid::from_str(tip)?)?;
+            }
+        }
+        let mut entries = self.walk_entries(walk, limit)?;
+        for entry in &mut entries {
+            if let Some(refs) = git2::Oid::from_str(&entry.oid)
+                .ok()
+                .and_then(|oid| refs_by_oid.remove(&oid))
+            {
+                entry.refs = refs;
+            }
+        }
+        Ok(entries)
+    }
+
+    /// `(ahead, behind)` of commit `local` against commit `upstream`.
+    pub(crate) fn ahead_behind(
+        &self,
+        local: &str,
+        upstream: &str,
+    ) -> Result<(usize, usize), VcsError> {
+        Ok(self
+            .repo
+            .graph_ahead_behind(git2::Oid::from_str(local)?, git2::Oid::from_str(upstream)?)?)
     }
 
     /// Whether `git stash` would save anything; untracked files don't count.
@@ -169,6 +338,23 @@ impl Vcs for GitVcs {
     }
 
     fn head(&self) -> Result<HeadInfo, VcsError> {
+        if !matches!(self.base.get(), Base::FollowHead) {
+            let commit = self.head_commit()?;
+            return Ok(HeadInfo {
+                branch: None,
+                oid7: commit
+                    .as_ref()
+                    .map(|c| short7(&c.id().to_string()))
+                    .unwrap_or_default(),
+                subject: commit
+                    .as_ref()
+                    .and_then(|c| c.summary().ok().flatten().map(str::to_owned))
+                    .unwrap_or_default(),
+                upstream: None,
+                ahead: 0,
+                behind: 0,
+            });
+        }
         match self.repo.head() {
             Ok(head) => {
                 let branch = if head.is_branch() {
@@ -290,7 +476,7 @@ impl Vcs for GitVcs {
     }
 
     fn resolve(&self, revision: &str) -> Result<String, VcsError> {
-        let object = self.repo.revparse_single(revision)?;
+        let object = self.revparse(revision)?;
         let commit = object.peel_to_commit()?;
         Ok(commit.id().to_string())
     }
@@ -309,38 +495,7 @@ impl Vcs for GitVcs {
     }
 
     fn log(&self, limit: usize, all_branches: bool) -> Result<Vec<LogEntry>, VcsError> {
-        if self.head_tree()?.is_none() {
-            return Ok(Vec::new());
-        }
-        let mut refs_by_oid: HashMap<git2::Oid, Vec<String>> = HashMap::new();
-        for reference in self.repo.references()?.flatten() {
-            let Ok(name) = reference.shorthand().map(str::to_owned) else {
-                continue;
-            };
-            let Some(target) = reference.peel_to_commit().ok().map(|c| c.id()) else {
-                continue;
-            };
-            refs_by_oid.entry(target).or_default().push(name);
-        }
-
-        let mut walk = self.repo.revwalk()?;
-        walk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)?;
-        walk.push_head()?;
-        if all_branches {
-            for glob in ["refs/heads", "refs/remotes", "refs/tags"] {
-                walk.push_glob(glob)?;
-            }
-        }
-        let mut entries = self.walk_entries(walk, limit)?;
-        for entry in &mut entries {
-            if let Some(refs) = git2::Oid::from_str(&entry.oid)
-                .ok()
-                .and_then(|oid| refs_by_oid.remove(&oid))
-            {
-                entry.refs = refs;
-            }
-        }
-        Ok(entries)
+        self.log_from(limit, all_branches, &[])
     }
 
     fn default_branch(&self, remote: &str) -> Result<Option<String>, VcsError> {
@@ -370,10 +525,7 @@ impl Vcs for GitVcs {
     }
 
     fn commits_between(&self, base: &str, head: &str) -> Result<Vec<LogEntry>, VcsError> {
-        let (base, head) = (
-            self.repo.revparse_single(base)?,
-            self.repo.revparse_single(head)?,
-        );
+        let (base, head) = (self.revparse(base)?, self.revparse(head)?);
         let mut walk = self.repo.revwalk()?;
         walk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)?;
         walk.push(head.id())?;
@@ -382,12 +534,12 @@ impl Vcs for GitVcs {
     }
 
     fn unpushed(&self, limit: usize) -> Result<Option<Vec<LogEntry>>, VcsError> {
-        let Ok(head) = self.repo.head() else {
+        let Some(head) = self.head_commit().ok().flatten() else {
             return Ok(None);
         };
         let mut walk = self.repo.revwalk()?;
         walk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)?;
-        walk.push(head.peel_to_commit()?.id())?;
+        walk.push(head.id())?;
         let mut remotes = 0;
         for reference in self.repo.references()? {
             let reference = reference?;
@@ -407,6 +559,9 @@ impl Vcs for GitVcs {
     fn blame(&self, rel: &Path) -> Result<Vec<BlameSpan>, VcsError> {
         let mut options = git2::BlameOptions::new();
         options.track_copies_same_file(true);
+        if !matches!(self.base.get(), Base::FollowHead) {
+            options.newest_commit(self.head_commit_or_unborn()?.id());
+        }
         let blame = self.repo.blame_file(rel, Some(&mut options))?;
         // blame_file only knows committed content, so we remap the spans onto
         // the worktree with blame_buffer
@@ -443,7 +598,7 @@ impl Vcs for GitVcs {
     }
 
     fn read_at(&self, rev: &str, path: &str) -> Result<Option<String>, VcsError> {
-        let commit = self.repo.revparse_single(rev)?.peel_to_commit()?;
+        let commit = self.revparse(rev)?.peel_to_commit()?;
         match commit.tree()?.get_path(Path::new(path)) {
             Ok(entry) => Ok(blob_text(&self.repo, entry.id())),
             Err(err) if err.code() == git2::ErrorCode::NotFound => Ok(None),
@@ -461,6 +616,9 @@ impl Vcs for GitVcs {
     }
 
     fn tracked_files(&self) -> Result<Vec<PathBuf>, VcsError> {
+        if !self.indexed {
+            return self.tree_files();
+        }
         let index = self.repo.index()?;
         let mut out: Vec<PathBuf> = index
             .iter()
@@ -663,7 +821,7 @@ impl Vcs for GitVcs {
     }
 
     fn head_message(&self) -> Result<String, VcsError> {
-        let commit = self.repo.head()?.peel_to_commit()?;
+        let commit = self.head_commit_or_unborn()?;
         Ok(commit.message().unwrap_or_default().to_owned())
     }
 

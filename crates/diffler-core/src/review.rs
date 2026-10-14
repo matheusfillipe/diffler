@@ -13,7 +13,7 @@ use crate::repo;
 use crate::session::Session;
 use crate::source::ReviewSource;
 use crate::store::{self, StoreError};
-use crate::vcs::{StatusModel, Vcs, VcsError};
+use crate::vcs::{CommitLists, HeadInfo, JjView, StatusModel, Vcs, VcsError, commit_lists};
 
 #[derive(Debug, Error)]
 pub enum ReviewError {
@@ -82,6 +82,19 @@ pub struct Refreshed {
     /// the rev so a review swapped while the worker ran drops the answer.
     pub against: Option<(String, Result<DiffModel, VcsError>)>,
     pub pinned: Option<Result<DiffModel, VcsError>>,
+    pub head: Result<HeadInfo, VcsError>,
+    pub commits: Result<CommitLists, VcsError>,
+    /// Read here since it costs `jj` runs; the UI's own handle adopts it.
+    pub jj: Result<Option<JjView>, VcsError>,
+}
+
+/// How much history a refresh reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommitLimits {
+    pub recent: usize,
+    pub unpushed: usize,
+    /// What the log screen shows, which jj's change ids cover.
+    pub log: usize,
 }
 
 /// The diff for a commit, range or PR source. `pr_head` is the PR's
@@ -177,8 +190,11 @@ impl Review {
         settings: &DiffSettings,
         against: Option<&str>,
         pinned: Option<(&ReviewSource, Option<(&str, &str)>)>,
+        limits: CommitLimits,
     ) -> Result<Refreshed, ReviewError> {
         let vcs = repo::open_with_settings(repo_root, settings)?;
+        // first, so a repo with no `.git` reads every later HEAD as `@-`
+        let jj = vcs.read_jj_view(limits.log);
         let status = vcs.status()?;
         let model = vcs.working_tree_diff()?;
         let against =
@@ -189,6 +205,9 @@ impl Review {
             model,
             against,
             pinned,
+            head: vcs.head(),
+            commits: commit_lists(vcs.as_ref(), limits.recent, limits.unpushed),
+            jj,
         })
     }
 

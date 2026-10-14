@@ -15,24 +15,17 @@ pub enum RepoError {
     NotFound(PathBuf),
     #[error("repository has no working directory: {0}")]
     Bare(PathBuf),
-    #[error(
-        "jj repo at {0} is not colocated with git; run `jj git colocation enable` there to use diffler"
-    )]
-    JjNotColocated(PathBuf),
     #[error(transparent)]
     Git(#[from] git2::Error),
 }
 
 /// The worktree root of the repository containing `path`. A `.jj` with no
-/// `.git` reports [`RepoError::JjNotColocated`].
+/// `.git` above it is a jj repo, whose root we return.
 pub fn discover(path: &Path) -> Result<PathBuf, RepoError> {
     let repo = match git2::Repository::discover(path) {
         Ok(repo) => repo,
         Err(err) if err.code() == git2::ErrorCode::NotFound => {
-            return Err(find_uncolocated_jj(path).map_or_else(
-                || RepoError::NotFound(path.to_path_buf()),
-                RepoError::JjNotColocated,
-            ));
+            return find_jj_root(path).ok_or_else(|| RepoError::NotFound(path.to_path_buf()));
         }
         Err(err) => return Err(RepoError::Git(err)),
     };
@@ -41,7 +34,7 @@ pub fn discover(path: &Path) -> Result<PathBuf, RepoError> {
         .ok_or_else(|| RepoError::Bare(path.to_path_buf()))
 }
 
-fn find_uncolocated_jj(path: &Path) -> Option<PathBuf> {
+fn find_jj_root(path: &Path) -> Option<PathBuf> {
     let mut dir = if path.is_dir() {
         Some(path)
     } else {
@@ -56,7 +49,7 @@ fn find_uncolocated_jj(path: &Path) -> Option<PathBuf> {
     None
 }
 
-/// [`JjVcs`] when a `.jj` directory sits beside `.git`, else [`GitVcs`].
+/// [`JjVcs`] when the root has a `.jj` directory, else [`GitVcs`].
 pub fn open(root: &Path) -> Result<Box<dyn Vcs>, VcsError> {
     open_with_settings(root, &DiffSettings::default())
 }

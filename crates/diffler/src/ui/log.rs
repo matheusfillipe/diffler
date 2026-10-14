@@ -110,7 +110,10 @@ fn entry_line(
     ));
     let drawn = graph.len().min(MAX_LANES + 1);
     spans.push(Span::raw("  ".repeat(ctx.lanes.saturating_sub(drawn))));
-    spans.push(Span::styled(format!(" {} ", entry.oid7), theme.dim_style()));
+    spans.push(Span::styled(
+        format!(" {} ", entry.short_id()),
+        theme.dim_style(),
+    ));
     spans.extend(ref_spans(ctx, entry));
     spans.extend(super::highlight_spans(
         &entry.subject,
@@ -221,7 +224,7 @@ mod tests {
 
     use crate::app::App;
     use crate::config::LoadedConfig;
-    use crate::test_support::{key, mouse_click, standard_fixture};
+    use crate::test_support::{jj_fixture, key, mouse_click, standard_fixture};
 
     fn render(app: &mut App) -> Terminal<TestBackend> {
         let backend = TestBackend::new(120, 40);
@@ -279,6 +282,24 @@ mod tests {
         assert!(content.contains("feat/topic"), "refs decorate: {content}");
         assert!(content.contains("1h"), "commit age renders: {content}");
         insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn a_jj_log_names_commits_by_change_id() {
+        let fixture = jj_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.handle(key('l'));
+        app.handle(key('l'));
+        let entries = &mut app.log.as_mut().unwrap().entries;
+        assert!(entries.iter().all(|e| e.change_id.is_some()));
+        // jj picks random change ids, so we seat ones that snapshots can hold
+        for (entry, id) in entries.iter_mut().zip(["kkmpptxz", "qpvuntsm"]) {
+            entry.change_id = Some(id.to_owned());
+            entry.time_unix = 1_700_000_000;
+        }
+        entries[0].subject = "(no description set)".to_owned();
+        app.now_unix = 1_700_000_000 + 3661;
+        insta::assert_snapshot!(render(&mut app).backend());
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! Backend-agnostic VCS interface. Only the `git` and `repo` modules and test
 //! fixtures may import git2.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
@@ -48,6 +49,49 @@ pub struct LogEntry {
     pub subject: String,
     pub author: String,
     pub time_unix: i64,
+    /// Short jj change id; `None` outside a jj repo.
+    pub change_id: Option<String>,
+}
+
+impl LogEntry {
+    /// The id a reader names the commit by: the change id in a jj repo.
+    pub fn short_id(&self) -> &str {
+        self.change_id.as_deref().unwrap_or(&self.oid7)
+    }
+}
+
+/// The jj working-copy change `@`, shown on a jj repo's head line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangeInfo {
+    pub change_id: String,
+    /// A bookmark on `@`, else on its nearest bookmarked ancestor.
+    pub bookmark: Option<String>,
+    /// First line of the description; empty when none is set.
+    pub description: String,
+}
+
+/// A jj bookmark: `name` for a local one, `name@remote` for a remote one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bookmark {
+    pub name: String,
+    pub oid: String,
+    pub remote: bool,
+    pub tip_unix: i64,
+}
+
+/// What jj knows beyond the git store, read through the `jj` CLI.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct JjView {
+    /// `@`, `None` when jj's answer named no working copy.
+    pub change: Option<ChangeInfo>,
+    /// The first parent of `@`, which colocated git's HEAD sits on; `None`
+    /// when that is jj's root commit.
+    pub base: Option<String>,
+    /// Every bookmark; filled only where the git store lacks them, which is
+    /// a repo with no `.git`.
+    pub bookmarks: Vec<Bookmark>,
+    /// Short change id by full commit id, over recent history.
+    pub change_ids: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,6 +147,14 @@ pub trait Vcs: Send {
     /// the `.git` file points at.
     fn git_dir(&self) -> Result<PathBuf, VcsError>;
     fn head(&self) -> Result<HeadInfo, VcsError>;
+    /// jj's view, covering `log_limit` commits of history; `None` outside a
+    /// jj repo. It costs two `jj` runs, so callers ask from a worker, and
+    /// this handle adopts it.
+    fn read_jj_view(&self, _log_limit: usize) -> Result<Option<JjView>, VcsError> {
+        Ok(None)
+    }
+    /// Take a view another handle read, with no subprocess.
+    fn adopt_jj_view(&self, _view: JjView) {}
     /// Whether this backend has a staging area. jj has none, so its whole
     /// working copy reads as [`StatusModel::staged`].
     fn has_index(&self) -> bool;
@@ -213,6 +265,30 @@ pub trait Vcs: Send {
 
     /// Set the line-diff algorithm for every later diff of this instance.
     fn set_diff_algorithm(&self, algorithm: DiffAlgorithm, indent_heuristic: bool);
+}
+
+/// The status screen's commit sections.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CommitLists {
+    /// [`Vcs::unpushed`]'s answer.
+    pub unpushed: Option<Vec<LogEntry>>,
+    /// HEAD's history with the unpushed commits left out.
+    pub recent: Vec<LogEntry>,
+}
+
+/// `recent` leaves out what `unpushed` holds, so a caller applies both or
+/// neither, or a commit goes missing from both sections.
+pub fn commit_lists(
+    vcs: &dyn Vcs,
+    recent_limit: usize,
+    unpushed_limit: usize,
+) -> Result<CommitLists, VcsError> {
+    let unpushed = vcs.unpushed(unpushed_limit)?;
+    let ahead = unpushed.as_deref().unwrap_or_default();
+    let mut recent = vcs.log(recent_limit + ahead.len(), false)?;
+    recent.retain(|entry| !ahead.iter().any(|local| local.oid == entry.oid));
+    recent.truncate(recent_limit);
+    Ok(CommitLists { unpushed, recent })
 }
 
 /// Three-dot diff of `rev` against the working tree: `merge-base(rev, HEAD)`

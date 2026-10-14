@@ -253,6 +253,16 @@ impl App {
         format!("{}{number}", Self::PR_FETCH_PREFIX)
     }
 
+    /// We fetch a pull request with `git`, which in a jj repo with no
+    /// `.git` would fetch into whatever repo encloses it.
+    pub(crate) fn declines_pr_fetch(&mut self) -> bool {
+        if self.review.repo_root.join(".git").exists() {
+            return false;
+        }
+        self.error("run `jj git colocation enable` to fetch pull requests into this repo");
+        true
+    }
+
     pub(crate) fn checkout_selected_pr(&mut self) {
         let Some(pr) = self.prs.get(self.prs_cursor).cloned() else {
             return;
@@ -282,6 +292,9 @@ impl App {
                     pr.number.to_string(),
                 ],
             });
+            return;
+        }
+        if self.declines_pr_fetch() {
             return;
         }
         let (remote, head) = self.pr_head_source(pr.number);

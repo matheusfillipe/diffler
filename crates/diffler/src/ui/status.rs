@@ -3,7 +3,7 @@
 use crate::app::rowsel::RowSelect;
 use diffler_core::model::FileDiff;
 use diffler_core::stats::LanguageChurn;
-use diffler_core::vcs::LogEntry;
+use diffler_core::vcs::{ChangeInfo, LogEntry};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -257,7 +257,34 @@ fn unexpected_upstream(app: &App) -> Option<&str> {
     (!upstream.ends_with(&format!("/{branch}"))).then_some(upstream)
 }
 
+/// jj's `@`: its change id, the bookmark it sits on or under, its description.
+fn change_line(app: &App, change: &ChangeInfo) -> Line<'static> {
+    let theme = &app.theme;
+    let mut spans = vec![
+        Span::styled(" Head:     ", theme.dim_style()),
+        Span::styled(format!("@ {}", change.change_id), theme.dim_style()),
+    ];
+    if let Some(bookmark) = &change.bookmark {
+        spans.push(Span::styled(
+            format!(" {bookmark}"),
+            branch_name_style(theme),
+        ));
+    }
+    if change.description.is_empty() {
+        spans.push(Span::styled(" (no description set)", theme.dim_style()));
+    } else {
+        spans.push(Span::styled(
+            format!(" {}", change.description),
+            theme.base(),
+        ));
+    }
+    Line::from(spans)
+}
+
 fn head_line(app: &App) -> Line<'static> {
+    if let Some(change) = &app.change {
+        return change_line(app, change);
+    }
     let theme = &app.theme;
     let mut spans = vec![Span::styled(" Head:     ", theme.dim_style())];
     match &app.head.branch {
@@ -559,7 +586,7 @@ fn commit_spans(
         app.status.unfolded_commits.contains(&entry.oid),
     ));
     spans.push(Span::styled(
-        format!("{} ", entry.oid7),
+        format!("{} ", entry.short_id()),
         Style::new().fg(theme.warn_fg),
     ));
     spans.extend(highlight_spans(
@@ -761,6 +788,7 @@ mod tests {
         Fixture, jj_fixture, key, mouse_click, mouse_scroll, render, standard_fixture,
         two_hunk_fixture,
     };
+    use diffler_core::vcs::ChangeInfo;
 
     #[test]
     fn the_language_line_appears_only_once_a_review_spans_two() {
@@ -835,7 +863,33 @@ mod tests {
     fn status_screen_in_a_jj_repo_folds_into_one_working_copy_section() {
         let fixture = jj_fixture();
         let mut app = App::new(fixture.review(), LoadedConfig::default());
+        // jj picks a random change id, so we seat one that snapshots can hold
+        app.change = Some(ChangeInfo {
+            change_id: "kkmpptxz".to_owned(),
+            bookmark: Some("main".to_owned()),
+            description: "add the answer".to_owned(),
+        });
         insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn a_jj_head_with_no_description_says_so() {
+        let fixture = jj_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.change = Some(ChangeInfo {
+            change_id: "qpvuntsm".to_owned(),
+            bookmark: None,
+            description: String::new(),
+        });
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn a_jj_repo_reads_its_change_from_the_backend() {
+        let fixture = jj_fixture();
+        let app = App::new(fixture.review(), LoadedConfig::default());
+        let change = app.change.expect("jj change");
+        assert_eq!(change.change_id.len(), 8);
     }
 
     #[test]

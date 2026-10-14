@@ -105,3 +105,45 @@ impl JjFixture {
         diffler_core::test_git::jj(self.root(), args)
     }
 }
+
+/// A jj repo with no `.git`: one commit `initial` holding `README.md` and
+/// `a.txt`, an empty `@` on top.
+pub(crate) struct JjStoreFixture {
+    pub dir: TempDir,
+}
+
+impl JjStoreFixture {
+    pub(crate) fn new() -> Self {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fx = Self { dir };
+        fx.jj(&["git", "init", "--no-colocate"]);
+        fx.jj(&["config", "set", "--repo", "user.name", "reviewer"]);
+        fx.jj(&[
+            "config",
+            "set",
+            "--repo",
+            "user.email",
+            "reviewer@example.com",
+        ]);
+        fx.write("README.md", "hello\n");
+        fx.write("a.txt", "one\n");
+        fx.jj(&["commit", "--message=initial"]);
+        fx
+    }
+
+    pub(crate) fn root(&self) -> &Path {
+        self.dir.path()
+    }
+
+    pub(crate) fn write(&self, rel: &str, content: &str) {
+        let path = self.dir.path().join(rel);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("mkdir");
+        }
+        fs::write(path, content).expect("write");
+    }
+
+    pub(crate) fn jj(&self, args: &[&str]) -> String {
+        diffler_core::test_git::jj(self.root(), args)
+    }
+}

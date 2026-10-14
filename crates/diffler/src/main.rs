@@ -72,7 +72,8 @@ async fn main() -> color_eyre::Result<()> {
             let terminal = ratatui::init();
             set_mouse_capture(true);
             install_mouse_panic_hook();
-            let result = run(terminal, app, overrides).await;
+            // the App lives in this future, and clippy's large_futures wants it on the heap
+            let result = Box::pin(run(terminal, app, overrides)).await;
             set_mouse_capture(false);
             ratatui::restore();
             result
@@ -123,10 +124,6 @@ fn exit_without_repo(err: &diffler_core::repo::RepoError, path: &str) -> ! {
         diffler_core::repo::RepoError::Bare(_) => {
             eprintln!("diffler: {shown} is a bare repository, which has nothing to review");
             eprintln!("open a clone with a working tree instead");
-        }
-        diffler_core::repo::RepoError::JjNotColocated(_) => {
-            eprintln!("diffler: {shown} is a jj repo without git colocation");
-            eprintln!("run `jj git colocation enable` there, then reopen diffler");
         }
         git @ diffler_core::repo::RepoError::Git(_) => eprintln!("diffler: {git}"),
     }
@@ -281,6 +278,7 @@ fn dispatch_refresh(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     let root = app.review.repo_root.clone();
     let settings = app.config.diff_settings();
     let against = app.against_rev().map(str::to_owned);
+    let limits = app.commit_limits();
     let tx = tx.clone();
     tokio::task::spawn_blocking(move || {
         let result = diffler_core::review::Review::compute_refresh(
@@ -288,6 +286,7 @@ fn dispatch_refresh(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
             &settings,
             against.as_deref(),
             None,
+            limits,
         )
         .map_err(|err| err.to_string());
         let _ = tx.send(AppEvent::RefreshDone(Box::new(result)));

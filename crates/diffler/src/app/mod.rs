@@ -55,7 +55,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use diffler_core::model::DiffModel;
 use diffler_core::review::Review;
 use diffler_core::source::ReviewSource;
-use diffler_core::vcs::{BranchInfo, HeadInfo, NetworkOp, Vcs, VcsError};
+use diffler_core::vcs::{BranchInfo, ChangeInfo, HeadInfo, NetworkOp, Vcs, VcsError};
 
 use crate::config::{Config, KeyPress, LoadedConfig};
 use crate::editor::EditorRequest;
@@ -642,6 +642,10 @@ pub(crate) fn page_step(viewport: u16, full: bool) -> usize {
 pub struct App {
     pub review: Review,
     pub head: HeadInfo,
+    /// The jj working-copy change `@`, shown on a jj repo's head line.
+    pub change: Option<ChangeInfo>,
+    /// Why the last read of jj failed, so we report a failure once.
+    jj_error: Option<String>,
     pub theme: Theme,
     /// Pinned to `theme`'s syntax palette; enrichment workers clone the `Arc`.
     pub highlighter: Arc<diffler_core::highlight::Highlighter>,
@@ -880,6 +884,17 @@ impl App {
                 text,
                 severity: Severity::Warning,
             });
+        // startup pays the jj runs once; refreshes read jj on their worker
+        let (change, jj_error) = match review.vcs.read_jj_view(log::LOG_LIMIT) {
+            Ok(view) => (view.and_then(|view| view.change), None),
+            Err(err) => {
+                message = Some(StatusMessage {
+                    text: err.to_string(),
+                    severity: Severity::Warning,
+                });
+                (None, Some(err.to_string()))
+            }
+        };
         let head = match review.vcs.head() {
             Ok(head) => head,
             Err(err) => {
@@ -890,12 +905,12 @@ impl App {
                 empty_head()
             }
         };
-        let (unpushed, recent) = match status::load_commit_lists(
+        let (unpushed, recent) = match diffler_core::vcs::commit_lists(
             review.vcs.as_ref(),
             config.ui.recent_commits,
             status::UNPUSHED_LIMIT,
         ) {
-            Ok(lists) => lists,
+            Ok(lists) => status::commit_sections(lists),
             Err(err) => {
                 message = Some(StatusMessage {
                     text: err.to_string(),
@@ -926,6 +941,8 @@ impl App {
         let mut app = Self {
             review,
             head,
+            change,
+            jj_error,
             theme,
             highlighter,
             config,
@@ -1659,6 +1676,7 @@ impl App {
             about,
             pr_head,
             token: self.rediff_token,
+            limits: self.commit_limits(),
         });
     }
 
@@ -1706,6 +1724,7 @@ impl App {
             model,
             against,
             pinned,
+            ..
         } = match result {
             Ok(refreshed) => refreshed,
             Err(message) => {
@@ -1853,6 +1872,7 @@ impl App {
             &self.config.diff_settings(),
             against.as_deref(),
             None,
+            self.commit_limits(),
         )
         .map_err(|err| err.to_string());
         self.on_refresh_done(result);
@@ -1869,13 +1889,49 @@ impl App {
         }
     }
 
+    /// A failing `jj` leaves git's own reads standing, so we say so once.
+    fn adopt_jj(&mut self, jj: Result<Option<diffler_core::vcs::JjView>, VcsError>) {
+        match jj {
+            Ok(view) => {
+                self.jj_error = None;
+                self.change = view.as_ref().and_then(|view| view.change.clone());
+                if let Some(view) = view {
+                    self.review.vcs.adopt_jj_view(view);
+                }
+            }
+            Err(err) => {
+                let text = err.to_string();
+                if self.jj_error.as_ref() != Some(&text) {
+                    self.message = Some(StatusMessage {
+                        text: text.clone(),
+                        severity: Severity::Warning,
+                    });
+                }
+                self.jj_error = Some(text);
+                self.change = None;
+            }
+        }
+    }
+
+    pub fn commit_limits(&self) -> diffler_core::review::CommitLimits {
+        diffler_core::review::CommitLimits {
+            recent: self.config.ui.recent_commits,
+            unpushed: status::UNPUSHED_LIMIT,
+            log: log::LOG_LIMIT,
+        }
+    }
+
     pub(crate) fn apply_refresh(&mut self, refreshed: diffler_core::review::Refreshed) {
         let diffler_core::review::Refreshed {
             status,
             model,
             against,
+            head,
+            commits,
+            jj,
             ..
         } = refreshed;
+        self.adopt_jj(jj);
         self.now_unix = now_unix();
         let status_anchor = self.status_cursor_anchor();
         let diff_anchor_path = self.diff_cursor_path();
@@ -1893,18 +1949,13 @@ impl App {
             self.review.install_refresh(status, model);
             self.status.clear_enriched();
         }
-        match self.review.vcs.head() {
+        match head {
             Ok(head) => self.head = head,
             Err(err) => self.error(err.to_string()),
         }
-        match status::load_commit_lists(
-            self.review.vcs.as_ref(),
-            self.config.ui.recent_commits,
-            status::UNPUSHED_LIMIT,
-        ) {
-            Ok((unpushed, recent)) => {
-                self.status.unpushed = unpushed;
-                self.status.recent = recent;
+        match commits {
+            Ok(lists) => {
+                (self.status.unpushed, self.status.recent) = status::commit_sections(lists);
             }
             Err(err) => self.error(err.to_string()),
         }

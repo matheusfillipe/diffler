@@ -61,7 +61,7 @@ impl RowText for LogView {
     fn row_text(&self, row: usize) -> String {
         self.entries
             .get(row)
-            .map(|entry| format!("{} {}", entry.oid7, entry.subject))
+            .map(|entry| format!("{} {}", entry.short_id(), entry.subject))
             .unwrap_or_default()
     }
 }

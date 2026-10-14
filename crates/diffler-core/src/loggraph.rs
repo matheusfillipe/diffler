@@ -235,6 +235,7 @@ mod tests {
             subject: String::new(),
             author: String::new(),
             time_unix: 0,
+            change_id: None,
         }
     }
 

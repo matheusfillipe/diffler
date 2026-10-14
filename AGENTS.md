@@ -12,7 +12,7 @@ small native binary, alternate-screen TUI, no daemon, no browser).
 crates/diffler-core/   pure logic, no terminal (errors via thiserror):
   vcs.rs / git.rs      Vcs trait + git2 backend (status, diff, log, stage, commit, branch)
   jj.rs                JjVcs: composes the git2 backend for reads, shells out to `jj` for writes
-  repo.rs              repository discovery and backend selection (git vs colocated jj)
+  repo.rs              repository discovery and backend selection (git vs jj)
   model.rs diff.rs     diff model, hunks
   diffalgo.rs          selectable line-diff algorithms (myers/minimal/patience/histogram/structural)
   pairing.rs           similarity line-pairing + grapheme intraline emphasis
@@ -97,9 +97,9 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
 - **Layering.** Nothing above the `Vcs` trait may import git2 or shell out to
   `jj`. Two backends exist: `git.rs`'s git2 backend, and `jj.rs`'s `JjVcs`.
   `repo::open` picks between them by whether the discovered root has a `.jj`
-  directory beside `.git`.
-- **jj support.** Colocated repos only: a `.jj` directory beside `.git`, what
-  `jj git init` makes by default. In a colocated repo git's HEAD sits on
+  directory.
+- **jj support.** Colocated repos, a `.jj` directory beside `.git` (what
+  `jj git init` makes by default), and repos with no `.git`. In a colocated repo git's HEAD sits on
   jj's `@-` and the worktree matches `@`, so `JjVcs` delegates every read
   (diff, log, blame, `read_at`, tree diffs) to `GitVcs` unchanged. Writes
   shell out to `jj`: commit -> `jj commit`, extend -> `jj squash -u` (a bare
@@ -131,16 +131,58 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   reporting it once as added (tree vs index) and again as modified (index
   vs workdir). The status screen folds to that one section
   (titled "Working copy (@)") and its hint line drops `s stage`; nothing else
-  about the screen forks for jj. `repo::discover` reports a jj repo with no
-  `.git` at all (`jj git init --no-colocate`) as `RepoError::JjNotColocated`,
-  naming `jj git colocation enable` as the fix. The watcher ignores `.jj/`
-  the way it ignores `.git/objects`: a jj command rewrites its operation log
-  and working-copy snapshot on every invocation, but the same command also
-  moves the `.git/refs`/`.git/HEAD` it exports to, which carries the real
-  signal. `head()` reads git HEAD as-is (often detached, since jj never
-  moves a bookmark for you): resolving `@`'s own bookmark or change id on
-  every refresh would cost a `jj` subprocess call on the UI thread for a
-  cosmetic label, so `head()` skips it.
+  about the screen forks for jj, but its head line. A repo with no `.git`
+  (`jj git init --no-colocate`) works too: `repo::discover` falls back to
+  the nearest `.jj`, and `JjVcs` opens jj's own store (`.jj/repo/store/git`,
+  or wherever `git_target` points) with git2 as a bare repo whose workdir is
+  the root. That store has no index, its HEAD never moves and jj never
+  exports bookmarks into it, so we never write to it: `GitVcs` carries a
+  base (`set_base`) that every read of HEAD goes through (`head`,
+  `head_tree`, `unpushed`, the log walk, `head_message`, and a `HEAD`,
+  `HEAD~n` or `HEAD^` in `resolve`, `read_at`, `commits_between` and
+  `blame`), set to the first parent of `@` (unborn on jj's root commit). A
+  colocated repo leaves it following git's own HEAD, which jj keeps on that
+  same commit. The working copy diffs with `diff_tree_to_workdir`, ignores
+  `.jj/`, reports a new file as added (jj tracks it), and lists
+  `tracked_files` from the base's tree. A secondary workspace (`.jj/repo` a
+  file) is refused with a message naming the main one. jj's own knowledge
+  is a `JjView` (`@`'s change id, description and bookmark, else the
+  nearest bookmarked ancestor's, local before `name@remote`; the base; every
+  bookmark in a repo with no `.git`; short change ids over twice the log's
+  depth of `::(@ | bookmarks() | remote_bookmarks() | tags())`), read in two
+  `jj log --ignore-working-copy` runs by `Vcs::read_jj_view`. Only
+  `App::new` and `Review::compute_refresh` (on the blocking pool, first, so
+  the worker's handle reads HEAD as the base) call it. `App::new` runs on
+  the UI thread when a project opens, at startup or as a new tab, and a repo
+  with no `.git` pays 3 `jj` runs there: `Review::open`'s state read, then
+  the view; the refresh carries the view, HEAD and the commit lists in
+  `Refreshed`, and `apply_refresh` assigns them and hands the view to the
+  UI's handle through `adopt_jj_view`, which runs nothing. Every other read
+  stays a git2 read: `log`, `unpushed` and `commits_between` attach change
+  ids, jj's `(no description set)` for an empty subject, and (with no
+  `.git`) the bookmarks as ref labels from the adopted view, dropping the
+  `jj/keep/*` refs; with no `.git`, `branches`, `all_branches` (`name` and
+  `name@remote`) and `divergence` read the view's bookmarks too. A handle
+  that has adopted no view asks jj for the state alone once, before its
+  first read of HEAD, which is how a worker's fresh backend finds `@-`, and
+  a write asks again for the commit it made, failing when `jj` fails. A
+  colocated repo whose `jj` fails or is missing keeps its git2 reads: the
+  refresh carries the error, shown once. A repo with no `.git` keeps the
+  UI's last good base, and a refresh whose handle never learned one fails
+  with jj's error. A colocated repo resolves a revision through git first
+  (refs, `main~2`, oids, `HEAD` as the base), since git's refs are current
+  where jj's import of them can lag. A repo with no `.git` resolves a
+  leading bookmark name through the view, since its store's refs are stale
+  or absent, and applies a `~n`/`^n` suffix with git2. What git cannot
+  read (`trunk()`, change ids), and `@` with its relatives, which git
+  reads as HEAD, goes to `jj log -r <rev>`, refusing a revset that matches
+  no commit, several, or jj's root commit; a git ancestry suffix on a name
+  nothing knows is refused, never handed to jj, which reads `~` as a set
+  difference. A pull request fetch declines in a repo with no `.git`,
+  since `git fetch` would reach an enclosing repo. The watcher ignores
+  `.jj/` the way it ignores `.git/objects`, except `.jj/repo/op_heads`:
+  every jj operation lands there, and a repo with no `.git` has no other
+  signal.
 - **Runtime.** One tokio runtime: MCP server (axum, `127.0.0.1:{port}/mcp`),
   notify watcher (debounce ~200ms → refresh), main task = the ratatui loop.
   `App` owns all state; workers (git, CI, editor, clipboard, refresh,

@@ -826,6 +826,7 @@ pub struct RediffRequest {
     pub pr_head: Option<(String, String)>,
     /// The request this answers; a stale one is dropped on arrival.
     pub token: u64,
+    pub limits: diffler_core::review::CommitLimits,
 }
 
 impl RediffRequest {
@@ -856,7 +857,8 @@ impl RediffRequest {
                 )
             })
             .map(|source| (source, pr_head));
-        Review::compute_refresh(repo_root, settings, against, pinned).map_err(|err| err.to_string())
+        Review::compute_refresh(repo_root, settings, against, pinned, self.limits)
+            .map_err(|err| err.to_string())
     }
 }
 
