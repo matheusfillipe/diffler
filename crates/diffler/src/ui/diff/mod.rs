@@ -14,22 +14,21 @@ use diffler_core::model::DiffModel;
 use diffler_core::session::Session;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use self::cards::pane_author_orders;
-pub(super) use self::cards::slot_color;
-use self::comments::draw_comments;
+use self::cards::CardSearch;
+use self::comments::{draw_comments, pane_author_orders};
 use self::pane::{FigureRaster, draw_pane, patch_figure_copy_text, rasterize_figures};
 use self::references::draw_references;
-use self::sidebar::{draw_sidebar, tree_lead};
-use crate::app::markdown::MdSpan;
+use self::sidebar::draw_sidebar;
 use crate::app::{App, DiffView};
 use crate::keymap::Action;
 use crate::search::Search;
 use crate::theme::Theme;
 use crate::ui::Hint;
+use crate::ui::diff_render::cursor_band;
 use crate::ui::status_bar;
 
 const HINTS: &[Hint] = &[
@@ -277,31 +276,36 @@ fn clip_spans(
     }
 }
 
-/// Recolouring flags (code, link, muted) win over `base`'s foreground.
-pub(super) fn md_span(run: &MdSpan, base: Style, theme: &Theme) -> Span<'static> {
-    let mut style = base;
-    if run.bold {
-        style = style.add_modifier(Modifier::BOLD);
+fn sidebar_row_bg(theme: &Theme, on_cursor: bool, focused: bool) -> Color {
+    if on_cursor {
+        cursor_band(theme, sidebar_bg(theme), focused)
+    } else {
+        sidebar_bg(theme)
     }
-    if run.italic {
-        style = style.add_modifier(Modifier::ITALIC);
-    }
-    if run.strike {
-        style = style.add_modifier(Modifier::CROSSED_OUT);
-    }
-    if run.code {
-        style = style.fg(theme.accent);
-    }
-    if run.link {
-        style = style.fg(theme.accent).add_modifier(Modifier::UNDERLINED);
-    }
-    if run.muted {
-        style = style.fg(theme.dim);
-    }
-    if let Some((r, g, b)) = run.fg {
-        style = style.fg(Color::Rgb(r, g, b));
-    }
-    Span::styled(run.text.clone(), style)
+}
+
+/// The cursor `▌` marker plus the tree indent for `depth`.
+fn tree_lead(theme: &Theme, depth: usize, bg: Color, on_cursor: bool) -> Span<'static> {
+    // some themes tint the cursor band faintly, so we add a bar
+    let marker = if on_cursor { "▌" } else { " " };
+    Span::styled(
+        format!("{marker}{}", " ".repeat(depth * 2)),
+        Style::new().fg(theme.accent).bg(bg),
+    )
+}
+
+fn search_ranges(
+    search: Option<CardSearch<'_>>,
+    text: &str,
+) -> Vec<(std::ops::Range<usize>, bool)> {
+    search
+        .map(|search| {
+            crate::search::find_matches(&[(0, text.to_owned())], search.query)
+                .into_iter()
+                .map(|found| (found.range, search.current))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn pad_line(mut spans: Vec<Span<'static>>, bg: Color, width: u16) -> Line<'static> {
@@ -585,7 +589,7 @@ mod tests {
             fg: Some((1, 2, 3)),
             ..Default::default()
         };
-        let span = super::md_span(&run, theme.base(), &theme);
+        let span = super::cards::md_span(&run, theme.base(), &theme);
         assert_eq!(
             span.style.fg,
             Some(ratatui::style::Color::Rgb(1, 2, 3)),

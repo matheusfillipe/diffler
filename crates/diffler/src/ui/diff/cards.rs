@@ -2,92 +2,37 @@
 
 use std::collections::HashMap;
 
-use diffler_core::model::DiffModel;
-use diffler_core::session::{Comment, CommentStatus, Session};
+use diffler_core::session::{Comment, CommentStatus};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use super::comments::{CardCtx, comments_in_order};
-use super::sidebar::tree_lead;
-use super::{RenderCtx, RowState, md_span, pad_line};
+use super::{RenderCtx, RowState, pad_line, tree_lead};
 use crate::app::composer::{Composer, ComposerKind, ComposerLine};
+use crate::app::markdown::MdSpan;
 use crate::app::walkthrough::summary_figure_key;
 use crate::app::{CommentLine, DiffView, summary_display};
 use crate::theme::Theme;
+use crate::ui::color::golden_color;
 use crate::ui::diff_render::card_frame;
 
-fn hsl_to_rgb(hue: f32, saturation: f32, lightness: f32) -> (u8, u8, u8) {
-    let c = (1.0 - (2.0 * lightness - 1.0).abs()) * saturation;
-    let h = hue.rem_euclid(360.0) / 60.0;
-    let x = c * (1.0 - (h.rem_euclid(2.0) - 1.0).abs());
-    // `h` is `hue.rem_euclid(360.0) / 60.0`, always in 0.0..6.0
-    #[allow(clippy::cast_sign_loss)]
-    let sector = h as u32;
-    let (r1, g1, b1) = match sector {
-        0 => (c, x, 0.0),
-        1 => (x, c, 0.0),
-        2 => (0.0, c, x),
-        3 => (0.0, x, c),
-        4 => (x, 0.0, c),
-        _ => (c, 0.0, x),
-    };
-    let m = lightness - c / 2.0;
-    let channel = |v: f32| {
-        // the clamp keeps the value in 0.0..=255.0 before the cast
-        #[allow(clippy::cast_sign_loss)]
-        let byte = ((v + m) * 255.0).round().clamp(0.0, 255.0) as u8;
-        byte
-    };
-    (channel(r1), channel(g1), channel(b1))
+#[derive(Clone, Copy)]
+pub(super) struct CardSearch<'a> {
+    pub(super) query: &'a str,
+    /// This card holds the active match, so its hits take the stronger colour.
+    pub(super) current: bool,
 }
 
-/// A distinct, readable colour for the `slot`th thing a screen tells apart.
-pub(in crate::ui) fn slot_color(theme: &Theme, slot: usize) -> Color {
-    #[allow(clippy::cast_precision_loss)] // a hue only needs to look distinct, not be exact
-    let hue = (slot as f32 * HUE_STEP + 25.0).rem_euclid(360.0);
-    let (r, g, b) = hsl_to_rgb(hue, 0.7, 0.55);
-    let (r, g, b) = diffler_core::language::readable_on((r, g, b), crate::ui::rgb_of(theme.bg));
-    Color::Rgb(r, g, b)
-}
-
-/// The golden angle, so each new hue lands far from every earlier one.
-const HUE_STEP: f32 = 137.507_76;
-
-/// Each author's first-appearance position, skipping the human and the agent
-/// since they take fixed colours.
-pub(super) fn author_orders<'a>(
-    authors: impl Iterator<Item = &'a str>,
-    human_author: &str,
-) -> HashMap<&'a str, usize> {
-    let mut orders = HashMap::new();
-    for author in authors {
-        if author == human_author || author == crate::mcp::AGENT_AUTHOR {
-            continue;
-        }
-        let next = orders.len();
-        orders.entry(author).or_insert(next);
-    }
-    orders
-}
-
-/// Comment authors in sidebar order first, then anyone who only replied.
-pub(super) fn pane_author_orders<'a>(
-    session: &'a Session,
-    model: Option<&DiffModel>,
-    human_author: &str,
-) -> HashMap<&'a str, usize> {
-    let roots = comments_in_order(session, model);
-    let repliers = session
-        .comments
-        .iter()
-        .flat_map(|comment| comment.replies.iter().map(|reply| reply.author.as_str()));
-    author_orders(
-        roots
-            .iter()
-            .map(|(comment, _)| comment.author.as_str())
-            .chain(repliers),
-        human_author,
-    )
+#[derive(Clone, Copy)]
+pub(super) struct CardCtx<'a> {
+    pub(super) theme: &'a Theme,
+    pub(super) budget: usize,
+    pub(super) bg: Color,
+    pub(super) width: u16,
+    pub(super) depth: usize,
+    pub(super) on_cursor: bool,
+    pub(super) orphan: bool,
+    pub(super) author_color: Color,
+    pub(super) search: Option<CardSearch<'a>>,
 }
 
 /// The human and the agent keep fixed colours because the reader looks for
@@ -106,11 +51,7 @@ pub(super) fn author_color(
     if author == crate::mcp::AGENT_AUTHOR {
         return theme.purple;
     }
-    #[allow(clippy::cast_precision_loss)] // a hue only needs to look distinct, not be exact
-    let hue = (order as f32 * HUE_STEP).rem_euclid(360.0);
-    let (r, g, b) = hsl_to_rgb(hue, 0.55, 0.6);
-    let (r, g, b) = diffler_core::language::readable_on((r, g, b), crate::ui::rgb_of(bg));
-    Color::Rgb(r, g, b)
+    golden_color(order, 0.0, 0.55, 0.6, bg)
 }
 
 /// The status glyph and author spans, plus the width left after them.
@@ -152,6 +93,33 @@ pub(super) fn comment_header_spans(
 
 /// Caps an author's columns so a long handle leaves room for the preview.
 const AUTHOR_MAX: usize = 14;
+
+/// Recolouring flags (code, link, muted) win over `base`'s foreground.
+pub(super) fn md_span(run: &MdSpan, base: Style, theme: &Theme) -> Span<'static> {
+    let mut style = base;
+    if run.bold {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    if run.italic {
+        style = style.add_modifier(Modifier::ITALIC);
+    }
+    if run.strike {
+        style = style.add_modifier(Modifier::CROSSED_OUT);
+    }
+    if run.code {
+        style = style.fg(theme.accent);
+    }
+    if run.link {
+        style = style.fg(theme.accent).add_modifier(Modifier::UNDERLINED);
+    }
+    if run.muted {
+        style = style.fg(theme.dim);
+    }
+    if let Some((r, g, b)) = run.fg {
+        style = style.fg(Color::Rgb(r, g, b));
+    }
+    Span::styled(run.text.clone(), style)
+}
 
 /// Replies take the comments sidebar's author colours, and every reply but the
 /// reader's own indents into the other lane.
@@ -495,7 +463,7 @@ flowchart LR
         session.add_comment(anchor, "bob", "two");
         session.reply(&id, "carol", "three");
         session.reply(&id, "agent", "four");
-        let orders = super::pane_author_orders(&session, None, "reviewer");
+        let orders = crate::ui::diff::comments::pane_author_orders(&session, None, "reviewer");
         assert_eq!(orders.get("alice"), Some(&0));
         assert_eq!(orders.get("bob"), Some(&1));
         assert_eq!(orders.get("carol"), Some(&2));
@@ -532,7 +500,7 @@ flowchart LR
         let theme = Theme::github_dark();
         let bg = theme.bg;
         let authors = ["alice", "bob", "carol", "dave", "erin", "frank"];
-        let orders = super::author_orders(authors.into_iter(), "reviewer");
+        let orders = crate::ui::diff::comments::author_orders(authors.into_iter(), "reviewer");
         let colours: Vec<ratatui::style::Color> = authors
             .iter()
             .map(|author| {

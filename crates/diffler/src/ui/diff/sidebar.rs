@@ -6,20 +6,19 @@ use diffler_core::model::{DiffModel, FileDiff};
 use diffler_core::session::{CommentStatus, Session};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
 use super::{
     HeaderCtx, RenderCtx, clip_spans, group_header_line, pad_line, pane_heading, push_right,
-    sidebar_bg,
+    sidebar_bg, sidebar_row_bg, tree_lead,
 };
 use crate::app::walkthrough::stop_title;
 use crate::app::{DiffView, Pane};
 use crate::config::FileLayout;
 use crate::theme::Theme;
 use crate::tree::{Bucket, TreeNode};
-use crate::ui::diff_render::cursor_band;
 use crate::ui::{diffstat_spans, status_color};
 
 #[derive(Clone, Copy)]
@@ -210,7 +209,7 @@ fn sidebar_summary_line(rc: &TreeRowCtx<'_>) -> Line<'static> {
     pad_line(spans, bg, width)
 }
 
-pub(crate) fn base_name(path: &str) -> String {
+fn base_name(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).to_owned()
 }
 
@@ -264,24 +263,6 @@ impl GroupStat {
         }
         stat
     }
-}
-
-pub(super) fn sidebar_row_bg(theme: &Theme, on_cursor: bool, focused: bool) -> Color {
-    if on_cursor {
-        cursor_band(theme, sidebar_bg(theme), focused)
-    } else {
-        sidebar_bg(theme)
-    }
-}
-
-/// The cursor `▌` marker plus the tree indent for `depth`.
-pub(super) fn tree_lead(theme: &Theme, depth: usize, bg: Color, on_cursor: bool) -> Span<'static> {
-    // some themes tint the cursor band faintly, so we add a bar
-    let marker = if on_cursor { "▌" } else { " " };
-    Span::styled(
-        format!("{marker}{}", " ".repeat(depth * 2)),
-        Style::new().fg(theme.accent).bg(bg),
-    )
 }
 
 fn sidebar_dir_line(
@@ -800,7 +781,7 @@ mod tests {
             search: &[],
         };
         let spans = super::sidebar_dir_line(&rc, "src", false, (3, 1));
-        let painted: Vec<(&str, Option<super::Color>)> = spans
+        let painted: Vec<(&str, Option<ratatui::style::Color>)> = spans
             .spans
             .iter()
             .filter(|span| span.content.contains('+') || span.content.contains('-'))

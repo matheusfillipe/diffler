@@ -12,8 +12,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
-use super::cards::{comment_row_line, composer_row_line, slot_color, summary_row_line};
-use super::comments::CardSearch;
+use super::cards::{comment_row_line, composer_row_line, summary_row_line};
 use super::sidebar::open_comment_count;
 use super::{RenderCtx, RowState, pad_line, pane_heading};
 use crate::app::composer::Composer;
@@ -23,6 +22,7 @@ use crate::app::{
     DiffRow, DiffView, FileHighlights, FileScope, Pane, RowCopy, SplitRow, SplitSide,
 };
 use crate::theme::Theme;
+use crate::ui::color::slot_color;
 use crate::ui::diff_render::{
     LineFlags, Mark, PairSelection, align_scroll, diff_line_height, file_gutter_width, fold_row,
     hunk_header, line_syntax, render_diff_line, render_split_pair, split_pair_height, syntax_row,
@@ -91,20 +91,6 @@ struct SplitFileCtx<'a> {
     file: &'a FileDiff,
     highlights: Option<&'a FileHighlights>,
     gutter: usize,
-}
-
-pub(super) fn search_ranges(
-    search: Option<CardSearch<'_>>,
-    text: &str,
-) -> Vec<(std::ops::Range<usize>, bool)> {
-    search
-        .map(|search| {
-            crate::search::find_matches(&[(0, text.to_owned())], search.query)
-                .into_iter()
-                .map(|found| (found.range, search.current))
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 fn lens_marks(

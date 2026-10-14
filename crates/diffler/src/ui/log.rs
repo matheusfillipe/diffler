@@ -133,7 +133,7 @@ fn entry_line(
 fn lane_color(theme: &Theme, lane: Option<Lane>) -> Color {
     match lane {
         Some(Lane { head: true, .. }) => theme.accent,
-        Some(Lane { id, .. }) => super::diff::slot_color(theme, id + 1),
+        Some(Lane { id, .. }) => super::color::slot_color(theme, id + 1),
         None => theme.dim,
     }
 }

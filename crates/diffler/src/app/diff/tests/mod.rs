@@ -170,10 +170,7 @@ fn seat_walkthrough(app: &mut App) {
 }
 
 fn walkthrough_app(fixture: &Fixture) -> App {
-    let mut loaded = LoadedConfig::default();
-    loaded.config.ui.diff_file_layout = crate::config::FileLayout::Walkthrough;
-    let mut app = App::new(fixture.review(), loaded);
-    app.author = "reviewer".to_owned();
+    let mut app = crate::test_support::walkthrough_layout_app(fixture);
     seat_walkthrough(&mut app);
     app.open_walkthrough_diff("w1");
     resolve_walkthrough(&mut app);
@@ -183,10 +180,7 @@ fn walkthrough_app(fixture: &Fixture) -> App {
 /// Like `walkthrough_app`, with a summary set before the diff opens, so
 /// its row appears in the sidebar and the initial seat lands past it.
 fn walkthrough_app_with_summary(fixture: &Fixture) -> App {
-    let mut loaded = LoadedConfig::default();
-    loaded.config.ui.diff_file_layout = crate::config::FileLayout::Walkthrough;
-    let mut app = App::new(fixture.review(), loaded);
-    app.author = "reviewer".to_owned();
+    let mut app = crate::test_support::walkthrough_layout_app(fixture);
     seat_walkthrough(&mut app);
     crate::test_support::set_walkthrough_summary(&mut app, "w1", "the shape of the change");
     app.open_walkthrough_diff("w1");
@@ -199,10 +193,7 @@ fn walkthrough_app_with_summary(fixture: &Fixture) -> App {
 /// rows on the next key or render after a resolution lands; a test that
 /// reads rows with neither has to ask explicitly.
 fn walkthrough_app_with(fixture: &Fixture, stops: &[(&str, Option<&str>, &str)]) -> App {
-    let mut loaded = LoadedConfig::default();
-    loaded.config.ui.diff_file_layout = crate::config::FileLayout::Walkthrough;
-    let mut app = App::new(fixture.review(), loaded);
-    app.author = "reviewer".to_owned();
+    let mut app = crate::test_support::walkthrough_layout_app(fixture);
     crate::test_support::seat_walkthrough(&mut app, "tour", stops);
     app.open_walkthrough_diff("w1");
     resolve_walkthrough(&mut app);

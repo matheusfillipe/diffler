@@ -25,10 +25,7 @@ pub(super) fn diff_app() -> (crate::test_support::Fixture, App) {
 }
 
 pub(super) fn walkthrough_app(fixture: &Fixture, stops: &[(&str, Option<&str>, &str)]) -> App {
-    let mut loaded = LoadedConfig::default();
-    loaded.config.ui.diff_file_layout = crate::config::FileLayout::Walkthrough;
-    let mut app = App::new(fixture.review(), loaded);
-    app.author = "reviewer".to_owned();
+    let mut app = crate::test_support::walkthrough_layout_app(fixture);
     crate::test_support::seat_walkthrough(&mut app, "How the answer moved", stops);
     app.open_walkthrough_diff("w1");
     // anchors resolve off-thread, so we land them before rendering

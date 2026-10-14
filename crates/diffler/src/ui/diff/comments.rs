@@ -1,5 +1,7 @@
 //! Comments sidebar of the diff screen.
 
+use std::collections::HashMap;
+
 use diffler_core::model::DiffModel;
 use diffler_core::session::Session;
 use ratatui::Frame;
@@ -8,33 +10,51 @@ use ratatui::style::{Color, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Paragraph};
 
-use super::cards::{author_color, comment_header_spans};
-use super::pane::search_ranges;
-use super::sidebar::sidebar_row_bg;
-use super::{HeaderCtx, RenderCtx, group_header_line, pad_line, pane_heading, sidebar_bg};
+use super::cards::{CardCtx, CardSearch, author_color, comment_header_spans};
+use super::{
+    HeaderCtx, RenderCtx, group_header_line, pad_line, pane_heading, search_ranges, sidebar_bg,
+    sidebar_row_bg,
+};
 use crate::app::{
     CommentFacts, CommentGrouping, CommentPaneRow, DiffView, Pane, group_comment_rows,
 };
 use crate::theme::Theme;
 
-#[derive(Clone, Copy)]
-pub(super) struct CardSearch<'a> {
-    pub(super) query: &'a str,
-    /// This card holds the active match, so its hits take the stronger colour.
-    pub(super) current: bool,
+/// Each author's first-appearance position, skipping the human and the agent
+/// since they take fixed colours.
+pub(super) fn author_orders<'a>(
+    authors: impl Iterator<Item = &'a str>,
+    human_author: &str,
+) -> HashMap<&'a str, usize> {
+    let mut orders = HashMap::new();
+    for author in authors {
+        if author == human_author || author == crate::mcp::AGENT_AUTHOR {
+            continue;
+        }
+        let next = orders.len();
+        orders.entry(author).or_insert(next);
+    }
+    orders
 }
 
-#[derive(Clone, Copy)]
-pub(super) struct CardCtx<'a> {
-    pub(super) theme: &'a Theme,
-    pub(super) budget: usize,
-    pub(super) bg: Color,
-    pub(super) width: u16,
-    pub(super) depth: usize,
-    pub(super) on_cursor: bool,
-    pub(super) orphan: bool,
-    pub(super) author_color: Color,
-    pub(super) search: Option<CardSearch<'a>>,
+/// Comment authors in sidebar order first, then anyone who only replied.
+pub(super) fn pane_author_orders<'a>(
+    session: &'a Session,
+    model: Option<&DiffModel>,
+    human_author: &str,
+) -> HashMap<&'a str, usize> {
+    let roots = comments_in_order(session, model);
+    let repliers = session
+        .comments
+        .iter()
+        .flat_map(|comment| comment.replies.iter().map(|reply| reply.author.as_str()));
+    author_orders(
+        roots
+            .iter()
+            .map(|(comment, _)| comment.author.as_str())
+            .chain(repliers),
+        human_author,
+    )
 }
 
 /// Built from the same ordering `App::comment_rows` groups, so a click or a key
@@ -528,11 +548,11 @@ mod tests {
         let theme = &app.theme;
         assert_eq!(
             focused,
-            Some(crate::ui::diff::sidebar::sidebar_row_bg(theme, true, true))
+            Some(crate::ui::diff::sidebar_row_bg(theme, true, true))
         );
         assert_eq!(
             unfocused,
-            Some(crate::ui::diff::sidebar::sidebar_row_bg(theme, true, false))
+            Some(crate::ui::diff::sidebar_row_bg(theme, true, false))
         );
         assert_ne!(focused, unfocused, "the band weakens with focus lost");
     }

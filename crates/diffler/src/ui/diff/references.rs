@@ -8,12 +8,11 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
-use super::cards::slot_color;
-use super::sidebar::tree_lead;
-use super::{RenderCtx, clip_spans, pad_line, pane_heading, sidebar_bg};
+use super::{RenderCtx, clip_spans, pad_line, pane_heading, sidebar_bg, tree_lead};
 use crate::app::RefEntry;
 use crate::app::{DiffView, FileHighlights, Pane};
 use crate::theme::Theme;
+use crate::ui::color::slot_color;
 use crate::ui::diff_render::{Mark, card_frame, syntax_row};
 
 #[derive(Clone, Copy)]

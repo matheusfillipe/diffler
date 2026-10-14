@@ -2,6 +2,7 @@
 //! `&mut App` for scroll offsets and the diff view's highlight cache.
 
 pub mod ci_log;
+mod color;
 pub mod diff;
 pub mod diff_render;
 pub mod file;

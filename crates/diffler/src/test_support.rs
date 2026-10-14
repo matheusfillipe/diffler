@@ -205,6 +205,14 @@ pub(crate) fn seat_walkthrough_at(
     source
 }
 
+pub(crate) fn walkthrough_layout_app(fixture: &Fixture) -> App {
+    let mut loaded = crate::config::LoadedConfig::default();
+    loaded.config.ui.diff_file_layout = crate::config::FileLayout::Walkthrough;
+    let mut app = App::new(fixture.review(), loaded);
+    app.author = "reviewer".to_owned();
+    app
+}
+
 /// One untracked, one modified-unstaged and one staged-new file.
 pub(crate) fn standard_fixture() -> Fixture {
     let fixture = Fixture::new();
