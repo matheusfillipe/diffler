@@ -6,8 +6,10 @@ use std::collections::HashSet;
 
 use diffler_core::model::{DiffLine, DiffModel, FileDiff, Hunk, LineKind};
 
-use super::rows::line_row_text;
-use super::{DiffRow, RowCopy, SplitRow};
+use diffler_core::review::Review;
+
+use super::rows::{line_row_text, thread_folds};
+use super::{DiffRow, DiffView, RowCopy, SplitRow};
 
 /// What one `DiffRow::Fold` row stands for: one folded hunk.
 #[derive(Debug, Clone)]
@@ -179,6 +181,144 @@ pub(crate) fn apply_split(
         }
     }
     out
+}
+
+impl DiffView {
+    /// Open the hunk the fold row `group` stands for.
+    pub(super) fn open_fold_group(&mut self, group: usize) -> bool {
+        let Some(keys) = self.fold_groups.get(group).map(|g| g.keys.clone()) else {
+            return false;
+        };
+        if let Some(folded) = self.folded.get_mut(&self.rows_path) {
+            for key in &keys {
+                folded.remove(key);
+            }
+        }
+        self.mark_rows_dirty();
+        true
+    }
+
+    /// The hunk row `row` belongs to: its own for a header or a line, and for
+    /// a comment or composer row, the hunk of the line above it.
+    fn hunk_of_row(&self, row: usize) -> Option<usize> {
+        self.rows
+            .get(..=row)?
+            .iter()
+            .rev()
+            .find_map(|row| match *row {
+                DiffRow::Hunk { hunk, .. } | DiffRow::Line { hunk, .. } => Some(hunk),
+                _ => None,
+            })
+    }
+
+    /// Open or close the thread of the comment under the cursor, when closing
+    /// it hides something.
+    pub(crate) fn toggle_thread_at_cursor(&mut self, review: &Review) -> bool {
+        let Some(DiffRow::Comment { comment, .. }) = self.rows.get(self.cursor).copied() else {
+            return false;
+        };
+        let session = review.session_for(&self.source);
+        let Some(card) = session
+            .comments
+            .get(comment)
+            .filter(|card| thread_folds(card))
+        else {
+            return false;
+        };
+        let id = card.id.clone();
+        if !self.open_threads.remove(&id) {
+            self.open_threads.insert(id);
+        }
+        self.mark_rows_dirty();
+        true
+    }
+
+    /// The lines the fold row `group` hides, with their own model data.
+    pub(crate) fn fold_lines<'a>(
+        &self,
+        file: &'a FileDiff,
+        group: usize,
+    ) -> Vec<((usize, usize), &'a DiffLine)> {
+        let lines = self
+            .fold_groups
+            .get(group)
+            .map_or(&[][..], |g| g.lines.as_slice());
+        resolve_hidden(file, lines)
+    }
+
+    /// The code a fold row hides, one line per line and bare (no diff
+    /// marker), for search to match.
+    pub(crate) fn fold_text(&self, file: &FileDiff, group: usize) -> String {
+        self.fold_lines(file, group)
+            .iter()
+            .map(|(_, diff_line)| diff_line.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// `za`/`<tab>`: open the folded hunk under the cursor, or fold the hunk
+    /// the cursor sits in. `false` when the cursor is in no hunk.
+    pub(crate) fn toggle_fold_at_cursor(&mut self, review: &Review) -> bool {
+        if let Some(DiffRow::Fold { group, .. }) = self.rows.get(self.cursor).copied() {
+            return self.open_fold_group(group);
+        }
+        let Some(hunk) = self.hunk_of_row(self.cursor) else {
+            return false;
+        };
+        let Some(key) = self
+            .model_for_rows(review)
+            .files
+            .get(self.selected)
+            .and_then(|file| file.hunks.get(hunk))
+            .map(hunk_key)
+        else {
+            return false;
+        };
+        // the cursor goes to the header first, so the rebuild seats it on
+        // the fold row that replaces it
+        if let Some(header) = self
+            .rows
+            .iter()
+            .position(|row| matches!(*row, DiffRow::Hunk { hunk: h, .. } if h == hunk))
+        {
+            self.cursor = header;
+        }
+        self.folded
+            .entry(self.rows_path.clone())
+            .or_default()
+            .insert(key);
+        self.mark_rows_dirty();
+        true
+    }
+
+    /// `zR`: open every folded hunk of the file on screen. `false` when none
+    /// is folded.
+    pub(crate) fn open_all_folds(&mut self) -> bool {
+        let opened = self
+            .folded
+            .remove(&self.rows_path)
+            .is_some_and(|folded| !folded.is_empty());
+        if opened {
+            self.mark_rows_dirty();
+        }
+        opened
+    }
+
+    /// `zM`: fold every hunk of the file on screen. `false` when it has none.
+    pub(crate) fn fold_all(&mut self, review: &Review) -> bool {
+        let keys: HashSet<String> = self
+            .model_for_rows(review)
+            .files
+            .get(self.selected)
+            .map(|file| file.hunks.iter().map(hunk_key).collect())
+            .unwrap_or_default();
+        if keys.is_empty() {
+            return false;
+        }
+        self.folded.insert(self.rows_path.clone(), keys);
+        self.mark_rows_dirty();
+        true
+    }
 }
 
 #[cfg(test)]
