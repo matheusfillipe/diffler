@@ -477,15 +477,13 @@ pub struct AddCommentResponse {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct DeleteCommentParams {
-    /// The comment to delete. Must be the agent's own, and not a walkthrough
-    /// stop or note.
+    /// The comment to delete, from `get_comments` or `add_comment`.
     pub id: String,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct EditCommentParams {
-    /// The comment to rewrite. Must be the agent's own, and not a
-    /// walkthrough stop or note.
+    /// The comment to rewrite, from `get_comments` or `add_comment`.
     pub id: String,
     pub body: String,
 }
@@ -495,11 +493,17 @@ pub struct StopParams {
     /// The comment id of the stop this replaces, from `get_walkthrough`. Pass
     /// it to keep that stop's thread; omit it for a new stop.
     pub id: Option<String>,
+    /// A label of two to five words naming what the stop is about, no verb;
+    /// the sidebar shows about thirty characters.
     pub title: String,
     /// `path#symbol` where a symbol exists, `path:start-end` where none does,
     /// `path:line` for one line, a bare `path` for a whole file, or omit for
     /// a stop with no anchor.
     pub anchor: Option<String>,
+    /// Markdown: two or three short bullets on what we chose and why, in full
+    /// sentences, every identifier in backticks, plain verbs for code (raise,
+    /// return, check) and no metaphor. A `mermaid` or `callstack` fence draws
+    /// a diagram.
     pub body: String,
     /// Extra remarks on this same stop: a second point about another part of
     /// its region, or a diagram beside the prose. Each becomes its own comment
@@ -523,6 +527,7 @@ pub struct PublishWalkthroughParams {
     /// The walkthrough to revise, from `get_walkthrough` or `review_status`.
     /// Omit to publish a new one of its own.
     pub id: Option<String>,
+    /// The walkthrough's name, as the status screen lists it.
     pub title: String,
     pub stops: Vec<StopParams>,
     /// One line on what you left out and why.
@@ -902,7 +907,7 @@ impl DifflerMcp {
     }
 
     #[tool(
-        description = "Write a new review comment on a line or an inclusive line range of a file, in the review the human is currently looking at (working tree, or the open commit/range/PR diff). Anchored to that line exactly like a human's own comment, so a rewrite marks it outdated the same way. Authored as the agent by default, so the human answers it in the thread; pass as_human to author it as the human's own instead, so it goes out untouched with their next submitted review."
+        description = "Write a review comment on a line or an inclusive line range in the review the human has open: the working tree, or the commit, range or PR on screen. To comment on another review, `focus` it first. The comment is anchored like the human's own, so it shows as outdated once its line changes. It is the agent's comment, for the human to answer in its thread; `as_human` makes it the human's own, sent with their next submitted review. Returns its `id`."
     )]
     async fn add_comment(
         &self,
@@ -922,7 +927,7 @@ impl DifflerMcp {
     }
 
     #[tool(
-        description = "Delete a comment, yours or the human's. Refused for one already posted to the forge, for one someone else replied to, and for a walkthrough stop or note (revise or drop those with publish_walkthrough instead)."
+        description = "Delete a comment, yours or the human's. Refused for one already posted to the forge, for one someone else has replied to (edit it instead), and for a walkthrough stop or note, which `publish_walkthrough` revises."
     )]
     async fn delete_comment(
         &self,
@@ -936,7 +941,7 @@ impl DifflerMcp {
     }
 
     #[tool(
-        description = "Replace the body of a comment, yours or the human's (a draft they asked you to rewrite), keeping its author, status, replies and anchor. Refused for one already posted to the forge, and for a walkthrough stop or note (revise those with publish_walkthrough instead)."
+        description = "Replace a comment's body, yours or the human's, keeping its author, status, replies and anchor. Refused for one already posted to the forge, and for a walkthrough stop or note, which `publish_walkthrough` revises."
     )]
     async fn edit_comment(
         &self,
@@ -953,7 +958,7 @@ impl DifflerMcp {
     }
 
     #[tool(
-        description = "Publish the reading order for a change, one stop per real decision and as few as the change needs (five is common, ten is a lot, more means the change wants splitting). Pass `id` (from `review_status` or `get_walkthrough`) to revise that walkthrough in place; omit it to publish a new one alongside any others already on the review, when this change is a different one from those. Every stop answers why, never restates what the diff already shows. Write the body as two to four bullets, each a full plain sentence starting with `We`, every identifier in backticks, no metaphor for code (raise, return, check; never gate, carry, land). A stop is an agent comment, so the human replies to it in the thread. Anchor with `path#symbol` where a symbol exists, `path:start-end` where none does, `path:line` for one line, a bare `path` for a whole file, or omit the anchor for an overview stop. A stop is a topic, and its `notes` are the extra remarks on it: a second point about another part of its region, or a diagram beside the prose, each anchored in the stop's own file. When you revise a walkthrough, pass each surviving stop's and note's `id` from `get_walkthrough` so it keeps its comment and the replies on it; one whose id you leave out is deleted. Put what you left out in `skipped`. The reply carries the walkthrough's `id` and validation receipts; a refusal names what to fix and republish."
+        description = "Publish a walkthrough: the order a reader should take through a change. Use one stop per real decision, as few as the change needs (five is common; more than ten means the change wants splitting). Each stop says why, never what the diff already shows, and becomes an agent comment the human answers in its thread. It describes the review open now, pinned to the commit checked out. Pass `id` to revise one in place, with each surviving stop's and note's `id` from `get_walkthrough`; any left out are deleted. Returns the walkthrough's `id` and receipts; a refusal names what to fix. Limits: 20 stops, 8 KB per body, 64 KB in all."
     )]
     async fn publish_walkthrough(
         &self,
@@ -991,7 +996,7 @@ impl DifflerMcp {
     }
 
     #[tool(
-        description = "Tell the human what you're doing right now: a short plain phrase (e.g. \"writing the walkthrough\") and the file it's about, if any. Shows live in the status bar. Every other tool call already reports something on its own, so call this when the generic phrase for that call wouldn't say enough, or you're about to spend a while on something no tool call names (reading code, thinking, writing tests)."
+        description = "Show what you are doing in the human's status bar: a few words (\"writing the walkthrough\") and the file it is about, if any. Every other tool call already shows on its own, so call this before work no call covers, such as reading code or writing tests, or when a call's own label says too little."
     )]
     async fn report_activity(
         &self,
@@ -1022,7 +1027,7 @@ impl DifflerMcp {
     }
 
     #[tool(
-        description = "Take the human's diffler to a place: a comment or a walkthrough by `id`, or a `file` and line range in any review (the working tree, a commit, a range, a PR). It switches to the project's tab and opens that review the way the human would, with the cursor on the place. Use it when the human asks where something is: show them rather than describe it. To point at code with a remark, call add_comment and then focus the id it returns; add_comment writes into the review on screen, so focus the file in a commit or PR first to comment there. After publish_walkthrough, focus its id to open it. Refused while the human is typing a comment or answering a dialog."
+        description = "Take the human's diffler to a place: a comment or walkthrough by `id`, or a `file` and line range in any review. It switches to the project's tab and opens that review with the cursor on the place. Use it when the human asks where something is, and after `publish_walkthrough` to open the walkthrough. To point at code with a remark, call `add_comment`, then focus the `id` it returns. Refused while the human is typing a comment or answering a dialog; a pull request that still has to load answers `waiting` and opens once it does."
     )]
     async fn focus(
         &self,
@@ -1051,7 +1056,7 @@ impl DifflerMcp {
     }
 
     #[tool(
-        description = "Long-poll until the human sends feedback (comments, replies, or the send key). Returns the new epoch and all open/replied comments, or timed_out. A timed_out result means the human is still reviewing: call again with the epoch it returned to keep waiting. A comment on a walkthrough stop arrives as a reply on that stop's own comment, so its id names the stop."
+        description = "Wait until the human sends feedback: a comment, a reply, or the send key. Returns the new epoch and every open or replied comment, or `timed_out` while they are still reviewing; call again with the returned epoch to keep waiting. A reply on a walkthrough stop arrives as a reply on that stop's comment, so its id names the stop."
     )]
     async fn wait_for_feedback(
         &self,
