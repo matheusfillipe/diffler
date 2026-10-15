@@ -1302,6 +1302,36 @@ impl App {
         }
     }
 
+    /// The files and folders a `V` selection covers, each once, a rename's
+    /// old path included, in a repo with no index; `None` with no selection,
+    /// and in git, which commits what is staged.
+    pub(super) fn selected_working_copy_paths(&self) -> Option<Vec<String>> {
+        let (top, bottom) = self.status.selection()?;
+        if self.review.vcs.has_index() {
+            return None;
+        }
+        let mut paths: Vec<String> = Vec::new();
+        for row in self.visible_rows().get(top..=bottom).unwrap_or_default() {
+            let row_paths = match row {
+                Row::Dir { path, .. } => vec![path.clone()],
+                other => self
+                    .row_file(other)
+                    .map(|(_, file, _)| {
+                        std::iter::once(file.path.clone())
+                            .chain(file.old_path.clone())
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            };
+            for path in row_paths {
+                if !paths.contains(&path) {
+                    paths.push(path);
+                }
+            }
+        }
+        Some(paths)
+    }
+
     /// Newest first; non-commit rows in the selection are skipped.
     fn selected_commit_oids(&self) -> Vec<String> {
         let Some((top, bottom)) = self.status.selection() else {

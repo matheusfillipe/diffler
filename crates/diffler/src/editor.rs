@@ -7,8 +7,10 @@ use diffler_core::model::{FileDiff, FileStatus};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EditorPurpose {
+    /// `paths` empty commits everything staged; else just those paths (jj).
     Commit {
         msg_path: std::path::PathBuf,
+        paths: Vec<String>,
     },
     /// `use_index` folds the staged index in (amend); false keeps HEAD's tree (reword).
     Amend {
@@ -26,9 +28,7 @@ pub enum EditorPurpose {
         target: TextBoxTarget,
     },
     /// The human edited a file under review.
-    OpenFile {
-        path: String,
-    },
+    OpenFile { path: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

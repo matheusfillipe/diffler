@@ -4,7 +4,7 @@
 use crate::keymap::{Action, render_chord};
 use crate::transient::TransientKind;
 
-use super::{App, Screen};
+use super::App;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Command {
@@ -35,21 +35,22 @@ impl App {
                 chord: render_chord(chord),
             })
             .collect();
-        if self.screen() == Screen::Status {
-            for kind in TransientKind::ALL {
-                let Some(prefix) = keymap.prefix_chord(kind) else {
-                    continue;
-                };
-                commands.extend(
-                    self.transient(kind)
-                        .flat_entries()
-                        .map(|(key, entry)| Command {
-                            action: entry.action,
-                            label: entry.action.label(),
-                            chord: format!("{prefix} {key}"),
-                        }),
-                );
-            }
+        for kind in TransientKind::ALL {
+            let Some(prefix) = keymap
+                .prefix_chord(kind)
+                .filter(|_| self.offers_transient(kind))
+            else {
+                continue;
+            };
+            commands.extend(
+                self.transient(kind)
+                    .flat_entries()
+                    .map(|(key, entry)| Command {
+                        action: entry.action,
+                        label: entry.action.label(),
+                        chord: format!("{prefix} {key}"),
+                    }),
+            );
         }
         commands.extend(
             self.tabs_keymap()

@@ -465,15 +465,16 @@ fn help_entries(app: &App) -> Vec<(String, String)> {
         .iter()
         .map(|(chord, action)| (render_chord(chord), action.label().to_owned()))
         .collect();
-    if app.screen() == Screen::Status {
-        for kind in TransientKind::ALL {
-            let Some(prefix) = keymap.prefix_chord(kind) else {
-                continue;
-            };
-            entries.push((prefix, format!("{} …", kind.title())));
-            for (key, entry) in app.transient(kind).flat_entries() {
-                entries.push((format!("  {key}"), entry.label.to_owned()));
-            }
+    for kind in TransientKind::ALL {
+        let Some(prefix) = keymap
+            .prefix_chord(kind)
+            .filter(|_| app.offers_transient(kind))
+        else {
+            continue;
+        };
+        entries.push((prefix, format!("{} …", kind.title())));
+        for (key, entry) in app.transient(kind).flat_entries() {
+            entries.push((format!("  {key}"), entry.label.to_owned()));
         }
     }
     entries.extend(tab_help_entries(app.tabs_keymap()));

@@ -5,6 +5,7 @@ mod ci;
 pub mod ci_log;
 mod commands;
 pub use commands::Command;
+mod change;
 mod commit;
 pub mod composer;
 mod diff;
@@ -146,6 +147,17 @@ pub enum PendingOp {
     ForcePull {
         upstream: String,
     },
+    /// A push whose argv the backend builds once confirmed, so a jj bookmark
+    /// made while the dialog was open still counts.
+    Network {
+        label: String,
+        op: NetworkOp,
+    },
+    /// A jj change verb, and the message that reports it done.
+    Change {
+        op: diffler_core::vcs::ChangeOp,
+        done: String,
+    },
 }
 
 /// What an input modal does with its buffer on submit.
@@ -164,6 +176,11 @@ pub enum InputOp {
     ReviewBody {
         number: u64,
         verdict: crate::ci::ReviewVerdict,
+    },
+    /// A jj change's new description; `label` names it in the report.
+    Describe {
+        rev: String,
+        label: String,
     },
 }
 
@@ -348,6 +365,7 @@ struct Transients {
     pull: Transient,
     fetch: Transient,
     stash: Transient,
+    change: Transient,
 }
 
 impl Transients {
@@ -361,6 +379,7 @@ impl Transients {
             TransientKind::Pull => &self.pull,
             TransientKind::Fetch => &self.fetch,
             TransientKind::Stash => &self.stash,
+            TransientKind::Change => &self.change,
         }
     }
 }
@@ -514,6 +533,7 @@ fn build_transients(
         pull: build(TransientKind::Pull),
         fetch: build(TransientKind::Fetch),
         stash: build(TransientKind::Stash),
+        change: build(TransientKind::Change),
     }
 }
 
@@ -689,6 +709,8 @@ pub struct App {
     pub(crate) pending_pr_open: Option<crate::ci::PullRequest>,
     /// A branch to switch to once its PR fetch lands.
     pub(crate) pending_pr_switch: Option<String>,
+    /// The bookmark and remote a jj pull's fetch was queued for.
+    pub(crate) pending_jj_pull: Option<diffler_core::vcs::PullTarget>,
     /// A walkthrough about a PR still resolving its range, with the slide it
     /// was opened on; retried once the PR fetch or list lands.
     pub(crate) pending_walkthrough_open: Option<(String, diff::Slide)>,
@@ -970,6 +992,7 @@ impl App {
             pr_ranges: std::collections::HashMap::new(),
             pending_pr_open: None,
             pending_pr_switch: None,
+            pending_jj_pull: None,
             pending_walkthrough_open: None,
             pending_focus: None,
             prs: Vec::new(),
@@ -1401,6 +1424,8 @@ impl App {
             Resolved::Transient(TransientKind::Diff) if self.status_cursor_on_walkthrough() => {
                 self.dispatch(Action::DeleteComment)
             }
+            // a git repo leaves the change menu's prefix unbound
+            Resolved::Transient(kind) if !self.offers_transient(kind) => Flow::Continue,
             Resolved::Transient(kind) => {
                 self.open_transient(kind);
                 Flow::Continue
@@ -1435,6 +1460,11 @@ impl App {
                 Flow::Continue
             }
         }
+    }
+
+    /// The change menu is jj's alone, so a git repo neither opens nor lists it.
+    pub(crate) fn offers_transient(&self, kind: TransientKind) -> bool {
+        kind != TransientKind::Change || !self.review.vcs.has_index()
     }
 
     /// The built transient for `kind`, with config overrides applied.
@@ -1569,6 +1599,7 @@ impl App {
             Action::EditExternally => {
                 self.info("nothing here to edit; open a comment or a field first");
             }
+            action if change::is_change_action(action) => self.change_menu(action),
             action => match self.screen() {
                 Screen::Status => self.dispatch_status(action),
                 Screen::Log => self.dispatch_log(action),
@@ -2100,12 +2131,25 @@ impl App {
                 return;
             }
         }
-        let summary = output
-            .lines()
-            .map(str::trim)
-            .find(|line| !line.is_empty())
-            .unwrap_or("")
-            .to_owned();
+        let jj = !self.review.vcs.has_index() && network::is_jj_network_label(label);
+        if label == "pull" && jj {
+            let target = self.pending_jj_pull.take();
+            if ok {
+                self.message = None;
+                self.finish_jj_pull(target);
+                return;
+            }
+        }
+        let summary = if jj {
+            network::jj_summary(output)
+        } else {
+            output
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+                .unwrap_or("")
+                .to_owned()
+        };
         self.message = None;
         self.queue_refresh();
         if ok {
@@ -2114,7 +2158,7 @@ impl App {
             } else {
                 self.info(format!("{label}: {summary}"));
             }
-        } else if self.network_recovery(label, output) {
+        } else if !jj && self.network_recovery(label, output) {
             // the recovery dialog replaces the raw error
         } else if summary.is_empty() {
             self.error(format!("{label} failed"));
@@ -2621,7 +2665,7 @@ mod tests {
         app.handle(key('c'));
         app.handle(key('c'));
         let request = app.pending_editor.clone().expect("editor request");
-        let EditorPurpose::Commit { msg_path } = &request.purpose else {
+        let EditorPurpose::Commit { msg_path, .. } = &request.purpose else {
             panic!("expected a commit purpose, got {:?}", request.purpose);
         };
         // the gitdir comes from libgit2, which canonicalizes (macOS tempdirs
@@ -2672,7 +2716,7 @@ mod tests {
         app.handle(key('c'));
         assert_eq!(app.message, None, "template write must succeed");
         let request = app.pending_editor.clone().expect("editor request");
-        let EditorPurpose::Commit { msg_path } = &request.purpose else {
+        let EditorPurpose::Commit { msg_path, .. } = &request.purpose else {
             panic!("expected a commit purpose, got {:?}", request.purpose);
         };
         let template = std::fs::read_to_string(msg_path).unwrap();
@@ -2690,14 +2734,20 @@ mod tests {
         app.handle(key('c'));
         app.handle(key('c'));
         let Some(EditorRequest {
-            purpose: EditorPurpose::Commit { msg_path },
+            purpose: EditorPurpose::Commit { msg_path, .. },
             ..
         }) = app.pending_editor.take()
         else {
             panic!("expected a commit request");
         };
         std::fs::write(&msg_path, "add ci config\n\n# comment to strip\n").unwrap();
-        app.editor_finished(EditorPurpose::Commit { msg_path }, Ok(true));
+        app.editor_finished(
+            EditorPurpose::Commit {
+                msg_path,
+                paths: Vec::new(),
+            },
+            Ok(true),
+        );
         app.settle_refresh();
         assert_eq!(app.section_files(Section::Staged).len(), 0);
         assert_eq!(app.head.subject, "add ci config");
@@ -3110,21 +3160,27 @@ mod tests {
         app.handle(key('c'));
         app.handle(key('c'));
         let Some(EditorRequest {
-            purpose: EditorPurpose::Commit { msg_path },
+            purpose: EditorPurpose::Commit { msg_path, .. },
             ..
         }) = app.pending_editor.take()
         else {
             panic!("expected a commit request");
         };
         std::fs::write(&msg_path, "commit everything\n").unwrap();
-        app.editor_finished(EditorPurpose::Commit { msg_path }, Ok(true));
+        app.editor_finished(
+            EditorPurpose::Commit {
+                msg_path,
+                paths: Vec::new(),
+            },
+            Ok(true),
+        );
         app.settle_refresh();
         assert_eq!(app.head.subject, "commit everything");
         assert_eq!(app.section_files(Section::Staged).len(), 0);
     }
 
     #[test]
-    fn a_jj_repo_declines_staging_a_file_and_pushing() {
+    fn a_jj_repo_declines_staging_and_pushes_its_bookmark_with_jj() {
         let fixture = jj_fixture();
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         app.handle(key('j'));
@@ -3132,12 +3188,168 @@ mod tests {
         let message = app.message.clone().expect("stage declined");
         assert!(message.text.contains("no staging area"), "{}", message.text);
 
-        app.head.upstream = Some("origin/main".to_owned());
+        let bookmark = app
+            .change
+            .as_ref()
+            .and_then(|c| c.bookmark.clone())
+            .expect("the git branch is a bookmark");
         app.handle(key('P'));
         app.handle(key('p'));
-        assert!(app.pending_git.is_none());
-        let message = app.message.expect("push declined");
-        assert!(message.text.contains("jj git push"), "{}", message.text);
+        let git = app.pending_git.take().expect("push queued");
+        assert_eq!(
+            git.argv,
+            [
+                "jj".to_owned(),
+                "git".to_owned(),
+                "push".to_owned(),
+                format!("--bookmark=exact:\"{bookmark}\""),
+            ]
+        );
+        assert!(
+            app.message
+                .expect("running")
+                .text
+                .starts_with("running jj push")
+        );
+    }
+
+    #[test]
+    fn a_jj_pull_fetches_then_reports_a_bookmark_that_tracks_nothing() {
+        let fixture = jj_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.handle(key('p'));
+        app.handle(key('p'));
+        let git = app.pending_git.take().expect("fetch queued");
+        assert_eq!(git.argv, ["jj", "git", "fetch"]);
+        app.git_finished(&git.label, true, "");
+        let message = app.message.expect("reported");
+        assert!(
+            message.text.contains("track a remote bookmark"),
+            "{}",
+            message.text
+        );
+    }
+
+    #[test]
+    fn a_jj_commit_over_a_selection_commits_only_the_selected_files() {
+        let fixture = jj_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let rows = app.visible_rows();
+        let todo = rows
+            .iter()
+            .position(|row| {
+                app.row_file(row)
+                    .is_some_and(|(_, file, hunk)| file.path == "todo.md" && hunk.is_none())
+            })
+            .expect("todo.md row");
+        app.status.cursor = todo;
+        app.handle(key('V'));
+        app.handle(key('c'));
+        app.handle(key('c'));
+        let Some(EditorRequest {
+            purpose: EditorPurpose::Commit { msg_path, paths },
+            ..
+        }) = app.pending_editor.take()
+        else {
+            panic!("expected a commit request");
+        };
+        assert_eq!(paths, ["todo.md"]);
+        assert!(
+            crate::app::rowsel::RowSelect::selection(&app.status).is_none(),
+            "the commit takes the selection"
+        );
+        std::fs::write(&msg_path, "track the todo\n").unwrap();
+        app.editor_finished(EditorPurpose::Commit { msg_path, paths }, Ok(true));
+        app.settle_refresh();
+        assert_eq!(app.head.subject, "track the todo");
+        let left: Vec<&str> = app
+            .review
+            .status
+            .staged
+            .files
+            .iter()
+            .map(|f| f.path.as_str())
+            .collect();
+        assert!(!left.contains(&"todo.md"), "{left:?}");
+        assert!(left.contains(&"src/lib.rs"), "{left:?}");
+    }
+
+    #[test]
+    fn a_jj_commit_over_a_selection_with_no_files_commits_nothing() {
+        let fixture = jj_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let header = app
+            .visible_rows()
+            .iter()
+            .position(|row| matches!(row, status::Row::SectionHeader { .. }))
+            .expect("section header");
+        app.status.cursor = header;
+        app.handle(key('V'));
+        app.handle(key('c'));
+        app.handle(key('c'));
+        assert!(app.pending_editor.is_none());
+        let message = app.message.expect("declined");
+        assert!(
+            message.text.starts_with("select file rows"),
+            "{}",
+            message.text
+        );
+    }
+
+    #[test]
+    fn a_jj_push_and_track_builds_its_argv_once_confirmed() {
+        let fixture = jj_fixture();
+        fixture.remote("codeberg", "https://example.invalid/r.git");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.handle(key('P'));
+        app.handle(key('u'));
+        let Some(Modal::Confirm {
+            message,
+            on_confirm: PendingOp::Network { op, .. },
+        }) = app.modal.clone()
+        else {
+            panic!("asks first: {:?}", app.modal);
+        };
+        assert_eq!(message, "Push to codeberg and track the bookmark there?");
+        assert_eq!(
+            op,
+            NetworkOp::PushSetUpstream {
+                remote: "codeberg".into()
+            }
+        );
+        app.handle(key('y'));
+        let git = app.pending_git.take().expect("push queued");
+        assert_eq!(git.argv[..4], ["jj", "git", "push", "--remote=codeberg"]);
+    }
+
+    #[test]
+    fn a_failed_jj_push_shows_jjs_error_and_opens_no_git_recovery() {
+        let fixture = jj_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.last_push_argv = Some(vec!["jj".into(), "git".into(), "push".into()]);
+        app.git_finished(
+            "push",
+            false,
+            "Changes to push to origin:\n  bookmark: main [move]\nError: failed to push: rejected [non-fast-forward]\n",
+        );
+        assert_eq!(app.modal, None, "no force-with-lease offer");
+        let message = app.message.expect("reported");
+        assert_eq!(
+            message.text,
+            "Error: failed to push: rejected [non-fast-forward]"
+        );
+    }
+
+    #[test]
+    fn a_jj_push_reports_what_it_sent() {
+        assert_eq!(
+            network::jj_summary("Changes to push to origin:\n  bookmark: main [add to 1234]\n"),
+            "Changes to push to origin: bookmark: main [add to 1234]"
+        );
+        assert_eq!(
+            network::jj_summary("Nothing changed.\n"),
+            "Nothing changed."
+        );
     }
 
     #[test]

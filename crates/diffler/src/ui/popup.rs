@@ -25,7 +25,7 @@ impl Popup {
     pub fn render(&self, frame: &mut Frame<'_>, theme: &Theme) {
         let area = frame.area();
         let body_rows = area.height.saturating_sub(1) as usize;
-        let lines = self.lines(theme, body_rows.max(1));
+        let lines = self.lines(theme, body_rows.max(1), usize::from(area.width));
         let height = (lines.len() as u16 + 1).min(area.height);
         let popup_area = Rect {
             x: area.x,
@@ -49,7 +49,7 @@ impl Popup {
         );
     }
 
-    fn lines(&self, theme: &Theme, body_rows: usize) -> Vec<Line<'static>> {
+    fn lines(&self, theme: &Theme, body_rows: usize, width: usize) -> Vec<Line<'static>> {
         let key_style = Style::new().fg(theme.purple).bg(theme.panel);
         let dim = Style::new().fg(theme.dim).bg(theme.panel);
         let fg = Style::new().fg(theme.fg).bg(theme.panel);
@@ -74,7 +74,7 @@ impl Popup {
         let per_column = self.entries.len().div_ceil(columns);
         let cell_width =
             |entry: &(String, String)| 1 + entry.0.chars().count() + 2 + entry.1.chars().count();
-        let widths: Vec<usize> = (0..columns)
+        let natural: Vec<usize> = (0..columns)
             .map(|column| {
                 (0..per_column)
                     .filter_map(|row| self.entries.get(column * per_column + row))
@@ -83,20 +83,21 @@ impl Popup {
                     .unwrap_or(0)
             })
             .collect();
+        let widths = fit_widths(&natural, width.saturating_sub(POPUP_COLUMN_GAP * columns));
         for row in 0..per_column {
             let mut spans = Vec::new();
             for column in 0..columns {
-                let Some(entry) = self.entries.get(column * per_column + row) else {
+                let Some((key, description)) = self.entries.get(column * per_column + row) else {
                     continue;
                 };
-                let width = widths
-                    .get(column)
-                    .copied()
-                    .unwrap_or_else(|| cell_width(entry));
-                let pad = width.saturating_sub(cell_width(entry)) + POPUP_COLUMN_GAP;
-                spans.push(Span::styled(format!(" {}", entry.0), key_style));
+                let column_width = widths.get(column).copied().unwrap_or(0);
+                let room = column_width.saturating_sub(1 + key.chars().count() + 2);
+                let description = crate::text::elide(description, room);
+                let used = 1 + key.chars().count() + 2 + description.chars().count();
+                let pad = column_width.saturating_sub(used) + POPUP_COLUMN_GAP;
+                spans.push(Span::styled(format!(" {key}"), key_style));
                 spans.push(Span::styled(
-                    format!("  {}{}", entry.1, " ".repeat(pad)),
+                    format!("  {description}{}", " ".repeat(pad)),
                     fg,
                 ));
             }
@@ -104,6 +105,29 @@ impl Popup {
         }
         lines
     }
+}
+
+/// Column widths that fit `available`, narrowing only the widest columns:
+/// each narrow column keeps its width and the rest share what is left.
+fn fit_widths(natural: &[usize], available: usize) -> Vec<usize> {
+    if natural.iter().sum::<usize>() <= available {
+        return natural.to_vec();
+    }
+    let mut sorted = natural.to_vec();
+    sorted.sort_unstable();
+    let mut left = available;
+    let mut remaining = sorted.len();
+    let mut cap = 0;
+    for width in sorted {
+        let share = left / remaining.max(1);
+        if width > share {
+            cap = share;
+            break;
+        }
+        left -= width;
+        remaining -= 1;
+    }
+    natural.iter().map(|&width| width.min(cap)).collect()
 }
 
 const WHICH_KEY_COL_SPACING: usize = 2;
@@ -781,6 +805,19 @@ pub(super) mod tests {
     fn which_key_panel_renders_the_stash_transient() {
         let (transient, warnings) = crate::transient::Transient::build(
             crate::transient::TransientKind::Stash,
+            &crate::config::KeysConfig::default(),
+        );
+        assert!(warnings.is_empty());
+        let terminal = render(|frame, theme| {
+            WhichKeyPanel::new(&WhichKey::Transient(&transient)).render(frame, theme);
+        });
+        insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn which_key_panel_renders_the_change_transient() {
+        let (transient, warnings) = crate::transient::Transient::build(
+            crate::transient::TransientKind::Change,
             &crate::config::KeysConfig::default(),
         );
         assert!(warnings.is_empty());

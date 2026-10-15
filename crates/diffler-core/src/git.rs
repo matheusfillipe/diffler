@@ -825,6 +825,11 @@ impl Vcs for GitVcs {
         Ok(commit.message().unwrap_or_default().to_owned())
     }
 
+    fn commit_message(&self, oid: &str) -> Result<String, VcsError> {
+        let commit = self.repo.find_commit(git2::Oid::from_str(oid)?)?;
+        Ok(commit.message().unwrap_or_default().to_owned())
+    }
+
     fn amend(&self, message: Option<&str>, use_index: bool) -> Result<String, VcsError> {
         if let Some(message) = message
             && message.trim().is_empty()

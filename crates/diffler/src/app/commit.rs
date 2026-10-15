@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use super::App;
+use super::rowsel::RowSelect;
 use crate::editor::{self, EditorPurpose, EditorRequest};
 
 impl App {
@@ -29,15 +30,32 @@ impl App {
     }
 
     /// `c c`: open the editor on a commit message when something is staged.
+    /// In jj a `V` selection commits just the files it covers.
     pub(crate) fn commit_flow(&mut self) {
+        let selected = self.selected_working_copy_paths();
+        if selected.as_ref().is_some_and(Vec::is_empty) {
+            self.info("select file rows to commit them, or press esc to commit everything");
+            return;
+        }
+        let paths = selected.unwrap_or_default();
         let staged = &self.review.status.staged.files;
         if staged.is_empty() {
             self.info("nothing staged");
             return;
         }
-        let template = editor::commit_template(staged);
+        let picked: Vec<diffler_core::model::FileDiff> = staged
+            .iter()
+            .filter(|file| {
+                paths.is_empty() || paths.iter().any(|p| Path::new(&file.path).starts_with(p))
+            })
+            .cloned()
+            .collect();
+        let template = editor::commit_template(&picked);
+        if !paths.is_empty() {
+            self.status.set_anchor(None);
+        }
         self.queue_message_editor("COMMIT_EDITMSG", template, |msg_path| {
-            EditorPurpose::Commit { msg_path }
+            EditorPurpose::Commit { msg_path, paths }
         });
     }
 
@@ -226,7 +244,9 @@ impl App {
     pub fn editor_finished(&mut self, purpose: EditorPurpose, outcome: Result<bool, String>) {
         self.message = None;
         match purpose {
-            EditorPurpose::Commit { msg_path } => self.finish_commit(&msg_path, outcome),
+            EditorPurpose::Commit { msg_path, paths } => {
+                self.finish_commit(&msg_path, &paths, outcome);
+            }
             EditorPurpose::Amend {
                 msg_path,
                 use_index,
@@ -261,7 +281,12 @@ impl App {
         }
     }
 
-    pub(super) fn finish_commit(&mut self, msg_path: &Path, outcome: Result<bool, String>) {
+    pub(super) fn finish_commit(
+        &mut self,
+        msg_path: &Path,
+        paths: &[String],
+        outcome: Result<bool, String>,
+    ) {
         match outcome {
             Err(err) => {
                 self.error(format!("editor failed: {err}"));
@@ -285,7 +310,12 @@ impl App {
             self.info("commit aborted");
             return;
         };
-        match self.review.vcs.commit(&message) {
+        let committed = if paths.is_empty() {
+            self.review.vcs.commit(&message)
+        } else {
+            self.review.vcs.commit_paths(&message, paths)
+        };
+        match committed {
             Ok(oid) => {
                 let subject = message.lines().next().unwrap_or_default().to_owned();
                 let oid7 = oid.get(..7).unwrap_or(&oid).to_owned();
@@ -344,7 +374,7 @@ mod tests {
 
         let msg_path = app.review.repo_root.join("MSG");
         std::fs::write(&msg_path, "a plain commit\n").expect("write commit message");
-        app.finish_commit(&msg_path, Ok(true));
+        app.finish_commit(&msg_path, &[], Ok(true));
 
         assert!(
             app.message

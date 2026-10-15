@@ -38,6 +38,7 @@ const GIT_HINTS: &[Hint] = &[
 const JJ_HINTS: &[Hint] = &[
     Hint::Prefix(TransientKind::Commit, "commit"),
     Hint::Prefix(TransientKind::Branch, "branch"),
+    Hint::Prefix(TransientKind::Change, "edit changes"),
     Hint::Leaf(&[Action::Discard], "discard"),
     Hint::Leaf(&[Action::Help], "help"),
 ];
@@ -866,6 +867,7 @@ mod tests {
         // jj picks a random change id, so we seat one that snapshots can hold
         app.change = Some(ChangeInfo {
             change_id: "kkmpptxz".to_owned(),
+            commit_id: String::new(),
             bookmark: Some("main".to_owned()),
             description: "add the answer".to_owned(),
         });
@@ -878,6 +880,7 @@ mod tests {
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         app.change = Some(ChangeInfo {
             change_id: "qpvuntsm".to_owned(),
+            commit_id: String::new(),
             bookmark: None,
             description: String::new(),
         });
@@ -1647,6 +1650,25 @@ mod tests {
         assert!(content.contains("Amend"), "{content}");
         assert!(content.contains("Branch …"), "{content}");
         assert!(content.contains("Create and checkout"), "{content}");
+        assert!(!content.contains("Change …"), "git has no change menu");
+        insta::assert_snapshot!(terminal.backend());
+    }
+
+    /// jj's change menu adds a third column, so its labels elide to fit.
+    #[test]
+    fn help_popup_in_a_jj_repo_fits_every_column_on_screen() {
+        let fixture = jj_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.change = Some(ChangeInfo {
+            change_id: "kkmpptxz".to_owned(),
+            commit_id: String::new(),
+            bookmark: Some("main".to_owned()),
+            description: "add the answer".to_owned(),
+        });
+        app.handle(key('?'));
+        let terminal = render(&mut app);
+        let content = terminal.backend().to_string();
+        assert!(content.contains("Change …"), "{content}");
         insta::assert_snapshot!(terminal.backend());
     }
 

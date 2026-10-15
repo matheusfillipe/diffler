@@ -206,7 +206,8 @@ impl App {
             self.error("no remote to push the branch to");
             return;
         };
-        if self.declines_jj_network() {
+        if !self.review.vcs.has_index() {
+            self.error("push the bookmark with P p, then open the pull request");
             return;
         }
         // arm the slot and queue the push it waits on together: a slot armed

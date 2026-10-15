@@ -14,8 +14,8 @@ use crate::diffalgo::{DiffAlgorithm, DiffSettings};
 use crate::git::GitVcs;
 use crate::model::{DiffModel, HunkId};
 use crate::vcs::{
-    BlameSpan, Bookmark, BranchInfo, ChangeInfo, HeadInfo, JjView, LogEntry, NetworkOp,
-    StatusModel, Vcs, VcsError,
+    BlameSpan, Bookmark, BranchInfo, ChangeInfo, ChangeOp, HeadInfo, JjView, LogEntry, NetworkOp,
+    PullOutcome, PullTarget, StatusModel, Vcs, VcsError,
 };
 
 const NO_DESCRIPTION: &str = "(no description set)";
@@ -227,6 +227,96 @@ impl JjVcs {
         }
         self.git.resolve("HEAD")
     }
+
+    /// `rev` for a jj argument. A commit id goes as the change it belongs
+    /// to, since acting on a commit rewritten since would bring it back as a
+    /// divergent copy.
+    fn target(&self, rev: &str) -> Result<String, VcsError> {
+        if is_working_copy_revset(rev) {
+            return Ok(rev.to_owned());
+        }
+        let change = self.query(&quoted(rev), "change_id", Some(1))?;
+        if change.is_empty() {
+            return Err(VcsError::Rejected(format!(
+                "`{rev}` names no commit; refresh and pick another"
+            )));
+        }
+        Ok(format!("change_id({})", quoted(&change)))
+    }
+
+    /// jj snapshots edits before an undo or redo, and both would then act on
+    /// that snapshot and drop the edits, so we refuse while it is the newest
+    /// operation.
+    fn refuse_over_snapshot(&self, verb: &str) -> Result<(), VcsError> {
+        self.run(&["util", "snapshot"])?;
+        let newest = self.run(&[
+            "op",
+            "log",
+            "--ignore-working-copy",
+            "--no-graph",
+            "--limit=1",
+            "--template=description",
+        ])?;
+        if newest.starts_with("snapshot working copy") {
+            return Err(VcsError::Rejected(format!(
+                "describe or commit your edits first; {verb} would drop them"
+            )));
+        }
+        Ok(())
+    }
+
+    /// A bare squash opens an editor only when both sides are described, so
+    /// we join the two descriptions ourselves then.
+    fn squash(&self, rev: &str) -> Result<String, VcsError> {
+        let target = self.target(rev)?;
+        let source = self.query(&target, "description", Some(1))?;
+        let destination = self.query(&format!("({target})-"), "description", Some(1))?;
+        let revision = format!("--revision={target}");
+        if source.is_empty() || destination.is_empty() {
+            return self.run(&["squash", &revision]);
+        }
+        self.run(&[
+            "squash",
+            &revision,
+            &format!("--message={destination}\n\n{source}"),
+        ])
+    }
+
+    /// Read fresh, since a bookmark made a moment ago must count.
+    fn nearest_bookmark(&self) -> Result<NearestBookmark, VcsError> {
+        let template = line_template(&[
+            r#"if(self.current_working_copy(), "@", if(self.contained_in("@-"), "-", "^"))"#,
+            r#"if(immutable, "1", "0")"#,
+            &list_template("local_bookmarks.map(|b| b.name())"),
+        ]);
+        let out = self.query("@- | heads(::@ & bookmarks())", &template, None)?;
+        Ok(parse_nearest_bookmark(&out))
+    }
+
+    /// What `jj git push` sends: the nearest local bookmark when it sits on
+    /// `@` or `@-`, else `@-` under a name jj makes from its change id. A
+    /// bookmark further back that is still mutable would push without the
+    /// newer work, so we ask for it to be moved.
+    fn push_selection(&self) -> Result<String, VcsError> {
+        let nearest = self.nearest_bookmark()?;
+        match nearest.name {
+            Some(name) if nearest.on_working_line => {
+                return Ok(format!("--bookmark=exact:{}", quoted(&name)));
+            }
+            Some(name) if !nearest.immutable => {
+                return Err(VcsError::Rejected(format!(
+                    "move {name} to @- first (jj bookmark move {name} --to @-), then push"
+                )));
+            }
+            _ => {}
+        }
+        if nearest.parent_immutable {
+            return Err(VcsError::Rejected(
+                "commit a change on top of @- first; there is nothing new to push".into(),
+            ));
+        }
+        Ok("--change=@-".into())
+    }
 }
 
 /// The git store a jj repo without `.git` keeps; `git_target` names it
@@ -291,6 +381,7 @@ fn parse_state(out: &str, bookmarks: bool) -> JjView {
                 .map(str::to_owned);
             view.change = Some(ChangeInfo {
                 change_id: change_id.to_owned(),
+                commit_id: oid.to_owned(),
                 bookmark: bookmark().map(str::to_owned),
                 description: description.to_owned(),
             });
@@ -350,10 +441,53 @@ fn quoted(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
+/// `path` as a fileset naming exactly that repo-relative file.
+fn root_file(path: &str) -> String {
+    format!("root-file:{}", quoted(path))
+}
+
+/// The local bookmark nearest `@`, where it sits, and whether `@-` is
+/// already immutable.
+struct NearestBookmark {
+    name: Option<String>,
+    /// On `@` or `@-`, so a push sends what the reader is working on.
+    on_working_line: bool,
+    immutable: bool,
+    parent_immutable: bool,
+}
+
+/// [`JjVcs::nearest_bookmark`]'s rows: marker, immutable flag, local names.
+fn parse_nearest_bookmark(out: &str) -> NearestBookmark {
+    let mut nearest = NearestBookmark {
+        name: None,
+        on_working_line: false,
+        immutable: false,
+        parent_immutable: false,
+    };
+    for line in out.lines() {
+        let fields: Vec<&str> = line.split(FIELD_SEPARATOR).collect();
+        let &[marker, immutable, names] = fields.as_slice() else {
+            continue;
+        };
+        let immutable = immutable == "1";
+        if marker == "-" && immutable {
+            nearest.parent_immutable = true;
+        }
+        if nearest.name.is_none()
+            && let Some(name) = split_list(names).next()
+        {
+            nearest.name = Some(name.to_owned());
+            nearest.on_working_line = marker != "^";
+            nearest.immutable = immutable;
+        }
+    }
+    nearest
+}
+
 const EMPTY_MESSAGE: &str = "write a commit message first";
 const NO_STAGING: &str = "commit the whole working copy; jj has no staging area";
-const NO_STASH: &str = "run jj new in a shell to set this change aside; jj has no stash";
-const NO_PUSH_PULL: &str = "run jj git push or jj git fetch in a shell to sync a jj repo";
+const NO_STASH: &str = "start a new change from the change menu instead; jj has no stash";
+const NO_PULL_MODE: &str = "pull with p p; jj rebases @ onto the fetched bookmark";
 
 impl Vcs for JjVcs {
     fn has_index(&self) -> bool {
@@ -601,9 +735,117 @@ impl Vcs for JjVcs {
     }
 
     fn discard(&self, rel: &Path) -> Result<(), VcsError> {
-        let fileset = format!("root-file:{}", quoted(&rel.to_string_lossy()));
-        self.run(&["restore", "--", &fileset])?;
+        self.run(&["restore", "--", &root_file(&rel.to_string_lossy())])?;
         Ok(())
+    }
+
+    fn commit_paths(&self, message: &str, paths: &[String]) -> Result<String, VcsError> {
+        if message.trim().is_empty() {
+            return Err(VcsError::Rejected(EMPTY_MESSAGE.into()));
+        }
+        let message = format!("--message={message}");
+        // we pass `root:` so a selected folder commits its whole subtree
+        let filesets: Vec<String> = paths
+            .iter()
+            .map(|path| format!("root:{}", quoted(path)))
+            .collect();
+        let mut args = vec!["commit", message.as_str(), "--"];
+        args.extend(filesets.iter().map(String::as_str));
+        self.run(&args)?;
+        self.head_oid()
+    }
+
+    fn change(&self, op: &ChangeOp) -> Result<(), VcsError> {
+        match op {
+            ChangeOp::New(rev) => self.run(&["new", "--", &self.target(rev)?]),
+            ChangeOp::Edit(rev) => self.run(&["edit", "--", &self.target(rev)?]),
+            ChangeOp::Describe { rev, message } => self.run(&[
+                "describe",
+                &format!("--message={message}"),
+                "--",
+                &self.target(rev)?,
+            ]),
+            ChangeOp::Squash(rev) => self.squash(rev),
+            ChangeOp::Abandon(rev) => self.run(&["abandon", "--", &self.target(rev)?]),
+            ChangeOp::Undo => {
+                self.refuse_over_snapshot("undo")?;
+                self.run(&["undo"])
+            }
+            ChangeOp::Redo => {
+                self.refuse_over_snapshot("redo")?;
+                self.run(&["redo"])
+            }
+        }?;
+        Ok(())
+    }
+
+    /// `origin` wins when the bookmark tracks several remotes.
+    fn pull_target(&self) -> Result<Option<PullTarget>, VcsError> {
+        let Some(bookmark) = self.nearest_bookmark()?.name else {
+            return Ok(None);
+        };
+        let tracked = self.run(&[
+            "bookmark",
+            "list",
+            "--ignore-working-copy",
+            "--tracked",
+            r#"--template=if(remote, remote ++ "\n")"#,
+            "--",
+            &format!("exact:{}", quoted(&bookmark)),
+        ])?;
+        let remotes: Vec<&str> = tracked.lines().filter(|r| *r != "git").collect();
+        let remote = remotes
+            .iter()
+            .find(|r| **r == "origin")
+            .or_else(|| remotes.first())
+            .map(|r| (*r).to_owned());
+        Ok(Some(PullTarget { bookmark, remote }))
+    }
+
+    fn rebase_onto_remote(&self, bookmark: &str, remote: &str) -> Result<PullOutcome, VcsError> {
+        let onto = format!("{bookmark}@{remote}");
+        let target = format!(
+            "remote_bookmarks(exact:{}, exact:{})",
+            quoted(bookmark),
+            quoted(remote)
+        );
+        if self.query(&target, COMMIT_ID_TEMPLATE, Some(1))?.is_empty() {
+            return Ok(PullOutcome::Gone { onto });
+        }
+        if !self
+            .query(&format!("({target}) & ::@"), COMMIT_ID_TEMPLATE, Some(1))?
+            .is_empty()
+        {
+            return Ok(PullOutcome::UpToDate { onto });
+        }
+        self.run(&["rebase", "--branch=@", &format!("--onto={target}")])?;
+        let conflicts = self
+            .query(
+                &format!("({target})..@ & conflicts()"),
+                COMMIT_ID_TEMPLATE,
+                None,
+            )?
+            .lines()
+            .count();
+        let bookmark_conflicted = !self
+            .run(&[
+                "bookmark",
+                "list",
+                "--ignore-working-copy",
+                "--conflicted",
+                "--",
+                &format!("exact:{}", quoted(bookmark)),
+            ])?
+            .is_empty();
+        Ok(PullOutcome::Rebased {
+            onto,
+            conflicts,
+            bookmark_conflicted,
+        })
+    }
+
+    fn commit_message(&self, oid: &str) -> Result<String, VcsError> {
+        self.git.commit_message(oid)
     }
 
     /// Messages go as `--message=<text>`: clap reads a separate value that
@@ -671,21 +913,29 @@ impl Vcs for JjVcs {
         Err(VcsError::Rejected(NO_STASH.into()))
     }
 
+    /// A push sends what [`JjVcs::push_selection`] picks, and jj tracks the
+    /// remote bookmark it makes. A pull is the fetch alone;
+    /// [`Vcs::rebase_onto_remote`] follows it.
     fn network_argv(&self, op: NetworkOp) -> Result<Vec<String>, VcsError> {
-        let args: &[&str] = match op {
-            NetworkOp::Fetch => &["git", "fetch"],
-            NetworkOp::FetchAll => &["git", "fetch", "--all-remotes"],
-            NetworkOp::Push
-            | NetworkOp::PushSetUpstream { .. }
-            | NetworkOp::Pull
-            | NetworkOp::PullFrom { .. }
-            | NetworkOp::PullRebase
-            | NetworkOp::PullMerge => return Err(VcsError::Rejected(NO_PUSH_PULL.into())),
-        };
-        Ok(std::iter::once("jj")
-            .chain(args.iter().copied())
-            .map(str::to_owned)
-            .collect())
+        let mut args = vec!["git".to_owned()];
+        match op {
+            NetworkOp::Fetch | NetworkOp::Pull => args.push("fetch".into()),
+            NetworkOp::FetchAll => args.extend(["fetch".into(), "--all-remotes".into()]),
+            NetworkOp::PullFrom { remote, .. } => {
+                args.extend(["fetch".into(), format!("--remote={remote}")]);
+            }
+            NetworkOp::Push | NetworkOp::PushSetUpstream { .. } => {
+                args.push("push".into());
+                if let NetworkOp::PushSetUpstream { remote } = op {
+                    args.push(format!("--remote={remote}"));
+                }
+                args.push(self.push_selection()?);
+            }
+            NetworkOp::PullRebase | NetworkOp::PullMerge => {
+                return Err(VcsError::Rejected(NO_PULL_MODE.into()));
+            }
+        }
+        Ok(std::iter::once("jj".to_owned()).chain(args).collect())
     }
 
     fn workdir(&self) -> Result<PathBuf, VcsError> {

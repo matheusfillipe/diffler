@@ -15,6 +15,7 @@ pub enum TransientKind {
     Pull,
     Fetch,
     Stash,
+    Change,
 }
 
 impl TransientKind {
@@ -30,6 +31,7 @@ impl TransientKind {
             Self::Pull => "pull",
             Self::Fetch => "fetch",
             Self::Stash => "stash",
+            Self::Change => "change",
         }
     }
 
@@ -43,10 +45,11 @@ impl TransientKind {
             Self::Pull => "Pull",
             Self::Fetch => "Fetch",
             Self::Stash => "Stash",
+            Self::Change => "Change",
         }
     }
 
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Commit,
         Self::Branch,
         Self::Diff,
@@ -55,6 +58,7 @@ impl TransientKind {
         Self::Pull,
         Self::Fetch,
         Self::Stash,
+        Self::Change,
     ];
 }
 
@@ -172,6 +176,41 @@ const STASH_GROUPS: &[DefaultGroup] = &[(
     ],
 )];
 
+const CHANGE_GROUPS: &[DefaultGroup] = &[
+    (
+        "Change",
+        &[
+            ("new", "n", Action::ChangeNew, "New change on top"),
+            ("edit", "e", Action::ChangeEdit, "Edit this change"),
+            (
+                "describe",
+                "d",
+                Action::ChangeDescribe,
+                "Describe this change",
+            ),
+            (
+                "squash",
+                "s",
+                Action::ChangeSquash,
+                "Squash into its parent",
+            ),
+            ("abandon", "a", Action::ChangeAbandon, "Abandon this change"),
+        ],
+    ),
+    (
+        "Operation log",
+        &[
+            ("undo", "u", Action::ChangeUndo, "Undo the last operation"),
+            (
+                "redo",
+                "U",
+                Action::ChangeRedo,
+                "Redo the last undone operation",
+            ),
+        ],
+    ),
+];
+
 impl TransientKind {
     fn default_groups(self) -> &'static [DefaultGroup] {
         match self {
@@ -183,6 +222,7 @@ impl TransientKind {
             Self::Pull => PULL_GROUPS,
             Self::Stash => STASH_GROUPS,
             Self::Fetch => FETCH_GROUPS,
+            Self::Change => CHANGE_GROUPS,
         }
     }
 }
@@ -449,6 +489,25 @@ mod tests {
             TransientResolve::Action(Action::StashPop)
         );
         assert_eq!(stash.resolve(&press("x")), TransientResolve::Unbound);
+    }
+
+    #[test]
+    fn change_transient_resolves_its_leaves() {
+        let change = transient(TransientKind::Change);
+        for (key, action) in [
+            ("n", Action::ChangeNew),
+            ("e", Action::ChangeEdit),
+            ("d", Action::ChangeDescribe),
+            ("s", Action::ChangeSquash),
+            ("a", Action::ChangeAbandon),
+            ("u", Action::ChangeUndo),
+            ("U", Action::ChangeRedo),
+        ] {
+            assert_eq!(
+                change.resolve(&press(key)),
+                TransientResolve::Action(action)
+            );
+        }
     }
 
     #[test]

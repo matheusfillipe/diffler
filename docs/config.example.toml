@@ -129,6 +129,7 @@
 # pull = "p"
 # fetch = "f"
 # stash = "z"
+# change = "C"             # jj only: verbs on @
 
 [keys.diff]
 # move_left = "h"
@@ -188,6 +189,7 @@
 # prev_section = "["
 # open_file_picker = "gf"
 # refresh = "<c-r>"
+# change = "c"             # prefix: jj verbs on the commit under the cursor
 
 # The whole-file view, reached with the file picker or by blaming a file.
 [keys.file]
@@ -280,3 +282,13 @@
 [keys.stash]
 # push = "z"
 # pop = "p"
+
+[keys.change]
+# jj only
+# new = "n"                # start a new change on top
+# edit = "e"               # make this change the working copy
+# describe = "d"
+# squash = "s"             # into its parent, keeping both descriptions
+# abandon = "a"
+# undo = "u"               # the last jj operation
+# redo = "U"

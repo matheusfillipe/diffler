@@ -5,10 +5,10 @@ mod common;
 
 use std::path::Path;
 
-use common::{JjFixture, JjStoreFixture};
+use common::{JjFixture, JjRemote, JjStoreFixture};
 use diffler_core::jj::JjVcs;
 use diffler_core::model::FileStatus;
-use diffler_core::vcs::{NetworkOp, Vcs, VcsError};
+use diffler_core::vcs::{ChangeOp, NetworkOp, PullOutcome, PullTarget, Vcs, VcsError};
 
 const LOG_LIMIT: usize = 64;
 
@@ -278,27 +278,446 @@ fn network_argv_maps_each_op_to_the_jj_cli() {
 }
 
 #[test]
-fn network_argv_rejects_every_push_and_pull_variant() {
+fn network_argv_declines_gits_pull_modes() {
     let fx = JjFixture::new();
     let v = vcs(&fx);
-    for op in [
-        NetworkOp::Push,
-        NetworkOp::PushSetUpstream {
-            remote: "origin".into(),
-        },
-        NetworkOp::Pull,
-        NetworkOp::PullFrom {
-            remote: "origin".into(),
-            branch: "main".into(),
-        },
-        NetworkOp::PullRebase,
-        NetworkOp::PullMerge,
-    ] {
-        assert!(
-            matches!(v.network_argv(op), Err(VcsError::Rejected(_))),
-            "push/pull must decline in a jj repo"
-        );
+    for op in [NetworkOp::PullRebase, NetworkOp::PullMerge] {
+        assert!(matches!(v.network_argv(op), Err(VcsError::Rejected(_))));
     }
+    assert_eq!(
+        v.network_argv(NetworkOp::Pull).expect("pull"),
+        ["jj", "git", "fetch"]
+    );
+    assert_eq!(
+        v.network_argv(NetworkOp::PullFrom {
+            remote: "upstream".into(),
+            branch: "main".into(),
+        })
+        .expect("pull from"),
+        ["jj", "git", "fetch", "--remote=upstream"]
+    );
+}
+
+/// `argv` as [`Vcs::network_argv`] built it, run the way the app runs it.
+fn run_network(root: &Path, argv: &[String]) {
+    assert_eq!(argv.first().map(String::as_str), Some("jj"));
+    let jj_args: Vec<&str> = argv.iter().skip(1).map(String::as_str).collect();
+    diffler_core::test_git::jj(root, &jj_args);
+}
+
+#[test]
+fn push_sends_the_nearest_local_bookmark_and_tracks_it() {
+    let fx = JjFixture::new();
+    let remote = JjRemote::new();
+    fx.jj(&["git", "remote", "add", "origin", &remote.url()]);
+    fx.write("a.txt", "a\n");
+    let oid = vcs(&fx).commit("add a").expect("commit");
+    let v = vcs(&fx);
+    fx.jj(&["bookmark", "create", "feature", "-r", "@-"]);
+    let argv = v.network_argv(NetworkOp::Push).expect("push");
+    assert_eq!(
+        argv,
+        ["jj", "git", "push", "--bookmark=exact:\"feature\""],
+        "a bookmark made after the handle opened counts"
+    );
+    run_network(fx.root(), &argv);
+    assert_eq!(remote.tip("feature"), Some(oid));
+    let tracked = fx.jj(&["bookmark", "list", "--tracked", "feature"]);
+    assert!(tracked.contains("@origin"), "{tracked}");
+}
+
+#[test]
+fn push_and_set_upstream_names_the_remote() {
+    let fx = JjFixture::new();
+    let v = vcs(&fx);
+    assert_eq!(
+        v.network_argv(NetworkOp::PushSetUpstream {
+            remote: "fork".into()
+        })
+        .expect("push -u"),
+        [
+            "jj",
+            "git",
+            "push",
+            "--remote=fork",
+            "--bookmark=exact:\"main\""
+        ]
+    );
+}
+
+#[test]
+fn push_with_no_bookmark_has_jj_name_the_parent_change() {
+    let fx = JjStoreFixture::new();
+    let remote = JjRemote::new();
+    fx.jj(&["git", "remote", "add", "origin", &remote.url()]);
+    let v = store_vcs(&fx);
+    let argv = v.network_argv(NetworkOp::Push).expect("push");
+    assert_eq!(argv, ["jj", "git", "push", "--change=@-"]);
+    run_network(fx.root(), &argv);
+    let branches = remote.branches();
+    assert!(
+        matches!(branches.as_slice(), [name] if name.starts_with("push-")),
+        "{branches:?}"
+    );
+}
+
+#[test]
+fn push_asks_to_move_a_bookmark_left_behind() {
+    let fx = JjFixture::new();
+    fx.write("a.txt", "a\n");
+    vcs(&fx).commit("add a").expect("commit");
+    assert!(matches!(
+        vcs(&fx).network_argv(NetworkOp::Push),
+        Err(VcsError::Rejected(message)) if message.contains("jj bookmark move main --to @-")
+    ));
+}
+
+#[test]
+fn push_on_top_of_someone_elses_remote_bookmark_has_nothing_to_send() {
+    let (fx, remote) = tracking_fixture();
+    remote.advance("main", "theirs.txt", "theirs\n");
+    remote.branch_off("main", "other", "other.txt");
+    fx.jj(&["git", "fetch"]);
+    fx.jj(&["new", "other@origin"]);
+    fx.write("mine.txt", "mine\n");
+    assert!(matches!(
+        vcs(&fx).network_argv(NetworkOp::Push),
+        Err(VcsError::Rejected(message)) if message.contains("nothing new to push")
+    ));
+}
+
+/// A colocated repo whose `main` tracks `origin`'s, with `@` holding
+/// uncommitted work on top of it.
+fn tracking_fixture() -> (JjFixture, JjRemote) {
+    let fx = JjFixture::new();
+    let remote = JjRemote::new();
+    fx.jj(&["git", "remote", "add", "origin", &remote.url()]);
+    fx.jj(&["git", "push", "--bookmark", "main"]);
+    fx.write("mine.txt", "mine\n");
+    (fx, remote)
+}
+
+#[test]
+fn pull_rebases_the_working_copy_onto_the_moved_remote_bookmark() {
+    let (fx, remote) = tracking_fixture();
+    remote.advance("main", "theirs.txt", "theirs\n");
+    let v = vcs(&fx);
+    let target = v.pull_target().expect("target").expect("a bookmark");
+    assert_eq!(
+        target,
+        PullTarget {
+            bookmark: "main".into(),
+            remote: Some("origin".into())
+        }
+    );
+    let fetch = NetworkOp::PullFrom {
+        remote: "origin".into(),
+        branch: "main".into(),
+    };
+    run_network(fx.root(), &v.network_argv(fetch).expect("pull"));
+    assert_eq!(
+        v.rebase_onto_remote("main", "origin").expect("rebase"),
+        PullOutcome::Rebased {
+            onto: "main@origin".into(),
+            conflicts: 0,
+            bookmark_conflicted: false,
+        }
+    );
+    let v = vcs(&fx);
+    assert_eq!(v.head().expect("head").subject, "remote change");
+    assert!(fx.root().join("theirs.txt").exists());
+    let paths: Vec<String> = v
+        .working_tree_diff()
+        .expect("diff")
+        .files
+        .into_iter()
+        .map(|f| f.path)
+        .collect();
+    assert_eq!(paths, ["mine.txt"], "@ keeps its own work");
+    assert_eq!(
+        v.rebase_onto_remote("main", "origin").expect("again"),
+        PullOutcome::UpToDate {
+            onto: "main@origin".into()
+        }
+    );
+}
+
+#[test]
+fn pull_says_so_when_the_remote_deleted_the_bookmark() {
+    let (fx, remote) = tracking_fixture();
+    fx.jj(&["bookmark", "create", "feature", "-r", "@-"]);
+    fx.jj(&["git", "push", "--bookmark", "feature"]);
+    remote.delete("feature");
+    fx.jj(&["git", "fetch"]);
+    assert_eq!(
+        vcs(&fx)
+            .rebase_onto_remote("feature", "origin")
+            .expect("rebase"),
+        PullOutcome::Gone {
+            onto: "feature@origin".into()
+        }
+    );
+}
+
+#[test]
+fn pull_reports_conflicts_the_rebase_left() {
+    let (fx, remote) = tracking_fixture();
+    fx.write("README.md", "ours\n");
+    remote.advance("main", "README.md", "theirs\n");
+    let v = vcs(&fx);
+    run_network(fx.root(), &v.network_argv(NetworkOp::Pull).expect("pull"));
+    assert_eq!(
+        v.rebase_onto_remote("main", "origin").expect("rebase"),
+        PullOutcome::Rebased {
+            onto: "main@origin".into(),
+            conflicts: 1,
+            bookmark_conflicted: false,
+        }
+    );
+}
+
+#[test]
+fn a_bookmark_that_tracks_nothing_has_no_remote_to_pull() {
+    let fx = JjFixture::new();
+    assert_eq!(
+        vcs(&fx).pull_target().expect("target"),
+        Some(PullTarget {
+            bookmark: "main".into(),
+            remote: None
+        })
+    );
+}
+
+#[test]
+fn commit_paths_commits_only_the_named_files() {
+    for colocated in [true, false] {
+        let (root, _keep): (std::path::PathBuf, Box<dyn std::any::Any>) = if colocated {
+            let fx = JjFixture::new();
+            (fx.root().to_owned(), Box::new(fx))
+        } else {
+            let fx = JjStoreFixture::new();
+            (fx.root().to_owned(), Box::new(fx))
+        };
+        for name in ["picked.txt", "paren(x).txt", "left.txt"] {
+            std::fs::write(root.join(name), "new\n").expect("write");
+        }
+        let v = JjVcs::open(&root).expect("open");
+        let oid = v
+            .commit_paths(
+                "pick two",
+                &["picked.txt".to_owned(), "paren(x).txt".to_owned()],
+            )
+            .expect("commit");
+        let head = v.head().expect("head");
+        assert_eq!(head.subject, "pick two", "colocated: {colocated}");
+        assert_eq!(head.oid7, oid.get(..7).expect("short"));
+        assert!(v.read_at(&oid, "picked.txt").expect("read").is_some());
+        assert!(v.read_at(&oid, "paren(x).txt").expect("read").is_some());
+        assert!(v.read_at(&oid, "left.txt").expect("read").is_none());
+        let left: Vec<String> = v
+            .working_tree_diff()
+            .expect("diff")
+            .files
+            .into_iter()
+            .map(|f| f.path)
+            .collect();
+        assert_eq!(left, ["left.txt"], "colocated: {colocated}");
+    }
+}
+
+#[test]
+fn commit_paths_takes_a_folder_whole() {
+    let fx = JjFixture::new();
+    fx.write("dir/x.txt", "x\n");
+    fx.write("dir/deep/y.txt", "y\n");
+    fx.write("dirt.txt", "z\n");
+    let v = vcs(&fx);
+    let oid = v
+        .commit_paths("the folder", &["dir".to_owned()])
+        .expect("commit");
+    assert!(v.read_at(&oid, "dir/x.txt").expect("read").is_some());
+    assert!(v.read_at(&oid, "dir/deep/y.txt").expect("read").is_some());
+    assert!(v.read_at(&oid, "dirt.txt").expect("read").is_none());
+}
+
+/// The subject of `@-` and `@`, read fresh from jj.
+#[allow(clippy::expect_used)]
+fn subjects(root: &Path) -> (String, String) {
+    let v = JjVcs::open(root).expect("open");
+    let view = v.read_jj_view(LOG_LIMIT).expect("view").expect("jj repo");
+    (
+        v.head().expect("head").subject,
+        view.change.expect("@").description,
+    )
+}
+
+#[test]
+fn change_verbs_move_and_rewrite_changes() {
+    let fx = JjFixture::new();
+    fx.write("a.txt", "a\n");
+    let added = vcs(&fx).commit("add a").expect("commit");
+    let initial = vcs(&fx).resolve("main").expect("main");
+
+    vcs(&fx)
+        .change(&ChangeOp::Describe {
+            rev: added.clone(),
+            message: "-renamed".into(),
+        })
+        .expect("describe");
+    assert_eq!(subjects(fx.root()).0, "-renamed");
+    vcs(&fx)
+        .change(&ChangeOp::Describe {
+            rev: "@".into(),
+            message: "wip".into(),
+        })
+        .expect("describe @");
+    assert_eq!(subjects(fx.root()).1, "wip");
+
+    let renamed = vcs(&fx).resolve("@-").expect("@-");
+    vcs(&fx).change(&ChangeOp::Edit(renamed)).expect("edit");
+    assert_eq!(subjects(fx.root()), ("initial".into(), "-renamed".into()));
+
+    vcs(&fx).change(&ChangeOp::New(initial)).expect("new");
+    assert_eq!(subjects(fx.root()), ("initial".into(), String::new()));
+    assert!(!fx.root().join("a.txt").exists());
+}
+
+#[test]
+fn a_verb_on_a_rewritten_commit_acts_on_its_change_without_diverging() {
+    let fx = JjFixture::new();
+    fx.write("a.txt", "a\n");
+    let stale = vcs(&fx).commit("add a").expect("commit");
+    vcs(&fx)
+        .change(&ChangeOp::Describe {
+            rev: stale.clone(),
+            message: "renamed".into(),
+        })
+        .expect("describe");
+    vcs(&fx).change(&ChangeOp::Edit(stale)).expect("edit");
+    assert_eq!(subjects(fx.root()).1, "renamed");
+    let divergent = fx.jj(&["log", "--no-graph", "-r", "divergent()", "-T", "commit_id"]);
+    assert!(divergent.is_empty(), "{divergent}");
+}
+
+#[test]
+fn an_empty_description_clears_it() {
+    let fx = JjFixture::new();
+    fx.jj(&["describe", "--message=draft"]);
+    vcs(&fx)
+        .change(&ChangeOp::Describe {
+            rev: "@".into(),
+            message: String::new(),
+        })
+        .expect("describe");
+    assert_eq!(subjects(fx.root()).1, "");
+}
+
+#[test]
+fn squash_keeps_both_descriptions() {
+    let fx = JjFixture::new();
+    fx.write("a.txt", "a\n");
+    vcs(&fx).commit("add a").expect("commit");
+    fx.write("b.txt", "b\n");
+    fx.jj(&["describe", "--message=add b"]);
+    vcs(&fx)
+        .change(&ChangeOp::Squash("@".into()))
+        .expect("squash");
+    let v = vcs(&fx);
+    let head = v.resolve("HEAD").expect("head");
+    assert_eq!(
+        v.commit_message(&head).expect("message"),
+        "add a\n\nadd b\n"
+    );
+    assert!(v.read_at("HEAD", "b.txt").expect("read").is_some());
+}
+
+#[test]
+fn squash_of_an_undescribed_change_keeps_the_parents_description() {
+    let fx = JjFixture::new();
+    fx.write("a.txt", "a\n");
+    vcs(&fx).commit("add a").expect("commit");
+    fx.write("b.txt", "b\n");
+    vcs(&fx)
+        .change(&ChangeOp::Squash("@".into()))
+        .expect("squash");
+    let v = vcs(&fx);
+    let head = v.resolve("HEAD").expect("head");
+    assert_eq!(v.commit_message(&head).expect("message"), "add a\n");
+}
+
+#[test]
+fn undo_refuses_to_drop_edits_jj_would_snapshot() {
+    let fx = JjFixture::new();
+    fx.write("a.txt", "a\n");
+    vcs(&fx).commit("add a").expect("commit");
+    fx.write("d.txt", "dirty\n");
+    assert!(matches!(
+        vcs(&fx).change(&ChangeOp::Undo),
+        Err(VcsError::Rejected(message)) if message.contains("would drop them")
+    ));
+    assert!(fx.root().join("d.txt").exists());
+    vcs(&fx)
+        .change(&ChangeOp::Describe {
+            rev: "@".into(),
+            message: "wip".into(),
+        })
+        .expect("describe");
+    vcs(&fx).change(&ChangeOp::Undo).expect("undo the describe");
+    assert_eq!(subjects(fx.root()), ("add a".into(), String::new()));
+    assert!(fx.root().join("d.txt").exists(), "the edits survive");
+    fx.write("e.txt", "more\n");
+    assert!(matches!(
+        vcs(&fx).change(&ChangeOp::Redo),
+        Err(VcsError::Rejected(message)) if message.contains("would drop them")
+    ));
+    assert!(fx.root().join("e.txt").exists());
+}
+
+#[test]
+fn abandon_drops_a_change_and_undo_redo_walk_the_operation_log() {
+    let fx = JjFixture::new();
+    fx.write("a.txt", "a\n");
+    let added = vcs(&fx).commit("add a").expect("commit");
+    vcs(&fx).change(&ChangeOp::Abandon(added)).expect("abandon");
+    assert_eq!(subjects(fx.root()).0, "initial");
+    vcs(&fx).change(&ChangeOp::Undo).expect("undo");
+    assert_eq!(subjects(fx.root()).0, "add a");
+    vcs(&fx).change(&ChangeOp::Redo).expect("redo");
+    assert_eq!(subjects(fx.root()).0, "initial");
+}
+
+#[test]
+fn change_verbs_work_in_a_repo_without_git() {
+    let fx = JjStoreFixture::new();
+    fx.write("b.txt", "b\n");
+    store_vcs(&fx).commit("add b").expect("commit");
+    let initial = store_vcs(&fx).resolve("@--").expect("@--");
+    store_vcs(&fx).change(&ChangeOp::New(initial)).expect("new");
+    assert_eq!(subjects(fx.root()).0, "initial");
+    store_vcs(&fx).change(&ChangeOp::Undo).expect("undo");
+    assert_eq!(subjects(fx.root()).0, "add b");
+}
+
+#[test]
+fn jj_refuses_to_rewrite_an_immutable_change() {
+    let (fx, _remote) = tracking_fixture();
+    let main = vcs(&fx).resolve("main").expect("main");
+    assert!(matches!(
+        vcs(&fx).change(&ChangeOp::Abandon(main)),
+        Err(VcsError::Rejected(message)) if message.contains("immutable")
+    ));
+}
+
+#[test]
+fn the_view_names_the_working_copy_commit() {
+    let fx = JjFixture::new();
+    let v = vcs(&fx);
+    let change = v
+        .read_jj_view(LOG_LIMIT)
+        .expect("view")
+        .and_then(|view| view.change)
+        .expect("@");
+    assert_eq!(change.commit_id, v.resolve("@").expect("@"));
 }
 
 #[test]

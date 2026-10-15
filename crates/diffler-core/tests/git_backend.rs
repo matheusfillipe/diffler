@@ -8,7 +8,7 @@ use diffler_core::classify::Kind;
 use diffler_core::diffalgo::DiffSettings;
 use diffler_core::git::GitVcs;
 use diffler_core::model::{FileStatus, LineKind};
-use diffler_core::vcs::{NetworkOp, Vcs, VcsError};
+use diffler_core::vcs::{ChangeOp, JJ_ONLY, NetworkOp, Vcs, VcsError};
 
 // helper fns run outside #[test] fns, where clippy's test allowances don't reach
 #[allow(clippy::expect_used)]
@@ -1201,6 +1201,29 @@ fn create_branch_without_checkout_keeps_head() {
             .iter()
             .any(|b| b.name == "idle")
     );
+}
+
+#[test]
+fn jj_verbs_decline_in_a_git_repo() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "x\n");
+    fx.commit_all("base");
+    let v = vcs(&fx);
+    assert!(matches!(
+        v.change(&ChangeOp::Undo),
+        Err(VcsError::Rejected(message)) if message == JJ_ONLY
+    ));
+    assert!(matches!(
+        v.rebase_onto_remote("main", "origin"),
+        Err(VcsError::Rejected(_))
+    ));
+    assert!(matches!(
+        v.commit_paths("x", &["a.txt".to_owned()]),
+        Err(VcsError::Rejected(_))
+    ));
+    assert_eq!(v.pull_target().expect("target"), None);
+    let head = head_oid(&fx);
+    assert_eq!(v.commit_message(&head).expect("message"), "base");
 }
 
 #[test]

@@ -258,6 +258,7 @@ pub struct KeysConfig {
     pub pull: BTreeMap<String, String>,
     pub fetch: BTreeMap<String, String>,
     pub stash: BTreeMap<String, String>,
+    pub change: BTreeMap<String, String>,
 }
 
 impl KeysConfig {
@@ -271,6 +272,7 @@ impl KeysConfig {
             crate::transient::TransientKind::Pull => &self.pull,
             crate::transient::TransientKind::Fetch => &self.fetch,
             crate::transient::TransientKind::Stash => &self.stash,
+            crate::transient::TransientKind::Change => &self.change,
         }
     }
 }
@@ -785,6 +787,7 @@ fn apply_layer(
         (layer.keys.pull, &mut config.keys.pull, "pull"),
         (layer.keys.fetch, &mut config.keys.fetch, "fetch"),
         (layer.keys.stash, &mut config.keys.stash, "stash"),
+        (layer.keys.change, &mut config.keys.change, "change"),
     ];
     for (entries, target, section) in key_sections {
         for (action, chord) in entries {

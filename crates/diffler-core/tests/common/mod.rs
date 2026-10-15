@@ -106,6 +106,101 @@ impl JjFixture {
     }
 }
 
+/// A bare git remote, plus a jj clone of it that moves its bookmarks the way
+/// another contributor would.
+pub(crate) struct JjRemote {
+    pub dir: TempDir,
+}
+
+impl JjRemote {
+    pub(crate) fn new() -> Self {
+        let dir = tempfile::tempdir().expect("tempdir");
+        git2::Repository::init_bare(dir.path().join("remote.git")).expect("bare remote");
+        Self { dir }
+    }
+
+    pub(crate) fn url(&self) -> String {
+        self.dir
+            .path()
+            .join("remote.git")
+            .to_str()
+            .expect("utf-8 path")
+            .to_owned()
+    }
+
+    /// The commit `branch` names on the remote.
+    pub(crate) fn tip(&self, branch: &str) -> Option<String> {
+        let repo = git2::Repository::open_bare(self.dir.path().join("remote.git")).expect("open");
+        let reference = repo.find_reference(&format!("refs/heads/{branch}")).ok()?;
+        reference.target().map(|oid| oid.to_string())
+    }
+
+    pub(crate) fn branches(&self) -> Vec<String> {
+        let repo = git2::Repository::open_bare(self.dir.path().join("remote.git")).expect("open");
+        repo.branches(None)
+            .expect("branches")
+            .filter_map(|branch| branch.ok()?.0.name().ok()?.map(str::to_owned))
+            .collect()
+    }
+
+    /// Another contributor's clone, fetched fresh.
+    fn clone(&self) -> std::path::PathBuf {
+        let clone = self.dir.path().join("other");
+        let jj = |root: &Path, args: &[&str]| diffler_core::test_git::jj(root, args);
+        if !clone.exists() {
+            jj(self.dir.path(), &["git", "clone", &self.url(), "other"]);
+            jj(
+                &clone,
+                &["config", "set", "--repo", "user.name", "reviewer"],
+            );
+            jj(
+                &clone,
+                &[
+                    "config",
+                    "set",
+                    "--repo",
+                    "user.email",
+                    "reviewer@example.com",
+                ],
+            );
+        }
+        jj(&clone, &["git", "fetch"]);
+        clone
+    }
+
+    /// Commit `content` to `file` on top of `branch` from another clone and
+    /// push it.
+    pub(crate) fn advance(&self, branch: &str, file: &str, content: &str) {
+        let clone = self.clone();
+        let jj = |args: &[&str]| diffler_core::test_git::jj(&clone, args);
+        jj(&["new", &format!("{branch}@origin")]);
+        fs::write(clone.join(file), content).expect("write");
+        jj(&["commit", "--message=remote change"]);
+        jj(&["bookmark", "set", branch, "-r", "@-", "--allow-backwards"]);
+        jj(&["git", "push", "--bookmark", branch]);
+    }
+
+    /// Push a new branch `name` from another clone, one commit on `base`.
+    pub(crate) fn branch_off(&self, base: &str, name: &str, file: &str) {
+        let clone = self.clone();
+        let jj = |args: &[&str]| diffler_core::test_git::jj(&clone, args);
+        jj(&["new", &format!("{base}@origin")]);
+        fs::write(clone.join(file), "branched\n").expect("write");
+        jj(&["commit", "--message=branched change"]);
+        jj(&["bookmark", "create", name, "-r", "@-"]);
+        jj(&["git", "push", "--bookmark", name]);
+    }
+
+    /// Delete `branch` on the remote, as a merged pull request does.
+    pub(crate) fn delete(&self, branch: &str) {
+        let repo = git2::Repository::open_bare(self.dir.path().join("remote.git")).expect("open");
+        repo.find_reference(&format!("refs/heads/{branch}"))
+            .expect("branch")
+            .delete()
+            .expect("delete");
+    }
+}
+
 /// A jj repo with no `.git`: one commit `initial` holding `README.md` and
 /// `a.txt`, an empty `@` on top.
 pub(crate) struct JjStoreFixture {

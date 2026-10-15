@@ -1,55 +1,103 @@
 //! Push/pull orchestration: resolve the remote, ask before anything that could
 //! fail or destroy work, and turn a rejected push/pull into a recovery dialog.
 
-use diffler_core::vcs::NetworkOp;
+use std::fmt::Write as _;
 
-use super::{App, GitOp, Modal, PendingOp, RemotePurpose, fuzzy};
+use diffler_core::vcs::{NetworkOp, PullOutcome, PullTarget};
+
+use super::{App, GitOp, Modal, PendingOp, RemotePurpose, Severity, StatusMessage, fuzzy};
+
+/// The labels a network op carries; in a jj repo each of them runs `jj`.
+pub(super) fn is_jj_network_label(label: &str) -> bool {
+    matches!(label, "push" | "push -u" | "pull" | "fetch" | "fetch --all")
+}
+
+/// jj reports on stderr in blocks: the `Error:` line on failure, else the
+/// first line, joined with the next when it only introduces a list.
+pub(super) fn jj_summary(output: &str) -> String {
+    let mut lines = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty());
+    if let Some(error) = lines.clone().find(|line| line.starts_with("Error:")) {
+        return error.to_owned();
+    }
+    match (lines.next(), lines.next()) {
+        (Some(head), Some(next)) if head.ends_with(':') => format!("{head} {next}"),
+        (Some(head), _) => head.to_owned(),
+        (None, _) => String::new(),
+    }
+}
 
 impl App {
+    /// jj picks the remote itself, from `git.push` or else `origin`.
     pub(crate) fn push(&mut self) {
-        if self.head.upstream.is_some() {
+        if self.head.upstream.is_some() || !self.review.vcs.has_index() {
             self.queue_network_op("push", NetworkOp::Push);
         } else {
             self.push_set_upstream();
         }
     }
 
+    /// jj picks what to push itself, once confirmed, so a git branch is the
+    /// only name the dialog can give.
     pub(crate) fn push_set_upstream(&mut self) {
-        if self.declines_jj_network() {
-            return;
-        }
-        let Some(branch) = self.head.branch.clone() else {
-            self.error("HEAD is detached; nothing to push");
-            return;
+        let branch = if self.review.vcs.has_index() {
+            let Some(branch) = self.head.branch.clone() else {
+                self.error("HEAD is detached; nothing to push");
+                return;
+            };
+            Some(branch)
+        } else {
+            None
         };
         let remotes = self.review.vcs.remotes().unwrap_or_default();
         match remotes.as_slice() {
             [] => self.info("no remote configured"),
-            [remote] => self.confirm_push_upstream(&branch, remote),
+            [remote] => self.confirm_push_upstream(branch.as_deref(), remote),
             _ => self.open_remote_list(remotes, RemotePurpose::SetUpstreamPush),
         }
     }
 
-    fn confirm_push_upstream(&mut self, branch: &str, remote: &str) {
-        let op = NetworkOp::PushSetUpstream {
-            remote: remote.to_owned(),
+    fn confirm_push_upstream(&mut self, branch: Option<&str>, remote: &str) {
+        let message = match branch {
+            Some(branch) => format!("Push {branch} to {remote} and set it as upstream?"),
+            None => format!("Push to {remote} and track the bookmark there?"),
         };
-        match self.review.vcs.network_argv(op) {
-            Ok(argv) => {
-                self.modal = Some(Modal::Confirm {
-                    message: format!("Push {branch} to {remote} and set it as upstream?"),
-                    on_confirm: PendingOp::RunGit {
-                        label: "push -u".into(),
-                        argv,
-                    },
-                });
-            }
-            Err(err) => self.error(err.to_string()),
-        }
+        self.modal = Some(Modal::Confirm {
+            message,
+            on_confirm: PendingOp::Network {
+                label: "push -u".into(),
+                op: NetworkOp::PushSetUpstream {
+                    remote: remote.to_owned(),
+                },
+            },
+        });
     }
 
+    /// jj fetches the remote the nearest bookmark tracks, then
+    /// [`Self::finish_jj_pull`] rebases `@` onto that bookmark.
     pub(crate) fn pull(&mut self) {
-        if self.declines_jj_network() {
+        if !self.review.vcs.has_index() {
+            let target = match self.review.vcs.pull_target() {
+                Ok(target) => target,
+                Err(err) => {
+                    self.error(err.to_string());
+                    return;
+                }
+            };
+            let op = match &target {
+                Some(PullTarget {
+                    bookmark,
+                    remote: Some(remote),
+                }) => NetworkOp::PullFrom {
+                    remote: remote.clone(),
+                    branch: bookmark.clone(),
+                },
+                _ => NetworkOp::Pull,
+            };
+            self.pending_jj_pull = target;
+            self.queue_network_op("pull", op);
             return;
         }
         if self.head.upstream.is_some() {
@@ -126,21 +174,63 @@ impl App {
         if argv.get(1).map(String::as_str) == Some("push") {
             self.last_push_argv = Some(argv.clone());
         }
-        self.info(format!("running git {label}…"));
+        let program = argv.first().map_or("git", String::as_str);
+        self.info(format!("running {program} {label}…"));
         self.pending_git = Some(GitOp { label, argv });
     }
 
-    /// Every push/pull variant declines the same way in a jj repo, so we
-    /// probe with a bare `Push` before showing a confirm dialog or a remote
-    /// picker.
-    pub(super) fn declines_jj_network(&mut self) -> bool {
-        match self.review.vcs.network_argv(NetworkOp::Push) {
-            Ok(_) => false,
-            Err(err) => {
-                self.error(err.to_string());
-                true
+    /// The fetch of a jj pull finished; `target` is what it was queued for.
+    pub(super) fn finish_jj_pull(&mut self, target: Option<PullTarget>) {
+        self.queue_refresh();
+        let Some(PullTarget { bookmark, remote }) = target else {
+            self.info("fetched; bookmark a change under @ to rebase it on pull");
+            return;
+        };
+        let Some(remote) = remote else {
+            self.info(format!(
+                "fetched; track a remote bookmark for {bookmark} to rebase on pull"
+            ));
+            return;
+        };
+        match self.review.vcs.rebase_onto_remote(&bookmark, &remote) {
+            Ok(PullOutcome::Gone { onto }) => self.warn(format!(
+                "fetched; the remote deleted {onto}, so @ stays where it is"
+            )),
+            Ok(PullOutcome::UpToDate { onto }) => {
+                self.info(format!("fetched; @ already sits on {onto}"));
             }
+            Ok(PullOutcome::Rebased {
+                onto,
+                conflicts,
+                bookmark_conflicted,
+            }) => {
+                let mut text = format!("rebased @ onto {onto}");
+                if conflicts > 0 {
+                    let noun = if conflicts == 1 { "change" } else { "changes" };
+                    // we drop the result, since writing to a String cannot fail
+                    let _ = write!(text, "; resolve the conflicts in {conflicts} {noun}");
+                }
+                if bookmark_conflicted {
+                    let _ = write!(
+                        text,
+                        "; pick where {bookmark} goes with jj bookmark set, since it moved on both sides"
+                    );
+                }
+                if conflicts > 0 || bookmark_conflicted {
+                    self.warn(text);
+                } else {
+                    self.info(text);
+                }
+            }
+            Err(err) => self.error(err.to_string()),
         }
+    }
+
+    fn warn(&mut self, text: String) {
+        self.message = Some(StatusMessage {
+            text,
+            severity: Severity::Warning,
+        });
     }
 
     /// A failed push/pull: open the recovery dialog its error calls for.

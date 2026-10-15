@@ -83,6 +83,8 @@ impl App {
             PendingOp::DeleteWalkthrough(id) => self.delete_walkthrough(&id),
             PendingOp::DeleteStop(index) => self.delete_stop(index),
             PendingOp::RunGit { label, argv } => self.queue_network(label, argv),
+            PendingOp::Network { label, op } => self.queue_network_op(label, op),
+            PendingOp::Change { op, done } => self.run_change(&op, done),
             PendingOp::ForcePull { .. } => self.queue_network(
                 "reset --hard",
                 vec![
@@ -340,11 +342,12 @@ impl App {
             return;
         };
         let body = buffer.trim();
-        // the review summary is optional; everything else needs content
+        // the review summary is optional and an empty description clears it;
+        // everything else needs content
         if body.is_empty()
             && !matches!(
                 on_submit,
-                InputOp::ReviewBody { .. } | InputOp::PrField { .. }
+                InputOp::ReviewBody { .. } | InputOp::PrField { .. } | InputOp::Describe { .. }
             )
         {
             return;
@@ -369,6 +372,13 @@ impl App {
             InputOp::ReviewBody { number, verdict } => {
                 let body = body.to_owned();
                 self.queue_pr_review(number, verdict, &body);
+            }
+            InputOp::Describe { rev, label } => {
+                let message = body.to_owned();
+                self.run_change(
+                    &diffler_core::vcs::ChangeOp::Describe { rev, message },
+                    format!("described {label}"),
+                );
             }
             InputOp::CreateBranch { checkout } => {
                 let name = body.to_owned();

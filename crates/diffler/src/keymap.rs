@@ -68,6 +68,13 @@ pub enum Action {
     FetchAll,
     StashPush,
     StashPop,
+    ChangeNew,
+    ChangeEdit,
+    ChangeDescribe,
+    ChangeSquash,
+    ChangeAbandon,
+    ChangeUndo,
+    ChangeRedo,
     NextHunk,
     PrevHunk,
     NextFunction,
@@ -193,6 +200,13 @@ impl Action {
             Self::FetchAll => "fetch_all",
             Self::StashPush => "stash_push",
             Self::StashPop => "stash_pop",
+            Self::ChangeNew => "change_new",
+            Self::ChangeEdit => "change_edit",
+            Self::ChangeDescribe => "change_describe",
+            Self::ChangeSquash => "change_squash",
+            Self::ChangeAbandon => "change_abandon",
+            Self::ChangeUndo => "change_undo",
+            Self::ChangeRedo => "change_redo",
             Self::NextHunk => "next_hunk",
             Self::NextFunction => "next_function",
             Self::PrevFunction => "prev_function",
@@ -317,6 +331,13 @@ impl Action {
             Self::FetchAll => "fetch all remotes",
             Self::StashPush => "stash uncommitted changes",
             Self::StashPop => "restore the latest stash",
+            Self::ChangeNew => "start a new change on top of this one",
+            Self::ChangeEdit => "edit this change in the working copy",
+            Self::ChangeDescribe => "describe this change",
+            Self::ChangeSquash => "squash this change into its parent",
+            Self::ChangeAbandon => "abandon this change",
+            Self::ChangeUndo => "undo the last jj operation",
+            Self::ChangeRedo => "redo the last undone jj operation",
             Self::NextHunk => "go to the next hunk",
             Self::PrevHunk => "go to the previous hunk",
             Self::NextFunction => "go to the next function",
@@ -383,7 +404,7 @@ impl Action {
         }
     }
 
-    pub(crate) const ALL: [Self; 117] = [
+    pub(crate) const ALL: [Self; 124] = [
         Self::CenterCursor,
         Self::CursorTop,
         Self::CursorBottom,
@@ -454,6 +475,13 @@ impl Action {
         Self::FetchAll,
         Self::StashPush,
         Self::StashPop,
+        Self::ChangeNew,
+        Self::ChangeEdit,
+        Self::ChangeDescribe,
+        Self::ChangeSquash,
+        Self::ChangeAbandon,
+        Self::ChangeUndo,
+        Self::ChangeRedo,
         Self::NextHunk,
         Self::PrevHunk,
         Self::NextComment,
@@ -591,7 +619,10 @@ const STATUS_PREFIXES: &[(&str, TransientKind)] = &[
     ("p", TransientKind::Pull),
     ("f", TransientKind::Fetch),
     ("z", TransientKind::Stash),
+    ("C", TransientKind::Change),
 ];
+
+const LOG_PREFIXES: &[(&str, TransientKind)] = &[("c", TransientKind::Change)];
 
 const NO_PREFIXES: &[(&str, TransientKind)] = &[];
 
@@ -822,7 +853,7 @@ impl Keymap {
         let (defaults, prefixes, overrides, section) = match context {
             Context::Status => (STATUS_DEFAULTS, STATUS_PREFIXES, &keys.status, "status"),
             Context::Diff => (DIFF_DEFAULTS, NO_PREFIXES, &keys.diff, "diff"),
-            Context::Log => (LOG_DEFAULTS, NO_PREFIXES, &keys.log, "log"),
+            Context::Log => (LOG_DEFAULTS, LOG_PREFIXES, &keys.log, "log"),
             Context::CiLog => (CI_LOG_DEFAULTS, NO_PREFIXES, &keys.ci_log, "ci_log"),
             Context::Graph => (GRAPH_DEFAULTS, NO_PREFIXES, &keys.graph, "graph"),
             Context::Prs => (PRS_DEFAULTS, NO_PREFIXES, &keys.prs, "prs"),

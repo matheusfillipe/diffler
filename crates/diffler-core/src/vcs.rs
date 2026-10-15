@@ -64,11 +64,61 @@ impl LogEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChangeInfo {
     pub change_id: String,
+    /// `@`'s commit id when the view was read; a snapshot rewrites it.
+    pub commit_id: String,
     /// A bookmark on `@`, else on its nearest bookmarked ancestor.
     pub bookmark: Option<String>,
     /// First line of the description; empty when none is set.
     pub description: String,
 }
+
+/// A jj verb on one change. A `rev` is `@`, or a full commit id that names
+/// the change it belongs to, so a change rewritten since keeps its target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChangeOp {
+    New(String),
+    Edit(String),
+    /// An empty message clears the description.
+    Describe {
+        rev: String,
+        message: String,
+    },
+    /// Into its parent. Both descriptions survive: the parent's, then the
+    /// change's, when both are set.
+    Squash(String),
+    Abandon(String),
+    Undo,
+    Redo,
+}
+
+/// The local bookmark nearest `@` and the remote it tracks, which a jj pull
+/// fetches and rebases onto.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullTarget {
+    pub bookmark: String,
+    /// `None` when the bookmark tracks no remote bookmark.
+    pub remote: Option<String>,
+}
+
+/// What a jj pull did after its fetch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PullOutcome {
+    /// The remote no longer has `onto` (`name@remote`).
+    Gone { onto: String },
+    /// `@` already descends from `onto`.
+    UpToDate { onto: String },
+    /// `@`'s branch now sits on `onto`; `conflicts` of its changes conflict,
+    /// and the local bookmark conflicts with the remote's when it moved on
+    /// both sides.
+    Rebased {
+        onto: String,
+        conflicts: usize,
+        bookmark_conflicted: bool,
+    },
+}
+
+/// What a jj-only verb answers in a git repo.
+pub const JJ_ONLY: &str = "edit changes in a jj repo; this one is plain git";
 
 /// A jj bookmark: `name` for a local one, `name@remote` for a remote one.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -235,6 +285,29 @@ pub trait Vcs: Send {
     fn discard(&self, rel: &Path) -> Result<(), VcsError>;
     /// Commit the index; returns the new commit id.
     fn commit(&self, message: &str) -> Result<String, VcsError>;
+    /// Commit only `paths` (files or folders) of the working copy, which jj
+    /// can do with no index; returns the new commit id.
+    fn commit_paths(&self, _message: &str, _paths: &[String]) -> Result<String, VcsError> {
+        Err(VcsError::Rejected(
+            "stage the files you want, then commit".into(),
+        ))
+    }
+    /// A jj change verb; git has none.
+    fn change(&self, _op: &ChangeOp) -> Result<(), VcsError> {
+        Err(VcsError::Rejected(JJ_ONLY.into()))
+    }
+    /// What a jj pull fetches and rebases onto, read fresh; `None` outside
+    /// jj or with no local bookmark under `@`.
+    fn pull_target(&self) -> Result<Option<PullTarget>, VcsError> {
+        Ok(None)
+    }
+    /// After a fetch, rebase `@`'s branch onto `bookmark@remote` when that
+    /// moved.
+    fn rebase_onto_remote(&self, _bookmark: &str, _remote: &str) -> Result<PullOutcome, VcsError> {
+        Err(VcsError::Rejected(JJ_ONLY.into()))
+    }
+    /// Full message of the commit `oid`.
+    fn commit_message(&self, oid: &str) -> Result<String, VcsError>;
     /// Full message of the HEAD commit, for amend/reword editor templates.
     fn head_message(&self) -> Result<String, VcsError>;
     /// Amend HEAD, returning the new commit id. `message` `None` reuses HEAD's
@@ -256,8 +329,8 @@ pub trait Vcs: Send {
     /// stash or the pop would conflict.
     fn stash_pop(&self) -> Result<(), VcsError>;
     /// Argv for a network op, run in [`Vcs::workdir`] so the backend's own CLI
-    /// handles credentials. jj rejects push and pull, since they would move
-    /// git's refs behind its back.
+    /// handles credentials. jj pushes bookmarks with `jj git push` and pulls
+    /// with `jj git fetch`, then [`Vcs::rebase_onto_remote`].
     fn network_argv(&self, op: NetworkOp) -> Result<Vec<String>, VcsError>;
     fn workdir(&self) -> Result<PathBuf, VcsError>;
     fn remote_url(&self, name: &str) -> Result<Option<String>, VcsError>;

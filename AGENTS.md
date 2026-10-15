@@ -109,21 +109,64 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   `jj bookmark create -r @` / `jj bookmark delete exact:`, checkout ->
   `jj new <rev>` (checkout keeps working on top of a branch; `jj edit`
   edits its tip commit in place), discard -> `jj restore
-  root-file:<path>`. A message travels as `--message=<text>`; a name jj
+  root-file:<path>`. `c c` over a `V` selection of working-copy rows
+  commits just those files and folders, a rename's old path included
+  (`Vcs::commit_paths`, `jj commit -- root:<path>…`); a selection holding
+  no file row commits nothing, and git's `c c` commits the index and
+  ignores a selection.
+  A message travels as `--message=<text>`; a name jj
   would otherwise resolve as a revset or fileset expression (a checkout's
-  target, a deleted bookmark, a discarded path) travels as a quoted jj
-  string literal after `--`, since a leading `-` reads as a flag and git
+  target, a deleted bookmark, a discarded path, a commit id) travels as a
+  quoted jj string literal, after `--` where it is positional, since a
+  leading `-` reads as a flag and git
   allows names (`fix(x)`, `u@v`) that parse as fileset or revset syntax
   there. A created bookmark's name is never resolved as an expression, so
   it goes through unquoted. Every call sets `JJ_EDITOR=false`; a prompt jj
   opens anyway then fails at once, keeping the write's UI thread
   responsive. Staging, unstaging, hunk staging, and stash have no jj
   equivalent; each returns a `VcsError::Rejected`, and the UI shows it as a
-  status message. In-app fetch runs `jj git fetch` (or, fetching every
-  remote, `jj git fetch --all-remotes`) through `network_argv`; push and
-  pull decline there, since the git CLI would move HEAD and branches behind
-  jj's back; a PR checkout fetches the head ref with git and switches
-  through `Vcs::checkout`. `Vcs::status` reads
+  status message (stash's names the change menu's New). The change menu
+  (`TransientKind::Change`: `C` on the status screen for `@`, `c` on the log
+  for the commit under the cursor) runs `Vcs::change` with a `ChangeOp`:
+  new -> `jj new`, edit -> `jj edit` (log only; `@` already is the working
+  copy), describe -> `jj describe` (the input opens on the full
+  description, read with git2 from the commit the view last saw:
+  `ChangeInfo::commit_id` for `@`; an empty one clears it), squash -> `jj
+  squash --revision`, passing `--message=<parent>\n\n<change>` when both
+  are described, since jj would open an editor to join them, abandon
+  (after a confirm that says `@`'s edits go with it) -> `jj abandon`, and
+  undo/redo -> `jj undo`/`jj redo`. jj snapshots edits before undo or redo
+  and would then act on that snapshot, dropping them, so `jj util
+  snapshot` runs first and the verb is refused while a snapshot is the
+  newest operation. `@` goes to jj as `@`, since its commit id moves with
+  every snapshot; a log row's commit id goes as `change_id(<its change>)`,
+  so a commit rewritten since names its current version and never comes
+  back as a divergent copy. jj refuses an immutable commit itself and we
+  show its error. A git repo leaves the menu's prefix unbound and lists it
+  nowhere, and its backend declines `ChangeOp` with `vcs::JJ_ONLY`.
+  Network ops run through `network_argv` in the git-op worker, which reads
+  what a push sends fresh, so a bookmark made a moment ago counts; `P u`
+  carries the `NetworkOp` through its confirm and builds the argv after.
+  Fetch runs `jj git fetch` (or `--all-remotes`). Push takes the nearest
+  local bookmark (`heads(::@ & bookmarks())`): on `@` or `@-` it runs `jj
+  git push --bookmark=exact:<name>`; further back and still mutable it is
+  refused, asking for `jj bookmark move`; otherwise, with `@-` mutable, it
+  runs `jj git push --change=@-`, which names a bookmark after the change,
+  and with `@-` immutable it is refused as nothing to push. jj tracks the
+  remote bookmark a push makes. `P u` adds `--remote=<picked>`; with no
+  flag jj picks `git.push`, else `origin`. Pull reads `Vcs::pull_target`
+  (the nearest local bookmark and the remote it tracks, `origin` first)
+  into `App::pending_jj_pull`, runs `jj git fetch --remote=<that remote>`,
+  then `Vcs::rebase_onto_remote` on the UI thread: when that remote
+  bookmark is no longer in `::@`, `jj rebase --branch=@
+  --onto=<remote bookmark>`, warning about rebased changes that now
+  conflict and a local bookmark that moved on both sides; a bookmark the
+  remote deleted leaves `@` in place and says so. A jj network op's toast
+  shows jj's `Error:` line, or its first line joined with the next when it
+  only introduces a list, and skips git's push and pull recovery dialogs.
+  A PR checkout fetches the
+  head ref with git and switches through `Vcs::checkout`; creating a PR
+  asks for the bookmark to be pushed first. `Vcs::status` reads
   `working_tree_diff` (one diff pass, `@-` against the whole working copy)
   into the `staged` section: jj's colocation
   snapshot marks a new file intent-to-add in the git index, so merging
