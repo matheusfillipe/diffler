@@ -200,12 +200,11 @@ of its change and open it from the status screen. More in
 | PR review | ✅¹ | ✅² | ❌ | ❌ |
 | Agent replies in the thread | ✅ | ❌³ | ❌ | ❌ |
 | Agent walkthroughs | ✅ | ❌ | ❌ | ❌ |
-| jj | ✅⁴ | ✅ | ❌ | ❌ |
+| jj | ✅ | ✅ | ❌ | ❌ |
 
 <sub>¹ GitHub, GitLab and Forgejo.</sub><br>
 <sub>² GitHub, GitLab, Gitea, Bitbucket, Azure DevOps and Gerrit.</sub><br>
-<sub>³ tuicr exports your comments as markdown for you to paste into the agent.</sub><br>
-<sub>⁴ Colocated repos.</sub>
+<sub>³ tuicr exports your comments as markdown for you to paste into the agent.</sub>
 
 ## Keys
 
