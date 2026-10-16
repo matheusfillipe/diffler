@@ -115,7 +115,16 @@ pub(crate) struct JjRemote {
 impl JjRemote {
     pub(crate) fn new() -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
-        git2::Repository::init_bare(dir.path().join("remote.git")).expect("bare remote");
+        // jj's clone tracks the remote's HEAD branch, so we pin it to main on
+        // every machine
+
+        git2::Repository::init_opts(
+            dir.path().join("remote.git"),
+            git2::RepositoryInitOptions::new()
+                .bare(true)
+                .initial_head("main"),
+        )
+        .expect("bare remote");
         Self { dir }
     }
 
