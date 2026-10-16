@@ -71,15 +71,21 @@ pub fn colocate_jj(root: &Path) {
     );
 }
 
-/// Run jj in `root`, panicking on failure. We point `HOME` at a directory
-/// beside `root` so the developer's jj config never applies and
-/// `.config/jj/` never shows up as untracked in the tree under test.
+/// Run jj in `root`, panicking on failure. We point `JJ_CONFIG` at an empty
+/// file beside `root` so the developer's jj config never applies. We keep
+/// `HOME`, since jj stores `config set --repo` under the user's config dir and
+/// the backend under test reads it from there.
 pub fn jj(root: &Path, args: &[&str]) -> String {
-    let home = root.parent().expect("root has a parent").join("jjhome");
-    std::fs::create_dir_all(&home).expect("jj home");
+    let config = root
+        .parent()
+        .expect("root has a parent")
+        .join("jjconfig.toml");
+    if !config.exists() {
+        std::fs::write(&config, "").expect("jj config");
+    }
     let output = std::process::Command::new("jj")
         .current_dir(root)
-        .env("HOME", &home)
+        .env("JJ_CONFIG", &config)
         .args(args)
         .output()
         .expect("run jj");
