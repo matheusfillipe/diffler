@@ -7,6 +7,8 @@ use diffler::workspace::{self, Workspace, WsEvent};
 use diffler::{ci, clipboard, config, editor, event, mcp, ui};
 use diffler_core::review::Review;
 use ratatui::DefaultTerminal;
+use ratatui_image::picker::Picker;
+use ratatui_image::picker::cap_parser::QueryStdioOptions;
 use tokio::sync::mpsc;
 
 /// Standalone magit-style git TUI and code reviewer, on its own or with your coding agent.
@@ -142,8 +144,14 @@ async fn run(
     mut app: App,
     overrides: config::CliOverrides,
 ) -> color_eyre::Result<()> {
-    // the query reads the terminal's answer from stdin, so it runs before the event pump
-    if let Ok(picker) = ratatui_image::picker::Picker::from_query_stdio() {
+    // the query reads the terminal's answer from stdin, so it runs before the
+    // event pump, where it would eat keys; a terminal answers in milliseconds,
+    // so we wait half a second for one behind ssh before falling back
+    let options = QueryStdioOptions {
+        timeout_ms: 500,
+        ..QueryStdioOptions::default()
+    };
+    if let Ok(picker) = Picker::from_query_stdio_with_options(options) {
         app.image_picker = picker;
     }
     let (tx, mut rx) = mpsc::unbounded_channel();

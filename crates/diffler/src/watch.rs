@@ -55,18 +55,10 @@ pub fn spawn_watcher(
         notify::Config::default(),
     )?;
     debouncer.watch(repo_root, RecursiveMode::Recursive)?;
-    for extra in ["HEAD", "refs", "index"] {
-        let path = git_dir.join(extra);
-        if !path.exists() {
-            continue;
-        }
-        let mode = if path.is_dir() {
-            RecursiveMode::Recursive
-        } else {
-            RecursiveMode::NonRecursive
-        };
-        // an in-tree gitdir duplicates the root watch, which the debounce absorbs
-        let _ = debouncer.watch(&path, mode);
+    // FSEvents rebuilds its stream on every watch (~400ms each in a large
+    // tree), so we add one only for a gitdir the root watch misses
+    if !git_dir.starts_with(repo_root) {
+        let _ = debouncer.watch(git_dir, RecursiveMode::Recursive);
     }
     Ok(WatcherHandle {
         healthy,
