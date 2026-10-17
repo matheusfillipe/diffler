@@ -76,7 +76,9 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
   Never `git commit --no-verify`.
 - Review before committing: in Claude Code run `/rev` on the working tree for any
   non-trivial change.
-- Commit messages: short, imperative, one line.
+- Commit messages: one short conventional-commit line, `<type>: <lowercase
+  imperative summary>` (`feat`, `fix`, `perf`, `refactor`, `test`, `docs`,
+  `chore`, `ci`), e.g. `fix: speed up opening`.
 - Comments explain why, never what. No change-history commentary.
 - UI text is imperative and names the action: a hint is `c add comment`, never
   `c comment` (bare noun) or `c writes the first` (narrating what the program
