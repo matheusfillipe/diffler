@@ -1,8 +1,8 @@
 //! Diff/review screen: file sidebar, diff pane, and the comments or references sidebar.
 
-mod avatars;
-mod cards;
-mod comments;
+pub(super) mod avatars;
+pub(super) mod cards;
+pub(super) mod comments;
 mod pane;
 mod references;
 mod sidebar;

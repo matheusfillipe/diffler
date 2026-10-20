@@ -1392,7 +1392,10 @@ impl App {
                 };
                 self.open_commit_diff(&oid);
             }
-            Row::Pr => self.open_pr_review(),
+            Row::Pr => match self.pr.clone() {
+                Some(pr) => self.open_pr_page(pr),
+                None => self.info("no open PR detected for this branch"),
+            },
             Row::Walkthrough { id } => {
                 let slide = self.opening_slide(id);
                 self.open_walkthrough(id, slide);
@@ -1401,7 +1404,7 @@ impl App {
                 let Some(pr) = self.other_prs().get(*index).map(|pr| (*pr).clone()) else {
                     return;
                 };
-                self.open_pr_review_for(pr);
+                self.open_pr_page(pr);
             }
             Row::PrsHeader { .. } => self.open_prs(),
             Row::Branch { index } => {
@@ -2143,7 +2146,7 @@ mod tests {
     }
 
     #[test]
-    fn enter_on_the_pr_row_queues_the_head_fetch() {
+    fn enter_on_the_pr_row_then_on_its_page_queues_the_head_fetch() {
         let (_fixture, mut app) = app();
         app.pr = Some(crate::ci::PullRequest {
             number: 7,
@@ -2155,10 +2158,10 @@ mod tests {
             head_oid: "0000000000000000000000000000000000000abc".into(),
         });
         cursor_to(&mut app, |row| matches!(row, Row::Pr));
-        app.handle(AppEvent::Key(KeyEvent::new(
-            KeyCode::Enter,
-            KeyModifiers::NONE,
-        )));
+        let enter = || AppEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.handle(enter());
+        assert_eq!(app.screen(), Screen::Pr);
+        app.handle(enter());
         // the head isn't local, so the open waits on a forge fetch
         let git = app.pending_git.take().expect("fetch queued");
         assert_eq!(git.argv[..2], ["git".to_owned(), "fetch".to_owned()]);
@@ -4096,13 +4099,15 @@ mod tests {
     }
 
     #[test]
-    fn enter_on_an_open_pr_row_reviews_that_pr() {
+    fn enter_on_an_open_pr_row_then_on_its_page_reviews_that_pr() {
         let (_fixture, mut app) = app();
         app.ci_remotes = vec![github_remote()];
         app.prs = vec![pull_request(9)];
         app.status.prs_loaded = true;
         app.status.group_folded[Group::Prs.index()] = false;
         cursor_to(&mut app, |row| matches!(row, Row::OpenPr { .. }));
+        app.handle(key('\n'));
+        assert_eq!(app.screen(), Screen::Pr);
         app.handle(key('\n'));
         // the fixture never fetched PR 9's head, so the open queues a fetch
         // the same way the branch's own PR row does

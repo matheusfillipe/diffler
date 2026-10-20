@@ -11,9 +11,10 @@ use crate::ci::error::{CiError, Result, parse_json};
 use crate::ci::exec::CommandRunner;
 use crate::ci::model::{
     Annotation, AnnotationLevel, Artifact, CiJob, CiJobLeg, CiRun, JobId, JobStatus, LogChunk,
-    LogStepMeta, PrComment, PullRequest, RunDetail, RunExtras, RunId, ts_sort_key,
+    LogStepMeta, PrComment, PrConversation, PrNote, PrState, PrVerdict, PullRequest, RunDetail,
+    RunExtras, RunId, ts_sort_key,
 };
-use crate::ci::provider::{ForgeProvider, ProviderKind};
+use crate::ci::provider::{ForgeProvider, NewPrNote, ProviderKind};
 
 pub type YamlCache = std::sync::Arc<std::sync::Mutex<HashMap<String, String>>>;
 
@@ -668,6 +669,32 @@ impl ForgeProvider for GitHubProvider {
         let raw = self.gh(&args).await?;
         let pr: PrListItem = parse_json("pr", &raw)?;
         Ok(pr.into_pr())
+    }
+
+    async fn pr_conversation(&self, number: u64) -> Result<PrConversation> {
+        let args = [
+            "pr".to_owned(),
+            "view".to_owned(),
+            number.to_string(),
+            "--json".to_owned(),
+            "number,title,url,baseRefName,headRefName,headRefOid,author,body,state,isDraft,\
+             labels,additions,deletions,changedFiles,comments,reviews"
+                .to_owned(),
+        ];
+        let raw = self.gh(&args).await?;
+        let conversation: ConversationApi = parse_json("pr conversation", &raw)?;
+        Ok(conversation.into_conversation())
+    }
+
+    async fn post_pr_note(&self, new: &NewPrNote) -> Result<()> {
+        let args = [
+            "pr".to_owned(),
+            "comment".to_owned(),
+            new.number.to_string(),
+            "--body".to_owned(),
+            new.quoted_body(),
+        ];
+        self.gh(&args).await.map(|_| ())
     }
 
     async fn create_pr(&self, new: &crate::ci::NewPullRequest) -> Result<PullRequest> {
@@ -1353,6 +1380,115 @@ impl PrListItem {
             head_ref: self.head_ref_name,
             head_oid: self.head_ref_oid,
             author: self.author.login,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConversationApi {
+    #[serde(flatten)]
+    pr: PrListItem,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    is_draft: bool,
+    #[serde(default)]
+    labels: Vec<LabelApi>,
+    additions: Option<u64>,
+    deletions: Option<u64>,
+    changed_files: Option<u64>,
+    #[serde(default)]
+    comments: Vec<IssueCommentApi>,
+    #[serde(default)]
+    reviews: Vec<ReviewApi>,
+}
+
+#[derive(Deserialize)]
+struct LabelApi {
+    name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct IssueCommentApi {
+    id: String,
+    #[serde(default)]
+    author: AuthorApi,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    created_at: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewApi {
+    id: String,
+    #[serde(default)]
+    author: AuthorApi,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    submitted_at: String,
+}
+
+impl ReviewApi {
+    /// GitHub files a bare `COMMENTED` review for every batch of line
+    /// comments, so we keep one only when it says something or decides something.
+    fn into_note(self) -> Option<PrNote> {
+        let verdict = match self.state.as_str() {
+            "APPROVED" => PrVerdict::Approved,
+            "CHANGES_REQUESTED" => PrVerdict::ChangesRequested,
+            "COMMENTED" if !self.body.trim().is_empty() => PrVerdict::Commented,
+            _ => return None,
+        };
+        Some(PrNote {
+            id: self.id,
+            author: self.author.login,
+            body: self.body,
+            at: created_epoch(&self.submitted_at),
+            verdict: Some(verdict),
+            thread_id: None,
+            reply_to: None,
+        })
+    }
+}
+
+impl ConversationApi {
+    fn into_conversation(self) -> PrConversation {
+        let state = match self.state.as_str() {
+            "MERGED" => PrState::Merged,
+            "CLOSED" => PrState::Closed,
+            _ if self.is_draft => PrState::Draft,
+            _ => PrState::Open,
+        };
+        let comments = self.comments.into_iter().map(|comment| PrNote {
+            id: comment.id,
+            author: comment.author.login,
+            body: comment.body,
+            at: created_epoch(&comment.created_at),
+            verdict: None,
+            thread_id: None,
+            reply_to: None,
+        });
+        let mut notes: Vec<PrNote> = comments
+            .chain(self.reviews.into_iter().filter_map(ReviewApi::into_note))
+            .collect();
+        notes.sort_by_key(|note| note.at);
+        PrConversation {
+            pr: self.pr.into_pr(),
+            body: self.body,
+            state,
+            labels: self.labels.into_iter().map(|label| label.name).collect(),
+            changed_files: self.changed_files,
+            additions: self.additions,
+            deletions: self.deletions,
+            notes,
         }
     }
 }
@@ -2365,6 +2501,69 @@ jobs:
         assert_eq!(pr.head_oid, "headsha");
         assert_eq!(pr.base_ref, "main");
         assert_eq!(pr.head_ref, "feat/x");
+    }
+
+    const CONVERSATION: &str = r#"{"number":7,"title":"Add widgets","url":"https://github.com/acme/widgets/pull/7",
+        "baseRefName":"main","headRefName":"feat/x","headRefOid":"abc","author":{"login":"author"},
+        "body":"Adds widgets.","state":"OPEN","isDraft":true,"labels":[{"name":"stale"}],
+        "additions":52,"deletions":3,"changedFiles":2,
+        "comments":[{"id":"IC_2","author":{"login":"reviewer"},"body":"later","createdAt":"2026-08-02T00:00:00Z"}],
+        "reviews":[
+          {"id":"PRR_1","author":{"login":"reviewer"},"body":"","state":"COMMENTED","submittedAt":"2026-08-01T00:00:00Z"},
+          {"id":"PRR_2","author":{"login":"lead"},"body":"","state":"APPROVED","submittedAt":"2026-08-03T00:00:00Z"},
+          {"id":"PRR_3","author":{"login":"lead"},"body":"first","state":"COMMENTED","submittedAt":"2026-08-01T12:00:00Z"}]}"#;
+
+    #[tokio::test]
+    async fn a_conversation_keeps_comments_and_reviews_that_say_something_in_order() {
+        let conversation = provider(&[("pr view 7", CONVERSATION)])
+            .pr_conversation(7)
+            .await
+            .expect("conversation");
+        assert_eq!(conversation.state, PrState::Draft);
+        assert_eq!(conversation.labels, ["stale"]);
+        assert_eq!(conversation.body, "Adds widgets.");
+        assert_eq!(conversation.changed_files, Some(2));
+        let notes: Vec<(&str, Option<PrVerdict>)> = conversation
+            .notes
+            .iter()
+            .map(|note| (note.id.as_str(), note.verdict))
+            .collect();
+        assert_eq!(
+            notes,
+            [
+                ("PRR_3", Some(PrVerdict::Commented)),
+                ("IC_2", None),
+                ("PRR_2", Some(PrVerdict::Approved)),
+            ],
+            "a bare COMMENTED review only wraps line comments"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reply_quotes_the_comment_it_answers() {
+        let runner = std::sync::Arc::new(RecordingRunner::new(&[]));
+        let parent = PrNote {
+            id: "IC_2".to_owned(),
+            author: "reviewer".to_owned(),
+            body: "why?\nreally".to_owned(),
+            at: 0,
+            verdict: None,
+            thread_id: None,
+            reply_to: None,
+        };
+        provider_with(std::sync::Arc::clone(&runner))
+            .post_pr_note(&NewPrNote {
+                number: 7,
+                body: "because".to_owned(),
+                reply_to: Some(parent),
+            })
+            .await
+            .expect("posted");
+        let call = runner.calls().remove(0);
+        assert!(
+            call.contains("pr comment 7 --body @reviewer wrote:\n> why?\n> really\n\nbecause"),
+            "{call}"
+        );
     }
 }
 

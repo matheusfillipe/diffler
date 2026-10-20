@@ -40,7 +40,7 @@ pub(super) struct CardCtx<'a> {
 /// The human and the agent keep fixed colours because the reader looks for
 /// them first; everyone else steps the golden angle from `order`, lifted for
 /// contrast against the row's own `bg`.
-pub(super) fn author_color(
+pub(in crate::ui) fn author_color(
     theme: &Theme,
     bg: Color,
     human_author: &str,
@@ -99,7 +99,7 @@ pub(super) fn comment_header_spans(
 const AUTHOR_MAX: usize = 14;
 
 /// Recolouring flags (code, link, muted) win over `base`'s foreground.
-pub(super) fn md_span(run: &MdSpan, base: Style, theme: &Theme) -> Span<'static> {
+pub(in crate::ui) fn md_span(run: &MdSpan, base: Style, theme: &Theme) -> Span<'static> {
     let mut style = base;
     if run.bold {
         style = style.add_modifier(Modifier::BOLD);

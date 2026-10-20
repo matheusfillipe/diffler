@@ -1,8 +1,9 @@
 ---
 source: crates/diffler/src/ui/prs.rs
+assertion_line: 130
 expression: terminal.backend()
 ---
-" <cr> review · b checkout · y yank url · / search · ? help                      "
+" <cr> open · D review diff · b checkout · y yank url · / search · ? help        "
 "  no open pull requests…                                                        "
 "                                                                                "
 "                                                                                "

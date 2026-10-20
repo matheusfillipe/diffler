@@ -126,12 +126,19 @@ pub enum McpRequestKind {
         target: FocusTarget,
         note: Option<String>,
     },
+    /// The PR's description and conversation; `None` is the PR on screen,
+    /// else the branch's own.
+    GetPr {
+        number: Option<u64>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FocusTarget {
     /// A comment id or a walkthrough id.
     Id(String),
+    /// A pull request's own page.
+    Pr(u64),
     Code {
         file: String,
         line: Option<u32>,
@@ -164,6 +171,71 @@ pub enum McpResponse {
     /// Answers [`McpRequestKind::OpenProject`]: the tab now showing it.
     ProjectOpened(ProjectInfo),
     Focused(FocusResponse),
+    Pr(Box<PrInfo>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+pub struct PrInfo {
+    #[schemars(with = "Count")]
+    pub number: u64,
+    pub title: String,
+    pub url: Option<String>,
+    pub author: String,
+    /// `open`, `draft`, `closed` or `merged`.
+    pub state: String,
+    pub base: String,
+    pub head: String,
+    pub labels: Vec<String>,
+    /// The PR's description, in markdown.
+    pub body: String,
+    /// Oldest first: comments on the PR as a whole and reviews' summaries.
+    /// Line comments live in the PR's review: read them with `get_comments`.
+    pub comments: Vec<PrNoteInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+pub struct PrNoteInfo {
+    pub id: String,
+    pub author: String,
+    pub body: String,
+    /// Unix seconds; 0 when the forge gave none.
+    #[schemars(with = "Count")]
+    pub at: u64,
+    /// Set on a review's summary: `approved`, `requested changes` or `reviewed`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<String>,
+    /// The comment this one answers, on a forge that threads them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<String>,
+}
+
+impl PrInfo {
+    pub fn from_conversation(conversation: &crate::ci::PrConversation) -> Self {
+        let pr = &conversation.pr;
+        Self {
+            number: pr.number,
+            title: pr.title.clone(),
+            url: pr.url.clone(),
+            author: pr.author.clone(),
+            state: conversation.state.label().to_owned(),
+            base: pr.base_ref.clone(),
+            head: pr.head_ref.clone(),
+            labels: conversation.labels.clone(),
+            body: conversation.body.clone(),
+            comments: conversation
+                .notes
+                .iter()
+                .map(|note| PrNoteInfo {
+                    id: note.id.clone(),
+                    author: note.author.clone(),
+                    body: note.body.clone(),
+                    at: note.at,
+                    verdict: note.verdict.map(|verdict| verdict.label().to_owned()),
+                    reply_to: note.reply_to.clone(),
+                })
+                .collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
@@ -171,6 +243,8 @@ pub enum McpResponse {
 pub enum FocusView {
     Diff,
     File,
+    /// The pull request's own page: its description and conversation.
+    Pr,
     /// diffler is fetching what the review needs; the human's view moves
     /// once it arrives.
     Waiting,
@@ -582,6 +656,27 @@ pub struct FocusParams {
     /// path. Omit it for the project the human is looking at; an `id` finds
     /// its own project.
     pub project: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct GetPrParams {
+    /// The pull request's number. Omit it for the one the human has open,
+    /// else the branch's own.
+    #[schemars(with = "Option<Count>")]
+    pub number: Option<u64>,
+    /// The project to act on: its folder name from `review_status`, or its
+    /// path. Omit it for the project the human is looking at.
+    pub project: Option<String>,
+}
+
+/// `pr:12` or `pr:#12`, the form `focus` takes for a pull request.
+fn pr_number(review: &str) -> Option<u64> {
+    review
+        .trim()
+        .strip_prefix("pr:")?
+        .trim_start_matches('#')
+        .parse()
+        .ok()
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -1027,7 +1122,7 @@ impl DifflerMcp {
     }
 
     #[tool(
-        description = "Take the human's diffler to a place: a comment or walkthrough by `id`, or a `file` and line range in any review or anywhere in the project. It switches to the project's tab and opens that review with the cursor on the place; a file or line no diff shows opens in the file viewer there. Use it when the human asks where something is, and after `publish_walkthrough` to open the walkthrough. To point at code with a remark, call `add_comment`, then focus the `id` it returns. Refused while the human is typing a comment or answering a dialog; a pull request that still has to load answers `waiting` and opens once it does."
+        description = "Take the human's diffler to a place: a comment or walkthrough by `id`, or a `file` and line range in any review or anywhere in the project. It switches to the project's tab and opens that review with the cursor on the place; a file or line no diff shows opens in the file viewer there. `review: \"pr:<number>\"` with no `file` opens that pull request's page: its description and conversation. Use it when the human asks where something is, and after `publish_walkthrough` to open the walkthrough. To point at code with a remark, call `add_comment`, then focus the `id` it returns. Refused while the human is typing a comment or answering a dialog; a pull request that still has to load answers `waiting` and opens once it does."
     )]
     async fn focus(
         &self,
@@ -1041,7 +1136,16 @@ impl DifflerMcp {
                 line_end: params.line_end,
                 review: params.review,
             },
-            _ => {
+            (None, None) => match params.review.as_deref().and_then(pr_number) {
+                Some(number) => FocusTarget::Pr(number),
+                None => {
+                    return Err(ErrorData::invalid_params(
+                        "pass an id, a file, or review: pr:<number> alone for a pull request's page",
+                        None,
+                    ));
+                }
+            },
+            (Some(_), Some(_)) => {
                 return Err(ErrorData::invalid_params("pass either id or file", None));
             }
         };
@@ -1051,6 +1155,22 @@ impl DifflerMcp {
         };
         match self.request_in(params.project, kind).await? {
             McpResponse::Focused(focused) => Ok(Json(focused)),
+            _ => Err(mismatch()),
+        }
+    }
+
+    #[tool(
+        description = "Read a pull request's description, labels and state, and the comments and review summaries on the pull request as a whole, oldest first. `get_comments` holds its line comments. Omit `number` for the pull request the human has open, else the branch's own. To show it to the human, call `focus` with `review: \"pr:<number>\"` and no file."
+    )]
+    async fn get_pr(
+        &self,
+        Parameters(params): Parameters<GetPrParams>,
+    ) -> Result<Json<PrInfo>, ErrorData> {
+        let kind = McpRequestKind::GetPr {
+            number: params.number,
+        };
+        match self.request_in(params.project, kind).await? {
+            McpResponse::Pr(info) => Ok(Json(*info)),
             _ => Err(mismatch()),
         }
     }

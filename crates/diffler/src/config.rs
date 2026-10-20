@@ -250,6 +250,7 @@ pub struct KeysConfig {
     pub ci_log: BTreeMap<String, String>,
     pub graph: BTreeMap<String, String>,
     pub prs: BTreeMap<String, String>,
+    pub pr: BTreeMap<String, String>,
     pub file: BTreeMap<String, String>,
     pub stats: BTreeMap<String, String>,
     pub tabs: BTreeMap<String, String>,
@@ -807,6 +808,7 @@ fn apply_layer(
         (layer.keys.ci_log, &mut config.keys.ci_log, "ci_log"),
         (layer.keys.graph, &mut config.keys.graph, "graph"),
         (layer.keys.prs, &mut config.keys.prs, "prs"),
+        (layer.keys.pr, &mut config.keys.pr, "pr"),
         (layer.keys.file, &mut config.keys.file, "file"),
         (layer.keys.stats, &mut config.keys.stats, "stats"),
         (layer.keys.tabs, &mut config.keys.tabs, "tabs"),
@@ -1643,6 +1645,7 @@ mod tests {
             (crate::keymap::Context::CiLog, &keys.ci_log),
             (crate::keymap::Context::Graph, &keys.graph),
             (crate::keymap::Context::Prs, &keys.prs),
+            (crate::keymap::Context::Pr, &keys.pr),
         ] {
             let (_, warnings) = crate::keymap::Keymap::for_context(context, keys);
             assert_eq!(warnings, Vec::<String>::new(), "{context:?}");

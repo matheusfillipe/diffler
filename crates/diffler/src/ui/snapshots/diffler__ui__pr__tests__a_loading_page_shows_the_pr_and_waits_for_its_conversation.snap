@@ -1,0 +1,15 @@
+---
+source: crates/diffler/src/ui/pr.rs
+assertion_line: 359
+expression: "screen(&mut app, 80, 10)"
+---
+" <cr> open diff · c add comment · r reply · ] go to next comment · ? help       "
+" #7 Add widgets                                                                 "
+" author · feat/widgets → main                                                   "
+"▌Files changed                                                                  "
+"                                                                                "
+"  loading the conversation…                                                     "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+" PR #7  fixture@main · mcp off · 3 files, 0 viewed                              "

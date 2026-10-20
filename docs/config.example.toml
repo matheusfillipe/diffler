@@ -237,9 +237,24 @@
 # copy_all_feedback = "Y"
 
 [keys.prs]
-# open = "<cr>"
+# open = "<cr>"           # open the pull request's page
+# open_pr_diff = "D"      # open its diff straight away
 # branch_checkout = "b"
 # copy_url = "y"          # the forge's web URL for the pull request
+# refresh = "<c-r>"
+
+[keys.pr]
+# open = "<cr>"           # open the pull request's diff
+# open_pr_diff = "D"
+# comment = "c"           # comment on the pull request as a whole
+# reply = "r"
+# next_section = "]"      # step to the next card
+# prev_section = "["
+# branch_checkout = "b"
+# copy_url = "y"
+# open_url = "gx"
+# open_runs = "o"
+# switch_theme = "T"
 # refresh = "<c-r>"
 
 [keys.graph]

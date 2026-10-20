@@ -25,6 +25,30 @@ submit_pr_review` posts each whole-file comment through `post_pr_comment`
 network call and one more forge notification per whole-file comment,
 since GitHub gives no way to fold it into the single review post.
 
+## PR page
+
+`Screen::Pr` shows what a PR says outside its diff: state, labels, the
+description, and the conversation, which is every comment on the PR as a
+whole plus each review summary that says or decides something (a bare
+`COMMENTED` review only wraps line comments). `ForgeProvider::pr_conversation`
+reads it in one `gh pr view` on GitHub, the merge request plus its unanchored
+non-system notes on GitLab, and the pull, its issue comments and its reviews
+on Forgejo. The conversation stays out of the review session on purpose:
+session comments are anchored to lines, and `get_comments`, feedback export,
+walkthroughs and viewed marks all read them. `get_pr` is its MCP read.
+
+The page sits between the PR list and the diff: `<cr>` in the list or on a
+status PR row opens it with the cursor on the files row, so a second `<cr>`
+opens the diff, and `q` from the diff comes back to it. `App::pr_pages`
+holds one page per `Screen::Pr` on the stack. `c` and `r` post through
+`PrPost::Note`; GitLab threads its notes, so a reply goes into the
+discussion, while GitHub and Forgejo have flat PR comments, so a reply
+quotes the comment it answers (`NewPrNote::quoted_body`). A post the forge
+refuses comes back as the next `c`'s draft. An agent's `focus` with
+`review: pr:<n>` and no file opens the page by number alone, before the PR
+list knows it: the page learns the head from its first load, and its
+`<cr>` waits until then.
+
 ## GitLab merge requests
 
 A thread is a discussion and a comment is one of

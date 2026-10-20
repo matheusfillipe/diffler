@@ -63,6 +63,9 @@ impl App {
         if self.busy_typing() {
             return McpResponse::Error(TYPING_REFUSAL.to_owned());
         }
+        if let FocusTarget::Pr(number) = target {
+            return self.focus_pr_page(number, note.as_deref());
+        }
         let destination = match self.focus_destination(target) {
             Ok(destination) => destination,
             Err(err) => return McpResponse::Error(err),
@@ -99,6 +102,35 @@ impl App {
                 }
             }
         }
+    }
+
+    /// The page loads the PR itself, so a PR the open list has not reached,
+    /// or one already merged, opens all the same.
+    fn focus_pr_page(&mut self, number: u64, note: Option<&str>) -> McpResponse {
+        if self.would_drop_drafts(None) {
+            return McpResponse::Error(PARKED_DRAFT.to_owned());
+        }
+        if self.ci_remotes().is_empty() {
+            return McpResponse::Error(
+                "no forge detected for this repo, so diffler cannot open a PR".to_owned(),
+            );
+        }
+        let pr = self
+            .known_pr(number)
+            .unwrap_or_else(|| crate::ci::PullRequest {
+                number,
+                title: String::new(),
+                url: None,
+                base_ref: String::new(),
+                head_ref: String::new(),
+                head_oid: String::new(),
+                author: String::new(),
+            });
+        self.pending_focus = None;
+        self.unwind_screens();
+        self.open_pr_page(pr);
+        self.announce(note.filter(|note| !note.trim().is_empty()));
+        self.focused(Some(&ReviewSource::pr(number)), FocusView::Pr, None, None)
     }
 
     /// Finish a focus whose review was fetching. A human who started typing
@@ -152,6 +184,7 @@ impl App {
     fn focus_destination(&self, target: FocusTarget) -> Result<Destination, String> {
         match target {
             FocusTarget::Id(id) => self.id_destination(&id),
+            FocusTarget::Pr(number) => Err(format!("PR #{number} opens as a page, not a review")),
             FocusTarget::Code {
                 file,
                 line,
@@ -353,11 +386,16 @@ impl App {
     /// `None` once the open has run; otherwise how the focus has to wait.
     fn open_pr_for_focus(&mut self, number: u64) -> Option<Opened> {
         if let Some((base, head)) = self.pr_ranges.get(&number).cloned() {
+            if let Some(pr) = self.known_pr(number) {
+                self.open_pr_page(pr);
+            }
             self.open_pr_diff(number, &base, &head);
             return None;
         }
         match self.find_pr(number) {
+            // the page goes underneath, so `q` from the diff lands where the human's own Enter would
             PrLookup::Known(pr) => {
+                self.open_pr_page(pr.clone());
                 self.open_pr_review_for(pr);
                 None
             }

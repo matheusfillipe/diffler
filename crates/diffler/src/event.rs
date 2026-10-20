@@ -87,6 +87,10 @@ pub enum AppEvent {
         /// when the lookup failed.
         pr: Option<crate::ci::PullRequest>,
     },
+    PrConversation {
+        number: u64,
+        result: Result<Box<crate::ci::PrConversation>, String>,
+    },
     PrPosted {
         post: Box<crate::app::pr::PrPost>,
         result: Result<Option<crate::ci::PrComment>, String>,

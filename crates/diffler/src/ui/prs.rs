@@ -11,7 +11,8 @@ use crate::keymap::Action;
 use crate::ui::Hint;
 
 const HINTS: &[Hint] = &[
-    Hint::Leaf(&[Action::Open], "review"),
+    Hint::Leaf(&[Action::Open], "open"),
+    Hint::Leaf(&[Action::OpenPrDiff], "review diff"),
     Hint::Leaf(&[Action::BranchCheckout], "checkout"),
     Hint::Leaf(&[Action::CopyUrl], "yank url"),
     Hint::Leaf(&[Action::Search], "search"),

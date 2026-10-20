@@ -22,7 +22,7 @@ use crate::theme::Theme;
 
 /// Each author's first-appearance position, skipping the human and the agent
 /// since they take fixed colours.
-pub(super) fn author_orders<'a>(
+pub(in crate::ui) fn author_orders<'a>(
     authors: impl Iterator<Item = &'a str>,
     human_author: &str,
 ) -> HashMap<&'a str, usize> {

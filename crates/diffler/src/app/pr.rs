@@ -2,6 +2,8 @@
 //! the local session (the same review UI everywhere) and push local comments
 //! and replies back out.
 
+use std::hash::{DefaultHasher, Hash, Hasher};
+
 use diffler_core::session::{Anchor, Comment, CommentStatus, Reply};
 use diffler_core::source::ReviewSource;
 
@@ -46,6 +48,12 @@ pub enum PrPost {
         number: u64,
         comment_id: String,
         remote_id: String,
+    },
+    /// A comment on the PR as a whole, from its page.
+    Note {
+        number: u64,
+        body: String,
+        reply_to: Option<Box<crate::ci::PrNote>>,
     },
 }
 
@@ -209,6 +217,11 @@ impl App {
             }
             Action::Refresh => self.pending_ci = Some(super::CiRequest::Prs),
             Action::Open => {
+                if let Some(pr) = self.prs.get(self.prs_cursor).cloned() {
+                    self.open_pr_page(pr);
+                }
+            }
+            Action::OpenPrDiff => {
                 if let Some(pr) = self.prs.get(self.prs_cursor).cloned() {
                     self.open_pr_review_for(pr);
                 }
@@ -614,7 +627,7 @@ impl App {
         self.info(message);
     }
 
-    fn queue_pr_post(&mut self, post: PrPost) {
+    pub(crate) fn queue_pr_post(&mut self, post: PrPost) {
         if self.pr_posts_inflight.insert(post_key(&post)) {
             self.pending_pr_posts.push(post);
         }
@@ -636,6 +649,10 @@ impl App {
     ) {
         self.pr_posts_inflight.remove(&post_key(post));
         let number = match post {
+            PrPost::Note { number, body, .. } => {
+                self.on_pr_note_posted(*number, body, result.map(|_| ()));
+                return;
+            }
             PrPost::Review { review, .. } => review.number,
             PrPost::Reply { number, .. }
             | PrPost::Resolve { number, .. }
@@ -668,7 +685,7 @@ impl App {
                             r.remote_id = remote.map(|c| c.id);
                         }
                     }
-                    PrPost::Resolve { .. } | PrPost::Edit { .. } => {}
+                    PrPost::Resolve { .. } | PrPost::Edit { .. } | PrPost::Note { .. } => {}
                     PrPost::Delete { comment_id, .. } => {
                         session.comments.retain(|c| c.id != *comment_id);
                         self.pending_ci = Some(super::CiRequest::PrComments(number));
@@ -818,14 +835,16 @@ fn post_key(post: &PrPost) -> String {
         } => format!("res-{comment_id}-{resolved}"),
         PrPost::Edit {
             comment_id, body, ..
-        } => {
-            use std::hash::{DefaultHasher, Hash, Hasher};
-            let mut hasher = DefaultHasher::new();
-            body.hash(&mut hasher);
-            format!("e-{comment_id}-{:x}", hasher.finish())
-        }
+        } => format!("e-{comment_id}-{:x}", body_hash(body)),
+        PrPost::Note { number, body, .. } => format!("n-{number}-{:x}", body_hash(body)),
         PrPost::Delete { comment_id, .. } => format!("d-{comment_id}"),
     }
+}
+
+fn body_hash(body: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    body.hash(&mut hasher);
+    hasher.finish()
 }
 
 fn resolve_key_prefix(comment_id: &str) -> String {
@@ -958,7 +977,7 @@ mod tests {
             head_oid: "0000000000000000000000000000000000000abc".into(),
             author: "alice".into(),
         }];
-        app.dispatch_prs(crate::keymap::Action::Open);
+        app.dispatch_prs(crate::keymap::Action::OpenPrDiff);
         let git = app.pending_git.take().expect("fetch queued");
         assert_eq!(git.argv.get(2).map(String::as_str), Some("gitlab"));
         assert!(
@@ -981,7 +1000,7 @@ mod tests {
             head_oid: "0000000000000000000000000000000000000abc".into(),
             author: "alice".into(),
         }];
-        app.dispatch_prs(crate::keymap::Action::Open);
+        app.dispatch_prs(crate::keymap::Action::OpenPrDiff);
         // the head isn't local: the open fetches the pull ref, not a branch
         let git = app.pending_git.take().expect("fetch queued");
         assert!(

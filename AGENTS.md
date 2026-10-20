@@ -111,6 +111,6 @@ Before changing one of these areas, read its design notes:
 - **TUI** (screens, keys, sidebars, folds, mouse, image preview, symbol lens, blame, status bands, language stats): [docs/architecture/tui.md](docs/architecture/tui.md)
 - **Walkthrough** (stops, slides, anchors, figures): [docs/architecture/walkthrough.md](docs/architecture/walkthrough.md)
 - **MCP** (tools, `focus`, activity indicator, instance registry): [docs/architecture/mcp.md](docs/architecture/mcp.md)
-- **Forges** (PR review, GitLab, PR form, CI remote, matrix legs): [docs/architecture/forges.md](docs/architecture/forges.md)
+- **Forges** (PR review, PR page, GitLab, PR form, CI remote, matrix legs): [docs/architecture/forges.md](docs/architecture/forges.md)
 - **Project tabs** (`workspace.rs`, event routing): [docs/architecture/tabs.md](docs/architecture/tabs.md)
 - **Releasing** (`just release-*`, CI publishing, channels): [docs/releasing.md](docs/releasing.md)

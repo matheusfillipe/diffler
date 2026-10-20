@@ -202,19 +202,10 @@ impl App {
         }
     }
 
-    /// Review the branch's open PR: diff `merge-base..head` under the stable
-    /// `pr-<n>` source. A head we don't have yet is fetched first, from the
-    /// ref the forge serves it under, and the open retries after the fetch.
-    pub(crate) fn open_pr_review(&mut self) {
-        let Some(pr) = self.pr.clone() else {
-            self.info("no open PR detected for this branch");
-            return;
-        };
-        self.open_pr_review_for(pr);
-    }
-
-    /// Review any PR, including one whose branch was never checked out; the
-    /// diff needs only the fetched objects.
+    /// Review any PR, including one whose branch was never checked out: diff
+    /// `merge-base..head` under the stable `pr-<n>` source. A head we don't
+    /// have yet is fetched first, from the ref the forge serves it under, and
+    /// the open retries after the fetch.
     pub(crate) fn open_pr_review_for(&mut self, pr: crate::ci::PullRequest) {
         let number = pr.number;
         if let Some((base, head)) = self.ensure_pr_range(pr) {

@@ -497,6 +497,7 @@ impl App {
             | Screen::Runs
             | Screen::Graph
             | Screen::Prs
+            | Screen::Pr
             | Screen::CiLog
             | Screen::Stats => None,
         }
@@ -631,10 +632,7 @@ impl App {
 
     fn open_file_link(&mut self) {
         match self.file_link() {
-            Ok(url) => match crate::proc::open_in_browser(&url) {
-                Ok(()) => self.info(format!("opened {url}")),
-                Err(err) => self.error(format!("cannot open the browser: {err}")),
-            },
+            Ok(url) => self.open_or_report(Some(url), "this file"),
             Err(err) => self.info(err),
         }
     }

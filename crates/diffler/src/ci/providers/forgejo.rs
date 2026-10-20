@@ -9,9 +9,12 @@ use serde::Deserialize;
 use crate::ci::error::{CiError, Result, parse_json};
 use crate::ci::exec::CommandRunner;
 use crate::ci::model::{
-    CiJob, CiRun, JobId, JobStatus, LogChunk, PrComment, PullRequest, RunDetail, RunExtras, RunId,
+    CiJob, CiRun, JobId, JobStatus, LogChunk, PrComment, PrConversation, PrNote, PrState,
+    PrVerdict, PullRequest, RunDetail, RunExtras, RunId,
 };
-use crate::ci::provider::{ForgeProvider, NewPrComment, NewPrReview, ProviderKind, ReviewVerdict};
+use crate::ci::provider::{
+    ForgeProvider, NewPrComment, NewPrNote, NewPrReview, ProviderKind, ReviewVerdict,
+};
 
 pub struct ForgejoProvider {
     runner: Box<dyn CommandRunner>,
@@ -63,6 +66,32 @@ impl ForgejoProvider {
             ],
         )
         .await
+    }
+
+    /// The session keeps exactly what comes back, so we read every page: one
+    /// left unread would delete its comments from the review.
+    async fn reviews(&self, number: u64) -> Result<Vec<ReviewItem>> {
+        let mut reviews: Vec<ReviewItem> = Vec::new();
+        for page in 1.. {
+            let raw = self
+                .get(&format!(
+                    "pulls/{number}/reviews?limit={PAGE_SIZE}&page={page}"
+                ))
+                .await?;
+            let batch: Vec<ReviewItem> = parse_json("pr reviews", &raw)?;
+            let full = batch.len() >= PAGE_SIZE;
+            reviews.extend(batch);
+            if !full {
+                break;
+            }
+        }
+        Ok(reviews)
+    }
+
+    /// The endpoint takes no `page` or `limit`, so one call returns every comment.
+    async fn issue_comments(&self, number: u64) -> Result<Vec<IssueCommentItem>> {
+        let raw = self.get(&format!("issues/{number}/comments")).await?;
+        parse_json("pr issue comments", &raw)
     }
 
     /// Forgejo has no per-comment endpoint, so we read the PR's comments and pick the row.
@@ -195,23 +224,30 @@ impl ForgeProvider for ForgejoProvider {
         Ok(pull.into_pr())
     }
 
+    async fn pr_conversation(&self, number: u64) -> Result<PrConversation> {
+        let raw = self.get(&format!("pulls/{number}")).await?;
+        let pull: PullItem = parse_json("pr", &raw)?;
+        let (comments, reviews) =
+            futures_util::future::join(self.issue_comments(number), self.reviews(number)).await;
+        let comments = comments?.into_iter().map(IssueCommentItem::into_note);
+        let mut notes: Vec<PrNote> = comments
+            .chain(reviews?.into_iter().filter_map(ReviewItem::into_note))
+            .collect();
+        notes.sort_by_key(|note| note.at);
+        Ok(pull.into_conversation(notes))
+    }
+
+    async fn post_pr_note(&self, new: &NewPrNote) -> Result<()> {
+        self.post(
+            &format!("issues/{}/comments", new.number),
+            &serde_json::json!({ "body": new.quoted_body() }),
+        )
+        .await
+        .map(|_| ())
+    }
+
     async fn pr_comments(&self, number: u64) -> Result<Vec<PrComment>> {
-        // the session keeps exactly what comes back, so a page left unread
-        // deletes those comments from the review
-        let mut reviews: Vec<ReviewItem> = Vec::new();
-        for page in 1.. {
-            let raw = self
-                .get(&format!(
-                    "pulls/{number}/reviews?limit={PAGE_SIZE}&page={page}"
-                ))
-                .await?;
-            let batch: Vec<ReviewItem> = parse_json("pr reviews", &raw)?;
-            let full = batch.len() >= PAGE_SIZE;
-            reviews.extend(batch);
-            if !full {
-                break;
-            }
-        }
+        let reviews = self.reviews(number).await?;
         // a `REQUEST_REVIEW` row is a review request
         let paths: Vec<String> = reviews
             .iter()
@@ -350,6 +386,55 @@ struct PullItem {
     base: PullSide,
     #[serde(default)]
     user: ForgejoUser,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    merged: bool,
+    #[serde(default)]
+    draft: bool,
+    #[serde(default)]
+    labels: Vec<LabelItem>,
+    additions: Option<u64>,
+    deletions: Option<u64>,
+    changed_files: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct LabelItem {
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct IssueCommentItem {
+    id: u64,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    user: ForgejoUser,
+    #[serde(default)]
+    created_at: String,
+}
+
+impl IssueCommentItem {
+    fn into_note(self) -> PrNote {
+        PrNote {
+            id: self.id.to_string(),
+            author: self.user.login,
+            body: self.body,
+            at: epoch_secs(&self.created_at),
+            verdict: None,
+            thread_id: None,
+            reply_to: None,
+        }
+    }
+}
+
+fn epoch_secs(iso: &str) -> u64 {
+    parse_ts(iso)
+        .and_then(|at| u64::try_from(at.unix_timestamp()).ok())
+        .unwrap_or(0)
 }
 
 #[derive(Deserialize, Default)]
@@ -359,6 +444,34 @@ struct ForgejoUser {
 }
 
 impl PullItem {
+    fn into_conversation(mut self, notes: Vec<PrNote>) -> PrConversation {
+        // older Forgejo marks a draft only with a WIP: title prefix
+        let draft = self.draft || self.title.starts_with("WIP:");
+        let state = match self.state.as_str() {
+            _ if self.merged => PrState::Merged,
+            "closed" => PrState::Closed,
+            _ if draft => PrState::Draft,
+            _ => PrState::Open,
+        };
+        let body = std::mem::take(&mut self.body);
+        let labels = std::mem::take(&mut self.labels)
+            .into_iter()
+            .map(|label| label.name)
+            .collect();
+        let (changed_files, additions, deletions) =
+            (self.changed_files, self.additions, self.deletions);
+        PrConversation {
+            pr: self.into_pr(),
+            body,
+            state,
+            labels,
+            changed_files,
+            additions,
+            deletions,
+            notes,
+        }
+    }
+
     fn into_pr(self) -> PullRequest {
         PullRequest {
             number: self.number,
@@ -390,6 +503,34 @@ struct ReviewItem {
     state: String,
     #[serde(default)]
     comments_count: u64,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    user: ForgejoUser,
+    #[serde(default)]
+    submitted_at: String,
+}
+
+impl ReviewItem {
+    /// A `COMMENT` review with no summary only carries line comments, which
+    /// the diff already shows.
+    fn into_note(self) -> Option<PrNote> {
+        let verdict = match self.state.as_str() {
+            "APPROVED" => PrVerdict::Approved,
+            "REQUEST_CHANGES" => PrVerdict::ChangesRequested,
+            "COMMENT" if !self.body.trim().is_empty() => PrVerdict::Commented,
+            _ => return None,
+        };
+        Some(PrNote {
+            id: format!("review-{}", self.id),
+            author: self.user.login,
+            body: self.body,
+            at: epoch_secs(&self.submitted_at),
+            verdict: Some(verdict),
+            thread_id: None,
+            reply_to: None,
+        })
+    }
 }
 
 /// `position` is the new-file line and `original_position` the old-file one,
@@ -437,9 +578,7 @@ impl ReviewCommentItem {
             reply_to: None,
             thread_id: Some(self.pull_request_review_id.to_string()),
             resolved: self.resolver.is_some(),
-            at: parse_ts(&self.created_at)
-                .and_then(|at| u64::try_from(at.unix_timestamp()).ok())
-                .unwrap_or(0),
+            at: epoch_secs(&self.created_at),
         }
     }
 }
@@ -1011,6 +1150,52 @@ mod create_pr_tests {
         let call = runner.calls().remove(0);
         assert!(call.contains("-X POST"), "{call}");
         assert!(call.contains(r#""title":"a title""#), "{call}");
+    }
+
+    #[tokio::test]
+    async fn a_conversation_merges_issue_comments_and_review_summaries() {
+        let pull = r#"{"number":7,"title":"a title","head":{"ref":"feat/x","sha":"abc"},
+            "base":{"ref":"main","sha":"def"},"user":{"login":"author"},"body":"the body",
+            "state":"closed","merged":true,"labels":[{"name":"bug"}],"changed_files":1}"#;
+        let comments = r#"[{"id":5,"body":"a remark","user":{"login":"reviewer"},
+            "created_at":"2026-08-02T00:00:00Z"}]"#;
+        let reviews = r#"[
+            {"id":5,"state":"APPROVED","body":"","user":{"login":"lead"},"submitted_at":"2026-08-03T00:00:00Z"},
+            {"id":6,"state":"COMMENT","body":"","comments_count":2,"user":{"login":"lead"}},
+            {"id":7,"state":"REQUEST_REVIEW","body":"","user":{"login":"lead"}}]"#;
+        let runner = Arc::new(RecordingRunner::new(&[
+            ("pulls/7/reviews", reviews),
+            ("issues/7/comments", comments),
+            ("pulls/7", pull),
+        ]));
+        let conversation = provider(&runner).pr_conversation(7).await.expect("read");
+        assert_eq!(conversation.state, PrState::Merged);
+        assert_eq!(conversation.labels, ["bug"]);
+        let ids: Vec<&str> = conversation.notes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["5", "review-5"],
+            "review ids never collide with comment ids"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_note_posts_to_the_pull_as_an_issue_comment() {
+        let runner = Arc::new(RecordingRunner::new(&[]));
+        provider(&runner)
+            .post_pr_note(&NewPrNote {
+                number: 7,
+                body: "looks good".to_owned(),
+                reply_to: None,
+            })
+            .await
+            .expect("posted");
+        let call = runner.calls().remove(0);
+        assert!(
+            call.contains("repos/acme/widgets/issues/7/comments"),
+            "{call}"
+        );
+        assert!(call.contains(r#"{"body":"looks good"}"#), "{call}");
     }
 
     #[tokio::test]

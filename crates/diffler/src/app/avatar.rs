@@ -135,21 +135,30 @@ impl App {
         self.config.ui.avatars && self.image_picker.protocol_type() != ProtocolType::Halfblocks
     }
 
-    /// Queue a picture for every forge author in the open review that has
-    /// none yet. A login is asked for once per run, failures included.
+    /// Queue a picture for every forge author in the open review and the open
+    /// PR pages that has none yet. A login is asked for once per run, failures
+    /// included.
     pub(crate) fn queue_avatars(&mut self) {
         if !self.avatars_shown() {
             return;
         }
-        let Some(diff) = self.diff.as_ref() else {
-            return;
-        };
         let Some(remote) = self.ci_remotes.first() else {
             return;
         };
         let remote_url = remote.url.as_deref().unwrap_or_default();
-        let session = self.review.session_for(&diff.source);
-        let missing: Vec<&str> = forge_logins(session, &self.author)
+        let page_logins = self.pr_page_logins();
+        let mut logins: BTreeSet<&str> = page_logins
+            .iter()
+            .map(String::as_str)
+            .filter(|login| is_forge_author(login, true, &self.author))
+            .collect();
+        if let Some(diff) = self.diff.as_ref() {
+            logins.extend(forge_logins(
+                self.review.session_for(&diff.source),
+                &self.author,
+            ));
+        }
+        let missing: Vec<&str> = logins
             .into_iter()
             .filter(|login| !self.avatars.contains_key(*login))
             .collect();

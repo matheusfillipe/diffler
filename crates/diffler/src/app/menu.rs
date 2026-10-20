@@ -82,7 +82,12 @@ impl App {
             }
             // these screens select nothing on click, so a menu would act on
             // whatever row the keyboard left selected
-            Screen::Prs | Screen::Runs | Screen::Graph | Screen::File | Screen::Stats => Vec::new(),
+            Screen::Prs
+            | Screen::Pr
+            | Screen::Runs
+            | Screen::Graph
+            | Screen::File
+            | Screen::Stats => Vec::new(),
         }
     }
 }

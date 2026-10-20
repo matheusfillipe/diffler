@@ -117,9 +117,11 @@ diffler path/to/repo    # or in another one
 ```
 
 Inside diffler, `<cr>` opens a file's diff, `s` stages, `cc` commits, and `c`
-comments a line. For pull requests, `b` `p` lists the open ones, `<cr>`
-reviews one, and `S` submits your comments as a single review. `b` `P` opens a
-new pull request from the current branch.
+comments a line. For pull requests, `b` `p` lists the open ones and `<cr>`
+opens one's page: its description and conversation, where `c` comments on the
+pull request as a whole. `<cr>` again reviews its diff, and `S` submits your
+line comments as a single review. `b` `P` opens a new pull request from the
+current branch.
 
 ### With a coding agent
 

@@ -373,6 +373,9 @@ impl App {
                 let body = body.to_owned();
                 self.queue_pr_review(number, verdict, &body);
             }
+            InputOp::PrNote { number, reply_to } => {
+                self.queue_pr_note(number, body.to_owned(), reply_to.map(|note| *note));
+            }
             InputOp::Describe { rev, label } => {
                 let message = body.to_owned();
                 self.run_change(

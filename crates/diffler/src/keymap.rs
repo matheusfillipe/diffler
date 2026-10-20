@@ -39,6 +39,7 @@ pub enum Action {
     Refresh,
     Open,
     OpenReviewDiff,
+    OpenPrDiff,
     DiffBase,
     DiffLastCommit,
     DiffBranch,
@@ -174,6 +175,7 @@ impl Action {
             Self::Refresh => "refresh",
             Self::Open => "open",
             Self::OpenReviewDiff => "open_review_diff",
+            Self::OpenPrDiff => "open_pr_diff",
             Self::DiffBase => "diff_base",
             Self::DiffLastCommit => "diff_last_commit",
             Self::DiffBranch => "diff_branch",
@@ -308,6 +310,7 @@ impl Action {
             Self::Refresh => "reload",
             Self::Open => "open the item under the cursor",
             Self::OpenReviewDiff => "review all uncommitted changes",
+            Self::OpenPrDiff => "open the pull request's diff",
             Self::DiffBase => "review everything since the base branch",
             Self::DiffLastCommit => "review the last commit plus uncommitted work",
             Self::DiffBranch => "review everything since a branch you pick",
@@ -413,7 +416,7 @@ impl Action {
         }
     }
 
-    pub(crate) const ALL: [Self; 127] = [
+    pub(crate) const ALL: [Self; 128] = [
         Self::CenterCursor,
         Self::CursorTop,
         Self::CursorBottom,
@@ -461,6 +464,7 @@ impl Action {
         Self::Refresh,
         Self::Open,
         Self::OpenReviewDiff,
+        Self::OpenPrDiff,
         Self::DiffBase,
         Self::DiffLastCommit,
         Self::DiffBranch,
@@ -558,6 +562,8 @@ pub enum Context {
     /// The CI pipeline graph.
     Graph,
     Prs,
+    /// One pull request's page.
+    Pr,
     /// The file view, with or without its blame column.
     File,
     Stats,
@@ -801,8 +807,42 @@ const PRS_DEFAULTS: &[(&str, Action)] = &[
     ("<c-f>", Action::FullPageDown),
     ("<c-b>", Action::FullPageUp),
     ("<cr>", Action::Open),
+    ("D", Action::OpenPrDiff),
     ("b", Action::BranchCheckout),
     ("y", Action::CopyUrl),
+    ("<c-r>", Action::Refresh),
+    ("/", Action::Search),
+    ("n", Action::SearchNext),
+    ("N", Action::SearchPrev),
+    ("<c-k>", Action::Palette),
+    ("?", Action::Help),
+    ("q", Action::Back),
+];
+
+/// The page reuses the diff's comment verbs, and `[`/`]` step its cards the way
+/// they step the status screen's groups.
+const PR_DEFAULTS: &[(&str, Action)] = &[
+    ("j", Action::MoveDown),
+    ("k", Action::MoveUp),
+    ("gg", Action::GoTop),
+    ("G", Action::GoBottom),
+    ("<c-d>", Action::HalfPageDown),
+    ("<c-u>", Action::HalfPageUp),
+    ("<c-f>", Action::FullPageDown),
+    ("<c-b>", Action::FullPageUp),
+    ("]", Action::NextSection),
+    ("[", Action::PrevSection),
+    ("<c-n>", Action::NextSection),
+    ("<c-p>", Action::PrevSection),
+    ("<cr>", Action::Open),
+    ("D", Action::OpenPrDiff),
+    ("c", Action::Comment),
+    ("r", Action::Reply),
+    ("b", Action::BranchCheckout),
+    ("y", Action::CopyUrl),
+    ("gx", Action::OpenUrl),
+    ("o", Action::OpenRuns),
+    ("T", Action::SwitchTheme),
     ("<c-r>", Action::Refresh),
     ("/", Action::Search),
     ("n", Action::SearchNext),
@@ -873,6 +913,7 @@ impl Keymap {
             Context::CiLog => (CI_LOG_DEFAULTS, NO_PREFIXES, &keys.ci_log, "ci_log"),
             Context::Graph => (GRAPH_DEFAULTS, NO_PREFIXES, &keys.graph, "graph"),
             Context::Prs => (PRS_DEFAULTS, NO_PREFIXES, &keys.prs, "prs"),
+            Context::Pr => (PR_DEFAULTS, NO_PREFIXES, &keys.pr, "pr"),
             Context::File => (FILE_DEFAULTS, NO_PREFIXES, &keys.file, "file"),
             Context::Stats => (STATS_DEFAULTS, NO_PREFIXES, &keys.stats, "stats"),
             Context::Tabs => (TABS_DEFAULTS, NO_PREFIXES, &keys.tabs, "tabs"),
@@ -1269,6 +1310,7 @@ mod tests {
             (CI_LOG_DEFAULTS, Context::CiLog),
             (GRAPH_DEFAULTS, Context::Graph),
             (PRS_DEFAULTS, Context::Prs),
+            (PR_DEFAULTS, Context::Pr),
             (FILE_DEFAULTS, Context::File),
             (STATS_DEFAULTS, Context::Stats),
         ] {
@@ -1639,6 +1681,7 @@ mod tests {
             Context::CiLog,
             Context::Graph,
             Context::Prs,
+            Context::Pr,
             Context::File,
             Context::Stats,
         ] {
@@ -1700,6 +1743,7 @@ mod tests {
             Context::CiLog,
             Context::Graph,
             Context::Prs,
+            Context::Pr,
         ] {
             let (_, warnings) = Keymap::for_context(context, &KeysConfig::default());
             assert!(

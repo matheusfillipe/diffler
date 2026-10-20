@@ -174,6 +174,73 @@ pub struct PrComment {
     pub at: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrState {
+    Open,
+    Draft,
+    Closed,
+    Merged,
+}
+
+impl PrState {
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Draft => "draft",
+            Self::Closed => "closed",
+            Self::Merged => "merged",
+        }
+    }
+}
+
+/// What a review said about the PR as a whole.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrVerdict {
+    Approved,
+    ChangesRequested,
+    Commented,
+}
+
+impl PrVerdict {
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Approved => "approved",
+            Self::ChangesRequested => "requested changes",
+            Self::Commented => "reviewed",
+        }
+    }
+}
+
+/// A comment on the PR as a whole, or a review's summary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrNote {
+    pub id: String,
+    pub author: String,
+    pub body: String,
+    pub at: u64,
+    /// Set on a review's summary.
+    pub verdict: Option<PrVerdict>,
+    /// The forge thread a reply posts into; only GitLab threads these.
+    pub thread_id: Option<String>,
+    /// The note this one answers inside its thread.
+    pub reply_to: Option<String>,
+}
+
+/// Everything a PR says outside its diff, oldest note first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrConversation {
+    pub pr: PullRequest,
+    pub body: String,
+    pub state: PrState,
+    pub labels: Vec<String>,
+    pub changed_files: Option<u64>,
+    pub additions: Option<u64>,
+    pub deletions: Option<u64>,
+    pub notes: Vec<PrNote>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Artifact {
     pub name: String,

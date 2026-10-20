@@ -1,0 +1,27 @@
+---
+source: crates/diffler/src/ui/pr.rs
+assertion_line: 366
+expression: "screen(&mut app, 80, 22)"
+---
+" <cr> open diff · c add comment · r reply · ] go to next comment · ? help       "
+" #7 Add widgets                                                                 "
+" open · author · feat/widgets → main   backend                                  "
+"▌Files changed  2  +52 -3                                                       "
+"                                                                                "
+" Description                                                                    "
+"  ▌ author · opened the pull request                                            "
+"  ▌ Adds widgets.                                                               "
+"  ▌ Second paragraph.                                                           "
+"                                                                                "
+" Conversation  2                                                                "
+"  ▌ reviewer                                                                    "
+"  ▌ why this way?                                                               "
+"                                                                                "
+"  ▌ lead · approved                                                             "
+"  ▌ ship it                                                                     "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+" PR #7  fixture@main · mcp off · 3 files, 0 viewed                              "

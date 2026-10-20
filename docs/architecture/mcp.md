@@ -4,7 +4,7 @@ Tools: `review_status`, `get_diff`,
 `get_comments`, `list_reviews`, `reply_comment`, `propose_resolve`,
 `mark_viewed`, `add_comment`, `delete_comment`, `edit_comment`,
 `report_activity`, `wait_for_feedback`, `publish_walkthrough`,
-`get_walkthrough`, `open_project`, `focus`. `add_comment`
+`get_walkthrough`, `get_pr`, `open_project`, `focus`. `add_comment`
 writes a new comment on a line or an inclusive line range of the review the
 human is currently looking at, anchored exactly the way a human's own
 comment is; authored as the agent by default, or as the human when

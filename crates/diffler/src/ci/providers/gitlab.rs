@@ -10,9 +10,12 @@ use serde::Deserialize;
 use crate::ci::error::{CiError, Result, parse_json};
 use crate::ci::exec::CommandRunner;
 use crate::ci::model::{
-    CiJob, CiRun, JobId, JobStatus, LogChunk, PrComment, PullRequest, RunDetail, RunExtras, RunId,
+    CiJob, CiRun, JobId, JobStatus, LogChunk, PrComment, PrConversation, PrNote, PrState,
+    PullRequest, RunDetail, RunExtras, RunId,
 };
-use crate::ci::provider::{ForgeProvider, NewPrComment, NewPrReview, ProviderKind, ReviewVerdict};
+use crate::ci::provider::{
+    ForgeProvider, NewPrComment, NewPrNote, NewPrReview, ProviderKind, ReviewVerdict,
+};
 
 const PAGE_SIZE: usize = 100;
 
@@ -266,6 +269,29 @@ impl ForgeProvider for GitLabProvider {
 
     async fn pr(&self, number: u64) -> Result<PullRequest> {
         Ok(self.merge_request(number).await?.into_pr())
+    }
+
+    async fn pr_conversation(&self, number: u64) -> Result<PrConversation> {
+        let merge_request = self.merge_request(number).await?;
+        let discussions = self.discussions(number).await?;
+        Ok(merge_request.into_conversation(discussions))
+    }
+
+    async fn post_pr_note(&self, new: &NewPrNote) -> Result<()> {
+        let number = new.number;
+        let path = match new
+            .reply_to
+            .as_ref()
+            .and_then(|note| note.thread_id.as_ref())
+        {
+            Some(thread) => {
+                format!("projects/:fullpath/merge_requests/{number}/discussions/{thread}/notes")
+            }
+            None => format!("projects/:fullpath/merge_requests/{number}/notes"),
+        };
+        self.send_json("POST", &path, &[("body".to_owned(), new.body.clone())])
+            .await
+            .map(|_| ())
     }
 
     async fn pr_comments(&self, number: u64) -> Result<Vec<PrComment>> {
@@ -575,6 +601,12 @@ fn parse_created(raw: &str) -> Option<time::OffsetDateTime> {
     time::OffsetDateTime::parse(raw, &time::format_description::well_known::Rfc3339).ok()
 }
 
+fn epoch_secs(raw: Option<&str>) -> u64 {
+    raw.and_then(parse_created)
+        .and_then(|at| u64::try_from(at.unix_timestamp()).ok())
+        .unwrap_or(0)
+}
+
 #[derive(Deserialize)]
 struct PipelineItem {
     id: u64,
@@ -630,9 +662,53 @@ struct MergeRequestItem {
     sha: Option<String>,
     author: Option<GitLabUser>,
     diff_refs: Option<DiffRefs>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    draft: bool,
+    #[serde(default)]
+    labels: Vec<String>,
+    /// A string, since GitLab caps it as `"1000+"`.
+    #[serde(default)]
+    changes_count: Option<String>,
 }
 
 impl MergeRequestItem {
+    fn into_conversation(mut self, discussions: Vec<DiscussionItem>) -> PrConversation {
+        let state = match self.state.as_str() {
+            "merged" => PrState::Merged,
+            "closed" | "locked" => PrState::Closed,
+            _ if self.draft => PrState::Draft,
+            _ => PrState::Open,
+        };
+        let changed_files = self
+            .changes_count
+            .as_deref()
+            .and_then(|count| count.trim_end_matches('+').parse().ok());
+        let body = self.description.take().unwrap_or_default();
+        let labels = std::mem::take(&mut self.labels);
+        // a reply indents under the note above it, so a thread's notes stay together
+        let mut threads: Vec<Vec<PrNote>> = discussions
+            .into_iter()
+            .map(DiscussionItem::into_notes)
+            .filter(|thread| !thread.is_empty())
+            .collect();
+        threads.sort_by_key(|thread| thread.first().map_or(0, |root| root.at));
+        let notes = threads.into_iter().flatten().collect();
+        PrConversation {
+            pr: self.into_pr(),
+            body,
+            state,
+            labels,
+            changed_files,
+            additions: None,
+            deletions: None,
+            notes,
+        }
+    }
+
     fn into_pr(self) -> PullRequest {
         PullRequest {
             number: self.iid,
@@ -687,6 +763,29 @@ impl DiscussionItem {
         }
         comments
     }
+
+    /// The merge request's own thread: unanchored notes written by people.
+    fn into_notes(self) -> Vec<PrNote> {
+        let mut root: Option<String> = None;
+        let mut notes = Vec::new();
+        for note in self.notes {
+            if note.system || note.position.is_some() {
+                continue;
+            }
+            let id = note.id.to_string();
+            notes.push(PrNote {
+                id: id.clone(),
+                author: note.author.map(|a| a.username).unwrap_or_default(),
+                body: note.body,
+                at: epoch_secs(note.created_at.as_deref()),
+                verdict: None,
+                thread_id: Some(self.id.clone()),
+                reply_to: root.clone(),
+            });
+            root.get_or_insert(id);
+        }
+        notes
+    }
 }
 
 #[derive(Deserialize)]
@@ -735,12 +834,7 @@ impl NoteItem {
             reply_to,
             thread_id: Some(thread_id.to_owned()),
             resolved: self.resolved,
-            at: self
-                .created_at
-                .as_deref()
-                .and_then(parse_created)
-                .and_then(|at| u64::try_from(at.unix_timestamp()).ok())
-                .unwrap_or(0),
+            at: epoch_secs(self.created_at.as_deref()),
         })
     }
 }
@@ -1419,6 +1513,73 @@ mod tests {
             runner.calls()[0].contains("source_branch=feat/guard"),
             "{:?}",
             runner.calls()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_conversation_keeps_unanchored_human_notes_threaded() {
+        let merge_request = r#"{"iid":4,"title":"Guard","source_branch":"feat/guard",
+            "target_branch":"main","sha":"aa1","author":{"username":"author"},
+            "description":"Adds a guard.","state":"opened","draft":false,
+            "labels":["backend"],"changes_count":"1000+"}"#;
+        let discussions = r#"[
+            {"id":"d1","notes":[
+              {"id":1,"body":"question","author":{"username":"reviewer"},"created_at":"2026-08-01T00:00:00Z"},
+              {"id":2,"body":"answer","author":{"username":"author"},"created_at":"2026-08-02T00:00:00Z"}]},
+            {"id":"d2","notes":[{"id":3,"body":"approved this merge request","system":true}]},
+            {"id":"d5","notes":[{"id":5,"body":"later thread","author":{"username":"lead"},
+              "created_at":"2026-08-01T12:00:00Z"}]},
+            {"id":"d3","notes":[{"id":4,"body":"on a line","author":{"username":"reviewer"},
+              "position":{"new_path":"a.rs","new_line":3}}]}]"#;
+        let conversation = provider(&[
+            ("discussions", discussions),
+            ("merge_requests/4", merge_request),
+        ])
+        .pr_conversation(4)
+        .await
+        .expect("read");
+        assert_eq!(conversation.body, "Adds a guard.");
+        assert_eq!(conversation.changed_files, Some(1000));
+        let notes: Vec<(&str, Option<&str>, Option<&str>)> = conversation
+            .notes
+            .iter()
+            .map(|n| (n.id.as_str(), n.reply_to.as_deref(), n.thread_id.as_deref()))
+            .collect();
+        assert_eq!(
+            notes,
+            [
+                ("1", None, Some("d1")),
+                ("2", Some("1"), Some("d1")),
+                ("5", None, Some("d5")),
+            ],
+            "a reply stays under its own thread's root"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reply_posts_into_its_discussion() {
+        let (runner, provider) = provider_on(&[], "feat/guard");
+        let parent = PrNote {
+            id: "1".to_owned(),
+            author: "reviewer".to_owned(),
+            body: "question".to_owned(),
+            at: 0,
+            verdict: None,
+            thread_id: Some("d1".to_owned()),
+            reply_to: None,
+        };
+        provider
+            .post_pr_note(&NewPrNote {
+                number: 4,
+                body: "answer".to_owned(),
+                reply_to: Some(parent),
+            })
+            .await
+            .expect("posted");
+        let call = runner.calls().remove(0);
+        assert!(
+            call.contains("merge_requests/4/discussions/d1/notes --raw-field body=answer"),
+            "{call}"
         );
     }
 

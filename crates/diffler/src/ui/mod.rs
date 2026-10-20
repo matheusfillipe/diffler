@@ -10,6 +10,7 @@ pub mod graph;
 mod image_pane;
 pub mod log;
 pub mod popup;
+mod pr;
 mod prs;
 mod runs;
 mod stats;
@@ -193,6 +194,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         Screen::Graph => graph::draw(frame, app),
         Screen::Runs => runs::draw(frame, app),
         Screen::Prs => prs::draw(frame, app),
+        Screen::Pr => pr::draw(frame, app),
         Screen::CiLog => ci_log::draw(frame, app),
         Screen::File => file::draw(frame, app),
         Screen::Stats => stats::draw(frame, app),
@@ -237,6 +239,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) -> Option<popup::ListHits> {
                 Screen::Graph => "graph",
                 Screen::Runs => "runs",
                 Screen::Prs => "prs",
+                Screen::Pr => "pr",
                 Screen::CiLog => "logs",
                 Screen::File => "file",
                 Screen::Stats => "stats",
@@ -928,6 +931,10 @@ fn mode_chip(app: &App) -> String {
         Screen::Graph => " GRAPH ".to_owned(),
         Screen::Runs => " RUNS ".to_owned(),
         Screen::Prs => " PRS ".to_owned(),
+        Screen::Pr => app.pr_page().map_or_else(
+            || " PR ".to_owned(),
+            |page| format!(" PR #{} ", page.number()),
+        ),
         Screen::CiLog => " LOGS ".to_owned(),
         Screen::File => " FILE ".to_owned(),
         Screen::Stats => " STATS ".to_owned(),

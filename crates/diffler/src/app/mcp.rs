@@ -16,7 +16,7 @@ use diffler_core::walkthrough::{
 use super::App;
 use crate::mcp::{
     AGENT_AUTHOR, CommentInfo, FileEntry, McpRequestKind, McpResponse, NoteInfo, NoteParams,
-    ProjectInfo, ReceiptInfo, ReviewStatusResponse, ReviewSummary, StopInfo, StopParams,
+    PrInfo, ProjectInfo, ReceiptInfo, ReviewStatusResponse, ReviewSummary, StopInfo, StopParams,
     WalkthroughInfo, WalkthroughPublished, WalkthroughSummary, comment_info, comment_status_name,
     file_status_name, render_unified,
 };
@@ -77,7 +77,84 @@ impl App {
                 }
                 response
             }
+            McpRequestKind::GetPr { number } => match self.pr_for_agent(number) {
+                Ok(number) => self.loaded_pr_info(number).unwrap_or_else(|| {
+                    McpResponse::Error(format!("PR #{number} has not loaded yet; ask again"))
+                }),
+                Err(err) => McpResponse::Error(err),
+            },
         }
+    }
+
+    /// Answers `get_pr` now when an open page holds the conversation, else
+    /// once the forge answers the fetch this starts.
+    pub(crate) fn agent_get_pr(
+        &mut self,
+        number: Option<u64>,
+        reply: tokio::sync::oneshot::Sender<McpResponse>,
+    ) {
+        self.record_mcp_activity(&McpRequestKind::GetPr { number });
+        let number = match self.pr_for_agent(number) {
+            Ok(number) => number,
+            Err(err) => {
+                let _ = reply.send(McpResponse::Error(err));
+                return;
+            }
+        };
+        if let Some(response) = self.loaded_pr_info(number) {
+            let _ = reply.send(response);
+            return;
+        }
+        // an agent that timed out left its waiter behind, and only its PR's load would free it
+        self.pr_waiters.retain(|(_, waiting)| !waiting.is_closed());
+        self.pr_waiters.push((number, reply));
+        self.pending_ci = Some(crate::app::CiRequest::PrConversation(number));
+    }
+
+    pub(crate) fn answer_pr_waiters(
+        &mut self,
+        number: u64,
+        result: &Result<Box<crate::ci::PrConversation>, String>,
+    ) {
+        let (answered, waiting) = std::mem::take(&mut self.pr_waiters)
+            .into_iter()
+            .partition(|(wanted, _)| *wanted == number);
+        self.pr_waiters = waiting;
+        for (_, reply) in answered {
+            let response = match result {
+                Ok(conversation) => {
+                    McpResponse::Pr(Box::new(PrInfo::from_conversation(conversation)))
+                }
+                Err(err) => McpResponse::Error(format!("cannot read PR #{number}: {err}")),
+            };
+            let _ = reply.send(response);
+        }
+    }
+
+    /// The PR the agent named, else the one on screen, else the branch's own.
+    fn pr_for_agent(&self, number: Option<u64>) -> Result<u64, String> {
+        if self.ci_remotes().is_empty() {
+            return Err("no forge detected for this repo, so it has no pull requests".to_owned());
+        }
+        let on_screen = || match self.screen() {
+            crate::app::Screen::Pr => self.pr_page().map(super::pr_page::PrPage::number),
+            _ => match self.diff.as_ref().map(|diff| &diff.source) {
+                Some(ReviewSource::Pr { number }) => Some(*number),
+                _ => None,
+            },
+        };
+        number
+            .or_else(on_screen)
+            .or_else(|| self.pr.as_ref().map(|pr| pr.number))
+            .ok_or_else(|| "no pull request is open or on this branch; pass its number".to_owned())
+    }
+
+    fn loaded_pr_info(&self, number: u64) -> Option<McpResponse> {
+        self.pr_pages
+            .iter()
+            .filter(|page| page.number() == number)
+            .find_map(|page| page.conversation.as_ref())
+            .map(|conversation| McpResponse::Pr(Box::new(PrInfo::from_conversation(conversation))))
     }
 
     /// We count every tool call as activity, so an agent that never calls
@@ -101,6 +178,7 @@ impl App {
             McpRequestKind::OpenProject { .. } => ("opening a project", None),
             // we name the file once the focus lands, so a refused path never shows
             McpRequestKind::Focus { .. } => (FOCUS_ACTIVITY, None),
+            McpRequestKind::GetPr { .. } => ("reading the pull request", None),
         };
         self.set_agent_activity(focus, file);
     }

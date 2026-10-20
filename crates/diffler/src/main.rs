@@ -561,6 +561,18 @@ fn dispatch_pr_posts(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
                     .delete_pr_comment(*number, remote_id)
                     .await
                     .map(|()| None),
+                app::pr::PrPost::Note {
+                    number,
+                    body,
+                    reply_to,
+                } => provider
+                    .post_pr_note(&ci::NewPrNote {
+                        number: *number,
+                        body: body.clone(),
+                        reply_to: reply_to.as_deref().cloned(),
+                    })
+                    .await
+                    .map(|()| None),
             };
             let _ = tx.send(AppEvent::PrPosted {
                 post: Box::new(post),
@@ -661,6 +673,14 @@ async fn run_ci_request(
                 pr: provider.pr(number).await.ok(),
             },
             Err(err) => AppEvent::CiError(err.to_string()),
+        },
+        CiRequest::PrConversation(number) => AppEvent::PrConversation {
+            number,
+            result: provider
+                .pr_conversation(number)
+                .await
+                .map(Box::new)
+                .map_err(|err| err.to_string()),
         },
         CiRequest::Detail(id) => match provider.run_detail(&id).await {
             Ok(detail) => AppEvent::CiRunDetail(detail),

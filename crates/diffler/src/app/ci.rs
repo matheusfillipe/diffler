@@ -81,6 +81,9 @@ impl App {
                 }),
                 _ => None,
             },
+            Screen::Pr => self
+                .pr_page()
+                .map(|page| CiRequest::PrConversation(page.number())),
             Screen::Log | Screen::Prs | Screen::File | Screen::Stats => None,
         };
     }

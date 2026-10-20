@@ -4,8 +4,8 @@ use async_trait::async_trait;
 
 use crate::ci::error::{CiError, Result};
 use crate::ci::model::{
-    Capabilities, CiRun, DagSource, JobId, LogChunk, LogMode, PrComment, PullRequest, RunDetail,
-    RunExtras, RunId,
+    Capabilities, CiRun, DagSource, JobId, LogChunk, LogMode, PrComment, PrConversation, PrNote,
+    PullRequest, RunDetail, RunExtras, RunId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,6 +134,44 @@ pub trait ForgeProvider: Send + Sync {
 
     async fn create_pr(&self, _new: &NewPullRequest) -> Result<PullRequest> {
         Err(CiError::Unsupported("opening a pull request"))
+    }
+
+    async fn pr_conversation(&self, _number: u64) -> Result<PrConversation> {
+        Err(CiError::Unsupported("reading a PR's conversation"))
+    }
+
+    async fn post_pr_note(&self, _new: &NewPrNote) -> Result<()> {
+        Err(CiError::Unsupported("commenting on a PR"))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewPrNote {
+    pub number: u64,
+    pub body: String,
+    /// A forge that threads PR notes posts into this note's thread; the others
+    /// quote it.
+    pub reply_to: Option<PrNote>,
+}
+
+impl NewPrNote {
+    /// The body with the note it answers quoted on top, for a forge whose PR
+    /// comments have no threads.
+    pub fn quoted_body(&self) -> String {
+        let Some(parent) = &self.reply_to else {
+            return self.body.clone();
+        };
+        let quote: Vec<String> = parent
+            .body
+            .lines()
+            .map(|line| format!("> {line}").trim_end().to_owned())
+            .collect();
+        format!(
+            "@{} wrote:\n{}\n\n{}",
+            parent.author,
+            quote.join("\n"),
+            self.body
+        )
     }
 }
 

@@ -12,7 +12,7 @@ use ratatui::text::Span;
 
 use crate::app::avatar::{AVATAR_SIZE, AvatarState, is_forge_author};
 
-pub(super) struct AvatarCtx<'a> {
+pub(in crate::ui) struct AvatarCtx<'a> {
     /// `None` where avatars are off or the terminal draws halfblocks.
     states: Option<&'a HashMap<String, AvatarState>>,
     human: &'a str,
@@ -26,7 +26,7 @@ pub(super) struct AvatarCtx<'a> {
 }
 
 impl<'a> AvatarCtx<'a> {
-    pub(super) fn new(
+    pub(in crate::ui) fn new(
         states: Option<&'a HashMap<String, AvatarState>>,
         human: &'a str,
         covered: bool,
@@ -42,7 +42,7 @@ impl<'a> AvatarCtx<'a> {
 
     /// Leaves room for `author`'s picture at the end of `spans` once a fetch
     /// for it has started, and nowhere once it has failed.
-    pub(super) fn gap(
+    pub(in crate::ui) fn gap(
         &self,
         spans: &mut Vec<Span<'static>>,
         bg: Color,
@@ -72,7 +72,7 @@ impl<'a> AvatarCtx<'a> {
 
     /// Ties the gaps the last built row left to `line`, its index among the
     /// pane's lines, or drops them when the row drew nothing.
-    pub(super) fn claim(&self, line: usize, drawn: bool) {
+    pub(in crate::ui) fn claim(&self, line: usize, drawn: bool) {
         let pending = std::mem::take(&mut *self.pending.borrow_mut());
         if drawn {
             self.placed.borrow_mut().extend(
@@ -85,7 +85,7 @@ impl<'a> AvatarCtx<'a> {
 
     /// Draws every ready picture whose line shows in `area`, `first` being the
     /// line on its top row.
-    pub(super) fn draw(&self, frame: &mut Frame<'_>, area: Rect, first: usize) {
+    pub(in crate::ui) fn draw(&self, frame: &mut Frame<'_>, area: Rect, first: usize) {
         let placed = std::mem::take(&mut *self.placed.borrow_mut());
         let Some(states) = self.states.filter(|_| !self.covered) else {
             return;

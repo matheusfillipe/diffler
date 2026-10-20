@@ -15,12 +15,12 @@ pub(crate) use exec::test_support;
 pub use exec::{CommandRunner, RealRunner};
 pub use model::{
     Annotation, AnnotationLevel, Artifact, Capabilities, CiJob, CiJobLeg, CiRun, DagSource, JobId,
-    JobStatus, LogChunk, LogMode, LogStepMeta, PrComment, PullRequest, RunDetail, RunExtras, RunId,
-    fmt_duration, ts_sort_key,
+    JobStatus, LogChunk, LogMode, LogStepMeta, PrComment, PrConversation, PrNote, PrState,
+    PrVerdict, PullRequest, RunDetail, RunExtras, RunId, fmt_duration, ts_sort_key,
 };
 pub use provider::{
-    ForgeProvider, NewPrComment, NewPrReview, NewPullRequest, ProviderKind, ReviewVerdict,
-    capabilities_for,
+    ForgeProvider, NewPrComment, NewPrNote, NewPrReview, NewPullRequest, ProviderKind,
+    ReviewVerdict, capabilities_for,
 };
 pub use providers::{EtagCache, ForgejoProvider, GitHubProvider, GitLabProvider, YamlCache};
 

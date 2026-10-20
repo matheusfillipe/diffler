@@ -24,6 +24,7 @@ mod modal;
 mod network;
 pub mod pr;
 pub mod pr_create;
+pub mod pr_page;
 pub mod rowsel;
 mod search;
 pub mod stats;
@@ -87,6 +88,8 @@ pub enum Screen {
     Runs,
     Graph,
     Prs,
+    /// One pull request's description and conversation.
+    Pr,
     CiLog,
     /// One whole file, with or without its blame column.
     File,
@@ -104,6 +107,7 @@ impl Screen {
             Self::Diff => Context::Diff,
             Self::Graph => Context::Graph,
             Self::Prs => Context::Prs,
+            Self::Pr => Context::Pr,
             Self::File => Context::File,
             Self::Stats => Context::Stats,
         }
@@ -177,6 +181,11 @@ pub enum InputOp {
     ReviewBody {
         number: u64,
         verdict: crate::ci::ReviewVerdict,
+    },
+    /// A comment on a PR as a whole, or a reply to one of its comments.
+    PrNote {
+        number: u64,
+        reply_to: Option<Box<crate::ci::PrNote>>,
     },
     /// A jj change's new description; `label` names it in the report.
     Describe {
@@ -330,6 +339,7 @@ struct Keymaps {
     ci_log: Keymap,
     graph: Keymap,
     prs: Keymap,
+    pr: Keymap,
     file: Keymap,
     stats: Keymap,
     tabs: Keymap,
@@ -349,6 +359,7 @@ impl Keymaps {
             ci_log: build(Context::CiLog),
             graph: build(Context::Graph),
             prs: build(Context::Prs),
+            pr: build(Context::Pr),
             file: build(Context::File),
             stats: build(Context::Stats),
             tabs: build(Context::Tabs),
@@ -506,6 +517,7 @@ pub enum CiRequest {
     Pr,
     Prs,
     PrComments(u64),
+    PrConversation(u64),
     CreatePr(Box<crate::ci::NewPullRequest>),
     Detail(crate::ci::RunId),
     Extras(crate::ci::RunId),
@@ -723,6 +735,10 @@ pub struct App {
     /// until the cursor reaches its margin.
     pub(crate) prs_scroll: usize,
     pub(crate) runs_scroll: usize,
+    /// One per `Screen::Pr` on the stack, the top one last.
+    pub(crate) pr_pages: Vec<pr_page::PrPage>,
+    /// Agents waiting on `get_pr` until the forge answers for that PR.
+    pub(crate) pr_waiters: Vec<(u64, tokio::sync::oneshot::Sender<crate::mcp::McpResponse>)>,
     /// Outbound forge posts drained by the runtime each frame.
     pub pending_pr_posts: Vec<pr::PrPost>,
     pub(crate) pr_posts_inflight: std::collections::HashSet<String>,
@@ -1009,6 +1025,8 @@ impl App {
             runs_cursor: 0,
             prs_scroll: 0,
             runs_scroll: 0,
+            pr_pages: Vec::new(),
+            pr_waiters: Vec::new(),
             open_run: None,
             open_run_remote: None,
             extras: None,
@@ -1123,6 +1141,7 @@ impl App {
             Context::CiLog => &self.keymaps.ci_log,
             Context::Graph => &self.keymaps.graph,
             Context::Prs => &self.keymaps.prs,
+            Context::Pr => &self.keymaps.pr,
             Context::File => &self.keymaps.file,
             Context::Stats => &self.keymaps.stats,
             Context::Tabs => &self.keymaps.tabs,
@@ -1251,6 +1270,7 @@ impl App {
                 pr,
             } => self.on_pr_comments_event(number, &comments, pr),
             AppEvent::PrPosted { post, result } => self.on_pr_posted_event(&post, result),
+            AppEvent::PrConversation { number, result } => self.on_pr_conversation(number, &result),
             AppEvent::CiRunDetail(detail) => {
                 self.on_run_detail(&detail);
                 Flow::Continue
@@ -1279,6 +1299,8 @@ impl App {
                 // loop), so we drop the request to avoid an unseen stale mutation
                 if request.reply.is_closed() {
                     self.info("dropped stale agent request");
+                } else if let crate::mcp::McpRequestKind::GetPr { number } = request.kind {
+                    self.agent_get_pr(number, request.reply);
                 } else {
                     let response = self.handle_mcp(request.kind);
                     // a dropped receiver means the agent gave up mid-call
@@ -1387,7 +1409,12 @@ impl App {
             Screen::Diff => self.diff_mouse(gesture),
             Screen::Log => self.log_mouse(gesture),
             Screen::CiLog => self.ci_log_mouse(gesture),
-            Screen::Graph | Screen::Runs | Screen::Prs | Screen::File | Screen::Stats => {}
+            Screen::Graph
+            | Screen::Runs
+            | Screen::Prs
+            | Screen::Pr
+            | Screen::File
+            | Screen::Stats => {}
         }
     }
 
@@ -1622,6 +1649,7 @@ impl App {
                 Screen::Runs => self.dispatch_runs(action),
                 Screen::Graph => self.dispatch_graph(action),
                 Screen::Prs => self.dispatch_prs(action),
+                Screen::Pr => self.dispatch_pr_page(action),
                 Screen::File => self.dispatch_file(action),
                 Screen::Stats => self.dispatch_stats(action),
             },
@@ -1684,8 +1712,17 @@ impl App {
             }
             Some(Screen::Runs) => self.runs_cursor = 0,
             Some(Screen::Prs) => self.prs_cursor = 0,
+            Some(Screen::Pr) => {
+                self.pr_pages.pop();
+            }
             Some(Screen::Stats) => self.stats = None,
             Some(Screen::Status) | None => {}
+        }
+        // a diff opened over the page takes the fetch slot first, so we queue the page's load again on return
+        if self.screen() == Screen::Pr
+            && let Some(page) = self.pr_page().filter(|page| page.conversation.is_none())
+        {
+            self.pending_ci = Some(CiRequest::PrConversation(page.number()));
         }
         Flow::Continue
     }
@@ -1910,6 +1947,17 @@ impl App {
         };
         self.info(format!("copied {value}"));
         self.pending_clipboard = Some(value);
+    }
+
+    pub(crate) fn open_or_report(&mut self, url: Option<String>, missing: &str) {
+        let Some(url) = url else {
+            self.info(format!("no URL for {missing}"));
+            return;
+        };
+        match crate::proc::open_in_browser(&url) {
+            Ok(()) => self.info(format!("opened {url}")),
+            Err(err) => self.error(format!("cannot open the browser: {err}")),
+        }
     }
 
     pub(crate) fn warn(&mut self, text: String) {

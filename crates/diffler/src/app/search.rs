@@ -155,6 +155,7 @@ impl App {
             Screen::File => self.file.as_ref().map_or(0, |v| v.cursor),
             Screen::Runs => self.runs_cursor,
             Screen::Prs => self.prs_cursor,
+            Screen::Pr => self.pr_page().map_or(0, |page| page.cursor),
             Screen::Graph => self.graph.as_ref().map_or(0, GraphView::selected_index),
             Screen::Stats => self.stats.as_ref().map_or(0, |view| view.cursor),
         }
@@ -183,6 +184,9 @@ impl App {
                 .enumerate()
                 .map(|(i, pr)| (i, format!("#{} {} {}", pr.number, pr.title, pr.author)))
                 .collect(),
+            Screen::Pr => self
+                .pr_page()
+                .map_or_else(Vec::new, crate::app::pr_page::PrPage::search_rows),
             Screen::CiLog => self.ci_log.as_ref().map_or_else(Vec::new, |view| {
                 view.rows()
                     .iter()
@@ -256,6 +260,11 @@ impl App {
             Screen::Status => self.status.cursor = row,
             Screen::Runs => self.runs_cursor = row,
             Screen::Prs => self.prs_cursor = row,
+            Screen::Pr => {
+                if let Some(page) = self.pr_page_mut() {
+                    page.cursor = row;
+                }
+            }
             Screen::Log => {
                 if let Some(l) = self.log.as_mut() {
                     l.cursor = row;
