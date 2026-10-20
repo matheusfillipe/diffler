@@ -15,11 +15,13 @@ use diffler_core::walkthrough::{
 
 use super::App;
 use crate::mcp::{
-    AGENT_AUTHOR, CommentInfo, FileEntry, FocusTarget, McpRequestKind, McpResponse, NoteInfo,
-    NoteParams, ProjectInfo, ReceiptInfo, ReviewStatusResponse, ReviewSummary, StopInfo,
-    StopParams, WalkthroughInfo, WalkthroughPublished, WalkthroughSummary, comment_info,
-    comment_status_name, file_status_name, render_unified,
+    AGENT_AUTHOR, CommentInfo, FileEntry, McpRequestKind, McpResponse, NoteInfo, NoteParams,
+    ProjectInfo, ReceiptInfo, ReviewStatusResponse, ReviewSummary, StopInfo, StopParams,
+    WalkthroughInfo, WalkthroughPublished, WalkthroughSummary, comment_info, comment_status_name,
+    file_status_name, render_unified,
 };
+
+const FOCUS_ACTIVITY: &str = "showing you a place";
 
 impl App {
     pub(crate) fn handle_mcp(&mut self, kind: McpRequestKind) -> McpResponse {
@@ -68,7 +70,13 @@ impl App {
             McpRequestKind::OpenProject { .. } => {
                 McpResponse::Error("only the workspace holding the tabs opens a project".to_owned())
             }
-            McpRequestKind::Focus { target, note } => self.agent_focus(target, note),
+            McpRequestKind::Focus { target, note } => {
+                let response = self.agent_focus(target, note);
+                if let McpResponse::Focused(focused) = &response {
+                    self.set_agent_activity(FOCUS_ACTIVITY, focused.file.as_deref());
+                }
+                response
+            }
         }
     }
 
@@ -91,13 +99,8 @@ impl App {
             McpRequestKind::PublishWalkthrough { .. } => ("publishing a walkthrough", None),
             McpRequestKind::GetWalkthrough { .. } => ("reading the walkthrough", None),
             McpRequestKind::OpenProject { .. } => ("opening a project", None),
-            McpRequestKind::Focus { target, .. } => (
-                "showing you a place",
-                match target {
-                    FocusTarget::Code { file, .. } => Some(file.as_str()),
-                    FocusTarget::Id(_) => None,
-                },
-            ),
+            // we name the file once the focus lands, so a refused path never shows
+            McpRequestKind::Focus { .. } => (FOCUS_ACTIVITY, None),
         };
         self.set_agent_activity(focus, file);
     }

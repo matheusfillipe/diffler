@@ -1027,7 +1027,7 @@ impl DifflerMcp {
     }
 
     #[tool(
-        description = "Take the human's diffler to a place: a comment or walkthrough by `id`, or a `file` and line range in any review. It switches to the project's tab and opens that review with the cursor on the place. Use it when the human asks where something is, and after `publish_walkthrough` to open the walkthrough. To point at code with a remark, call `add_comment`, then focus the `id` it returns. Refused while the human is typing a comment or answering a dialog; a pull request that still has to load answers `waiting` and opens once it does."
+        description = "Take the human's diffler to a place: a comment or walkthrough by `id`, or a `file` and line range in any review or anywhere in the project. It switches to the project's tab and opens that review with the cursor on the place; a file or line no diff shows opens in the file viewer there. Use it when the human asks where something is, and after `publish_walkthrough` to open the walkthrough. To point at code with a remark, call `add_comment`, then focus the `id` it returns. Refused while the human is typing a comment or answering a dialog; a pull request that still has to load answers `waiting` and opens once it does."
     )]
     async fn focus(
         &self,

@@ -168,6 +168,9 @@ impl App {
                     Some(raw) => Some(self.parse_review(&raw)?),
                     None => self.source_holding(&file),
                 };
+                if matches!(source, None | Some(ReviewSource::WorkingTree)) {
+                    self.check_line_on_disk(&file, span)?;
+                }
                 match source {
                     Some(ReviewSource::Walkthrough { .. }) => {
                         Err("focus a walkthrough by passing its id".to_owned())
@@ -180,6 +183,22 @@ impl App {
                 }
             }
         }
+    }
+
+    /// We refuse a line past the end, so an agent that guessed it learns the
+    /// file's length rather than believing the cursor landed there.
+    fn check_line_on_disk(&self, file: &str, span: Option<(u32, u32)>) -> Result<(), String> {
+        let Some((line, _)) = span else {
+            return Ok(());
+        };
+        let Ok(bytes) = std::fs::read(self.review.repo_root.join(file)) else {
+            return Ok(());
+        };
+        let lines = String::from_utf8_lossy(&bytes).lines().count();
+        if usize::try_from(line).is_ok_and(|line| line > lines) {
+            return Err(format!("{file} has {lines} lines"));
+        }
+        Ok(())
     }
 
     fn id_destination(&self, id: &str) -> Result<Destination, String> {
@@ -550,6 +569,40 @@ mod tests {
 
         assert_eq!((focused.view, focused.review), (FocusView::File, None));
         assert!(app.pending_file.is_some());
+    }
+
+    #[test]
+    fn a_line_past_the_end_of_a_file_is_refused_with_its_length() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+
+        let response = app.handle_mcp(McpRequestKind::Focus {
+            target: code("notes.txt", Some((500, 500)), None),
+            note: None,
+        });
+
+        let McpResponse::Error(err) = response else {
+            panic!("a line past the end was accepted: {response:?}");
+        };
+        assert!(err.contains("notes.txt has"), "{err}");
+        assert!(app.pending_file.is_none());
+    }
+
+    #[test]
+    fn a_refused_focus_never_names_its_path_in_the_status_bar() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+
+        app.handle_mcp(McpRequestKind::Focus {
+            target: code("../../etc/hosts", Some((1, 1)), None),
+            note: None,
+        });
+
+        let activity = app.agent_activity.current.as_ref().expect("activity set");
+        assert_eq!(activity.file, None);
+        focus(&mut app, code("notes.txt", Some((1, 1)), None));
+        let activity = app.agent_activity.current.as_ref().expect("activity set");
+        assert_eq!(activity.file.as_deref(), Some("notes.txt"));
     }
 
     #[test]
