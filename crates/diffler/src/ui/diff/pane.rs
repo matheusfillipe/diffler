@@ -1166,7 +1166,7 @@ mod tests {
     #[test]
     fn a_fold_row_shares_the_hunk_band_and_lights_its_text_under_the_cursor() {
         use crate::ui::diff_render::{fold_row, hunk_header};
-        for name in crate::theme::NAMES {
+        for name in crate::theme::builtin_names() {
             let theme = Theme::from_name(name).0;
             let hunk = diffler_core::model::Hunk {
                 id: diffler_core::model::HunkId("h".into()),

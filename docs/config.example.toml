@@ -10,6 +10,8 @@
 #   diffler config --dump
 
 [ui]
+# A built-in name, or the name of a file in ~/.config/diffler/themes/ (see
+# docs/themes/README.md for its keys).
 # theme = "github-dark"
 # Lines of unchanged code around each hunk; `+`/`-`/`=` change it live.
 # context_lines = 3

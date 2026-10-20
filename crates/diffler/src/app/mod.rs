@@ -1669,7 +1669,11 @@ impl App {
     }
 
     pub(crate) fn apply_theme(&mut self, name: &str) {
-        let (theme, _) = Theme::from_name(name);
+        let (theme, warning) = Theme::from_name(name);
+        if let Some(warning) = warning {
+            self.warn(warning);
+            return;
+        }
         self.theme = theme;
         name.clone_into(&mut self.config.ui.theme);
         self.rebuild_highlighter();
@@ -1868,6 +1872,13 @@ impl App {
         };
         self.info(format!("copied {value}"));
         self.pending_clipboard = Some(value);
+    }
+
+    pub(crate) fn warn(&mut self, text: String) {
+        self.message = Some(StatusMessage {
+            text,
+            severity: Severity::Warning,
+        });
     }
 
     pub fn error(&mut self, text: impl Into<String>) {
@@ -3823,6 +3834,18 @@ mod tests {
         let message = app.message.expect("warning");
         assert_eq!(message.severity, Severity::Warning);
         assert!(message.text.contains("nope"));
+    }
+
+    #[test]
+    fn a_theme_that_fails_to_load_keeps_the_current_one_and_warns() {
+        let (_fixture, mut app) = app();
+        app.apply_theme("dracula");
+        app.apply_theme("nope");
+        assert_eq!(app.theme, Theme::dracula());
+        assert_eq!(app.config.ui.theme, "dracula");
+        let message = app.message.expect("warning");
+        assert_eq!(message.severity, Severity::Warning);
+        assert!(message.text.contains("nope"), "{}", message.text);
     }
 
     #[test]

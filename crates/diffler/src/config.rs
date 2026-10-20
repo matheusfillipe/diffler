@@ -158,7 +158,7 @@ pub struct UiConfig {
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
-            theme: "github-dark".to_owned(),
+            theme: crate::theme::DEFAULT.to_owned(),
             context_lines: 3,
             recent_commits: 10,
             status_file_layout: FileLayout::List,
@@ -405,11 +405,25 @@ pub fn load(repo_root: Option<&Path>, cli: &CliOverrides) -> Result<LoadedConfig
 }
 
 fn global_config_path_from(xdg: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
+    Some(global_config_dir_from(xdg, home)?.join("config.toml"))
+}
+
+fn global_config_dir_from(xdg: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
     let base = match xdg {
         Some(dir) if !dir.is_empty() => PathBuf::from(dir),
         _ => PathBuf::from(home?).join(".config"),
     };
-    Some(base.join("diffler").join("config.toml"))
+    Some(base.join("diffler"))
+}
+
+pub fn themes_dir() -> Option<PathBuf> {
+    Some(
+        global_config_dir_from(
+            std::env::var_os("XDG_CONFIG_HOME"),
+            std::env::var_os("HOME"),
+        )?
+        .join("themes"),
+    )
 }
 
 fn load_layers(

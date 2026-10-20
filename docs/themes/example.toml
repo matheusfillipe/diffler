@@ -1,0 +1,26 @@
+# A complete theme. Save it as ~/.config/diffler/themes/midnight.toml and set
+# ui.theme = "midnight". Every key is optional.
+extends = "github-dark"
+syntax = "tokyo-night"
+
+bg = "#0f111a"
+panel = "#141722"
+cursor_line = "#2a2f4a"
+fg = "#d6dcf5"
+dim = "#6b7399"
+accent = "#82aaff"
+purple = "#c792ea"
+border = "#2b3050"
+del_line_bg = "#3a1f2b"
+add_line_bg = "#1b3329"
+del_emph_bg = "#63303f"
+add_emph_bg = "#2b5a42"
+annotated = "#3b3216"
+search = "#574712"
+search_current = "#a37c18"
+added = "#9ece6a"
+warn_fg = "#ffcb6b"
+error_fg = "#f07178"
+
+chip_fg = "#0f111a"
+chip_bg = "#82aaff"

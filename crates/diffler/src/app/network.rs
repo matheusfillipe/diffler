@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 
 use diffler_core::vcs::{NetworkOp, PullOutcome, PullTarget};
 
-use super::{App, GitOp, Modal, PendingOp, RemotePurpose, Severity, StatusMessage, fuzzy};
+use super::{App, GitOp, Modal, PendingOp, RemotePurpose, fuzzy};
 
 /// The labels a network op carries; in a jj repo each of them runs `jj`.
 pub(super) fn is_jj_network_label(label: &str) -> bool {
@@ -224,13 +224,6 @@ impl App {
             }
             Err(err) => self.error(err.to_string()),
         }
-    }
-
-    fn warn(&mut self, text: String) {
-        self.message = Some(StatusMessage {
-            text,
-            severity: Severity::Warning,
-        });
     }
 
     /// A failed push/pull: open the recovery dialog its error calls for.

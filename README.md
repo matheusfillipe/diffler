@@ -255,7 +255,9 @@ diffler config --dump
 ## Themes
 
 Switch live with `T`, or set `ui.theme`. See every theme in the
-[gallery](showcase/THEMES.md).
+[gallery](showcase/THEMES.md). Add your own as a TOML file in
+`~/.config/diffler/themes/`: [docs/themes](docs/themes/README.md) lists
+every key.
 
 ![the review screen in catppuccin-mocha: the file tree, a diff carrying a comment thread with the agent's reply, and the comments sidebar](showcase/img/catppuccin-mocha.png)
 

@@ -1,8 +1,14 @@
-//! Color themes. `github-dark` is the default; `ui.theme` selects a built-in,
-//! each pairing its palette with a matching syntax-highlight theme.
+//! Color themes. `github-dark` is the default; `ui.theme` selects a built-in or
+//! a TOML file in the themes directory, each pairing its palette with a
+//! syntax-highlight theme.
+
+use std::path::Path;
 
 use diffler_core::highlight::SyntaxTheme;
 use ratatui::style::{Color, Style};
+use serde::Deserialize;
+
+use crate::config;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Theme {
@@ -35,20 +41,146 @@ pub struct Theme {
     pub syntax: SyntaxTheme,
 }
 
-pub const NAMES: &[&str] = &[
-    "github-dark",
-    "catppuccin-mocha",
-    "tokyo-night",
-    "gruvbox-dark",
-    "nord",
-    "rose-pine",
-    "kanagawa",
-    "dracula",
-    "github-light",
+type Builder = fn() -> Theme;
+
+const DEFAULT_BUILTIN: (&str, Builder) = ("github-dark", Theme::github_dark);
+
+pub const DEFAULT: &str = DEFAULT_BUILTIN.0;
+
+const BUILTINS: &[(&str, Builder)] = &[
+    DEFAULT_BUILTIN,
+    ("catppuccin-mocha", Theme::catppuccin_mocha),
+    ("tokyo-night", Theme::tokyo_night),
+    ("gruvbox-dark", Theme::gruvbox_dark),
+    ("nord", Theme::nord),
+    ("rose-pine", Theme::rose_pine),
+    ("kanagawa", Theme::kanagawa),
+    ("dracula", Theme::dracula),
+    ("github-light", Theme::github_light),
 ];
 
+pub fn builtin_names() -> impl Iterator<Item = &'static str> {
+    BUILTINS.iter().map(|(name, _)| *name)
+}
+
+fn builtin(name: &str) -> Option<Theme> {
+    BUILTINS
+        .iter()
+        .find(|(candidate, _)| *candidate == name)
+        .map(|(_, build)| build())
+}
+
+/// Built-ins first, then the user's theme files by name.
 pub fn names() -> Vec<String> {
-    NAMES.iter().map(|s| (*s).to_owned()).collect()
+    names_in(config::themes_dir().as_deref())
+}
+
+fn names_in(dir: Option<&Path>) -> Vec<String> {
+    builtin_names()
+        .map(str::to_owned)
+        .chain(user_names(dir))
+        .collect()
+}
+
+fn user_names(dir: Option<&Path>) -> Vec<String> {
+    let Some(entries) = dir.and_then(|dir| std::fs::read_dir(dir).ok()) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "toml"))
+        .filter_map(|path| Some(path.file_stem()?.to_str()?.to_owned()))
+        .filter(|name| builtin(name).is_none())
+        .collect();
+    names.sort();
+    names
+}
+
+macro_rules! theme_file {
+    ($($colour:ident),* $(,)?) => {
+        /// A user theme file. Every colour is optional and replaces the one in
+        /// the theme it extends.
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct ThemeFile {
+            extends: Option<String>,
+            syntax: Option<String>,
+            chip_fg: Option<String>,
+            chip_bg: Option<String>,
+            $($colour: Option<String>,)*
+        }
+
+        impl ThemeFile {
+            fn paint_colours(&self, theme: &mut Theme) -> Result<(), String> {
+                $(if let Some(text) = &self.$colour {
+                    theme.$colour = parse_hex(stringify!($colour), text)?;
+                })*
+                Ok(())
+            }
+        }
+    };
+}
+
+theme_file!(
+    bg,
+    panel,
+    cursor_line,
+    fg,
+    dim,
+    accent,
+    purple,
+    border,
+    del_line_bg,
+    add_line_bg,
+    del_emph_bg,
+    add_emph_bg,
+    annotated,
+    search,
+    search_current,
+    added,
+    warn_fg,
+    error_fg,
+);
+
+fn parse_hex(field: &str, text: &str) -> Result<Color, String> {
+    let bad = || format!("bad colour for {field}, use #rrggbb");
+    let digits = text
+        .strip_prefix('#')
+        .filter(|digits| digits.len() == 6 && digits.bytes().all(|b| b.is_ascii_hexdigit()))
+        .ok_or_else(bad)?;
+    let [_, red, green, blue] = u32::from_str_radix(digits, 16)
+        .map_err(|_| bad())?
+        .to_be_bytes();
+    Ok(Color::Rgb(red, green, blue))
+}
+
+fn parse_theme_file(text: &str) -> Result<Theme, String> {
+    let file: ThemeFile = toml::from_str(text).map_err(|err| err.message().to_owned())?;
+    let base = file.extends.as_deref().unwrap_or(DEFAULT);
+    let mut theme = builtin(base).ok_or_else(|| format!("unknown extends \"{base}\""))?;
+    if let Some(name) = &file.syntax {
+        theme.syntax = builtin(name)
+            .ok_or_else(|| format!("unknown syntax \"{name}\""))?
+            .syntax;
+    }
+    file.paint_colours(&mut theme)?;
+    let chip_text = file
+        .chip_fg
+        .as_deref()
+        .map_or(Ok(theme.bg), |text| parse_hex("chip_fg", text))?;
+    let chip_fill = file
+        .chip_bg
+        .as_deref()
+        .map_or(Ok(theme.accent), |text| parse_hex("chip_bg", text))?;
+    theme.chip = Style::new().fg(chip_text).bg(chip_fill);
+    Ok(theme)
+}
+
+fn load_user_theme(path: &Path) -> Result<Theme, String> {
+    let fix = |problem: String| format!("fix {}: {problem}", path.display());
+    let text = std::fs::read_to_string(path).map_err(|err| fix(err.to_string()))?;
+    parse_theme_file(&text).map_err(fix)
 }
 
 impl Theme {
@@ -296,26 +428,28 @@ impl Theme {
         }
     }
 
-    /// Look up a theme by config name. Unknown names fall back to
-    /// github-dark with a warning for the status bar.
+    /// Look up a theme by config name, built-in or a file in the user's
+    /// themes directory. A bad or unknown one falls back to github-dark with
+    /// a warning for the status bar.
     pub fn from_name(name: &str) -> (Self, Option<String>) {
-        match name {
-            "github-dark" => (Self::github_dark(), None),
-            "github-light" => (Self::github_light(), None),
-            "dracula" => (Self::dracula(), None),
-            "catppuccin-mocha" => (Self::catppuccin_mocha(), None),
-            "tokyo-night" => (Self::tokyo_night(), None),
-            "gruvbox-dark" => (Self::gruvbox_dark(), None),
-            "nord" => (Self::nord(), None),
-            "rose-pine" => (Self::rose_pine(), None),
-            "kanagawa" => (Self::kanagawa(), None),
-            other => (
-                Self::github_dark(),
-                Some(format!(
-                    "unknown theme \"{other}\", using github-dark (try: {})",
-                    NAMES.join(", ")
-                )),
-            ),
+        Self::from_name_in(config::themes_dir().as_deref(), name)
+    }
+
+    fn from_name_in(dir: Option<&Path>, name: &str) -> (Self, Option<String>) {
+        if let Some(theme) = builtin(name) {
+            return (theme, None);
+        }
+        let fallback = (DEFAULT_BUILTIN.1)();
+        let (Some(dir), true) = (dir, user_names(dir).iter().any(|user| user == name)) else {
+            let warning = format!(
+                "unknown theme \"{name}\", using {DEFAULT} (try: {})",
+                names_in(dir).join(", ")
+            );
+            return (fallback, Some(warning));
+        };
+        match load_user_theme(&dir.join(format!("{name}.toml"))) {
+            Ok(theme) => (theme, None),
+            Err(warning) => (fallback, Some(warning)),
         }
     }
 
@@ -362,7 +496,7 @@ mod tests {
 
     #[test]
     fn every_listed_name_resolves_without_warning() {
-        for name in NAMES {
+        for name in builtin_names() {
             let (_, warning) = Theme::from_name(name);
             assert_eq!(warning, None, "{name} should be a known theme");
         }
@@ -370,7 +504,7 @@ mod tests {
 
     #[test]
     fn every_theme_mixes_in_rgb_so_blending_reaches_it() {
-        for name in NAMES {
+        for name in builtin_names() {
             let theme = Theme::from_name(name).0;
             for (label, color) in [("bg", theme.bg), ("panel", theme.panel), ("fg", theme.fg)] {
                 assert!(
@@ -383,14 +517,96 @@ mod tests {
 
     #[test]
     fn each_theme_pairs_a_distinct_syntax_palette() {
-        let syntaxes: std::collections::HashSet<SyntaxTheme> = NAMES
-            .iter()
+        let syntaxes: std::collections::HashSet<SyntaxTheme> = builtin_names()
             .map(|name| Theme::from_name(name).0.syntax)
             .collect();
         assert_eq!(
             syntaxes.len(),
-            NAMES.len(),
+            BUILTINS.len(),
             "each theme has its own palette"
         );
+    }
+
+    fn themes_dir_with(files: &[(&str, &str)]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for (name, text) in files {
+            std::fs::write(dir.path().join(name), text).expect("write theme");
+        }
+        dir
+    }
+
+    #[test]
+    fn a_partial_file_extends_the_default_and_overrides_only_what_it_sets() {
+        let dir = themes_dir_with(&[("mine.toml", "accent = \"#ff8800\"\n")]);
+        let (theme, warning) = Theme::from_name_in(Some(dir.path()), "mine");
+        assert_eq!(warning, None);
+        assert_eq!(theme.accent, Color::Rgb(0xff, 0x88, 0x00));
+        assert_eq!(theme.chip.bg, Some(theme.accent));
+        assert_eq!(theme.bg, Theme::github_dark().bg);
+    }
+
+    #[test]
+    fn extends_and_syntax_pick_other_built_ins() {
+        let dir = themes_dir_with(&[(
+            "mine.toml",
+            "extends = \"dracula\"\nsyntax = \"nord\"\nchip_fg = \"#000000\"\n",
+        )]);
+        let (theme, warning) = Theme::from_name_in(Some(dir.path()), "mine");
+        assert_eq!(warning, None);
+        assert_eq!(theme.bg, Theme::dracula().bg);
+        assert_eq!(theme.syntax, SyntaxTheme::Nord);
+        assert_eq!(theme.chip.fg, Some(Color::Rgb(0, 0, 0)));
+    }
+
+    #[test]
+    fn a_bad_file_falls_back_with_a_warning_naming_the_file_and_problem() {
+        for (text, problem) in [
+            ("accent = \"orange\"", "bad colour for accent"),
+            ("accent = \"#12345\"", "bad colour for accent"),
+            ("accent = \"#€€\"", "bad colour for accent"),
+            ("accent = \"#+f+f+f\"", "bad colour for accent"),
+            ("extends = \"nonesuch\"", "unknown extends \"nonesuch\""),
+            ("syntax = \"nonesuch\"", "unknown syntax \"nonesuch\""),
+            ("colour = \"#ffffff\"", "unknown field"),
+            ("accent = ", "expected"),
+        ] {
+            let dir = themes_dir_with(&[("bad.toml", text)]);
+            let (theme, warning) = Theme::from_name_in(Some(dir.path()), "bad");
+            assert_eq!(theme, Theme::github_dark(), "{text}");
+            let warning = warning.expect("warning");
+            assert!(warning.starts_with("fix "), "{warning}");
+            assert!(warning.contains("bad.toml"), "{warning}");
+            assert!(warning.contains(problem), "{warning}");
+        }
+    }
+
+    #[test]
+    fn user_themes_list_after_the_built_ins_and_never_shadow_one() {
+        let dir = themes_dir_with(&[
+            ("zeta.toml", ""),
+            ("alpha.toml", ""),
+            ("nord.toml", ""),
+            ("notes.txt", ""),
+        ]);
+        let names = names_in(Some(dir.path()));
+        let built_in = builtin_names().count();
+        assert_eq!(names[..built_in], builtin_names().collect::<Vec<_>>()[..]);
+        assert_eq!(names[built_in..], ["alpha", "zeta"]);
+    }
+
+    #[test]
+    fn the_documented_example_theme_parses() {
+        let text = include_str!("../../../docs/themes/example.toml");
+        assert_eq!(
+            parse_theme_file(text).map(|theme| theme.bg),
+            Ok(Color::Rgb(0x0f, 0x11, 0x1a))
+        );
+    }
+
+    #[test]
+    fn a_name_outside_the_themes_directory_is_unknown() {
+        let dir = themes_dir_with(&[("mine.toml", "")]);
+        let (_, warning) = Theme::from_name_in(Some(dir.path()), "../mine");
+        assert!(warning.expect("warning").contains("unknown theme"));
     }
 }
