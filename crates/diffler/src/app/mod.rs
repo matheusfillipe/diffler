@@ -1,6 +1,7 @@
 //! Application state and event handling. `App::handle` does no terminal IO,
 //! so we can unit-test the whole shell; `ui::draw` renders the state.
 
+pub mod avatar;
 mod ci;
 pub mod ci_log;
 mod commands;
@@ -762,6 +763,9 @@ pub struct App {
     image_token: u64,
     /// So a draw does not ask for the same preview twice.
     image_in_flight: Option<image::ImageKey>,
+    /// Forge authors' pictures by login, kept for the tab's life.
+    pub avatars: std::collections::HashMap<String, avatar::AvatarState>,
+    pub pending_avatars: Vec<avatar::AvatarRequest>,
     pub pending_lens: Option<LensRequest>,
     /// `gl` picks for this run as anchored globs, newest last.
     language_picks: Vec<(String, String)>,
@@ -1030,6 +1034,8 @@ impl App {
             pending_image: None,
             image_token: 0,
             image_in_flight: None,
+            avatars: std::collections::HashMap::new(),
+            pending_avatars: Vec::new(),
             pending_lens: None,
             pending_tab: None,
             held_press: None,
@@ -1204,6 +1210,7 @@ impl App {
             }
             AppEvent::RediffDone { result, request } => self.on_rediff_done(*result, &request),
             AppEvent::ImagePreview { token, preview } => self.on_image_preview(token, *preview),
+            AppEvent::Avatar(fetched) => self.on_avatar(fetched),
             AppEvent::Lens { token, lens } => self.on_lens(token, *lens),
             AppEvent::Enriched(outcome) => {
                 self.on_enriched(*outcome);

@@ -1,5 +1,6 @@
 //! Diff/review screen: file sidebar, diff pane, and the comments or references sidebar.
 
+mod avatars;
 mod cards;
 mod comments;
 mod pane;
@@ -18,6 +19,7 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
+use self::avatars::AvatarCtx;
 use self::cards::CardSearch;
 use self::comments::{draw_comments, pane_author_orders};
 use self::pane::{FigureRaster, draw_pane, patch_figure_copy_text, rasterize_figures};
@@ -65,6 +67,8 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let highlighter = app.highlighter.as_ref();
     let human_author = app.author.as_str();
     let algorithm = app.config.diff.algorithm;
+    let avatar_states = app.avatars_shown().then_some(&app.avatars);
+    let covered = app.modal.is_some() || app.which_key_panel().is_some();
     if let Some(diff) = app.diff.as_mut() {
         diff.ensure_rows(review);
         // we clone the source so the session's borrow stays off the view, which the rasteriser mutates
@@ -91,11 +95,13 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             rasters: &rasters,
             algorithm,
             author_orders,
+            avatars: AvatarCtx::new(avatar_states, human_author, covered),
         };
         draw_body(frame, body, &ctx, diff);
     }
     // we queue after drawing so the worker builds the picture for the size the pane just drew
     app.queue_image_preview();
+    app.queue_avatars();
 
     frame.render_widget(
         Paragraph::new(status_bar(app, bar.width)).style(Style::new().bg(app.theme.panel)),
@@ -113,6 +119,7 @@ struct RenderCtx<'a> {
     rasters: &'a FigureRaster,
     algorithm: diffler_core::diffalgo::DiffAlgorithm,
     author_orders: HashMap<&'a str, usize>,
+    avatars: AvatarCtx<'a>,
 }
 
 #[derive(Clone, Copy)]

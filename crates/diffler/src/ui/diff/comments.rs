@@ -147,6 +147,7 @@ pub(super) fn draw_comments(
         .take(height)
         .collect();
     frame.render_widget(Paragraph::new(shown), inner);
+    ctx.avatars.draw(frame, inner, diff.comments_scroll);
 }
 
 /// The pane's rendered lines, each line's owning row (so a click on a wrapped
@@ -209,10 +210,12 @@ fn comment_pane_lines(
                         query: search.query(),
                         current: search.current_row() == Some(row_index),
                     }),
+                    avatars: &ctx.avatars,
                 };
                 // the cursor's comment stays one line too: the diff pane shows it in
                 // full, and a row that grew under the cursor would shift every row below
                 lines.push(comment_summary_line(&card, comment));
+                ctx.avatars.claim(lines.len() - 1, true);
                 owners.push(Some(row_index));
                 let last_in_group =
                     !matches!(rows.get(row_index + 1), Some(CommentPaneRow::Item { .. }));

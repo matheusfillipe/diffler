@@ -143,6 +143,7 @@ impl fmt::Display for FileLayout {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
+#[allow(clippy::struct_excessive_bools)] // each flag is a setting the reader toggles on its own
 pub struct UiConfig {
     pub theme: String,
     pub context_lines: u32,
@@ -153,6 +154,7 @@ pub struct UiConfig {
     /// Emphasize changes by AST diff, leaving reindentation and block wrapping unflagged.
     pub semantic_diff: bool,
     pub show_agent_activity: bool,
+    pub avatars: bool,
 }
 
 impl Default for UiConfig {
@@ -166,6 +168,7 @@ impl Default for UiConfig {
             side_by_side: false,
             semantic_diff: true,
             show_agent_activity: true,
+            avatars: true,
         }
     }
 }
@@ -409,21 +412,31 @@ fn global_config_path_from(xdg: Option<OsString>, home: Option<OsString>) -> Opt
 }
 
 fn global_config_dir_from(xdg: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
-    let base = match xdg {
-        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
-        _ => PathBuf::from(home?).join(".config"),
-    };
-    Some(base.join("diffler"))
+    xdg_dir_from(xdg, home, ".config")
 }
 
 pub fn themes_dir() -> Option<PathBuf> {
-    Some(
-        global_config_dir_from(
-            std::env::var_os("XDG_CONFIG_HOME"),
-            std::env::var_os("HOME"),
-        )?
-        .join("themes"),
+    Some(xdg_dir("XDG_CONFIG_HOME", ".config")?.join("themes"))
+}
+
+/// `$<xdg_var>/diffler`, else `$HOME/<home_fallback>/diffler`.
+pub(crate) fn xdg_dir(xdg_var: &str, home_fallback: impl AsRef<Path>) -> Option<PathBuf> {
+    xdg_dir_from(
+        std::env::var_os(xdg_var),
+        std::env::var_os("HOME"),
+        home_fallback,
     )
+}
+
+/// An empty variable counts as unset.
+pub(crate) fn xdg_dir_from(
+    xdg: Option<OsString>,
+    home: Option<OsString>,
+    home_fallback: impl AsRef<Path>,
+) -> Option<PathBuf> {
+    let set = |value: Option<OsString>| value.filter(|value| !value.is_empty()).map(PathBuf::from);
+    let base = set(xdg).or_else(|| Some(set(home)?.join(home_fallback)))?;
+    Some(base.join("diffler"))
 }
 
 fn load_layers(
@@ -496,6 +509,7 @@ struct PartialUi {
     side_by_side: Option<bool>,
     semantic_diff: Option<bool>,
     show_agent_activity: Option<bool>,
+    avatars: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -698,6 +712,13 @@ fn apply_layer(
         origins,
     );
     set(
+        layer.ui.avatars,
+        &mut config.ui.avatars,
+        "ui.avatars",
+        origin,
+        origins,
+    );
+    set(
         layer.mcp.enabled,
         &mut config.mcp.enabled,
         "mcp.enabled",
@@ -832,7 +853,7 @@ fn apply_cli(cli: &CliOverrides, config: &mut Config, origins: &mut BTreeMap<Str
 }
 
 /// Always listed in the `--dump` origins block; `keys.*` entries follow from the user's config.
-const SCALAR_KEYS: [&str; 18] = [
+const SCALAR_KEYS: [&str; 19] = [
     "ui.theme",
     "ui.context_lines",
     "ui.recent_commits",
@@ -841,6 +862,7 @@ const SCALAR_KEYS: [&str; 18] = [
     "ui.side_by_side",
     "ui.semantic_diff",
     "ui.show_agent_activity",
+    "ui.avatars",
     "diff.algorithm",
     "diff.indent_heuristic",
     "mcp.enabled",
@@ -1352,6 +1374,11 @@ mod tests {
     #[test]
     fn no_home_no_xdg_means_no_global_file() {
         assert_eq!(global_config_path_from(None, None), None);
+        assert_eq!(
+            global_config_path_from(Some(OsString::new()), Some(OsString::new())),
+            None,
+            "an empty HOME counts as unset"
+        );
     }
 
     #[test]

@@ -276,6 +276,7 @@ pub(super) fn draw_pane(
                 side,
                 diff.composer.as_ref(),
             );
+            let first = lines.len();
             for (offset, line) in rendered.into_iter().enumerate() {
                 let at = start + offset;
                 if at < scroll || at >= scroll + height {
@@ -283,6 +284,7 @@ pub(super) fn draw_pane(
                 }
                 lines.push(line);
             }
+            ctx.avatars.claim(first, lines.len() > first);
         }
         let top = top_row.and_then(|from| {
             split
@@ -292,6 +294,7 @@ pub(super) fn draw_pane(
         });
         render_scope_crumb(frame, crumb_area, theme, diff.scopes.get(&file.path), top);
         frame.render_widget(Paragraph::new(lines), rows_area);
+        ctx.avatars.draw(frame, rows_area, 0);
         return;
     }
 
@@ -379,6 +382,7 @@ pub(super) fn draw_pane(
             rendered =
                 crate::ui::band_referenced(rendered, referenced, index, theme, rows_area.width);
         }
+        let first = lines.len();
         for (offset, line) in rendered.into_iter().enumerate() {
             let at = start + offset;
             if at < scroll || at >= scroll + height {
@@ -387,9 +391,11 @@ pub(super) fn draw_pane(
             lines.push(line);
             line_rows.push(Some(index));
         }
+        ctx.avatars.claim(first, lines.len() > first);
     }
     diff.line_rows = line_rows;
     frame.render_widget(Paragraph::new(lines), rows_area);
+    ctx.avatars.draw(frame, rows_area, 0);
 
     let top = top_row.and_then(|from| rows.iter().skip(from).find_map(|r| row_new_no(file, r)));
     render_scope_crumb(frame, crumb_area, theme, diff.scopes.get(&file.path), top);

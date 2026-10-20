@@ -31,6 +31,9 @@
 # semantic_diff = true
 # Show what the connected agent is doing in the status bar.
 # show_agent_activity = true
+# Show forge reviewers' avatars on their comments, on terminals with an image
+# protocol (kitty, sixel, iTerm2). Set false to fetch none.
+# avatars = true
 
 [diff]
 # The line-diff algorithm: "myers", "minimal" (slower, more minimal myers),

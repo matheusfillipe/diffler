@@ -418,6 +418,16 @@ fn dispatch_image(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     });
 }
 
+fn dispatch_avatars(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
+    for request in app.pending_avatars.drain(..) {
+        let tx = tx.clone();
+        let picker = app.image_picker.clone();
+        tokio::task::spawn_blocking(move || {
+            let _ = tx.send(AppEvent::Avatar(app::avatar::fetch(&picker, &request)));
+        });
+    }
+}
+
 fn dispatch_lens(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     let Some(request) = app.pending_lens.take() else {
         return;
@@ -437,6 +447,7 @@ fn dispatch_workers(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     dispatch_enrich(app, tx);
     dispatch_lens(app, tx);
     dispatch_image(app, tx);
+    dispatch_avatars(app, tx);
     dispatch_walkthrough(app, tx);
     dispatch_file(app, tx);
     dispatch_declared(app, tx);

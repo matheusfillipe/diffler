@@ -76,6 +76,8 @@ pub enum CommentLine {
     /// The author line opening one reply's block.
     ReplyHead {
         author: String,
+        /// The forge synced this reply.
+        remote: bool,
     },
     /// One line of a reply's body.
     Reply {
@@ -184,7 +186,7 @@ pub(super) fn row_copy_for(line: &CommentLine, header: &str, key: &str) -> RowCo
         CommentLine::Body(spans) | CommentLine::Note(spans) | CommentLine::Reply { spans, .. } => {
             RowCopy::Text(md_spans_text(spans))
         }
-        CommentLine::ReplyHead { author } => RowCopy::Text(author.clone()),
+        CommentLine::ReplyHead { author, .. } => RowCopy::Text(author.clone()),
         CommentLine::FoldedReplies { count, .. } => RowCopy::Text(folded_replies_text(*count)),
         CommentLine::Figure { block, row } => RowCopy::Figure {
             key: key.to_owned(),
@@ -306,6 +308,7 @@ pub fn comment_display(
         lines.push(CommentLine::ReplyGap);
         lines.push(CommentLine::ReplyHead {
             author: reply.author.clone(),
+            remote: reply.remote_id.is_some(),
         });
         for logical in markdown::parse(&reply.body, highlighter, width) {
             lines.extend(

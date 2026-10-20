@@ -295,6 +295,7 @@ fn comment_display_lines_cover_body_and_replies() {
             CommentLine::ReplyGap,
             CommentLine::ReplyHead {
                 author: "agent".to_owned(),
+                remote: false,
             },
             CommentLine::Reply {
                 author: "agent".to_owned(),

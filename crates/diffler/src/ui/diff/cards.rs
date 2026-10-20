@@ -6,6 +6,7 @@ use diffler_core::session::{Comment, CommentStatus};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
+use super::avatars::AvatarCtx;
 use super::{RenderCtx, RowState, pad_line, tree_lead};
 use crate::app::composer::{Composer, ComposerKind, ComposerLine};
 use crate::app::markdown::MdSpan;
@@ -33,6 +34,7 @@ pub(super) struct CardCtx<'a> {
     pub(super) orphan: bool,
     pub(super) author_color: Color,
     pub(super) search: Option<CardSearch<'a>>,
+    pub(super) avatars: &'a AvatarCtx<'a>,
 }
 
 /// The human and the agent keep fixed colours because the reader looks for
@@ -67,6 +69,7 @@ pub(super) fn comment_header_spans(
         on_cursor,
         orphan,
         author_color,
+        avatars,
         ..
     } = cc;
     // an orphan's file is gone, so we show that over its status
@@ -76,17 +79,18 @@ pub(super) fn comment_header_spans(
         CommentStatus::Replied => ("◐", theme.accent),
         CommentStatus::Resolved => ("✓", theme.added),
     };
-    let spans = vec![
+    let mut spans = vec![
         tree_lead(theme, depth, bg, on_cursor),
         Span::styled(format!("{status} "), Style::new().fg(colour).bg(bg)),
-        Span::styled(
-            format!("{} ", crate::ui::elide(&comment.author, AUTHOR_MAX)),
-            Style::new()
-                .fg(author_color)
-                .bg(bg)
-                .add_modifier(Modifier::BOLD),
-        ),
     ];
+    avatars.gap(&mut spans, bg, &comment.author, comment.remote_id.is_some());
+    spans.push(Span::styled(
+        format!("{} ", crate::ui::elide(&comment.author, AUTHOR_MAX)),
+        Style::new()
+            .fg(author_color)
+            .bg(bg)
+            .add_modifier(Modifier::BOLD),
+    ));
     let used: usize = spans.iter().map(Span::width).sum();
     (spans, budget.saturating_sub(used))
 }
@@ -129,6 +133,7 @@ struct ThreadLook<'a> {
     bg: Color,
     human: &'a str,
     orders: &'a HashMap<&'a str, usize>,
+    avatars: &'a AvatarCtx<'a>,
 }
 
 impl ThreadLook<'_> {
@@ -158,8 +163,9 @@ impl ThreadLook<'_> {
         let dim = Style::new().fg(theme.dim).bg(bg);
         let fg = Style::new().fg(theme.fg).bg(bg);
         match part {
-            CommentLine::ReplyHead { author } => {
+            CommentLine::ReplyHead { author, remote } => {
                 let mut spans = self.lane(bar, author);
+                self.avatars.gap(&mut spans, bg, author, *remote);
                 spans.push(Span::styled(
                     author.clone(),
                     Style::new()
@@ -233,6 +239,7 @@ pub(super) fn comment_row_line(
         bg,
         human: ctx.human_author,
         orders: &ctx.author_orders,
+        avatars: &ctx.avatars,
     };
     let spans = match part {
         CommentLine::Header => {
@@ -243,6 +250,8 @@ pub(super) fn comment_row_line(
                     Style::new().fg(theme.accent).bg(bg),
                 ));
             }
+            ctx.avatars
+                .gap(&mut spans, bg, &comment.author, comment.remote_id.is_some());
             spans.extend([
                 Span::styled(
                     comment.author.clone(),

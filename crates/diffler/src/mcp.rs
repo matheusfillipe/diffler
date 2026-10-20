@@ -1279,20 +1279,11 @@ struct RegistryEntry<'a> {
 /// `$XDG_STATE_HOME/diffler/instances`, defaulting to `~/.local/state`.
 /// Tests set `DIFFLER_STATE_DIR` so they never touch the real home directory.
 fn registry_dir() -> Option<PathBuf> {
-    let base = if let Some(dir) = non_empty_env("DIFFLER_STATE_DIR") {
-        PathBuf::from(dir)
-    } else if let Some(dir) = non_empty_env("XDG_STATE_HOME") {
-        PathBuf::from(dir)
-    } else {
-        PathBuf::from(non_empty_env("HOME")?)
-            .join(".local")
-            .join("state")
+    let base = match std::env::var_os("DIFFLER_STATE_DIR").filter(|dir| !dir.is_empty()) {
+        Some(dir) => PathBuf::from(dir).join("diffler"),
+        None => crate::config::xdg_dir("XDG_STATE_HOME", Path::new(".local").join("state"))?,
     };
-    Some(base.join("diffler").join("instances"))
-}
-
-fn non_empty_env(key: &str) -> Option<std::ffi::OsString> {
-    std::env::var_os(key).filter(|v| !v.is_empty())
+    Some(base.join("instances"))
 }
 
 /// Best-effort: a same-repo proxy still finds `.diffler/mcp.json`, so we

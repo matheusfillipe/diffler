@@ -150,12 +150,7 @@ pub fn blob_url(
     path: &str,
     (first, last): (u32, u32),
 ) -> Option<String> {
-    let host = match detected.kind {
-        ProviderKind::GitHub => "github.com".to_owned(),
-        ProviderKind::GitLab | ProviderKind::Forgejo => {
-            detected.host.clone().or_else(|| parse_host(remote_url))?
-        }
-    };
+    let host = web_host(detected, remote_url)?;
     let repo = parse_repo_path(remote_url)?;
     let path = encode_path(path);
     let span = |sep: &str| {
@@ -175,6 +170,57 @@ pub fn blob_url(
             )
         }
     })
+}
+
+fn web_host(detected: &Detected, remote_url: &str) -> Option<String> {
+    match detected.kind {
+        ProviderKind::GitHub => Some("github.com".to_owned()),
+        ProviderKind::GitLab | ProviderKind::Forgejo => {
+            detected.host.clone().or_else(|| parse_host(remote_url))
+        }
+    }
+}
+
+/// The forge's host and the picture it serves for `login`. GitLab serves one
+/// only behind a user lookup, so it gets none.
+pub fn avatar_url(detected: &Detected, remote_url: &str, login: &str) -> Option<(String, String)> {
+    // we put the host and login into a URL and a cache path, so we accept only a plain name's characters
+    let plain = |name: &str| {
+        !name.is_empty()
+            && !name.starts_with('.')
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    };
+    if !plain(login) {
+        return None;
+    }
+    let host = web_host(detected, remote_url).filter(|host| plain(host))?;
+    let url = match detected.kind {
+        ProviderKind::GitHub => format!("https://{host}/{login}.png?size=64"),
+        ProviderKind::Forgejo => format!("https://{host}/user/avatar/{login}/64"),
+        ProviderKind::GitLab => return None,
+    };
+    Some((host, url))
+}
+
+/// Blocking: an `avatar_url` picture's bytes, capped at 1MB and 10 seconds.
+pub fn download_avatar(url: &str) -> Option<Vec<u8>> {
+    let output = std::process::Command::new("curl")
+        .args([
+            "--fail",
+            "--silent",
+            "--location",
+            "--max-time",
+            "10",
+            "--max-filesize",
+            "1000000",
+            "--url",
+            url,
+        ])
+        .output()
+        .ok()?;
+    (output.status.success() && !output.stdout.is_empty()).then_some(output.stdout)
 }
 
 /// Every path segment after the host, so a GitLab subgroup survives.
@@ -372,6 +418,52 @@ mod tests {
             None,
             "an unrecognized value falls back to the forge's own status strings"
         );
+    }
+
+    #[test]
+    fn avatar_url_names_each_forges_own_picture_and_refuses_odd_logins() {
+        let github = Detected {
+            kind: ProviderKind::GitHub,
+            host: None,
+        };
+        assert_eq!(
+            avatar_url(&github, "git@github.com:acme/widgets.git", "reviewer"),
+            Some((
+                "github.com".to_owned(),
+                "https://github.com/reviewer.png?size=64".to_owned()
+            ))
+        );
+        let forgejo = Detected {
+            kind: ProviderKind::Forgejo,
+            host: Some("forge.example".to_owned()),
+        };
+        assert_eq!(
+            avatar_url(
+                &forgejo,
+                "https://forge.example/acme/widgets",
+                "re.viewer_1"
+            ),
+            Some((
+                "forge.example".to_owned(),
+                "https://forge.example/user/avatar/re.viewer_1/64".to_owned()
+            ))
+        );
+        let gitlab = Detected {
+            kind: ProviderKind::GitLab,
+            host: None,
+        };
+        assert_eq!(
+            avatar_url(&gitlab, "https://gitlab.com/acme/widgets", "reviewer"),
+            None
+        );
+        for odd in ["", "../etc", ".hidden", "bot[bot]", "a/b", "a b"] {
+            assert_eq!(avatar_url(&github, "", odd), None, "{odd}");
+        }
+        let crafted = Detected {
+            kind: ProviderKind::Forgejo,
+            host: Some("forge.example/../../tmp".to_owned()),
+        };
+        assert_eq!(avatar_url(&crafted, "", "reviewer"), None);
     }
 
     #[test]

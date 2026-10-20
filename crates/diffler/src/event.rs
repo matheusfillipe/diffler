@@ -62,6 +62,7 @@ pub enum AppEvent {
         token: u64,
         preview: Box<crate::app::image::ImagePreview>,
     },
+    Avatar(crate::app::avatar::Fetched),
     /// Routed through the channel so the app stays the single owner of review state.
     Mcp(McpRequest),
     /// `wait_for_feedback` started a poll that ends by `until` at the latest.

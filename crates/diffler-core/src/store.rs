@@ -231,7 +231,7 @@ pub fn write_file(repo_root: &Path, name: &str, contents: &str) -> std::io::Resu
 
 /// Replace `path` through a temp file and rename. We write through a symlink
 /// to its target and keep the target's permissions.
-pub fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
+pub fn write_atomic(path: &Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
     let (target, permissions) = match fs::canonicalize(path) {
         Ok(target) => {
             let permissions = fs::metadata(&target)?.permissions();
@@ -244,7 +244,7 @@ pub fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
         .parent()
         .ok_or_else(|| std::io::Error::other(format!("{} has no folder", target.display())))?;
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
-    tmp.write_all(contents.as_bytes())?;
+    tmp.write_all(contents.as_ref())?;
     if let Some(permissions) = permissions {
         tmp.as_file().set_permissions(permissions)?;
     }

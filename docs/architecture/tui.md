@@ -42,6 +42,21 @@ author's colour in place of the card's status bar; the reader's own replies
 line up under the first comment and everyone else's indent `REPLY_LANE`
 columns. A forge thread is a
 flat list of replies, so the lanes show authorship and never nesting. A
+comment or reply synced from a forge, by anyone but the human and the agent
+here, leads its author with the author's avatar, two cells by one row, on a
+terminal with a real image protocol (`[ui] avatars`); halfblocks draws none.
+The author line leaves the gap once a fetch starts, and `ui/diff/avatars.rs`
+draws each picture over its gap after the pane's lines. Kitty sends a
+picture on its first draw only, so we draw none while a popup is open.
+`ci::avatar_url`
+names the picture: GitHub's `<login>.png`, Forgejo's
+`/user/avatar/<login>/64`; GitLab serves one only behind a user lookup, so
+it gets none. A worker (`pending_avatars` → `AppEvent::Avatar`) reads
+`$XDG_CACHE_HOME/diffler/avatars/<host>/<login>.png` while it is under a
+week old, else downloads it with `curl` (keeping the old copy when that
+fails), and encodes it for the terminal.
+We ask for a login once per run and keep a failure, so a broken picture is
+never fetched again and draws no gap. A
 closed thread folds the replies between its first comment and its latest
 reply into one `▸ N earlier replies` row once it has more than two, and
 always shows the latest reply in full; `tab`/`za` on any of its rows
