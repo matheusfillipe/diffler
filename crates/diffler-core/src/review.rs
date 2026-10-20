@@ -306,6 +306,32 @@ impl Review {
         })
     }
 
+    /// [`Review::compute_file`] as `rev`'s tree has `rel`.
+    pub fn compute_file_at(
+        repo_root: &Path,
+        rev: &str,
+        rel: &str,
+    ) -> Result<FileSnapshot, ReviewError> {
+        let vcs = repo::open(repo_root)?;
+        let content = vcs.read_at(rev, rel)?.ok_or_else(|| {
+            VcsError::Rejected(format!("{rel} has no text at {}", crate::git::short7(rev)))
+        })?;
+        Ok(FileSnapshot {
+            path: rel.to_owned(),
+            blame: vcs.blame_at(rev, Path::new(rel)).unwrap_or_default(),
+            content,
+        })
+    }
+
+    /// [`Vcs::file_history`] on a backend of its own, for a worker.
+    pub fn compute_file_history(
+        repo_root: &Path,
+        rel: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::vcs::FileVersion>, ReviewError> {
+        Ok(repo::open(repo_root)?.file_history(rel, limit)?)
+    }
+
     pub fn install_refresh(&mut self, status: StatusModel, model: DiffModel) {
         self.status = status;
         self.session.reconcile(&model);

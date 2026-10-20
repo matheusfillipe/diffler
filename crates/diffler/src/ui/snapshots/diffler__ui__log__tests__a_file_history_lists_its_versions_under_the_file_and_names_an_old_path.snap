@@ -1,0 +1,12 @@
+---
+source: crates/diffler/src/ui/log.rs
+expression: terminal.backend()
+---
+" <cr> open commit · B open this version · V select range · ? help               "
+"  src/lib.rs  3 versions                                                        "
+"▌●  ccccccc tidy the answer                                        reviewer  3d "
+" ●  bbbbbbb move into src                                          reviewer  3d "
+" ●  aaaaaaa lib.rs first answer                                    reviewer  3d "
+"                                                                                "
+"                                                                                "
+" LOG  fixture@main · mcp off · 3 files, 0 viewed                                "

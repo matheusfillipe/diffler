@@ -60,6 +60,13 @@ impl LogEntry {
     }
 }
 
+/// A commit that changed a file, and the path the file had there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileVersion {
+    pub entry: LogEntry,
+    pub path: String,
+}
+
 /// The jj working-copy change `@`, shown on a jj repo's head line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChangeInfo {
@@ -241,6 +248,11 @@ pub trait Vcs: Send {
     /// Last commit to touch each line of `rel` as the worktree has it, in line
     /// order. Uncommitted lines come back as spans owned by no commit.
     fn blame(&self, rel: &Path) -> Result<Vec<BlameSpan>, VcsError>;
+    /// [`Vcs::blame`] of `rel` as `rev`'s tree has it.
+    fn blame_at(&self, rev: &str, rel: &Path) -> Result<Vec<BlameSpan>, VcsError>;
+    /// The commits on HEAD's first-parent line that changed `rel`, newest
+    /// first, at most `limit`, following renames like `git log --follow`.
+    fn file_history(&self, rel: &str, limit: usize) -> Result<Vec<FileVersion>, VcsError>;
 
     /// One file's content in `rev`'s tree, `None` when the tree lacks it.
     fn read_at(&self, rev: &str, path: &str) -> Result<Option<String>, VcsError>;

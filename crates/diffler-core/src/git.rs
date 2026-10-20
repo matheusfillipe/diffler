@@ -10,10 +10,14 @@ use crate::model::{
     DiffLine, DiffModel, FileDiff, FileStatus, Hunk, HunkId, LineKind, disambiguated_hunk_id,
 };
 use crate::vcs::{
-    BlameSpan, BranchInfo, HeadInfo, LogEntry, NetworkOp, StatusModel, Vcs, VcsError,
+    BlameSpan, BranchInfo, FileVersion, HeadInfo, LogEntry, NetworkOp, StatusModel, Vcs, VcsError,
 };
 
 pub const DEFAULT_CONTEXT_LINES: u32 = 3;
+
+/// Commits a file history walks at most, so a file untouched for years in
+/// a huge repo still answers quickly.
+const HISTORY_WALK_LIMIT: usize = 20_000;
 
 pub const DEFAULT_INDENT_HEURISTIC: bool = true;
 
@@ -242,21 +246,67 @@ impl GitVcs {
     ) -> Result<Vec<LogEntry>, VcsError> {
         let mut entries = Vec::new();
         for oid in walk.take(limit) {
-            let oid = oid?;
-            let commit = self.repo.find_commit(oid)?;
-            let full = oid.to_string();
-            entries.push(LogEntry {
-                oid7: short7(&full),
-                oid: full,
-                refs: Vec::new(),
-                parents: commit.parent_ids().map(|id| id.to_string()).collect(),
-                subject: commit.summary()?.unwrap_or_default().to_owned(),
-                author: commit.author().name().unwrap_or_default().to_owned(),
-                time_unix: commit.time().seconds(),
-                change_id: None,
-            });
+            entries.push(log_entry(&self.repo.find_commit(oid?)?)?);
         }
         Ok(entries)
+    }
+
+    /// Where `commit` took `path` from its first parent: the same path, or
+    /// the one a rename moved it from. `None` when the parent has neither.
+    fn path_in_parent(
+        &self,
+        commit: &git2::Commit<'_>,
+        parent: &git2::Commit<'_>,
+        path: &str,
+    ) -> Result<Option<String>, VcsError> {
+        if blob_at(parent, path)?.is_some() {
+            return Ok(Some(path.to_owned()));
+        }
+        let mut diff = self.repo.diff_tree_to_tree(
+            Some(&parent.tree()?),
+            Some(&commit.tree()?),
+            Some(&mut git2::DiffOptions::new()),
+        )?;
+        diff.find_similar(Some(git2::DiffFindOptions::new().renames(true)))?;
+        Ok(diff.deltas().find_map(|delta| {
+            let renamed = delta.status() == git2::Delta::Renamed
+                && delta.new_file().path() == Some(Path::new(path));
+            renamed
+                .then(|| {
+                    delta
+                        .old_file()
+                        .path()
+                        .map(|old| old.to_string_lossy().into_owned())
+                })
+                .flatten()
+        }))
+    }
+
+    fn blame_spans(&self, blame: &git2::Blame<'_>) -> Vec<BlameSpan> {
+        let mut out = Vec::new();
+        for hunk in blame.iter() {
+            let oid = hunk.final_commit_id();
+            let commit = self.repo.find_commit(oid).ok();
+            let full = oid.to_string();
+            out.push(BlameSpan {
+                start_line: u32::try_from(hunk.final_start_line()).unwrap_or(u32::MAX),
+                line_count: u32::try_from(hunk.lines_in_hunk()).unwrap_or(u32::MAX),
+                oid7: short7(&full),
+                oid: full,
+                author: commit
+                    .as_ref()
+                    .map(|c| c.author().name().unwrap_or_default().to_owned())
+                    .unwrap_or_default(),
+                time_unix: commit.as_ref().map_or(0, |c| c.time().seconds()),
+                summary: commit
+                    .as_ref()
+                    .and_then(|c| c.summary().ok().flatten().map(str::to_owned))
+                    .unwrap_or_default(),
+                committed: !oid.is_zero(),
+            });
+        }
+        out.sort_by_key(|span| span.start_line);
+        out
     }
 
     /// [`Vcs::log`], with `all_branches` also walking `tips`, the commits jj
@@ -570,40 +620,60 @@ impl Vcs for GitVcs {
             Ok(bytes) => blame.blame_buffer(&bytes)?,
             Err(_) => blame,
         };
+        Ok(self.blame_spans(&blame))
+    }
 
-        let mut out = Vec::new();
-        for hunk in blame.iter() {
-            let oid = hunk.final_commit_id();
-            let commit = self.repo.find_commit(oid).ok();
-            let full = oid.to_string();
-            out.push(BlameSpan {
-                start_line: u32::try_from(hunk.final_start_line()).unwrap_or(u32::MAX),
-                line_count: u32::try_from(hunk.lines_in_hunk()).unwrap_or(u32::MAX),
-                oid7: short7(&full),
-                oid: full,
-                author: commit
-                    .as_ref()
-                    .map(|c| c.author().name().unwrap_or_default().to_owned())
-                    .unwrap_or_default(),
-                time_unix: commit.as_ref().map_or(0, |c| c.time().seconds()),
-                summary: commit
-                    .as_ref()
-                    .and_then(|c| c.summary().ok().flatten().map(str::to_owned))
-                    .unwrap_or_default(),
-                committed: !oid.is_zero(),
-            });
+    fn blame_at(&self, rev: &str, rel: &Path) -> Result<Vec<BlameSpan>, VcsError> {
+        let commit = self.revparse(rev)?.peel_to_commit()?;
+        let mut options = git2::BlameOptions::new();
+        options
+            .track_copies_same_file(true)
+            .newest_commit(commit.id());
+        let blame = self.repo.blame_file(rel, Some(&mut options))?;
+        Ok(self.blame_spans(&blame))
+    }
+
+    fn file_history(&self, rel: &str, limit: usize) -> Result<Vec<FileVersion>, VcsError> {
+        let mut versions = Vec::new();
+        let Some(mut commit) = self.head_commit()? else {
+            return Ok(versions);
+        };
+        let mut path = rel.to_owned();
+        for _ in 0..HISTORY_WALK_LIMIT {
+            let Some(blob) = blob_at(&commit, &path)? else {
+                break;
+            };
+            let parent = commit.parent(0).ok();
+            let unchanged = match &parent {
+                Some(parent) => blob_at(parent, &path)? == Some(blob),
+                None => false,
+            };
+            if !unchanged {
+                versions.push(FileVersion {
+                    entry: log_entry(&commit)?,
+                    path: path.clone(),
+                });
+                if versions.len() >= limit {
+                    break;
+                }
+            }
+            let Some(parent) = parent else {
+                break;
+            };
+            if !unchanged {
+                match self.path_in_parent(&commit, &parent, &path)? {
+                    Some(older) => path = older,
+                    None => break,
+                }
+            }
+            commit = parent;
         }
-        out.sort_by_key(|span| span.start_line);
-        Ok(out)
+        Ok(versions)
     }
 
     fn read_at(&self, rev: &str, path: &str) -> Result<Option<String>, VcsError> {
         let commit = self.revparse(rev)?.peel_to_commit()?;
-        match commit.tree()?.get_path(Path::new(path)) {
-            Ok(entry) => Ok(blob_text(&self.repo, entry.id())),
-            Err(err) if err.code() == git2::ErrorCode::NotFound => Ok(None),
-            Err(err) => Err(err.into()),
-        }
+        Ok(blob_at(&commit, path)?.and_then(|oid| blob_text(&self.repo, oid)))
     }
 
     fn read_blob(&self, oid: &str) -> Result<Option<Vec<u8>>, VcsError> {
@@ -1202,7 +1272,7 @@ fn render_hunk_patch_from_model(
     out
 }
 
-fn short7(oid: &str) -> String {
+pub fn short7(oid: &str) -> String {
     oid.get(..7).unwrap_or(oid).to_owned()
 }
 
@@ -1336,6 +1406,29 @@ fn map_status(status: git2::Delta) -> FileStatus {
         git2::Delta::Renamed => FileStatus::Renamed,
         git2::Delta::Untracked => FileStatus::Untracked,
         _ => FileStatus::Modified,
+    }
+}
+
+fn log_entry(commit: &git2::Commit<'_>) -> Result<LogEntry, VcsError> {
+    let full = commit.id().to_string();
+    Ok(LogEntry {
+        oid7: short7(&full),
+        oid: full,
+        refs: Vec::new(),
+        parents: commit.parent_ids().map(|id| id.to_string()).collect(),
+        subject: commit.summary()?.unwrap_or_default().to_owned(),
+        author: commit.author().name().unwrap_or_default().to_owned(),
+        time_unix: commit.time().seconds(),
+        change_id: None,
+    })
+}
+
+/// The blob `path` names in `commit`'s tree, `None` when the tree lacks it.
+fn blob_at(commit: &git2::Commit<'_>, path: &str) -> Result<Option<git2::Oid>, VcsError> {
+    match commit.tree()?.get_path(Path::new(path)) {
+        Ok(entry) => Ok(Some(entry.id())),
+        Err(err) if err.code() == git2::ErrorCode::NotFound => Ok(None),
+        Err(err) => Err(err.into()),
     }
 }
 

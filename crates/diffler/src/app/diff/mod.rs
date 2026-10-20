@@ -593,6 +593,19 @@ impl DiffView {
         self.rows_dirty |= revealed;
     }
 
+    /// Select `path` and reveal it in the sidebar, when the diff carries it.
+    pub(crate) fn select_path(&mut self, review: &Review, path: &str) {
+        let index = self
+            .model_for_rows(review)
+            .files
+            .iter()
+            .position(|file| file.path == path);
+        if let Some(index) = index {
+            self.select(index, review);
+            self.reveal_selected(review);
+        }
+    }
+
     /// Move the sidebar cursor to `selected`, rebuilding the diff rows and
     /// resetting the diff cursor to the top of the new file.
     fn select(&mut self, selected: usize, review: &Review) {

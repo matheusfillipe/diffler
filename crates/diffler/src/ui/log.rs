@@ -9,6 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::app::App;
+use crate::app::file::FileHistory;
 use crate::app::rowsel::RowSelect;
 use crate::keymap::Action;
 use crate::theme::Theme;
@@ -22,6 +23,13 @@ const HINTS: &[Hint] = &[
         &[Action::NextSection, Action::PrevSection],
         "step branch tips",
     ),
+    Hint::Leaf(&[Action::Help], "help"),
+];
+
+const HISTORY_HINTS: &[Hint] = &[
+    Hint::Leaf(&[Action::Open], "open commit"),
+    Hint::Leaf(&[Action::Blame], "open this version"),
+    Hint::Leaf(&[Action::VisualSelect], "select range"),
     Hint::Leaf(&[Action::Help], "help"),
 ];
 
@@ -41,7 +49,15 @@ struct RowCtx<'a> {
 }
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
-    let (body, bar) = super::screen_chrome(frame, app, HINTS);
+    let history = app.log.as_ref().and_then(|log| log.file.as_ref());
+    let (body, bar) = if let Some(file) = history {
+        let header_line = history_header(file, &app.theme);
+        let (header, body, bar) = super::screen_chrome_with_header(frame, app, HISTORY_HINTS);
+        frame.render_widget(Paragraph::new(header_line), header);
+        (body, bar)
+    } else {
+        super::screen_chrome(frame, app, HINTS)
+    };
 
     let search = app.search.as_ref();
     if let Some(log) = app.log.as_mut() {
@@ -78,7 +94,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             .map(|(index, entry)| {
                 let ranges = search.map(|s| s.ranges_for(index)).unwrap_or_default();
                 let graph = log.graph.get(index).map_or(&[][..], Vec::as_slice);
-                let line = entry_line(&ctx, entry, graph, &ranges);
+                let old_path = log.file.as_ref().and_then(|file| {
+                    let path = &file.versions.get(index)?.path;
+                    (*path != file.path).then_some(path.as_str())
+                });
+                let line = entry_line(&ctx, entry, graph, old_path, &ranges);
                 if index == log.cursor || selected(index) {
                     cursor_line(line, &app.theme, body.width)
                 } else {
@@ -95,10 +115,22 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     );
 }
 
+fn history_header(file: &FileHistory, theme: &Theme) -> Line<'static> {
+    let count = file.versions.len();
+    Line::from(vec![
+        Span::styled(format!("  {}", file.path), Style::new().fg(theme.accent)),
+        Span::styled(
+            format!("  {count} version{}", if count == 1 { "" } else { "s" }),
+            theme.dim_style(),
+        ),
+    ])
+}
+
 fn entry_line(
     ctx: &RowCtx<'_>,
     entry: &LogEntry,
     graph: &[Cell],
+    version_old_path: Option<&str>,
     search: &[(std::ops::Range<usize>, bool)],
 ) -> Line<'static> {
     let theme = ctx.theme;
@@ -115,6 +147,12 @@ fn entry_line(
         theme.dim_style(),
     ));
     spans.extend(ref_spans(ctx, entry));
+    if let Some(path) = version_old_path {
+        spans.push(Span::styled(
+            format!("{path} "),
+            Style::new().fg(theme.purple),
+        ));
+    }
     spans.extend(super::highlight_spans(
         &entry.subject,
         theme.base(),
@@ -223,8 +261,10 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     use crate::app::App;
+    use crate::app::file::FileHistory;
     use crate::config::LoadedConfig;
     use crate::test_support::{jj_fixture, key, mouse_click, standard_fixture};
+    use crate::ui::file::tests::version;
 
     fn render(app: &mut App) -> Terminal<TestBackend> {
         let backend = TestBackend::new(120, 40);
@@ -264,6 +304,26 @@ mod tests {
         };
         app.handle(mouse_click(body.x + 1, body.y + 1 - scroll));
         assert_eq!(app.log.as_ref().unwrap().cursor, 1);
+    }
+
+    #[test]
+    fn a_file_history_lists_its_versions_under_the_file_and_names_an_old_path() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.show_file_history(FileHistory {
+            path: "src/lib.rs".to_owned(),
+            versions: vec![
+                version("ccccccc", "tidy the answer", "src/lib.rs"),
+                version("bbbbbbb", "move into src", "src/lib.rs"),
+                version("aaaaaaa", "first answer", "lib.rs"),
+            ],
+        });
+        app.now_unix = 86_400 * 3;
+        let mut terminal = Terminal::new(TestBackend::new(80, 8)).expect("terminal");
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .expect("draw");
+        insta::assert_snapshot!(terminal.backend());
     }
 
     #[test]

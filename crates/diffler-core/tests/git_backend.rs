@@ -1433,6 +1433,128 @@ fn blame_maps_onto_the_worktree_so_uncommitted_lines_are_their_own_span() {
 }
 
 #[test]
+fn blame_at_a_past_commit_attributes_that_versions_lines() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\n");
+    fx.commit_all("first");
+    let first = head_oid(&fx);
+    fx.write("a.txt", "one\ntwo\n");
+    fx.commit_all("second");
+
+    let spans = vcs(&fx)
+        .blame_at(&first, Path::new("a.txt"))
+        .expect("blame");
+    let by_line: Vec<(u32, u32, &str)> = spans
+        .iter()
+        .map(|s| (s.start_line, s.line_count, s.summary.as_str()))
+        .collect();
+    assert_eq!(by_line, vec![(1, 1, "first")]);
+}
+
+fn history(fx: &Fixture, path: &str, limit: usize) -> Vec<(String, String)> {
+    vcs(fx)
+        .file_history(path, limit)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|version| (version.entry.subject, version.path))
+        .collect()
+}
+
+fn owned(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+    pairs
+        .iter()
+        .map(|(subject, path)| ((*subject).to_owned(), (*path).to_owned()))
+        .collect()
+}
+
+#[test]
+fn file_history_lists_the_commits_that_changed_the_file_newest_first() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\n");
+    fx.commit_all("add a");
+    fx.write("other.txt", "x\n");
+    fx.commit_all("unrelated");
+    fx.write("a.txt", "one\ntwo\n");
+    fx.commit_all("edit a");
+
+    assert_eq!(
+        history(&fx, "a.txt", 500),
+        owned(&[("edit a", "a.txt"), ("add a", "a.txt")])
+    );
+}
+
+#[test]
+fn file_history_stops_at_the_commit_that_added_the_file() {
+    let fx = Fixture::new();
+    fx.write("base.txt", "base\n");
+    fx.commit_all("base");
+    fx.write("a.txt", "one\n");
+    fx.commit_all("add a");
+    fx.write("a.txt", "one\ntwo\n");
+    fx.commit_all("edit a");
+
+    assert_eq!(
+        history(&fx, "a.txt", 500),
+        owned(&[("edit a", "a.txt"), ("add a", "a.txt")])
+    );
+}
+
+#[test]
+fn file_history_follows_a_rename_to_the_old_path() {
+    let fx = Fixture::new();
+    let body = "fn main() {\n    let a = 1;\n    let b = 2;\n    println!(\"{a} {b}\");\n}\n";
+    fx.write("old.rs", body);
+    fx.commit_all("add old");
+    fx.write("old.rs", &format!("{body}// tail\n"));
+    fx.commit_all("edit old");
+    fx.remove("old.rs");
+    {
+        let mut index = fx.repo.index().expect("index");
+        index.remove_path(Path::new("old.rs")).expect("unstage");
+        index.write().expect("index write");
+    }
+    fx.write("new.rs", &format!("{body}// tail\n"));
+    fx.commit_all("rename to new");
+    fx.write("new.rs", &format!("{body}// tail\n// more\n"));
+    fx.commit_all("edit new");
+
+    assert_eq!(
+        history(&fx, "new.rs", 500),
+        owned(&[
+            ("edit new", "new.rs"),
+            ("rename to new", "new.rs"),
+            ("edit old", "old.rs"),
+            ("add old", "old.rs"),
+        ])
+    );
+}
+
+#[test]
+fn file_history_stops_at_its_limit() {
+    let fx = Fixture::new();
+    for n in 0..5 {
+        fx.write("a.txt", &format!("{n}\n"));
+        fx.commit_all(&format!("edit {n}"));
+    }
+    assert_eq!(
+        history(&fx, "a.txt", 3),
+        owned(&[
+            ("edit 4", "a.txt"),
+            ("edit 3", "a.txt"),
+            ("edit 2", "a.txt")
+        ])
+    );
+}
+
+#[test]
+fn file_history_of_a_path_head_lacks_is_empty() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\n");
+    fx.commit_all("add a");
+    assert!(history(&fx, "missing.txt", 500).is_empty());
+}
+
+#[test]
 fn gitattributes_declare_a_files_bucket() {
     let fx = Fixture::new();
     fx.write(

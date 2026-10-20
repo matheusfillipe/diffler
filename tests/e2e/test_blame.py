@@ -38,6 +38,35 @@ def test_picker_opens_any_tracked_file_with_its_blame(spawn):
     tui.wait_for(" STATUS ")
 
 
+def test_braces_step_into_a_past_version_and_h_lists_the_history(spawn):
+    tui = spawn("--no-mcp")
+    tui.wait_for("Unstaged changes (1)")
+
+    tui.send("gf")
+    tui.wait_for("File ·")
+    tui.send("README")
+    tui.wait_for("README.md")
+    tui.send("\r")
+    tui.wait_for(" FILE ")
+    tui.wait_for("# demo")
+
+    tui.send("{")
+    tui.wait_for("version 1/1")
+    tui.send("{")
+    tui.wait_for("this is the oldest version")
+    tui.send("}")
+    tui.wait_until(
+        lambda text: "version 1/1" not in text and "# demo" in text,
+        "the newest step returns to the working-tree file",
+    )
+
+    tui.send("H")
+    tui.wait_for(" LOG ")
+    tui.wait_for("1 version")
+    tui.send("q")
+    tui.wait_for(" FILE ")
+
+
 def test_blame_from_the_status_cursor_opens_the_file_under_it(spawn):
     tui = spawn("--no-mcp")
     tui.wait_for("Unstaged changes (1)")

@@ -233,6 +233,7 @@ full keymap of the screen you're on, and `<c-k>` fuzzy-finds any action.
 | `alt-h` / `alt-l` | previous / next project tab (`alt-1`-`alt-9` jumps to one) |
 | `alt-w` | close this project tab |
 | `B` | blame: see who last changed each line |
+| `{` / `}` | in the file view, step to the file's older / newer version (`H` lists them) |
 | `e` | open the file in your editor |
 | `q` | back / quit |
 

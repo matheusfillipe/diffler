@@ -748,6 +748,9 @@ pub struct App {
     pub pending_file: Option<file::FileOpen>,
     /// Bumped per file request, so we drop a load the reader has moved past.
     file_token: u64,
+    pub pending_history: Option<file::HistoryRequest>,
+    /// Bumped per history read, so we drop one the reader has moved past.
+    history_token: u64,
     pub pending_declared: Option<DeclaredRequest>,
     /// Bumped per request, so we drop an answer for a replaced file list.
     declared_token: u64,
@@ -1045,6 +1048,8 @@ impl App {
             frame_width: 0,
             lens_token: 0,
             file_token: 0,
+            pending_history: None,
+            history_token: 0,
             pending_clipboard: None,
             pending_editor: None,
             pending_pr_create: None,
@@ -1222,6 +1227,7 @@ impl App {
                 reload,
                 token,
             } => self.on_file_loaded(*result, span, reload, token),
+            AppEvent::FileHistory { request, result } => self.on_file_history(&request, *result),
             AppEvent::DeclaredKinds { kinds, token } => self.on_declared_kinds(kinds, token),
             AppEvent::RepoStats { stats, token } => self.on_repo_stats(*stats, token),
             AppEvent::WalkthroughAnchors {
@@ -1601,6 +1607,7 @@ impl App {
             Action::SwitchDiffAlgorithm => self.open_choice_picker(ChoiceKind::DiffAlgorithm),
             Action::OpenFilePicker => self.open_file_picker(),
             Action::Blame => self.blame_focused(),
+            Action::FileHistory => self.file_history_focused(),
             Action::OpenStats => self.open_stats(),
             // the composer and the input modal handle this key first
             Action::EditExternally => {
@@ -1628,6 +1635,26 @@ impl App {
         self.screens.push(screen);
     }
 
+    /// Bring up a File or Log `screen`: back down to the one already on the
+    /// stack when only File and Log screens sit above it, so a history list
+    /// and its versions swap in place, else pushed. True when it went back.
+    pub(crate) fn raise_screen(&mut self, screen: Screen) -> bool {
+        let reachable = self
+            .screens
+            .iter()
+            .rev()
+            .take_while(|above| matches!(above, Screen::File | Screen::Log))
+            .any(|above| *above == screen);
+        if !reachable {
+            self.push_screen(screen);
+            return false;
+        }
+        while self.screen() != screen {
+            self.pop_screen();
+        }
+        true
+    }
+
     fn pop_screen(&mut self) -> Flow {
         if self.screens.len() <= 1 {
             return Flow::Quit;
@@ -1635,8 +1662,12 @@ impl App {
         self.search = None;
         // so a slow file load cannot push the file view over what replaced it
         self.cancel_file_load();
-        match self.screens.pop() {
+        let popped = self.screens.pop();
+        // a File or Log screen lower down shares the one view slot, so we keep it filled for that screen
+        let shared = popped.is_some_and(|screen| self.screens.contains(&screen));
+        match popped {
             Some(Screen::Diff) => self.diff = None,
+            Some(Screen::Log | Screen::File) if shared => {}
             Some(Screen::Log) => self.log = None,
             Some(Screen::File) => self.file = None,
             Some(Screen::Graph) => {
@@ -2015,6 +2046,7 @@ impl App {
         self.reload_walkthroughs();
         self.restore_status_cursor(status_anchor);
         self.refresh_log();
+        self.forget_worktree_history();
         let swap = against.and_then(|(rev, result)| self.against_swap(&rev, result));
         let mut moved = false;
         if let Some(diff) = self.diff.as_mut() {

@@ -192,6 +192,7 @@
 # open = "<cr>"
 # next_section = "]"       # next commit carrying a branch or tag name
 # prev_section = "["
+# blame = "B"              # in a file's history, open the version under the cursor
 # open_file_picker = "gf"
 # refresh = "<c-r>"
 # change = "c"             # prefix: jj verbs on the commit under the cursor
@@ -201,6 +202,9 @@
 # toggle_blame = "b"
 # next_section = "]"       # next commit block in the blame column
 # prev_section = "["
+# older_version = "{"      # step back through the commits that changed the file
+# newer_version = "}"      # past the newest commit, back to the working tree
+# file_history = "H"       # list those commits in the log
 # open = "<cr>"            # review the commit that wrote this line
 # open_editor = "e"
 # copy_url = "Y"           # the forge link to the line or selection
@@ -272,6 +276,7 @@
 [keys.log_menu]
 # current = "l"
 # all = "b"                # every branch, remote branch and tag, as a graph
+# file = "f"               # the commits that changed the file under the cursor
 
 [keys.push]
 # push = "p"

@@ -142,6 +142,7 @@ const LOG_GROUPS: &[DefaultGroup] = &[(
     &[
         ("current", "l", Action::LogView, "Current branch"),
         ("all", "b", Action::LogAllBranches, "All branches"),
+        ("file", "f", Action::FileHistory, "This file"),
     ],
 )];
 

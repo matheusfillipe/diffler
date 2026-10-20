@@ -231,7 +231,28 @@ straight to `$EDITOR`. `y` copies the selected lines' text; `Y` copies the
 forge's link to them (`ci::blob_url`, GitHub/GitLab/Forgejo line-range
 anchors) and `gx` opens that link in the default browser. The link names the
 branch when it is pushed with nothing ahead, else the remote's default
-branch, since a link to commits the forge lacks would 404.
+branch, since a link to commits the forge lacks would 404; a past version
+names its commit.
+
+`{`/`}` step the view through the file's past versions, git-timemachine
+style. `Vcs::file_history` lists the commits on HEAD's first-parent line that
+changed the file, newest first, following a rename the way `git log --follow`
+does, capped at `HISTORY_LIMIT` versions and a commit-walk ceiling. The first
+step reads it on a worker (`pending_history` → `AppEvent::FileHistory`,
+token-guarded) and keeps it on the `FileView` until a repo refresh finds the
+view on the working-tree file; every step after is one
+`Review::compute_file_at` read (`Vcs::read_at` and `Vcs::blame_at`) through
+the same file worker a reload uses, so the cursor keeps its line number,
+clamped. `}` past the newest version returns to the working-tree file. The
+header names the version on screen, `version i/N` with its commit; `b`,
+`<cr>` and a reload work on it, and `e` declines, since it is not on disk.
+`H`, and `l f` on the status screen, list the same history on the Log
+screen (`LogView::file`), drawn as one line of descent with a renamed
+version's old path before its subject. `App::raise_screen` goes back to a
+Log or File screen already on the stack when only Log and File screens sit
+above it, so the list and its versions swap in place and `q` walks back the
+way it came; under any other screen it pushes a new one. `<cr>` reviews the commit with the
+file selected, and `B` opens the file view on that version, ready to step.
 
 ## Status bands
 

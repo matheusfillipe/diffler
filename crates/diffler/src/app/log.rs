@@ -4,8 +4,9 @@
 use diffler_core::loggraph::{self, Cell};
 use diffler_core::vcs::{LogEntry, VcsError};
 
-use super::App;
+use super::file::{FileHistory, HistoryNext, HistoryRequest};
 use super::rowsel::{RowSelect, RowText};
+use super::{App, Screen};
 use crate::keymap::Action;
 
 /// How much history one log screen loads (neogit's default max-count).
@@ -37,6 +38,43 @@ pub struct LogView {
     pub(crate) viewport: u16,
     /// Entry-area rect of the last render, for mapping mouse clicks to rows.
     pub(crate) body: ratatui::layout::Rect,
+    /// Set when the log lists one file's versions, one per entry.
+    pub file: Option<FileHistory>,
+}
+
+impl LogView {
+    fn new(history: LogHistory, all_branches: bool, file: Option<FileHistory>) -> Self {
+        Self {
+            graph: history.graph,
+            entries: history.entries,
+            head: history.head,
+            all_branches,
+            remotes: history.remotes,
+            cursor: 0,
+            scroll: 0,
+            visual_anchor: None,
+            viewport: 0,
+            body: ratatui::layout::Rect::default(),
+            file,
+        }
+    }
+}
+
+/// The versions as a single line of descent, since a version's parent is
+/// rarely the next version.
+fn version_chain(file: &FileHistory) -> Vec<LogEntry> {
+    let entries: Vec<&LogEntry> = file.versions.iter().map(|version| &version.entry).collect();
+    entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| LogEntry {
+            parents: entries
+                .get(index + 1)
+                .map(|older| vec![older.oid.clone()])
+                .unwrap_or_default(),
+            ..(*entry).clone()
+        })
+        .collect()
 }
 
 impl RowSelect for LogView {
@@ -81,26 +119,75 @@ impl App {
     pub(crate) fn open_log(&mut self, all_branches: bool) {
         match self.load_log(all_branches) {
             Ok(history) => {
-                self.log = Some(LogView {
-                    graph: history.graph,
-                    entries: history.entries,
-                    head: history.head,
-                    all_branches,
-                    remotes: history.remotes,
-                    cursor: 0,
-                    scroll: 0,
-                    visual_anchor: None,
-                    viewport: 0,
-                    body: ratatui::layout::Rect::default(),
-                });
-                self.push_screen(super::Screen::Log);
+                self.log = Some(LogView::new(history, all_branches, None));
+                self.push_screen(Screen::Log);
             }
             Err(err) => self.error(err.to_string()),
         }
     }
 
+    /// The log screen listing one file's versions. A log reached back through
+    /// file views takes it, so `q` from there still walks back the way it came.
+    pub(crate) fn show_file_history(&mut self, file: FileHistory) {
+        if self.raise_screen(Screen::Log) && self.refresh_file_history(file.clone()) {
+            return;
+        }
+        let history = self.version_log(&file);
+        self.search = None;
+        self.log = Some(LogView::new(history, false, Some(file)));
+    }
+
+    /// Swap new versions into an open history of the same file, keeping the
+    /// cursor; false when the log lists something else.
+    pub(super) fn refresh_file_history(&mut self, file: FileHistory) -> bool {
+        let listed = self
+            .log
+            .as_ref()
+            .and_then(|log| log.file.as_ref())
+            .is_some_and(|open| open.path == file.path);
+        if !listed {
+            return false;
+        }
+        let history = self.version_log(&file);
+        if let Some(log) = self.log.as_mut() {
+            log.graph = history.graph;
+            log.entries = history.entries;
+            log.head = history.head;
+            log.cursor = log.cursor.min(log.entries.len().saturating_sub(1));
+            log.visual_anchor = None;
+            log.file = Some(file);
+        }
+        true
+    }
+
+    fn version_log(&self, file: &FileHistory) -> LogHistory {
+        let head = self.review.vcs.resolve("HEAD").ok();
+        LogHistory {
+            graph: loggraph::layout(&version_chain(file), head.as_deref()),
+            entries: file.versions.iter().map(|v| v.entry.clone()).collect(),
+            head,
+            remotes: self.review.vcs.remotes().unwrap_or_default(),
+        }
+    }
+
     /// Reload entries after a repo change, keeping the cursor in bounds.
     pub(super) fn refresh_log(&mut self) {
+        if let Some(path) = self
+            .log
+            .as_ref()
+            .and_then(|log| log.file.as_ref())
+            .map(|file| file.path.clone())
+        {
+            // we keep the token here, so a refresh never drops a step in flight
+            if self.pending_history.is_none() {
+                self.pending_history = Some(HistoryRequest {
+                    path,
+                    then: HistoryNext::Refresh,
+                    token: self.history_token,
+                });
+            }
+            return;
+        }
         let Some(all_branches) = self.log.as_ref().map(|log| log.all_branches) else {
             return;
         };
@@ -169,6 +256,24 @@ impl App {
     /// is the oldest commit); otherwise open the single commit under the
     /// cursor.
     fn open_log_selection(&mut self) {
+        let Some(log) = self.log.as_ref() else {
+            return;
+        };
+        let version_path = log
+            .file
+            .as_ref()
+            .and_then(|file| file.versions.get(log.cursor))
+            .map(|version| version.path.clone());
+        self.open_log_rows();
+        if let Some(path) = version_path
+            && self.screen() == Screen::Diff
+            && let Some(diff) = self.diff.as_mut()
+        {
+            diff.select_path(&self.review, &path);
+        }
+    }
+
+    fn open_log_rows(&mut self) {
         let Some(log) = self.log.as_ref() else {
             return;
         };

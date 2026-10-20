@@ -14,6 +14,11 @@ use crate::ui::{Hint, cursor_line, status_bar};
 
 const HINTS: &[Hint] = &[
     Hint::Leaf(&[Action::ToggleBlame], "toggle blame"),
+    Hint::Leaf(
+        &[Action::OlderVersion, Action::NewerVersion],
+        "step versions",
+    ),
+    Hint::Leaf(&[Action::FileHistory], "list history"),
     Hint::Leaf(&[Action::Open], "open commit"),
     Hint::Leaf(&[Action::OpenEditor], "open in editor"),
     Hint::Leaf(&[Action::Help], "help"),
@@ -119,6 +124,19 @@ fn header_line(view: &FileView, theme: &Theme) -> Line<'static> {
         format!("  {} lines", view.lines.len()),
         theme.dim_style(),
     ));
+    if let (Some(version), Some(index), Some(history)) =
+        (view.shown_version(), view.version, view.history.as_ref())
+    {
+        let count = history.versions.len();
+        spans.push(Span::styled(
+            format!("  version {}/{count}", count - index),
+            Style::new().fg(theme.purple),
+        ));
+        spans.push(Span::styled(
+            format!(" {} {}", version.entry.short_id(), version.entry.subject),
+            theme.dim_style(),
+        ));
+    }
     if let Some(span) = view.cursor_commit() {
         spans.push(Span::styled(
             format!("  ▸ {} {}", span.oid7, span.summary),
@@ -199,12 +217,13 @@ fn blame_span(theme: &Theme, view: &FileView, index: usize, now: i64) -> Span<'s
 }
 
 #[cfg(test)]
-mod tests {
-    use diffler_core::vcs::BlameSpan;
+pub(crate) mod tests {
+    use diffler_core::vcs::{BlameSpan, FileVersion, LogEntry};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
     use super::*;
+    use crate::app::file::FileHistory;
     use crate::config::LoadedConfig;
     use crate::test_support::standard_fixture;
 
@@ -327,6 +346,40 @@ mod tests {
         let mut app = app_with_file(false);
         let backend = TestBackend::new(72, 9);
         let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|f| draw(f, &mut app)).expect("draw");
+        insta::assert_snapshot!(terminal.backend());
+    }
+
+    pub(crate) fn version(oid7: &str, subject: &str, path: &str) -> FileVersion {
+        FileVersion {
+            entry: LogEntry {
+                oid: format!("{oid7}0000000000000000000000000000000"),
+                oid7: oid7.to_owned(),
+                refs: Vec::new(),
+                parents: Vec::new(),
+                subject: subject.to_owned(),
+                author: "reviewer".to_owned(),
+                time_unix: 0,
+                change_id: None,
+            },
+            path: path.to_owned(),
+        }
+    }
+
+    #[test]
+    fn the_header_names_the_past_version_on_screen() {
+        let mut app = app_with_file(true);
+        let view = app.file.as_mut().expect("a file view");
+        view.history = Some(FileHistory {
+            path: "src/lib.rs".to_owned(),
+            versions: vec![
+                version("ccccccc", "third", "src/lib.rs"),
+                version("bbbbbbb", "second", "src/lib.rs"),
+                version("aaaaaaa", "first", "src/main.rs"),
+            ],
+        });
+        view.version = Some(1);
+        let mut terminal = Terminal::new(TestBackend::new(96, 9)).expect("terminal");
         terminal.draw(|f| draw(f, &mut app)).expect("draw");
         insta::assert_snapshot!(terminal.backend());
     }

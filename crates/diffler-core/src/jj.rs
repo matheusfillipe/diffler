@@ -14,8 +14,8 @@ use crate::diffalgo::{DiffAlgorithm, DiffSettings};
 use crate::git::GitVcs;
 use crate::model::{DiffModel, HunkId};
 use crate::vcs::{
-    BlameSpan, Bookmark, BranchInfo, ChangeInfo, ChangeOp, HeadInfo, JjView, LogEntry, NetworkOp,
-    PullOutcome, PullTarget, StatusModel, Vcs, VcsError,
+    BlameSpan, Bookmark, BranchInfo, ChangeInfo, ChangeOp, FileVersion, HeadInfo, JjView, LogEntry,
+    NetworkOp, PullOutcome, PullTarget, StatusModel, Vcs, VcsError,
 };
 
 const NO_DESCRIPTION: &str = "(no description set)";
@@ -632,6 +632,26 @@ impl Vcs for JjVcs {
     fn blame(&self, rel: &Path) -> Result<Vec<BlameSpan>, VcsError> {
         self.ensure_base()?;
         self.git.blame(rel)
+    }
+
+    fn blame_at(&self, rev: &str, rel: &Path) -> Result<Vec<BlameSpan>, VcsError> {
+        self.ensure_base()?;
+        self.git.blame_at(rev, rel)
+    }
+
+    fn file_history(&self, rel: &str, limit: usize) -> Result<Vec<FileVersion>, VcsError> {
+        self.ensure_base()?;
+        let versions = self.git.file_history(rel, limit)?;
+        let (paths, entries): (Vec<String>, Vec<LogEntry>) = versions
+            .into_iter()
+            .map(|version| (version.path, version.entry))
+            .unzip();
+        Ok(self
+            .decorated(entries)
+            .into_iter()
+            .zip(paths)
+            .map(|(entry, path)| FileVersion { entry, path })
+            .collect())
     }
 
     fn read_at(&self, rev: &str, path: &str) -> Result<Option<String>, VcsError> {

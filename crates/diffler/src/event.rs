@@ -29,6 +29,10 @@ pub enum AppEvent {
         /// The request this answers; a stale one is dropped on arrival.
         token: u64,
     },
+    FileHistory {
+        request: crate::app::file::HistoryRequest,
+        result: Box<Result<Vec<diffler_core::vcs::FileVersion>, String>>,
+    },
     /// A path is absent when the repo's attributes say nothing about it.
     DeclaredKinds {
         kinds: std::collections::HashMap<String, diffler_core::classify::Kind>,

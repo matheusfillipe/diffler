@@ -1,13 +1,17 @@
 //! The whole-file view and its blame column, plus the fuzzy picker that
 //! reaches any tracked file, including files the review does not touch.
 
-use diffler_core::highlight::StyledRange;
-use diffler_core::vcs::BlameSpan;
+use diffler_core::highlight::{Highlighter, StyledRange};
+use diffler_core::review::Review;
+use diffler_core::vcs::{BlameSpan, FileVersion};
 
 use super::fuzzy::{FuzzyKey, FuzzyList, name_haystack, selected};
 use super::rowsel::{RowSelect, RowText};
 use super::{App, Flow, Modal, Screen};
 use crate::keymap::Action;
+
+/// How many past versions one history read lists.
+pub const HISTORY_LIMIT: usize = 500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileAction {
@@ -19,14 +23,52 @@ pub enum FileAction {
 /// A file the view is waiting on, dispatched to the blocking pool.
 #[derive(Debug, Clone)]
 pub struct FileOpen {
+    /// The path as the version read has it.
     pub path: String,
     /// Rows the reference covers, 1-based and inclusive.
     pub span: Option<(u32, u32)>,
     pub blame: bool,
     /// Whether this load recolours the open view, keeping the reader's place.
     pub reload: bool,
+    /// The past version to read; `None` reads the working tree.
+    pub at: Option<VersionAt>,
+    /// A history read elsewhere, for the view to step through.
+    pub history: Option<FileHistory>,
     /// We drop a result whose token no longer matches the app's, so it never
     /// reopens a screen the user left.
+    pub token: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionAt {
+    pub oid: String,
+    /// Index into [`FileHistory::versions`].
+    pub index: usize,
+}
+
+/// The commits that changed a file, newest first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileHistory {
+    /// The working-tree path the history was read for.
+    pub path: String,
+    pub versions: Vec<FileVersion>,
+}
+
+/// What a history read does once it lands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistoryNext {
+    Step {
+        older: bool,
+    },
+    List,
+    /// Update an open list in place; nothing opens.
+    Refresh,
+}
+
+#[derive(Debug, Clone)]
+pub struct HistoryRequest {
+    pub path: String,
+    pub then: HistoryNext,
     pub token: u64,
 }
 
@@ -48,6 +90,18 @@ pub struct FileView {
     pub show_blame: bool,
     /// Body height of the last draw, so paging steps a real screenful.
     pub viewport: u16,
+    pub history: Option<FileHistory>,
+    /// The past version on screen, an index into the history; `None` is the
+    /// working tree.
+    pub version: Option<usize>,
+    /// The step a load in flight brings, so a quick second step counts from
+    /// there.
+    requested: Option<Requested>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Requested {
+    version: Option<usize>,
 }
 
 impl FileView {
@@ -72,7 +126,22 @@ impl FileView {
             visual_anchor: None,
             show_blame,
             viewport: 0,
+            history: None,
+            version: None,
+            requested: None,
         }
+    }
+
+    /// The path the working tree has, whichever version is on screen.
+    pub fn worktree_path(&self) -> &str {
+        self.history
+            .as_ref()
+            .map_or(self.path.as_str(), |history| history.path.as_str())
+    }
+
+    /// The past version on screen, `None` on the working tree.
+    pub fn shown_version(&self) -> Option<&FileVersion> {
+        self.history.as_ref()?.versions.get(self.version?)
     }
 
     /// The blame span owning a 0-based line.
@@ -145,6 +214,54 @@ impl RowText for FileView {
     }
 }
 
+/// Read, blame and highlight what `request` names, for a worker.
+pub fn load_file(
+    root: &std::path::Path,
+    highlighter: &Highlighter,
+    request: FileOpen,
+) -> Result<FileView, String> {
+    let snapshot = match &request.at {
+        Some(at) => Review::compute_file_at(root, &at.oid, &request.path),
+        None => Review::compute_file(root, &request.path),
+    }
+    .map_err(|err| format!("{}: {err}", request.path))?;
+    let highlights = highlighter.highlight(&snapshot.path, &snapshot.content);
+    let mut view = FileView::new(
+        snapshot.path,
+        &snapshot.content,
+        highlights,
+        snapshot.blame,
+        request.blame,
+    );
+    view.version = request.at.map(|at| at.index);
+    view.history = request.history;
+    Ok(view)
+}
+
+/// The version one step away from `current` among `count`, `None` being the
+/// working tree, which sits newer than every committed version.
+fn next_version(
+    current: Option<usize>,
+    count: usize,
+    older: bool,
+) -> Result<Option<usize>, StepEnd> {
+    match (current, older) {
+        (None, true) if count == 0 => Err(StepEnd::Uncommitted),
+        (None, true) => Ok(Some(0)),
+        (Some(index), true) if index + 1 >= count => Err(StepEnd::Oldest),
+        (Some(index), true) => Ok(Some(index + 1)),
+        (None, false) => Err(StepEnd::Newest),
+        (Some(index), false) => Ok(index.checked_sub(1)),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StepEnd {
+    Uncommitted,
+    Oldest,
+    Newest,
+}
+
 /// Map each line onto the span that owns it. A line no span covers stays
 /// `None` and renders plain.
 fn index_spans(spans: &[BlameSpan], line_count: usize) -> Vec<Option<usize>> {
@@ -169,35 +286,207 @@ impl App {
             span,
             blame,
             reload: false,
+            at: None,
+            history: None,
             token: self.file_token,
         });
         self.info(format!("opening {path}"));
     }
 
-    /// Load the open file again under the current highlighter.
-    pub(crate) fn reload_file(&mut self) {
-        let Some(view) = self.file.as_ref() else {
+    /// Open the file view on one version of `history`, ready to step from.
+    pub(crate) fn open_file_version(&mut self, history: FileHistory, index: usize) {
+        let Some((path, oid)) = history
+            .versions
+            .get(index)
+            .map(|version| (version.path.clone(), version.entry.oid.clone()))
+        else {
             return;
         };
         self.file_token += 1;
+        self.info(format!("opening {path}"));
         self.pending_file = Some(FileOpen {
-            path: view.path.clone(),
+            path,
             span: None,
-            blame: view.show_blame,
-            reload: true,
+            blame: true,
+            reload: false,
+            at: Some(VersionAt { oid, index }),
+            history: Some(history),
             token: self.file_token,
         });
     }
 
-    /// Abandon whatever file load is in flight.
+    /// Load the open file again under the current highlighter, at the
+    /// version on screen.
+    pub(crate) fn reload_file(&mut self) {
+        let Some(view) = self.file.as_mut() else {
+            return;
+        };
+        view.requested = None;
+        let version = view.version;
+        self.queue_version(version);
+    }
+
+    /// Read the open file's `version` in its place, keeping the reader's line.
+    fn queue_version(&mut self, version: Option<usize>) {
+        let Some(view) = self.file.as_ref() else {
+            return;
+        };
+        let at = version.and_then(|index| {
+            let shown = view.history.as_ref()?.versions.get(index)?;
+            Some((shown.path.clone(), shown.entry.oid.clone(), index))
+        });
+        let (path, at) = match at {
+            Some((path, oid, index)) => (path, Some(VersionAt { oid, index })),
+            None => (view.worktree_path().to_owned(), None),
+        };
+        self.file_token += 1;
+        self.pending_file = Some(FileOpen {
+            path,
+            span: None,
+            blame: view.show_blame,
+            reload: true,
+            at,
+            history: None,
+            token: self.file_token,
+        });
+    }
+
+    /// A repo change can add commits, so we drop the history a working-tree
+    /// view holds and the next step reads it again. A past version keeps its
+    /// history, so stepping from it stays where it was.
+    pub(crate) fn forget_worktree_history(&mut self) {
+        if let Some(view) = self
+            .file
+            .as_mut()
+            .filter(|view| view.version.is_none() && view.requested.is_none())
+        {
+            view.history = None;
+        }
+    }
+
+    /// Abandon whatever file or history load is in flight.
     pub(crate) fn cancel_file_load(&mut self) {
         self.file_token += 1;
         self.pending_file = None;
+        self.history_token += 1;
+        self.pending_history = None;
     }
 
-    /// Blame whatever file the current screen has focused, at its line.
-    pub(crate) fn blame_focused(&mut self) {
-        let target = match self.screen() {
+    fn queue_history(&mut self, path: &str, then: HistoryNext) {
+        self.history_token += 1;
+        self.pending_history = Some(HistoryRequest {
+            path: path.to_owned(),
+            then,
+            token: self.history_token,
+        });
+        self.info(format!("reading the history of {path}"));
+    }
+
+    fn step_version(&mut self, older: bool) {
+        let Some(view) = self.file.as_ref() else {
+            return;
+        };
+        let Some(history) = view.history.as_ref() else {
+            let path = view.worktree_path().to_owned();
+            self.queue_history(&path, HistoryNext::Step { older });
+            return;
+        };
+        let current = view.requested.map_or(view.version, |step| step.version);
+        match next_version(current, history.versions.len(), older) {
+            Ok(next) => {
+                self.queue_version(next);
+                if let Some(view) = self.file.as_mut() {
+                    view.requested = Some(Requested { version: next });
+                }
+            }
+            Err(end) => {
+                let chord = |action| self.active_keymap().chord_for(action).unwrap_or_default();
+                let text = match end {
+                    StepEnd::Uncommitted => "commit this file to give it versions".to_owned(),
+                    StepEnd::Oldest => format!(
+                        "this is the oldest version; {} to see a newer one",
+                        chord(Action::NewerVersion)
+                    ),
+                    StepEnd::Newest => format!(
+                        "this is the working-tree file; {} to see an older version",
+                        chord(Action::OlderVersion)
+                    ),
+                };
+                self.info(text);
+            }
+        }
+    }
+
+    /// List the history of whatever file the current screen has focused.
+    pub(crate) fn file_history_focused(&mut self) {
+        let path = match self.screen() {
+            Screen::File => self
+                .file
+                .as_ref()
+                .map(|view| view.worktree_path().to_owned()),
+            Screen::Log => self
+                .log
+                .as_ref()
+                .and_then(|log| log.file.as_ref())
+                .map(|history| history.path.clone()),
+            _ => self.focused_file_line().map(|(path, _)| path),
+        };
+        match path {
+            Some(path) => self.queue_history(&path, HistoryNext::List),
+            None => self.info("no file under the cursor"),
+        }
+    }
+
+    pub(crate) fn on_file_history(
+        &mut self,
+        request: &HistoryRequest,
+        result: Result<Vec<FileVersion>, String>,
+    ) -> Flow {
+        let refresh = request.then == HistoryNext::Refresh;
+        // we match a refresh to the open list by its path, since it carries no token
+        if !refresh && request.token != self.history_token {
+            return Flow::Idle;
+        }
+        let versions = match result {
+            Ok(versions) => versions,
+            Err(_) if refresh => return Flow::Continue,
+            Err(err) => {
+                self.error(err);
+                return Flow::Continue;
+            }
+        };
+        let history = FileHistory {
+            path: request.path.clone(),
+            versions,
+        };
+        if !refresh {
+            self.message = None;
+        }
+        match request.then {
+            HistoryNext::Refresh => {
+                self.refresh_file_history(history);
+            }
+            HistoryNext::Step { older } => {
+                if let Some(view) = self
+                    .file
+                    .as_mut()
+                    .filter(|view| view.worktree_path() == history.path)
+                {
+                    view.history = Some(history);
+                    self.step_version(older);
+                }
+            }
+            HistoryNext::List if history.versions.is_empty() => {
+                self.info(format!("commit {} to give it a history", history.path));
+            }
+            HistoryNext::List => self.show_file_history(history),
+        }
+        Flow::Continue
+    }
+
+    /// The file and line the current screen has under its cursor.
+    fn focused_file_line(&self) -> Option<(String, Option<u32>)> {
+        match self.screen() {
             Screen::Diff => self.diff_cursor_file_line(),
             Screen::Status => self.status_cursor_file_line(),
             Screen::File => self
@@ -210,8 +499,20 @@ impl App {
             | Screen::Prs
             | Screen::CiLog
             | Screen::Stats => None,
-        };
-        let Some((path, line)) = target else {
+        }
+    }
+
+    /// Blame whatever file the current screen has focused, at its line. In a
+    /// file's history that is the version under the cursor.
+    pub(crate) fn blame_focused(&mut self) {
+        if let Some((history, index)) = self.log.as_ref().and_then(|log| {
+            let history = log.file.as_ref().filter(|_| self.screen() == Screen::Log)?;
+            Some((history.clone(), log.cursor))
+        }) {
+            self.open_file_version(history, index);
+            return;
+        }
+        let Some((path, line)) = self.focused_file_line() else {
             self.info("no file under the cursor");
             return;
         };
@@ -231,7 +532,12 @@ impl App {
         match result {
             Ok(view) if reload => self.install_reloaded_file(view),
             Ok(view) => self.install_file(view, span),
-            Err(err) => self.error(err),
+            Err(err) => {
+                if let Some(view) = self.file.as_mut() {
+                    view.requested = None;
+                }
+                self.error(err);
+            }
         }
         Flow::Continue
     }
@@ -244,21 +550,24 @@ impl App {
             view.cursor = start;
             view.referenced = Some((start, (end.saturating_sub(1) as usize).min(last).max(start)));
         }
+        self.raise_screen(Screen::File);
         self.file = Some(view);
         self.message = None;
-        if self.screen() != Screen::File {
-            self.push_screen(Screen::File);
-        }
     }
 
+    /// We match the old view by token, so a renamed past version still keeps
+    /// the reader's line.
     fn install_reloaded_file(&mut self, mut view: FileView) {
-        if let Some(old) = self.file.take().filter(|old| old.path == view.path) {
+        if let Some(old) = self.file.take() {
             let last = view.lines.len().saturating_sub(1);
             view.cursor = old.cursor.min(last);
             view.scroll = old.scroll.min(last);
-            view.referenced = old.referenced;
+            view.referenced = old.referenced.filter(|_| old.version == view.version);
             view.visual_anchor = old.visual_anchor.map(|anchor| anchor.min(last));
             view.viewport = old.viewport;
+            if view.history.is_none() {
+                view.history = old.history;
+            }
         }
         self.file = Some(view);
     }
@@ -294,6 +603,11 @@ impl App {
             Action::CopyUrl => self.copy_file_link(),
             Action::OpenUrl => self.open_file_link(),
             Action::Open => self.open_cursor_commit(),
+            Action::OlderVersion => self.step_version(true),
+            Action::NewerVersion => self.step_version(false),
+            Action::OpenEditor if view.version.is_some() => {
+                self.info("step back to the working-tree file to edit it");
+            }
             Action::OpenEditor => {
                 let (path, line) = (view.path.clone(), view.cursor as u32 + 1);
                 self.request_editor(&path, Some(line));
@@ -359,6 +673,9 @@ impl App {
                 .unwrap_or_else(|| "main".to_owned());
             (remote, rev)
         };
+        let rev = view
+            .shown_version()
+            .map_or(rev, |version| version.entry.oid.clone());
         let url = vcs
             .remote_url(&remote)
             .ok()
@@ -758,6 +1075,300 @@ mod tests {
             vec!["second"],
             "the earlier load cannot overwrite the later one"
         );
+    }
+
+    #[test]
+    fn a_step_clamps_at_the_oldest_version_and_returns_to_the_working_tree() {
+        assert_eq!(next_version(None, 3, true), Ok(Some(0)));
+        assert_eq!(next_version(Some(0), 3, true), Ok(Some(1)));
+        assert_eq!(next_version(Some(2), 3, true), Err(StepEnd::Oldest));
+        assert_eq!(next_version(Some(2), 3, false), Ok(Some(1)));
+        assert_eq!(
+            next_version(Some(0), 3, false),
+            Ok(None),
+            "back to the worktree"
+        );
+        assert_eq!(next_version(None, 3, false), Err(StepEnd::Newest));
+        assert_eq!(next_version(None, 0, true), Err(StepEnd::Uncommitted));
+    }
+
+    /// Three commits of `a.txt` and a fourth line still in the worktree.
+    fn history_fixture() -> Fixture {
+        let fixture = Fixture::new();
+        fixture.write("a.txt", "one\n");
+        fixture.commit_all("first");
+        fixture.write("a.txt", "one\ntwo\n");
+        fixture.commit_all("second");
+        fixture.write("a.txt", "one\ntwo\nthree\n");
+        fixture.commit_all("third");
+        fixture.write("a.txt", "one\ntwo\nthree\nfour\n");
+        fixture
+    }
+
+    /// Answer queued history and file reads the way the workers do.
+    fn settle(app: &mut App, fixture: &Fixture) {
+        for _ in 0..8 {
+            if let Some(request) = app.pending_history.take() {
+                let result =
+                    Review::compute_file_history(&fixture.root, &request.path, HISTORY_LIMIT)
+                        .map_err(|err| err.to_string());
+                app.on_file_history(&request, result);
+            } else if let Some(request) = app.pending_file.take() {
+                let (span, reload, token) = (request.span, request.reload, request.token);
+                let highlighter = std::sync::Arc::clone(&app.highlighter);
+                let result = load_file(&fixture.root, &highlighter, request);
+                app.on_file_loaded(result, span, reload, token);
+            } else {
+                return;
+            }
+        }
+    }
+
+    fn shown(app: &App) -> (Option<usize>, usize, usize) {
+        let view = app.file.as_ref().expect("a file view");
+        (view.version, view.lines.len(), view.cursor)
+    }
+
+    fn message(app: &App) -> String {
+        app.message
+            .as_ref()
+            .map(|m| m.text.clone())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn braces_step_through_versions_keeping_the_line_number() {
+        let fixture = history_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_file("a.txt", None, false);
+        settle(&mut app, &fixture);
+        app.handle(key('G'));
+        assert_eq!(shown(&app), (None, 4, 3));
+
+        app.handle(key('{'));
+        settle(&mut app, &fixture);
+        assert_eq!(shown(&app), (Some(0), 3, 2), "third, the line clamped");
+        app.handle(key('{'));
+        app.handle(key('{'));
+        settle(&mut app, &fixture);
+        assert_eq!(shown(&app), (Some(2), 1, 0), "the add commit");
+
+        app.handle(key('{'));
+        assert!(app.pending_file.is_none());
+        assert_eq!(
+            message(&app),
+            "this is the oldest version; } to see a newer one"
+        );
+
+        for _ in 0..3 {
+            app.handle(key('}'));
+            settle(&mut app, &fixture);
+        }
+        assert_eq!(shown(&app), (None, 4, 0), "back on the working tree");
+        app.handle(key('}'));
+        assert!(app.pending_file.is_none());
+        assert!(message(&app).contains("working-tree"));
+    }
+
+    #[test]
+    fn a_failed_step_counts_the_next_one_from_the_version_on_screen() {
+        let fixture = history_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_file("a.txt", None, false);
+        settle(&mut app, &fixture);
+        app.handle(key('{'));
+        settle(&mut app, &fixture);
+        app.handle(key('{'));
+        let failed = app.pending_file.take().expect("a queued step");
+        app.on_file_loaded(Err("binary".to_owned()), None, true, failed.token);
+
+        app.handle(key('{'));
+        let retry = app.pending_file.as_ref().expect("a queued step");
+        assert_eq!(retry.at.as_ref().map(|at| at.index), Some(1));
+    }
+
+    #[test]
+    fn a_past_version_declines_the_editor_and_reloads_in_place() {
+        let fixture = history_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_file("a.txt", None, false);
+        settle(&mut app, &fixture);
+        app.handle(key('{'));
+        settle(&mut app, &fixture);
+        app.handle(key('{'));
+        settle(&mut app, &fixture);
+        app.handle(key('e'));
+        assert!(app.pending_editor.is_none());
+        assert!(message(&app).contains("working-tree"));
+
+        app.reload_file();
+        settle(&mut app, &fixture);
+        assert_eq!(shown(&app), (Some(1), 2, 0), "the reload keeps the version");
+    }
+
+    #[test]
+    fn shift_h_lists_the_history_and_b_opens_a_version_from_it() {
+        let fixture = history_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_file("a.txt", None, false);
+        settle(&mut app, &fixture);
+        app.handle(key('H'));
+        settle(&mut app, &fixture);
+        assert_eq!(app.screen(), Screen::Log);
+        let log = app.log.as_ref().expect("a log");
+        let subjects: Vec<&str> = log.entries.iter().map(|e| e.subject.as_str()).collect();
+        assert_eq!(subjects, vec!["third", "second", "first"]);
+        assert_eq!(log.file.as_ref().map(|f| f.path.as_str()), Some("a.txt"));
+
+        app.handle(key('j'));
+        app.handle(key('B'));
+        settle(&mut app, &fixture);
+        assert_eq!(app.screen(), Screen::File);
+        assert_eq!(
+            app.screens.len(),
+            2,
+            "the file screen below takes the version"
+        );
+        assert_eq!(shown(&app), (Some(1), 2, 0));
+        assert!(app.file.as_ref().is_some_and(|v| v.show_blame));
+
+        app.handle(key('{'));
+        settle(&mut app, &fixture);
+        assert_eq!(
+            shown(&app).0,
+            Some(2),
+            "the version steps from the list's history"
+        );
+
+        app.handle(key('H'));
+        settle(&mut app, &fixture);
+        assert_eq!(app.screen(), Screen::Log);
+        app.handle(key('q'));
+        assert_eq!(app.screen(), Screen::File);
+        assert_eq!(shown(&app).0, Some(2), "the version stays under the list");
+    }
+
+    #[test]
+    fn a_review_above_a_file_view_survives_opening_a_file_or_a_history() {
+        let fixture = history_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_file("a.txt", None, false);
+        settle(&mut app, &fixture);
+        app.open_working_tree_diff(None);
+        let draft = crate::app::composer::Composer::new(
+            crate::app::composer::ComposerKind::Reply {
+                comment_id: "c1".to_owned(),
+            },
+            "half a thought".to_owned(),
+        );
+        app.diff.as_mut().expect("a diff").parked_drafts.push(draft);
+
+        app.open_file("a.txt", None, false);
+        settle(&mut app, &fixture);
+        app.queue_history("a.txt", HistoryNext::List);
+        settle(&mut app, &fixture);
+        assert_eq!(
+            app.screens,
+            vec![
+                Screen::Status,
+                Screen::File,
+                Screen::Diff,
+                Screen::File,
+                Screen::Log
+            ]
+        );
+
+        app.handle(key('q'));
+        app.handle(key('q'));
+        assert_eq!(app.screen(), Screen::Diff);
+        let parked = app.diff.as_ref().map(|diff| diff.parked_drafts.len());
+        assert_eq!(parked, Some(1), "the draft is still parked");
+        app.handle(key('q'));
+        assert_eq!(app.screen(), Screen::File);
+        assert!(app.file.is_some(), "the file screen below still has a view");
+    }
+
+    #[test]
+    fn a_new_commit_reaches_the_working_tree_view_but_not_a_past_version() {
+        let fixture = history_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_file("a.txt", None, false);
+        settle(&mut app, &fixture);
+        app.handle(key('{'));
+        settle(&mut app, &fixture);
+        fixture.commit_all("fourth");
+        app.queue_refresh();
+        app.settle_refresh();
+        settle(&mut app, &fixture);
+        let versions = |app: &App| {
+            app.file
+                .as_ref()
+                .and_then(|view| view.history.as_ref())
+                .map(|history| history.versions.len())
+        };
+        assert_eq!(versions(&app), Some(3), "a past version keeps its history");
+
+        app.handle(key('}'));
+        settle(&mut app, &fixture);
+        assert_eq!(shown(&app).0, None);
+        app.queue_refresh();
+        app.settle_refresh();
+        settle(&mut app, &fixture);
+        assert_eq!(versions(&app), None);
+        app.handle(key('{'));
+        settle(&mut app, &fixture);
+        assert_eq!(
+            versions(&app),
+            Some(4),
+            "the next step reads the new commit"
+        );
+        assert_eq!(shown(&app), (Some(0), 4, 0));
+    }
+
+    #[test]
+    fn enter_in_a_file_history_opens_the_commit_on_that_file() {
+        let fixture = history_fixture();
+        fixture.write("b.txt", "other\n");
+        fixture.commit_all("touch both");
+        fixture.write("a.txt", "changed\n");
+        fixture.commit_all("edit a");
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_file("b.txt", None, false);
+        settle(&mut app, &fixture);
+        app.handle(key('H'));
+        settle(&mut app, &fixture);
+        app.handle(key('\n'));
+        assert_eq!(app.screen(), Screen::Diff);
+        let diff = app.diff.as_ref().expect("a diff");
+        assert_eq!(diff.selected_path(&app.review).as_deref(), Some("b.txt"));
+    }
+
+    #[test]
+    fn l_f_lists_the_history_of_the_file_under_the_status_cursor() {
+        let (_fixture, mut app) = app();
+        assert!(app.status_cursor_file_line().is_none());
+        app.handle(key('l'));
+        app.handle(key('f'));
+        assert!(app.pending_history.is_none());
+        assert_eq!(message(&app), "no file under the cursor");
+
+        seek(&mut app, |app| app.status_cursor_file_line().is_some());
+        let expected = app.status_cursor_file_line().expect("a file row").0;
+        app.handle(key('l'));
+        app.handle(key('f'));
+        let request = app.pending_history.as_ref().expect("a history read");
+        assert_eq!(request.path, expected);
+        assert_eq!(request.then, HistoryNext::List);
+    }
+
+    #[test]
+    fn a_file_with_no_commits_lists_nothing() {
+        let (_fixture, mut app) = app();
+        app.queue_history("todo.md", HistoryNext::List);
+        let request = app.pending_history.take().expect("a history read");
+        app.on_file_history(&request, Ok(Vec::new()));
+        assert_eq!(app.screen(), Screen::Status);
+        assert_eq!(message(&app), "commit todo.md to give it a history");
     }
 
     #[test]

@@ -310,23 +310,33 @@ fn dispatch_file(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     let root = app.review.repo_root.clone();
     let highlighter = std::sync::Arc::clone(&app.highlighter);
     tokio::task::spawn_blocking(move || {
-        let result = diffler_core::review::Review::compute_file(&root, &request.path)
-            .map_err(|err| format!("{}: {err}", request.path))
-            .map(|snapshot| {
-                let highlights = highlighter.highlight(&snapshot.path, &snapshot.content);
-                app::file::FileView::new(
-                    snapshot.path,
-                    &snapshot.content,
-                    highlights,
-                    snapshot.blame,
-                    request.blame,
-                )
-            });
+        let (span, reload, token) = (request.span, request.reload, request.token);
+        let result = app::file::load_file(&root, &highlighter, request);
         let _ = tx.send(AppEvent::FileLoaded {
             result: Box::new(result),
-            span: request.span,
-            reload: request.reload,
-            token: request.token,
+            span,
+            reload,
+            token,
+        });
+    });
+}
+
+fn dispatch_history(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
+    let Some(request) = app.pending_history.take() else {
+        return;
+    };
+    let tx = tx.clone();
+    let root = app.review.repo_root.clone();
+    tokio::task::spawn_blocking(move || {
+        let result = diffler_core::review::Review::compute_file_history(
+            &root,
+            &request.path,
+            app::file::HISTORY_LIMIT,
+        )
+        .map_err(|err| format!("{}: {err}", request.path));
+        let _ = tx.send(AppEvent::FileHistory {
+            request,
+            result: Box::new(result),
         });
     });
 }
@@ -450,6 +460,7 @@ fn dispatch_workers(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
     dispatch_avatars(app, tx);
     dispatch_walkthrough(app, tx);
     dispatch_file(app, tx);
+    dispatch_history(app, tx);
     dispatch_declared(app, tx);
     dispatch_stats(app, tx);
     dispatch_pr_posts(app, tx);

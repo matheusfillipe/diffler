@@ -118,6 +118,9 @@ pub enum Action {
     SymbolLensBack,
     Blame,
     ToggleBlame,
+    OlderVersion,
+    NewerVersion,
+    FileHistory,
     SendFeedback,
     Help,
     Palette,
@@ -249,6 +252,9 @@ impl Action {
             Self::SymbolLensBack => "symbol_lens_back",
             Self::Blame => "blame",
             Self::ToggleBlame => "toggle_blame",
+            Self::OlderVersion => "older_version",
+            Self::NewerVersion => "newer_version",
+            Self::FileHistory => "file_history",
             Self::SendFeedback => "send_feedback",
             Self::Help => "help",
             Self::Palette => "palette",
@@ -382,6 +388,9 @@ impl Action {
             }
             Self::Blame => "blame this file: see who last changed each line",
             Self::ToggleBlame => "show or hide the blame column",
+            Self::OlderVersion => "show this file's older version",
+            Self::NewerVersion => "show this file's newer version",
+            Self::FileHistory => "list this file's history",
             Self::SendFeedback => "send your comments to the waiting agent",
             Self::Help => "show the keys",
             Self::Palette => "search all commands",
@@ -404,7 +413,7 @@ impl Action {
         }
     }
 
-    pub(crate) const ALL: [Self; 124] = [
+    pub(crate) const ALL: [Self; 127] = [
         Self::CenterCursor,
         Self::CursorTop,
         Self::CursorBottom,
@@ -510,6 +519,9 @@ impl Action {
         Self::SymbolLensBack,
         Self::Blame,
         Self::ToggleBlame,
+        Self::OlderVersion,
+        Self::NewerVersion,
+        Self::FileHistory,
         Self::SendFeedback,
         Self::Help,
         Self::Palette,
@@ -713,6 +725,9 @@ const FILE_DEFAULTS: &[(&str, Action)] = &[
     // the brackets step the blame column's commit blocks here
     ("[", Action::PrevSection),
     ("]", Action::NextSection),
+    ("{", Action::OlderVersion),
+    ("}", Action::NewerVersion),
+    ("H", Action::FileHistory),
     ("<cr>", Action::Open),
     ("e", Action::OpenEditor),
     ("V", Action::VisualSelect),
@@ -744,6 +759,7 @@ const LOG_DEFAULTS: &[(&str, Action)] = &[
     ("<c-r>", Action::Refresh),
     ("]", Action::NextSection),
     ("[", Action::PrevSection),
+    ("B", Action::Blame),
     ("gf", Action::OpenFilePicker),
     ("/", Action::Search),
     ("n", Action::SearchNext),
