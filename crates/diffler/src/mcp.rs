@@ -1108,7 +1108,7 @@ impl DifflerMcp {
     }
 
     #[tool(
-        description = "Open a git repository as a project tab in the human's diffler, so they can review its changes beside the others. Call it for every repository you changed outside the one diffler started in. Comments and feedback then cover it too, and `project` targets a call at it."
+        description = "Open a git repository or worktree as a project tab in the human's diffler, so they can review its changes beside the others. Call it for every repository or worktree you changed outside the one diffler started in. Comments and feedback then cover it too, and `project` targets a call at it."
     )]
     async fn open_project(
         &self,

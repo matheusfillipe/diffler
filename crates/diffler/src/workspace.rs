@@ -290,7 +290,32 @@ impl Workspace {
         self.active_mut().handle(AppEvent::Key(key))
     }
 
+    /// A git op a background tab started finishes there, so we carry out its
+    /// open or drop without bringing it to front.
+    fn apply_background_tab_ops(&mut self) {
+        let active = self.active;
+        let ops: Vec<TabOp> = self
+            .tabs
+            .iter_mut()
+            .enumerate()
+            .filter(|(index, _)| *index != active)
+            .filter_map(|(_, tab)| tab.app.pending_tab.take())
+            .collect();
+        for op in ops {
+            match op {
+                TabOp::Open(path) => {
+                    if let Err(err) = self.open(&path) {
+                        self.active_mut().error(err);
+                    }
+                }
+                TabOp::Drop(path) => self.drop_tab(&path),
+                TabOp::Next | TabOp::Prev | TabOp::Go(_) | TabOp::Close | TabOp::Pick => {}
+            }
+        }
+    }
+
     fn apply_tab_op(&mut self) -> Flow {
+        self.apply_background_tab_ops();
         let Some(op) = self.active_mut().pending_tab.take() else {
             return Flow::Idle;
         };
@@ -306,11 +331,7 @@ impl Workspace {
             TabOp::Close if count == 1 => self
                 .active_mut()
                 .info("add another project before closing this one"),
-            TabOp::Close => {
-                let tab = self.tabs.remove(self.active);
-                tab.clear_endpoint(self.mcp_port);
-                self.active = self.active.min(self.tabs.len() - 1);
-            }
+            TabOp::Close => self.remove_tab(self.active),
             TabOp::Pick => {
                 let roots: Vec<PathBuf> = self.tabs.iter().map(|tab| tab.root.clone()).collect();
                 self.active_mut().open_project_picker(nearby_repos(&roots));
@@ -319,11 +340,37 @@ impl Workspace {
                 Ok(index) => self.active = index,
                 Err(err) => self.active_mut().error(err),
             },
+            TabOp::Drop(path) => self.drop_tab(&path),
         }
         if self.active != before {
             self.hand_over_focus(before);
         }
         Flow::Continue
+    }
+
+    /// The folder is already gone, so we compare the path as given: the tab
+    /// recorded its root while the folder still resolved.
+    fn drop_tab(&mut self, path: &Path) {
+        let Some(index) = self
+            .tabs
+            .iter()
+            .position(|tab| tab.root == path || tab.app.review.repo_root == path)
+        else {
+            return;
+        };
+        if index != self.active {
+            self.remove_tab(index);
+        }
+    }
+
+    /// The tab in front stays in front unless it is the one going.
+    fn remove_tab(&mut self, index: usize) {
+        let tab = self.tabs.remove(index);
+        tab.clear_endpoint(self.mcp_port);
+        if index < self.active {
+            self.active -= 1;
+        }
+        self.active = self.active.min(self.tabs.len().saturating_sub(1));
     }
 
     fn activate(&mut self, index: usize) {

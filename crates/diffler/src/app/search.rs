@@ -158,6 +158,7 @@ impl App {
             Screen::Pr => self.pr_page().map_or(0, |page| page.cursor),
             Screen::Graph => self.graph.as_ref().map_or(0, GraphView::selected_index),
             Screen::Stats => self.stats.as_ref().map_or(0, |view| view.cursor),
+            Screen::Worktrees => self.worktrees_cursor,
         }
     }
 
@@ -187,6 +188,13 @@ impl App {
             Screen::Pr => self
                 .pr_page()
                 .map_or_else(Vec::new, crate::app::pr_page::PrPage::search_rows),
+            Screen::Worktrees => self
+                .status
+                .worktrees
+                .iter()
+                .enumerate()
+                .map(|(i, w)| (i, w.label.clone()))
+                .collect(),
             Screen::CiLog => self.ci_log.as_ref().map_or_else(Vec::new, |view| {
                 view.rows()
                     .iter()
@@ -260,6 +268,7 @@ impl App {
             Screen::Status => self.status.cursor = row,
             Screen::Runs => self.runs_cursor = row,
             Screen::Prs => self.prs_cursor = row,
+            Screen::Worktrees => self.worktrees_cursor = row,
             Screen::Pr => {
                 if let Some(page) = self.pr_page_mut() {
                     page.cursor = row;

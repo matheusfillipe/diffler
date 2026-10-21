@@ -71,6 +71,11 @@
 # this.
 # host = "codeberg.org"
 
+[worktree]
+# Where a worktree diffler creates goes, relative to the main worktree.
+# {repo} is the main worktree's folder name, {branch} the branch with / as -.
+# path = "../{repo}-{branch}"
+
 [classify]
 # Globs that pin a path into one of the "kinds" sidebar buckets, consulted
 # before the built-in rules and before the repo's own linguist-* gitattributes.
@@ -135,6 +140,7 @@
 # fetch = "f"
 # stash = "z"
 # change = "C"             # jj only: verbs on @
+# worktree_menu = "w"      # git worktrees, or jj workspaces
 
 [keys.diff]
 # move_left = "h"
@@ -240,6 +246,7 @@
 # open = "<cr>"           # open the pull request's page
 # open_pr_diff = "D"      # open its diff straight away
 # branch_checkout = "b"
+# pr_worktree = "w"       # check it out in its own worktree and open that as a tab
 # copy_url = "y"          # the forge's web URL for the pull request
 # refresh = "<c-r>"
 
@@ -251,10 +258,19 @@
 # next_section = "]"      # step to the next card
 # prev_section = "["
 # branch_checkout = "b"
+# pr_worktree = "w"
 # copy_url = "y"
 # open_url = "gx"
 # open_runs = "o"
 # switch_theme = "T"
+# refresh = "<c-r>"
+
+[keys.worktrees]
+# open = "<cr>"           # open the worktree as a tab
+# worktree_create = "c"   # a new branch in a new worktree
+# worktree_checkout = "b" # an existing branch in a new worktree
+# worktree_remove = "x"   # a worktree with changes asks again before forcing
+# copy_url = "y"          # the worktree's path
 # refresh = "<c-r>"
 
 [keys.graph]
@@ -307,6 +323,13 @@
 [keys.stash]
 # push = "z"
 # pop = "p"
+
+[keys.worktree_menu]
+# open = "w"               # pick a worktree to open as a tab
+# create = "c"
+# checkout = "b"
+# remove = "D"
+# list = "l"
 
 [keys.change]
 # jj only

@@ -27,6 +27,17 @@ switching back finds a tab exactly where it was left.
   `open_project` opens a tab behind the one in front. The workspace keeps
   its own feedback epoch and bumps it whenever any tab's moves, so closing
   a tab never moves it back.
+- Worktrees: a git worktree or jj workspace is a folder, so it opens as a
+  tab like any project. `Vcs::worktrees` lists them from git's own record
+  (`.git/worktrees/`), so we see the ones an agent or a shell made wherever
+  their folders live. The status screen's Worktrees group, the `w` menu,
+  the picker and the worktree screen (`app/worktree.rs`) open, create and
+  remove them. We run the add and remove through `git worktree` or
+  `jj workspace` (`Vcs::worktree_argv`), so hooks and checkout filters run
+  as in a shell; a remove git refuses for local changes asks again with
+  `--force`, and a removed worktree closes its tab (`TabOp::Drop`). `w` on
+  a pull request fetches its head into a branch of the same name and adds
+  a worktree for it. `[worktree] path` places new ones.
 - Lifetime: we do not save open tabs between runs. We write the endpoint
   file and a registry entry into every open project, so a proxy started
   in any of them finds this diffler, and the proxy counts one url as one

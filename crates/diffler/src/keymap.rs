@@ -60,6 +60,12 @@ pub enum Action {
     BranchCreateCheckout,
     BranchCreate,
     BranchDelete,
+    OpenWorktrees,
+    WorktreeOpen,
+    WorktreeCreate,
+    WorktreeCheckout,
+    WorktreeRemove,
+    PrWorktree,
     LogView,
     LogAllBranches,
     Push,
@@ -196,6 +202,12 @@ impl Action {
             Self::BranchCreateCheckout => "branch_create_checkout",
             Self::BranchCreate => "branch_create",
             Self::BranchDelete => "branch_delete",
+            Self::OpenWorktrees => "open_worktrees",
+            Self::WorktreeOpen => "worktree_open",
+            Self::WorktreeCreate => "worktree_create",
+            Self::WorktreeCheckout => "worktree_checkout",
+            Self::WorktreeRemove => "worktree_remove",
+            Self::PrWorktree => "pr_worktree",
             Self::LogView => "log_view",
             Self::LogAllBranches => "log_all_branches",
             Self::Push => "push",
@@ -331,6 +343,12 @@ impl Action {
             Self::BranchCreateCheckout => "create a branch and switch to it",
             Self::BranchCreate => "create a branch",
             Self::BranchDelete => "delete a branch",
+            Self::OpenWorktrees => "see the worktree list",
+            Self::WorktreeOpen => "open a worktree in a tab",
+            Self::WorktreeCreate => "create a branch in a new worktree",
+            Self::WorktreeCheckout => "check out a branch in a new worktree",
+            Self::WorktreeRemove => "remove a worktree",
+            Self::PrWorktree => "check out the pull request in its own worktree",
             Self::LogView => "see the commit log",
             Self::LogAllBranches => "see every branch's log as a graph",
             Self::Push => "push to upstream",
@@ -416,7 +434,7 @@ impl Action {
         }
     }
 
-    pub(crate) const ALL: [Self; 128] = [
+    pub(crate) const ALL: [Self; 134] = [
         Self::CenterCursor,
         Self::CursorTop,
         Self::CursorBottom,
@@ -479,6 +497,12 @@ impl Action {
         Self::BranchCreateCheckout,
         Self::BranchCreate,
         Self::BranchDelete,
+        Self::OpenWorktrees,
+        Self::WorktreeOpen,
+        Self::WorktreeCreate,
+        Self::WorktreeCheckout,
+        Self::WorktreeRemove,
+        Self::PrWorktree,
         Self::LogView,
         Self::LogAllBranches,
         Self::Push,
@@ -567,6 +591,7 @@ pub enum Context {
     /// The file view, with or without its blame column.
     File,
     Stats,
+    Worktrees,
     /// Tab keys, resolved on every screen.
     Tabs,
 }
@@ -638,6 +663,7 @@ const STATUS_PREFIXES: &[(&str, TransientKind)] = &[
     ("f", TransientKind::Fetch),
     ("z", TransientKind::Stash),
     ("C", TransientKind::Change),
+    ("w", TransientKind::Worktree),
 ];
 
 const LOG_PREFIXES: &[(&str, TransientKind)] = &[("c", TransientKind::Change)];
@@ -809,6 +835,7 @@ const PRS_DEFAULTS: &[(&str, Action)] = &[
     ("<cr>", Action::Open),
     ("D", Action::OpenPrDiff),
     ("b", Action::BranchCheckout),
+    ("w", Action::PrWorktree),
     ("y", Action::CopyUrl),
     ("<c-r>", Action::Refresh),
     ("/", Action::Search),
@@ -839,10 +866,34 @@ const PR_DEFAULTS: &[(&str, Action)] = &[
     ("c", Action::Comment),
     ("r", Action::Reply),
     ("b", Action::BranchCheckout),
+    ("w", Action::PrWorktree),
     ("y", Action::CopyUrl),
     ("gx", Action::OpenUrl),
     ("o", Action::OpenRuns),
     ("T", Action::SwitchTheme),
+    ("<c-r>", Action::Refresh),
+    ("/", Action::Search),
+    ("n", Action::SearchNext),
+    ("N", Action::SearchPrev),
+    ("<c-k>", Action::Palette),
+    ("?", Action::Help),
+    ("q", Action::Back),
+];
+
+const WORKTREES_DEFAULTS: &[(&str, Action)] = &[
+    ("j", Action::MoveDown),
+    ("k", Action::MoveUp),
+    ("gg", Action::GoTop),
+    ("G", Action::GoBottom),
+    ("<c-d>", Action::HalfPageDown),
+    ("<c-u>", Action::HalfPageUp),
+    ("<c-f>", Action::FullPageDown),
+    ("<c-b>", Action::FullPageUp),
+    ("<cr>", Action::Open),
+    ("c", Action::WorktreeCreate),
+    ("b", Action::WorktreeCheckout),
+    ("x", Action::WorktreeRemove),
+    ("y", Action::CopyUrl),
     ("<c-r>", Action::Refresh),
     ("/", Action::Search),
     ("n", Action::SearchNext),
@@ -916,6 +967,12 @@ impl Keymap {
             Context::Pr => (PR_DEFAULTS, NO_PREFIXES, &keys.pr, "pr"),
             Context::File => (FILE_DEFAULTS, NO_PREFIXES, &keys.file, "file"),
             Context::Stats => (STATS_DEFAULTS, NO_PREFIXES, &keys.stats, "stats"),
+            Context::Worktrees => (
+                WORKTREES_DEFAULTS,
+                NO_PREFIXES,
+                &keys.worktrees,
+                "worktrees",
+            ),
             Context::Tabs => (TABS_DEFAULTS, NO_PREFIXES, &keys.tabs, "tabs"),
         };
         let mut keymap = Self {

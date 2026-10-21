@@ -8,7 +8,7 @@ use std::path::Path;
 use common::{JjFixture, JjRemote, JjStoreFixture};
 use diffler_core::jj::JjVcs;
 use diffler_core::model::FileStatus;
-use diffler_core::vcs::{ChangeOp, NetworkOp, PullOutcome, PullTarget, Vcs, VcsError};
+use diffler_core::vcs::{ChangeOp, NetworkOp, PullOutcome, PullTarget, Vcs, VcsError, WorktreeOp};
 
 const LOG_LIMIT: usize = 64;
 
@@ -1154,5 +1154,33 @@ fn a_repo_without_git_keeps_its_last_base_and_fails_a_fresh_read_when_jj_fails()
             },
         )
         .is_err()
+    );
+}
+
+#[test]
+fn worktrees_list_jj_workspaces_and_forget_one_by_name() {
+    let fx = JjFixture::new();
+    let elsewhere = tempfile::tempdir().expect("tempdir");
+    let second = elsewhere.path().join("second");
+    fx.jj(&[
+        "workspace",
+        "add",
+        "--name=second",
+        &second.display().to_string(),
+    ]);
+    let worktrees = vcs(&fx).worktrees().expect("worktrees");
+    let names: Vec<(&str, bool)> = worktrees
+        .iter()
+        .map(|w| (w.name.as_str(), w.current))
+        .collect();
+    assert_eq!(names, [("default", true), ("second", false)]);
+    assert_eq!(
+        vcs(&fx)
+            .worktree_argv(&WorktreeOp::Remove {
+                worktree: worktrees[1].clone(),
+                force: false,
+            })
+            .expect("forget"),
+        ["jj", "workspace", "forget", "second"]
     );
 }

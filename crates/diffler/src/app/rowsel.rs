@@ -69,7 +69,12 @@ impl App {
             Screen::CiLog => self.ci_log.as_mut().map(|view| view as &mut dyn RowSelect),
             Screen::File => self.file.as_mut().map(|view| view as &mut dyn RowSelect),
             Screen::Status => Some(&mut self.status),
-            Screen::Graph | Screen::Runs | Screen::Prs | Screen::Pr | Screen::Stats => None,
+            Screen::Graph
+            | Screen::Runs
+            | Screen::Prs
+            | Screen::Pr
+            | Screen::Stats
+            | Screen::Worktrees => None,
         }
     }
 
@@ -80,7 +85,12 @@ impl App {
             Screen::CiLog => self.ci_log.as_ref().is_some_and(|v| v.anchor().is_some()),
             Screen::File => self.file.as_ref().is_some_and(|v| v.anchor().is_some()),
             Screen::Status => self.status.anchor().is_some(),
-            Screen::Graph | Screen::Runs | Screen::Prs | Screen::Pr | Screen::Stats => false,
+            Screen::Graph
+            | Screen::Runs
+            | Screen::Prs
+            | Screen::Pr
+            | Screen::Stats
+            | Screen::Worktrees => false,
         }
     }
 
@@ -96,7 +106,8 @@ impl App {
             | Screen::Runs
             | Screen::Prs
             | Screen::Pr
-            | Screen::Stats => None,
+            | Screen::Stats
+            | Screen::Worktrees => None,
         }
     }
 

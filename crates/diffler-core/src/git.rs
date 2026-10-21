@@ -11,6 +11,7 @@ use crate::model::{
 };
 use crate::vcs::{
     BlameSpan, BranchInfo, FileVersion, HeadInfo, LogEntry, NetworkOp, StatusModel, Vcs, VcsError,
+    Worktree, WorktreeOp,
 };
 
 pub const DEFAULT_CONTEXT_LINES: u32 = 3;
@@ -991,6 +992,93 @@ impl Vcs for GitVcs {
         Ok(std::iter::once("git".to_owned()).chain(args).collect())
     }
 
+    fn worktrees(&self) -> Result<Vec<Worktree>, VcsError> {
+        let here = self
+            .repo
+            .workdir()
+            .and_then(|dir| fs::canonicalize(dir).ok());
+        let opened;
+        let main = if self.repo.is_worktree() {
+            opened = git2::Repository::open(self.repo.commondir())?;
+            &opened
+        } else {
+            &self.repo
+        };
+        let entry = |name: String, path: &Path, repo: Option<&git2::Repository>, main: bool| {
+            let (label, subject, time_unix) =
+                repo.map_or_else(|| (name.clone(), String::new(), 0), worktree_head);
+            let branch = repo
+                .and_then(|repo| repo.head().ok())
+                .filter(git2::Reference::is_branch)
+                .and_then(|head| head.shorthand().ok().map(str::to_owned));
+            Worktree {
+                name,
+                current: here.is_some() && fs::canonicalize(path).ok() == here,
+                path: path.to_path_buf(),
+                label,
+                branch,
+                subject,
+                time_unix,
+                main,
+                missing: repo.is_none(),
+            }
+        };
+        let mut found = Vec::new();
+        // a bare clone has no main worktree, only linked ones
+        if let Some(dir) = main.workdir() {
+            found.push(entry(String::new(), dir, Some(main), true));
+        }
+        let mut names: Vec<String> = main
+            .worktrees()?
+            .iter()
+            .flatten()
+            .flatten()
+            .map(str::to_owned)
+            .collect();
+        names.sort();
+        for name in names {
+            let linked = main.find_worktree(&name)?;
+            let repo = linked
+                .validate()
+                .ok()
+                .and_then(|()| git2::Repository::open_from_worktree(&linked).ok());
+            found.push(entry(name, linked.path(), repo.as_ref(), false));
+        }
+        Ok(found)
+    }
+
+    fn worktree_argv(&self, op: &WorktreeOp) -> Result<Vec<String>, VcsError> {
+        let mut argv: Vec<String> = vec!["git".into(), "worktree".into()];
+        match op {
+            WorktreeOp::Add {
+                path,
+                branch,
+                new_branch: true,
+            } => argv.extend([
+                "add".into(),
+                "-b".into(),
+                branch.clone(),
+                path.display().to_string(),
+            ]),
+            WorktreeOp::Add { path, branch, .. } => {
+                argv.extend(["add".into(), path.display().to_string(), branch.clone()]);
+            }
+            WorktreeOp::Remove { worktree, .. } if worktree.main => {
+                return Err(VcsError::Rejected(
+                    "the main worktree stays with the repository; remove a linked one".into(),
+                ));
+            }
+            WorktreeOp::Remove { worktree, force } => {
+                argv.push("remove".into());
+                if *force {
+                    argv.push("--force".into());
+                }
+                argv.push(worktree.path.display().to_string());
+            }
+        }
+        Ok(argv)
+    }
+
     fn workdir(&self) -> Result<PathBuf, VcsError> {
         Ok(self.workdir_path()?.to_path_buf())
     }
@@ -1270,6 +1358,32 @@ fn render_hunk_patch_from_model(
         reverse,
     );
     out
+}
+
+/// `(label, subject, time)` of a worktree's HEAD: the branch, or the commit a
+/// detached HEAD sits on.
+fn worktree_head(repo: &git2::Repository) -> (String, String, i64) {
+    let Ok(head) = repo.head() else {
+        return ("(no commits)".to_owned(), String::new(), 0);
+    };
+    let Ok(commit) = head.peel_to_commit() else {
+        return ("(no commits)".to_owned(), String::new(), 0);
+    };
+    let label = if head.is_branch() {
+        head.shorthand().unwrap_or_default().to_owned()
+    } else {
+        format!("detached {}", short7(&commit.id().to_string()))
+    };
+    (
+        label,
+        commit
+            .summary()
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+            .to_owned(),
+        commit.time().seconds(),
+    )
 }
 
 pub fn short7(oid: &str) -> String {

@@ -8,7 +8,7 @@ use std::path::Path;
 use diffler_core::model::FileDiff;
 use diffler_core::review::Review;
 use diffler_core::source::ReviewSource;
-use diffler_core::vcs::{BranchInfo, CommitLists, LogEntry, NetworkOp, Vcs, VcsError};
+use diffler_core::vcs::{BranchInfo, CommitLists, LogEntry, NetworkOp, Vcs, VcsError, Worktree};
 
 use super::enrich::EnrichOutcome;
 use super::rowsel::RowSelect;
@@ -29,6 +29,8 @@ pub(crate) const BRANCHES_TITLE: &str = "Branches";
 
 pub(crate) const PRS_TITLE: &str = "Open pull requests";
 
+pub(crate) const WORKTREES_TITLE: &str = "Worktrees";
+
 pub(crate) const WALKTHROUGHS_TITLE: &str = "Walkthroughs";
 
 /// When the remote refs sit off HEAD's history nothing prunes the unpushed
@@ -36,6 +38,8 @@ pub(crate) const WALKTHROUGHS_TITLE: &str = "Walkthroughs";
 pub(crate) const UNPUSHED_LIMIT: usize = 100;
 
 const BRANCHES_INLINE_LIMIT: usize = 10;
+
+const WORKTREES_INLINE_LIMIT: usize = 10;
 
 const PRS_INLINE_LIMIT: usize = 5;
 
@@ -87,10 +91,12 @@ pub enum Group {
     /// stays reachable.
     Ci,
     Walkthrough,
+    /// Shown only once the repository has a second worktree.
+    Worktrees,
 }
 
 impl Group {
-    pub(crate) const COUNT: usize = 6;
+    pub(crate) const COUNT: usize = 7;
 
     pub(crate) fn index(self) -> usize {
         match self {
@@ -100,14 +106,17 @@ impl Group {
             Self::Recent => 3,
             Self::Ci => 4,
             Self::Walkthrough => 5,
+            Self::Worktrees => 6,
         }
     }
 }
 
 fn default_group_folded() -> [bool; Group::COUNT] {
     let mut folded = [true; Group::COUNT];
-    if let Some(slot) = folded.get_mut(Group::Unpushed.index()) {
-        *slot = false;
+    for group in [Group::Unpushed, Group::Worktrees] {
+        if let Some(slot) = folded.get_mut(group.index()) {
+            *slot = false;
+        }
     }
     folded
 }
@@ -184,6 +193,13 @@ pub enum Row {
     Branch {
         index: usize,
     },
+    WorktreesHeader {
+        count: usize,
+    },
+    /// `index` into `StatusView::worktrees`.
+    Worktree {
+        index: usize,
+    },
     CiHeader {
         count: usize,
     },
@@ -222,6 +238,8 @@ pub(super) enum CursorAnchor {
     PrsRow(usize),
     Branches,
     BranchRow(String),
+    Worktrees,
+    WorktreeRow(std::path::PathBuf),
     Ci,
     CiRun(usize),
 }
@@ -290,6 +308,8 @@ pub struct StatusView {
     pub recent: Vec<LogEntry>,
     pub branches: Vec<BranchInfo>,
     pub walkthroughs: Vec<WalkthroughRow>,
+    /// Also what the worktree screen lists.
+    pub worktrees: Vec<Worktree>,
     /// Indexed by `Group::index`.
     pub group_folded: [bool; Group::COUNT],
     /// Keyed by oid so the set survives a refresh that reorders the list.
@@ -336,6 +356,7 @@ impl StatusView {
         recent: Vec<LogEntry>,
         branches: Vec<BranchInfo>,
         walkthroughs: Vec<WalkthroughRow>,
+        worktrees: Vec<Worktree>,
     ) -> Self {
         Self {
             cursor: 0,
@@ -345,6 +366,7 @@ impl StatusView {
             recent,
             branches,
             walkthroughs,
+            worktrees,
             group_folded: default_group_folded(),
             unfolded_commits: BTreeSet::new(),
             viewport: 0,
@@ -643,6 +665,15 @@ impl App {
                 rows.extend((0..shown).map(|index| Row::Branch { index }));
             }
         }
+        if self.status.worktrees.len() > 1 {
+            rows.push(Row::WorktreesHeader {
+                count: self.status.worktrees.len(),
+            });
+            if !self.is_group_folded(Group::Worktrees) {
+                let shown = self.status.worktrees.len().min(WORKTREES_INLINE_LIMIT);
+                rows.extend((0..shown).map(|index| Row::Worktree { index }));
+            }
+        }
         if has_forge {
             let others = self.other_prs();
             rows.push(Row::PrsHeader {
@@ -692,6 +723,8 @@ impl App {
             Row::Commit { index } => self.status.recent.get(*index)?.subject.clone(),
             Row::BranchesHeader { .. } => BRANCHES_TITLE.to_owned(),
             Row::Branch { index } => self.status.branches.get(*index)?.name.clone(),
+            Row::WorktreesHeader { .. } => WORKTREES_TITLE.to_owned(),
+            Row::Worktree { index } => self.status.worktrees.get(*index)?.label.clone(),
             Row::Pr => {
                 let pr = self.pr.as_ref()?;
                 format!("PR #{} {}", pr.number, pr.title)
@@ -882,6 +915,9 @@ impl App {
                 Action::Blame,
                 Action::CopyUrl,
             ],
+            Some(Row::Worktree { .. }) => {
+                vec![Action::Open, Action::WorktreeRemove, Action::CopyUrl]
+            }
             Some(row) if folds(&row) => vec![Action::ToggleFold],
             Some(_) => vec![Action::Open, Action::CopyUrl],
             None => Vec::new(),
@@ -899,6 +935,7 @@ impl App {
                 | Row::Unpushed { .. }
                 | Row::Commit { .. }
                 | Row::Branch { .. }
+                | Row::Worktree { .. }
                 | Row::OpenPr { .. }
                 | Row::CiRun { .. }
                 | Row::Walkthrough { .. },
@@ -911,6 +948,7 @@ impl App {
                 | Row::UnpushedHeader { .. }
                 | Row::PrsHeader { .. }
                 | Row::BranchesHeader { .. }
+                | Row::WorktreesHeader { .. }
                 | Row::RecentHeader { .. }
                 | Row::CiHeader { .. }
                 | Row::WalkthroughHeader { .. },
@@ -1103,6 +1141,10 @@ impl App {
                 .other_prs()
                 .get(index)
                 .map(|pr| (pr.url.clone(), format!("#{}", pr.number))),
+            Row::Worktree { index } => self.status.worktrees.get(index).map(|w| {
+                let path = w.path.display().to_string();
+                (Some(path.clone()), path)
+            }),
             Row::Commit { index } => self
                 .status
                 .recent
@@ -1147,7 +1189,7 @@ impl App {
         Some((path, line_no))
     }
 
-    fn cursor_row(&self) -> Option<Row> {
+    pub(super) fn cursor_row(&self) -> Option<Row> {
         self.visible_rows().get(self.status.cursor).cloned()
     }
 
@@ -1184,6 +1226,8 @@ impl App {
             | Row::OpenPr { .. }
             | Row::BranchesHeader { .. }
             | Row::Branch { .. }
+            | Row::WorktreesHeader { .. }
+            | Row::Worktree { .. }
             | Row::RecentHeader { .. }
             | Row::Commit { .. }
             | Row::CiHeader { .. }
@@ -1263,6 +1307,10 @@ impl App {
         let Some(row) = self.cursor_row() else {
             return;
         };
+        if let Row::Worktree { .. } = row {
+            self.remove_worktree_here();
+            return;
+        }
         let Some((_, file, _)) = self.row_file(&row) else {
             return;
         };
@@ -1414,6 +1462,12 @@ impl App {
                 self.checkout_branch(&name);
             }
             Row::BranchesHeader { .. } => self.open_branch_list(BranchAction::Checkout),
+            Row::Worktree { index } => {
+                if let Some(worktree) = self.status.worktrees.get(*index).cloned() {
+                    self.open_worktree(&worktree);
+                }
+            }
+            Row::WorktreesHeader { .. } => self.open_worktrees(),
             Row::CiRun { index, .. } => {
                 self.runs_cursor = *index;
                 self.open_selected_run();
@@ -1546,6 +1600,11 @@ impl App {
             Row::CiHeader { .. } => {
                 self.toggle_group(Group::Ci, |row| matches!(row, Row::CiHeader { .. }));
             }
+            Row::WorktreesHeader { .. } => {
+                self.toggle_group(Group::Worktrees, |row| {
+                    matches!(row, Row::WorktreesHeader { .. })
+                });
+            }
             Row::WalkthroughHeader { .. } => {
                 self.toggle_group(Group::Walkthrough, |row| {
                     matches!(row, Row::WalkthroughHeader { .. })
@@ -1571,6 +1630,7 @@ impl App {
             | Row::RepoDivider
             | Row::CiRun { .. }
             | Row::Branch { .. }
+            | Row::Worktree { .. }
             | Row::OpenPr { .. } => {}
         }
         self.clamp_cursor();
@@ -1624,6 +1684,10 @@ impl App {
             Row::BranchesHeader { .. } => CursorAnchor::Branches,
             Row::Branch { index } => {
                 CursorAnchor::BranchRow(self.status.branches.get(*index)?.name.clone())
+            }
+            Row::WorktreesHeader { .. } => CursorAnchor::Worktrees,
+            Row::Worktree { index } => {
+                CursorAnchor::WorktreeRow(self.status.worktrees.get(*index)?.path.clone())
             }
             Row::CiHeader { .. } => CursorAnchor::Ci,
             Row::CiRun { index, .. } => CursorAnchor::CiRun(*index),
@@ -1705,6 +1769,19 @@ impl App {
                         if self.status.branches.get(*index).is_some_and(|b| b.name == *name))
                 },
                 |r| matches!(r, Row::BranchesHeader { .. }),
+            ),
+            CursorAnchor::Worktrees => {
+                header_pos(&rows, |r| matches!(r, Row::WorktreesHeader { .. }))
+            }
+            // we anchor by path, since a worktree an agent adds re-sorts the list
+            // under the cursor
+            CursorAnchor::WorktreeRow(path) => indexed_or_header(
+                &rows,
+                |r| {
+                    matches!(r, Row::Worktree { index }
+                        if self.status.worktrees.get(*index).is_some_and(|w| w.path == *path))
+                },
+                |r| matches!(r, Row::WorktreesHeader { .. }),
             ),
             CursorAnchor::Ci => header_pos(&rows, |r| matches!(r, Row::CiHeader { .. })),
             CursorAnchor::CiRun(index) => indexed_or_header(
@@ -1843,6 +1920,7 @@ fn is_section_header(row: &Row) -> bool {
             | Row::UnpushedHeader { .. }
             | Row::PrsHeader { .. }
             | Row::BranchesHeader { .. }
+            | Row::WorktreesHeader { .. }
             | Row::RecentHeader { .. }
             | Row::CiHeader { .. }
             | Row::WalkthroughHeader { .. }

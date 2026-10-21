@@ -15,6 +15,7 @@ mod prs;
 mod runs;
 mod stats;
 pub mod status;
+mod worktrees;
 
 use diffler_core::language;
 use diffler_core::model::FileStatus;
@@ -198,6 +199,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         Screen::CiLog => ci_log::draw(frame, app),
         Screen::File => file::draw(frame, app),
         Screen::Stats => stats::draw(frame, app),
+        Screen::Worktrees => worktrees::draw(frame, app),
     }
     app.modal_hits = draw_modal(frame, app);
     if app.modal.is_none()
@@ -243,6 +245,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) -> Option<popup::ListHits> {
                 Screen::CiLog => "logs",
                 Screen::File => "file",
                 Screen::Stats => "stats",
+                Screen::Worktrees => "worktrees",
             };
             popup::Popup {
                 title: format!("Help: {screen} keys"),
@@ -260,6 +263,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) -> Option<popup::ListHits> {
             | Modal::Choice { .. }
             | Modal::FilePicker { .. }
             | Modal::AddProject { .. }
+            | Modal::WorktreeList { .. }
             | Modal::Menu { .. }
             | Modal::LanguageScope { .. }
             | Modal::RemoteList { .. },
@@ -376,6 +380,7 @@ fn fuzzy_modal(app: &App) -> Option<popup::FuzzyModal> {
             let title = match action {
                 BranchAction::Checkout => "Checkout branch",
                 BranchAction::Delete => "Delete branch",
+                BranchAction::Worktree => "Check out in a new worktree",
             };
             Some(popup::FuzzyModal {
                 title: title.to_owned(),
@@ -457,6 +462,11 @@ fn fuzzy_modal(app: &App) -> Option<popup::FuzzyModal> {
                 .clone_into(&mut modal.footer);
             Some(modal)
         }
+        Some(Modal::WorktreeList {
+            worktrees,
+            list,
+            remove,
+        }) => Some(worktrees::picker(worktrees, list, *remove)),
         _ => None,
     }
 }
@@ -938,6 +948,7 @@ fn mode_chip(app: &App) -> String {
         Screen::CiLog => " LOGS ".to_owned(),
         Screen::File => " FILE ".to_owned(),
         Screen::Stats => " STATS ".to_owned(),
+        Screen::Worktrees => " WORKTREES ".to_owned(),
     }
 }
 

@@ -84,6 +84,8 @@ pub struct Refreshed {
     pub pinned: Option<Result<DiffModel, VcsError>>,
     pub head: Result<HeadInfo, VcsError>,
     pub commits: Result<CommitLists, VcsError>,
+    /// Read here since a jj repo answers it with a `jj` run.
+    pub worktrees: Result<Vec<crate::vcs::Worktree>, VcsError>,
     /// Read here since it costs `jj` runs; the UI's own handle adopts it.
     pub jj: Result<Option<JjView>, VcsError>,
 }
@@ -207,6 +209,7 @@ impl Review {
             pinned,
             head: vcs.head(),
             commits: commit_lists(vcs.as_ref(), limits.recent, limits.unpushed),
+            worktrees: vcs.worktrees(),
             jj,
         })
     }

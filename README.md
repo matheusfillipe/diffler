@@ -22,6 +22,7 @@ diff and reply right there, while you watch it fix the code.
 - Review pull requests without checking them out
 - Let your agent answer your comments and walk you through its changes (optional)
 - Open several projects as tabs; your agent sees all of them through one connection
+- Open, create and remove git worktrees (jj workspaces), each as its own tab
 - Works in git and jj repos
 - Shows changed images in the terminal, before and after
 
@@ -234,6 +235,7 @@ full keymap of the screen you're on, and `<c-k>` fuzzy-finds any action.
 | `alt-n` | open another project as a tab |
 | `alt-h` / `alt-l` | previous / next project tab (`alt-1`-`alt-9` jumps to one) |
 | `alt-w` | close this project tab |
+| `w` | on the status screen, open, create or remove a worktree; on a pull request, check it out in its own worktree |
 | `B` | blame: see who last changed each line |
 | `{` / `}` | in the file view, step to the file's older / newer version (`H` lists them) |
 | `e` | open the file in your editor |

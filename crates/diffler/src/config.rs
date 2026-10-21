@@ -25,6 +25,7 @@ pub struct Config {
     pub mcp: McpConfig,
     pub editor: EditorConfig,
     pub ci: CiConfig,
+    pub worktree: WorktreeConfig,
     pub classify: ClassifyConfig,
     /// `glob = language` highlighting rules, checked before name and shebang.
     pub syntax: BTreeMap<String, String>,
@@ -197,6 +198,22 @@ pub struct EditorConfig {
     pub command: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WorktreeConfig {
+    /// Where a new worktree goes, relative to the main worktree. `{repo}` is
+    /// its folder name and `{branch}` the branch, with `/` as `-`.
+    pub path: String,
+}
+
+impl Default for WorktreeConfig {
+    fn default() -> Self {
+        Self {
+            path: "../{repo}-{branch}".to_owned(),
+        }
+    }
+}
+
 /// `provider = "auto"` detects the forge from the remote and config files.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -253,6 +270,7 @@ pub struct KeysConfig {
     pub pr: BTreeMap<String, String>,
     pub file: BTreeMap<String, String>,
     pub stats: BTreeMap<String, String>,
+    pub worktrees: BTreeMap<String, String>,
     pub tabs: BTreeMap<String, String>,
     pub commit: BTreeMap<String, String>,
     pub branch: BTreeMap<String, String>,
@@ -263,6 +281,7 @@ pub struct KeysConfig {
     pub fetch: BTreeMap<String, String>,
     pub stash: BTreeMap<String, String>,
     pub change: BTreeMap<String, String>,
+    pub worktree_menu: BTreeMap<String, String>,
 }
 
 impl KeysConfig {
@@ -277,6 +296,7 @@ impl KeysConfig {
             crate::transient::TransientKind::Fetch => &self.fetch,
             crate::transient::TransientKind::Stash => &self.stash,
             crate::transient::TransientKind::Change => &self.change,
+            crate::transient::TransientKind::Worktree => &self.worktree_menu,
         }
     }
 }
@@ -485,6 +505,7 @@ struct PartialConfig {
     mcp: PartialMcp,
     editor: PartialEditor,
     ci: PartialCi,
+    worktree: PartialWorktree,
     classify: ClassifyConfig,
     syntax: BTreeMap<String, String>,
     keys: KeysConfig,
@@ -524,6 +545,12 @@ struct PartialMcp {
 #[serde(default)]
 struct PartialEditor {
     command: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct PartialWorktree {
+    path: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -738,6 +765,13 @@ fn apply_layer(
         origins.insert("editor.command".to_owned(), origin.clone());
     }
     set(
+        layer.worktree.path,
+        &mut config.worktree.path,
+        "worktree.path",
+        origin,
+        origins,
+    );
+    set(
         layer.ci.provider,
         &mut config.ci.provider,
         "ci.provider",
@@ -811,6 +845,11 @@ fn apply_layer(
         (layer.keys.pr, &mut config.keys.pr, "pr"),
         (layer.keys.file, &mut config.keys.file, "file"),
         (layer.keys.stats, &mut config.keys.stats, "stats"),
+        (
+            layer.keys.worktrees,
+            &mut config.keys.worktrees,
+            "worktrees",
+        ),
         (layer.keys.tabs, &mut config.keys.tabs, "tabs"),
         (layer.keys.commit, &mut config.keys.commit, "commit"),
         (layer.keys.branch, &mut config.keys.branch, "branch"),
@@ -825,6 +864,11 @@ fn apply_layer(
         (layer.keys.fetch, &mut config.keys.fetch, "fetch"),
         (layer.keys.stash, &mut config.keys.stash, "stash"),
         (layer.keys.change, &mut config.keys.change, "change"),
+        (
+            layer.keys.worktree_menu,
+            &mut config.keys.worktree_menu,
+            "worktree_menu",
+        ),
     ];
     for (entries, target, section) in key_sections {
         for (action, chord) in entries {
@@ -855,7 +899,7 @@ fn apply_cli(cli: &CliOverrides, config: &mut Config, origins: &mut BTreeMap<Str
 }
 
 /// Always listed in the `--dump` origins block; `keys.*` entries follow from the user's config.
-const SCALAR_KEYS: [&str; 19] = [
+const SCALAR_KEYS: [&str; 20] = [
     "ui.theme",
     "ui.context_lines",
     "ui.recent_commits",
@@ -875,6 +919,7 @@ const SCALAR_KEYS: [&str; 19] = [
     "ci.poll_seconds",
     "ci.gitlab.host",
     "ci.forgejo.host",
+    "worktree.path",
 ];
 
 /// `diffler config --dump`: the merged TOML, then each key's origin as comments.
@@ -1631,6 +1676,7 @@ mod tests {
 
         assert_eq!(loaded.config.ui, UiConfig::default());
         assert_eq!(loaded.config.mcp, McpConfig::default());
+        assert_eq!(loaded.config.worktree, WorktreeConfig::default());
         assert_eq!(loaded.config.ci.provider, CiConfig::default().provider);
         assert_eq!(
             loaded.config.ci.poll_seconds,
@@ -1646,6 +1692,7 @@ mod tests {
             (crate::keymap::Context::Graph, &keys.graph),
             (crate::keymap::Context::Prs, &keys.prs),
             (crate::keymap::Context::Pr, &keys.pr),
+            (crate::keymap::Context::Worktrees, &keys.worktrees),
         ] {
             let (_, warnings) = crate::keymap::Keymap::for_context(context, keys);
             assert_eq!(warnings, Vec::<String>::new(), "{context:?}");

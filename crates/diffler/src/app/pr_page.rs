@@ -308,6 +308,10 @@ impl App {
                 let pr = page.pr.clone();
                 self.checkout_pr(&pr);
             }
+            Action::PrWorktree => {
+                let pr = page.pr.clone();
+                self.pr_worktree(&pr);
+            }
             Action::CopyUrl => {
                 let (number, url) = (page.number(), page.pr.url.clone());
                 self.copy_or_report(url, &format!("#{number}"));

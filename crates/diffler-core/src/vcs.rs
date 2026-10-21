@@ -176,6 +176,43 @@ pub enum NetworkOp {
     PullMerge,
 }
 
+/// One working copy of the repository: git's main worktree, a linked one, or
+/// a jj workspace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Worktree {
+    /// git's worktree name, or the jj workspace name.
+    pub name: String,
+    pub path: PathBuf,
+    /// The checked-out branch, or what stands in for one.
+    pub label: String,
+    /// `None` for a detached HEAD, a missing folder and a jj workspace.
+    pub branch: Option<String>,
+    pub subject: String,
+    pub time_unix: i64,
+    /// The worktree this handle reads.
+    pub current: bool,
+    /// git's main worktree, which only goes away with the repository.
+    pub main: bool,
+    /// Its folder is gone, so removing it only drops the record.
+    pub missing: bool,
+}
+
+/// A worktree change we run through the backend's CLI, so its hooks and
+/// checkout filters run as they would in a shell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorktreeOp {
+    /// `new_branch` creates `branch` at HEAD first.
+    Add {
+        path: PathBuf,
+        branch: String,
+        new_branch: bool,
+    },
+    Remove {
+        worktree: Worktree,
+        force: bool,
+    },
+}
+
 /// A run of consecutive lines a single commit last touched.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlameSpan {
@@ -344,6 +381,9 @@ pub trait Vcs: Send {
     /// handles credentials. jj pushes bookmarks with `jj git push` and pulls
     /// with `jj git fetch`, then [`Vcs::rebase_onto_remote`].
     fn network_argv(&self, op: NetworkOp) -> Result<Vec<String>, VcsError>;
+    /// The main worktree first, then the linked ones by name.
+    fn worktrees(&self) -> Result<Vec<Worktree>, VcsError>;
+    fn worktree_argv(&self, op: &WorktreeOp) -> Result<Vec<String>, VcsError>;
     fn workdir(&self) -> Result<PathBuf, VcsError>;
     fn remote_url(&self, name: &str) -> Result<Option<String>, VcsError>;
     fn remotes(&self) -> Result<Vec<String>, VcsError>;

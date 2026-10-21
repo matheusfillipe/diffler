@@ -87,7 +87,8 @@ impl App {
             | Screen::Runs
             | Screen::Graph
             | Screen::File
-            | Screen::Stats => Vec::new(),
+            | Screen::Stats
+            | Screen::Worktrees => Vec::new(),
         }
     }
 }

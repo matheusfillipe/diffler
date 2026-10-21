@@ -197,24 +197,11 @@ impl App {
 
     pub(crate) fn dispatch_prs(&mut self, action: crate::keymap::Action) {
         use crate::keymap::Action;
-        let last = self.prs.len().saturating_sub(1);
+        if let Some(cursor) = super::list_motion(self.prs_cursor, self.prs.len(), action) {
+            self.prs_cursor = cursor;
+            return;
+        }
         match action {
-            Action::MoveDown => self.prs_cursor = (self.prs_cursor + 1).min(last),
-            Action::MoveUp => self.prs_cursor = self.prs_cursor.saturating_sub(1),
-            Action::GoTop => self.prs_cursor = 0,
-            Action::GoBottom => self.prs_cursor = last,
-            Action::HalfPageDown => {
-                self.prs_cursor = (self.prs_cursor + super::page_step(0, false)).min(last);
-            }
-            Action::FullPageDown => {
-                self.prs_cursor = (self.prs_cursor + super::page_step(0, true)).min(last);
-            }
-            Action::HalfPageUp => {
-                self.prs_cursor = self.prs_cursor.saturating_sub(super::page_step(0, false));
-            }
-            Action::FullPageUp => {
-                self.prs_cursor = self.prs_cursor.saturating_sub(super::page_step(0, true));
-            }
             Action::Refresh => self.pending_ci = Some(super::CiRequest::Prs),
             Action::Open => {
                 if let Some(pr) = self.prs.get(self.prs_cursor).cloned() {
@@ -227,6 +214,11 @@ impl App {
                 }
             }
             Action::BranchCheckout => self.checkout_selected_pr(),
+            Action::PrWorktree => {
+                if let Some(pr) = self.prs.get(self.prs_cursor).cloned() {
+                    self.pr_worktree(&pr);
+                }
+            }
             Action::CopyUrl => self.copy_selected_pr_url(),
             _ => {}
         }
@@ -307,11 +299,18 @@ impl App {
             });
             return;
         }
+        if self.queue_pr_fetch(pr) {
+            self.pending_pr_switch = Some(pr.head_ref.clone());
+        }
+    }
+
+    /// Fetch the PR's head into a local branch of its own name. `false` when
+    /// this repo cannot fetch, which we have reported.
+    pub(crate) fn queue_pr_fetch(&mut self, pr: &crate::ci::PullRequest) -> bool {
         if self.declines_pr_fetch() {
-            return;
+            return false;
         }
         let (remote, head) = self.pr_head_source(pr.number);
-        self.pending_pr_switch = Some(pr.head_ref.clone());
         self.pending_git = Some(super::GitOp {
             label: Self::pr_fetch_label(pr.number),
             argv: vec![
@@ -321,6 +320,7 @@ impl App {
                 format!("{head}:refs/heads/{}", pr.head_ref),
             ],
         });
+        true
     }
 
     pub(crate) fn on_pr_comments_event(

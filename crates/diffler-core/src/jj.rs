@@ -15,13 +15,14 @@ use crate::git::GitVcs;
 use crate::model::{DiffModel, HunkId};
 use crate::vcs::{
     BlameSpan, Bookmark, BranchInfo, ChangeInfo, ChangeOp, FileVersion, HeadInfo, JjView, LogEntry,
-    NetworkOp, PullOutcome, PullTarget, StatusModel, Vcs, VcsError,
+    NetworkOp, PullOutcome, PullTarget, StatusModel, Vcs, VcsError, Worktree, WorktreeOp,
 };
 
 const NO_DESCRIPTION: &str = "(no description set)";
 const FIELD_SEPARATOR: char = '\x1f';
 const LIST_SEPARATOR: char = '\x1e';
 const COMMIT_ID_TEMPLATE: &str = r#"commit_id ++ "\n""#;
+const WORKSPACE_TEMPLATE: &str = r#"name ++ "\x1f" ++ root ++ "\x1f" ++ target.description().first_line() ++ "\x1f" ++ target.committer().timestamp().format("%s") ++ "\n""#;
 /// The bookmarked commits nearest `@`, which name the line `@` sits on.
 const NEAREST_BOOKMARKS: &str = "heads(::@ & (bookmarks() | remote_bookmarks()))";
 /// The history whose change ids a view carries, matching what the log walks.
@@ -956,6 +957,59 @@ impl Vcs for JjVcs {
             }
         }
         Ok(std::iter::once("jj".to_owned()).chain(args).collect())
+    }
+
+    fn worktrees(&self) -> Result<Vec<Worktree>, VcsError> {
+        let out = self.run(&[
+            "workspace",
+            "list",
+            "--ignore-working-copy",
+            &format!("--template={WORKSPACE_TEMPLATE}"),
+        ])?;
+        let here = fs::canonicalize(&self.root).ok();
+        Ok(out
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split('\x1f');
+                let name = fields.next()?.to_owned();
+                let path = PathBuf::from(fields.next()?);
+                let subject = fields.next().unwrap_or_default().to_owned();
+                let time_unix = fields.next().and_then(|t| t.parse().ok()).unwrap_or(0);
+                Some(Worktree {
+                    current: here.is_some() && fs::canonicalize(&path).ok() == here,
+                    missing: !path.exists(),
+                    main: name == "default",
+                    label: name.clone(),
+                    branch: None,
+                    name,
+                    path,
+                    subject,
+                    time_unix,
+                })
+            })
+            .collect())
+    }
+
+    fn worktree_argv(&self, op: &WorktreeOp) -> Result<Vec<String>, VcsError> {
+        let mut argv: Vec<String> = vec!["jj".into(), "workspace".into()];
+        match op {
+            WorktreeOp::Add {
+                path,
+                branch,
+                new_branch,
+            } => {
+                argv.extend(["add".into(), format!("--name={branch}")]);
+                if !new_branch {
+                    argv.push(format!("--revision={}", quoted(branch)));
+                }
+                argv.push(path.display().to_string());
+            }
+            // jj forgets a workspace and leaves its folder, so nothing is lost
+            WorktreeOp::Remove { worktree, .. } => {
+                argv.extend(["forget".into(), worktree.name.clone()]);
+            }
+        }
+        Ok(argv)
     }
 
     fn workdir(&self) -> Result<PathBuf, VcsError> {

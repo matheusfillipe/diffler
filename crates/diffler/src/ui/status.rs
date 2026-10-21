@@ -14,7 +14,7 @@ use std::ops::Range;
 
 use crate::app::{
     App, BRANCHES_TITLE, CI_TITLE, Group, PRS_TITLE, RECENT_TITLE, Row, Section, UNPUSHED_TITLE,
-    WALKTHROUGHS_TITLE,
+    WALKTHROUGHS_TITLE, WORKTREES_TITLE,
 };
 use crate::config::FileLayout;
 use crate::keymap::Action;
@@ -130,6 +130,7 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16, Vec<Option<usize>>) 
                             | Row::RepoDivider
                             | Row::PrsHeader { .. }
                             | Row::BranchesHeader { .. }
+                            | Row::WorktreesHeader { .. }
                             | Row::RecentHeader { .. }
                             | Row::CiHeader { .. }
                     )
@@ -450,6 +451,14 @@ fn row_line(
             search,
         ),
         Row::Branch { index } => branch_spans(app, *index, theme, width, search),
+        Row::WorktreesHeader { count } => header_spans(
+            theme,
+            WORKTREES_TITLE,
+            Some(*count),
+            app.is_group_folded(Group::Worktrees),
+            search,
+        ),
+        Row::Worktree { index } => worktree_spans(app, *index, theme, width, search),
         Row::CiHeader { count } => header_spans(
             theme,
             CI_TITLE,
@@ -696,6 +705,42 @@ fn branch_spans(
     spans.extend(age_spans(
         theme,
         branch.tip_unix,
+        app.now_unix,
+        used,
+        width as usize,
+    ));
+    spans
+}
+
+fn worktree_spans(
+    app: &App,
+    index: usize,
+    theme: &Theme,
+    width: u16,
+    search: &[(Range<usize>, bool)],
+) -> Vec<Span<'static>> {
+    let Some(worktree) = app.status.worktrees.get(index) else {
+        return Vec::new();
+    };
+    let marker = if worktree.current { "   * " } else { "     " };
+    let mut spans = vec![Span::styled(marker, theme.dim_style())];
+    let label_style = if worktree.missing {
+        Style::new().fg(theme.error_fg)
+    } else {
+        branch_name_style(theme)
+    };
+    spans.extend(highlight_spans(&worktree.label, label_style, search, theme));
+    spans.push(Span::styled(
+        format!("  {}", crate::app::tabs::home_relative(&worktree.path)),
+        theme.dim_style(),
+    ));
+    if worktree.missing {
+        return spans;
+    }
+    let used: usize = spans.iter().map(Span::width).sum();
+    spans.extend(age_spans(
+        theme,
+        worktree.time_unix,
         app.now_unix,
         used,
         width as usize,

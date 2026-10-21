@@ -1,7 +1,7 @@
 //! CI screens: the runs list and the run graph. Job-log handlers live with
 //! their screen state in [`super::ci_log`].
 
-use super::{App, CiRequest, Screen, page_step};
+use super::{App, CiRequest, Screen};
 use crate::keymap::Action;
 
 impl App {
@@ -84,31 +84,15 @@ impl App {
             Screen::Pr => self
                 .pr_page()
                 .map(|page| CiRequest::PrConversation(page.number())),
-            Screen::Log | Screen::Prs | Screen::File | Screen::Stats => None,
+            Screen::Log | Screen::Prs | Screen::File | Screen::Stats | Screen::Worktrees => None,
         };
     }
 
     pub(super) fn dispatch_runs(&mut self, action: Action) {
-        let last = self.runs.len().saturating_sub(1);
-        match action {
-            Action::MoveDown => self.runs_cursor = (self.runs_cursor + 1).min(last),
-            Action::MoveUp => self.runs_cursor = self.runs_cursor.saturating_sub(1),
-            Action::GoTop => self.runs_cursor = 0,
-            Action::GoBottom => self.runs_cursor = last,
-            Action::HalfPageDown => {
-                self.runs_cursor = (self.runs_cursor + page_step(0, false)).min(last);
-            }
-            Action::HalfPageUp => {
-                self.runs_cursor = self.runs_cursor.saturating_sub(page_step(0, false));
-            }
-            Action::FullPageDown => {
-                self.runs_cursor = (self.runs_cursor + page_step(0, true)).min(last);
-            }
-            Action::FullPageUp => {
-                self.runs_cursor = self.runs_cursor.saturating_sub(page_step(0, true));
-            }
-            Action::Open => self.open_selected_run(),
-            _ => {}
+        if let Some(cursor) = super::list_motion(self.runs_cursor, self.runs.len(), action) {
+            self.runs_cursor = cursor;
+        } else if action == Action::Open {
+            self.open_selected_run();
         }
     }
 

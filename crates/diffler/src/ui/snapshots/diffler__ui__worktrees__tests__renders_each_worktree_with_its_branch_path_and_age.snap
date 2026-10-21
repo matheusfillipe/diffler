@@ -1,0 +1,11 @@
+---
+source: crates/diffler/src/ui/worktrees.rs
+expression: render(&mut app).backend()
+---
+" <cr> open in a tab · c create · b check out a branch · x remove · ? help                           "
+"  * main               /work/widgets              work on main                                   2m "
+"▌   agent/fix-avatars  /work/widgets-fix-avatars  work on agent/fix-avatars                      2m "
+"  ✗ old-spike          /work/widgets-old-spike    folder gone, x to forget it                       "
+"                                                                                                    "
+"                                                                                                    "
+" WORKTREES  fixture@main · mcp off · 3 files, 0 viewed                                              "

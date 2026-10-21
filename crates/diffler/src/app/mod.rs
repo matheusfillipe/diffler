@@ -32,6 +32,7 @@ mod status;
 pub mod tabs;
 pub mod text_edit;
 pub mod walkthrough;
+mod worktree;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -51,6 +52,7 @@ pub use diff::{
 pub use log::LogView;
 pub(crate) use status::{
     BRANCHES_TITLE, CI_TITLE, PRS_TITLE, RECENT_TITLE, UNPUSHED_TITLE, WALKTHROUGHS_TITLE,
+    WORKTREES_TITLE,
 };
 pub use status::{Group, Row, Section, StatusView};
 
@@ -95,6 +97,7 @@ pub enum Screen {
     File,
     /// The repo's language breakdown.
     Stats,
+    Worktrees,
 }
 
 impl Screen {
@@ -110,6 +113,7 @@ impl Screen {
             Self::Pr => Context::Pr,
             Self::File => Context::File,
             Self::Stats => Context::Stats,
+            Self::Worktrees => Context::Worktrees,
         }
     }
 }
@@ -192,6 +196,8 @@ pub enum InputOp {
         rev: String,
         label: String,
     },
+    /// A new branch, checked out in a new worktree.
+    WorktreeBranch,
 }
 
 /// What selecting a branch in the branch list does.
@@ -199,6 +205,8 @@ pub enum InputOp {
 pub enum BranchAction {
     Checkout,
     Delete,
+    /// Check it out in a new worktree.
+    Worktree,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -282,6 +290,12 @@ pub enum Modal {
         entries: Vec<String>,
         list: fuzzy::FuzzyList,
     },
+    /// Fuzzy picker for a worktree to open as a tab, or to remove.
+    WorktreeList {
+        worktrees: Vec<diffler_core::vcs::Worktree>,
+        list: fuzzy::FuzzyList,
+        remove: bool,
+    },
     Help,
 }
 
@@ -296,6 +310,7 @@ impl Modal {
             | Self::Choice { list, .. }
             | Self::FilePicker { list, .. }
             | Self::AddProject { list, .. }
+            | Self::WorktreeList { list, .. }
             | Self::Menu { list, .. }
             | Self::LanguageScope { list, .. }
             | Self::RemoteList { list, .. } => Some(list),
@@ -342,6 +357,7 @@ struct Keymaps {
     pr: Keymap,
     file: Keymap,
     stats: Keymap,
+    worktrees: Keymap,
     tabs: Keymap,
 }
 
@@ -362,6 +378,7 @@ impl Keymaps {
             pr: build(Context::Pr),
             file: build(Context::File),
             stats: build(Context::Stats),
+            worktrees: build(Context::Worktrees),
             tabs: build(Context::Tabs),
         }
     }
@@ -378,6 +395,7 @@ struct Transients {
     fetch: Transient,
     stash: Transient,
     change: Transient,
+    worktree: Transient,
 }
 
 impl Transients {
@@ -392,6 +410,7 @@ impl Transients {
             TransientKind::Fetch => &self.fetch,
             TransientKind::Stash => &self.stash,
             TransientKind::Change => &self.change,
+            TransientKind::Worktree => &self.worktree,
         }
     }
 }
@@ -547,6 +566,7 @@ fn build_transients(
         fetch: build(TransientKind::Fetch),
         stash: build(TransientKind::Stash),
         change: build(TransientKind::Change),
+        worktree: build(TransientKind::Worktree),
     }
 }
 
@@ -672,6 +692,23 @@ pub(crate) fn page_step(viewport: u16, full: bool) -> usize {
     }
 }
 
+/// Where a plain list's cursor goes on a motion; `None` for any other action.
+pub(crate) fn list_motion(cursor: usize, len: usize, action: Action) -> Option<usize> {
+    let last = len.saturating_sub(1);
+    let (half, full) = (page_step(0, false), page_step(0, true));
+    Some(match action {
+        Action::MoveDown => (cursor + 1).min(last),
+        Action::MoveUp => cursor.saturating_sub(1),
+        Action::GoTop => 0,
+        Action::GoBottom => last,
+        Action::HalfPageDown => (cursor + half).min(last),
+        Action::FullPageDown => (cursor + full).min(last),
+        Action::HalfPageUp => cursor.saturating_sub(half),
+        Action::FullPageUp => cursor.saturating_sub(full),
+        _ => return None,
+    })
+}
+
 pub struct App {
     pub review: Review,
     pub head: HeadInfo,
@@ -722,6 +759,17 @@ pub struct App {
     pub(crate) pending_pr_open: Option<crate::ci::PullRequest>,
     /// A branch to switch to once its PR fetch lands.
     pub(crate) pending_pr_switch: Option<String>,
+    /// The fetch label of a PR and the branch to add a worktree for once that
+    /// fetch lands.
+    pub(crate) pending_pr_worktree: Option<(String, String)>,
+    /// By git op label: the folder each add creates, opened as a tab when it
+    /// succeeds.
+    pub(crate) pending_worktree_open: Vec<(String, std::path::PathBuf)>,
+    /// By git op label: the worktree each remove deletes, asked about again
+    /// when git wants `--force`.
+    pub(crate) pending_worktree_remove: Vec<(String, diffler_core::vcs::Worktree)>,
+    pub(crate) worktrees_cursor: usize,
+    pub(crate) worktrees_scroll: usize,
     /// The bookmark and remote a jj pull's fetch was queued for.
     pub(crate) pending_jj_pull: Option<diffler_core::vcs::PullTarget>,
     /// A walkthrough about a PR still resolving its range, with the slide it
@@ -975,6 +1023,7 @@ impl App {
             }
         };
         let walkthroughs = status::load_walkthroughs(&review);
+        let worktrees = review.vcs.worktrees().unwrap_or_default();
 
         let pushes_to = head
             .upstream
@@ -993,7 +1042,7 @@ impl App {
             config,
             author: std::env::var("USER").unwrap_or_else(|_| "you".to_owned()),
             screens: vec![Screen::Status],
-            status: StatusView::new(unpushed, recent, branches, walkthroughs),
+            status: StatusView::new(unpushed, recent, branches, walkthroughs, worktrees),
             log: None,
             diff: None,
             graph: None,
@@ -1015,6 +1064,11 @@ impl App {
             pr_ranges: std::collections::HashMap::new(),
             pending_pr_open: None,
             pending_pr_switch: None,
+            pending_pr_worktree: None,
+            pending_worktree_open: Vec::new(),
+            pending_worktree_remove: Vec::new(),
+            worktrees_cursor: 0,
+            worktrees_scroll: 0,
             pending_jj_pull: None,
             pending_walkthrough_open: None,
             pending_focus: None,
@@ -1144,6 +1198,7 @@ impl App {
             Context::Pr => &self.keymaps.pr,
             Context::File => &self.keymaps.file,
             Context::Stats => &self.keymaps.stats,
+            Context::Worktrees => &self.keymaps.worktrees,
             Context::Tabs => &self.keymaps.tabs,
         }
     }
@@ -1414,7 +1469,8 @@ impl App {
             | Screen::Prs
             | Screen::Pr
             | Screen::File
-            | Screen::Stats => {}
+            | Screen::Stats
+            | Screen::Worktrees => {}
         }
     }
 
@@ -1640,6 +1696,11 @@ impl App {
             Action::EditExternally => {
                 self.info("nothing here to edit; open a comment or a field first");
             }
+            Action::OpenWorktrees => self.open_worktrees(),
+            Action::WorktreeOpen => self.open_worktree_picker(false),
+            Action::WorktreeCreate => self.worktree_branch_input(),
+            Action::WorktreeCheckout => self.worktree_branch_list(),
+            Action::WorktreeRemove => self.remove_worktree_here(),
             action if change::is_change_action(action) => self.change_menu(action),
             action => match self.screen() {
                 Screen::Status => self.dispatch_status(action),
@@ -1652,6 +1713,7 @@ impl App {
                 Screen::Pr => self.dispatch_pr_page(action),
                 Screen::File => self.dispatch_file(action),
                 Screen::Stats => self.dispatch_stats(action),
+                Screen::Worktrees => self.dispatch_worktrees(action),
             },
         }
         Flow::Continue
@@ -1716,6 +1778,7 @@ impl App {
                 self.pr_pages.pop();
             }
             Some(Screen::Stats) => self.stats = None,
+            Some(Screen::Worktrees) => self.worktrees_cursor = 0,
             Some(Screen::Status) | None => {}
         }
         // a diff opened over the page takes the fetch slot first, so we queue the page's load again on return
@@ -2056,6 +2119,7 @@ impl App {
             against,
             head,
             commits,
+            worktrees,
             jj,
             ..
         } = refreshed;
@@ -2091,6 +2155,8 @@ impl App {
             Ok(branches) => self.status.branches = branches,
             Err(err) => self.error(err.to_string()),
         }
+        // a refresh runs on every change, so a failed listing stays quiet
+        self.adopt_worktrees(worktrees.unwrap_or_default());
         self.reload_walkthroughs();
         self.restore_status_cursor(status_anchor);
         self.refresh_log();
@@ -2201,6 +2267,9 @@ impl App {
     /// continuations on the fetch's own label, since several git ops can be
     /// in flight and an unrelated one must not consume them.
     fn git_finished(&mut self, label: &str, ok: bool, output: &str) {
+        if self.worktree_finished(label, ok, output) {
+            return;
+        }
         if label == Self::PR_CREATE_PUSH {
             if ok {
                 // the create is addressed against the pushed head
@@ -2210,6 +2279,16 @@ impl App {
             }
             // the branch never reached the forge, so there is nothing to open
             self.pending_pr_create = None;
+        }
+        if self
+            .pending_pr_worktree
+            .as_ref()
+            .is_some_and(|(fetch, _)| fetch == label)
+            && let Some((_, branch)) = self.pending_pr_worktree.take()
+            && ok
+        {
+            self.add_worktree(&branch, false);
+            return;
         }
         if label.starts_with(Self::PR_FETCH_PREFIX) {
             if let Some(pr) = self.pending_pr_open.take()

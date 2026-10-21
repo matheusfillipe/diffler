@@ -1,9 +1,8 @@
 ---
 source: crates/diffler/src/ui/prs.rs
-assertion_line: 120
 expression: terminal.backend()
 ---
-" <cr> open · D review diff · b checkout · y yank url · / search · ? help        "
+" <cr> open · D review diff · b checkout · w open in a worktree · ? help         "
 "  #12 Add widgets alice · feat/widgets → main                                   "
 "▌ #9 Fix flaky test bob · fix/flaky → main                                      "
 "                                                                                "

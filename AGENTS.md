@@ -100,8 +100,8 @@ crates/diffler/        binary (color-eyre at the top; thiserror for typed errors
 - **Config.** TOML, XDG-layered (built-in defaults → `~/.config/diffler/config.toml`
   → `<repo>/.diffler/config.toml` → CLI flags; every flag has a config key).
   `diffler config --dump` prints the merged config with origins.
-- **Non-goals.** Worktree/workspace management, agent orchestration,
-  a difftastic-style structural layout, task tracking.
+- **Non-goals.** Agent orchestration, a difftastic-style structural layout,
+  task tracking.
 
 Before changing one of these areas, read its design notes:
 
@@ -112,5 +112,5 @@ Before changing one of these areas, read its design notes:
 - **Walkthrough** (stops, slides, anchors, figures): [docs/architecture/walkthrough.md](docs/architecture/walkthrough.md)
 - **MCP** (tools, `focus`, activity indicator, instance registry): [docs/architecture/mcp.md](docs/architecture/mcp.md)
 - **Forges** (PR review, PR page, GitLab, PR form, CI remote, matrix legs): [docs/architecture/forges.md](docs/architecture/forges.md)
-- **Project tabs** (`workspace.rs`, event routing): [docs/architecture/tabs.md](docs/architecture/tabs.md)
+- **Project tabs** (`workspace.rs`, event routing, worktrees): [docs/architecture/tabs.md](docs/architecture/tabs.md)
 - **Releasing** (`just release-*`, CI publishing, channels): [docs/releasing.md](docs/releasing.md)

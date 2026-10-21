@@ -52,6 +52,8 @@ pub enum TabOp {
     Close,
     Pick,
     Open(PathBuf),
+    /// Close the tab showing a folder that just went away.
+    Drop(PathBuf),
 }
 
 pub fn tab_op(action: Action) -> Option<TabOp> {
@@ -186,6 +188,18 @@ fn looks_like_path(query: &str) -> bool {
     query.starts_with(['/', '~', '.']) || Path::new(query).is_absolute()
 }
 
+/// `~` for the home folder, the way a shell prompt shows it.
+pub fn home_relative(path: &Path) -> String {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    match home
+        .as_deref()
+        .and_then(|home| path.strip_prefix(home).ok())
+    {
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    }
+}
+
 pub fn expand_home(path: &str) -> PathBuf {
     match (path.strip_prefix('~'), std::env::var_os("HOME")) {
         (Some(rest), Some(home)) => PathBuf::from(home).join(rest.trim_start_matches('/')),
@@ -196,7 +210,6 @@ pub fn expand_home(path: &str) -> PathBuf {
 /// The git repositories beside each of `roots`, the ones not already open,
 /// shown with `~` for the home directory.
 pub fn nearby_repos(roots: &[PathBuf]) -> Vec<String> {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
     let mut found: Vec<PathBuf> = roots
         .iter()
         .filter_map(|root| root.parent())
@@ -206,18 +219,7 @@ pub fn nearby_repos(roots: &[PathBuf]) -> Vec<String> {
         .collect();
     found.sort();
     found.dedup();
-    found
-        .iter()
-        .map(|path| {
-            match home
-                .as_deref()
-                .and_then(|home| path.strip_prefix(home).ok())
-            {
-                Some(rest) => format!("~/{}", rest.display()),
-                None => path.display().to_string(),
-            }
-        })
-        .collect()
+    found.iter().map(|path| home_relative(path)).collect()
 }
 
 #[cfg(test)]

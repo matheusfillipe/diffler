@@ -8,7 +8,7 @@ use diffler_core::classify::Kind;
 use diffler_core::diffalgo::DiffSettings;
 use diffler_core::git::GitVcs;
 use diffler_core::model::{FileStatus, LineKind};
-use diffler_core::vcs::{ChangeOp, JJ_ONLY, NetworkOp, Vcs, VcsError};
+use diffler_core::vcs::{ChangeOp, JJ_ONLY, NetworkOp, Vcs, VcsError, WorktreeOp};
 
 // helper fns run outside #[test] fns, where clippy's test allowances don't reach
 #[allow(clippy::expect_used)]
@@ -1224,6 +1224,89 @@ fn jj_verbs_decline_in_a_git_repo() {
     assert_eq!(v.pull_target().expect("target"), None);
     let head = head_oid(&fx);
     assert_eq!(v.commit_message(&head).expect("message"), "base");
+}
+
+#[test]
+fn worktrees_list_the_main_one_and_every_linked_one_from_either_side() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "x\n");
+    fx.commit_all("base");
+    fx.branch("feat");
+    let elsewhere = tempfile::tempdir().expect("tempdir");
+    let linked_path = elsewhere.path().join("feat-tree");
+    let feat = fx
+        .repo
+        .find_branch("feat", git2::BranchType::Local)
+        .expect("branch")
+        .into_reference();
+    let mut options = git2::WorktreeAddOptions::new();
+    options.reference(Some(&feat));
+    fx.repo
+        .worktree("feat-tree", &linked_path, Some(&options))
+        .expect("add worktree");
+
+    let from_main = vcs(&fx).worktrees().expect("worktrees");
+    let labels: Vec<(&str, bool, bool)> = from_main
+        .iter()
+        .map(|w| (w.label.as_str(), w.main, w.current))
+        .collect();
+    assert_eq!(labels, [("main", true, true), ("feat", false, false)]);
+    assert_eq!(from_main[1].subject, "base");
+    assert_eq!(from_main[1].branch.as_deref(), Some("feat"));
+    assert_eq!(from_main[1].name, "feat-tree");
+
+    let from_linked = GitVcs::open(&linked_path)
+        .expect("open linked")
+        .worktrees()
+        .expect("worktrees");
+    let current: Vec<bool> = from_linked.iter().map(|w| w.current).collect();
+    assert_eq!(current, [false, true], "the linked handle reads itself");
+
+    std::fs::remove_dir_all(&linked_path).expect("remove folder");
+    let after = vcs(&fx).worktrees().expect("worktrees");
+    assert!(after[1].missing, "{after:?}");
+}
+
+#[test]
+fn worktree_argv_adds_and_removes_through_the_git_cli() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "x\n");
+    fx.commit_all("base");
+    let v = vcs(&fx);
+    let add = |branch: &str, new_branch| WorktreeOp::Add {
+        path: "/tmp/w".into(),
+        branch: branch.to_owned(),
+        new_branch,
+    };
+    assert_eq!(
+        v.worktree_argv(&add("feat", true)).expect("add new"),
+        ["git", "worktree", "add", "-b", "feat", "/tmp/w"]
+    );
+    assert_eq!(
+        v.worktree_argv(&add("feat", false)).expect("add existing"),
+        ["git", "worktree", "add", "/tmp/w", "feat"]
+    );
+    let mut worktree = v.worktrees().expect("worktrees").remove(0);
+    assert!(
+        matches!(
+            v.worktree_argv(&WorktreeOp::Remove {
+                worktree: worktree.clone(),
+                force: false
+            }),
+            Err(VcsError::Rejected(_))
+        ),
+        "the main worktree stays"
+    );
+    worktree.main = false;
+    worktree.path = "/tmp/w".into();
+    assert_eq!(
+        v.worktree_argv(&WorktreeOp::Remove {
+            worktree,
+            force: true
+        })
+        .expect("remove"),
+        ["git", "worktree", "remove", "--force", "/tmp/w"]
+    );
 }
 
 #[test]

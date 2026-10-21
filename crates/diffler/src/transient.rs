@@ -16,6 +16,7 @@ pub enum TransientKind {
     Fetch,
     Stash,
     Change,
+    Worktree,
 }
 
 impl TransientKind {
@@ -32,6 +33,8 @@ impl TransientKind {
             Self::Fetch => "fetch",
             Self::Stash => "stash",
             Self::Change => "change",
+            // `[keys.worktrees]` is already the worktree screen's keymap
+            Self::Worktree => "worktree_menu",
         }
     }
 
@@ -46,10 +49,11 @@ impl TransientKind {
             Self::Fetch => "Fetch",
             Self::Stash => "Stash",
             Self::Change => "Change",
+            Self::Worktree => "Worktree",
         }
     }
 
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Commit,
         Self::Branch,
         Self::Diff,
@@ -59,6 +63,7 @@ impl TransientKind {
         Self::Fetch,
         Self::Stash,
         Self::Change,
+        Self::Worktree,
     ];
 }
 
@@ -177,6 +182,27 @@ const STASH_GROUPS: &[DefaultGroup] = &[(
     ],
 )];
 
+const WORKTREE_GROUPS: &[DefaultGroup] = &[(
+    "Worktree",
+    &[
+        ("open", "w", Action::WorktreeOpen, "Open in a tab"),
+        (
+            "create",
+            "c",
+            Action::WorktreeCreate,
+            "Create with a new branch",
+        ),
+        (
+            "checkout",
+            "b",
+            Action::WorktreeCheckout,
+            "Check out a branch",
+        ),
+        ("remove", "D", Action::WorktreeRemove, "Remove"),
+        ("list", "l", Action::OpenWorktrees, "See the list"),
+    ],
+)];
+
 const CHANGE_GROUPS: &[DefaultGroup] = &[
     (
         "Change",
@@ -224,6 +250,7 @@ impl TransientKind {
             Self::Stash => STASH_GROUPS,
             Self::Fetch => FETCH_GROUPS,
             Self::Change => CHANGE_GROUPS,
+            Self::Worktree => WORKTREE_GROUPS,
         }
     }
 }

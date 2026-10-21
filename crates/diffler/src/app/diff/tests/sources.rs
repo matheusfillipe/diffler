@@ -151,6 +151,7 @@ fn a_refresh_answering_for_another_rev_leaves_the_open_review_alone() {
         pinned: None,
         head: Ok(app.head.clone()),
         commits: Ok(diffler_core::vcs::CommitLists::default()),
+        worktrees: Ok(Vec::new()),
         jj: Ok(None),
     });
     assert_eq!(against_paths(&app), ["dirty.rs", "landed.rs"]);

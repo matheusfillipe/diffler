@@ -44,6 +44,7 @@ impl App {
             Some(Modal::Palette { .. }) => return self.handle_palette_key(key),
             Some(Modal::FilePicker { .. }) => return self.handle_file_picker_key(key),
             Some(Modal::AddProject { .. }) => return self.handle_add_project_key(key),
+            Some(Modal::WorktreeList { .. }) => self.handle_worktree_list_key(key),
             Some(Modal::Menu { .. }) => return self.handle_menu_key(key),
             Some(Modal::LanguageScope { .. }) => {
                 return self.handle_language_key(key);
@@ -383,6 +384,7 @@ impl App {
                     format!("described {label}"),
                 );
             }
+            InputOp::WorktreeBranch => self.add_worktree(body, true),
             InputOp::CreateBranch { checkout } => {
                 let name = body.to_owned();
                 self.message = None;
@@ -774,6 +776,7 @@ impl App {
         self.message = None;
         match action {
             BranchAction::Checkout => self.checkout_branch(&name),
+            BranchAction::Worktree => self.add_worktree(&name, false),
             BranchAction::Delete => {
                 self.modal = Some(Modal::Confirm {
                     message: format!("Delete branch {name}?"),

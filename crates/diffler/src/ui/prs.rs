@@ -14,8 +14,7 @@ const HINTS: &[Hint] = &[
     Hint::Leaf(&[Action::Open], "open"),
     Hint::Leaf(&[Action::OpenPrDiff], "review diff"),
     Hint::Leaf(&[Action::BranchCheckout], "checkout"),
-    Hint::Leaf(&[Action::CopyUrl], "yank url"),
-    Hint::Leaf(&[Action::Search], "search"),
+    Hint::Leaf(&[Action::PrWorktree], "open in a worktree"),
     Hint::Leaf(&[Action::Help], "help"),
 ];
 

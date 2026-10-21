@@ -499,7 +499,8 @@ impl App {
             | Screen::Prs
             | Screen::Pr
             | Screen::CiLog
-            | Screen::Stats => None,
+            | Screen::Stats
+            | Screen::Worktrees => None,
         }
     }
 
