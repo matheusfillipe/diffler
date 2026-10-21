@@ -262,8 +262,9 @@ when it has any (a header counting them, one row per walkthrough, folded
 like any other group), then the working-tree sections,
 Unpushed (commits no remote-tracking ref contains, walked to `UNPUSHED_LIMIT`
 and counted `N+` at the ceiling), and Recent commits. A bare
-rule then opens the repo band: Branches, Open pull requests (fetched the
-first time the group unfolds), CI runs. A branch listing resolves no
+rule then opens the repo band: Branches, Worktrees (present once the repo
+has a second one), Open pull requests (fetched the first time the group
+unfolds), CI runs. A branch listing resolves no
 upstream: one costs a config read and a graph walk (~2ms measured, so 570
 branches cost 1.5s on every refresh), and only the rows the section renders
 ask `Vcs::divergence` for theirs. A group is present when the repo can
