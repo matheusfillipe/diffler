@@ -654,6 +654,15 @@ impl App {
         }
         // we show a group whenever the repo can have the thing, since a count
         // of zero is an answer and a vanishing header hides whether we asked
+        if self.status.worktrees.len() > 1 {
+            rows.push(Row::WorktreesHeader {
+                count: self.status.worktrees.len(),
+            });
+            if !self.is_group_folded(Group::Worktrees) {
+                let shown = self.status.worktrees.len().min(WORKTREES_INLINE_LIMIT);
+                rows.extend((0..shown).map(|index| Row::Worktree { index }));
+            }
+        }
         let has_forge = !self.ci_remotes().is_empty();
         rows.push(Row::RepoDivider);
         {
@@ -663,15 +672,6 @@ impl App {
             if !self.is_group_folded(Group::Branches) {
                 let shown = self.status.branches.len().min(BRANCHES_INLINE_LIMIT);
                 rows.extend((0..shown).map(|index| Row::Branch { index }));
-            }
-        }
-        if self.status.worktrees.len() > 1 {
-            rows.push(Row::WorktreesHeader {
-                count: self.status.worktrees.len(),
-            });
-            if !self.is_group_folded(Group::Worktrees) {
-                let shown = self.status.worktrees.len().min(WORKTREES_INLINE_LIMIT);
-                rows.extend((0..shown).map(|index| Row::Worktree { index }));
             }
         }
         if has_forge {
