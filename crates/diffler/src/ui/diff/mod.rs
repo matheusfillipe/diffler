@@ -402,22 +402,26 @@ mod tests {
         app.handle(crate::test_support::ctrl_key('a'));
         insta::assert_snapshot!(render(&mut app).backend());
 
-        // myers, minimal, patience, histogram: three steps down
-        app.handle(key('j'));
-        app.handle(key('j'));
-        app.handle(key('j'));
+        // the cursor starts on histogram, one above it is patience
+        app.handle(key('k'));
         app.handle(crate::test_support::code_key(
             crossterm::event::KeyCode::Enter,
         ));
         assert_eq!(
             app.config.diff.algorithm,
-            diffler_core::diffalgo::DiffAlgorithm::Histogram
+            diffler_core::diffalgo::DiffAlgorithm::Patience
         );
         let screen = render(&mut app).backend().to_string();
         assert!(
-            screen.contains("histogram"),
+            screen.contains("patience"),
             "pane heading names the active algorithm: {screen}"
         );
+    }
+
+    fn myers_config() -> LoadedConfig {
+        let mut loaded = LoadedConfig::default();
+        loaded.config.diff.algorithm = diffler_core::diffalgo::DiffAlgorithm::Myers;
+        loaded
     }
 
     /// The content hash is the same under both algorithms, so an enrichment
@@ -431,7 +435,7 @@ mod tests {
         fixture.write("a.txt", old);
         fixture.commit_all("base");
         fixture.write("a.txt", new);
-        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let mut app = App::new(fixture.review(), myers_config());
         app.open_working_tree_diff(None);
         app.queue_enrich_selected();
 
@@ -472,7 +476,7 @@ mod tests {
             "begin\nunique_anchor\nrepeat\nrepeat\nrepeat\nrepeat\nend\n",
         );
         fixture.write("b.txt", "one\nTWO\nthree\n");
-        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let mut app = App::new(fixture.review(), myers_config());
         app.open_working_tree_diff(None);
         let said = |app: &App| app.message.as_ref().map(|m| m.text.clone());
 
@@ -506,7 +510,7 @@ mod tests {
             .replace("line 5\n", "LINE FIVE\n")
             .replace("line 35\n", "LINE THIRTY-FIVE\n");
         fixture.write("a.txt", &edited);
-        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let mut app = App::new(fixture.review(), myers_config());
         app.open_working_tree_file("a.txt");
         let _ = render(&mut app);
 
@@ -530,7 +534,7 @@ mod tests {
         fixture.write("a.txt", old);
         fixture.commit_all("base");
         fixture.write("a.txt", new);
-        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let mut app = App::new(fixture.review(), myers_config());
         let rows = |app: &mut App| {
             use crate::app::rowsel::RowText as _;
             let _ = render(app);

@@ -1343,12 +1343,15 @@ mod tests {
         let project = dir.path().join("project.toml");
         fs::write(&project, "[diff]\nalgorithm = \"bogus\"\n").unwrap();
         let loaded = load_layers(None, Some(&project), &CliOverrides::default()).unwrap();
-        assert_eq!(loaded.config.diff.algorithm, DiffAlgorithm::Myers);
+        assert_eq!(loaded.config.diff.algorithm, DiffAlgorithm::Histogram);
         assert!(!loaded.origins.contains_key("diff.algorithm"));
         assert_eq!(loaded.warnings.len(), 1);
         let warning = &loaded.warnings[0];
         assert!(warning.contains("bogus"), "names the bad value: {warning}");
-        assert!(warning.contains("myers"), "names the fallback: {warning}");
+        assert!(
+            warning.contains("histogram"),
+            "names the fallback: {warning}"
+        );
     }
 
     #[test]

@@ -10,10 +10,10 @@ use crate::model::{DiffLine, Hunk, HunkId, LineKind, disambiguated_hunk_id};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DiffAlgorithm {
-    #[default]
     Myers,
     Minimal,
     Patience,
+    #[default]
     Histogram,
     /// Histogram, plus dimming paired lines that differ in layout alone.
     Structural,
@@ -311,8 +311,8 @@ mod tests {
     }
 
     #[test]
-    fn default_algorithm_is_myers() {
-        assert_eq!(DiffAlgorithm::default(), DiffAlgorithm::Myers);
+    fn default_algorithm_is_histogram() {
+        assert_eq!(DiffAlgorithm::default(), DiffAlgorithm::Histogram);
     }
 
     #[test]

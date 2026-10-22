@@ -1,5 +1,5 @@
 ---
-source: crates/diffler/src/ui/diff.rs
+source: crates/diffler/src/ui/diff/mod.rs
 expression: render(&mut app).backend()
 ---
 " c add comment · r reply · m mark viewed · C see comment list · ? help                                                  "
@@ -20,10 +20,10 @@ expression: render(&mut app).backend()
 "                                                                                                                        "
 "                                  Diff algorithm ──────────────────────────────────────                                 "
 "                                  >                                                                                     "
-"                                  * myers                                                                               "
+"                                    myers                                                                               "
 "                                    minimal                                                                             "
 "                                    patience                                                                            "
-"                                    histogram                                                                           "
+"                                  * histogram                                                                           "
 "                                    structural                                                                          "
 "                                  enter apply · j/k move · tab filter · q close                                         "
 "                                                                                                                        "

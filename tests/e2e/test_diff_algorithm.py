@@ -10,18 +10,18 @@ def open_diff(tui):
     tui.wait_for(" DIFF ")
 
 
-def test_switching_to_histogram_renames_the_pane_and_keeps_the_diff(spawn):
+def test_switching_to_patience_renames_the_pane_and_keeps_the_diff(spawn):
     tui = spawn("--no-mcp")
     open_diff(tui)
     tui.wait_for("beta2")  # the added line, proving the diff rendered
 
     tui.send_ctrl("a")
     tui.wait_for("Diff algorithm")
-    tui.wait_for("histogram")
+    tui.wait_for("patience")
 
-    # myers, minimal, patience, histogram: three steps down, then apply
-    tui.send("jjj")
+    # the cursor starts on histogram, one above it is patience
+    tui.send("k")
     tui.send("\r")
 
-    tui.wait_for("Diff · histogram")  # non-default algorithm names itself
+    tui.wait_for("Diff · patience")  # non-default algorithm names itself
     tui.wait_for("beta2")  # re-diffed under the new algorithm, still correct

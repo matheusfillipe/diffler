@@ -39,7 +39,7 @@
 # The line-diff algorithm: "myers", "minimal" (slower, more minimal myers),
 # "patience", "histogram", or "structural" (histogram, with lines that only
 # changed whitespace dimmed). <c-a> on the diff screen switches it live.
-# algorithm = "myers"
+# algorithm = "histogram"
 # A heuristic that shifts ambiguous hunk boundaries to indentation, the way
 # modern git does by default.
 # indent_heuristic = true
