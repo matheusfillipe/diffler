@@ -120,8 +120,8 @@ diffler path/to/repo    # or in another one
 Inside diffler, `<cr>` opens a file's diff, `s` stages, `cc` commits, and `c`
 comments a line. For pull requests, `b` `p` lists the open ones and `<cr>`
 opens one's page: its description and conversation, where `c` comments on the
-pull request as a whole. `<cr>` again reviews its diff, and `S` submits your
-line comments as a single review. `b` `P` opens a new pull request from the
+pull request as a whole and `R` requests a reviewer. `<cr>` again reviews its
+diff, and `S` submits your line comments as a single review. `b` `P` opens a new pull request from the
 current branch.
 
 ### With a coding agent
@@ -230,6 +230,7 @@ full keymap of the screen you're on, and `<c-k>` fuzzy-finds any action.
 | `d` | on the status screen, review against another branch or commit |
 | `C` | open the comments list |
 | `S` | submit PR comments as one review |
+| `R` | on a pull request, request a reviewer |
 | `gf` | open any file in the repo |
 | `gl` | set the language a file highlights as, for now or saved to the project |
 | `alt-n` | open another project as a tab |

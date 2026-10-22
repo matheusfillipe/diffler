@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use crate::ci::error::{CiError, Result};
 use crate::ci::model::{
     Capabilities, CiRun, DagSource, JobId, LogChunk, LogMode, PrComment, PrConversation, PrNote,
-    PullRequest, RunDetail, RunExtras, RunId,
+    PullRequest, ReviewerCandidate, RunDetail, RunExtras, RunId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,6 +142,15 @@ pub trait ForgeProvider: Send + Sync {
 
     async fn post_pr_note(&self, _new: &NewPrNote) -> Result<()> {
         Err(CiError::Unsupported("commenting on a PR"))
+    }
+
+    /// Suggested reviewers first, then everyone else who can review.
+    async fn reviewer_candidates(&self, _number: u64) -> Result<Vec<ReviewerCandidate>> {
+        Err(CiError::Unsupported("listing reviewers"))
+    }
+
+    async fn request_reviewer(&self, _number: u64, _login: &str) -> Result<()> {
+        Err(CiError::Unsupported("requesting a reviewer"))
     }
 }
 

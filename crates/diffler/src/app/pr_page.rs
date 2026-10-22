@@ -2,18 +2,21 @@
 //! the PR as a whole, which its diff has no line for. It sits between the PR
 //! list and the PR's diff.
 
+use crossterm::event::KeyEvent;
 use diffler_core::highlight::Highlighter;
 
+use super::fuzzy::{FuzzyKey, FuzzyList, selected};
 use super::pr::PrPost;
-use super::{App, CiRequest, Flow, InputOp, Screen};
+use super::{App, CiRequest, Flow, InputOp, Modal, Screen};
 use crate::app::markdown::{self, MdSpan};
-use crate::ci::{PrConversation, PrNote, PullRequest};
+use crate::ci::{PrConversation, PrNote, PullRequest, ReviewerCandidate};
 use crate::keymap::Action;
 
 /// What a row belongs to, so a key acts on the whole card the cursor is in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PrItem {
     Files,
+    Reviewers,
     Description,
     Note(usize),
 }
@@ -23,6 +26,8 @@ pub(crate) enum PrLine {
     /// State, author, branches and labels.
     Meta,
     Files,
+    /// Who reviews the PR and where each stands.
+    Reviewers,
     Blank,
     Section {
         title: &'static str,
@@ -153,18 +158,17 @@ fn layout(
     width: u16,
     highlighter: &Highlighter,
 ) -> Vec<(Option<PrItem>, PrLine)> {
-    let mut lines = vec![
-        (None, PrLine::Meta),
-        (Some(PrItem::Files), PrLine::Files),
-        (None, PrLine::Blank),
-    ];
+    let mut lines = vec![(None, PrLine::Meta), (Some(PrItem::Files), PrLine::Files)];
     let Some(conversation) = conversation else {
+        lines.push((None, PrLine::Blank));
         lines.push((
             None,
             error.map_or(PrLine::Loading, |err| PrLine::Failed(err.to_owned())),
         ));
         return lines;
     };
+    lines.push((Some(PrItem::Reviewers), PrLine::Reviewers));
+    lines.push((None, PrLine::Blank));
     let budget = super::composer::card_budget(width);
     lines.push((
         None,
@@ -288,6 +292,13 @@ impl App {
             Action::FullPageUp => page.cursor = page.cursor.saturating_sub(step(true)),
             Action::NextSection => page.step_item(true),
             Action::PrevSection => page.step_item(false),
+            Action::Open | Action::RequestReviewer
+                if action == Action::RequestReviewer
+                    || page.item_at_cursor() == Some(PrItem::Reviewers) =>
+            {
+                let number = page.number();
+                self.load_reviewer_candidates(number);
+            }
             // a page an agent opened by number learns the head from its first load
             Action::Open | Action::OpenPrDiff if page.pr.head_oid.is_empty() => {
                 self.info("wait for the pull request to load, then open its diff");
@@ -380,6 +391,114 @@ impl App {
         }
     }
 
+    /// The picker opens once the forge says who can review.
+    pub(crate) fn load_reviewer_candidates(&mut self, number: u64) {
+        self.pending_ci = Some(CiRequest::ReviewerCandidates(number));
+        self.info(format!("loading reviewers for #{number}…"));
+    }
+
+    /// We leave out anyone already asked to review, so every pick sends a new request.
+    pub(crate) fn on_reviewer_candidates(
+        &mut self,
+        number: u64,
+        result: Result<Vec<ReviewerCandidate>, String>,
+    ) -> Flow {
+        let Some(author) = self.shown_pr_author(number) else {
+            return Flow::Idle;
+        };
+        if self.modal.is_some() {
+            return Flow::Idle;
+        }
+        let candidates = match result {
+            Ok(candidates) => candidates,
+            Err(err) => {
+                self.error(format!("cannot list reviewers for #{number}: {err}"));
+                return Flow::Continue;
+            }
+        };
+        let pending: Vec<&str> = self
+            .pr_pages
+            .iter()
+            .filter(|page| page.number() == number)
+            .filter_map(|page| page.conversation.as_ref())
+            .flat_map(|c| c.reviewers.iter())
+            .filter(|r| r.verdict.is_none())
+            .map(|r| r.login.as_str())
+            .collect();
+        let candidates: Vec<ReviewerCandidate> = candidates
+            .into_iter()
+            .filter(|c| c.login != author && !pending.contains(&c.login.as_str()))
+            .collect();
+        if candidates.is_empty() {
+            self.info(format!("no one else can review #{number}"));
+            return Flow::Continue;
+        }
+        self.message = None;
+        let mut list = FuzzyList::default();
+        list.rerank(&reviewer_haystack(&candidates));
+        self.modal = Some(Modal::ReviewerList {
+            number,
+            candidates,
+            list,
+        });
+        Flow::Continue
+    }
+
+    /// The author of PR `number` when it is the one on screen, so a listing
+    /// that lands after the human moved on opens no picker.
+    fn shown_pr_author(&self, number: u64) -> Option<String> {
+        let pr = match self.screen() {
+            Screen::Pr => self.pr_page().map(|page| &page.pr),
+            Screen::Prs => self.prs.get(self.prs_cursor),
+            _ => None,
+        }?;
+        (pr.number == number).then(|| pr.author.clone())
+    }
+
+    pub(super) fn handle_reviewer_list_key(&mut self, key: &KeyEvent) {
+        let Some(Modal::ReviewerList {
+            number,
+            candidates,
+            list,
+        }) = self.modal.as_mut()
+        else {
+            return;
+        };
+        match list.feed(key) {
+            FuzzyKey::Submit => {
+                let Some(login) = selected(list, candidates).map(|c| c.login.clone()) else {
+                    return;
+                };
+                let number = *number;
+                self.modal = None;
+                self.info(format!("requesting a review from {login} on #{number}…"));
+                self.queue_pr_post(PrPost::RequestReviewer { number, login });
+            }
+            FuzzyKey::Cancel => self.modal = None,
+            FuzzyKey::Edited => list.rerank(&reviewer_haystack(candidates)),
+            FuzzyKey::Consumed | FuzzyKey::Other => {}
+        }
+    }
+
+    pub(crate) fn on_reviewer_requested(
+        &mut self,
+        number: u64,
+        login: &str,
+        result: Result<(), String>,
+    ) {
+        match result {
+            Ok(()) => {
+                self.info(format!("requested a review from {login} on #{number}"));
+                if self.pr_pages.iter().any(|page| page.number() == number) {
+                    self.pending_ci = Some(CiRequest::PrConversation(number));
+                }
+            }
+            Err(err) => self.error(format!(
+                "requesting a review from {login} on #{number} failed: {err}; R to try again"
+            )),
+        }
+    }
+
     /// Every forge login the open PR pages show, for their avatars.
     pub(crate) fn pr_page_logins(&self) -> Vec<String> {
         let mut logins: Vec<String> = self
@@ -389,6 +508,7 @@ impl App {
             .flat_map(|conversation| {
                 std::iter::once(conversation.pr.author.clone())
                     .chain(conversation.notes.iter().map(|note| note.author.clone()))
+                    .chain(conversation.reviewers.iter().map(|r| r.login.clone()))
             })
             .filter(|login| !login.is_empty())
             .collect();
@@ -396,6 +516,10 @@ impl App {
         logins.dedup();
         logins
     }
+}
+
+fn reviewer_haystack(candidates: &[ReviewerCandidate]) -> Vec<String> {
+    candidates.iter().map(|c| c.login.clone()).collect()
 }
 
 #[cfg(test)]
@@ -442,6 +566,16 @@ pub(crate) mod tests {
             additions: Some(52),
             deletions: Some(3),
             notes: vec![note("c1", "reviewer", "why this way?"), approved],
+            reviewers: vec![
+                crate::ci::PrReviewer {
+                    login: "lead".to_owned(),
+                    verdict: Some(PrVerdict::Approved),
+                },
+                crate::ci::PrReviewer {
+                    login: "peer".to_owned(),
+                    verdict: None,
+                },
+            ],
         }
     }
 
@@ -608,6 +742,123 @@ pub(crate) mod tests {
         app.dispatch_prs(Action::Open);
         assert_eq!(app.screen(), Screen::Pr);
         assert!(matches!(app.pending_ci, Some(CiRequest::PrConversation(7))));
+    }
+
+    fn candidate(login: &str, suggested: bool) -> ReviewerCandidate {
+        ReviewerCandidate {
+            login: login.to_owned(),
+            suggested,
+        }
+    }
+
+    #[test]
+    fn r_lists_who_can_review_and_a_pick_sends_the_request() {
+        let (_fixture, mut app) = app_on_page();
+        app.dispatch_pr_page(Action::RequestReviewer);
+        assert!(matches!(
+            app.pending_ci,
+            Some(CiRequest::ReviewerCandidates(7))
+        ));
+        app.on_reviewer_candidates(
+            7,
+            Ok(vec![
+                candidate("author", false),
+                candidate("lead", true),
+                candidate("peer", false),
+                candidate("new", false),
+            ]),
+        );
+        let Some(Modal::ReviewerList { candidates, .. }) = &app.modal else {
+            panic!("the picker opens");
+        };
+        let logins: Vec<&str> = candidates.iter().map(|c| c.login.as_str()).collect();
+        assert_eq!(
+            logins,
+            ["lead", "new"],
+            "the author and peer, who is already asked, are left out; lead can be asked again"
+        );
+        app.handle(crate::test_support::code_key(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert!(app.modal.is_none());
+        assert!(matches!(
+            app.pending_pr_posts.as_slice(),
+            [PrPost::RequestReviewer { number: 7, login }] if login == "lead"
+        ));
+
+        app.pending_ci = None;
+        app.on_reviewer_requested(7, "lead", Ok(()));
+        assert!(matches!(app.pending_ci, Some(CiRequest::PrConversation(7))));
+        assert_eq!(
+            app.message.as_ref().map(|m| m.text.as_str()),
+            Some("requested a review from lead on #7")
+        );
+    }
+
+    #[test]
+    fn enter_on_the_reviewers_row_lists_who_can_review() {
+        let (_fixture, mut app) = app_on_page();
+        if let Some(page) = app.pr_page_mut() {
+            page.cursor = 2;
+        }
+        assert_eq!(
+            app.pr_page().and_then(PrPage::item_at_cursor),
+            Some(PrItem::Reviewers)
+        );
+        app.dispatch_pr_page(Action::Open);
+        assert!(matches!(
+            app.pending_ci,
+            Some(CiRequest::ReviewerCandidates(7))
+        ));
+        assert_eq!(app.screen(), Screen::Pr, "the diff stays closed");
+    }
+
+    #[test]
+    fn a_refused_listing_or_request_says_why() {
+        let (_fixture, mut app) = app_on_page();
+        app.on_reviewer_candidates(7, Err("forbidden".to_owned()));
+        assert!(app.modal.is_none());
+        assert_eq!(
+            app.message.as_ref().map(|m| m.text.as_str()),
+            Some("cannot list reviewers for #7: forbidden")
+        );
+        app.on_reviewer_candidates(7, Ok(vec![candidate("peer", false)]));
+        assert_eq!(
+            app.message.as_ref().map(|m| m.text.as_str()),
+            Some("no one else can review #7")
+        );
+        app.on_reviewer_requested(7, "lead", Err("not a collaborator".to_owned()));
+        assert_eq!(
+            app.message.as_ref().map(|m| m.text.as_str()),
+            Some("requesting a review from lead on #7 failed: not a collaborator; R to try again")
+        );
+    }
+
+    #[test]
+    fn a_listing_for_a_pr_no_longer_on_screen_opens_no_picker() {
+        let (_fixture, mut app) = app_on_page();
+        app.open_pr_page(pr(9));
+        app.on_reviewer_candidates(7, Ok(vec![candidate("lead", false)]));
+        assert!(app.modal.is_none());
+        app.on_reviewer_candidates(9, Ok(vec![candidate("lead", false)]));
+        assert!(matches!(
+            app.modal,
+            Some(Modal::ReviewerList { number: 9, .. })
+        ));
+    }
+
+    #[test]
+    fn the_pr_list_requests_a_reviewer_for_the_row_under_the_cursor() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.prs = vec![pr(7), pr(9)];
+        app.prs_cursor = 1;
+        app.push_screen(Screen::Prs);
+        app.dispatch_prs(Action::RequestReviewer);
+        assert!(matches!(
+            app.pending_ci,
+            Some(CiRequest::ReviewerCandidates(9))
+        ));
     }
 
     #[test]

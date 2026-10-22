@@ -55,6 +55,10 @@ pub enum PrPost {
         body: String,
         reply_to: Option<Box<crate::ci::PrNote>>,
     },
+    RequestReviewer {
+        number: u64,
+        login: String,
+    },
 }
 
 /// What submitting a PR review would send to the forge.
@@ -220,6 +224,11 @@ impl App {
                 }
             }
             Action::CopyUrl => self.copy_selected_pr_url(),
+            Action::RequestReviewer => {
+                if let Some(number) = self.prs.get(self.prs_cursor).map(|pr| pr.number) {
+                    self.load_reviewer_candidates(number);
+                }
+            }
             _ => {}
         }
     }
@@ -653,6 +662,10 @@ impl App {
                 self.on_pr_note_posted(*number, body, result.map(|_| ()));
                 return;
             }
+            PrPost::RequestReviewer { number, login } => {
+                self.on_reviewer_requested(*number, login, result.map(|_| ()));
+                return;
+            }
             PrPost::Review { review, .. } => review.number,
             PrPost::Reply { number, .. }
             | PrPost::Resolve { number, .. }
@@ -685,7 +698,10 @@ impl App {
                             r.remote_id = remote.map(|c| c.id);
                         }
                     }
-                    PrPost::Resolve { .. } | PrPost::Edit { .. } | PrPost::Note { .. } => {}
+                    PrPost::Resolve { .. }
+                    | PrPost::Edit { .. }
+                    | PrPost::Note { .. }
+                    | PrPost::RequestReviewer { .. } => {}
                     PrPost::Delete { comment_id, .. } => {
                         session.comments.retain(|c| c.id != *comment_id);
                         self.pending_ci = Some(super::CiRequest::PrComments(number));
@@ -838,6 +854,7 @@ fn post_key(post: &PrPost) -> String {
         } => format!("e-{comment_id}-{:x}", body_hash(body)),
         PrPost::Note { number, body, .. } => format!("n-{number}-{:x}", body_hash(body)),
         PrPost::Delete { comment_id, .. } => format!("d-{comment_id}"),
+        PrPost::RequestReviewer { number, login } => format!("rr-{number}-{login}"),
     }
 }
 

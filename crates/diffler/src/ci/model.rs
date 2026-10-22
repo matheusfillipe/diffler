@@ -239,6 +239,51 @@ pub struct PrConversation {
     pub additions: Option<u64>,
     pub deletions: Option<u64>,
     pub notes: Vec<PrNote>,
+    pub reviewers: Vec<PrReviewer>,
+}
+
+/// Someone asked to review the PR or who reviewed it; `verdict` is `None`
+/// while their review is pending.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrReviewer {
+    pub login: String,
+    pub verdict: Option<PrVerdict>,
+}
+
+/// Someone the forge lets us request a review from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewerCandidate {
+    pub login: String,
+    /// The forge recommends them for this PR.
+    pub suggested: bool,
+}
+
+/// Each reviewer's standing from their reviews and review requests, oldest
+/// first; a `None` verdict is a request. A plain comment keeps an earlier
+/// approval or change request, the way the forges count it, and a request made
+/// after a review asks for a new one. The PR's author answering on their own
+/// PR is no reviewer.
+pub fn reviewers_from(
+    author: &str,
+    events: impl IntoIterator<Item = (String, Option<PrVerdict>)>,
+) -> Vec<PrReviewer> {
+    let mut reviewers: Vec<PrReviewer> = Vec::new();
+    for (login, verdict) in events {
+        if login.is_empty() || login == author {
+            continue;
+        }
+        match reviewers.iter_mut().find(|r| r.login == login) {
+            Some(known)
+                if verdict == Some(PrVerdict::Commented)
+                    && matches!(
+                        known.verdict,
+                        Some(PrVerdict::Approved | PrVerdict::ChangesRequested)
+                    ) => {}
+            Some(known) => known.verdict = verdict,
+            None => reviewers.push(PrReviewer { login, verdict }),
+        }
+    }
+    reviewers
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -316,5 +361,34 @@ mod tests {
             JobStatus::Queued
         );
         assert_eq!(JobStatus::Ok.worse(JobStatus::Ok), JobStatus::Ok);
+    }
+
+    #[test]
+    fn reviewers_keep_their_standing_and_a_new_request_reopens_it() {
+        let events = [
+            ("lead", Some(PrVerdict::Approved)),
+            ("bot", Some(PrVerdict::Commented)),
+            ("lead", Some(PrVerdict::Commented)),
+            ("peer", Some(PrVerdict::ChangesRequested)),
+            ("", Some(PrVerdict::Commented)),
+            ("author", Some(PrVerdict::Commented)),
+            ("peer", None),
+            ("new", None),
+        ]
+        .map(|(login, verdict)| (login.to_owned(), verdict));
+        let reviewers = reviewers_from("author", events);
+        let standing: Vec<(&str, Option<PrVerdict>)> = reviewers
+            .iter()
+            .map(|r| (r.login.as_str(), r.verdict))
+            .collect();
+        assert_eq!(
+            standing,
+            [
+                ("lead", Some(PrVerdict::Approved)),
+                ("bot", Some(PrVerdict::Commented)),
+                ("peer", None),
+                ("new", None),
+            ]
+        );
     }
 }

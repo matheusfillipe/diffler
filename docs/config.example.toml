@@ -247,6 +247,7 @@
 # open_pr_diff = "D"      # open its diff straight away
 # branch_checkout = "b"
 # pr_worktree = "w"       # check it out in its own worktree and open that as a tab
+# request_reviewer = "R"
 # copy_url = "y"          # the forge's web URL for the pull request
 # refresh = "<c-r>"
 
@@ -259,6 +260,7 @@
 # prev_section = "["
 # branch_checkout = "b"
 # pr_worktree = "w"
+# request_reviewer = "R"
 # copy_url = "y"
 # open_url = "gx"
 # open_runs = "o"

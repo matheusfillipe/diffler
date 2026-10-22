@@ -11,7 +11,7 @@ use crate::ci::error::{CiError, Result, parse_json};
 use crate::ci::exec::CommandRunner;
 use crate::ci::model::{
     CiJob, CiRun, JobId, JobStatus, LogChunk, PrComment, PrConversation, PrNote, PrState,
-    PullRequest, RunDetail, RunExtras, RunId,
+    PrVerdict, PullRequest, ReviewerCandidate, RunDetail, RunExtras, RunId, reviewers_from,
 };
 use crate::ci::provider::{
     ForgeProvider, NewPrComment, NewPrNote, NewPrReview, ProviderKind, ReviewVerdict,
@@ -274,7 +274,64 @@ impl ForgeProvider for GitLabProvider {
     async fn pr_conversation(&self, number: u64) -> Result<PrConversation> {
         let merge_request = self.merge_request(number).await?;
         let discussions = self.discussions(number).await?;
-        Ok(merge_request.into_conversation(discussions))
+        let mut conversation = merge_request.into_conversation(discussions);
+        // we ignore a failed reviewers lookup so the page still opens, with an empty reviewers row
+        if let Ok(raw) = self
+            .api(&format!(
+                "projects/:fullpath/merge_requests/{number}/reviewers"
+            ))
+            .await
+            && let Ok(reviewers) = parse_json::<Vec<MrReviewerItem>>("glab reviewers", &raw)
+        {
+            conversation.reviewers = mr_reviewers(&conversation.pr.author, reviewers);
+        }
+        Ok(conversation)
+    }
+
+    async fn reviewer_candidates(&self, _number: u64) -> Result<Vec<ReviewerCandidate>> {
+        let raw = self
+            .api(&format!(
+                "projects/:fullpath/members/all?per_page={PAGE_SIZE}"
+            ))
+            .await?;
+        let members: Vec<MemberItem> = parse_json("glab members", &raw)?;
+        Ok(members
+            .into_iter()
+            .filter(|member| member.state == "active")
+            .map(|member| ReviewerCandidate {
+                login: member.username,
+                suggested: false,
+            })
+            .collect())
+    }
+
+    /// GitLab replaces the whole reviewer list, so we send the new one plus the current
+    /// ones. A tier that allows one reviewer keeps the first id, so the new one goes first.
+    async fn request_reviewer(&self, number: u64, login: &str) -> Result<()> {
+        if !crate::ci::is_plain_name(login) {
+            return Err(CiError::NotFound(format!("GitLab user {login}")));
+        }
+        let raw = self.api(&format!("users?username={login}")).await?;
+        let users: Vec<UserId> = parse_json("glab user", &raw)?;
+        let user = users
+            .first()
+            .ok_or_else(|| CiError::NotFound(format!("GitLab user {login}")))?;
+        let merge_request = self.merge_request(number).await?;
+        let others = merge_request.reviewers.iter().map(|r| r.id);
+        let ids: Vec<u64> = std::iter::once(user.id)
+            .chain(others.filter(|id| *id != user.id))
+            .collect();
+        let fields: Vec<(String, String)> = ids
+            .into_iter()
+            .map(|id| ("reviewer_ids[]".to_owned(), id.to_string()))
+            .collect();
+        self.send_form(
+            "PUT",
+            &format!("projects/:fullpath/merge_requests/{number}"),
+            &fields,
+        )
+        .await
+        .map(|_| ())
     }
 
     async fn post_pr_note(&self, new: &NewPrNote) -> Result<()> {
@@ -673,6 +730,40 @@ struct MergeRequestItem {
     /// A string, since GitLab caps it as `"1000+"`.
     #[serde(default)]
     changes_count: Option<String>,
+    #[serde(default)]
+    reviewers: Vec<UserId>,
+}
+
+#[derive(Deserialize)]
+struct UserId {
+    id: u64,
+}
+
+#[derive(Deserialize)]
+struct MemberItem {
+    username: String,
+    #[serde(default)]
+    state: String,
+}
+
+#[derive(Deserialize)]
+struct MrReviewerItem {
+    user: GitLabUser,
+    #[serde(default)]
+    state: String,
+}
+
+fn mr_reviewers(author: &str, items: Vec<MrReviewerItem>) -> Vec<crate::ci::PrReviewer> {
+    let events = items.into_iter().map(|item| {
+        let verdict = match item.state.as_str() {
+            "approved" => Some(PrVerdict::Approved),
+            "requested_changes" => Some(PrVerdict::ChangesRequested),
+            "reviewed" => Some(PrVerdict::Commented),
+            _ => None,
+        };
+        (item.user.username, verdict)
+    });
+    reviewers_from(author, events)
 }
 
 impl MergeRequestItem {
@@ -706,6 +797,7 @@ impl MergeRequestItem {
             additions: None,
             deletions: None,
             notes,
+            reviewers: Vec::new(),
         }
     }
 
@@ -1553,6 +1645,71 @@ mod tests {
                 ("5", None, Some("d5")),
             ],
             "a reply stays under its own thread's root"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_conversation_names_each_reviewer_and_where_they_stand() {
+        let merge_request = r#"{"iid":4,"title":"Guard","source_branch":"feat/guard",
+            "target_branch":"main","sha":"aa1","author":{"username":"author"},"state":"opened"}"#;
+        let reviewers = r#"[
+            {"user":{"username":"lead"},"state":"approved"},
+            {"user":{"username":"peer"},"state":"unreviewed"},
+            {"user":{"username":"critic"},"state":"requested_changes"}]"#;
+        let conversation = provider(&[
+            ("discussions", "[]"),
+            ("merge_requests/4/reviewers", reviewers),
+            ("merge_requests/4", merge_request),
+        ])
+        .pr_conversation(4)
+        .await
+        .expect("read");
+        let shown: Vec<(&str, Option<PrVerdict>)> = conversation
+            .reviewers
+            .iter()
+            .map(|r| (r.login.as_str(), r.verdict))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("lead", Some(PrVerdict::Approved)),
+                ("peer", None),
+                ("critic", Some(PrVerdict::ChangesRequested)),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_request_puts_the_new_reviewer_first_and_keeps_the_others() {
+        let merge_request = r#"{"iid":4,"title":"Guard","source_branch":"feat/guard",
+            "target_branch":"main","sha":"aa1","author":{"username":"author"},
+            "reviewers":[{"id":11,"username":"lead"}]}"#;
+        let (runner, provider) = provider_on(
+            &[
+                ("users?username=peer", r#"[{"id":12}]"#),
+                (
+                    "--method GET projects/:fullpath/merge_requests/4",
+                    merge_request,
+                ),
+            ],
+            "feat/guard",
+        );
+        provider
+            .request_reviewer(4, "peer")
+            .await
+            .expect("requested");
+        let calls = runner.calls();
+        let put = calls.last().cloned().unwrap_or_default();
+        assert!(
+            put.contains("--method PUT projects/:fullpath/merge_requests/4")
+                && put.contains("--form reviewer_ids[]=12 --form reviewer_ids[]=11"),
+            "{put}"
+        );
+        assert!(provider.request_reviewer(4, "a/b").await.is_err());
+        assert_eq!(
+            runner.calls().len(),
+            calls.len(),
+            "a name that is no username never reaches the lookup"
         );
     }
 

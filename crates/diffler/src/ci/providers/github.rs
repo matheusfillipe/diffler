@@ -11,8 +11,8 @@ use crate::ci::error::{CiError, Result, parse_json};
 use crate::ci::exec::CommandRunner;
 use crate::ci::model::{
     Annotation, AnnotationLevel, Artifact, CiJob, CiJobLeg, CiRun, JobId, JobStatus, LogChunk,
-    LogStepMeta, PrComment, PrConversation, PrNote, PrState, PrVerdict, PullRequest, RunDetail,
-    RunExtras, RunId, ts_sort_key,
+    LogStepMeta, PrComment, PrConversation, PrNote, PrState, PrVerdict, PullRequest,
+    ReviewerCandidate, RunDetail, RunExtras, RunId, reviewers_from, ts_sort_key,
 };
 use crate::ci::provider::{ForgeProvider, NewPrNote, ProviderKind};
 
@@ -678,7 +678,7 @@ impl ForgeProvider for GitHubProvider {
             number.to_string(),
             "--json".to_owned(),
             "number,title,url,baseRefName,headRefName,headRefOid,author,body,state,isDraft,\
-             labels,additions,deletions,changedFiles,comments,reviews"
+             labels,additions,deletions,changedFiles,comments,reviews,reviewRequests"
                 .to_owned(),
         ];
         let raw = self.gh(&args).await?;
@@ -695,6 +695,43 @@ impl ForgeProvider for GitHubProvider {
             new.quoted_body(),
         ];
         self.gh(&args).await.map(|_| ())
+    }
+
+    async fn reviewer_candidates(&self, number: u64) -> Result<Vec<ReviewerCandidate>> {
+        let (owner, name) = self.repo_slug().await?;
+        let query = "query($owner:String!,$name:String!,$number:Int!){\
+            repository(owner:$owner,name:$name){\
+            pullRequest(number:$number){suggestedReviewers{reviewer{login}}}\
+            assignableUsers(first:100){nodes{login}}}}";
+        let args = [
+            "api".to_owned(),
+            "graphql".to_owned(),
+            "-f".to_owned(),
+            format!("query={query}"),
+            "-f".to_owned(),
+            format!("owner={owner}"),
+            "-f".to_owned(),
+            format!("name={name}"),
+            "-F".to_owned(),
+            format!("number={number}"),
+        ];
+        let raw = self.runner.run("gh", &args).await?;
+        let page: CandidatesPage = parse_json("reviewer candidates", &raw)?;
+        Ok(page.into_candidates())
+    }
+
+    async fn request_reviewer(&self, number: u64, login: &str) -> Result<()> {
+        let args = [
+            "api".to_owned(),
+            "-X".to_owned(),
+            "POST".to_owned(),
+            self.scoped(&format!(
+                "repos/{{owner}}/{{repo}}/pulls/{number}/requested_reviewers"
+            )),
+            "-f".to_owned(),
+            format!("reviewers[]={login}"),
+        ];
+        self.runner.run("gh", &args).await.map(|_| ())
     }
 
     async fn create_pr(&self, new: &crate::ci::NewPullRequest) -> Result<PullRequest> {
@@ -1404,6 +1441,78 @@ struct ConversationApi {
     comments: Vec<IssueCommentApi>,
     #[serde(default)]
     reviews: Vec<ReviewApi>,
+    #[serde(default)]
+    review_requests: Vec<ReviewRequestApi>,
+}
+
+/// A user carries a `login`, a team only its `slug`.
+#[derive(Deserialize)]
+struct ReviewRequestApi {
+    login: Option<String>,
+    slug: Option<String>,
+}
+
+impl ReviewRequestApi {
+    /// A team reads `@slug`, the way GitHub mentions one, so it never matches a
+    /// user's login or fetches a user's avatar.
+    fn reviewer(self) -> Option<String> {
+        self.login.or_else(|| Some(format!("@{}", self.slug?)))
+    }
+}
+
+#[derive(Deserialize)]
+struct CandidatesPage {
+    data: CandidatesData,
+}
+
+#[derive(Deserialize)]
+struct CandidatesData {
+    repository: CandidatesRepo,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CandidatesRepo {
+    pull_request: CandidatesPr,
+    assignable_users: LoginNodes,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CandidatesPr {
+    #[serde(default)]
+    suggested_reviewers: Vec<SuggestedApi>,
+}
+
+#[derive(Deserialize)]
+struct SuggestedApi {
+    reviewer: AuthorApi,
+}
+
+#[derive(Deserialize)]
+struct LoginNodes {
+    nodes: Vec<AuthorApi>,
+}
+
+impl CandidatesPage {
+    fn into_candidates(self) -> Vec<ReviewerCandidate> {
+        let CandidatesRepo {
+            pull_request,
+            assignable_users,
+        } = self.data.repository;
+        let suggested = pull_request
+            .suggested_reviewers
+            .into_iter()
+            .map(|s| (s.reviewer.login, true));
+        let others = assignable_users.nodes.into_iter().map(|u| (u.login, false));
+        let mut candidates: Vec<ReviewerCandidate> = Vec::new();
+        for (login, suggested) in suggested.chain(others) {
+            if !candidates.iter().any(|c| c.login == login) {
+                candidates.push(ReviewerCandidate { login, suggested });
+            }
+        }
+        candidates
+    }
 }
 
 #[derive(Deserialize)]
@@ -1438,14 +1547,22 @@ struct ReviewApi {
 }
 
 impl ReviewApi {
+    /// A dismissed or pending review has no verdict.
+    fn verdict(&self) -> Option<PrVerdict> {
+        match self.state.as_str() {
+            "APPROVED" => Some(PrVerdict::Approved),
+            "CHANGES_REQUESTED" => Some(PrVerdict::ChangesRequested),
+            "COMMENTED" => Some(PrVerdict::Commented),
+            _ => None,
+        }
+    }
+
     /// GitHub files a bare `COMMENTED` review for every batch of line
     /// comments, so we keep one only when it says something or decides something.
     fn into_note(self) -> Option<PrNote> {
-        let verdict = match self.state.as_str() {
-            "APPROVED" => PrVerdict::Approved,
-            "CHANGES_REQUESTED" => PrVerdict::ChangesRequested,
-            "COMMENTED" if !self.body.trim().is_empty() => PrVerdict::Commented,
-            _ => return None,
+        let verdict = match self.verdict()? {
+            PrVerdict::Commented if self.body.trim().is_empty() => return None,
+            verdict => verdict,
         };
         Some(PrNote {
             id: self.id,
@@ -1467,6 +1584,17 @@ impl ConversationApi {
             _ if self.is_draft => PrState::Draft,
             _ => PrState::Open,
         };
+        let author = self.pr.author.login.clone();
+        let mut timeline: Vec<&ReviewApi> = self.reviews.iter().collect();
+        timeline.sort_by(|a, b| a.submitted_at.cmp(&b.submitted_at));
+        let verdicts = timeline
+            .into_iter()
+            .filter_map(|review| Some((review.author.login.clone(), Some(review.verdict()?))));
+        let requested = self
+            .review_requests
+            .into_iter()
+            .filter_map(|request| Some((request.reviewer()?, None)));
+        let reviewers = reviewers_from(&author, verdicts.chain(requested));
         let comments = self.comments.into_iter().map(|comment| PrNote {
             id: comment.id,
             author: comment.author.login,
@@ -1489,6 +1617,7 @@ impl ConversationApi {
             additions: self.additions,
             deletions: self.deletions,
             notes,
+            reviewers,
         }
     }
 }
@@ -2511,7 +2640,13 @@ jobs:
         "reviews":[
           {"id":"PRR_1","author":{"login":"reviewer"},"body":"","state":"COMMENTED","submittedAt":"2026-08-01T00:00:00Z"},
           {"id":"PRR_2","author":{"login":"lead"},"body":"","state":"APPROVED","submittedAt":"2026-08-03T00:00:00Z"},
-          {"id":"PRR_3","author":{"login":"lead"},"body":"first","state":"COMMENTED","submittedAt":"2026-08-01T12:00:00Z"}]}"#;
+          {"id":"PRR_3","author":{"login":"lead"},"body":"first","state":"COMMENTED","submittedAt":"2026-08-01T12:00:00Z"},
+          {"id":"PRR_5","author":{"login":"lead"},"body":"","state":"COMMENTED","submittedAt":"2026-08-05T00:00:00Z"},
+          {"id":"PRR_6","author":{"login":"gone"},"body":"","state":"DISMISSED","submittedAt":"2026-08-05T00:00:00Z"},
+          {"id":"PRR_7","author":{"login":"critic"},"body":"","state":"APPROVED","submittedAt":"2026-08-06T00:00:00Z"},
+          {"id":"PRR_8","author":{"login":"critic"},"body":"","state":"CHANGES_REQUESTED","submittedAt":"2026-08-02T12:00:00Z"},
+          {"id":"PRR_4","author":{"login":"author"},"body":"","state":"COMMENTED","submittedAt":"2026-08-04T00:00:00Z"}],
+        "reviewRequests":[{"__typename":"User","login":"peer"},{"__typename":"Team","name":"Core","slug":"core"}]}"#;
 
     #[tokio::test]
     async fn a_conversation_keeps_comments_and_reviews_that_say_something_in_order() {
@@ -2533,9 +2668,68 @@ jobs:
             [
                 ("PRR_3", Some(PrVerdict::Commented)),
                 ("IC_2", None),
+                ("PRR_8", Some(PrVerdict::ChangesRequested)),
                 ("PRR_2", Some(PrVerdict::Approved)),
+                ("PRR_7", Some(PrVerdict::Approved)),
             ],
             "a bare COMMENTED review only wraps line comments"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_conversation_names_each_reviewer_and_where_they_stand() {
+        let conversation = provider(&[("pr view 7", CONVERSATION)])
+            .pr_conversation(7)
+            .await
+            .expect("conversation");
+        let reviewers: Vec<(&str, Option<PrVerdict>)> = conversation
+            .reviewers
+            .iter()
+            .map(|r| (r.login.as_str(), r.verdict))
+            .collect();
+        assert_eq!(
+            reviewers,
+            [
+                ("reviewer", Some(PrVerdict::Commented)),
+                ("lead", Some(PrVerdict::Approved)),
+                ("critic", Some(PrVerdict::Approved)),
+                ("peer", None),
+                ("@core", None),
+            ],
+            "reviews count in time order, an approval outlives a later comment, a dismissed review counts for nothing, and the author is no reviewer"
+        );
+    }
+
+    #[tokio::test]
+    async fn candidates_put_the_suggested_first_once() {
+        let slug = r#"{"owner":{"login":"acme"},"name":"widgets"}"#;
+        let page = r#"{"data":{"repository":{
+            "pullRequest":{"suggestedReviewers":[{"reviewer":{"login":"lead"}}]},
+            "assignableUsers":{"nodes":[{"login":"peer"},{"login":"lead"}]}}}}"#;
+        let candidates = provider(&[("repo view", slug), ("graphql", page)])
+            .reviewer_candidates(7)
+            .await
+            .expect("candidates");
+        let shown: Vec<(&str, bool)> = candidates
+            .iter()
+            .map(|c| (c.login.as_str(), c.suggested))
+            .collect();
+        assert_eq!(shown, [("lead", true), ("peer", false)]);
+    }
+
+    #[tokio::test]
+    async fn a_request_posts_the_login_to_the_pull_request() {
+        let runner = std::sync::Arc::new(RecordingRunner::new(&[]));
+        provider_with(std::sync::Arc::clone(&runner))
+            .request_reviewer(7, "peer")
+            .await
+            .expect("requested");
+        let call = runner.calls().remove(0);
+        assert!(
+            call.contains(
+                "-X POST repos/{owner}/{repo}/pulls/7/requested_reviewers -f reviewers[]=peer"
+            ),
+            "{call}"
         );
     }
 

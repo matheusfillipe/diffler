@@ -296,6 +296,12 @@ pub enum Modal {
         list: fuzzy::FuzzyList,
         remove: bool,
     },
+    /// Fuzzy picker for someone to review pull request `number`.
+    ReviewerList {
+        number: u64,
+        candidates: Vec<crate::ci::ReviewerCandidate>,
+        list: fuzzy::FuzzyList,
+    },
     Help,
 }
 
@@ -311,6 +317,7 @@ impl Modal {
             | Self::FilePicker { list, .. }
             | Self::AddProject { list, .. }
             | Self::WorktreeList { list, .. }
+            | Self::ReviewerList { list, .. }
             | Self::Menu { list, .. }
             | Self::LanguageScope { list, .. }
             | Self::RemoteList { list, .. } => Some(list),
@@ -537,6 +544,7 @@ pub enum CiRequest {
     Prs,
     PrComments(u64),
     PrConversation(u64),
+    ReviewerCandidates(u64),
     CreatePr(Box<crate::ci::NewPullRequest>),
     Detail(crate::ci::RunId),
     Extras(crate::ci::RunId),
@@ -1326,6 +1334,9 @@ impl App {
             } => self.on_pr_comments_event(number, &comments, pr),
             AppEvent::PrPosted { post, result } => self.on_pr_posted_event(&post, result),
             AppEvent::PrConversation { number, result } => self.on_pr_conversation(number, &result),
+            AppEvent::ReviewerCandidates { number, result } => {
+                self.on_reviewer_candidates(number, result)
+            }
             AppEvent::CiRunDetail(detail) => {
                 self.on_run_detail(&detail);
                 Flow::Continue

@@ -15,8 +15,9 @@ pub(crate) use exec::test_support;
 pub use exec::{CommandRunner, RealRunner};
 pub use model::{
     Annotation, AnnotationLevel, Artifact, Capabilities, CiJob, CiJobLeg, CiRun, DagSource, JobId,
-    JobStatus, LogChunk, LogMode, LogStepMeta, PrComment, PrConversation, PrNote, PrState,
-    PrVerdict, PullRequest, RunDetail, RunExtras, RunId, fmt_duration, ts_sort_key,
+    JobStatus, LogChunk, LogMode, LogStepMeta, PrComment, PrConversation, PrNote, PrReviewer,
+    PrState, PrVerdict, PullRequest, ReviewerCandidate, RunDetail, RunExtras, RunId, fmt_duration,
+    reviewers_from, ts_sort_key,
 };
 pub use provider::{
     ForgeProvider, NewPrComment, NewPrNote, NewPrReview, NewPullRequest, ProviderKind,
@@ -181,21 +182,22 @@ fn web_host(detected: &Detected, remote_url: &str) -> Option<String> {
     }
 }
 
+/// A name we can put into a URL or a cache path as it is.
+pub(crate) fn is_plain_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('.')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
 /// The forge's host and the picture it serves for `login`. GitLab serves one
 /// only behind a user lookup, so it gets none.
 pub fn avatar_url(detected: &Detected, remote_url: &str, login: &str) -> Option<(String, String)> {
-    // we put the host and login into a URL and a cache path, so we accept only a plain name's characters
-    let plain = |name: &str| {
-        !name.is_empty()
-            && !name.starts_with('.')
-            && name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-    };
-    if !plain(login) {
+    if !is_plain_name(login) {
         return None;
     }
-    let host = web_host(detected, remote_url).filter(|host| plain(host))?;
+    let host = web_host(detected, remote_url).filter(|host| is_plain_name(host))?;
     let url = match detected.kind {
         ProviderKind::GitHub => format!("https://{host}/{login}.png?size=64"),
         ProviderKind::Forgejo => format!("https://{host}/user/avatar/{login}/64"),

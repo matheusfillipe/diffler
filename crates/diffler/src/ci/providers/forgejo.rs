@@ -10,7 +10,7 @@ use crate::ci::error::{CiError, Result, parse_json};
 use crate::ci::exec::CommandRunner;
 use crate::ci::model::{
     CiJob, CiRun, JobId, JobStatus, LogChunk, PrComment, PrConversation, PrNote, PrState,
-    PrVerdict, PullRequest, RunDetail, RunExtras, RunId,
+    PrVerdict, PullRequest, ReviewerCandidate, RunDetail, RunExtras, RunId, reviewers_from,
 };
 use crate::ci::provider::{
     ForgeProvider, NewPrComment, NewPrNote, NewPrReview, ProviderKind, ReviewVerdict,
@@ -229,18 +229,45 @@ impl ForgeProvider for ForgejoProvider {
         let pull: PullItem = parse_json("pr", &raw)?;
         let (comments, reviews) =
             futures_util::future::join(self.issue_comments(number), self.reviews(number)).await;
+        let mut reviews = reviews?;
+        // a request row has no `submitted_at`, so we order by id, which Forgejo assigns in turn
+        reviews.sort_by_key(|review| review.id);
+        let reviewers = review_standing(&pull.user.login, &reviews);
         let comments = comments?.into_iter().map(IssueCommentItem::into_note);
         let mut notes: Vec<PrNote> = comments
-            .chain(reviews?.into_iter().filter_map(ReviewItem::into_note))
+            .chain(reviews.into_iter().filter_map(ReviewItem::into_note))
             .collect();
         notes.sort_by_key(|note| note.at);
-        Ok(pull.into_conversation(notes))
+        let mut conversation = pull.into_conversation(notes);
+        conversation.reviewers = reviewers;
+        Ok(conversation)
     }
 
     async fn post_pr_note(&self, new: &NewPrNote) -> Result<()> {
         self.post(
             &format!("issues/{}/comments", new.number),
             &serde_json::json!({ "body": new.quoted_body() }),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn reviewer_candidates(&self, _number: u64) -> Result<Vec<ReviewerCandidate>> {
+        let raw = self.get("reviewers").await?;
+        let users: Vec<ForgejoUser> = parse_json("reviewers", &raw)?;
+        Ok(users
+            .into_iter()
+            .map(|user| ReviewerCandidate {
+                login: user.login,
+                suggested: false,
+            })
+            .collect())
+    }
+
+    async fn request_reviewer(&self, number: u64, login: &str) -> Result<()> {
+        self.post(
+            &format!("pulls/{number}/requested_reviewers"),
+            &serde_json::json!({ "reviewers": [login] }),
         )
         .await
         .map(|_| ())
@@ -469,6 +496,7 @@ impl PullItem {
             additions,
             deletions,
             notes,
+            reviewers: Vec::new(),
         }
     }
 
@@ -509,17 +537,42 @@ struct ReviewItem {
     user: ForgejoUser,
     #[serde(default)]
     submitted_at: String,
+    #[serde(default)]
+    dismissed: bool,
+}
+
+/// A `REQUEST_REVIEW` row is a pending request.
+fn review_standing(author: &str, reviews: &[ReviewItem]) -> Vec<crate::ci::PrReviewer> {
+    let events = reviews.iter().filter_map(|review| {
+        let verdict = match review.state.as_str() {
+            "REQUEST_REVIEW" => None,
+            _ => Some(review.verdict()?),
+        };
+        Some((review.user.login.clone(), verdict))
+    });
+    reviewers_from(author, events)
 }
 
 impl ReviewItem {
     /// A `COMMENT` review with no summary only carries line comments, which
     /// the diff already shows.
+    /// Forgejo keeps a dismissed review's state, so we read its `dismissed` flag.
+    fn verdict(&self) -> Option<PrVerdict> {
+        if self.dismissed {
+            return None;
+        }
+        match self.state.as_str() {
+            "APPROVED" => Some(PrVerdict::Approved),
+            "REQUEST_CHANGES" => Some(PrVerdict::ChangesRequested),
+            "COMMENT" => Some(PrVerdict::Commented),
+            _ => None,
+        }
+    }
+
     fn into_note(self) -> Option<PrNote> {
-        let verdict = match self.state.as_str() {
-            "APPROVED" => PrVerdict::Approved,
-            "REQUEST_CHANGES" => PrVerdict::ChangesRequested,
-            "COMMENT" if !self.body.trim().is_empty() => PrVerdict::Commented,
-            _ => return None,
+        let verdict = match self.verdict()? {
+            PrVerdict::Commented if self.body.trim().is_empty() => return None,
+            verdict => verdict,
         };
         Some(PrNote {
             id: format!("review-{}", self.id),
@@ -1160,9 +1213,10 @@ mod create_pr_tests {
         let comments = r#"[{"id":5,"body":"a remark","user":{"login":"reviewer"},
             "created_at":"2026-08-02T00:00:00Z"}]"#;
         let reviews = r#"[
+            {"id":7,"state":"REQUEST_REVIEW","body":"","user":{"login":"lead"}},
             {"id":5,"state":"APPROVED","body":"","user":{"login":"lead"},"submitted_at":"2026-08-03T00:00:00Z"},
             {"id":6,"state":"COMMENT","body":"","comments_count":2,"user":{"login":"lead"}},
-            {"id":7,"state":"REQUEST_REVIEW","body":"","user":{"login":"lead"}}]"#;
+            {"id":8,"state":"REQUEST_CHANGES","body":"","dismissed":true,"user":{"login":"critic"}}]"#;
         let runner = Arc::new(RecordingRunner::new(&[
             ("pulls/7/reviews", reviews),
             ("issues/7/comments", comments),
@@ -1176,6 +1230,41 @@ mod create_pr_tests {
             ids,
             ["5", "review-5"],
             "review ids never collide with comment ids"
+        );
+        let standing: Vec<(&str, Option<PrVerdict>)> = conversation
+            .reviewers
+            .iter()
+            .map(|r| (r.login.as_str(), r.verdict))
+            .collect();
+        assert_eq!(
+            standing,
+            [("lead", None)],
+            "a request after the approval asks for a new review; a dismissed one counts for nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn candidates_list_who_can_review_and_a_request_posts_the_login() {
+        let users = r#"[{"login":"author"},{"login":"peer"}]"#;
+        let runner = Arc::new(RecordingRunner::new(&[
+            ("requested_reviewers", ""),
+            ("/reviewers", users),
+        ]));
+        let candidates = provider(&runner)
+            .reviewer_candidates(7)
+            .await
+            .expect("list");
+        let logins: Vec<&str> = candidates.iter().map(|c| c.login.as_str()).collect();
+        assert_eq!(logins, ["author", "peer"]);
+        provider(&runner)
+            .request_reviewer(7, "peer")
+            .await
+            .expect("requested");
+        let call = runner.calls().pop().unwrap_or_default();
+        assert!(
+            call.contains("repos/acme/widgets/pulls/7/requested_reviewers")
+                && call.contains(r#"{"reviewers":["peer"]}"#),
+            "{call}"
         );
     }
 

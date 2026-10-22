@@ -49,6 +49,17 @@ refuses comes back as the next `c`'s draft. An agent's `focus` with
 list knows it: the page learns the head from its first load, and its
 `<cr>` waits until then.
 
+The reviewers row lists everyone asked to review and where each stands, built
+by `ci::reviewers_from` from the reviews and requests in time order: a plain
+comment keeps an earlier approval, and a request after a review reopens it.
+GitHub reads `reviewRequests` beside the reviews, GitLab its MR `reviewers`
+endpoint with each reviewer's state, and Forgejo its review rows, where a
+`REQUEST_REVIEW` row is a request. `R` (or `<cr>` on the row) lists
+`ForgeProvider::reviewer_candidates`: GitHub's `suggestedReviewers` first, then
+its assignable users; GitLab's project members; Forgejo's `reviewers`
+endpoint. A pick posts `PrPost::RequestReviewer`. GitLab replaces the whole
+reviewer list on update, so its request sends the current ids plus the new one.
+
 ## GitLab merge requests
 
 A thread is a discussion and a comment is one of

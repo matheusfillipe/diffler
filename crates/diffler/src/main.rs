@@ -573,6 +573,10 @@ fn dispatch_pr_posts(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
                     })
                     .await
                     .map(|()| None),
+                app::pr::PrPost::RequestReviewer { number, login } => provider
+                    .request_reviewer(*number, login)
+                    .await
+                    .map(|()| None),
             };
             let _ = tx.send(AppEvent::PrPosted {
                 post: Box::new(post),
@@ -680,6 +684,13 @@ async fn run_ci_request(
                 .pr_conversation(number)
                 .await
                 .map(Box::new)
+                .map_err(|err| err.to_string()),
+        },
+        CiRequest::ReviewerCandidates(number) => AppEvent::ReviewerCandidates {
+            number,
+            result: provider
+                .reviewer_candidates(number)
+                .await
                 .map_err(|err| err.to_string()),
         },
         CiRequest::Detail(id) => match provider.run_detail(&id).await {

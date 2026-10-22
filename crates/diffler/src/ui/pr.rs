@@ -9,9 +9,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
+use crate::app::fuzzy::FuzzyList;
 use crate::app::pr_page::{PrItem, PrLine, PrPage};
 use crate::app::{App, REPLY_LANE};
-use crate::ci::{PrState, PrVerdict};
+use crate::ci::{PrState, PrVerdict, ReviewerCandidate};
 use crate::keymap::Action;
 use crate::theme::Theme;
 use crate::ui::Hint;
@@ -34,6 +35,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let covered = app.modal.is_some() || app.which_key_panel().is_some();
     let comment_key = app.active_keymap().chord_for(Action::Comment);
     let refresh_key = app.active_keymap().chord_for(Action::Refresh);
+    let request_key = app.active_keymap().chord_for(Action::RequestReviewer);
     let highlighter = Arc::clone(&app.highlighter);
     let theme = &app.theme;
     let avatars = AvatarCtx::new(
@@ -67,6 +69,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
         selected: page.item_at_cursor(),
         comment_key: comment_key.as_deref(),
         refresh_key: refresh_key.as_deref(),
+        request_key: request_key.as_deref(),
     };
     let rows: Vec<Line<'static>> = page
         .cached_lines()
@@ -118,6 +121,7 @@ struct LineCtx<'a> {
     selected: Option<PrItem>,
     comment_key: Option<&'a str>,
     refresh_key: Option<&'a str>,
+    request_key: Option<&'a str>,
 }
 
 impl LineCtx<'_> {
@@ -132,6 +136,7 @@ impl LineCtx<'_> {
         match line {
             PrLine::Meta => self.meta(),
             PrLine::Files => self.files(),
+            PrLine::Reviewers => self.reviewers(),
             PrLine::Blank => Line::default(),
             PrLine::Section { title, count } => {
                 let mut spans = vec![Span::styled(
@@ -243,6 +248,49 @@ impl LineCtx<'_> {
         Line::from(spans)
     }
 
+    fn reviewers(&self) -> Line<'static> {
+        let theme = self.theme;
+        let dim = theme.dim_style();
+        let mut spans = vec![Span::styled(
+            " Reviewers",
+            Style::new().fg(theme.fg).add_modifier(Modifier::BOLD),
+        )];
+        let reviewers = self
+            .page
+            .conversation
+            .as_ref()
+            .map(|c| c.reviewers.as_slice())
+            .unwrap_or_default();
+        if reviewers.is_empty() {
+            spans.push(Span::styled(
+                match self.request_key {
+                    Some(key) => format!("  no reviewers yet, {key} to request one"),
+                    None => "  no reviewers yet".to_owned(),
+                },
+                dim,
+            ));
+            return Line::from(spans);
+        }
+        for reviewer in reviewers {
+            spans.push(Span::raw("  "));
+            self.avatars
+                .gap(&mut spans, theme.bg, &reviewer.login, true);
+            let (glyph, color) = match reviewer.verdict {
+                None => ("●", theme.warn_fg),
+                Some(verdict) => (verdict_glyph(verdict), verdict_color(theme, verdict)),
+            };
+            spans.push(Span::styled(format!("{glyph} "), Style::new().fg(color)));
+            spans.push(Span::styled(
+                reviewer.login.clone(),
+                Style::new().fg(self.author_color(theme.bg, &reviewer.login)),
+            ));
+        }
+        if let Some(key) = self.request_key {
+            spans.push(Span::styled(format!("  · {key} to request another"), dim));
+        }
+        Line::from(spans)
+    }
+
     fn head(&self, item: Option<PrItem>, note: Option<usize>) -> Line<'static> {
         let theme = self.theme;
         let (bg, mut spans) = self.card_lead(item);
@@ -318,6 +366,34 @@ fn state_color(theme: &Theme, state: PrState) -> Color {
     }
 }
 
+fn verdict_glyph(verdict: PrVerdict) -> &'static str {
+    match verdict {
+        PrVerdict::Approved => "✓",
+        PrVerdict::ChangesRequested => "✗",
+        PrVerdict::Commented => "◆",
+    }
+}
+
+pub(super) fn reviewer_picker(
+    number: u64,
+    candidates: &[ReviewerCandidate],
+    list: &FuzzyList,
+) -> super::popup::FuzzyModal {
+    let rows: Vec<(String, String)> = candidates
+        .iter()
+        .map(|c| {
+            let note = if c.suggested { "suggested" } else { "" };
+            (c.login.clone(), note.to_owned())
+        })
+        .collect();
+    super::noted_list(
+        format!("Request a reviewer for #{number}"),
+        list,
+        &rows,
+        " request",
+    )
+}
+
 fn verdict_color(theme: &Theme, verdict: PrVerdict) -> Color {
     match verdict {
         PrVerdict::Approved => theme.added,
@@ -385,6 +461,39 @@ mod tests {
             shown.contains("cannot load the conversation: gh: not logged in, <c-r> to retry"),
             "{shown}"
         );
+    }
+
+    #[test]
+    fn a_page_with_no_reviewers_names_the_key_that_requests_one() {
+        let (_fixture, mut app) = page_app();
+        let mut lonely = conversation(7);
+        lonely.reviewers.clear();
+        app.on_pr_conversation(7, &Ok(Box::new(lonely)));
+        let shown = screen(&mut app, 80, 10);
+        assert!(
+            shown.contains("Reviewers  no reviewers yet, R to request one"),
+            "{shown}"
+        );
+    }
+
+    #[test]
+    fn the_reviewer_picker_marks_the_suggested() {
+        let (_fixture, mut app) = page_app();
+        app.on_pr_conversation(7, &Ok(Box::new(conversation(7))));
+        app.on_reviewer_candidates(
+            7,
+            Ok(vec![
+                crate::ci::ReviewerCandidate {
+                    login: "lead".to_owned(),
+                    suggested: true,
+                },
+                crate::ci::ReviewerCandidate {
+                    login: "new".to_owned(),
+                    suggested: false,
+                },
+            ]),
+        );
+        insta::assert_snapshot!(screen(&mut app, 80, 22));
     }
 
     #[test]

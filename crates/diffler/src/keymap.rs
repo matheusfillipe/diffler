@@ -66,6 +66,7 @@ pub enum Action {
     WorktreeCheckout,
     WorktreeRemove,
     PrWorktree,
+    RequestReviewer,
     LogView,
     LogAllBranches,
     Push,
@@ -208,6 +209,7 @@ impl Action {
             Self::WorktreeCheckout => "worktree_checkout",
             Self::WorktreeRemove => "worktree_remove",
             Self::PrWorktree => "pr_worktree",
+            Self::RequestReviewer => "request_reviewer",
             Self::LogView => "log_view",
             Self::LogAllBranches => "log_all_branches",
             Self::Push => "push",
@@ -349,6 +351,7 @@ impl Action {
             Self::WorktreeCheckout => "check out a branch in a new worktree",
             Self::WorktreeRemove => "remove a worktree",
             Self::PrWorktree => "check out the pull request in its own worktree",
+            Self::RequestReviewer => "request a reviewer",
             Self::LogView => "see the commit log",
             Self::LogAllBranches => "see every branch's log as a graph",
             Self::Push => "push to upstream",
@@ -434,7 +437,7 @@ impl Action {
         }
     }
 
-    pub(crate) const ALL: [Self; 134] = [
+    pub(crate) const ALL: [Self; 135] = [
         Self::CenterCursor,
         Self::CursorTop,
         Self::CursorBottom,
@@ -503,6 +506,7 @@ impl Action {
         Self::WorktreeCheckout,
         Self::WorktreeRemove,
         Self::PrWorktree,
+        Self::RequestReviewer,
         Self::LogView,
         Self::LogAllBranches,
         Self::Push,
@@ -836,6 +840,7 @@ const PRS_DEFAULTS: &[(&str, Action)] = &[
     ("D", Action::OpenPrDiff),
     ("b", Action::BranchCheckout),
     ("w", Action::PrWorktree),
+    ("R", Action::RequestReviewer),
     ("y", Action::CopyUrl),
     ("<c-r>", Action::Refresh),
     ("/", Action::Search),
@@ -867,6 +872,7 @@ const PR_DEFAULTS: &[(&str, Action)] = &[
     ("r", Action::Reply),
     ("b", Action::BranchCheckout),
     ("w", Action::PrWorktree),
+    ("R", Action::RequestReviewer),
     ("y", Action::CopyUrl),
     ("gx", Action::OpenUrl),
     ("o", Action::OpenRuns),

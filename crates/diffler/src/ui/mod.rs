@@ -264,6 +264,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) -> Option<popup::ListHits> {
             | Modal::FilePicker { .. }
             | Modal::AddProject { .. }
             | Modal::WorktreeList { .. }
+            | Modal::ReviewerList { .. }
             | Modal::Menu { .. }
             | Modal::LanguageScope { .. }
             | Modal::RemoteList { .. },
@@ -342,6 +343,20 @@ fn plain_list(
     labels: &[String],
     verb: &str,
 ) -> popup::FuzzyModal {
+    let rows: Vec<(String, String)> = labels
+        .iter()
+        .map(|label| (label.clone(), String::new()))
+        .collect();
+    noted_list(title, list, &rows, verb)
+}
+
+/// A picker whose rows each carry a dim note after the label.
+pub(super) fn noted_list(
+    title: String,
+    list: &fuzzy::FuzzyList,
+    rows: &[(String, String)],
+    verb: &str,
+) -> popup::FuzzyModal {
     popup::FuzzyModal {
         title,
         query: list.query.clone(),
@@ -350,8 +365,8 @@ fn plain_list(
         items: list
             .matches
             .iter()
-            .filter_map(|index| labels.get(*index))
-            .map(|label| (label.clone(), String::new()))
+            .filter_map(|index| rows.get(*index))
+            .cloned()
             .collect(),
         selected: list.selected,
         footer: footer_for(list, "", verb),
@@ -382,25 +397,11 @@ fn fuzzy_modal(app: &App) -> Option<popup::FuzzyModal> {
                 BranchAction::Delete => "Delete branch",
                 BranchAction::Worktree => "Check out in a new worktree",
             };
-            Some(popup::FuzzyModal {
-                title: title.to_owned(),
-                query: list.query.clone(),
-                cursor: list.cursor,
-                typing: matches!(list.focus, fuzzy::FuzzyFocus::Input),
-                items: list
-                    .matches
-                    .iter()
-                    .filter_map(|index| branches.get(*index))
-                    .map(|b| {
-                        (
-                            format!("{} {}", if b.is_head { "*" } else { " " }, b.name),
-                            String::new(),
-                        )
-                    })
-                    .collect(),
-                selected: list.selected,
-                footer: footer_for(list, "", " select"),
-            })
+            let labels: Vec<String> = branches
+                .iter()
+                .map(|b| format!("{} {}", if b.is_head { "*" } else { " " }, b.name))
+                .collect();
+            Some(plain_list(title.to_owned(), list, &labels, " select"))
         }
         Some(Modal::RevList {
             title,
@@ -467,6 +468,11 @@ fn fuzzy_modal(app: &App) -> Option<popup::FuzzyModal> {
             list,
             remove,
         }) => Some(worktrees::picker(worktrees, list, *remove)),
+        Some(Modal::ReviewerList {
+            number,
+            candidates,
+            list,
+        }) => Some(pr::reviewer_picker(*number, candidates, list)),
         _ => None,
     }
 }

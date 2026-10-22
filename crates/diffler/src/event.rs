@@ -91,6 +91,10 @@ pub enum AppEvent {
         number: u64,
         result: Result<Box<crate::ci::PrConversation>, String>,
     },
+    ReviewerCandidates {
+        number: u64,
+        result: Result<Vec<crate::ci::ReviewerCandidate>, String>,
+    },
     PrPosted {
         post: Box<crate::app::pr::PrPost>,
         result: Result<Option<crate::ci::PrComment>, String>,

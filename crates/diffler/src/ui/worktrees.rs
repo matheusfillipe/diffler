@@ -9,7 +9,7 @@ use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
-use crate::app::fuzzy::{FuzzyFocus, FuzzyList};
+use crate::app::fuzzy::FuzzyList;
 use crate::app::tabs::home_relative;
 use crate::keymap::Action;
 use crate::text::elide;
@@ -44,20 +44,11 @@ pub(super) fn picker(
     } else {
         ("Open worktree", " open")
     };
-    super::popup::FuzzyModal {
-        title: title.to_owned(),
-        query: list.query.clone(),
-        cursor: list.cursor,
-        typing: matches!(list.focus, FuzzyFocus::Input),
-        items: list
-            .matches
-            .iter()
-            .filter_map(|index| worktrees.get(*index))
-            .map(|w| (w.label.clone(), home_relative(&w.path)))
-            .collect(),
-        selected: list.selected,
-        footer: super::footer_for(list, "", verb),
-    }
+    let rows: Vec<(String, String)> = worktrees
+        .iter()
+        .map(|w| (w.label.clone(), home_relative(&w.path)))
+        .collect();
+    super::noted_list(title.to_owned(), list, &rows, verb)
 }
 
 fn draw_list(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
