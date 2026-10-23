@@ -4230,7 +4230,10 @@ mod tests {
         app.ci_remotes = vec![github_remote()];
         app.status.group_folded[Group::Prs.index()] = false;
         cursor_to(&mut app, |row| matches!(row, Row::RecentHeader { .. }));
-        app.handle(AppEvent::CiPrs(vec![pull_request(141), pull_request(142)]));
+        app.handle(AppEvent::CiPrs(vec![
+            pull_request(141).into(),
+            pull_request(142).into(),
+        ]));
         assert!(
             matches!(app.cursor_row(), Some(Row::RecentHeader { .. })),
             "the PR rows insert above the repo band without dragging the cursor: {:?}",

@@ -184,10 +184,15 @@ impl App {
         self.pending_ci = Some(super::CiRequest::Prs);
     }
 
-    pub(crate) fn on_prs_event(&mut self, prs: Vec<crate::ci::PullRequest>) -> super::Flow {
+    pub(crate) fn on_prs_event(&mut self, listed: Vec<crate::ci::ListedPr>) -> super::Flow {
         // the status screen renders `prs` too, so new rows can shift its cursor
         let anchor = self.status_cursor_anchor();
-        self.prs = prs;
+        self.pr_summaries.clear();
+        self.prs.clear();
+        for crate::ci::ListedPr { pr, summary } in listed {
+            self.pr_summaries.insert(pr.number, summary);
+            self.prs.push(pr);
+        }
         self.status.prs_loaded = true;
         self.status.prs_in_flight = false;
         self.prs_cursor = self.prs_cursor.min(self.prs.len().saturating_sub(1));

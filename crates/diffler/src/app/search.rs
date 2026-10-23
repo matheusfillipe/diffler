@@ -183,7 +183,7 @@ impl App {
                 .prs
                 .iter()
                 .enumerate()
-                .map(|(i, pr)| (i, format!("#{} {} {}", pr.number, pr.title, pr.author)))
+                .map(|(i, pr)| (i, format!("{} {}", pr.headline(), pr.author)))
                 .collect(),
             Screen::Pr => self
                 .pr_page()

@@ -4,8 +4,8 @@ use async_trait::async_trait;
 
 use crate::ci::error::{CiError, Result};
 use crate::ci::model::{
-    Capabilities, CiRun, DagSource, JobId, LogChunk, LogMode, PrComment, PrConversation, PrNote,
-    PullRequest, ReviewerCandidate, RunDetail, RunExtras, RunId,
+    Capabilities, CiRun, DagSource, JobId, ListedPr, LogChunk, LogMode, PrComment, PrConversation,
+    PrNote, PullRequest, ReviewerCandidate, RunDetail, RunExtras, RunId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,7 +83,7 @@ pub trait ForgeProvider: Send + Sync {
     async fn current_pr(&self) -> Result<Option<PullRequest>>;
 
     /// Newest first.
-    async fn list_prs(&self) -> Result<Vec<PullRequest>>;
+    async fn list_prs(&self) -> Result<Vec<ListedPr>>;
 
     async fn pr_comments(&self, _number: u64) -> Result<Vec<PrComment>> {
         Ok(Vec::new())

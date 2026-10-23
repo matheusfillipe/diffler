@@ -3,8 +3,8 @@ source: crates/diffler/src/ui/prs.rs
 expression: terminal.backend()
 ---
 " <cr> open · D review diff · b checkout · w open in a worktree · ? help         "
-"  #12 Add widgets alice · feat/widgets → main                                   "
-"▌ #9 Fix flaky test bob · fix/flaky → main                                      "
+"    #12 Add widgets  feat/widgets → main                            alice       "
+"▌   #9 Fix flaky test  fix/flaky → main                             bob         "
 "                                                                                "
 "                                                                                "
 "                                                                                "

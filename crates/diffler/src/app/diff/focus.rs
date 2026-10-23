@@ -745,15 +745,18 @@ mod tests {
         assert!(matches!(app.pending_ci, Some(crate::app::CiRequest::Prs)));
 
         let head_oid = app.review.vcs.resolve("feature").expect("head");
-        app.on_prs_event(vec![crate::ci::PullRequest {
-            number: 7,
-            title: "add pr_only.rs".into(),
-            url: None,
-            base_ref: "main".into(),
-            head_ref: "feature".into(),
-            head_oid,
-            author: "reviewer".into(),
-        }]);
+        app.on_prs_event(vec![
+            crate::ci::PullRequest {
+                number: 7,
+                title: "add pr_only.rs".into(),
+                url: None,
+                base_ref: "main".into(),
+                head_ref: "feature".into(),
+                head_oid,
+                author: "reviewer".into(),
+            }
+            .into(),
+        ]);
 
         assert_eq!(
             app.diff.as_ref().map(|diff| &diff.source),

@@ -15,9 +15,9 @@ pub(crate) use exec::test_support;
 pub use exec::{CommandRunner, RealRunner};
 pub use model::{
     Annotation, AnnotationLevel, Artifact, Capabilities, CiJob, CiJobLeg, CiRun, DagSource, JobId,
-    JobStatus, LogChunk, LogMode, LogStepMeta, PrComment, PrConversation, PrNote, PrReviewer,
-    PrState, PrVerdict, PullRequest, ReviewerCandidate, RunDetail, RunExtras, RunId, fmt_duration,
-    reviewers_from, ts_sort_key,
+    JobStatus, ListedPr, LogChunk, LogMode, LogStepMeta, PrComment, PrConversation, PrNote,
+    PrReviewer, PrState, PrSummary, PrVerdict, PullRequest, ReviewerCandidate, RunDetail,
+    RunExtras, RunId, fmt_duration, reviewers_from, ts_sort_key,
 };
 pub use provider::{
     ForgeProvider, NewPrComment, NewPrNote, NewPrReview, NewPullRequest, ProviderKind,

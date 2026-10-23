@@ -153,6 +153,46 @@ pub struct PullRequest {
     pub author: String,
 }
 
+impl PullRequest {
+    /// `#number title`, how a list names the PR.
+    #[must_use]
+    pub fn headline(&self) -> String {
+        format!("#{} {}", self.number, self.title)
+    }
+}
+
+/// A PR as the PR list shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListedPr {
+    pub pr: PullRequest,
+    pub summary: PrSummary,
+}
+
+impl From<PullRequest> for ListedPr {
+    fn from(pr: PullRequest) -> Self {
+        Self {
+            pr,
+            summary: PrSummary::default(),
+        }
+    }
+}
+
+/// What a forge's PR listing tells about each PR; a forge leaves out what its
+/// listing lacks.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PrSummary {
+    pub draft: bool,
+    pub checks: Option<JobStatus>,
+    /// The forge's overall review decision: approved or changes requested.
+    pub review: Option<PrVerdict>,
+    pub additions: Option<u64>,
+    pub deletions: Option<u64>,
+    pub comments: Option<u64>,
+    pub labels: Vec<String>,
+    /// Unix seconds; we store 0 when the forge gives no update time.
+    pub updated: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrComment {
     pub id: String,

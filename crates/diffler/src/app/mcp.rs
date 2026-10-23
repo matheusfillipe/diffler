@@ -2201,15 +2201,18 @@ mod tests {
             Some(published_id.clone())
         );
 
-        app.on_prs_event(vec![crate::ci::PullRequest {
-            number: 7,
-            title: "add pr_only.rs".into(),
-            url: None,
-            base_ref: "main".into(),
-            head_ref: "feature".into(),
-            head_oid,
-            author: "reviewer".into(),
-        }]);
+        app.on_prs_event(vec![
+            crate::ci::PullRequest {
+                number: 7,
+                title: "add pr_only.rs".into(),
+                url: None,
+                base_ref: "main".into(),
+                head_ref: "feature".into(),
+                head_oid,
+                author: "reviewer".into(),
+            }
+            .into(),
+        ]);
 
         assert!(
             app.pending_walkthrough_open.is_none(),

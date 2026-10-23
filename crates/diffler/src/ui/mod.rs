@@ -546,6 +546,49 @@ pub(super) fn ci_status_color(theme: &Theme, status: crate::ci::JobStatus) -> Co
     }
 }
 
+/// The widest of `texts`, capped at `cap`.
+pub(super) fn column_width<'a>(texts: impl Iterator<Item = &'a str>, cap: usize) -> usize {
+    texts
+        .map(UnicodeWidthStr::width)
+        .max()
+        .unwrap_or(0)
+        .min(cap)
+}
+
+/// `text` cut to `width` columns, then padded out to them.
+pub(super) fn fit(text: &str, width: usize) -> String {
+    let cut = crate::text::elide(text, width);
+    let pad = width.saturating_sub(cut.width());
+    format!("{cut}{}", " ".repeat(pad))
+}
+
+/// Blank when no run matches, so every row in a list stays aligned.
+pub(super) fn ci_glyph_spans(
+    rollup: Option<crate::ci::JobStatus>,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    match rollup {
+        Some(status) => vec![Span::styled(
+            format!(" {} ", status.glyph()),
+            Style::new().fg(ci_status_color(theme, status)).bg(theme.bg),
+        )],
+        None => vec![Span::raw("   ")],
+    }
+}
+
+/// A forge label as a chip, two columns off whatever precedes it.
+pub(super) fn label_chip_spans(theme: &Theme, label: &str) -> [Span<'static>; 2] {
+    [
+        Span::raw("  "),
+        Span::styled(
+            format!(" {label} "),
+            Style::new()
+                .fg(theme.warn_fg)
+                .bg(diff_render::card_surface(theme)),
+        ),
+    ]
+}
+
 /// ` +A -B` over `bg`, with a zero side dimmed.
 pub(super) fn diffstat_spans(
     theme: &Theme,
@@ -1077,6 +1120,12 @@ mod tests {
             .map(|span| span.content.as_ref())
             .collect();
         assert_eq!(lit, vec!["f/", "m"], "both halves of the match are lit");
+    }
+
+    #[test]
+    fn fit_pads_short_text_and_cuts_long_text() {
+        assert_eq!(super::fit("main", 6), "main  ");
+        assert_eq!(super::fit("feature/long", 8), "feature…");
     }
 
     #[test]

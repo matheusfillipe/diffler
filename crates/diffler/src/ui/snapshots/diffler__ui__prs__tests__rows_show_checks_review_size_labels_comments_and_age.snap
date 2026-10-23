@@ -1,0 +1,12 @@
+---
+source: crates/diffler/src/ui/prs.rs
+expression: terminal.backend()
+---
+" <cr> open · D review diff · b checkout · w open in a worktree · ? help                                       "
+"▌ ✓ #12 Add widgets  approved  +120 -4  3 comments   feature   feat/widgets → main                alice    2h "
+"  × #9 Fix flaky test  draft  1 comment  fix/flaky → main                                         bob      3d "
+"  ● #5 Rework the whole rendering pipeline so long titles get cut  requested changes  +2400 -900  carol    1m "
+"                                                                                                              "
+"                                                                                                              "
+"                                                                                                              "
+" PRS  fixture@main · mcp off · 3 files, 0 viewed                                                              "

@@ -786,6 +786,8 @@ pub struct App {
     /// The agent's focus on a review still fetching.
     pub(crate) pending_focus: Option<diff::PendingFocus>,
     pub prs: Vec<crate::ci::PullRequest>,
+    /// What the PR list shows beside each PR, by number.
+    pub(crate) pr_summaries: std::collections::HashMap<u64, crate::ci::PrSummary>,
     pub prs_cursor: usize,
     /// Scroll offsets of the two full-screen lists, so the view holds still
     /// until the cursor reaches its margin.
@@ -1081,6 +1083,7 @@ impl App {
             pending_walkthrough_open: None,
             pending_focus: None,
             prs: Vec::new(),
+            pr_summaries: std::collections::HashMap::new(),
             prs_cursor: 0,
             pending_pr_posts: Vec::new(),
             pr_posts_inflight: std::collections::HashSet::new(),

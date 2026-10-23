@@ -9,8 +9,9 @@ use serde::Deserialize;
 use crate::ci::error::{CiError, Result, parse_json};
 use crate::ci::exec::CommandRunner;
 use crate::ci::model::{
-    CiJob, CiRun, JobId, JobStatus, LogChunk, PrComment, PrConversation, PrNote, PrState,
-    PrVerdict, PullRequest, ReviewerCandidate, RunDetail, RunExtras, RunId, reviewers_from,
+    CiJob, CiRun, JobId, JobStatus, ListedPr, LogChunk, PrComment, PrConversation, PrNote, PrState,
+    PrSummary, PrVerdict, PullRequest, ReviewerCandidate, RunDetail, RunExtras, RunId,
+    reviewers_from,
 };
 use crate::ci::provider::{
     ForgeProvider, NewPrComment, NewPrNote, NewPrReview, ProviderKind, ReviewVerdict,
@@ -194,10 +195,10 @@ impl ForgeProvider for ForgejoProvider {
         Ok(RunExtras::default())
     }
 
-    async fn list_prs(&self) -> Result<Vec<PullRequest>> {
+    async fn list_prs(&self) -> Result<Vec<ListedPr>> {
         let raw = self.get("pulls?state=open&limit=50").await?;
         let pulls: Vec<PullItem> = parse_json("pr list", &raw)?;
-        Ok(pulls.into_iter().map(PullItem::into_pr).collect())
+        Ok(pulls.into_iter().map(PullItem::into_listed).collect())
     }
 
     async fn create_pr(&self, new: &crate::ci::NewPullRequest) -> Result<PullRequest> {
@@ -426,6 +427,9 @@ struct PullItem {
     additions: Option<u64>,
     deletions: Option<u64>,
     changed_files: Option<u64>,
+    comments: Option<u64>,
+    #[serde(default)]
+    updated_at: String,
 }
 
 #[derive(Deserialize)]
@@ -471,9 +475,32 @@ struct ForgejoUser {
 }
 
 impl PullItem {
+    /// Older Forgejo marks a draft only with a WIP: title prefix.
+    fn is_draft(&self) -> bool {
+        self.draft || self.title.starts_with("WIP:")
+    }
+
+    fn into_listed(mut self) -> ListedPr {
+        let summary = PrSummary {
+            draft: self.is_draft(),
+            additions: self.additions,
+            deletions: self.deletions,
+            comments: self.comments,
+            labels: std::mem::take(&mut self.labels)
+                .into_iter()
+                .map(|label| label.name)
+                .collect(),
+            updated: epoch_secs(&self.updated_at),
+            ..PrSummary::default()
+        };
+        ListedPr {
+            pr: self.into_pr(),
+            summary,
+        }
+    }
+
     fn into_conversation(mut self, notes: Vec<PrNote>) -> PrConversation {
-        // older Forgejo marks a draft only with a WIP: title prefix
-        let draft = self.draft || self.title.starts_with("WIP:");
+        let draft = self.is_draft();
         let state = match self.state.as_str() {
             _ if self.merged => PrState::Merged,
             "closed" => PrState::Closed,
@@ -1241,6 +1268,22 @@ mod create_pr_tests {
             [("lead", None)],
             "a request after the approval asks for a new review; a dismissed one counts for nothing"
         );
+    }
+
+    #[tokio::test]
+    async fn the_listing_summarizes_draft_size_labels_and_comments() {
+        let listing = r#"[{"number":7,"title":"WIP: Guard","head":{"ref":"feat","sha":"aa1"},
+            "base":{"ref":"main","sha":"bb2"},"user":{"login":"author"},
+            "labels":[{"name":"bug"}],"additions":12,"deletions":3,"comments":2,
+            "updated_at":"2026-08-07T10:00:00Z"}]"#;
+        let runner = Arc::new(RecordingRunner::new(&[("pulls?state=open", listing)]));
+        let listed = provider(&runner).list_prs().await.expect("listing");
+        let summary = &listed[0].summary;
+        assert!(summary.draft, "a WIP: title marks a draft");
+        assert_eq!((summary.additions, summary.deletions), (Some(12), Some(3)));
+        assert_eq!(summary.comments, Some(2));
+        assert_eq!(summary.labels, ["bug"]);
+        assert_eq!(summary.updated, 1_786_096_800);
     }
 
     #[tokio::test]

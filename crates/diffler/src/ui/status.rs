@@ -23,8 +23,8 @@ use crate::transient::TransientKind;
 use crate::ui::Hint;
 use crate::ui::diff_render::{diff_line_height, hunk_gutter_width, render_hunk_lines};
 use crate::ui::{
-    age_spans, commit_meta_spans, cursor_line, diffstat_spans, highlight_spans, proportion_bar,
-    status_bar, status_color,
+    age_spans, ci_glyph_spans, commit_meta_spans, cursor_line, diffstat_spans, highlight_spans,
+    proportion_bar, status_bar, status_color,
 };
 
 /// Sub-commands live in the which-key panel and the help popup.
@@ -554,19 +554,6 @@ fn file_spans(
     let (added, deleted) = file.diffstat();
     spans.extend(diffstat_spans(theme, added, deleted, theme.bg));
     spans
-}
-
-/// Blank when no run matches, so every row in a group stays aligned.
-fn ci_glyph_spans(rollup: Option<crate::ci::JobStatus>, theme: &Theme) -> Vec<Span<'static>> {
-    match rollup {
-        Some(status) => vec![Span::styled(
-            format!(" {} ", status.glyph()),
-            Style::new()
-                .fg(super::ci_status_color(theme, status))
-                .bg(theme.bg),
-        )],
-        None => vec![Span::raw("   ")],
-    }
 }
 
 fn run_fold_marker(theme: &Theme, has_runs: bool, unfolded: bool) -> Span<'static> {

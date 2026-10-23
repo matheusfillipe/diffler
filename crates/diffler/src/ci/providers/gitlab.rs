@@ -10,8 +10,9 @@ use serde::Deserialize;
 use crate::ci::error::{CiError, Result, parse_json};
 use crate::ci::exec::CommandRunner;
 use crate::ci::model::{
-    CiJob, CiRun, JobId, JobStatus, LogChunk, PrComment, PrConversation, PrNote, PrState,
-    PrVerdict, PullRequest, ReviewerCandidate, RunDetail, RunExtras, RunId, reviewers_from,
+    CiJob, CiRun, JobId, JobStatus, ListedPr, LogChunk, PrComment, PrConversation, PrNote, PrState,
+    PrSummary, PrVerdict, PullRequest, ReviewerCandidate, RunDetail, RunExtras, RunId,
+    reviewers_from,
 };
 use crate::ci::provider::{
     ForgeProvider, NewPrComment, NewPrNote, NewPrReview, ProviderKind, ReviewVerdict,
@@ -259,12 +260,15 @@ impl ForgeProvider for GitLabProvider {
         Ok(RunExtras::default())
     }
 
-    async fn list_prs(&self) -> Result<Vec<PullRequest>> {
+    async fn list_prs(&self) -> Result<Vec<ListedPr>> {
         let raw = self
             .api("projects/:fullpath/merge_requests?state=opened&order_by=updated_at&per_page=20")
             .await?;
         let items: Vec<MergeRequestItem> = parse_json("glab merge requests", &raw)?;
-        Ok(items.into_iter().map(MergeRequestItem::into_pr).collect())
+        Ok(items
+            .into_iter()
+            .map(MergeRequestItem::into_listed)
+            .collect())
     }
 
     async fn pr(&self, number: u64) -> Result<PullRequest> {
@@ -732,6 +736,8 @@ struct MergeRequestItem {
     changes_count: Option<String>,
     #[serde(default)]
     reviewers: Vec<UserId>,
+    user_notes_count: Option<u64>,
+    updated_at: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -767,6 +773,20 @@ fn mr_reviewers(author: &str, items: Vec<MrReviewerItem>) -> Vec<crate::ci::PrRe
 }
 
 impl MergeRequestItem {
+    fn into_listed(mut self) -> ListedPr {
+        let summary = PrSummary {
+            draft: self.draft,
+            comments: self.user_notes_count,
+            labels: std::mem::take(&mut self.labels),
+            updated: epoch_secs(self.updated_at.as_deref()),
+            ..PrSummary::default()
+        };
+        ListedPr {
+            pr: self.into_pr(),
+            summary,
+        }
+    }
+
     fn into_conversation(mut self, discussions: Vec<DiscussionItem>) -> PrConversation {
         let state = match self.state.as_str() {
             "merged" => PrState::Merged,
@@ -1677,6 +1697,21 @@ mod tests {
                 ("critic", Some(PrVerdict::ChangesRequested)),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn the_listing_summarizes_draft_labels_and_notes() {
+        let listing = r#"[{"iid":4,"title":"Guard","source_branch":"feat/guard",
+            "target_branch":"main","author":{"username":"author"},"draft":true,
+            "labels":["bug"],"user_notes_count":3,"updated_at":"2026-08-07T10:00:00.000Z"}]"#;
+        let (_, provider) = provider_on(&[("merge_requests?state=opened", listing)], "main");
+        let listed = provider.list_prs().await.expect("listing");
+        let summary = &listed[0].summary;
+        assert_eq!(listed[0].pr.number, 4);
+        assert!(summary.draft);
+        assert_eq!(summary.labels, ["bug"]);
+        assert_eq!(summary.comments, Some(3));
+        assert_eq!(summary.updated, 1_786_096_800);
     }
 
     #[tokio::test]

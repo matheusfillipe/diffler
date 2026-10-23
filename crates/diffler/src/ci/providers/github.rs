@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 use crate::ci::error::{CiError, Result, parse_json};
 use crate::ci::exec::CommandRunner;
 use crate::ci::model::{
-    Annotation, AnnotationLevel, Artifact, CiJob, CiJobLeg, CiRun, JobId, JobStatus, LogChunk,
-    LogStepMeta, PrComment, PrConversation, PrNote, PrState, PrVerdict, PullRequest,
-    ReviewerCandidate, RunDetail, RunExtras, RunId, reviewers_from, ts_sort_key,
+    Annotation, AnnotationLevel, Artifact, CiJob, CiJobLeg, CiRun, JobId, JobStatus, ListedPr,
+    LogChunk, LogStepMeta, PrComment, PrConversation, PrNote, PrState, PrSummary, PrVerdict,
+    PullRequest, ReviewerCandidate, RunDetail, RunExtras, RunId, reviewers_from, ts_sort_key,
 };
 use crate::ci::provider::{ForgeProvider, NewPrNote, ProviderKind};
 
@@ -470,19 +470,20 @@ impl ForgeProvider for GitHubProvider {
         })
     }
 
-    async fn list_prs(&self) -> Result<Vec<PullRequest>> {
+    async fn list_prs(&self) -> Result<Vec<ListedPr>> {
         let args = [
             "pr",
             "list",
             "--limit",
             "50",
             "--json",
-            "number,title,url,baseRefName,headRefName,headRefOid,author",
+            "number,title,url,baseRefName,headRefName,headRefOid,author,isDraft,reviewDecision,\
+             statusCheckRollup,additions,deletions,comments,labels,updatedAt",
         ]
         .map(str::to_owned);
         let raw = self.gh(&args).await?;
-        let items: Vec<PrListItem> = parse_json("pr list", &raw)?;
-        Ok(items.into_iter().map(PrListItem::into_pr).collect())
+        let items: Vec<PrListingApi> = parse_json("pr list", &raw)?;
+        Ok(items.into_iter().map(PrListingApi::into_listed).collect())
     }
 
     async fn pr_comments(&self, number: u64) -> Result<Vec<PrComment>> {
@@ -1417,6 +1418,94 @@ impl PrListItem {
             head_ref: self.head_ref_name,
             head_oid: self.head_ref_oid,
             author: self.author.login,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PrListingApi {
+    #[serde(flatten)]
+    pr: PrListItem,
+    #[serde(default)]
+    is_draft: bool,
+    #[serde(default)]
+    review_decision: Option<String>,
+    #[serde(default)]
+    status_check_rollup: Vec<CheckApi>,
+    additions: Option<u64>,
+    deletions: Option<u64>,
+    #[serde(default)]
+    comments: Vec<serde::de::IgnoredAny>,
+    #[serde(default)]
+    labels: Vec<LabelApi>,
+    #[serde(default)]
+    updated_at: String,
+}
+
+/// A check run carries `status` and `conclusion`, a commit status only `state`.
+#[derive(Deserialize)]
+struct CheckApi {
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    conclusion: Option<String>,
+    #[serde(default)]
+    state: Option<String>,
+}
+
+impl CheckApi {
+    fn status(&self) -> JobStatus {
+        if let Some(state) = &self.state {
+            return match state.as_str() {
+                "SUCCESS" => JobStatus::Ok,
+                "FAILURE" | "ERROR" => JobStatus::Failed,
+                _ => JobStatus::Running,
+            };
+        }
+        let lower = |s: &Option<String>| s.as_deref().unwrap_or_default().to_ascii_lowercase();
+        let conclusion = lower(&self.conclusion);
+        // GitHub's own rollup fails a PR on these, so we must count them before
+        // the skipped and neutral checks drop out
+        if matches!(conclusion.as_str(), "action_required" | "cancelled") {
+            return JobStatus::Failed;
+        }
+        map_status(
+            &lower(&self.status),
+            (!conclusion.is_empty()).then_some(conclusion.as_str()),
+        )
+    }
+}
+
+/// The PR's checks as one status. Skipped and neutral checks say nothing about
+/// the PR, so we leave them out.
+fn checks_rollup(checks: &[CheckApi]) -> Option<JobStatus> {
+    checks
+        .iter()
+        .map(CheckApi::status)
+        .filter(|status| !matches!(status, JobStatus::Skipped | JobStatus::Neutral))
+        .reduce(JobStatus::worse)
+}
+
+impl PrListingApi {
+    fn into_listed(self) -> ListedPr {
+        let review = match self.review_decision.as_deref() {
+            Some("APPROVED") => Some(PrVerdict::Approved),
+            Some("CHANGES_REQUESTED") => Some(PrVerdict::ChangesRequested),
+            _ => None,
+        };
+        ListedPr {
+            summary: PrSummary {
+                draft: self.is_draft,
+                checks: checks_rollup(&self.status_check_rollup),
+                review,
+                additions: self.additions,
+                deletions: self.deletions,
+                comments: Some(self.comments.len() as u64),
+                labels: self.labels.into_iter().map(|label| label.name).collect(),
+                updated: created_epoch(&self.updated_at),
+            },
+            pr: self.pr.into_pr(),
         }
     }
 }
@@ -2715,6 +2804,47 @@ jobs:
             .map(|c| (c.login.as_str(), c.suggested))
             .collect();
         assert_eq!(shown, [("lead", true), ("peer", false)]);
+    }
+
+    #[tokio::test]
+    async fn the_listing_summarizes_checks_review_size_and_comments() {
+        let listing = r#"[{"number":7,"title":"Add widgets","author":{"login":"reviewer"},
+            "isDraft":true,"reviewDecision":"CHANGES_REQUESTED",
+            "statusCheckRollup":[
+                {"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"},
+                {"__typename":"CheckRun","status":"COMPLETED","conclusion":"SKIPPED"},
+                {"__typename":"CheckRun","status":"IN_PROGRESS","conclusion":""},
+                {"__typename":"StatusContext","state":"SUCCESS"}],
+            "additions":12,"deletions":3,"comments":[{"id":"a"},{"id":"b"}],
+            "labels":[{"name":"bug"}],"updatedAt":"2026-08-07T10:00:00Z"},
+           {"number":8,"title":"Fix docs","author":{"login":"peer"},"reviewDecision":"",
+            "statusCheckRollup":[{"__typename":"StatusContext","state":"FAILURE"},
+                {"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]},
+           {"number":9,"title":"Gate","author":{"login":"peer"},
+            "statusCheckRollup":[
+                {"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"},
+                {"__typename":"CheckRun","status":"COMPLETED","conclusion":"ACTION_REQUIRED"}]}]"#;
+        let listed = provider(&[("pr list", listing)])
+            .list_prs()
+            .await
+            .expect("listing");
+        let first = &listed[0].summary;
+        assert_eq!(listed[0].pr.number, 7);
+        assert!(first.draft);
+        assert_eq!(first.checks, Some(JobStatus::Running));
+        assert_eq!(first.review, Some(PrVerdict::ChangesRequested));
+        assert_eq!((first.additions, first.deletions), (Some(12), Some(3)));
+        assert_eq!(first.comments, Some(2));
+        assert_eq!(first.labels, ["bug"]);
+        assert_eq!(first.updated, 1_786_096_800);
+        let second = &listed[1].summary;
+        assert_eq!(second.checks, Some(JobStatus::Failed));
+        assert_eq!(second.review, None);
+        assert_eq!(
+            listed[2].summary.checks,
+            Some(JobStatus::Failed),
+            "a check waiting for approval blocks the PR"
+        );
     }
 
     #[tokio::test]

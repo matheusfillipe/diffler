@@ -6,13 +6,12 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use unicode_width::UnicodeWidthStr;
 
+use super::{column_width, fit};
 use crate::app::App;
 use crate::app::fuzzy::FuzzyList;
 use crate::app::tabs::home_relative;
 use crate::keymap::Action;
-use crate::text::elide;
 use crate::ui::Hint;
 
 const HINTS: &[Hint] = &[
@@ -136,21 +135,6 @@ fn draw_list(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     frame.render_widget(Paragraph::new(rows), area);
 }
 
-fn column_width<'a>(texts: impl Iterator<Item = &'a str>, cap: usize) -> usize {
-    texts
-        .map(UnicodeWidthStr::width)
-        .max()
-        .unwrap_or(0)
-        .min(cap)
-}
-
-/// `text` cut to `width` columns, then padded out to them.
-fn fit(text: &str, width: usize) -> String {
-    let cut = elide(text, width);
-    let pad = width.saturating_sub(cut.width());
-    format!("{cut}{}", " ".repeat(pad))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,11 +196,5 @@ mod tests {
         app.status.worktrees.clear();
         let content = render(&mut app).backend().to_string();
         assert!(content.contains("c to create one"), "{content}");
-    }
-
-    #[test]
-    fn fit_pads_short_text_and_cuts_long_text() {
-        assert_eq!(fit("main", 6), "main  ");
-        assert_eq!(fit("feature/long", 8), "feature…");
     }
 }

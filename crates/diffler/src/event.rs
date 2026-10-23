@@ -99,7 +99,7 @@ pub enum AppEvent {
         post: Box<crate::app::pr::PrPost>,
         result: Result<Option<crate::ci::PrComment>, String>,
     },
-    CiPrs(Vec<crate::ci::PullRequest>),
+    CiPrs(Vec<crate::ci::ListedPr>),
     CiPr(Option<crate::ci::PullRequest>),
     PrCreated(Box<Result<crate::ci::PullRequest, String>>),
     CiRunDetail(crate::ci::RunDetail),

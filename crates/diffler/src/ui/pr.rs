@@ -214,11 +214,7 @@ impl LineCtx<'_> {
             .map(|c| c.labels.as_slice())
             .unwrap_or_default();
         for label in labels {
-            spans.push(Span::raw("  "));
-            spans.push(Span::styled(
-                format!(" {label} "),
-                Style::new().fg(theme.warn_fg).bg(card_surface(theme)),
-            ));
+            spans.extend(super::label_chip_spans(theme, label));
         }
         Line::from(spans)
     }
@@ -394,7 +390,7 @@ pub(super) fn reviewer_picker(
     )
 }
 
-fn verdict_color(theme: &Theme, verdict: PrVerdict) -> Color {
+pub(super) fn verdict_color(theme: &Theme, verdict: PrVerdict) -> Color {
     match verdict {
         PrVerdict::Approved => theme.added,
         PrVerdict::ChangesRequested => theme.error_fg,
