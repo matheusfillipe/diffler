@@ -126,7 +126,7 @@
 # open_file_picker = "gf"      # fuzzy over every tracked file
 # blame = "B"                  # blame the file under the cursor
 # open_stats = "L"             # see lines of code per language
-# copy_url = "y"               # a pull request as its URL, a commit as its sha
+# yank = "y"                   # a pull request as its URL, a commit as its sha
 # refresh = "<c-r>"
 
 # Prefix keys on the status screen, named after the transient menu each opens.
@@ -168,6 +168,8 @@
 # send_feedback = "Z"
 # copy_file_feedback = "y"
 # copy_all_feedback = "Y"
+# copy_url = "gy"           # the forge link to the line or selection
+# open_url = "gx"           # the same link, in the browser
 # next_hunk = "]"           # also steps sidebar/comments-pane group headers
 # prev_hunk = "["           # also steps sidebar/comments-pane group headers
 # next_function = ")"
@@ -195,6 +197,7 @@
 
 [keys.log]
 # visual_select = "V"
+# yank = "y"              # the selected commits, or the one under the cursor
 # open = "<cr>"
 # next_section = "]"       # next commit carrying a branch or tag name
 # prev_section = "["
@@ -213,7 +216,9 @@
 # file_history = "H"       # list those commits in the log
 # open = "<cr>"            # review the commit that wrote this line
 # open_editor = "e"
-# copy_url = "Y"           # the forge link to the line or selection
+# copy_file_feedback = "y" # the selection, or this file's comments as markdown
+# copy_all_feedback = "Y"
+# copy_url = "gy"          # the forge link to the line or selection
 # open_url = "gx"          # the same link, in the browser
 # open_file_picker = "gf"
 # set_language = "gl"
@@ -239,8 +244,7 @@
 [keys.ci_log]
 # toggle_fold = "<tab>"    # also <cr>
 # visual_select = "V"
-# copy_file_feedback = "y"
-# copy_all_feedback = "Y"
+# yank = "y"
 
 [keys.prs]
 # open = "<cr>"           # open the pull request's page
@@ -248,7 +252,9 @@
 # branch_checkout = "b"
 # pr_worktree = "w"       # check it out in its own worktree and open that as a tab
 # request_reviewer = "R"
-# copy_url = "y"          # the forge's web URL for the pull request
+# yank = "y"              # the forge's web URL for the pull request
+# copy_url = "gy"
+# open_url = "gx"
 # refresh = "<c-r>"
 
 [keys.pr]
@@ -261,7 +267,8 @@
 # branch_checkout = "b"
 # pr_worktree = "w"
 # request_reviewer = "R"
-# copy_url = "y"
+# yank = "y"
+# copy_url = "gy"
 # open_url = "gx"
 # open_runs = "o"
 # switch_theme = "T"
@@ -272,7 +279,7 @@
 # worktree_create = "c"   # a new branch in a new worktree
 # worktree_checkout = "b" # an existing branch in a new worktree
 # worktree_remove = "x"   # a worktree with changes asks again before forcing
-# copy_url = "y"          # the worktree's path
+# yank = "y"              # the worktree's path
 # refresh = "<c-r>"
 
 [keys.graph]

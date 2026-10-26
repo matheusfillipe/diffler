@@ -40,5 +40,5 @@ expression: terminal.backend()
 " gf     find a file in the repository           l    Current branch             <a-n>   add a project as a tab          "
 " B      blame this file: see who last chan…     b    All branches               <a-w>   close this project              "
 " L      see lines of code per language          f    This file                  <a-1>-<a-9>  switch to project tab N    "
-" y      copy the web link                     P      Push …                                                             "
+" y      copy what the cursor is on            P      Push …                                                             "
 " Z      send your comments to the waiting …     p    Push                                                               "

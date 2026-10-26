@@ -70,7 +70,7 @@ impl App {
         let worktree = self.status.worktrees.get(self.worktrees_cursor).cloned();
         match (action, worktree) {
             (Action::Open, Some(worktree)) => self.open_worktree(&worktree),
-            (Action::CopyUrl, Some(worktree)) => {
+            (Action::Yank | Action::CopyUrl, Some(worktree)) => {
                 let path = worktree.path.display().to_string();
                 self.copy_or_report(Some(path.clone()), &path);
             }

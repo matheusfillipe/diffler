@@ -3,6 +3,47 @@
 use super::*;
 
 #[test]
+fn g_y_copies_the_forge_link_to_the_line_under_the_cursor() {
+    let fixture = standard_fixture();
+    fixture.remote("origin", "git@github.com:acme/widgets.git");
+    let mut app = diff_app(&fixture);
+    select_file(&mut app, "src/lib.rs");
+    app.diff.as_mut().unwrap().cursor = added_line_position(&app);
+    app.handle(key('g'));
+    app.handle(key('y'));
+    let url = app.pending_clipboard.clone().expect("a link");
+    assert!(
+        url.starts_with("https://github.com/acme/widgets/blob/main/src/lib.rs#L"),
+        "{url}"
+    );
+}
+
+#[test]
+fn g_y_in_a_commit_review_links_that_commit() {
+    let fixture = standard_fixture();
+    fixture.remote("origin", "git@github.com:acme/widgets.git");
+    let mut app = App::new(fixture.review(), LoadedConfig::default());
+    let oid = app.status.recent[0].oid.clone();
+    app.open_commit_diff(&oid);
+    select_file(&mut app, "src/lib.rs");
+    let line_row = rows(&app)
+        .iter()
+        .position(|row| matches!(row, DiffRow::Line { .. }))
+        .expect("a diff line in the commit");
+    app.diff.as_mut().unwrap().focus = Pane::Diff;
+    app.diff.as_mut().unwrap().cursor = line_row;
+    app.handle(key('g'));
+    app.handle(key('y'));
+    let url = app.pending_clipboard.clone().expect("a link");
+    assert!(
+        url.starts_with(&format!(
+            "https://github.com/acme/widgets/blob/{oid}/src/lib.rs#L"
+        )),
+        "{url}"
+    );
+}
+
+#[test]
 fn y_copies_the_selected_files_feedback_as_markdown() {
     let fixture = standard_fixture();
     let mut app = diff_app(&fixture);

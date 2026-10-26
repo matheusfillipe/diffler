@@ -227,12 +227,14 @@ prints a commit only on the first line of its run. Reached with `B` on the
 file under the cursor (status or diff), or `gf`, the fuzzy picker over
 `Vcs::tracked_files`: the diff screens list only changed files, so the picker
 is the one way to a file the review does not touch, and it also sends one
-straight to `$EDITOR`. `y` copies the selected lines' text; `Y` copies the
-forge's link to them (`ci::blob_url`, GitHub/GitLab/Forgejo line-range
-anchors) and `gx` opens that link in the default browser. The link names the
-branch when it is pushed with nothing ahead, else the remote's default
-branch, since a link to commits the forge lacks would 404; a past version
-names its commit.
+straight to `$EDITOR`. `y` copies the selected lines' text, or with no
+selection the file's comments as markdown, and `Y` every comment of the
+review, the same as the diff. `gy` copies the forge's link to the lines
+(`ci::blob_url`, GitHub/GitLab/Forgejo line-range anchors) and `gx` opens it
+in the default browser, on the diff screen too (`App::forge_link`). The link
+names the branch when it is pushed with nothing ahead, else the remote's
+default branch, since a link to commits the forge lacks would 404; a past
+version and a review of a commit, a range or a pull request name that commit.
 
 `{`/`}` step the view through the file's past versions, git-timemachine
 style. `Vcs::file_history` lists the commits on HEAD's first-parent line that

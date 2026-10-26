@@ -9,6 +9,7 @@ use diffler_core::source::ReviewSource;
 
 use super::App;
 use crate::ci::{PrComment, ReviewVerdict};
+use crate::text::plural;
 
 /// One queued outbound post; results return as events and stamp `remote_id`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,10 +113,6 @@ impl PrPending {
         }
         lines
     }
-}
-
-fn plural<'a>(count: usize, one: &'a str, many: &'a str) -> &'a str {
-    if count == 1 { one } else { many }
 }
 
 /// Queues the comment and its unposted replies as posts at one anchor,
@@ -245,7 +242,16 @@ impl App {
                     self.pr_worktree(&pr);
                 }
             }
-            Action::CopyUrl => self.copy_selected_pr_url(),
+            Action::Yank | Action::CopyUrl => {
+                if let Some((url, label)) = self.selected_pr_url() {
+                    self.copy_or_report(url, &label);
+                }
+            }
+            Action::OpenUrl => {
+                if let Some((url, label)) = self.selected_pr_url() {
+                    self.open_or_report(url, &label);
+                }
+            }
             Action::RequestReviewer => {
                 if let Some(number) = self.prs.get(self.prs_cursor).map(|pr| pr.number) {
                     self.load_reviewer_candidates(number);
@@ -255,13 +261,12 @@ impl App {
         }
     }
 
-    fn copy_selected_pr_url(&mut self) {
+    fn selected_pr_url(&mut self) -> Option<(Option<String>, String)> {
         let Some(pr) = self.prs.get(self.prs_cursor) else {
-            self.info("no pull request under the cursor");
-            return;
+            self.info("move to a pull request first");
+            return None;
         };
-        let (number, url) = (pr.number, pr.url.clone());
-        self.copy_or_report(url, &format!("#{number}"));
+        Some((pr.url.clone(), format!("#{}", pr.number)))
     }
 
     /// Several git ops can be in flight, so this label marks the ones whose

@@ -114,6 +114,7 @@ pub enum Action {
     CopyAllFeedback,
     CopyUrl,
     OpenUrl,
+    Yank,
     Search,
     SearchNext,
     SearchPrev,
@@ -257,6 +258,7 @@ impl Action {
             Self::CopyAllFeedback => "copy_all_feedback",
             Self::CopyUrl => "copy_url",
             Self::OpenUrl => "open_url",
+            Self::Yank => "yank",
             Self::Search => "search",
             Self::SearchNext => "search_next",
             Self::SearchPrev => "search_prev",
@@ -399,6 +401,7 @@ impl Action {
             Self::CopyAllFeedback => "copy every comment as markdown",
             Self::CopyUrl => "copy the web link",
             Self::OpenUrl => "open the web link in the browser",
+            Self::Yank => "copy what the cursor is on",
             Self::Search => "search",
             Self::SearchNext => "go to the next match",
             Self::SearchPrev => "go to the previous match",
@@ -437,7 +440,7 @@ impl Action {
         }
     }
 
-    pub(crate) const ALL: [Self; 135] = [
+    pub(crate) const ALL: [Self; 136] = [
         Self::CenterCursor,
         Self::CursorTop,
         Self::CursorBottom,
@@ -540,6 +543,7 @@ impl Action {
         Self::CopyAllFeedback,
         Self::CopyUrl,
         Self::OpenUrl,
+        Self::Yank,
         Self::Search,
         Self::SearchNext,
         Self::SearchPrev,
@@ -646,7 +650,7 @@ const STATUS_DEFAULTS: &[(&str, Action)] = &[
     ("gf", Action::OpenFilePicker),
     ("B", Action::Blame),
     ("L", Action::OpenStats),
-    ("y", Action::CopyUrl),
+    ("y", Action::Yank),
     ("Z", Action::SendFeedback),
     ("/", Action::Search),
     ("n", Action::SearchNext),
@@ -726,6 +730,8 @@ const DIFF_DEFAULTS: &[(&str, Action)] = &[
     ("m", Action::MarkViewed),
     ("y", Action::CopyFileFeedback),
     ("Y", Action::CopyAllFeedback),
+    ("gy", Action::CopyUrl),
+    ("gx", Action::OpenUrl),
     ("e", Action::OpenEditor),
     ("<c-g>", Action::EditExternally),
     ("gf", Action::OpenFilePicker),
@@ -772,7 +778,8 @@ const FILE_DEFAULTS: &[(&str, Action)] = &[
     ("R", Action::Resolve),
     ("d", Action::DeleteComment),
     ("y", Action::CopyFileFeedback),
-    ("Y", Action::CopyUrl),
+    ("Y", Action::CopyAllFeedback),
+    ("gy", Action::CopyUrl),
     ("gx", Action::OpenUrl),
     ("T", Action::SwitchTheme),
     ("gf", Action::OpenFilePicker),
@@ -795,6 +802,7 @@ const LOG_DEFAULTS: &[(&str, Action)] = &[
     ("<c-f>", Action::FullPageDown),
     ("<c-b>", Action::FullPageUp),
     ("V", Action::VisualSelect),
+    ("y", Action::Yank),
     ("<cr>", Action::Open),
     ("<c-r>", Action::Refresh),
     ("]", Action::NextSection),
@@ -821,8 +829,7 @@ const CI_LOG_DEFAULTS: &[(&str, Action)] = &[
     ("<tab>", Action::ToggleFold),
     ("<cr>", Action::ToggleFold),
     ("V", Action::VisualSelect),
-    ("y", Action::CopyFileFeedback),
-    ("Y", Action::CopyAllFeedback),
+    ("y", Action::Yank),
     ("/", Action::Search),
     ("n", Action::SearchNext),
     ("N", Action::SearchPrev),
@@ -845,7 +852,9 @@ const PRS_DEFAULTS: &[(&str, Action)] = &[
     ("b", Action::BranchCheckout),
     ("w", Action::PrWorktree),
     ("R", Action::RequestReviewer),
-    ("y", Action::CopyUrl),
+    ("y", Action::Yank),
+    ("gy", Action::CopyUrl),
+    ("gx", Action::OpenUrl),
     ("<c-r>", Action::Refresh),
     ("/", Action::Search),
     ("n", Action::SearchNext),
@@ -877,7 +886,8 @@ const PR_DEFAULTS: &[(&str, Action)] = &[
     ("b", Action::BranchCheckout),
     ("w", Action::PrWorktree),
     ("R", Action::RequestReviewer),
-    ("y", Action::CopyUrl),
+    ("y", Action::Yank),
+    ("gy", Action::CopyUrl),
     ("gx", Action::OpenUrl),
     ("o", Action::OpenRuns),
     ("T", Action::SwitchTheme),
@@ -903,7 +913,7 @@ const WORKTREES_DEFAULTS: &[(&str, Action)] = &[
     ("c", Action::WorktreeCreate),
     ("b", Action::WorktreeCheckout),
     ("x", Action::WorktreeRemove),
-    ("y", Action::CopyUrl),
+    ("y", Action::Yank),
     ("<c-r>", Action::Refresh),
     ("/", Action::Search),
     ("n", Action::SearchNext),
@@ -1541,6 +1551,55 @@ mod tests {
             keymap.resolve(&mut pending, press("o")),
             Resolved::Action(Action::OpenFigureGraph)
         );
+    }
+
+    #[test]
+    fn copy_keys_mean_the_same_on_every_screen() {
+        let resolve = |context: Context, keys: &[&str]| {
+            let keymap = keymap(context);
+            let mut pending = Vec::new();
+            keys.iter()
+                .map(|key| keymap.resolve(&mut pending, press(key)))
+                .last()
+        };
+        for context in [
+            Context::Status,
+            Context::Log,
+            Context::CiLog,
+            Context::Prs,
+            Context::Pr,
+            Context::Worktrees,
+        ] {
+            assert_eq!(
+                resolve(context, &["y"]),
+                Some(Resolved::Action(Action::Yank)),
+                "{context:?}"
+            );
+        }
+        for context in [Context::Diff, Context::File] {
+            assert_eq!(
+                resolve(context, &["y"]),
+                Some(Resolved::Action(Action::CopyFileFeedback)),
+                "{context:?}"
+            );
+            assert_eq!(
+                resolve(context, &["Y"]),
+                Some(Resolved::Action(Action::CopyAllFeedback)),
+                "{context:?}"
+            );
+        }
+        for context in [Context::Diff, Context::File, Context::Prs, Context::Pr] {
+            assert_eq!(
+                resolve(context, &["g", "y"]),
+                Some(Resolved::Action(Action::CopyUrl)),
+                "{context:?}"
+            );
+            assert_eq!(
+                resolve(context, &["g", "x"]),
+                Some(Resolved::Action(Action::OpenUrl)),
+                "{context:?}"
+            );
+        }
     }
 
     #[test]

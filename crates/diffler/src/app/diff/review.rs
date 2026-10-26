@@ -11,6 +11,7 @@ use super::{ComposerKind, DiffRow, Pane, Slide, sidebar_rows};
 use crate::app::rowsel::RowSelect;
 use crate::app::{App, Modal};
 use crate::config::FileLayout;
+use crate::text::plural;
 use crate::tree::TreeNode;
 
 impl App {
@@ -562,8 +563,7 @@ impl App {
             .and_then(|diff| diff.commit_model.as_ref())
             .unwrap_or_else(|| self.review.model());
         let exported = self.feedback_markdown(&source, filter.as_deref(), model);
-        let scope = if file_only { "file" } else { "all" };
-        self.copy_exported_feedback(exported, scope);
+        self.copy_exported_feedback(exported, file_only);
     }
 
     /// The source's open comments as a markdown prompt, with their count.
@@ -590,10 +590,8 @@ impl App {
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
         let branch = self.head.branch.as_deref().unwrap_or("?");
-        let title = format!(
-            "Review feedback: {repo} @ {branch} ({count} {})",
-            noun(count)
-        );
+        let noun = plural(count, "comment", "comments");
+        let title = format!("Review feedback: {repo} @ {branch} ({count} {noun})");
         let markdown = feedback::to_markdown(
             session,
             model,
@@ -609,14 +607,39 @@ impl App {
     pub(crate) fn copy_exported_feedback(
         &mut self,
         exported: Option<(String, usize)>,
-        scope: &str,
+        file_only: bool,
     ) {
         let Some((markdown, count)) = exported else {
             self.info("no comments to copy");
             return;
         };
         self.pending_clipboard = Some(markdown);
-        self.info(format!("copied {count} {} ({scope})", noun(count)));
+        let noun = plural(count, "comment", "comments");
+        let scope = if file_only { "file" } else { "all" };
+        self.info(format!("copied {count} {noun} ({scope})"));
+    }
+
+    /// The forge page for the lines under the cursor or the selection, at the
+    /// commit the review shows when it has one.
+    pub(super) fn diff_link(&mut self) -> Result<String, String> {
+        let no_line = "move to a code line to link it";
+        let anchor = self.comment_anchor().ok_or(no_line)?;
+        if anchor.on_old_side {
+            return Err("move to a line on the new side to link it".to_owned());
+        }
+        let span = anchor.span().ok_or(no_line)?;
+        let source = self.active_review_source();
+        let rev = match self.resolve_about(&source) {
+            ReviewSource::Commit { oid } => Some(oid),
+            ReviewSource::Range { newest, .. } => Some(newest),
+            ReviewSource::Pr { number } => {
+                self.pr_ranges.get(&number).map(|(_, head)| head.clone())
+            }
+            ReviewSource::WorkingTree
+            | ReviewSource::Against { .. }
+            | ReviewSource::Walkthrough { .. } => None,
+        };
+        self.forge_link(&anchor.file, span, rev)
     }
 
     /// `y`: with a visual selection, yank the rows it covers; with none,
@@ -632,8 +655,4 @@ impl App {
             self.copy_feedback(true);
         }
     }
-}
-
-fn noun(count: usize) -> &'static str {
-    if count == 1 { "comment" } else { "comments" }
 }

@@ -913,13 +913,13 @@ impl App {
                 Action::Discard,
                 Action::OpenEditor,
                 Action::Blame,
-                Action::CopyUrl,
+                Action::Yank,
             ],
             Some(Row::Worktree { .. }) => {
-                vec![Action::Open, Action::WorktreeRemove, Action::CopyUrl]
+                vec![Action::Open, Action::WorktreeRemove, Action::Yank]
             }
             Some(row) if folds(&row) => vec![Action::ToggleFold],
-            Some(_) => vec![Action::Open, Action::CopyUrl],
+            Some(_) => vec![Action::Open, Action::Yank],
             None => Vec::new(),
         }
     }
@@ -1022,7 +1022,7 @@ impl App {
             Action::StashPush => self.stash_push(),
             Action::StashPop => self.stash_pop(),
             Action::OpenEditor => self.editor_at_status_cursor(),
-            Action::CopyUrl => self.copy_at_status_cursor(),
+            Action::Yank | Action::CopyUrl => self.copy_at_status_cursor(),
             other => {
                 self.info(format!("{} does nothing on this screen", other.name()));
             }
@@ -3879,7 +3879,7 @@ mod tests {
         seat_walkthrough(&mut app);
         app.status.group_folded[Group::Walkthrough.index()] = false;
         cursor_to(&mut app, |row| matches!(row, Row::Walkthrough { .. }));
-        app.dispatch_status(Action::CopyUrl);
+        app.dispatch_status(Action::Yank);
         assert_eq!(
             app.pending_clipboard.as_deref(),
             Some("How the answer moved")
@@ -3891,7 +3891,7 @@ mod tests {
         let (_fixture, mut app) = app();
         seat_walkthrough(&mut app);
         cursor_to(&mut app, |row| matches!(row, Row::WalkthroughHeader { .. }));
-        app.dispatch_status(Action::CopyUrl);
+        app.dispatch_status(Action::Yank);
         assert_eq!(app.pending_clipboard, None);
     }
 
@@ -3954,7 +3954,7 @@ mod tests {
         app.pr = Some(pr);
         cursor_to(&mut app, |row| matches!(row, Row::Pr));
 
-        app.dispatch_status(Action::CopyUrl);
+        app.dispatch_status(Action::Yank);
         assert_eq!(
             app.pending_clipboard.as_deref(),
             Some("https://example.invalid/acme/widgets/pull/7")
@@ -3971,7 +3971,7 @@ mod tests {
         };
         let expected = app.status.recent[index].oid.clone();
 
-        app.dispatch_status(Action::CopyUrl);
+        app.dispatch_status(Action::Yank);
         assert_eq!(app.pending_clipboard.as_deref(), Some(expected.as_str()));
         assert_eq!(expected.len(), 40, "the full sha, not the abbreviation");
     }
@@ -3999,7 +3999,7 @@ mod tests {
         app.dispatch_status(Action::MoveDown);
         let expected = format!("{}\n{}", app.status.recent[0].oid, app.status.recent[1].oid);
 
-        app.dispatch_status(Action::CopyUrl);
+        app.dispatch_status(Action::Yank);
         assert_eq!(app.pending_clipboard.as_deref(), Some(expected.as_str()));
         assert!(
             app.status.selection().is_none(),
@@ -4020,7 +4020,7 @@ mod tests {
             .expect("a second file row");
         app.status.cursor = last_file;
 
-        app.dispatch_status(Action::CopyUrl);
+        app.dispatch_status(Action::Yank);
         assert_eq!(app.pending_clipboard.as_deref(), Some("a.txt\nb.txt"));
     }
 
@@ -4031,7 +4031,7 @@ mod tests {
         app.pr = Some(pull_request(7));
         cursor_to(&mut app, |row| matches!(row, Row::Pr));
 
-        app.dispatch_status(Action::CopyUrl);
+        app.dispatch_status(Action::Yank);
         assert!(app.pending_clipboard.is_none());
         assert!(
             app.message
@@ -4047,7 +4047,7 @@ mod tests {
         let (_fixture, mut app) = app();
         cursor_to(&mut app, |row| matches!(row, Row::RecentHeader { .. }));
 
-        app.dispatch_status(Action::CopyUrl);
+        app.dispatch_status(Action::Yank);
         assert!(app.pending_clipboard.is_none());
     }
 
@@ -4055,7 +4055,7 @@ mod tests {
     fn y_on_a_file_copies_its_repo_relative_path() {
         let (_fixture, mut app) = app();
         cursor_to(&mut app, |row| matches!(row, Row::File { .. }));
-        app.dispatch_status(Action::CopyUrl);
+        app.dispatch_status(Action::Yank);
         assert_eq!(app.pending_clipboard.as_deref(), Some("todo.md"));
     }
 
@@ -4065,7 +4065,7 @@ mod tests {
         cursor_to(&mut app, |row| matches!(row, Row::File { .. }));
         app.handle(key('\t'));
         cursor_to(&mut app, |row| matches!(row, Row::DiffLine { .. }));
-        app.dispatch_status(Action::CopyUrl);
+        app.dispatch_status(Action::Yank);
         assert_eq!(app.pending_clipboard.as_deref(), Some("todo.md"));
     }
 
@@ -4079,7 +4079,7 @@ mod tests {
         app.config.ui.status_file_layout = crate::config::FileLayout::Tree;
         app.handle(AppEvent::Tick);
         cursor_to(&mut app, |row| matches!(row, Row::Dir { .. }));
-        app.dispatch_status(Action::CopyUrl);
+        app.dispatch_status(Action::Yank);
         assert!(
             app.pending_clipboard
                 .as_deref()

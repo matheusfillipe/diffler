@@ -2039,6 +2039,74 @@ impl App {
     }
 
     /// Put a resolved value on the clipboard, or name what had none.
+    /// The forge page for `lines` of `path` at `rev`, else on the branch when
+    /// it is pushed with nothing ahead, else on the remote's default branch.
+    pub(crate) fn forge_link(
+        &self,
+        path: &str,
+        lines: (u32, u32),
+        rev: Option<String>,
+    ) -> Result<String, String> {
+        let vcs = &self.review.vcs;
+        let remotes = vcs.remotes().unwrap_or_default();
+        let pushed = self
+            .head
+            .upstream
+            .as_deref()
+            .filter(|_| self.head.ahead == 0)
+            .and_then(|upstream| {
+                remotes.iter().find_map(|remote| {
+                    let branch = upstream.strip_prefix(remote.as_str())?.strip_prefix('/')?;
+                    Some((remote.clone(), branch.to_owned()))
+                })
+            });
+        let (remote, branch) = if let Some(found) = pushed {
+            found
+        } else {
+            let remote = remotes
+                .iter()
+                .find(|name| *name == "origin")
+                .or_else(|| remotes.first())
+                .ok_or("add a git remote to link to")?
+                .clone();
+            let branch = vcs
+                .default_branch(&remote)
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| "main".to_owned());
+            (remote, branch)
+        };
+        let rev = rev.unwrap_or(branch);
+        let url = vcs
+            .remote_url(&remote)
+            .ok()
+            .flatten()
+            .ok_or_else(|| format!("remote {remote} has no url"))?;
+        crate::ci::detect_for_repo(&self.review.repo_root, Some(&url), &self.config.ci)
+            .and_then(|detected| crate::ci::blob_url(&detected, &url, &rev, path, lines))
+            .ok_or_else(|| format!("no known forge serves {url}"))
+    }
+
+    /// Copies a forge link and drops the selection it was made from.
+    pub(crate) fn copy_link(&mut self, link: Result<String, String>) {
+        match link {
+            Ok(url) => {
+                self.copy_or_report(Some(url), "");
+                if let Some(view) = self.row_select_mut() {
+                    view.set_anchor(None);
+                }
+            }
+            Err(err) => self.info(err),
+        }
+    }
+
+    pub(crate) fn open_link(&mut self, link: Result<String, String>) {
+        match link {
+            Ok(url) => self.open_or_report(Some(url), ""),
+            Err(err) => self.info(err),
+        }
+    }
+
     pub(crate) fn copy_or_report(&mut self, value: Option<String>, missing: &str) {
         let Some(value) = value else {
             self.info(format!("no URL for {missing}"));

@@ -246,7 +246,7 @@ impl App {
             Action::FullPageUp => self.ci_log_page(true, true),
             Action::ToggleFold => view.toggle_fold_at_cursor(),
             Action::VisualSelect => view.toggle_visual(),
-            Action::CopyFileFeedback | Action::CopyAllFeedback => {
+            Action::Yank | Action::CopyFileFeedback | Action::CopyAllFeedback => {
                 self.yank_rows("yanked log selection");
             }
             _ => {}

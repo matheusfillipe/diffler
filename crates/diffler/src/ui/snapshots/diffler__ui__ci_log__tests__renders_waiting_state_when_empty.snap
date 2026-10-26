@@ -2,7 +2,7 @@
 source: crates/diffler/src/ui/ci_log.rs
 expression: terminal.backend()
 ---
-" <tab> fold · / search · ? help                             "
+" <tab> fold · / search · y yank · ? help                    "
 "                                                            "
 "  waiting for logs…                                         "
 "                                                            "

@@ -2,7 +2,7 @@
 source: crates/diffler/src/ui/ci_log.rs
 expression: terminal.backend()
 ---
-" <tab> fold · / search · ? help                             "
+" <tab> fold · / search · y yank · ? help                    "
 "                                                            "
 "▌▸ ✓ Set up job  2s  1 lines                                "
 " ▸ × Run cargo clippy  1m13s  1 lines                       "

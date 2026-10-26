@@ -16,7 +16,7 @@ expression: terminal.backend()
 " Help: status keys ─────────────────────────────────────────────────────────────────────────────────────────────────────"
 "Actions                                                                                                                 "
 " V      select several rows              L      see lines of code per language   l       Log …                          "
-" j      move down                        y      copy the web link                  l     Current branch                 "
+" j      move down                        y      copy what the cursor is on         l     Current branch                 "
 " k      move up                          Z      send your comments to the wai…     b     All branches                   "
 " gg     go to top                        /      search                             f     This file                      "
 " G      go to bottom                     n      go to the next match             P       Push …                         "

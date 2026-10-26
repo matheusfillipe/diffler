@@ -675,12 +675,19 @@ impl App {
             Action::PrevSection => view.step_span(false),
             Action::ToggleBlame => view.show_blame = !view.show_blame,
             Action::VisualSelect => view.toggle_visual(),
-            Action::CopyFileFeedback | Action::CopyAllFeedback if view.selection().is_some() => {
+            Action::CopyFileFeedback if view.selection().is_some() => {
                 self.yank_rows("yanked selection");
             }
-            Action::CopyFileFeedback | Action::CopyAllFeedback => self.copy_file_feedback(),
-            Action::CopyUrl => self.copy_file_link(),
-            Action::OpenUrl => self.open_file_link(),
+            Action::CopyFileFeedback => self.copy_file_feedback(true),
+            Action::CopyAllFeedback => self.copy_file_feedback(false),
+            Action::CopyUrl => {
+                let link = self.file_link();
+                self.copy_link(link);
+            }
+            Action::OpenUrl => {
+                let link = self.file_link();
+                self.open_link(link);
+            }
             Action::Open => self.open_cursor_commit(),
             Action::OlderVersion => self.step_version(true),
             Action::NewerVersion => self.step_version(false),
@@ -717,17 +724,34 @@ impl App {
         })
     }
 
-    /// `y` with no selection: this file's comments as a markdown prompt, the
-    /// same export the diff view's `y` copies.
-    fn copy_file_feedback(&mut self) {
+    /// `y` with no selection copies this file's comments as a markdown prompt,
+    /// `Y` every comment of its review, the same exports the diff view copies.
+    fn copy_file_feedback(&mut self, file_only: bool) {
         let (Some(source), Some(path)) = (
             self.file_comment_source(),
             self.file.as_ref().map(|view| view.path.clone()),
         ) else {
             return;
         };
-        let exported = self.feedback_markdown(&source, Some(&path), self.review.model());
-        self.copy_exported_feedback(exported, "file");
+        let open_commit_model = self
+            .diff
+            .as_ref()
+            .and_then(|diff| diff.commit_model.as_ref())
+            .filter(|_| self.active_review_source() == source);
+        let model = match (&source, open_commit_model) {
+            (ReviewSource::WorkingTree, _) => std::borrow::Cow::Borrowed(self.review.model()),
+            (_, Some(model)) => std::borrow::Cow::Borrowed(model),
+            (_, None) => match self.fetch_pinned(&source) {
+                Ok(model) => std::borrow::Cow::Owned(model),
+                Err(err) => {
+                    self.error(err.to_string());
+                    return;
+                }
+            },
+        };
+        let filter = file_only.then_some(path.as_str());
+        let exported = self.feedback_markdown(&source, filter, &model);
+        self.copy_exported_feedback(exported, file_only);
     }
 
     /// Rebuilds the file view's cards from its review. It runs when a file or
@@ -834,79 +858,13 @@ impl App {
         });
     }
 
-    fn copy_file_link(&mut self) {
-        match self.file_link() {
-            Ok(url) => {
-                self.info(format!("copied {url}"));
-                self.pending_clipboard = Some(url);
-                if let Some(view) = self.file.as_mut() {
-                    view.visual_anchor = None;
-                }
-            }
-            Err(err) => self.info(err),
-        }
-    }
-
-    fn open_file_link(&mut self) {
-        match self.file_link() {
-            Ok(url) => self.open_or_report(Some(url), "this file"),
-            Err(err) => self.info(err),
-        }
-    }
-
-    /// The forge page for the selected lines: on the branch when it is pushed
-    /// with nothing ahead, else on the remote's default branch.
     fn file_link(&self) -> Result<String, String> {
         let view = self.file.as_ref().ok_or("open a file first")?;
         let (first, last) = view.selection().unwrap_or((view.cursor, view.cursor));
-        let vcs = &self.review.vcs;
-        let remotes = vcs.remotes().unwrap_or_default();
-        let pushed = self
-            .head
-            .upstream
-            .as_deref()
-            .filter(|_| self.head.ahead == 0)
-            .and_then(|upstream| {
-                remotes.iter().find_map(|remote| {
-                    let branch = upstream.strip_prefix(remote.as_str())?.strip_prefix('/')?;
-                    Some((remote.clone(), branch.to_owned()))
-                })
-            });
-        let (remote, rev) = if let Some(found) = pushed {
-            found
-        } else {
-            let remote = remotes
-                .iter()
-                .find(|name| *name == "origin")
-                .or_else(|| remotes.first())
-                .ok_or("add a git remote to link to")?
-                .clone();
-            let rev = vcs
-                .default_branch(&remote)
-                .ok()
-                .flatten()
-                .unwrap_or_else(|| "main".to_owned());
-            (remote, rev)
-        };
         let rev = view
             .shown_version()
-            .map_or(rev, |version| version.entry.oid.clone());
-        let url = vcs
-            .remote_url(&remote)
-            .ok()
-            .flatten()
-            .ok_or_else(|| format!("remote {remote} has no url"))?;
-        crate::ci::detect_for_repo(&self.review.repo_root, Some(&url), &self.config.ci)
-            .and_then(|detected| {
-                crate::ci::blob_url(
-                    &detected,
-                    &url,
-                    &rev,
-                    &view.path,
-                    (first as u32 + 1, last as u32 + 1),
-                )
-            })
-            .ok_or_else(|| format!("no known forge serves {url}"))
+            .map(|version| version.entry.oid.clone());
+        self.forge_link(&view.path, (first as u32 + 1, last as u32 + 1), rev)
     }
 
     /// Enter on a blamed line reviews the commit that wrote it.
@@ -1070,7 +1028,7 @@ mod tests {
     }
 
     #[test]
-    fn shift_y_copies_the_forge_link_to_the_selected_lines() {
+    fn g_y_copies_the_forge_link_to_the_selected_lines() {
         let fixture = standard_fixture();
         fixture.remote("origin", "git@github.com:acme/widgets.git");
         let mut app = App::new(fixture.review(), LoadedConfig::default());
@@ -1078,7 +1036,8 @@ mod tests {
         app.handle(key('j'));
         app.handle(key('V'));
         app.handle(key('j'));
-        app.handle(key('Y'));
+        app.handle(key('g'));
+        app.handle(key('y'));
         assert_eq!(
             app.pending_clipboard.as_deref(),
             Some("https://github.com/acme/widgets/blob/main/src/lib.rs#L2-L3")
@@ -1087,10 +1046,11 @@ mod tests {
     }
 
     #[test]
-    fn shift_y_without_a_remote_says_what_to_add() {
+    fn g_y_without_a_remote_says_what_to_add() {
         let (_fixture, mut app) = app();
         app.install_file(view("one\n", Vec::new()), None);
-        app.handle(key('Y'));
+        app.handle(key('g'));
+        app.handle(key('y'));
         assert_eq!(app.pending_clipboard, None);
         assert!(
             app.message
@@ -1609,6 +1569,16 @@ mod tests {
         let copied = app.pending_clipboard.as_deref().expect("the comments");
         assert!(copied.contains("rename this"), "{copied}");
         assert_eq!(message(&app), "copied 1 comment (file)");
+
+        app.review.session.add_comment(
+            Anchor::on_file_lines("todo.md", (1, None), "x").expect("an anchor"),
+            "reviewer",
+            "other file",
+        );
+        app.handle(key('Y'));
+        let copied = app.pending_clipboard.as_deref().expect("the comments");
+        assert!(copied.contains("other file"), "{copied}");
+        assert_eq!(message(&app), "copied 2 comments (all)");
     }
 
     fn write_comment(app: &mut App, text: &str) {

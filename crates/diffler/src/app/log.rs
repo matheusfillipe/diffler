@@ -242,7 +242,7 @@ impl App {
             }
             // V toggles a range selection anchored at the cursor commit
             Action::VisualSelect => log.toggle_visual(),
-            Action::CopyFileFeedback | Action::CopyAllFeedback => {
+            Action::Yank | Action::CopyFileFeedback | Action::CopyAllFeedback => {
                 self.yank_rows("yanked commits");
             }
             other => {

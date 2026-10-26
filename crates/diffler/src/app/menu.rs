@@ -78,7 +78,7 @@ impl App {
             Screen::Diff => self.diff_menu_actions(),
             Screen::Status => self.status_menu_actions(),
             Screen::Log | Screen::CiLog => {
-                vec![Action::Open, Action::CopyUrl, Action::CopyFileFeedback]
+                vec![Action::Open, Action::Yank]
             }
             // these screens select nothing on click, so a menu would act on
             // whatever row the keyboard left selected

@@ -16,7 +16,7 @@ use crate::ui::{Hint, cursor_line, status_bar};
 const HINTS: &[Hint] = &[
     Hint::Leaf(&[Action::ToggleFold], "fold"),
     Hint::Leaf(&[Action::Search], "search"),
-    Hint::Leaf(&[Action::CopyFileFeedback], "yank"),
+    Hint::Leaf(&[Action::Yank], "yank"),
     Hint::Leaf(&[Action::Help], "help"),
 ];
 

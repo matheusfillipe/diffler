@@ -237,6 +237,8 @@ full keymap of the screen you're on, and `<c-k>` fuzzy-finds any action.
 | `alt-h` / `alt-l` | previous / next project tab (`alt-1`-`alt-9` jumps to one) |
 | `alt-w` | close this project tab |
 | `w` | on the status screen, open, create or remove a worktree; on a pull request, check it out in its own worktree |
+| `y` / `Y` | copy the selection or this file's comments / every comment, as an agent prompt |
+| `gy` / `gx` | copy / open the forge link to the line |
 | `B` | blame: see who last changed each line |
 | `{` / `}` | in the file view, step to the file's older / newer version (`H` lists them) |
 | `c` | in the file view, comment on the line or the `V` selection, even code the diff leaves out; on an older version the comment joins that commit's review |

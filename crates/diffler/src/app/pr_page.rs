@@ -323,7 +323,7 @@ impl App {
                 let pr = page.pr.clone();
                 self.pr_worktree(&pr);
             }
-            Action::CopyUrl => {
+            Action::Yank | Action::CopyUrl => {
                 let (number, url) = (page.number(), page.pr.url.clone());
                 self.copy_or_report(url, &format!("#{number}"));
             }

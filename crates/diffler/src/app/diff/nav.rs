@@ -284,6 +284,14 @@ impl App {
             Action::UnviewAll => self.diff_unview_all(),
             Action::CopyFileFeedback => self.copy_file_or_selection(),
             Action::CopyAllFeedback => self.copy_feedback(false),
+            Action::CopyUrl => {
+                let link = self.diff_link();
+                self.copy_link(link);
+            }
+            Action::OpenUrl => {
+                let link = self.diff_link();
+                self.open_link(link);
+            }
             Action::OpenEditor => self.editor_at_diff_cursor(),
             Action::OpenFigureGraph => self.open_figure_graph_at_cursor(),
             Action::SymbolLens => self.symbol_lens(true),

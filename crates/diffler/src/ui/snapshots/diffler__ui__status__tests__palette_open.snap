@@ -37,7 +37,7 @@ expression: render(&mut app).backend()
 "             find a file in the repository                                                             gf               "
 "             blame this file: see who last changed each line                                            B               "
 "             see lines of code per language                                                             L               "
-"             copy the web link                                                                          y               "
+"             copy what the cursor is on                                                                 y               "
 "             send your comments to the waiting agent                                                    Z               "
 "             type to filter · enter run · tab list · esc close                                                          "
 "                                                                                                                        "
