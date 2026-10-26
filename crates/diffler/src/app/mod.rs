@@ -1925,7 +1925,9 @@ impl App {
             .as_ref()
             .map(|diff| diff.capture_positions(&self.review));
         let before = self.shown_hunks();
-        self.review.install_refresh(status, model);
+        if let Err(err) = self.review.install_refresh(status, model) {
+            self.error(err.to_string());
+        }
         self.status.clear_enriched();
         let Some(positions) = positions else {
             self.report_rediff(&before);
@@ -2152,7 +2154,9 @@ impl App {
         if unchanged {
             self.review.status = status;
         } else {
-            self.review.install_refresh(status, model);
+            if let Err(err) = self.review.install_refresh(status, model) {
+                self.error(err.to_string());
+            }
             self.status.clear_enriched();
         }
         match head {

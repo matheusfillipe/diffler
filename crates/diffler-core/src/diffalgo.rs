@@ -154,6 +154,26 @@ pub fn histogram_hunks(
         .collect()
 }
 
+/// Where the 1-based `line` of `old` sits in `new`, shifted by the lines
+/// added and removed above it. `None` when an edit changed or removed it.
+pub fn follow_line(old: &str, new: &str, line: u32) -> Option<u32> {
+    let index = line.checked_sub(1)?;
+    let input = InternedInput::new(old, new);
+    let diff = Diff::compute(Algorithm::Histogram, &input);
+    let mut shift = 0i64;
+    for hunk in diff.hunks() {
+        if index < hunk.before.start {
+            break;
+        }
+        if index < hunk.before.end {
+            return None;
+        }
+        shift += i64::from(hunk.after.end - hunk.after.start)
+            - i64::from(hunk.before.end - hunk.before.start);
+    }
+    u32::try_from(i64::from(line) + shift).ok()
+}
+
 fn line_text(input: &InternedInput<&str>, token: imara_diff::Token) -> String {
     input.interner[token]
         .trim_end_matches(['\n', '\r'])

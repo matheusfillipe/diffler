@@ -266,6 +266,49 @@ impl Session {
         self.viewed.get(path).is_some_and(|h| h == current_hash)
     }
 
+    /// Shifts each comment by the lines an edit added or removed above it, so
+    /// it stays on its code. `previous` is the diff the comment was placed
+    /// against. A comment on a line the edit changed stays put and reads
+    /// outdated. Old-side lines never move, since their numbers come from the
+    /// base. Returns whether any comment moved.
+    pub fn follow_moved_lines(&mut self, previous: Option<&DiffModel>, model: &DiffModel) -> bool {
+        let Some(previous) = previous else {
+            return false;
+        };
+        let mut moved = false;
+        for comment in &mut self.comments {
+            // a walkthrough stop finds its lines again from its anchor_ref
+            if comment.anchor_ref.is_some() || comment.anchor.on_old_side {
+                continue;
+            }
+            let anchor = &mut comment.anchor;
+            let Some((start, end)) = anchor.span() else {
+                continue;
+            };
+            let (Some(old), Some(new)) = (
+                new_text(previous, &anchor.file),
+                new_text(model, &anchor.file),
+            ) else {
+                continue;
+            };
+            if old == new {
+                continue;
+            }
+            let (Some(first), Some(last)) = (
+                crate::diffalgo::follow_line(old, new, start),
+                crate::diffalgo::follow_line(old, new, end),
+            ) else {
+                continue;
+            };
+            if (first, last) != (start, end) {
+                anchor.line = Some(first);
+                anchor.line_end = anchor.line_end.map(|_| last);
+                moved = true;
+            }
+        }
+        moved
+    }
+
     /// Drop viewed marks for files that left the diff or changed. Comments
     /// stay, flagged outdated where they drifted.
     pub fn reconcile(&mut self, model: &DiffModel) {
@@ -277,6 +320,15 @@ impl Session {
         self.viewed
             .retain(|path, hash| live.get(path.as_str()).is_some_and(|h| h == hash));
     }
+}
+
+fn new_text<'a>(model: &'a DiffModel, file: &str) -> Option<&'a str> {
+    model
+        .files
+        .iter()
+        .find(|f| f.path == file)?
+        .new_text
+        .as_deref()
 }
 
 #[cfg(test)]

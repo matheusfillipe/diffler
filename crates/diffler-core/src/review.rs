@@ -180,8 +180,7 @@ impl Review {
     pub fn refresh(&mut self) -> Result<(), ReviewError> {
         self.status = self.vcs.status()?;
         let model = self.vcs.working_tree_diff()?;
-        self.install_refresh(self.status.clone(), model);
-        Ok(())
+        self.install_refresh(self.status.clone(), model)
     }
 
     /// A refresh on its own repo handle, for a worker thread; apply it with
@@ -335,10 +334,21 @@ impl Review {
         Ok(repo::open(repo_root)?.file_history(rel, limit)?)
     }
 
-    pub fn install_refresh(&mut self, status: StatusModel, model: DiffModel) {
+    /// Comments that moved with their code are saved at once, so a restart
+    /// finds them on their new lines.
+    pub fn install_refresh(
+        &mut self,
+        status: StatusModel,
+        model: DiffModel,
+    ) -> Result<(), ReviewError> {
         self.status = status;
+        let moved = self.session.follow_moved_lines(self.model.get(), &model);
         self.session.reconcile(&model);
         self.model = OnceCell::from(model);
+        if moved {
+            self.save()?;
+        }
+        Ok(())
     }
 
     pub fn save(&self) -> Result<(), ReviewError> {
