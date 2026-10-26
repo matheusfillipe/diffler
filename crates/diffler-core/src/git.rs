@@ -171,7 +171,7 @@ impl GitVcs {
             self.repo.diff_tree_to_workdir(base, Some(&mut options))?
         };
         let sparse = self.sparse_paths();
-        // ponytail: a sparse checkout gets no rename detection, since it would read
+        // we skip rename detection in a sparse checkout, since it would read
         // every file outside the cone, which a partial clone never downloaded
         if sparse.is_empty() {
             let mut find = git2::DiffFindOptions::new();
