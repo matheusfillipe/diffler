@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793006906806,
+  "lastUpdate": 1793007573387,
   "repoUrl": "https://github.com/matheusfillipe/diffler",
   "entries": {
     "Benchmark": [
@@ -19583,6 +19583,102 @@ window.BENCHMARK_DATA = {
             "name": "scope_index/20000",
             "value": 56666536,
             "range": "± 1617004",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "committer": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "distinct": true,
+          "id": "949c8145bf70b5cc9cd5a0cc92ce77a4682d8983",
+          "message": "fix: update tokio for RUSTSEC-2026-0386 and skip snapshots in typos",
+          "timestamp": "2026-10-26T10:35:06+01:00",
+          "tree_id": "952ea53d9435057e67fad5271d37c0e0f988d5ef",
+          "url": "https://github.com/matheusfillipe/diffler/commit/949c8145bf70b5cc9cd5a0cc92ce77a4682d8983"
+        },
+        "date": 1793007572862,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "syndiff_emphasis/1000",
+            "value": 6183083,
+            "range": "± 494136",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/1000",
+            "value": 15851,
+            "range": "± 220",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/1000",
+            "value": 4481252,
+            "range": "± 20206",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/1000",
+            "value": 3586632,
+            "range": "± 36897",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/5000",
+            "value": 32742205,
+            "range": "± 477290",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/5000",
+            "value": 79092,
+            "range": "± 1771",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/5000",
+            "value": 22915456,
+            "range": "± 573785",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/5000",
+            "value": 18132658,
+            "range": "± 365218",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/20000",
+            "value": 141480665,
+            "range": "± 3916762",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/20000",
+            "value": 321438,
+            "range": "± 7608",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/20000",
+            "value": 93066600,
+            "range": "± 1810219",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/20000",
+            "value": 73968426,
+            "range": "± 1772976",
             "unit": "ns/iter"
           }
         ]
