@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793035542104,
+  "lastUpdate": 1793035736270,
   "repoUrl": "https://github.com/matheusfillipe/diffler",
   "entries": {
     "Benchmark": [
@@ -19871,6 +19871,102 @@ window.BENCHMARK_DATA = {
             "name": "scope_index/20000",
             "value": 100947657,
             "range": "± 1035583",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f451f9696edc1d756bb9b44005adc6f2a3a39ccd",
+          "message": "chore(deps): bump the deps group across 1 directory with 10 updates (#59)\n\nBumps the deps group with 10 updates in the / directory:\n\n| Package | From | To |\n| --- | --- | --- |\n| [rmcp](https://github.com/modelcontextprotocol/rust-sdk) | `3.5.0` | `3.7.0` |\n| [ratatui-image](https://github.com/ratatui/ratatui-image) | `12.0.0-rc.0` | `12.0.0-rc.3` |\n| [tree-sitter-php](https://github.com/tree-sitter/tree-sitter-php) | `0.24.2` | `0.25.1` |\n| [tree-sitter-swift](https://github.com/alex-pinkus/tree-sitter-swift) | `0.7.3` | `0.7.4` |\n| [tree-sitter-scala](https://github.com/tree-sitter/tree-sitter-scala) | `0.26.2` | `0.26.3` |\n| [serde_json](https://github.com/serde-rs/json) | `1.0.151` | `1.0.154` |\n| [toml](https://github.com/toml-rs/toml) | `1.1.6+spec-1.1.0` | `1.1.8+spec-1.1.0` |\n| [uuid](https://github.com/uuid-rs/uuid) | `1.26.1` | `1.28.0` |\n| [pulldown-cmark](https://github.com/raphlinus/pulldown-cmark) | `0.13.4` | `0.13.5` |\n| [insta](https://github.com/mitsuhiko/insta) | `1.48.0` | `1.49.0` |\n\n\n\nUpdates `rmcp` from 3.5.0 to 3.7.0\n- [Release notes](https://github.com/modelcontextprotocol/rust-sdk/releases)\n- [Changelog](https://github.com/modelcontextprotocol/rust-sdk/blob/main/release-plz.toml)\n- [Commits](https://github.com/modelcontextprotocol/rust-sdk/compare/rmcp-v3.5.0...rmcp-v3.7.0)\n\nUpdates `ratatui-image` from 12.0.0-rc.0 to 12.0.0-rc.3\n- [Release notes](https://github.com/ratatui/ratatui-image/releases)\n- [Changelog](https://github.com/ratatui/ratatui-image/blob/master/CHANGELOG.md)\n- [Commits](https://github.com/ratatui/ratatui-image/compare/v12.0.0-rc.0...v12.0.0-rc.3)\n\nUpdates `tree-sitter-php` from 0.24.2 to 0.25.1\n- [Release notes](https://github.com/tree-sitter/tree-sitter-php/releases)\n- [Commits](https://github.com/tree-sitter/tree-sitter-php/compare/v0.24.2...v0.25.1)\n\nUpdates `tree-sitter-swift` from 0.7.3 to 0.7.4\n- [Release notes](https://github.com/alex-pinkus/tree-sitter-swift/releases)\n- [Commits](https://github.com/alex-pinkus/tree-sitter-swift/compare/0.7.3...0.7.4)\n\nUpdates `tree-sitter-scala` from 0.26.2 to 0.26.3\n- [Release notes](https://github.com/tree-sitter/tree-sitter-scala/releases)\n- [Commits](https://github.com/tree-sitter/tree-sitter-scala/compare/v0.26.2...v0.26.3)\n\nUpdates `serde_json` from 1.0.151 to 1.0.154\n- [Release notes](https://github.com/serde-rs/json/releases)\n- [Commits](https://github.com/serde-rs/json/compare/v1.0.151...v1.0.154)\n\nUpdates `toml` from 1.1.6+spec-1.1.0 to 1.1.8+spec-1.1.0\n- [Commits](https://github.com/toml-rs/toml/compare/toml-v1.1.6...toml-v1.1.8)\n\nUpdates `uuid` from 1.26.1 to 1.28.0\n- [Release notes](https://github.com/uuid-rs/uuid/releases)\n- [Commits](https://github.com/uuid-rs/uuid/compare/v1.26.1...v1.28.0)\n\nUpdates `pulldown-cmark` from 0.13.4 to 0.13.5\n- [Release notes](https://github.com/raphlinus/pulldown-cmark/releases)\n- [Commits](https://github.com/raphlinus/pulldown-cmark/compare/v0.13.4...v0.13.5)\n\nUpdates `insta` from 1.48.0 to 1.49.0\n- [Release notes](https://github.com/mitsuhiko/insta/releases)\n- [Changelog](https://github.com/mitsuhiko/insta/blob/master/CHANGELOG.md)\n- [Commits](https://github.com/mitsuhiko/insta/compare/1.48.0...1.49.0)\n\n---\nupdated-dependencies:\n- dependency-name: rmcp\n  dependency-version: 3.7.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: deps\n- dependency-name: ratatui-image\n  dependency-version: 12.0.0-rc.3\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: deps\n- dependency-name: tree-sitter-php\n  dependency-version: 0.25.1\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: deps\n- dependency-name: tree-sitter-swift\n  dependency-version: 0.7.4\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: deps\n- dependency-name: tree-sitter-scala\n  dependency-version: 0.26.3\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: deps\n- dependency-name: serde_json\n  dependency-version: 1.0.154\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: deps\n- dependency-name: toml\n  dependency-version: 1.1.8+spec-1.1.0\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: deps\n- dependency-name: uuid\n  dependency-version: 1.28.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: deps\n- dependency-name: pulldown-cmark\n  dependency-version: 0.13.5\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: deps\n- dependency-name: insta\n  dependency-version: 1.49.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: deps\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-10-26T18:21:51+01:00",
+          "tree_id": "c18c612edcfd735efaecbfe48095bdd6a7b08607",
+          "url": "https://github.com/matheusfillipe/diffler/commit/f451f9696edc1d756bb9b44005adc6f2a3a39ccd"
+        },
+        "date": 1793035735328,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "syndiff_emphasis/1000",
+            "value": 4627707,
+            "range": "± 462882",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/1000",
+            "value": 12947,
+            "range": "± 276",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/1000",
+            "value": 3431676,
+            "range": "± 58233",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/1000",
+            "value": 2712748,
+            "range": "± 106502",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/5000",
+            "value": 25498778,
+            "range": "± 1448454",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/5000",
+            "value": 61644,
+            "range": "± 3123",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/5000",
+            "value": 17516524,
+            "range": "± 700991",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/5000",
+            "value": 13755997,
+            "range": "± 609737",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/20000",
+            "value": 111820329,
+            "range": "± 8393954",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/20000",
+            "value": 248817,
+            "range": "± 12871",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/20000",
+            "value": 75205882,
+            "range": "± 3052860",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/20000",
+            "value": 56468138,
+            "range": "± 2657432",
             "unit": "ns/iter"
           }
         ]
