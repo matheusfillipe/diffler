@@ -346,6 +346,7 @@ fn fold_dots(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::tabs::folder_key;
     use crate::config::LoadedConfig;
     use crate::event::AppEvent;
     use crate::test_support::{Fixture, key, standard_fixture};
@@ -382,6 +383,22 @@ mod tests {
         (fixture, linked)
     }
 
+    /// We key a tab op by its folder so the test compares git's spelling of a
+    /// path with ours on every platform.
+    fn tab_key(op: Option<&TabOp>) -> Option<String> {
+        match op? {
+            TabOp::Open(path) => Some(format!("open {}", folder_key(path))),
+            TabOp::Drop(path) => Some(format!("drop {}", folder_key(path))),
+            other => Some(format!("{other:?}")),
+        }
+    }
+
+    fn argv_keys(argv: &[impl AsRef<str>]) -> Vec<String> {
+        argv.iter()
+            .map(|arg| folder_key(Path::new(arg.as_ref())))
+            .collect()
+    }
+
     fn worktree_row(app: &App) -> usize {
         app.visible_rows()
             .iter()
@@ -410,7 +427,10 @@ mod tests {
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         app.status.cursor = worktree_row(&app);
         app.handle(key('\n'));
-        assert_eq!(app.pending_tab, Some(TabOp::Open(linked)));
+        assert_eq!(
+            tab_key(app.pending_tab.as_ref()),
+            tab_key(Some(&TabOp::Open(linked)))
+        );
     }
 
     #[test]
@@ -426,18 +446,21 @@ mod tests {
         let git = app.pending_git.take().expect("add queued");
         let path = beside(&fixture, "fixture-feat-x");
         assert_eq!(
-            git.argv,
-            [
+            argv_keys(&git.argv),
+            argv_keys(&[
                 "git",
                 "worktree",
                 "add",
                 "-b",
                 "feat/x",
                 &path.display().to_string()
-            ]
+            ])
         );
         done(&mut app, &git.label, true, "");
-        assert_eq!(app.pending_tab, Some(TabOp::Open(path)));
+        assert_eq!(
+            tab_key(app.pending_tab.as_ref()),
+            tab_key(Some(&TabOp::Open(path)))
+        );
     }
 
     #[test]
@@ -449,8 +472,8 @@ mod tests {
         app.confirm_modal();
         let git = app.pending_git.take().expect("remove queued");
         assert_eq!(
-            git.argv,
-            ["git", "worktree", "remove", &linked.display().to_string()]
+            argv_keys(&git.argv),
+            argv_keys(&["git", "worktree", "remove", &linked.display().to_string()])
         );
         done(
             &mut app,
@@ -462,7 +485,10 @@ mod tests {
         let forced = app.pending_git.take().expect("forced remove queued");
         assert!(forced.argv.contains(&"--force".to_owned()), "{forced:?}");
         done(&mut app, &forced.label, true, "");
-        assert_eq!(app.pending_tab, Some(TabOp::Drop(linked)));
+        assert_eq!(
+            tab_key(app.pending_tab.as_ref()),
+            tab_key(Some(&TabOp::Drop(linked)))
+        );
     }
 
     #[test]
@@ -496,13 +522,13 @@ mod tests {
         let second = app.pending_git.take().expect("second add");
         done(&mut app, &second.label, true, "");
         assert_eq!(
-            app.pending_tab.take(),
-            Some(TabOp::Open(beside(&fixture, "fixture-second")))
+            tab_key(app.pending_tab.take().as_ref()),
+            tab_key(Some(&TabOp::Open(beside(&fixture, "fixture-second"))))
         );
         done(&mut app, &first.label, true, "");
         assert_eq!(
-            app.pending_tab,
-            Some(TabOp::Open(beside(&fixture, "fixture-first")))
+            tab_key(app.pending_tab.as_ref()),
+            tab_key(Some(&TabOp::Open(beside(&fixture, "fixture-first"))))
         );
     }
 
@@ -544,14 +570,14 @@ mod tests {
         let add = app.pending_git.take().expect("add queued");
         let path = beside(&fixture, "fixture-feat-widgets");
         assert_eq!(
-            add.argv,
-            [
+            argv_keys(&add.argv),
+            argv_keys(&[
                 "git",
                 "worktree",
                 "add",
                 &path.display().to_string(),
                 "feat/widgets"
-            ]
+            ])
         );
     }
 
@@ -568,7 +594,10 @@ mod tests {
         app.handle(key('k'));
         app.handle(key('\n'));
         let main = fixture.root.canonicalize().expect("canonical root");
-        assert_eq!(app.pending_tab, Some(TabOp::Open(main)));
+        assert_eq!(
+            tab_key(app.pending_tab.as_ref()),
+            tab_key(Some(&TabOp::Open(main)))
+        );
     }
 
     #[test]

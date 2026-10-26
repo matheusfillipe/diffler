@@ -200,6 +200,23 @@ pub fn home_relative(path: &Path) -> String {
     }
 }
 
+/// Whether two spellings name the same folder. Windows hands us `C:/a` from
+/// git, `C:\a` from a join and `\\?\C:\a` from canonicalize, and a removed
+/// worktree no longer exists to canonicalize, so we compare the text.
+pub fn same_folder(a: &Path, b: &Path) -> bool {
+    folder_key(a) == folder_key(b)
+}
+
+/// The spelling [`same_folder`] compares.
+pub fn folder_key(path: &Path) -> String {
+    let text = path.to_string_lossy().replace('\\', "/");
+    let text = match text.strip_prefix("//?/UNC/") {
+        Some(share) => format!("//{share}"),
+        None => text.strip_prefix("//?/").unwrap_or(&text).to_owned(),
+    };
+    text.strip_suffix('/').unwrap_or(&text).to_owned()
+}
+
 pub fn expand_home(path: &str) -> PathBuf {
     match (path.strip_prefix('~'), std::env::var_os("HOME")) {
         (Some(rest), Some(home)) => PathBuf::from(home).join(rest.trim_start_matches('/')),
@@ -225,6 +242,23 @@ pub fn nearby_repos(roots: &[PathBuf]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_windows_spelling_of_a_folder_is_the_same_folder() {
+        let git = Path::new("C:/work/widgets-feat");
+        for other in [
+            r"C:\work\widgets-feat",
+            r"\\?\C:\work\widgets-feat",
+            "C:/work/widgets-feat/",
+        ] {
+            assert!(same_folder(git, Path::new(other)), "{other}");
+        }
+        assert!(same_folder(
+            Path::new("//server/share/wt"),
+            Path::new(r"\\?\UNC\server\share\wt")
+        ));
+        assert!(!same_folder(git, Path::new("C:/work/widgets")));
+    }
 
     #[test]
     fn a_typed_path_lists_the_folders_it_could_complete_to() {

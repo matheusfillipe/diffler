@@ -8,7 +8,7 @@ use diffler_core::review::Review;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
-use crate::app::tabs::{TabOp, TabStrip, expand_home, nearby_repos};
+use crate::app::tabs::{TabOp, TabStrip, expand_home, nearby_repos, same_folder};
 use crate::app::{App, Flow};
 use crate::config::{self, CliOverrides};
 use crate::editor::{EditorPurpose, EditorRequest};
@@ -351,11 +351,9 @@ impl Workspace {
     /// The folder is already gone, so we compare the path as given: the tab
     /// recorded its root while the folder still resolved.
     fn drop_tab(&mut self, path: &Path) {
-        let Some(index) = self
-            .tabs
-            .iter()
-            .position(|tab| tab.root == path || tab.app.review.repo_root == path)
-        else {
+        let Some(index) = self.tabs.iter().position(|tab| {
+            same_folder(&tab.root, path) || same_folder(&tab.app.review.repo_root, path)
+        }) else {
             return;
         };
         if index != self.active {

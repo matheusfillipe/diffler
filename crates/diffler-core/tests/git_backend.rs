@@ -1245,12 +1245,23 @@ fn worktrees_list_the_main_one_and_every_linked_one_from_either_side() {
         .worktree("feat-tree", &linked_path, Some(&options))
         .expect("add worktree");
 
+    // git's own default names the first branch, so we read it back
+    let first_branch = fx
+        .repo
+        .head()
+        .expect("head")
+        .shorthand()
+        .unwrap_or_default()
+        .to_owned();
     let from_main = vcs(&fx).worktrees().expect("worktrees");
     let labels: Vec<(&str, bool, bool)> = from_main
         .iter()
         .map(|w| (w.label.as_str(), w.main, w.current))
         .collect();
-    assert_eq!(labels, [("main", true, true), ("feat", false, false)]);
+    assert_eq!(
+        labels,
+        [(first_branch.as_str(), true, true), ("feat", false, false)]
+    );
     assert_eq!(from_main[1].subject, "base");
     assert_eq!(from_main[1].branch.as_deref(), Some("feat"));
     assert_eq!(from_main[1].name, "feat-tree");
