@@ -20,6 +20,9 @@ pub struct Popup {
 }
 
 const POPUP_COLUMN_GAP: usize = 2;
+/// We pad a column's keys to its widest key, up to this cap, so `<c-d>` and a
+/// nested `  cc` fit.
+const POPUP_KEY_CAP: usize = 6;
 
 impl Popup {
     pub fn render(&self, frame: &mut Frame<'_>, theme: &Theme) {
@@ -61,24 +64,40 @@ impl Popup {
             .collect();
         lines.push(Line::styled("Actions", dim));
         let rows = body_rows.saturating_sub(lines.len()).max(1);
-        if self.entries.len() <= rows {
+        let columns = self.entries.len().div_ceil(rows).max(1);
+        let per_column = self.entries.len().div_ceil(columns);
+        let column_entries = |column: usize| {
+            (0..per_column).filter_map(move |row| self.entries.get(column * per_column + row))
+        };
+        // A key wider than POPUP_KEY_CAP pushes only its own description right.
+        let key_widths: Vec<usize> = (0..columns)
+            .map(|column| {
+                column_entries(column)
+                    .map(|(key, _)| key.chars().count())
+                    .max()
+                    .unwrap_or(0)
+                    .min(POPUP_KEY_CAP)
+            })
+            .collect();
+        let padded = |key: &str, column: usize| {
+            let key_width = key_widths.get(column).copied().unwrap_or(0);
+            format!(" {key:<key_width$}")
+        };
+        if columns == 1 {
             for (key, description) in &self.entries {
                 lines.push(Line::from(vec![
-                    Span::styled(format!(" {key}"), key_style),
+                    Span::styled(padded(key, 0), key_style),
                     Span::styled(format!("  {description}"), fg),
                 ]));
             }
             return lines;
         }
-        let columns = self.entries.len().div_ceil(rows);
-        let per_column = self.entries.len().div_ceil(columns);
-        let cell_width =
-            |entry: &(String, String)| 1 + entry.0.chars().count() + 2 + entry.1.chars().count();
         let natural: Vec<usize> = (0..columns)
             .map(|column| {
-                (0..per_column)
-                    .filter_map(|row| self.entries.get(column * per_column + row))
-                    .map(cell_width)
+                column_entries(column)
+                    .map(|(key, description)| {
+                        padded(key, column).chars().count() + 2 + description.chars().count()
+                    })
                     .max()
                     .unwrap_or(0)
             })
@@ -90,12 +109,13 @@ impl Popup {
                 let Some((key, description)) = self.entries.get(column * per_column + row) else {
                     continue;
                 };
+                let key = padded(key, column);
                 let column_width = widths.get(column).copied().unwrap_or(0);
-                let room = column_width.saturating_sub(1 + key.chars().count() + 2);
+                let room = column_width.saturating_sub(key.chars().count() + 2);
                 let description = crate::text::elide(description, room);
-                let used = 1 + key.chars().count() + 2 + description.chars().count();
+                let used = key.chars().count() + 2 + description.chars().count();
                 let pad = column_width.saturating_sub(used) + POPUP_COLUMN_GAP;
-                spans.push(Span::styled(format!(" {key}"), key_style));
+                spans.push(Span::styled(key, key_style));
                 spans.push(Span::styled(
                     format!("  {description}{}", " ".repeat(pad)),
                     fg,

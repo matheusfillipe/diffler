@@ -1,5 +1,5 @@
 ---
-source: crates/diffler/src/ui/diff.rs
+source: crates/diffler/src/ui/diff/mod.rs
 expression: render(&mut app).backend()
 ---
 " c add comment · r reply · m mark viewed · C see comment list · ? help                                                  "
@@ -38,7 +38,7 @@ expression: render(&mut app).backend()
 " 2 agent replies held back (the forge post is yours)                                                                    "
 " 1 whole-file comment held back (Forgejo takes line comments only)                                                      "
 "Actions                                                                                                                 "
-" a  approve                                                                                                             "
-" x  request changes                                                                                                     "
-" c  comment only                                                                                                        "
+" a    approve                                                                                                           "
+" x    request changes                                                                                                   "
+" c    comment only                                                                                                      "
 " esc  cancel                                                                                                            "
