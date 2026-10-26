@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792685647693,
+  "lastUpdate": 1793006906806,
   "repoUrl": "https://github.com/matheusfillipe/diffler",
   "entries": {
     "Benchmark": [
@@ -19487,6 +19487,102 @@ window.BENCHMARK_DATA = {
             "name": "scope_index/20000",
             "value": 64394689,
             "range": "± 788462",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "committer": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "distinct": true,
+          "id": "920367a930f5b438cf6ee4115671ebd8ad85d544",
+          "message": "fix: keep pickers and input boxes still while typing",
+          "timestamp": "2026-10-26T10:17:02+01:00",
+          "tree_id": "1c3522b725e6e25131b5e136e38c7fe009a12609",
+          "url": "https://github.com/matheusfillipe/diffler/commit/920367a930f5b438cf6ee4115671ebd8ad85d544"
+        },
+        "date": 1793006906076,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "syndiff_emphasis/1000",
+            "value": 4648947,
+            "range": "± 162211",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/1000",
+            "value": 13297,
+            "range": "± 357",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/1000",
+            "value": 3442190,
+            "range": "± 115139",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/1000",
+            "value": 2696043,
+            "range": "± 99622",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/5000",
+            "value": 25267154,
+            "range": "± 1580608",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/5000",
+            "value": 61673,
+            "range": "± 1097",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/5000",
+            "value": 17335928,
+            "range": "± 625886",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/5000",
+            "value": 13332838,
+            "range": "± 590666",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/20000",
+            "value": 111027307,
+            "range": "± 6752056",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/20000",
+            "value": 243529,
+            "range": "± 7898",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/20000",
+            "value": 70597318,
+            "range": "± 5654132",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/20000",
+            "value": 56666536,
+            "range": "± 1617004",
             "unit": "ns/iter"
           }
         ]
