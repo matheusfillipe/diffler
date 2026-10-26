@@ -146,7 +146,7 @@ impl App {
             match self.selected_comment_id() {
                 None => return self.info("no comment selected"),
                 Some(id) if self.comment_is_orphan(&id) => {
-                    return self.info("that comment's file is not in this diff");
+                    return self.info("that comment's file is not in this diff, <cr> to open it");
                 }
                 Some(_) => {}
             }
@@ -166,10 +166,13 @@ impl App {
             Action::ToggleFold => self.comments_toggle_fold(),
             // the diff cursor may have moved since the selection seated it, so
             // `<cr>` seats it again
-            Action::Open => {
-                self.seat_cursor_on_selected_comment();
-                self.diff_focus(Pane::Diff);
-            }
+            Action::Open => match self.selected_comment_id() {
+                Some(id) if self.comment_is_orphan(&id) => self.open_comment_in_file(&id),
+                _ => {
+                    self.seat_cursor_on_selected_comment();
+                    self.diff_focus(Pane::Diff);
+                }
+            },
             Action::MoveRight | Action::MoveLeft => self.diff_focus(Pane::Diff),
             Action::DeleteComment => self.delete_selected_comment(),
             Action::ClaimComment => self.claim_selected_comment(),

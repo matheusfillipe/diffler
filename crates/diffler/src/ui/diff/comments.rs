@@ -38,7 +38,7 @@ pub(in crate::ui) fn author_orders<'a>(
 }
 
 /// Comment authors in sidebar order first, then anyone who only replied.
-pub(super) fn pane_author_orders<'a>(
+pub(in crate::ui) fn pane_author_orders<'a>(
     session: &'a Session,
     model: Option<&DiffModel>,
     human_author: &str,
@@ -309,6 +309,7 @@ mod tests {
                 line_end: None,
                 on_old_side: false,
                 line_text: None,
+                on_file: false,
             },
             "reviewer",
             "why 42?",
@@ -320,6 +321,7 @@ mod tests {
                 line_end: None,
                 on_old_side: false,
                 line_text: None,
+                on_file: false,
             },
             "alice",
             "needs a date",
@@ -334,6 +336,7 @@ mod tests {
                     line_end: None,
                     on_old_side: false,
                     line_text: None,
+                    on_file: false,
                 },
                 "alice",
                 "already fixed",
@@ -351,6 +354,7 @@ mod tests {
             line_end: None,
             on_old_side: false,
             line_text: None,
+            on_file: false,
         }
     }
 
@@ -391,6 +395,7 @@ mod tests {
             line_end: None,
             on_old_side: false,
             line_text: None,
+            on_file: false,
         };
         let id = app
             .review
@@ -571,6 +576,7 @@ mod tests {
                     line_end: None,
                     on_old_side: false,
                     line_text: None,
+                    on_file: false,
                 },
                 "reviewer",
                 body,

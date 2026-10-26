@@ -239,6 +239,7 @@ full keymap of the screen you're on, and `<c-k>` fuzzy-finds any action.
 | `w` | on the status screen, open, create or remove a worktree; on a pull request, check it out in its own worktree |
 | `B` | blame: see who last changed each line |
 | `{` / `}` | in the file view, step to the file's older / newer version (`H` lists them) |
+| `c` | in the file view, comment on the line or the `V` selection, even code the diff leaves out; on an older version the comment joins that commit's review |
 | `e` | open the file in your editor |
 | `q` | back / quit |
 

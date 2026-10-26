@@ -458,6 +458,7 @@ mod tests {
             line_end: None,
             on_old_side: false,
             line_text: None,
+            on_file: false,
         };
         app.review.session.add_comment(anchor, "reviewer", "why?");
         let diff = app.diff.as_mut().expect("diff");

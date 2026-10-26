@@ -12,6 +12,7 @@ fn brace_keys_walk_between_comments() {
         line_end: None,
         on_old_side: false,
         line_text: None,
+        on_file: false,
     };
     app.review.session.add_comment(anchor(1), "r", "first");
     app.review.session.add_comment(anchor(20), "r", "second");
@@ -84,7 +85,7 @@ fn comment_rows_appear_under_their_anchored_line() {
     assert!(block.iter().all(|r| matches!(
         r,
         DiffRow::Comment {
-            outdated: false,
+            placement: crate::app::Placement::Current,
             ..
         }
     )));
@@ -102,6 +103,7 @@ fn outdated_comment_is_flagged_when_the_line_text_drifts() {
             line_end: None,
             on_old_side: false,
             line_text: Some("    43".to_owned()),
+            on_file: false,
         },
         "reviewer",
         "stale snapshot",
@@ -110,9 +112,13 @@ fn outdated_comment_is_flagged_when_the_line_text_drifts() {
     diff.invalidate();
     diff.ensure_rows(&app.review);
     assert!(
-        rows(&app)
-            .iter()
-            .any(|r| matches!(r, DiffRow::Comment { outdated: true, .. })),
+        rows(&app).iter().any(|r| matches!(
+            r,
+            DiffRow::Comment {
+                placement: crate::app::Placement::Outdated,
+                ..
+            }
+        )),
         "drifted line_text flags the comment outdated"
     );
 }
@@ -129,6 +135,7 @@ fn comment_for_a_departed_line_attaches_at_the_top() {
             line_end: None,
             on_old_side: false,
             line_text: None,
+            on_file: false,
         },
         "reviewer",
         "moved on",
@@ -138,7 +145,13 @@ fn comment_for_a_departed_line_attaches_at_the_top() {
     diff.ensure_rows(&app.review);
     let rows = rows(&app);
     assert!(
-        matches!(rows.first(), Some(DiffRow::Comment { outdated: true, .. })),
+        matches!(
+            rows.first(),
+            Some(DiffRow::Comment {
+                placement: crate::app::Placement::Outdated,
+                ..
+            })
+        ),
         "orphaned comment sits at the top, flagged outdated: {rows:?}"
     );
 }
@@ -274,6 +287,7 @@ fn comment_display_lines_cover_body_and_replies() {
                 line_end: None,
                 on_old_side: false,
                 line_text: None,
+                on_file: false,
             },
             "reviewer",
             "first\nsecond",
@@ -321,6 +335,7 @@ fn comment_display_wraps_long_text_to_the_pane_width() {
                 line_end: None,
                 on_old_side: false,
                 line_text: None,
+                on_file: false,
             },
             "reviewer",
             "a body long enough that it cannot fit on one row",
@@ -370,6 +385,7 @@ fn thread_with(replies: &[(&str, &str)]) -> Session {
                 line_end: None,
                 on_old_side: false,
                 line_text: None,
+                on_file: false,
             },
             "reviewer",
             "why?",
@@ -471,6 +487,7 @@ fn comment_display_hard_splits_an_unbreakable_token() {
             line_end: None,
             on_old_side: false,
             line_text: None,
+            on_file: false,
         },
         "reviewer",
         "https://example.invalid/a/very/long/unbroken/path/segment/thing",
@@ -531,6 +548,7 @@ fn claiming_a_comment_toggles_authorship_and_back() {
             line_end: None,
             body: "looks off".to_owned(),
             as_human: false,
+            outside_diff: false,
         })
     else {
         panic!("expected an added comment");
@@ -577,6 +595,7 @@ fn claiming_all_comments_asks_first_claims_every_agent_comment_and_leaves_a_huma
             line_end: None,
             body: "agent found this".to_owned(),
             as_human: false,
+            outside_diff: false,
         })
     else {
         panic!("expected an added comment");
@@ -591,6 +610,7 @@ fn claiming_all_comments_asks_first_claims_every_agent_comment_and_leaves_a_huma
                 line_end: None,
                 on_old_side: false,
                 line_text: None,
+                on_file: false,
             },
             "reviewer",
             "human's own",

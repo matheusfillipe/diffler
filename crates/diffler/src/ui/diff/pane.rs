@@ -474,11 +474,11 @@ fn split_row_lines(
         SplitRow::Comment {
             comment,
             line,
-            outdated,
+            placement,
         } => match ctx.session.comments.get(comment) {
             Some(found) => {
                 vec![comment_row_line(
-                    ctx, diff, found, line, outdated, width, state,
+                    ctx, diff, found, line, placement, width, state,
                 )]
             }
             None => vec![Line::default()],
@@ -609,11 +609,11 @@ fn row_lines(
         DiffRow::Comment {
             comment,
             line,
-            outdated,
+            placement,
         } => match ctx.session.comments.get(*comment) {
             Some(found) => {
                 vec![comment_row_line(
-                    ctx, diff, found, *line, *outdated, width, state,
+                    ctx, diff, found, *line, *placement, width, state,
                 )]
             }
             None => vec![Line::default()],
@@ -781,6 +781,30 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
+    /// Line 10 of `two_hunk_fixture` sits between its hunks.
+    #[test]
+    fn a_file_comment_outside_the_hunks_shows_above_them_with_its_line() {
+        let fixture = crate::test_support::two_hunk_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.author = "reviewer".to_owned();
+        app.open_working_tree_diff(None);
+        let anchor = diffler_core::session::Anchor {
+            file: "data.txt".to_owned(),
+            line: Some(10),
+            line_end: None,
+            on_old_side: false,
+            line_text: Some("line 10".to_owned()),
+            on_file: true,
+        };
+        app.review
+            .session
+            .add_comment(anchor, "reviewer", "this loop is slow too");
+        let diff = app.diff.as_mut().expect("diff view");
+        diff.focus = Pane::Diff;
+        diff.invalidate();
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
     /// A stop outside the diff makes `model_with_context` clone the model, which
     /// `ensure_rows` caches, so a render must not count a fresh merge.
     #[test]
@@ -905,6 +929,7 @@ mod tests {
                 line_end: Some(2),
                 on_old_side: false,
                 line_text: None,
+                on_file: false,
             },
             "reviewer",
             "this whole block",

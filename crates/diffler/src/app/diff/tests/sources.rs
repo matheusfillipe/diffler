@@ -60,6 +60,7 @@ fn yank_and_editor_on_a_commit_diff_use_that_sources_comments() {
             line_end: None,
             on_old_side: false,
             line_text: None,
+            on_file: false,
         },
         "reviewer",
         "working-tree decoy",

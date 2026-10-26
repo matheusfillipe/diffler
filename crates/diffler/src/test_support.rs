@@ -147,6 +147,7 @@ pub(crate) fn seat_walkthrough_session(
                     line_end: None,
                     on_old_side: false,
                     line_text: None,
+                    on_file: false,
                 },
                 title: Some((*stop_title).to_owned()),
                 anchor_ref: anchor.map(str::to_owned),

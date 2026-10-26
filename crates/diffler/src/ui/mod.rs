@@ -1029,6 +1029,18 @@ pub(super) fn status_bar(app: &App, width: u16) -> Line<'static> {
         };
         spans.push(Span::styled(text, on_panel(theme.dim)));
     }
+    let outside = if app.screen() == Screen::Diff {
+        app.comments_outside_diff()
+    } else {
+        0
+    };
+    if outside > 0 {
+        let noun = if outside == 1 { "comment" } else { "comments" };
+        spans.push(Span::styled(
+            format!(" · {outside} {noun} outside the diff, C to list"),
+            on_panel(theme.warn_fg),
+        ));
+    }
     let mut tail = Vec::new();
     if let Some(search) = &app.search {
         let (i, n) = search.count();

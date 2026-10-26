@@ -241,6 +241,7 @@ pub(crate) mod tests {
             line_end: None,
             on_old_side: false,
             line_text: None,
+            on_file: false,
         };
         let forge = session
             .add_comment(anchor.clone(), "alice", "why 42?")

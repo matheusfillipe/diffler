@@ -10,7 +10,7 @@ use thiserror::Error;
 use crate::diffalgo::{DiffAlgorithm, DiffSettings};
 use crate::model::DiffModel;
 use crate::repo;
-use crate::session::Session;
+use crate::session::{Anchor, Session};
 use crate::source::ReviewSource;
 use crate::store::{self, StoreError};
 use crate::vcs::{CommitLists, HeadInfo, JjView, StatusModel, Vcs, VcsError, commit_lists};
@@ -21,6 +21,21 @@ pub enum ReviewError {
     Vcs(#[from] VcsError),
     #[error(transparent)]
     Store(#[from] StoreError),
+}
+
+/// `rel`'s text in the working tree, or in `rev`'s tree when one is given.
+fn read_text(
+    vcs: &dyn Vcs,
+    repo_root: &Path,
+    rev: Option<&str>,
+    rel: &str,
+) -> Result<String, ReviewError> {
+    let Some(rev) = rev else {
+        return Ok(std::fs::read_to_string(repo_root.join(rel)).map_err(VcsError::from)?);
+    };
+    Ok(vcs.read_at(rev, rel)?.ok_or_else(|| {
+        VcsError::Rejected(format!("{rel} has no text at {}", crate::git::short7(rev)))
+    })?)
 }
 
 /// One file as the file view reads it: worktree text plus per-line blame.
@@ -299,11 +314,10 @@ impl Review {
     /// blame comes back with no spans.
     pub fn compute_file(repo_root: &Path, rel: &str) -> Result<FileSnapshot, ReviewError> {
         let vcs = repo::open(repo_root)?;
-        let path = Path::new(rel);
-        let content = std::fs::read_to_string(repo_root.join(path)).map_err(VcsError::from)?;
+        let content = read_text(vcs.as_ref(), repo_root, None, rel)?;
         Ok(FileSnapshot {
             path: rel.to_owned(),
-            blame: vcs.blame(path).unwrap_or_default(),
+            blame: vcs.blame(Path::new(rel)).unwrap_or_default(),
             content,
         })
     }
@@ -315,9 +329,7 @@ impl Review {
         rel: &str,
     ) -> Result<FileSnapshot, ReviewError> {
         let vcs = repo::open(repo_root)?;
-        let content = vcs.read_at(rev, rel)?.ok_or_else(|| {
-            VcsError::Rejected(format!("{rel} has no text at {}", crate::git::short7(rev)))
-        })?;
+        let content = read_text(vcs.as_ref(), repo_root, Some(rev), rel)?;
         Ok(FileSnapshot {
             path: rel.to_owned(),
             blame: vcs.blame_at(rev, Path::new(rel)).unwrap_or_default(),
@@ -349,6 +361,15 @@ impl Review {
             self.save()?;
         }
         Ok(())
+    }
+
+    /// An anchor on lines of the working-tree `rel`, wherever the diff runs.
+    pub fn file_anchor(&self, rel: &str, span: (u32, Option<u32>)) -> Result<Anchor, ReviewError> {
+        let text = read_text(self.vcs.as_ref(), &self.repo_root, None, rel)?;
+        Anchor::on_file_lines(rel, span, &text).ok_or_else(|| {
+            let line = span.1.unwrap_or(span.0);
+            VcsError::Rejected(format!("{rel} has no line {line}")).into()
+        })
     }
 
     pub fn save(&self) -> Result<(), ReviewError> {

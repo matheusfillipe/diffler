@@ -1,5 +1,7 @@
 //! The whole-file view with its optional blame column.
 
+use std::collections::BTreeMap;
+
 use ratatui::Frame;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -19,6 +21,7 @@ const HINTS: &[Hint] = &[
         "step versions",
     ),
     Hint::Leaf(&[Action::FileHistory], "list history"),
+    Hint::Leaf(&[Action::Comment], "add comment"),
     Hint::Leaf(&[Action::Open], "open commit"),
     Hint::Leaf(&[Action::OpenEditor], "open in editor"),
     Hint::Leaf(&[Action::Help], "help"),
@@ -37,6 +40,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             .map(|index| s.ranges_for(index))
             .collect::<Vec<_>>()
     });
+    let cards = card_rows(app, frame.area().width);
 
     let Some(view) = app.file.as_mut() else {
         frame.render_widget(
@@ -57,23 +61,39 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let gutter = view.lines.len().to_string().len().max(3);
     let blame_cols = if view.show_blame { BLAME_WIDTH } else { 0 };
     let prefix_cols = 1 + blame_cols + gutter + 1;
-    // scrolling counts terminal rows, since a wrapped line takes several
-    let row_height = |index: usize| {
+    // we scroll by terminal rows, since a wrapped line and the comment cards
+    // under it take several
+    let text_height = |index: usize| {
         view.lines.get(index).map_or(1, |text| {
             super::diff_render::text_height(text, prefix_cols, body.width)
         })
     };
-    let cursor_row: usize = (0..view.cursor).map(row_height).sum();
+    let card_height = |index: usize| {
+        cards
+            .get(&index)
+            .map_or(0, |cards| cards.iter().map(Vec::len).sum())
+    };
+    let row_height = |index: usize| text_height(index) + card_height(index);
+    let lines_above: usize = (0..view.cursor).map(row_height).sum();
+    // the scroll keeps the line or the card the cursor sits on in view, so a
+    // tall card never pushes its own line off screen
+    let (cursor_row, cursor_span) = match view.card_cursor {
+        Some(at) => {
+            let cards_here = cards.get(&view.cursor);
+            let above: usize =
+                cards_here.map_or(0, |cards| cards.iter().take(at).map(Vec::len).sum());
+            let span = cards_here
+                .and_then(|cards| cards.get(at))
+                .map_or(1, Vec::len);
+            (lines_above + text_height(view.cursor) + above, span)
+        }
+        None => (lines_above, text_height(view.cursor)),
+    };
     let total: usize = (0..view.lines.len()).map(row_height).sum();
-    view.scroll = super::scroll_to_span(
-        cursor_row,
-        row_height(view.cursor),
-        view.scroll,
-        height,
-        total,
-    );
+    view.scroll = super::scroll_to_span(cursor_row, cursor_span, view.scroll, height, total);
 
-    let selected = |index: usize| view.row_selected(index);
+    let on_card = view.card_cursor.is_some();
+    let selected = |index: usize| !on_card && view.row_selected(index);
     let referenced = view.referenced;
 
     let mut lines: Vec<Line<'static>> = Vec::new();
@@ -96,6 +116,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
                 .map(|line| cursor_line(line, &theme, body.width))
                 .collect();
         }
+        rendered.extend(cards.get(&index).into_iter().flatten().flatten().cloned());
         for (offset, line) in rendered.into_iter().enumerate() {
             if row + offset >= view.scroll {
                 lines.push(line);
@@ -113,6 +134,42 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         Paragraph::new(status_bar(app, bar.width)).style(Style::new().bg(app.theme.panel)),
         bar,
     );
+}
+
+/// Each line's comment cards, one row list per card, drawn the way the diff
+/// draws them, with the card under the cursor selected.
+fn card_rows(app: &App, width: u16) -> BTreeMap<usize, Vec<Vec<Line<'static>>>> {
+    let mut rows: BTreeMap<usize, Vec<Vec<Line<'static>>>> = BTreeMap::new();
+    let (Some(view), Some(source)) = (app.file.as_ref(), app.file_comment_source()) else {
+        return rows;
+    };
+    let session = app.review.session_for(&source);
+    let orders = super::diff::comments::pane_author_orders(session, None, &app.author);
+    let avatars = super::diff::avatars::AvatarCtx::new(None, &app.author, false);
+    let selected = view.selected_card().map(|card| card.id.as_str());
+    for card in &view.cards {
+        let Some(comment) = session.comment(&card.id) else {
+            continue;
+        };
+        let look = super::diff::cards::CardLook {
+            theme: &app.theme,
+            selected: selected == Some(card.id.as_str()),
+            focused: true,
+            human: &app.author,
+            orders: &orders,
+            avatars: &avatars,
+        };
+        let parts =
+            crate::app::comment_display(comment, width, Some(&app.highlighter), None, None, true);
+        let drawn = parts
+            .iter()
+            .filter_map(|part| {
+                super::diff::cards::card_row(&look, comment, part, card.placement, false, width)
+            })
+            .collect();
+        rows.entry(card.line).or_default().push(drawn);
+    }
+    rows
 }
 
 fn header_line(view: &FileView, theme: &Theme) -> Line<'static> {

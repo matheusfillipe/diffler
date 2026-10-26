@@ -45,9 +45,9 @@ pub use diff::lens::{Lens, LensRequest, PreviewLine, RefEntry, compute_lens};
 pub(crate) use diff::merge_count;
 pub use diff::{
     CommentFacts, CommentGrouping, CommentLine, CommentPaneRow, DeclaredRequest, DiffRow, DiffView,
-    FileHighlights, FileScope, Pane, REPLY_LANE, RediffRequest, RowCopy, ScrollAlign, SplitRow,
-    SplitSide, blocks_of, comment_display, folded_replies_text, group_comment_rows,
-    summary_display,
+    FileHighlights, FileScope, Pane, Placement, REPLY_LANE, RediffRequest, RowCopy, ScrollAlign,
+    SplitRow, SplitSide, blocks_of, comment_display, comment_header_text, folded_replies_text,
+    group_comment_rows, placement_flag, summary_display,
 };
 pub use log::LogView;
 pub(crate) use status::{
@@ -198,6 +198,8 @@ pub enum InputOp {
     },
     /// A new branch, checked out in a new worktree.
     WorktreeBranch,
+    /// A comment written, edited or answered in the file viewer.
+    Comment(Box<composer::ComposerKind>),
 }
 
 /// What selecting a branch in the branch list does.
@@ -1609,13 +1611,30 @@ impl App {
             .map_or(ReviewSource::WorkingTree, |diff| diff.source.clone())
     }
 
+    /// The review a human's comment verb acts on: on the file screen the file
+    /// view's own (today's file, or the commit of the version on screen),
+    /// else the open diff's. The agent keeps writing to the open diff's.
+    pub(crate) fn human_review_source(&self) -> ReviewSource {
+        if self.screen() == Screen::File
+            && let Some(source) = self.file_comment_source()
+        {
+            return source;
+        }
+        self.active_review_source()
+    }
+
     /// Persist a human comment change and wake agents waiting for feedback.
     /// Agent mutations call [`App::persist_review_change`] so they never wake
     /// their own `wait_for_feedback` poll.
     fn after_session_change(&mut self) {
+        let source = self.human_review_source();
+        self.session_changed(&source);
+    }
+
+    /// Wakes an agent waiting for feedback and saves `source`'s review.
+    pub(crate) fn session_changed(&mut self, source: &ReviewSource) {
         self.feedback_tx.send_modify(|epoch| *epoch += 1);
-        let source = self.active_review_source();
-        let _ = self.persist_review_change(&source);
+        let _ = self.persist_review_change(source);
     }
 
     /// Persist `source`'s session and invalidate the open diff's cached rows.
@@ -1625,6 +1644,7 @@ impl App {
         if let Some(diff) = self.diff.as_mut() {
             diff.invalidate();
         }
+        self.refresh_file_cards();
         if let Err(err) = &result {
             self.error(err.to_string());
         }
@@ -2725,6 +2745,7 @@ mod tests {
                     line_end: None,
                     on_old_side: false,
                     line_text: None,
+                    on_file: false,
                 },
             },
             "why?".to_owned(),
@@ -2754,6 +2775,7 @@ mod tests {
                     line_end: None,
                     on_old_side: false,
                     line_text: None,
+                    on_file: false,
                 },
                 "human",
                 "why?",
@@ -4088,6 +4110,7 @@ mod tests {
                     line_end: None,
                     on_old_side: false,
                     line_text: None,
+                    on_file: false,
                 },
             },
             String::new(),

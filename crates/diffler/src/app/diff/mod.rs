@@ -33,8 +33,8 @@ use super::rowsel::{RowSelect, RowText};
 pub use comments::{CommentFacts, CommentGrouping, CommentPaneRow, group_comment_rows};
 pub(crate) use rowref::RowPositions;
 pub use rows::{
-    CommentLine, DiffRow, REPLY_LANE, RowCopy, SplitRow, SplitSide, blocks_of, comment_display,
-    folded_replies_text, summary_display,
+    CommentLine, DiffRow, Placement, REPLY_LANE, RowCopy, SplitRow, SplitSide, blocks_of,
+    comment_display, comment_header_text, folded_replies_text, placement_flag, summary_display,
 };
 use rows::{build_rows, build_split_rows};
 pub use sidebar::DeclaredRequest;

@@ -164,6 +164,7 @@ fn comments_focus_half_page_walks_the_cards() {
                 line_end: None,
                 on_old_side: false,
                 line_text: None,
+                on_file: false,
             },
             "reviewer",
             "look here",

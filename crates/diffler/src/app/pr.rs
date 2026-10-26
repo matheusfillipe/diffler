@@ -172,6 +172,23 @@ fn absorb_published_locals(roots: &mut [Comment], locals: &[Comment]) -> Vec<Str
     absorbed
 }
 
+/// A forge comment's anchor, with the text its line reads in the PR's diff.
+fn remote_anchor(item: &PrComment, model: &diffler_core::model::DiffModel) -> Anchor {
+    let line_text = item.line.and_then(|line| {
+        model
+            .find_line(&item.path, line, !item.new_side)
+            .map(|l| l.text.clone())
+    });
+    Anchor {
+        file: item.path.clone(),
+        line: item.start_line.or(item.line),
+        line_end: item.start_line.and(item.line),
+        on_old_side: !item.new_side,
+        line_text,
+        on_file: false,
+    }
+}
+
 impl App {
     /// Open the forge's PR list; the entries arrive as an event.
     pub(crate) fn open_prs(&mut self) {
@@ -366,11 +383,6 @@ impl App {
         let model = self.source_model(&source);
         let mut roots: Vec<Comment> = Vec::new();
         for item in remote.iter().filter(|c| c.reply_to.is_none()) {
-            let line_text = item.line.and_then(|line| {
-                model
-                    .find_line(&item.path, line, !item.new_side)
-                    .map(|l| l.text.clone())
-            });
             let status = if item.resolved {
                 CommentStatus::Resolved
             } else {
@@ -381,13 +393,7 @@ impl App {
                 remote_id: Some(item.id.clone()),
                 thread_id: item.thread_id.clone(),
                 author: item.author.clone(),
-                anchor: Anchor {
-                    file: item.path.clone(),
-                    line: item.start_line.or(item.line),
-                    line_end: item.start_line.and(item.line),
-                    on_old_side: !item.new_side,
-                    line_text,
-                },
+                anchor: remote_anchor(item, &model),
                 title: None,
                 anchor_ref: None,
                 body: item.body.clone(),
@@ -1071,6 +1077,7 @@ mod tests {
                     line_end: None,
                     on_old_side: false,
                     line_text: None,
+                    on_file: false,
                 },
                 "reviewer",
                 "human comment",
@@ -1085,6 +1092,7 @@ mod tests {
                 line_end: None,
                 on_old_side: false,
                 line_text: None,
+                on_file: false,
             },
             "reviewer",
             "file level",
@@ -1142,6 +1150,7 @@ mod tests {
                     line_end: None,
                     on_old_side: false,
                     line_text: None,
+                    on_file: false,
                 },
                 "reviewer",
                 "about the whole file",
@@ -1217,6 +1226,7 @@ mod tests {
                 line_end: None,
                 body: "agent found this".to_owned(),
                 as_human: false,
+                outside_diff: false,
             })
         else {
             panic!("expected an added comment");
@@ -1236,6 +1246,7 @@ mod tests {
                 line_end: None,
                 body: "claimed by the human".to_owned(),
                 as_human: true,
+                outside_diff: false,
             })
         else {
             panic!("expected an added comment");
@@ -1263,6 +1274,7 @@ mod tests {
             line_end: None,
             body: "agent found this".to_owned(),
             as_human: false,
+            outside_diff: false,
         });
         let pending = app.pr_pending(3).expect("plan");
         assert!(
@@ -1301,6 +1313,7 @@ mod tests {
                 line_end: None,
                 on_old_side: false,
                 line_text: None,
+                on_file: false,
             },
             "reviewer",
             "why 43?",
@@ -1348,6 +1361,7 @@ mod tests {
                     line_end: None,
                     on_old_side: false,
                     line_text: None,
+                    on_file: false,
                 },
                 "reviewer",
                 "why 43?",
@@ -1688,6 +1702,7 @@ mod tests {
             line_end: None,
             on_old_side: false,
             line_text: None,
+            on_file: false,
         };
         let range = Anchor {
             file: "src/lib.rs".into(),
@@ -1695,6 +1710,7 @@ mod tests {
             line_end: Some(3),
             on_old_side: false,
             line_text: None,
+            on_file: false,
         };
         {
             let session = app.review.session_for_mut(&source);
@@ -1978,6 +1994,7 @@ mod tests {
             line_end: None,
             on_old_side: false,
             line_text: None,
+            on_file: false,
         };
         let local_id = app
             .review

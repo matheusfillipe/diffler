@@ -4,8 +4,9 @@
 use std::collections::{BTreeSet, HashMap};
 
 use diffler_core::session::CommentStatus;
+use diffler_core::source::ReviewSource;
 
-use super::{DiffRow, Pane};
+use super::{DiffRow, DiffView, Pane};
 use crate::app::App;
 
 /// The comments pane's groupings, cycled by `t` while it holds focus.
@@ -204,9 +205,11 @@ impl super::DiffView {
 impl App {
     /// Where a comment's file sits in the diff, `usize::MAX` when the diff
     /// lacks it, which makes the comment an orphan.
+    /// It reads the model the last render cached, since the status bar asks
+    /// on every frame.
     fn file_rank(&self, path: &str) -> usize {
         self.diff.as_ref().map_or(usize::MAX, |diff| {
-            diff.model_for_rows(&self.review)
+            DiffView::rendered_model(diff.merged_model.as_ref(), diff.model(&self.review))
                 .files
                 .iter()
                 .position(|file| file.path == path)
@@ -427,6 +430,44 @@ impl App {
             .is_some_and(|comment| self.file_rank(&comment.anchor.file) == usize::MAX)
     }
 
+    /// Open comments on files this diff leaves out, which only the comment
+    /// list shows, so the status bar counts them.
+    pub(crate) fn comments_outside_diff(&self) -> usize {
+        let Some(diff) = self.diff.as_ref() else {
+            return 0;
+        };
+        self.review
+            .session_for(&diff.source)
+            .comments
+            .iter()
+            .filter(|c| c.status != CommentStatus::Resolved)
+            .filter(|c| self.file_rank(&c.anchor.file) == usize::MAX)
+            .count()
+    }
+
+    /// Shows a comment whose file is outside this diff in the file viewer, on
+    /// its lines.
+    pub(super) fn open_comment_in_file(&mut self, id: &str) {
+        let Some(diff) = self.diff.as_ref() else {
+            return;
+        };
+        // the file view shows today's file and keeps the working tree's
+        // comments, so only that review's line numbers fit it
+        if diff.source != ReviewSource::WorkingTree {
+            self.info("that comment's file is not in this diff");
+            return;
+        }
+        let Some(anchor) = self
+            .review
+            .session_for(&diff.source)
+            .comment(id)
+            .map(|comment| comment.anchor.clone())
+        else {
+            return;
+        };
+        self.open_file(&anchor.file, anchor.span(), false);
+    }
+
     /// Delete the comment the sidebar has selected, by id: an orphan has no
     /// row for the cursor, and the cursor-driven delete would take whichever
     /// comment it was last left on.
@@ -584,6 +625,7 @@ mod tests {
             line_end: None,
             on_old_side: false,
             line_text: None,
+            on_file: false,
         }
     }
 
@@ -725,6 +767,52 @@ mod tests {
                 app.message
             );
         }
+    }
+
+    #[test]
+    fn enter_on_a_comment_outside_the_diff_opens_its_file_at_its_lines() {
+        let (_fixture, mut app) = app_with_comments();
+        let mut outside = anchor("docs/guide.md", 3);
+        outside.on_file = true;
+        app.review
+            .session
+            .add_comment(outside, "reviewer", "explain this");
+        app.handle(key('C'));
+        app.handle(key('G'));
+        assert!(selected_comment_is_orphan(&app));
+        app.handle(key('\n'));
+        let open = app.pending_file.as_ref().expect("a file view queued");
+        assert_eq!(
+            (open.path.as_str(), open.span),
+            ("docs/guide.md", Some((3, 3)))
+        );
+    }
+
+    #[test]
+    fn the_status_bar_counts_open_comments_on_files_outside_the_diff() {
+        let (_fixture, mut app) = app_with_comments();
+        assert_eq!(app.comments_outside_diff(), 0);
+        app.review
+            .session
+            .add_comment(anchor("docs/guide.md", 3), "agent", "look here");
+        let id = app
+            .review
+            .session
+            .add_comment(anchor("docs/other.md", 1), "agent", "done")
+            .id
+            .clone();
+        app.review.session.resolve(&id);
+        assert_eq!(
+            app.comments_outside_diff(),
+            1,
+            "a resolved one is done with"
+        );
+        let bar = crate::ui::status_bar(&app, 200);
+        let text: String = bar.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            text.contains("1 comment outside the diff, C to list"),
+            "{text}"
+        );
     }
 
     /// The review-wide verbs work with an orphan under the cursor.

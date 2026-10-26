@@ -537,6 +537,7 @@ mod tests {
                     line_end: None,
                     on_old_side: false,
                     line_text: Some("    41".to_owned()),
+                    on_file: false,
                 },
                 "reviewer",
                 "why 41?",

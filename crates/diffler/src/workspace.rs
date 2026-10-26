@@ -685,6 +685,7 @@ mod tests {
             line_end: None,
             body: body.to_owned(),
             as_human: true,
+            outside_diff: false,
         };
         match call(workspace, Some(project), kind) {
             McpResponse::Added { id } => id,

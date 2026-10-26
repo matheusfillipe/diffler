@@ -249,12 +249,18 @@ impl App {
             return;
         };
         self.close_composer();
-        let body = composer.buffer.trim().to_owned();
+        self.apply_comment(composer.kind, &composer.buffer);
+    }
+
+    /// Writes, answers or rewrites a comment in the review the human is acting
+    /// on; an empty body writes nothing.
+    pub(crate) fn apply_comment(&mut self, kind: ComposerKind, body: &str) {
+        let body = body.trim().to_owned();
         if body.is_empty() {
             return;
         }
-        let source = self.active_review_source();
-        match composer.kind {
+        let source = self.human_review_source();
+        match kind {
             ComposerKind::New { anchor } => {
                 self.review
                     .session_for_mut(&source)
@@ -407,6 +413,7 @@ mod tests {
             line_end: None,
             on_old_side: false,
             line_text: None,
+            on_file: false,
         }
     }
 

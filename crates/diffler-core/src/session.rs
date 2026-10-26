@@ -42,9 +42,54 @@ pub struct Anchor {
     /// outdated when the line changes.
     #[serde(default)]
     pub line_text: Option<String>,
+    /// Anchored to the file's text wherever the diff runs, as a comment from
+    /// the file viewer is. Such a comment outside the diff is current while
+    /// its line still reads `line_text`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub on_file: bool,
 }
 
 impl Anchor {
+    /// An anchor on the 1-based `(line, line_end)` of `file`'s own `text`, as
+    /// the file viewer writes it. `None` when `text` has no such line.
+    pub fn on_file_lines(
+        file: &str,
+        (line, line_end): (u32, Option<u32>),
+        text: &str,
+    ) -> Option<Self> {
+        let line_text = nth_line(text, line_end.unwrap_or(line))?;
+        Some(Self {
+            file: file.to_owned(),
+            line: Some(line),
+            line_end,
+            on_old_side: false,
+            line_text: Some(line_text.to_owned()),
+            on_file: true,
+        })
+    }
+
+    /// Whether `text`, the file the anchor sits in, no longer reads the
+    /// anchored line as it did when the comment was written.
+    pub fn line_drifted(&self, text: &str) -> bool {
+        let Some((_, end)) = self.span() else {
+            return false;
+        };
+        nth_line(text, end) != self.line_text.as_deref()
+    }
+
+    /// A file outside the diff still reads as its base, which is where the
+    /// comment was written, so only a file in the diff can drift; a file the
+    /// diff deletes has drifted away entirely.
+    fn file_line_drifted(&self, model: &DiffModel) -> bool {
+        match model.files.iter().find(|f| f.path == self.file) {
+            None => false,
+            Some(file) => file
+                .new_text
+                .as_deref()
+                .is_none_or(|text| self.line_drifted(text)),
+        }
+    }
+
     /// `(line, line_end)`, `None` for a file-level anchor.
     pub fn span(&self) -> Option<(u32, u32)> {
         self.line.map(|line| (line, self.line_end.unwrap_or(line)))
@@ -59,6 +104,7 @@ impl Anchor {
                     .line_text
                     .as_deref()
                     .is_some_and(|snap| snap != found.text),
+                None if self.on_file => self.file_line_drifted(model),
                 None => true,
             },
             None => !model.files.iter().any(|f| f.path == self.file),
@@ -286,8 +332,8 @@ impl Session {
                 continue;
             };
             let (Some(old), Some(new)) = (
-                new_text(previous, &anchor.file),
-                new_text(model, &anchor.file),
+                worktree_text(previous, model, &anchor.file),
+                worktree_text(model, previous, &anchor.file),
             ) else {
                 continue;
             };
@@ -322,13 +368,24 @@ impl Session {
     }
 }
 
-fn new_text<'a>(model: &'a DiffModel, file: &str) -> Option<&'a str> {
-    model
-        .files
-        .iter()
-        .find(|f| f.path == file)?
-        .new_text
-        .as_deref()
+/// `file`'s text as `model` sees it: its new side when `model` holds the file
+/// (`None` once deleted), else its base, which `other` carries as its old side.
+fn worktree_text<'a>(model: &'a DiffModel, other: &'a DiffModel, file: &str) -> Option<&'a str> {
+    match model.files.iter().find(|f| f.path == file) {
+        Some(diffed) => diffed.new_text.as_deref(),
+        None => other
+            .files
+            .iter()
+            .find(|f| f.path == file)?
+            .old_text
+            .as_deref(),
+    }
+}
+
+/// The 1-based `line` of `text`.
+fn nth_line(text: &str, line: u32) -> Option<&str> {
+    let index = usize::try_from(line).ok()?.checked_sub(1)?;
+    text.lines().nth(index)
 }
 
 #[cfg(test)]

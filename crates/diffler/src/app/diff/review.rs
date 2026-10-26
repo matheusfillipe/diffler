@@ -45,6 +45,7 @@ impl App {
                 line_end: None,
                 on_old_side,
                 line_text: Some(line.text.clone()),
+                on_file: false,
             });
         };
         let mut numbered: Vec<(u32, String)> = Vec::new();
@@ -72,6 +73,7 @@ impl App {
             // the display target is the range end, so that is the line
             // whose drift marks the comment outdated
             line_text: Some(last_text),
+            on_file: false,
         })
     }
 
@@ -107,6 +109,7 @@ impl App {
             line_end: None,
             on_old_side: false,
             line_text: None,
+            on_file: false,
         };
         self.open_composer(ComposerKind::New { anchor }, String::new());
     }
@@ -130,7 +133,7 @@ impl App {
 
     /// Ask before deleting the comment with `id`, whatever pointed at it.
     pub(crate) fn confirm_delete_comment(&mut self, id: &str) {
-        let source = self.active_review_source();
+        let source = self.human_review_source();
         let Some(author) = self
             .review
             .session_for(&source)
@@ -254,9 +257,19 @@ impl App {
             return;
         };
         let id = comment.id.clone();
+        self.toggle_resolved(&id);
+    }
+
+    /// Resolves the comment, or reopens a resolved one, in the review the
+    /// human is acting on.
+    pub(crate) fn toggle_resolved(&mut self, id: &str) {
+        let source = self.human_review_source();
+        let Some(comment) = self.review.session_for(&source).comment(id) else {
+            return;
+        };
+        let id = id.to_owned();
         let resolving = comment.status != CommentStatus::Resolved;
         let forge = comment.remote_id.is_some();
-        let source = self.active_review_source();
         // a forge thread must be queueable before the local flip, or the
         // status would lie until the next sync reverts it
         if forge

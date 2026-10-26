@@ -292,6 +292,7 @@ mod tests {
                 line_end: None,
                 on_old_side: false,
                 line_text: None,
+                on_file: false,
             },
             title: Some(id.to_owned()),
             anchor_ref: Some(format!("{file}:{line}")),

@@ -391,6 +391,7 @@ impl App {
                 );
             }
             InputOp::WorktreeBranch => self.add_worktree(body, true),
+            InputOp::Comment(kind) => self.apply_comment(*kind, body),
             InputOp::CreateBranch { checkout } => {
                 let name = body.to_owned();
                 self.message = None;
@@ -576,7 +577,7 @@ impl App {
     /// drop the local copy when the forge confirms, since the forge refuses
     /// someone else's comment.
     pub(super) fn delete_comment_by_id(&mut self, id: &str) -> bool {
-        let source = self.active_review_source();
+        let source = self.human_review_source();
         let session = self.review.session_for_mut(&source);
         let remote = session
             .comments
@@ -956,6 +957,7 @@ mod tests {
                 line_end: None,
                 on_old_side: false,
                 line_text: None,
+                on_file: false,
             },
             "me",
             "tighten this",
@@ -1066,6 +1068,7 @@ mod tests {
                 line_end: None,
                 on_old_side: false,
                 line_text: None,
+                on_file: false,
             },
             "alice",
             "remote",

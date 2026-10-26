@@ -411,6 +411,7 @@ mod tests {
                     line_end: None,
                     on_old_side: false,
                     line_text: None,
+                    on_file: false,
                 },
                 "reviewer",
                 body,

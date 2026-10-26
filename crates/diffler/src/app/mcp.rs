@@ -49,7 +49,8 @@ impl App {
                 line_end,
                 body,
                 as_human,
-            } => self.agent_add_comment(&file, line, line_end, &body, as_human),
+                outside_diff,
+            } => self.agent_add_comment(&file, (line, line_end), &body, as_human, outside_diff),
             McpRequestKind::DeleteComment { id } => self.agent_delete_comment(&id),
             McpRequestKind::EditComment { id, body } => self.agent_edit_comment(&id, &body),
             McpRequestKind::Feedback => McpResponse::Feedback {
@@ -676,10 +677,10 @@ impl App {
     fn agent_add_comment(
         &mut self,
         file: &str,
-        line: u32,
-        line_end: Option<u32>,
+        (line, line_end): (u32, Option<u32>),
         body: &str,
         as_human: bool,
+        outside_diff: bool,
     ) -> McpResponse {
         if let Some(end) = line_end
             && end < line
@@ -697,25 +698,48 @@ impl App {
             ));
         }
         let source = self.active_review_source();
-        let model = self.source_model(&source);
-        let anchor_line = line_end.unwrap_or(line);
-        let Some((on_old_side, hunk, line_text)) = locate_anchor_line(&model, file, anchor_line)
-        else {
-            return McpResponse::Error(format!("{file}:{anchor_line} is not part of the diff"));
-        };
-        // a range spanning two hunks would cover lines the diff never touched
-        if line != anchor_line
-            && find_line_in_hunk(&model, file, line, on_old_side).map(|(index, _)| index)
-                != Some(hunk)
-        {
-            return McpResponse::Error(format!("{file}:{line} is not part of the diff"));
-        }
-        let anchor = Anchor {
-            file: file.to_owned(),
-            line: Some(line),
-            line_end,
-            on_old_side,
-            line_text: Some(line_text),
+        let anchor = if outside_diff {
+            // the file view shows the working tree, so a comment outside the
+            // diff belongs to that review, where the human can open it
+            if source != ReviewSource::WorkingTree {
+                return McpResponse::Error(
+                    "outside_diff comments go on the working-tree review; focus it first"
+                        .to_owned(),
+                );
+            }
+            match self.review.file_anchor(file, (line, line_end)) {
+                Ok(anchor) => anchor,
+                Err(err) => return McpResponse::Error(err.to_string()),
+            }
+        } else {
+            let model = self.source_model(&source);
+            let anchor_line = line_end.unwrap_or(line);
+            let outside = |at: u32| {
+                format!(
+                    "{file}:{at} is not part of the diff; the human reads the diff, so comment \
+                     on its lines, or pass outside_diff to comment on the file anyway"
+                )
+            };
+            let Some((on_old_side, hunk, line_text)) =
+                locate_anchor_line(&model, file, anchor_line)
+            else {
+                return McpResponse::Error(outside(anchor_line));
+            };
+            // a range spanning two hunks would cover lines the diff never touched
+            if line != anchor_line
+                && find_line_in_hunk(&model, file, line, on_old_side).map(|(index, _)| index)
+                    != Some(hunk)
+            {
+                return McpResponse::Error(outside(line));
+            }
+            Anchor {
+                file: file.to_owned(),
+                line: Some(line),
+                line_end,
+                on_old_side,
+                line_text: Some(line_text),
+                on_file: false,
+            }
         };
         if let Err(err) = self.review.ensure_source(&source) {
             return McpResponse::Error(err.to_string());
@@ -875,6 +899,7 @@ fn write_agent_comment(
         line_end: None,
         on_old_side: false,
         line_text: None,
+        on_file: false,
     };
     let existing = id.and_then(|id| session.comments.iter_mut().find(|c| c.id == id));
     if let Some(comment) = existing {
@@ -1161,6 +1186,7 @@ mod tests {
                     line_end: None,
                     on_old_side: false,
                     line_text: Some("    42".to_owned()),
+                    on_file: false,
                 },
                 "human",
                 "why 42?",
@@ -1196,6 +1222,7 @@ mod tests {
                     line_end: None,
                     on_old_side: false,
                     line_text: Some("    42".to_owned()),
+                    on_file: false,
                 },
                 "human",
                 "why 42?",
@@ -1445,6 +1472,7 @@ mod tests {
             line_end: None,
             body: "this looks wrong".to_owned(),
             as_human: false,
+            outside_diff: false,
         });
         let McpResponse::Added { id } = response else {
             panic!("expected an added comment: {response:?}");
@@ -1481,6 +1509,7 @@ mod tests {
             line_end: Some(3),
             body: "the whole function".to_owned(),
             as_human: false,
+            outside_diff: false,
         });
         let McpResponse::Added { id } = response else {
             panic!("expected an added comment: {response:?}");
@@ -1500,8 +1529,43 @@ mod tests {
             line_end: None,
             body: "x".to_owned(),
             as_human: false,
+            outside_diff: false,
         });
         assert!(matches!(response, McpResponse::Error(message) if message.contains("999")));
+    }
+
+    /// Line 10 sits between `two_hunk_fixture`'s hunks (1-4, 17-20).
+    #[test]
+    fn a_comment_outside_the_diff_needs_the_agent_to_opt_in() {
+        let fixture = two_hunk_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let ask = |outside_diff| McpRequestKind::AddComment {
+            file: "data.txt".to_owned(),
+            line: 10,
+            line_end: None,
+            body: "this loop is slow too".to_owned(),
+            as_human: false,
+            outside_diff,
+        };
+        let refused = app.handle_mcp(ask(false));
+        assert!(
+            matches!(&refused, McpResponse::Error(message) if message.contains("outside_diff")),
+            "{refused:?}"
+        );
+        let McpResponse::Added { id } = app.handle_mcp(ask(true)) else {
+            panic!("an opted-in comment lands");
+        };
+        let anchor = app
+            .review
+            .session
+            .comment(&id)
+            .expect("stored")
+            .anchor
+            .clone();
+        let text = std::fs::read_to_string(fixture.root.join("data.txt")).expect("file");
+        assert!(anchor.on_file);
+        assert_eq!(anchor.line_text.as_deref(), text.lines().nth(9));
+        assert!(!anchor.is_outdated(app.review.model()));
     }
 
     /// Line 10 sits between `two_hunk_fixture`'s hunks (1-4, 17-20).
@@ -1515,6 +1579,7 @@ mod tests {
             line_end: Some(18),
             body: "x".to_owned(),
             as_human: false,
+            outside_diff: false,
         });
         assert!(matches!(response, McpResponse::Error(message) if message.contains("data.txt:10")));
     }
@@ -1529,6 +1594,7 @@ mod tests {
             line_end: Some(18),
             body: "x".to_owned(),
             as_human: false,
+            outside_diff: false,
         });
         assert!(matches!(response, McpResponse::Error(message) if message.contains("data.txt:2")));
     }
@@ -1542,6 +1608,7 @@ mod tests {
             line_end: None,
             body: String::new(),
             as_human: false,
+            outside_diff: false,
         });
         assert!(matches!(response, McpResponse::Error(_)));
     }
@@ -1555,6 +1622,7 @@ mod tests {
             line_end: None,
             body: "   \n\t  ".to_owned(),
             as_human: false,
+            outside_diff: false,
         });
         assert!(matches!(response, McpResponse::Error(_)));
     }
@@ -1568,6 +1636,7 @@ mod tests {
             line_end: None,
             body: "x".repeat(BODY_MAX_BYTES + 1),
             as_human: false,
+            outside_diff: false,
         });
         assert!(matches!(response, McpResponse::Error(message) if message.contains("at most")));
     }
@@ -1583,6 +1652,7 @@ mod tests {
             line_end: None,
             body: "agent's own".to_owned(),
             as_human: false,
+            outside_diff: false,
         }) else {
             panic!("expected an added comment");
         };
@@ -1597,6 +1667,7 @@ mod tests {
             line_end: None,
             body: "on behalf of the human".to_owned(),
             as_human: true,
+            outside_diff: false,
         }) else {
             panic!("expected an added comment");
         };
@@ -1615,6 +1686,7 @@ mod tests {
             line_end: None,
             body: "first guess".to_owned(),
             as_human: false,
+            outside_diff: false,
         }) else {
             panic!("expected an added comment");
         };
@@ -1638,6 +1710,7 @@ mod tests {
             line_end: None,
             body: "drifted onto the wrong line".to_owned(),
             as_human: false,
+            outside_diff: false,
         }) else {
             panic!("expected an added comment");
         };
@@ -1737,6 +1810,7 @@ mod tests {
             line_end: None,
             body: "this branch looks dead".to_owned(),
             as_human: false,
+            outside_diff: false,
         }) else {
             panic!("expected an added comment");
         };
@@ -1764,6 +1838,7 @@ mod tests {
             line_end: None,
             body: "checking this again".to_owned(),
             as_human: false,
+            outside_diff: false,
         }) else {
             panic!("expected an added comment");
         };
@@ -1795,6 +1870,7 @@ mod tests {
             line_end: None,
             on_old_side: false,
             line_text: None,
+            on_file: false,
         }
     }
 
@@ -1942,6 +2018,7 @@ mod tests {
                 line_end: None,
                 on_old_side: false,
                 line_text: None,
+                on_file: false,
             },
             "human",
             "second",

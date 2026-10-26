@@ -14,6 +14,7 @@ fn anchor(file: &str, line: u32) -> Anchor {
         line_end: None,
         on_old_side: false,
         line_text: None,
+        on_file: false,
     }
 }
 
@@ -176,4 +177,101 @@ fn a_moved_comment_keeps_its_new_place_after_a_reopen() {
     after_edit(&fx, &mut review, &edited);
     let reopened = Review::open(fx.root()).expect("reopen");
     assert_eq!(reopened.session.comments[0].anchor.line, Some(8));
+}
+
+/// A twenty-line file, committed, with `notes.md` changed so the diff holds
+/// one hunk far from line 15.
+const LONG: &str =
+    "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\nl13\nl14\nl15\nl16\nl17\nl18\nl19\nl20\n";
+
+fn file_comment(review: &mut Review, file: &str, line: u32, text: &str) {
+    let mut anchor = anchor(file, line);
+    anchor.line_text = Some(text.to_owned());
+    anchor.on_file = true;
+    review.session.add_comment(anchor, "reviewer", "look here");
+}
+
+fn long_repo(fx: &Fixture) -> Review {
+    fx.write("lib.rs", LONG);
+    fx.write("notes.md", "a\n");
+    fx.commit_all("base");
+    fx.write("lib.rs", &LONG.replace("l1\n", "L1\n"));
+    let review = Review::open(fx.root()).expect("open");
+    review.model();
+    review
+}
+
+#[test]
+fn a_file_comment_outside_the_hunks_is_current_while_its_line_reads_the_same() {
+    let fx = Fixture::new();
+    let mut review = long_repo(&fx);
+    file_comment(&mut review, "lib.rs", 15, "l15");
+    let anchor = &review.session.comments[0].anchor;
+    assert!(!anchor.is_outdated(review.model()));
+}
+
+#[test]
+fn a_file_comment_on_an_unchanged_file_is_current() {
+    let fx = Fixture::new();
+    let mut review = long_repo(&fx);
+    file_comment(&mut review, "notes.md", 1, "a");
+    let anchor = &review.session.comments[0].anchor;
+    assert!(!anchor.is_outdated(review.model()));
+}
+
+#[test]
+fn a_file_comment_whose_line_changed_reads_outdated() {
+    let fx = Fixture::new();
+    let mut review = long_repo(&fx);
+    file_comment(&mut review, "lib.rs", 15, "l15");
+    fx.write(
+        "lib.rs",
+        &LONG.replace("l1\n", "L1\n").replace("l15\n", "L15\n"),
+    );
+    review.refresh().expect("refresh");
+    let anchor = &review.session.comments[0].anchor;
+    assert_eq!(anchor.line, Some(15));
+    assert!(anchor.is_outdated(review.model()));
+}
+
+#[test]
+fn a_file_comment_follows_its_line_when_its_file_first_changes() {
+    let fx = Fixture::new();
+    let mut review = long_repo(&fx);
+    file_comment(&mut review, "notes.md", 1, "a");
+    fx.write("notes.md", "intro\n\na\n");
+    review.refresh().expect("refresh");
+    let anchor = &review.session.comments[0].anchor;
+    assert_eq!(anchor.line, Some(3));
+    assert!(!anchor.is_outdated(review.model()));
+}
+
+#[test]
+fn a_file_comment_reads_outdated_once_its_file_is_deleted() {
+    let fx = Fixture::new();
+    let mut review = long_repo(&fx);
+    file_comment(&mut review, "notes.md", 1, "a");
+    std::fs::remove_file(fx.root().join("notes.md")).expect("delete");
+    review.refresh().expect("refresh");
+    assert!(
+        review.session.comments[0]
+            .anchor
+            .is_outdated(review.model())
+    );
+}
+
+#[test]
+fn a_diff_comment_whose_line_leaves_the_hunks_still_reads_outdated() {
+    let fx = Fixture::new();
+    let mut review = long_repo(&fx);
+    let mut diff_anchor = anchor("lib.rs", 1);
+    diff_anchor.line_text = Some("L1".to_owned());
+    review.session.add_comment(diff_anchor, "reviewer", "why?");
+    fx.write("lib.rs", LONG);
+    review.refresh().expect("refresh");
+    assert!(
+        review.session.comments[0]
+            .anchor
+            .is_outdated(review.model())
+    );
 }

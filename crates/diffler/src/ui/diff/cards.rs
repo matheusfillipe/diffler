@@ -11,7 +11,7 @@ use super::{RenderCtx, RowState, pad_line, tree_lead};
 use crate::app::composer::{Composer, ComposerKind, ComposerLine};
 use crate::app::markdown::MdSpan;
 use crate::app::walkthrough::summary_figure_key;
-use crate::app::{CommentLine, DiffView, summary_display};
+use crate::app::{CommentLine, DiffView, Placement, placement_flag, summary_display};
 use crate::theme::Theme;
 use crate::ui::color::golden_color;
 use crate::ui::diff_render::card_frame;
@@ -209,37 +209,85 @@ impl ThreadLook<'_> {
     }
 }
 
+/// How a comment card is painted: its frame and the reader's author colours.
+pub(in crate::ui) struct CardLook<'a> {
+    pub(in crate::ui) theme: &'a Theme,
+    pub(in crate::ui) selected: bool,
+    pub(in crate::ui) focused: bool,
+    pub(in crate::ui) human: &'a str,
+    pub(in crate::ui) orders: &'a HashMap<&'a str, usize>,
+    pub(in crate::ui) avatars: &'a AvatarCtx<'a>,
+}
+
+fn status_look(theme: &Theme, status: CommentStatus) -> (&'static str, Color) {
+    match status {
+        CommentStatus::Open => ("open", theme.warn_fg),
+        CommentStatus::Replied => ("replied", theme.accent),
+        CommentStatus::Resolved => ("resolved", theme.dim),
+    }
+}
+
 pub(super) fn comment_row_line(
     ctx: &RenderCtx<'_>,
     diff: &DiffView,
     comment: &Comment,
     line: usize,
-    outdated: bool,
+    placement: Placement,
     width: u16,
     state: RowState,
 ) -> Line<'static> {
-    let theme = ctx.theme;
-    let (status_label, accent) = match comment.status {
-        CommentStatus::Open => ("open", theme.warn_fg),
-        CommentStatus::Replied => ("replied", theme.accent),
-        CommentStatus::Resolved => ("resolved", theme.dim),
-    };
-    let (bg, bar) = card_frame(theme, state.selected, state.focused, accent);
-    let dim = Style::new().fg(theme.dim).bg(bg);
-    let fg = Style::new().fg(theme.fg).bg(bg);
-    let unresolved = diff.unresolved_anchors.get(&comment.id).copied();
     let lines = diff
         .card_views()
         .lines_with(comment, width, Some(ctx.highlighter));
     let Some(part) = lines.get(line) else {
         return Line::default();
     };
-    let thread = ThreadLook {
-        theme,
-        bg,
+    if let CommentLine::Figure { block, row } = part {
+        let (_, accent) = status_look(ctx.theme, comment.status);
+        let (bg, _) = card_frame(ctx.theme, state.selected, state.focused, accent);
+        return ctx
+            .rasters
+            .get(&(comment.id.clone(), *block))
+            .and_then(|lines| lines.get(*row))
+            .map_or_else(Line::default, |drawn| {
+                crate::ui::fill_row(drawn.clone(), bg, width)
+            });
+    }
+    let look = CardLook {
+        theme: ctx.theme,
+        selected: state.selected,
+        focused: state.focused,
         human: ctx.human_author,
         orders: &ctx.author_orders,
         avatars: &ctx.avatars,
+    };
+    // only the anchor worker can tell a lost anchor from an unread one, so we read its map
+    let unresolved = diff.unresolved_anchors.contains_key(&comment.id);
+    card_row(&look, comment, part, placement, unresolved, width).unwrap_or_default()
+}
+
+/// One row of a comment card: the header with its placement and stale flags,
+/// the body, notes, replies or footer. `None` for a figure row, which only the
+/// diff pane draws, from its rasters.
+pub(in crate::ui) fn card_row(
+    look: &CardLook<'_>,
+    comment: &Comment,
+    part: &CommentLine,
+    placement: Placement,
+    stale: bool,
+    width: u16,
+) -> Option<Line<'static>> {
+    let theme = look.theme;
+    let (status_label, accent) = status_look(theme, comment.status);
+    let (bg, bar) = card_frame(theme, look.selected, look.focused, accent);
+    let dim = Style::new().fg(theme.dim).bg(bg);
+    let fg = Style::new().fg(theme.fg).bg(bg);
+    let thread = ThreadLook {
+        theme,
+        bg,
+        human: look.human,
+        orders: look.orders,
+        avatars: look.avatars,
     };
     let spans = match part {
         CommentLine::Header => {
@@ -250,7 +298,7 @@ pub(super) fn comment_row_line(
                     Style::new().fg(theme.accent).bg(bg),
                 ));
             }
-            ctx.avatars
+            look.avatars
                 .gap(&mut spans, bg, &comment.author, comment.remote_id.is_some());
             spans.extend([
                 Span::styled(
@@ -260,14 +308,15 @@ pub(super) fn comment_row_line(
                 Span::styled(" · ".to_owned(), dim),
                 Span::styled(status_label.to_owned(), Style::new().fg(accent).bg(bg)),
             ]);
-            if outdated {
-                spans.push(Span::styled(
-                    " · outdated".to_owned(),
-                    Style::new().fg(theme.warn_fg).bg(bg),
-                ));
-            }
-            // only the anchor worker can tell a lost anchor from an unread one, so we read its map
-            if unresolved.is_some() {
+            let flag_colour = match placement {
+                Placement::OutsideDiff(_) => theme.accent,
+                Placement::Current | Placement::Outdated => theme.warn_fg,
+            };
+            spans.push(Span::styled(
+                placement_flag(placement),
+                Style::new().fg(flag_colour).bg(bg),
+            ));
+            if stale {
                 spans.push(Span::styled(
                     " · stale".to_owned(),
                     Style::new().fg(theme.warn_fg).bg(bg),
@@ -285,16 +334,7 @@ pub(super) fn comment_row_line(
             spans.extend(runs.iter().map(|run| md_span(run, dim, theme)));
             spans
         }
-        CommentLine::Figure { block, row } => {
-            let Some(drawn) = ctx
-                .rasters
-                .get(&(comment.id.clone(), *block))
-                .and_then(|lines| lines.get(*row))
-            else {
-                return Line::default();
-            };
-            return crate::ui::fill_row(drawn.clone(), bg, width);
-        }
+        CommentLine::Figure { .. } => return None,
         CommentLine::ReplyGap
         | CommentLine::ReplyHead { .. }
         | CommentLine::Reply { .. }
@@ -308,7 +348,7 @@ pub(super) fn comment_row_line(
             Style::new().fg(accent).bg(bg),
         )],
     };
-    pad_line(spans, bg, width)
+    Some(pad_line(spans, bg, width))
 }
 
 /// The walkthrough summary's card: a "Summary" header with no status or author,
@@ -464,6 +504,7 @@ flowchart LR
             line_end: None,
             on_old_side: false,
             line_text: None,
+            on_file: false,
         };
         let id = session
             .add_comment(anchor.clone(), "alice", "one")
@@ -611,6 +652,7 @@ flowchart LR
                     line_end: Some(3),
                     on_old_side: false,
                     line_text: None,
+                    on_file: false,
                 },
                 "agent",
                 "two lines inside the region",
@@ -648,6 +690,7 @@ flowchart LR
                 line_end: None,
                 on_old_side: false,
                 line_text: None,
+                on_file: false,
             },
             "reviewer",
             "why not 41?",
@@ -678,6 +721,7 @@ flowchart LR
                 line_end: None,
                 on_old_side: false,
                 line_text: None,
+                on_file: false,
             },
             "reviewer",
             "why 42 and not 41?",
@@ -699,6 +743,7 @@ flowchart LR
                     line_end: None,
                     on_old_side: false,
                     line_text: None,
+                    on_file: false,
                 },
                 "reviewer",
                 "does it go this way?\n\n```mermaid\nflowchart LR\n  a[read] --> b[merge]\n```\n",
@@ -724,6 +769,7 @@ flowchart LR
                     line_end: None,
                     on_old_side: false,
                     line_text: None,
+                    on_file: false,
                 },
                 "reviewer",
                 "does it go this way?\n\n```mermaid\nflowchart LR\n  a[read] --> b[merge]\n```\n",
@@ -791,6 +837,7 @@ flowchart LR
                 line_end: None,
                 on_old_side: false,
                 line_text: None,
+                on_file: false,
             },
             "reviewer",
             "try this:\n```rust\nfn answer() -> u32 { 42 }\n```",
@@ -810,6 +857,7 @@ flowchart LR
                 line_end: None,
                 on_old_side: false,
                 line_text: None,
+                on_file: false,
             },
             "reviewer",
             "call `foo()` then make it **bold**",
@@ -893,6 +941,7 @@ flowchart LR
                     line_end: None,
                     on_old_side: false,
                     line_text: Some("pub fn answer() -> u32 {".to_owned()),
+                    on_file: false,
                 },
                 &human,
                 "why full jitter here?",
@@ -928,6 +977,7 @@ flowchart LR
                     line_end: None,
                     on_old_side: false,
                     line_text: Some("pub fn answer() -> u32 {".to_owned()),
+                    on_file: false,
                 },
                 "reviewer",
                 "rename this?",
@@ -952,6 +1002,7 @@ flowchart LR
                 line_end: None,
                 on_old_side: false,
                 line_text: Some("    42".to_owned()),
+                on_file: false,
             },
             "reviewer",
             "| Between | Ordering | What a failure costs |\n\
@@ -977,6 +1028,7 @@ flowchart LR
                     line_end: None,
                     on_old_side: false,
                     line_text: Some("    42".to_owned()),
+                    on_file: false,
                 },
                 "reviewer",
                 "a negative or far too large answer breaks the callers downstream, \
@@ -1006,6 +1058,7 @@ flowchart LR
                 line_end: None,
                 on_old_side: false,
                 line_text: Some("    42".to_owned()),
+                on_file: false,
             },
             "reviewer",
             &format!("{} END-MARKER", "word ".repeat(40)),

@@ -31,7 +31,7 @@ pub enum DiffRow {
     Comment {
         comment: usize,
         line: usize,
-        outdated: bool,
+        placement: Placement,
     },
     /// One display line of the open composer.
     Composer {
@@ -144,8 +144,8 @@ fn hunk_header_text(hunk: &Hunk) -> String {
 }
 
 /// A comment card's header line as plain text: title (a stop's), author,
-/// status, and the outdated/stale flags the card shows beside them.
-fn comment_header_text(comment: &Comment, outdated: bool, unresolved: bool) -> String {
+/// status, and the placement and stale flags the card shows beside them.
+pub fn comment_header_text(comment: &Comment, placement: Placement, unresolved: bool) -> String {
     let status = match comment.status {
         CommentStatus::Open => "open",
         CommentStatus::Replied => "replied",
@@ -159,9 +159,7 @@ fn comment_header_text(comment: &Comment, outdated: bool, unresolved: bool) -> S
     text.push_str(&comment.author);
     text.push_str(" · ");
     text.push_str(status);
-    if outdated {
-        text.push_str(" · outdated");
-    }
+    text.push_str(&placement_flag(placement));
     if unresolved {
         text.push_str(" · stale");
     }
@@ -444,10 +442,10 @@ impl CardViews<'_> {
 fn push_comment_rows(
     rows: &mut Vec<DiffRow>,
     copy: &mut Vec<RowCopy>,
-    comments: &[(usize, bool)],
+    comments: &[(usize, Placement)],
     ctx: RowCtx<'_>,
 ) {
-    for &(comment, outdated) in comments {
+    for &(comment, placement) in comments {
         let Some(c) = ctx.session.comments.get(comment) else {
             continue;
         };
@@ -457,12 +455,12 @@ fn push_comment_rows(
         }
         let unresolved = ctx.cards.unresolved_anchors.get(&c.id).copied();
         let lines = ctx.cards.lines(c, ctx.wrap_width);
-        let header = comment_header_text(c, outdated, unresolved.is_some());
+        let header = comment_header_text(c, placement, unresolved.is_some());
         for (line, part) in lines.iter().enumerate() {
             rows.push(DiffRow::Comment {
                 comment,
                 line,
-                outdated,
+                placement,
             });
             copy.push(row_copy_for(part, &header, &c.id));
         }
@@ -487,28 +485,54 @@ pub fn blocks_of<'a>(figures: &'a FigureCache, id: &str) -> Option<&'a [Block]> 
     Some(figures.get(id)?.blocks.as_slice())
 }
 
+/// The header's text for `placement`, empty while the comment is current.
+pub fn placement_flag(placement: Placement) -> String {
+    match placement {
+        Placement::Current => String::new(),
+        Placement::Outdated => " · outdated".to_owned(),
+        Placement::OutsideDiff(line) => format!(" · line {line}, outside the diff"),
+    }
+}
+
+/// What a comment card's header says about where its comment sits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Placement {
+    Current,
+    /// Its line changed since the comment was written.
+    Outdated,
+    /// A file-viewer comment on this line, which the diff's hunks leave out.
+    OutsideDiff(u32),
+}
+
 /// Bucket a file's comments by their `(hunk, line)` anchor for inline display.
-/// Outdated and file-level comments go in the unanchored list, rendered at
-/// the top.
+/// Outdated, file-level and outside-the-diff comments go in the unanchored
+/// list, rendered at the top.
 type CommentBuckets = (
-    HashMap<(usize, usize), Vec<(usize, bool)>>,
-    Vec<(usize, bool)>,
+    HashMap<(usize, usize), Vec<(usize, Placement)>>,
+    Vec<(usize, Placement)>,
 );
 
 fn collect_comments(file: &FileDiff, session: &Session, model: &DiffModel) -> CommentBuckets {
-    let mut by_line: HashMap<(usize, usize), Vec<(usize, bool)>> = HashMap::new();
-    let mut unanchored: Vec<(usize, bool)> = Vec::new();
+    let mut by_line: HashMap<(usize, usize), Vec<(usize, Placement)>> = HashMap::new();
+    let mut unanchored: Vec<(usize, Placement)> = Vec::new();
     for (comment_idx, comment) in session.comments.iter().enumerate() {
-        if comment.anchor.file != file.path {
+        let anchor = &comment.anchor;
+        if anchor.file != file.path {
             continue;
         }
-        let outdated = comment.anchor.is_outdated(model);
-        match anchor_target(file, &comment.anchor) {
+        let outdated = anchor.is_outdated(model);
+        let target = anchor_target(file, anchor);
+        let placement = match (outdated, target, anchor.span()) {
+            (true, ..) => Placement::Outdated,
+            (false, None, Some((_, end))) if anchor.on_file => Placement::OutsideDiff(end),
+            _ => Placement::Current,
+        };
+        match target {
             Some((hunk, line)) => by_line
                 .entry((hunk, line))
                 .or_default()
-                .push((comment_idx, outdated)),
-            None => unanchored.push((comment_idx, outdated)),
+                .push((comment_idx, placement)),
+            None => unanchored.push((comment_idx, placement)),
         }
     }
     (by_line, unanchored)
@@ -593,7 +617,7 @@ pub enum SplitRow {
     Comment {
         comment: usize,
         line: usize,
-        outdated: bool,
+        placement: Placement,
     },
     Composer {
         line: usize,
@@ -604,8 +628,8 @@ pub enum SplitRow {
     },
 }
 
-fn push_split_comments(rows: &mut Vec<SplitRow>, comments: &[(usize, bool)], ctx: RowCtx<'_>) {
-    for &(comment, outdated) in comments {
+fn push_split_comments(rows: &mut Vec<SplitRow>, comments: &[(usize, Placement)], ctx: RowCtx<'_>) {
+    for &(comment, placement) in comments {
         let Some(c) = ctx.session.comments.get(comment) else {
             continue;
         };
@@ -617,7 +641,7 @@ fn push_split_comments(rows: &mut Vec<SplitRow>, comments: &[(usize, bool)], ctx
         rows.extend((0..count).map(|line| SplitRow::Comment {
             comment,
             line,
-            outdated,
+            placement,
         }));
         if ctx.draft.is_some_and(|d| d.replies_to(&c.id)) {
             push_split_draft_rows(rows, ctx.draft);
@@ -635,7 +659,7 @@ fn push_split_draft_rows(rows: &mut Vec<SplitRow>, draft: Option<&Draft<'_>>) {
 /// comment anchored to a paired line follows its row.
 fn flush_change_block(
     rows: &mut Vec<SplitRow>,
-    by_line: &HashMap<(usize, usize), Vec<(usize, bool)>>,
+    by_line: &HashMap<(usize, usize), Vec<(usize, Placement)>>,
     hunk: usize,
     dels: &[usize],
     adds: &[usize],

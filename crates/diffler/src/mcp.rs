@@ -87,6 +87,7 @@ pub enum McpRequestKind {
         line_end: Option<u32>,
         body: String,
         as_human: bool,
+        outside_diff: bool,
     },
     /// Refused for a human's comment and for a walkthrough stop or note,
     /// which `publish_walkthrough` owns.
@@ -539,6 +540,10 @@ pub struct AddCommentParams {
     /// next submitted review. Off by default, which leaves the comment the
     /// agent's own for the human to answer.
     pub as_human: Option<bool>,
+    /// Comment on lines outside the diff, numbered as in the file. The human
+    /// reviews the diff, so such a comment waits in their comment list; set
+    /// it only for a point about code outside the change.
+    pub outside_diff: Option<bool>,
     /// The project to act on: its folder name from `review_status`, or its
     /// path. Omit it for the project the human is looking at.
     pub project: Option<String>,
@@ -792,7 +797,7 @@ pub fn comment_info(comment: &Comment, model: &DiffModel, source: &ReviewSource)
     // its first line so it reads top-down
     let context = anchor
         .line
-        .and_then(|line| feedback::context_snippet(model, &anchor.file, line, anchor.on_old_side))
+        .and_then(|line| feedback::comment_context(anchor, model, line))
         .map(|snippet| {
             snippet
                 .iter()
@@ -1014,6 +1019,7 @@ impl DifflerMcp {
             line_end: params.line_end,
             body: params.body,
             as_human: params.as_human.unwrap_or(false),
+            outside_diff: params.outside_diff.unwrap_or(false),
         };
         match self.request_in(params.project, kind).await? {
             McpResponse::Added { id } => Ok(Json(AddCommentResponse { id })),
@@ -1520,6 +1526,7 @@ mod tests {
             line_end: None,
             on_old_side: false,
             line_text: None,
+            on_file: false,
         }
     }
 
@@ -1659,6 +1666,7 @@ mod tests {
             line_end: Some(3),
             on_old_side: false,
             line_text: Some("three".to_owned()),
+            on_file: false,
         };
         assert_ne!(a.line_text.as_deref(), Some("one"));
         session.add_comment(a.clone(), "human", "range comment");

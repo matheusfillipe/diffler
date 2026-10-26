@@ -4,7 +4,7 @@
 use std::fmt::Write as _;
 
 use crate::model::{DiffLine, DiffModel};
-use crate::session::{Comment, CommentStatus, Session};
+use crate::session::{Anchor, Comment, CommentStatus, Session};
 
 pub struct FeedbackOptions<'a> {
     pub title: &'a str,
@@ -39,7 +39,7 @@ fn render_comment(out: &mut String, comment: &Comment, model: &DiffModel, includ
     };
 
     if let Some(line) = anchor.line {
-        match context_snippet(model, &anchor.file, line, anchor.on_old_side) {
+        match comment_context(anchor, model, line) {
             Some(snippet) => {
                 // we outrun every backtick run so diff content can't close the fence
                 let longest_run = snippet
@@ -75,6 +75,21 @@ fn render_comment(out: &mut String, comment: &Comment, model: &DiffModel, includ
     if include_resolved && comment.status == CommentStatus::Resolved {
         out.push_str("_(resolved)_\n");
     }
+}
+
+/// [`context_snippet`] from `line`, or for a file-viewer comment on unchanged
+/// code its own line, quoted as context.
+pub fn comment_context(
+    anchor: &Anchor,
+    model: &DiffModel,
+    line: u32,
+) -> Option<Vec<(char, String)>> {
+    context_snippet(model, &anchor.file, line, anchor.on_old_side).or_else(|| {
+        (anchor.on_file && !anchor.is_outdated(model))
+            .then(|| anchor.line_text.clone())
+            .flatten()
+            .map(|text| vec![(' ', text)])
+    })
 }
 
 /// The anchored line and its neighbours in the same hunk, each with its diff
@@ -188,6 +203,21 @@ mod tests {
         assert!(md.contains("```\n-two\n+TWO\n three\n```\n"));
         assert!(md.contains("> why uppercase?\n"));
         assert!(md.ends_with('\n'));
+    }
+
+    #[test]
+    fn a_file_comment_on_unchanged_code_quotes_its_line() {
+        let mut s = Session::default();
+        let mut a = anchor("README.md", Some(4));
+        a.line_text = Some("## Install".to_owned());
+        a.on_file = true;
+        s.add_comment(a, "reviewer", "add the winget line");
+        let md = to_markdown(&s, &sample_model(), &opts());
+        assert!(
+            md.contains("### README.md:4\n```\n ## Install\n```\n"),
+            "{md}"
+        );
+        assert!(!md.contains("outdated"), "{md}");
     }
 
     #[test]

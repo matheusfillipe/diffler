@@ -10,6 +10,7 @@ pub(crate) fn anchor(file: &str, line: Option<u32>) -> Anchor {
         line_end: None,
         on_old_side: false,
         line_text: None,
+        on_file: false,
     }
 }
 

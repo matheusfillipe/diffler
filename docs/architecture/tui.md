@@ -254,6 +254,24 @@ above it, so the list and its versions swap in place and `q` walks back the
 way it came; under any other screen it pushes a new one. `<cr>` reviews the commit with the
 file selected, and `B` opens the file view on that version, ready to step.
 
+The file view draws comment cards under their lines with the diff's card
+renderer (`cards::card_row`) from `FileView::cards`, which
+`App::refresh_file_cards` rebuilds on a load and on every comment change.
+`j` and `k` step onto each card under a line and off it again. `c` on a line
+or over a `V` selection writes a comment through the input modal
+(`InputOp::Comment`), and on a card edits it; `r`, `R` and `d` reply to,
+resolve or reopen, and delete the card under the cursor through the diff's own
+verbs. `App::human_review_source` sends them to the working-tree review for
+today's file and to that commit's review for a past version. Its anchor sets
+`on_file`: it belongs to the file's text, so outside the diff's hunks it stays
+current while its line reads `line_text` (`Anchor::is_outdated`), and
+`Session::follow_moved_lines` shifts it by the lines an edit adds or removes
+above it, reading a file outside the diff as its base. The diff keeps these
+comments in sight: a changed file shows them above its hunks marked
+`line N, outside the diff`, the status bar counts open ones on files the diff
+leaves out, and `<cr>` on one in the comments sidebar opens the file view on
+its lines.
+
 ## Status bands
 
 The branch band leads with the branch's own PR when it has

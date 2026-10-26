@@ -9,7 +9,10 @@ writes a new comment on a line or an inclusive line range of the review the
 human is currently looking at, anchored exactly the way a human's own
 comment is; authored as the agent by default, or as the human when
 `as_human` is set, so it goes out untouched with their next submitted
-review. `delete_comment` and
+review. A line outside the diff is refused unless `outside_diff` is set,
+because the human reads the diff; with it, the comment anchors to the file's
+own line (the working-tree review only) and waits in the human's
+comment list. `delete_comment` and
 `edit_comment` take back or rewrite any local comment, the human's
 included (so the agent can redraft what the human asked it to), keeping
 its author, so a comment that has drifted or turned out wrong need not sit

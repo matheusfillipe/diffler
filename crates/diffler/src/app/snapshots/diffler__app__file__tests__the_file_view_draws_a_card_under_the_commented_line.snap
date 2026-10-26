@@ -1,0 +1,14 @@
+---
+source: crates/diffler/src/app/file.rs
+expression: terminal.backend()
+---
+" b toggle blame · {/} step versions · H list history · c add comment ·"
+"  a.txt  4 lines  ▸ 7f3380e second                                    "
+"   1 one                                                              "
+"▌  2 two                                                              "
+"  ▌ reviewer · open                                                   "
+"  ▌ why two?                                                          "
+"  ▌                                                                   "
+"   3 three                                                            "
+"   4 four                                                             "
+" FILE  fixture@main · mcp off · 1 file, 0 viewed                      "

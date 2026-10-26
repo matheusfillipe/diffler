@@ -3,11 +3,14 @@
 
 use diffler_core::highlight::{Highlighter, StyledRange};
 use diffler_core::review::Review;
+use diffler_core::session::Anchor;
+use diffler_core::source::ReviewSource;
 use diffler_core::vcs::{BlameSpan, FileVersion};
 
+use super::composer::ComposerKind;
 use super::fuzzy::{FuzzyKey, FuzzyList, name_haystack, selected};
 use super::rowsel::{RowSelect, RowText};
-use super::{App, Flow, Modal, Screen};
+use super::{App, Flow, Modal, Placement, Screen};
 use crate::keymap::Action;
 
 /// How many past versions one history read lists.
@@ -72,6 +75,15 @@ pub struct HistoryRequest {
     pub token: u64,
 }
 
+/// A comment card the file view draws under the 0-based `line` its comment
+/// ends on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileCard {
+    pub line: usize,
+    pub id: String,
+    pub placement: Placement,
+}
+
 #[derive(Debug)]
 pub struct FileView {
     pub path: String,
@@ -97,6 +109,11 @@ pub struct FileView {
     /// The step a load in flight brings, so a quick second step counts from
     /// there.
     requested: Option<Requested>,
+    /// The comments on the version on screen, by line.
+    pub cards: Vec<FileCard>,
+    /// Which card under the cursor line the cursor sits on; `None` is the
+    /// line itself.
+    pub card_cursor: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -129,6 +146,47 @@ impl FileView {
             history: None,
             version: None,
             requested: None,
+            cards: Vec::new(),
+            card_cursor: None,
+        }
+    }
+
+    /// The cards under the 0-based `line`, top to bottom.
+    pub fn cards_at(&self, line: usize) -> impl Iterator<Item = &FileCard> {
+        self.cards.iter().filter(move |card| card.line == line)
+    }
+
+    /// The card the cursor sits on.
+    pub fn selected_card(&self) -> Option<&FileCard> {
+        self.cards_at(self.cursor).nth(self.card_cursor?)
+    }
+
+    /// `j`: onto the cursor line's first card, down its cards, then on to the
+    /// next line.
+    fn step_down(&mut self) {
+        let count = self.cards_at(self.cursor).count();
+        match self.card_cursor {
+            None if count > 0 => self.card_cursor = Some(0),
+            Some(at) if at + 1 < count => self.card_cursor = Some(at + 1),
+            _ if self.cursor + 1 < self.lines.len() => {
+                self.cursor += 1;
+                self.card_cursor = None;
+            }
+            _ => {}
+        }
+    }
+
+    /// `k`: up the cursor line's cards to the line, then onto the last card
+    /// of the line above.
+    fn step_up(&mut self) {
+        match self.card_cursor {
+            Some(0) => self.card_cursor = None,
+            Some(at) => self.card_cursor = Some(at - 1),
+            None if self.cursor > 0 => {
+                self.cursor -= 1;
+                self.card_cursor = self.cards_at(self.cursor).count().checked_sub(1);
+            }
+            None => {}
         }
     }
 
@@ -555,6 +613,7 @@ impl App {
         self.raise_screen(Screen::File);
         self.file = Some(view);
         self.message = None;
+        self.refresh_file_cards();
     }
 
     /// We match the old view by token, so a renamed past version still keeps
@@ -570,8 +629,10 @@ impl App {
             if view.history.is_none() {
                 view.history = old.history;
             }
+            view.card_cursor = old.card_cursor;
         }
         self.file = Some(view);
+        self.refresh_file_cards();
     }
 
     pub(super) fn dispatch_file(&mut self, action: Action) {
@@ -581,9 +642,24 @@ impl App {
         let last = view.lines.len().saturating_sub(1);
         let height = usize::from(view.viewport);
         let page = |full| super::page_step(view.viewport, full);
+        // every jump but a single step lands on a line, never on a card
+        if !matches!(
+            action,
+            Action::MoveDown
+                | Action::MoveUp
+                | Action::Comment
+                | Action::Reply
+                | Action::Resolve
+                | Action::DeleteComment
+                | Action::CenterCursor
+                | Action::CursorTop
+                | Action::CursorBottom
+        ) {
+            view.card_cursor = None;
+        }
         match action {
-            Action::MoveDown => view.cursor = (view.cursor + 1).min(last),
-            Action::MoveUp => view.cursor = view.cursor.saturating_sub(1),
+            Action::MoveDown => view.step_down(),
+            Action::MoveUp => view.step_up(),
             Action::GoTop => view.cursor = 0,
             Action::GoBottom => view.cursor = last,
             Action::HalfPageDown => view.cursor = (view.cursor + page(false)).min(last),
@@ -614,8 +690,134 @@ impl App {
                 let (path, line) = (view.path.clone(), view.cursor as u32 + 1);
                 self.request_editor(&path, Some(line));
             }
+            Action::Comment => self.comment_in_file(),
+            Action::Reply => self.reply_in_file(),
+            Action::Resolve => {
+                if let Some(id) = self.selected_file_card_id("resolve") {
+                    self.toggle_resolved(&id);
+                }
+            }
+            Action::DeleteComment => {
+                if let Some(id) = self.selected_file_card_id("delete") {
+                    self.confirm_delete_comment(&id);
+                }
+            }
             _ => {}
         }
+    }
+
+    /// The review a comment on the shown version joins: the working tree's
+    /// for today's file, that commit's for a past version.
+    pub(crate) fn file_comment_source(&self) -> Option<ReviewSource> {
+        let view = self.file.as_ref()?;
+        Some(match view.shown_version() {
+            Some(version) => ReviewSource::commit(version.entry.oid.clone()),
+            None => ReviewSource::WorkingTree,
+        })
+    }
+
+    /// Rebuilds the file view's cards from its review. It runs when a file or
+    /// version loads and on every comment change, so drawing only reads them.
+    pub(crate) fn refresh_file_cards(&mut self) {
+        let Some(source) = self.file_comment_source() else {
+            return;
+        };
+        if let Err(err) = self.review.ensure_source(&source) {
+            self.error(err.to_string());
+            return;
+        }
+        let Some(view) = self.file.as_mut() else {
+            return;
+        };
+        let text = view.lines.join("\n");
+        let mut cards: Vec<FileCard> = self
+            .review
+            .session_for(&source)
+            .comments
+            .iter()
+            .filter(|c| c.anchor.file == view.path && !c.anchor.on_old_side)
+            .filter_map(|c| {
+                let (_, end) = c.anchor.span()?;
+                let line = usize::try_from(end).ok()?.checked_sub(1)?;
+                let placement = if c.anchor.line_drifted(&text) {
+                    Placement::Outdated
+                } else {
+                    Placement::Current
+                };
+                (line < view.lines.len()).then(|| FileCard {
+                    line,
+                    id: c.id.clone(),
+                    placement,
+                })
+            })
+            .collect();
+        cards.sort_by_key(|card| card.line);
+        view.cards = cards;
+        let under_cursor = view.cards_at(view.cursor).count();
+        view.card_cursor = view.card_cursor.filter(|&at| at < under_cursor);
+    }
+
+    fn selected_file_card_id(&mut self, verb: &str) -> Option<String> {
+        let id = self
+            .file
+            .as_ref()?
+            .selected_card()
+            .map(|card| card.id.clone());
+        if id.is_none() {
+            self.info(format!("move onto a comment to {verb} it"));
+        }
+        id
+    }
+
+    /// `c` on a card edits its comment; on a line, or over a `V` selection, it
+    /// writes a new one.
+    fn comment_in_file(&mut self) {
+        let Some(view) = self.file.as_mut() else {
+            return;
+        };
+        if let Some(id) = view.selected_card().map(|card| card.id.clone()) {
+            let source = self.human_review_source();
+            let body = self
+                .review
+                .session_for(&source)
+                .comment(&id)
+                .map(|comment| comment.body.clone())
+                .unwrap_or_default();
+            self.open_file_input("Edit comment", body, ComposerKind::Edit { comment_id: id });
+            return;
+        }
+        let (start, end) = view.selection().unwrap_or((view.cursor, view.cursor));
+        view.visual_anchor = None;
+        let (Ok(first), Ok(last)) = (u32::try_from(start + 1), u32::try_from(end + 1)) else {
+            return;
+        };
+        let span = (first, (last > first).then_some(last));
+        let Some(anchor) = Anchor::on_file_lines(&view.path, span, &view.lines.join("\n")) else {
+            self.info("move to a line to comment");
+            return;
+        };
+        let lines = if last > first {
+            format!("{first}-{last}")
+        } else {
+            first.to_string()
+        };
+        let title = format!("Comment on {}:{lines}", anchor.file);
+        self.open_file_input(&title, String::new(), ComposerKind::New { anchor });
+    }
+
+    fn reply_in_file(&mut self) {
+        if let Some(comment_id) = self.selected_file_card_id("reply to") {
+            self.open_file_input("Reply", String::new(), ComposerKind::Reply { comment_id });
+        }
+    }
+
+    fn open_file_input(&mut self, title: &str, buffer: String, kind: ComposerKind) {
+        self.modal = Some(Modal::Input {
+            title: title.to_owned(),
+            cursor: buffer.chars().count(),
+            buffer,
+            on_submit: super::InputOp::Comment(Box::new(kind)),
+        });
     }
 
     fn copy_file_link(&mut self) {
@@ -1381,5 +1583,206 @@ mod tests {
             1,
             "a line past the end lands on the last one"
         );
+    }
+
+    fn write_comment(app: &mut App, text: &str) {
+        app.handle(key('c'));
+        assert!(matches!(app.modal, Some(Modal::Input { .. })));
+        for c in text.chars() {
+            app.handle(key(c));
+        }
+        app.handle(key('\n'));
+    }
+
+    fn comments_on(app: &App, source: &ReviewSource) -> Vec<diffler_core::session::Comment> {
+        app.review.session_for(source).comments.clone()
+    }
+
+    fn cards(app: &App) -> Vec<(usize, Placement)> {
+        let view = app.file.as_ref().expect("a file view");
+        view.cards
+            .iter()
+            .map(|card| (card.line, card.placement))
+            .collect()
+    }
+
+    fn type_and_submit(app: &mut App, key_char: char, text: &str) {
+        app.handle(key(key_char));
+        for c in text.chars() {
+            app.handle(key(c));
+        }
+        app.handle(key('\n'));
+    }
+
+    #[test]
+    fn c_comments_on_an_unchanged_line_of_the_working_tree_file() {
+        let fixture = history_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_file("a.txt", None, false);
+        settle(&mut app, &fixture);
+        app.handle(key('j'));
+        write_comment(&mut app, "why two?");
+        let comments = comments_on(&app, &ReviewSource::WorkingTree);
+        let anchor = &comments.first().expect("a comment").anchor;
+        assert_eq!(
+            (anchor.line, anchor.line_text.as_deref(), anchor.on_file),
+            (Some(2), Some("two"), true)
+        );
+        assert_eq!(comments[0].body, "why two?");
+        assert_eq!(cards(&app), [(1, Placement::Current)], "under line 2");
+    }
+
+    #[test]
+    fn c_on_a_commented_line_writes_a_new_comment_and_on_its_card_edits_it() {
+        let fixture = history_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_file("a.txt", None, false);
+        settle(&mut app, &fixture);
+        write_comment(&mut app, "first");
+        write_comment(&mut app, "second");
+        assert_eq!(comments_on(&app, &ReviewSource::WorkingTree).len(), 2);
+        // the first card under line 1 is the older comment
+        app.handle(key('j'));
+        type_and_submit(&mut app, 'c', " take");
+        let bodies: Vec<String> = comments_on(&app, &ReviewSource::WorkingTree)
+            .into_iter()
+            .map(|c| c.body)
+            .collect();
+        assert_eq!(bodies, ["first take", "second"]);
+    }
+
+    #[test]
+    fn a_visual_selection_over_a_commented_line_still_comments_on_the_selection() {
+        let fixture = history_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_file("a.txt", None, false);
+        settle(&mut app, &fixture);
+        app.handle(key('G'));
+        write_comment(&mut app, "on four");
+        app.handle(key('g'));
+        app.handle(key('g'));
+        app.handle(key('V'));
+        app.handle(key('G'));
+        write_comment(&mut app, "the whole file");
+        let comments = comments_on(&app, &ReviewSource::WorkingTree);
+        let anchor = &comments.last().expect("the range comment").anchor;
+        assert_eq!((anchor.line, anchor.line_end), (Some(1), Some(4)));
+        assert_eq!(comments.len(), 2);
+    }
+
+    #[test]
+    fn j_walks_onto_each_card_so_r_r_and_d_reach_an_older_comment() {
+        let fixture = history_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_file("a.txt", None, false);
+        settle(&mut app, &fixture);
+        write_comment(&mut app, "older");
+        write_comment(&mut app, "newer");
+        app.handle(key('r'));
+        assert!(app.modal.is_none(), "on the line, r asks for a card");
+        app.handle(key('j'));
+        type_and_submit(&mut app, 'r', "agreed");
+        app.handle(key('R'));
+        let older = comments_on(&app, &ReviewSource::WorkingTree)[0].clone();
+        assert_eq!(
+            older.replies.first().map(|r| r.body.as_str()),
+            Some("agreed")
+        );
+        assert_eq!(older.status, diffler_core::session::CommentStatus::Resolved);
+        app.handle(key('R'));
+        let reopened = &comments_on(&app, &ReviewSource::WorkingTree)[0];
+        assert_ne!(
+            reopened.status,
+            diffler_core::session::CommentStatus::Resolved
+        );
+
+        app.handle(key('j'));
+        app.handle(key('d'));
+        assert!(
+            matches!(app.modal, Some(Modal::Confirm { .. })),
+            "d asks before it deletes"
+        );
+        app.confirm_modal();
+        let left: Vec<String> = comments_on(&app, &ReviewSource::WorkingTree)
+            .into_iter()
+            .map(|c| c.body)
+            .collect();
+        assert_eq!(left, ["older"], "the second card's comment went");
+    }
+
+    #[test]
+    fn a_card_taller_than_the_screen_keeps_its_line_in_view() {
+        let fixture = history_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_file("a.txt", None, false);
+        settle(&mut app, &fixture);
+        app.handle(key('j'));
+        let long = "point\n".repeat(30);
+        let anchor = Anchor::on_file_lines("a.txt", (2, None), "one\ntwo\n").expect("line 2");
+        app.review.session.add_comment(anchor, "reviewer", &long);
+        app.refresh_file_cards();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 12)).expect("terminal");
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .expect("draw");
+        let shown = terminal.backend().to_string();
+        assert!(shown.contains("  2 two"), "{shown}");
+    }
+
+    #[test]
+    fn a_visual_range_comments_on_every_selected_line() {
+        let fixture = history_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_file("a.txt", None, false);
+        settle(&mut app, &fixture);
+        app.handle(key('V'));
+        app.handle(key('j'));
+        app.handle(key('j'));
+        write_comment(&mut app, "these three");
+        let comments = comments_on(&app, &ReviewSource::WorkingTree);
+        let anchor = &comments.first().expect("a comment").anchor;
+        assert_eq!(
+            (anchor.line, anchor.line_end, anchor.line_text.as_deref()),
+            (Some(1), Some(3), Some("three"))
+        );
+    }
+
+    #[test]
+    fn a_comment_on_a_past_version_joins_that_commits_review() {
+        let fixture = history_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_file("a.txt", None, false);
+        settle(&mut app, &fixture);
+        app.handle(key('{'));
+        settle(&mut app, &fixture);
+        let oid = app
+            .file
+            .as_ref()
+            .and_then(FileView::shown_version)
+            .map(|version| version.entry.oid.clone())
+            .expect("a past version");
+        write_comment(&mut app, "this was fine");
+        let source = ReviewSource::commit(oid);
+        assert_eq!(comments_on(&app, &source).len(), 1);
+        assert!(comments_on(&app, &ReviewSource::WorkingTree).is_empty());
+        assert_eq!(cards(&app).len(), 1, "the card shows on that version");
+    }
+
+    #[test]
+    fn the_file_view_draws_a_card_under_the_commented_line() {
+        let fixture = history_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_file("a.txt", None, false);
+        settle(&mut app, &fixture);
+        "reviewer".clone_into(&mut app.author);
+        app.handle(key('j'));
+        write_comment(&mut app, "why two?");
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(70, 10)).expect("terminal");
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .expect("draw");
+        insta::assert_snapshot!(terminal.backend());
     }
 }
