@@ -675,9 +675,10 @@ impl App {
             Action::PrevSection => view.step_span(false),
             Action::ToggleBlame => view.show_blame = !view.show_blame,
             Action::VisualSelect => view.toggle_visual(),
-            Action::CopyFileFeedback | Action::CopyAllFeedback => {
-                self.yank_rows("yanked lines");
+            Action::CopyFileFeedback | Action::CopyAllFeedback if view.selection().is_some() => {
+                self.yank_rows("yanked selection");
             }
+            Action::CopyFileFeedback | Action::CopyAllFeedback => self.copy_file_feedback(),
             Action::CopyUrl => self.copy_file_link(),
             Action::OpenUrl => self.open_file_link(),
             Action::Open => self.open_cursor_commit(),
@@ -714,6 +715,19 @@ impl App {
             Some(version) => ReviewSource::commit(version.entry.oid.clone()),
             None => ReviewSource::WorkingTree,
         })
+    }
+
+    /// `y` with no selection: this file's comments as a markdown prompt, the
+    /// same export the diff view's `y` copies.
+    fn copy_file_feedback(&mut self) {
+        let (Some(source), Some(path)) = (
+            self.file_comment_source(),
+            self.file.as_ref().map(|view| view.path.clone()),
+        ) else {
+            return;
+        };
+        let exported = self.feedback_markdown(&source, Some(&path), self.review.model());
+        self.copy_exported_feedback(exported, "file");
     }
 
     /// Rebuilds the file view's cards from its review. It runs when a file or
@@ -1104,12 +1118,12 @@ mod tests {
     }
 
     #[test]
-    fn yank_without_a_selection_copies_the_cursor_line() {
+    fn yank_without_a_selection_and_no_comments_copies_nothing() {
         let (_fixture, mut app) = app();
         app.install_file(view("one\ntwo\nthree\n", Vec::new()), None);
         app.handle(key('j'));
         app.handle(key('y'));
-        assert_eq!(app.pending_clipboard.as_deref(), Some("two"));
+        assert_eq!(app.pending_clipboard, None);
     }
 
     #[test]
@@ -1583,6 +1597,18 @@ mod tests {
             1,
             "a line past the end lands on the last one"
         );
+    }
+
+    #[test]
+    fn yank_without_a_selection_copies_the_files_comments() {
+        let (_fixture, mut app) = app();
+        app.install_file(view("one\ntwo\nthree\n", Vec::new()), None);
+        app.handle(key('j'));
+        write_comment(&mut app, "rename this");
+        app.handle(key('y'));
+        let copied = app.pending_clipboard.as_deref().expect("the comments");
+        assert!(copied.contains("rename this"), "{copied}");
+        assert_eq!(message(&app), "copied 1 comment (file)");
     }
 
     fn write_comment(app: &mut App, text: &str) {

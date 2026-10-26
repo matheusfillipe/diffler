@@ -556,17 +556,32 @@ impl App {
             None
         };
         let source = self.active_review_source();
-        let session = self.review.session_for(&source);
+        let model = self
+            .diff
+            .as_ref()
+            .and_then(|diff| diff.commit_model.as_ref())
+            .unwrap_or_else(|| self.review.model());
+        let exported = self.feedback_markdown(&source, filter.as_deref(), model);
+        let scope = if file_only { "file" } else { "all" };
+        self.copy_exported_feedback(exported, scope);
+    }
+
+    /// The source's open comments as a markdown prompt, with their count.
+    pub(crate) fn feedback_markdown(
+        &self,
+        source: &ReviewSource,
+        filter: Option<&str>,
+        model: &DiffModel,
+    ) -> Option<(String, usize)> {
+        let session = self.review.session_for(source);
         let count = session
             .comments
             .iter()
             .filter(|c| c.status != CommentStatus::Resolved)
-            .filter(|c| filter.as_deref().is_none_or(|f| c.anchor.file == f))
+            .filter(|c| filter.is_none_or(|f| c.anchor.file == f))
             .count();
-        let noun = if count == 1 { "comment" } else { "comments" };
         if count == 0 {
-            self.info("no comments to copy");
-            return;
+            return None;
         }
         let repo = self
             .review
@@ -574,25 +589,34 @@ impl App {
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let branch = self.head.branch.clone().unwrap_or_else(|| "?".to_owned());
-        let title = format!("Review feedback: {repo} @ {branch} ({count} {noun})");
-        let model = self
-            .diff
-            .as_ref()
-            .and_then(|diff| diff.commit_model.as_ref())
-            .unwrap_or_else(|| self.review.model());
+        let branch = self.head.branch.as_deref().unwrap_or("?");
+        let title = format!(
+            "Review feedback: {repo} @ {branch} ({count} {})",
+            noun(count)
+        );
         let markdown = feedback::to_markdown(
             session,
             model,
             &FeedbackOptions {
                 title: &title,
-                file_filter: filter.as_deref(),
+                file_filter: filter,
                 include_resolved: false,
             },
         );
+        Some((markdown, count))
+    }
+
+    pub(crate) fn copy_exported_feedback(
+        &mut self,
+        exported: Option<(String, usize)>,
+        scope: &str,
+    ) {
+        let Some((markdown, count)) = exported else {
+            self.info("no comments to copy");
+            return;
+        };
         self.pending_clipboard = Some(markdown);
-        let scope = if file_only { "file" } else { "all" };
-        self.info(format!("copied {count} {noun} ({scope})"));
+        self.info(format!("copied {count} {} ({scope})", noun(count)));
     }
 
     /// `y`: with a visual selection, yank the rows it covers; with none,
@@ -608,4 +632,8 @@ impl App {
             self.copy_feedback(true);
         }
     }
+}
+
+fn noun(count: usize) -> &'static str {
+    if count == 1 { "comment" } else { "comments" }
 }
