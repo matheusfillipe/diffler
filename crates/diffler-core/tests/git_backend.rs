@@ -1227,6 +1227,51 @@ fn jj_verbs_decline_in_a_git_repo() {
 }
 
 #[test]
+fn a_sparse_checkout_leaves_out_files_outside_its_cone_even_without_their_blobs() {
+    let fx = Fixture::new();
+    fx.write("kept.txt", "here\n");
+    fx.write("elsewhere.txt", "not checked out\n");
+    fx.commit_all("base");
+    let mut index = fx.repo.index().expect("index");
+    let mut entry = index
+        .get_path(Path::new("elsewhere.txt"), 0)
+        .expect("entry");
+    entry.flags_extended |= git2::IndexEntryExtendedFlag::SKIP_WORKTREE.bits();
+    let blob = entry.id.to_string();
+    index.add(&entry).expect("mark skip-worktree");
+    index.write().expect("write index");
+    std::fs::remove_file(fx.root().join("elsewhere.txt")).expect("leave the cone");
+    // a partial clone never downloads the blob, so we take ours away too
+    let (dir, file) = blob.split_at(2);
+    std::fs::remove_file(fx.root().join(".git/objects").join(dir).join(file))
+        .expect("drop the blob");
+
+    // a new file gives rename detection a pair to compare the missing blob with
+    fx.write("fresh.txt", "new\n");
+
+    let v = vcs(&fx);
+    let st = v.status().expect("status");
+    assert!(st.unstaged.files.is_empty(), "{:?}", st.unstaged.files);
+    let paths: Vec<String> = v
+        .working_tree_diff()
+        .expect("diff")
+        .files
+        .into_iter()
+        .map(|f| f.path)
+        .collect();
+    assert_eq!(paths, ["fresh.txt"]);
+
+    v.stage_everything().expect("stage everything");
+    let mut index = fx.repo.index().expect("index");
+    index.read(true).expect("reread the index from disk");
+    assert!(
+        index.get_path(Path::new("elsewhere.txt"), 0).is_some(),
+        "staging everything keeps the file outside the cone"
+    );
+    assert!(index.get_path(Path::new("fresh.txt"), 0).is_some());
+}
+
+#[test]
 fn worktrees_list_the_main_one_and_every_linked_one_from_either_side() {
     let fx = Fixture::new();
     fx.write("a.txt", "x\n");

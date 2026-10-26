@@ -1,7 +1,7 @@
 //! git2 backend for the [`Vcs`] trait.
 
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -170,10 +170,15 @@ impl GitVcs {
         } else {
             self.repo.diff_tree_to_workdir(base, Some(&mut options))?
         };
-        let mut find = git2::DiffFindOptions::new();
-        find.renames(true);
-        diff.find_similar(Some(&mut find))?;
-        let mut model = self.diff_to_model(&mut diff)?;
+        let sparse = self.sparse_paths();
+        // ponytail: a sparse checkout gets no rename detection, since it would read
+        // every file outside the cone, which a partial clone never downloaded
+        if sparse.is_empty() {
+            let mut find = git2::DiffFindOptions::new();
+            find.renames(true);
+            diff.find_similar(Some(&mut find))?;
+        }
+        let mut model = self.diff_to_model_skipping(&mut diff, &sparse)?;
         if !self.indexed {
             // jj tracks every file of the working copy that no ignore rule names
             for file in &mut model.files {
@@ -183,6 +188,23 @@ impl GitVcs {
             }
         }
         Ok(model)
+    }
+
+    /// The index entries a sparse checkout leaves out of the worktree. libgit2
+    /// ignores the skip-worktree bit, so we have to drop the deletions it
+    /// reports for them; git shows none.
+    fn sparse_paths(&self) -> HashSet<Vec<u8>> {
+        let Ok(index) = self.repo.index() else {
+            return HashSet::new();
+        };
+        index
+            .iter()
+            .filter(|entry| {
+                git2::IndexEntryExtendedFlag::from_bits_truncate(entry.flags_extended)
+                    .is_skip_worktree()
+            })
+            .map(|entry| entry.path)
+            .collect()
     }
 
     fn plain_diff_options(&self) -> git2::DiffOptions {
@@ -202,8 +224,25 @@ impl GitVcs {
 
     /// Leaves `.emphasis` empty; the TUI enriches a file when it draws it.
     fn diff_to_model(&self, diff: &mut git2::Diff<'_>) -> Result<DiffModel, VcsError> {
+        self.diff_to_model_skipping(diff, &HashSet::new())
+    }
+
+    /// [`Self::diff_to_model`] for a worktree diff, leaving out the deletions
+    /// of the `sparse` paths a sparse checkout never wrote to disk.
+    fn diff_to_model_skipping(
+        &self,
+        diff: &mut git2::Diff<'_>,
+        sparse: &HashSet<Vec<u8>>,
+    ) -> Result<DiffModel, VcsError> {
         let mut files = Vec::new();
         for idx in 0..diff.deltas().len() {
+            let outside_cone = diff.get_delta(idx).is_some_and(|delta| {
+                delta.status() == git2::Delta::Deleted
+                    && sparse.contains(delta.old_file().path_bytes().unwrap_or_default())
+            });
+            if outside_cone {
+                continue;
+            }
             if let Some(file) = self.build_file(diff, idx)? {
                 files.push(file);
             }
@@ -371,7 +410,10 @@ impl GitVcs {
         let mut opts = git2::StatusOptions::new();
         opts.include_untracked(false).include_ignored(false);
         let statuses = self.repo.statuses(Some(&mut opts))?;
-        Ok(statuses.iter().next().is_some())
+        let sparse = self.sparse_paths();
+        Ok(statuses.iter().any(|entry| {
+            !(entry.status() == git2::Status::WT_DELETED && sparse.contains(entry.path_bytes()))
+        }))
     }
 }
 
@@ -465,7 +507,7 @@ impl Vcs for GitVcs {
         let mut workdir = self
             .repo
             .diff_index_to_workdir(None, Some(&mut self.workdir_diff_options()))?;
-        let workdir_model = self.diff_to_model(&mut workdir)?;
+        let workdir_model = self.diff_to_model_skipping(&mut workdir, &self.sparse_paths())?;
         let (untracked, unstaged): (Vec<_>, Vec<_>) = workdir_model
             .files
             .into_iter()
@@ -787,10 +829,41 @@ impl Vcs for GitVcs {
     }
 
     fn stage_everything(&self) -> Result<(), VcsError> {
+        let sparse = self.sparse_paths();
         let mut index = self.repo.index()?;
-        // update_all catches deletions, add_all catches untracked files
-        index.update_all(["*"], None)?;
-        index.add_all(["*"], git2::IndexAddOption::DEFAULT, None)?;
+        if sparse.is_empty() {
+            // update_all catches deletions, add_all catches untracked files
+            index.update_all(["*"], None)?;
+            index.add_all(["*"], git2::IndexAddOption::DEFAULT, None)?;
+        } else {
+            // both read the blob of every path outside the sparse cone, which a
+            // partial clone never downloaded, so we stage the worktree diff's
+            // paths ourselves; listing the deltas reads no blob
+            let workdir = self.workdir_path()?.to_path_buf();
+            let diff = self
+                .repo
+                .diff_index_to_workdir(Some(&index), Some(&mut self.workdir_diff_options()))?;
+            let changed: Vec<PathBuf> = diff
+                .deltas()
+                .filter_map(|delta| {
+                    let file = if delta.status() == git2::Delta::Deleted {
+                        delta.old_file()
+                    } else {
+                        delta.new_file()
+                    };
+                    let path = file.path_bytes()?;
+                    (!sparse.contains(path))
+                        .then(|| PathBuf::from(String::from_utf8_lossy(path).into_owned()))
+                })
+                .collect();
+            for path in changed {
+                if workdir.join(&path).exists() {
+                    index.add_path(&path)?;
+                } else {
+                    index.remove_path(&path)?;
+                }
+            }
+        }
         index.write()?;
         Ok(())
     }
