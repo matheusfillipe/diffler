@@ -138,11 +138,16 @@ impl App {
             MouseEventKind::Down(MouseButton::Left)
                 if matches!(self.modal, Some(Modal::Menu { .. })) =>
             {
-                match self.modal_hits.and_then(|hits| hits.index_at(row)) {
+                let Some(hits) = self.modal_hits else {
+                    self.cancel_modal();
+                    return;
+                };
+                match hits.index_at(row) {
                     Some(index) => {
                         self.point_modal_at(index);
                         self.activate_modal();
                     }
+                    None if hits.area.contains((mouse.column, row).into()) => {}
                     None => self.cancel_modal(),
                 }
             }

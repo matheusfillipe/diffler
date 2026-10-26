@@ -1062,6 +1062,12 @@ mod tests {
             "{commands:?}"
         );
         insta::assert_snapshot!(render(&mut app).backend());
+        let hits = app.modal_hits.expect("the menu placed its rows");
+        app.handle(crate::test_support::mouse_click(
+            hits.area.x + 2,
+            hits.area.bottom() - 2,
+        ));
+        assert!(app.modal.is_some(), "a click on a blank row keeps the menu");
         app.handle(key('\n'));
         assert!(app.composer_open(), "the first entry, comment, ran");
     }

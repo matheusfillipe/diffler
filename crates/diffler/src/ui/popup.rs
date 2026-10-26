@@ -445,6 +445,7 @@ impl CreatePrForm<'_> {
             first_row: area.y + 3,
             rows: PrField::ORDER.len() as u16,
             first_index: 0,
+            area,
         }
     }
 }
@@ -503,7 +504,7 @@ impl InputModal {
             Style::new().fg(theme.dim).bg(theme.panel),
         ));
         let height = lines.len() as u16 + 1;
-        let area = floating(frame, box_w, height);
+        let area = anchored(frame, box_w, height);
         let block = dialog_block(theme, &format!(" {} ", self.title), Borders::TOP);
         frame.render_widget(
             Paragraph::new(lines)
@@ -580,6 +581,12 @@ fn wrap_ranges(chars: &[char], width: usize) -> Vec<(usize, usize)> {
     ranges
 }
 
+const FUZZY_MIN_WIDTH: u16 = 48;
+/// Rows the fuzzy picker leaves free under itself.
+const FUZZY_BOTTOM_MARGIN: u16 = 2;
+/// The top rule, the query line and the footer.
+const FUZZY_CHROME_ROWS: u16 = 3;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FuzzyModal {
     pub title: String,
@@ -599,6 +606,8 @@ pub struct ListHits {
     pub first_row: u16,
     pub rows: u16,
     pub first_index: usize,
+    /// The whole dialog, so a click inside it but off a row can keep it open.
+    pub area: Rect,
 }
 
 impl ListHits {
@@ -610,25 +619,16 @@ impl ListHits {
 
 impl FuzzyModal {
     pub(crate) fn render(&self, frame: &mut Frame<'_>, theme: &Theme) -> ListHits {
-        let width = self
-            .items
-            .iter()
-            .map(|(left, right)| left.chars().count() + right.chars().count() + 3)
-            .chain([
-                self.footer.len(),
-                self.title.chars().count() + 2,
-                self.query.chars().count() + 4,
-                44,
-            ])
-            .max()
-            .unwrap_or(0) as u16
-            + 4;
-        let max_rows = (frame.area().height.saturating_sub(6) as usize).max(1);
-        let visible = self.items.len().min(max_rows);
-        // +3: the top rule, the query line, and the footer
-        let height = visible as u16 + 3;
-        let width = width.min(frame.area().width);
-        let area = floating(frame, width, height);
+        // the size follows the screen alone, so the box holds still while the
+        // results change under the query
+        let full = frame.area();
+        let width = (full.width / 5 * 4).max(FUZZY_MIN_WIDTH.min(full.width));
+        let below = full.bottom() - palette_top(full);
+        let rows = (below.saturating_sub(FUZZY_CHROME_ROWS + FUZZY_BOTTOM_MARGIN)).max(1);
+        let visible = self.items.len().min(rows as usize);
+        let area = anchored(frame, width, rows + FUZZY_CHROME_ROWS);
+        let rows = area.height.saturating_sub(FUZZY_CHROME_ROWS) as usize;
+        let visible = visible.min(rows);
 
         let inner = width.saturating_sub(2) as usize;
         let split = self
@@ -671,6 +671,7 @@ impl FuzzyModal {
                 Span::styled(format!("{right} "), Style::new().fg(theme.dim).bg(bg)),
             ]));
         }
+        lines.resize(rows + 1, Line::default());
         lines.push(Line::styled(
             self.footer.clone(),
             Style::new().fg(theme.dim).bg(theme.panel),
@@ -690,6 +691,7 @@ impl FuzzyModal {
             first_row: area.y + 2,
             rows: visible as u16,
             first_index: top,
+            area,
         }
     }
 }
@@ -724,6 +726,34 @@ const SCRIM: u16 = 74;
 
 /// Every centred dialog goes through here so they all dim the screen alike.
 fn floating(frame: &mut Frame<'_>, width: u16, height: u16) -> Rect {
+    dim_screen(frame);
+    let area = centered(frame.area(), width, height);
+    frame.render_widget(Clear, area);
+    area
+}
+
+/// A dialog the reader types into keeps its top edge at one spot, so the
+/// input line holds still while the results or the text below it change.
+fn anchored(frame: &mut Frame<'_>, width: u16, height: u16) -> Rect {
+    dim_screen(frame);
+    let full = frame.area();
+    let top = palette_top(full);
+    let width = width.min(full.width);
+    let area = Rect {
+        x: full.x + (full.width - width) / 2,
+        y: top,
+        width,
+        height: height.min(full.bottom() - top),
+    };
+    frame.render_widget(Clear, area);
+    area
+}
+
+fn palette_top(full: Rect) -> u16 {
+    full.y + full.height / 8
+}
+
+fn dim_screen(frame: &mut Frame<'_>) {
     let full = frame.area();
     let buffer = frame.buffer_mut();
     for y in full.top()..full.bottom() {
@@ -735,9 +765,6 @@ fn floating(frame: &mut Frame<'_>, width: u16, height: u16) -> Rect {
             cell.set_bg(darkened(cell.bg));
         }
     }
-    let area = centered(full, width, height);
-    frame.render_widget(Clear, area);
-    area
 }
 
 fn darkened(color: Color) -> Color {

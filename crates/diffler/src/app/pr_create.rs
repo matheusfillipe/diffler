@@ -500,6 +500,7 @@ mod tests {
             first_row: 10,
             rows: 4,
             first_index: 0,
+            ..Default::default()
         });
 
         app.handle_modal_mouse(click(11));
@@ -705,6 +706,7 @@ mod form_tests {
             first_row: 3,
             rows: PrField::ORDER.len() as u16,
             first_index: 0,
+            ..Default::default()
         });
         let cancel_row = 3 + PrField::ORDER.len() as u16 - 1;
         app.handle_modal_mouse(click(cancel_row));
