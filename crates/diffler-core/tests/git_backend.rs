@@ -1366,6 +1366,37 @@ fn worktree_argv_adds_and_removes_through_the_git_cli() {
 }
 
 #[test]
+fn removing_a_worktree_whose_git_file_is_gone_forgets_it() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "x\n");
+    fx.commit_all("base");
+    let elsewhere = tempfile::tempdir().expect("tempdir");
+    let linked_path = elsewhere.path().join("stale");
+    fx.repo
+        .worktree("stale", &linked_path, None)
+        .expect("add worktree");
+    std::fs::remove_file(linked_path.join(".git")).expect("remove .git file");
+    let v = vcs(&fx);
+    let stale = v.worktrees().expect("worktrees").remove(1);
+    assert!(stale.missing, "{stale:?}");
+
+    let argv = v
+        .worktree_argv(&WorktreeOp::Remove {
+            worktree: stale,
+            force: false,
+        })
+        .expect("remove");
+    let status = std::process::Command::new(&argv[0])
+        .args(&argv[1..])
+        .current_dir(fx.dir.path())
+        .status()
+        .expect("run git");
+    assert!(status.success(), "{argv:?}");
+    assert_eq!(v.worktrees().expect("worktrees").len(), 1);
+    assert!(linked_path.exists(), "the leftover folder stays");
+}
+
+#[test]
 fn network_argv_maps_each_op_to_the_git_cli() {
     let fx = Fixture::new();
     fx.write("a.txt", "x\n");

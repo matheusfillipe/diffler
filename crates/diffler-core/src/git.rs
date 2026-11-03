@@ -1141,6 +1141,8 @@ impl Vcs for GitVcs {
                     "the main worktree stays with the repository; remove a linked one".into(),
                 ));
             }
+            // git refuses to remove a worktree whose .git file is gone, even forced
+            WorktreeOp::Remove { worktree, .. } if worktree.missing => argv.push("prune".into()),
             WorktreeOp::Remove { worktree, force } => {
                 argv.push("remove".into());
                 if *force {
