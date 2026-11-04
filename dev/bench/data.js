@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793798173605,
+  "lastUpdate": 1793800916887,
   "repoUrl": "https://github.com/matheusfillipe/diffler",
   "entries": {
     "Benchmark": [
@@ -20351,6 +20351,102 @@ window.BENCHMARK_DATA = {
             "name": "scope_index/20000",
             "value": 95167776,
             "range": "± 2330976",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "committer": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "distinct": true,
+          "id": "d558b42fa2a2f3fd99070b7915cec5ec4ab561a1",
+          "message": "fix: link the windows c runtime statically so the exe runs without vc++ installed",
+          "timestamp": "2026-11-04T14:58:27+01:00",
+          "tree_id": "007217fe28287fc54ff26cc9fabe756a1a2c9fa5",
+          "url": "https://github.com/matheusfillipe/diffler/commit/d558b42fa2a2f3fd99070b7915cec5ec4ab561a1"
+        },
+        "date": 1793800915472,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "syndiff_emphasis/1000",
+            "value": 6340591,
+            "range": "± 105800",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/1000",
+            "value": 15922,
+            "range": "± 294",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/1000",
+            "value": 4455415,
+            "range": "± 71448",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/1000",
+            "value": 3532570,
+            "range": "± 32394",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/5000",
+            "value": 38067752,
+            "range": "± 965791",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/5000",
+            "value": 78129,
+            "range": "± 176",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/5000",
+            "value": 23064798,
+            "range": "± 365133",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/5000",
+            "value": 18275800,
+            "range": "± 300105",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/20000",
+            "value": 158134394,
+            "range": "± 4213013",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/20000",
+            "value": 312570,
+            "range": "± 748",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/20000",
+            "value": 97122513,
+            "range": "± 3345071",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/20000",
+            "value": 77356751,
+            "range": "± 704188",
             "unit": "ns/iter"
           }
         ]
