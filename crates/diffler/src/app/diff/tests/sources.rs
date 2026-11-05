@@ -165,7 +165,6 @@ fn the_branch_picker_reviews_against_the_chosen_branch() {
     app.handle(key('d'));
     app.handle(key('b'));
     assert!(matches!(app.modal, Some(Modal::RevList { .. })));
-    app.handle(code_key(crossterm::event::KeyCode::Tab));
     for c in "main".chars() {
         app.handle(key(c));
     }

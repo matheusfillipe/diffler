@@ -896,7 +896,7 @@ impl App {
             .iter()
             .map(|path| path.to_string_lossy().replace('\\', "/"))
             .collect();
-        let mut list = FuzzyList::typing();
+        let mut list = FuzzyList::default();
         list.rerank(&name_haystack(&paths));
         self.modal = Some(Modal::FilePicker { paths, list });
     }

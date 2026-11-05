@@ -12,9 +12,9 @@ use super::byte_index;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FuzzyFocus {
     /// Keys navigate and hit the dialog's own shortcuts.
-    #[default]
     List,
     /// Keys type into the filter query.
+    #[default]
     Input,
 }
 
@@ -42,13 +42,6 @@ pub(crate) enum FuzzyKey {
 }
 
 impl FuzzyList {
-    pub(crate) fn typing() -> Self {
-        Self {
-            focus: FuzzyFocus::Input,
-            ..Self::default()
-        }
-    }
-
     pub(crate) fn feed(&mut self, key: &KeyEvent) -> FuzzyKey {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
@@ -322,6 +315,8 @@ mod tests {
     fn list_focus_keeps_classic_keys_and_tab_switches_to_typing() {
         let items = hay(&["stage file", "stash", "search"]);
         let mut list = FuzzyList::default();
+        assert_eq!(list.focus, FuzzyFocus::Input, "a list opens typing");
+        list.focus = FuzzyFocus::List;
         list.rerank(&items);
         let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
         // list focus: j/k move, other printables fall through to the dialog

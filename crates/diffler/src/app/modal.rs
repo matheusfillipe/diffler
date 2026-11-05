@@ -1030,7 +1030,6 @@ mod tests {
             ),
             "T opens the theme picker"
         );
-        press(&mut app, KeyCode::Tab);
         for c in "dracula".chars() {
             press(&mut app, KeyCode::Char(c));
         }

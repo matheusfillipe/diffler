@@ -403,7 +403,7 @@ mod tests {
         insta::assert_snapshot!(render(&mut app).backend());
 
         // the cursor starts on histogram, one above it is patience
-        app.handle(key('k'));
+        app.handle(crate::test_support::code_key(crossterm::event::KeyCode::Up));
         app.handle(crate::test_support::code_key(
             crossterm::event::KeyCode::Enter,
         ));

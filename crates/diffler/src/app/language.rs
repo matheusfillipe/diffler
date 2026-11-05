@@ -243,7 +243,7 @@ mod tests {
             press(&mut app, KeyCode::Char(c));
         }
         press(&mut app, KeyCode::Enter);
-        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Down);
         press(&mut app, KeyCode::Enter);
         assert!(
             app.pending_enrich

@@ -39,6 +39,6 @@ expression: render(&mut app).backend()
 "                                                                                                                        "
 "                                                                                                                        "
 "                                                                                                                        "
-"             enter select · j/k move · tab filter · q close                                                             "
+"             type to filter · enter select · tab list · esc close                                                       "
 "                                                                                                                        "
 " STATUS  fixture@main · mcp off · 3 files, 0 viewed                                                                     "

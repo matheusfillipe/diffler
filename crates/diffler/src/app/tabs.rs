@@ -93,7 +93,7 @@ impl App {
     /// Open the add-project picker over `nearby`, the repositories next to
     /// the ones already open.
     pub fn open_project_picker(&mut self, nearby: Vec<String>) {
-        let mut list = FuzzyList::typing();
+        let mut list = FuzzyList::default();
         list.rerank(&name_haystack(&nearby));
         self.modal = Some(Modal::AddProject {
             entries: nearby.clone(),

@@ -1705,7 +1705,7 @@ impl App {
             action if tabs::tab_op(action).is_some() => self.request_tab(action),
             Action::Palette => {
                 let (_, haystack) = self.command_index_haystack();
-                let mut list = fuzzy::FuzzyList::typing();
+                let mut list = fuzzy::FuzzyList::default();
                 list.rerank_words(&haystack);
                 self.modal = Some(Modal::Palette { list });
             }
@@ -1827,10 +1827,7 @@ impl App {
     pub(crate) fn open_choice_picker(&mut self, kind: ChoiceKind) {
         let names = kind.names();
         let current = kind.current(self);
-        let mut list = match kind {
-            ChoiceKind::Language => fuzzy::FuzzyList::typing(),
-            ChoiceKind::Theme | ChoiceKind::DiffAlgorithm => fuzzy::FuzzyList::default(),
-        };
+        let mut list = fuzzy::FuzzyList::default();
         list.rerank(&names);
         list.selected = list
             .matches

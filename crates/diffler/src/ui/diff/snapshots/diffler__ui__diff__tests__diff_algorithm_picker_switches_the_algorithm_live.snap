@@ -39,6 +39,6 @@ expression: render(&mut app).backend()
 "                                                                                                                        "
 "                                                                                                                        "
 "                                                                                                                        "
-"             enter apply · j/k move · tab filter · q close                                                              "
+"             type to filter · enter apply · tab list · esc close                                                        "
 "                                                                                                                        "
 " DIFF  fixture@main · mcp off · viewed 0/3 files                                                                        "

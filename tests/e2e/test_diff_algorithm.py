@@ -20,7 +20,7 @@ def test_switching_to_patience_renames_the_pane_and_keeps_the_diff(spawn):
     tui.wait_for("patience")
 
     # the cursor starts on histogram, one above it is patience
-    tui.send("k")
+    tui.send("\x1b[A")
     tui.send("\r")
 
     tui.wait_for("Diff · patience")  # non-default algorithm names itself
