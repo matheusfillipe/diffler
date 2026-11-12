@@ -26,9 +26,9 @@ and fixes the code while you watch.
 
 ### Your agent answers your comments
 
-Press <kbd>c</kbd> on any line to leave a comment, then <kbd>Z</kbd> to hand
-your comments over. Your agent replies in each thread and fixes the code, and
-the diff updates while you watch.
+Press <kbd>c</kbd> on any line to leave a comment, or select a few lines with
+<kbd>V</kbd> first to comment on all of them. Your agent replies in each thread
+and fixes the code, and the diff updates while you watch.
 
 ![a comment on a line that crashes, the agent's reply under it, and the fixed code below](assets/readme/agent.png)
 
@@ -44,11 +44,12 @@ you straight to any file, line or pull request.
 
 <kbd>b</kbd> <kbd>p</kbd> lists the open pull requests with their CI, review
 state and labels, on GitHub, GitLab and Forgejo. Open one to read its
-conversation, review the diff and submit your review.
+conversation, review the diff and submit your review. <kbd>C</kbd> lists every
+comment on the side, and <kbd>R</kbd> requests a reviewer, Copilot included.
 
 ![the pull request list with check marks, diff sizes and colored labels](assets/readme/prs.png)
 
-![a pull request diff with a reviewer's thread, a new comment and the submit review menu](assets/readme/pr-review.png)
+![a pull request diff with a reviewer's thread, a Copilot comment and the comment list on the side](assets/readme/comments.png)
 
 ### CI logs, down to the failing step
 
@@ -63,6 +64,9 @@ in its own worktree, and it opens as a new tab next to your project.
 - Stage files or hunks, commit, amend, branch, stash, push and pull, all from
   the keyboard.
 - Comment on any file of the repo, too.
+- Press <kbd>y</kbd> to copy what you selected with <kbd>V</kbd>, or a file's
+  comments as markdown to paste into any agent. On a pull request it copies the
+  URL.
 - Open your repos and worktrees as tabs and switch between them with one key.
 - Step back through a file's history and see who changed each line.
 - It works in git and jj repos.
@@ -200,9 +204,9 @@ in your repo. A client that speaks streamable HTTP can also connect to
 
 </details>
 
-Then comment on its changes and press `Z`. Your agent replies in each thread and
-fixes the code. Its tools are in [docs/mcp.md](docs/mcp.md), and
-`diffler --no-mcp` turns the connection off.
+Then ask your agent to answer your comments (`/df` in Claude Code and opencode).
+It replies in each thread and fixes the code. Its tools are in
+[docs/mcp.md](docs/mcp.md), and `diffler --no-mcp` turns the connection off.
 
 ## How it compares
 
@@ -230,7 +234,6 @@ You move like in vim: `j`/`k`, `gg`/`G`, `/` to search, Ctrl+d/Ctrl+u to scroll.
 | `s` / `u` | Stage / unstage |
 | `cc` | Commit |
 | `c` | Comment on the line, or on a range you selected with `V`, in a diff or any file |
-| `Z` | Send your comments to the agent |
 | `m` | Mark the file as viewed |
 | `t` | Change how the file list is grouped |
 | `\|` | Switch between a unified and a side-by-side diff |
