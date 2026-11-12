@@ -209,6 +209,7 @@ mod tests {
     use crate::ci::PullRequest;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
 
     use crate::config::LoadedConfig;
     use crate::test_support::standard_fixture;
@@ -274,7 +275,7 @@ mod tests {
                     additions: Some(120),
                     deletions: Some(4),
                     comments: Some(3),
-                    labels: vec!["feature".to_owned()],
+                    labels: vec![crate::ci::Label::new("feature".to_owned(), "a2eeef")],
                     updated: 1_000_000 - 7200,
                     ..PrSummary::default()
                 },
@@ -321,7 +322,10 @@ mod tests {
                 draft: true,
                 additions: Some(120),
                 deletions: Some(4),
-                labels: vec!["do not merge".to_owned(), "preview".to_owned()],
+                labels: vec![
+                    crate::ci::Label::new("do not merge".to_owned(), "b60205"),
+                    crate::ci::Label::new("preview".to_owned(), ""),
+                ],
                 updated: 1_000_000 - 7200,
                 ..PrSummary::default()
             },
@@ -344,5 +348,23 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal.draw(|f| draw(f, &mut app)).expect("draw");
         insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn a_label_chip_takes_the_forge_colour() {
+        let theme = Theme::github_dark();
+        let red = crate::ci::Label::new("do not merge".to_owned(), "b60205");
+        let plain = crate::ci::Label::new("preview".to_owned(), "");
+        let [_, red_chip] = super::super::label_chip_spans(&theme, &red);
+        let [_, plain_chip] = super::super::label_chip_spans(&theme, &plain);
+        let Some(Color::Rgb(r, g, b)) = red_chip.style.bg else {
+            panic!("a coloured label tints its chip");
+        };
+        assert!(r > g && r > b, "the chip reads red: {r},{g},{b}");
+        let Some(Color::Rgb(fr, fg, fb)) = red_chip.style.fg else {
+            panic!("a coloured label colours its text");
+        };
+        assert!(fr > fg && fr > fb, "the text reads red: {fr},{fg},{fb}");
+        assert_eq!(plain_chip.style.fg, Some(theme.warn_fg));
     }
 }

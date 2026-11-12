@@ -221,7 +221,11 @@ impl PrInfo {
             state: conversation.state.label().to_owned(),
             base: pr.base_ref.clone(),
             head: pr.head_ref.clone(),
-            labels: conversation.labels.clone(),
+            labels: conversation
+                .labels
+                .iter()
+                .map(|label| label.name.clone())
+                .collect(),
             body: conversation.body.clone(),
             comments: conversation
                 .notes

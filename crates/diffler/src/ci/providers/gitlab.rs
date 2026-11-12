@@ -10,8 +10,8 @@ use serde::Deserialize;
 use crate::ci::error::{CiError, Result, parse_json};
 use crate::ci::exec::CommandRunner;
 use crate::ci::model::{
-    CiJob, CiRun, JobId, JobStatus, ListedPr, LogChunk, PrComment, PrConversation, PrNote, PrState,
-    PrSummary, PrVerdict, PullRequest, ReviewerCandidate, RunDetail, RunExtras, RunId,
+    CiJob, CiRun, JobId, JobStatus, Label, ListedPr, LogChunk, PrComment, PrConversation, PrNote,
+    PrState, PrSummary, PrVerdict, PullRequest, ReviewerCandidate, RunDetail, RunExtras, RunId,
     reviewers_from,
 };
 use crate::ci::provider::{
@@ -262,7 +262,7 @@ impl ForgeProvider for GitLabProvider {
 
     async fn list_prs(&self) -> Result<Vec<ListedPr>> {
         let raw = self
-            .api("projects/:fullpath/merge_requests?state=opened&order_by=updated_at&per_page=20")
+            .api("projects/:fullpath/merge_requests?state=opened&order_by=updated_at&per_page=20&with_labels_details=true")
             .await?;
         let items: Vec<MergeRequestItem> = parse_json("glab merge requests", &raw)?;
         Ok(items
@@ -730,7 +730,7 @@ struct MergeRequestItem {
     #[serde(default)]
     draft: bool,
     #[serde(default)]
-    labels: Vec<String>,
+    labels: Vec<LabelItem>,
     /// A string, since GitLab caps it as `"1000+"`.
     #[serde(default)]
     changes_count: Option<String>,
@@ -738,6 +738,24 @@ struct MergeRequestItem {
     reviewers: Vec<UserId>,
     user_notes_count: Option<u64>,
     updated_at: Option<String>,
+}
+
+/// A listing asked `with_labels_details` spells each label as an object, a
+/// single merge request spells only its name.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum LabelItem {
+    Detailed { name: String, color: String },
+    Named(String),
+}
+
+impl From<LabelItem> for Label {
+    fn from(label: LabelItem) -> Self {
+        match label {
+            LabelItem::Detailed { name, color } => Self::new(name, &color),
+            LabelItem::Named(name) => Self::new(name, ""),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -777,7 +795,10 @@ impl MergeRequestItem {
         let summary = PrSummary {
             draft: self.draft,
             comments: self.user_notes_count,
-            labels: std::mem::take(&mut self.labels),
+            labels: std::mem::take(&mut self.labels)
+                .into_iter()
+                .map(Label::from)
+                .collect(),
             updated: epoch_secs(self.updated_at.as_deref()),
             ..PrSummary::default()
         };
@@ -799,7 +820,10 @@ impl MergeRequestItem {
             .as_deref()
             .and_then(|count| count.trim_end_matches('+').parse().ok());
         let body = self.description.take().unwrap_or_default();
-        let labels = std::mem::take(&mut self.labels);
+        let labels = std::mem::take(&mut self.labels)
+            .into_iter()
+            .map(Label::from)
+            .collect();
         // a reply indents under the note above it, so a thread's notes stay together
         let mut threads: Vec<Vec<PrNote>> = discussions
             .into_iter()
@@ -1701,15 +1725,16 @@ mod tests {
 
     #[tokio::test]
     async fn the_listing_summarizes_draft_labels_and_notes() {
-        let listing = r#"[{"iid":4,"title":"Guard","source_branch":"feat/guard",
+        let listing = r##"[{"iid":4,"title":"Guard","source_branch":"feat/guard",
             "target_branch":"main","author":{"username":"author"},"draft":true,
-            "labels":["bug"],"user_notes_count":3,"updated_at":"2026-08-07T10:00:00.000Z"}]"#;
+            "labels":[{"name":"bug","color":"#d73a4a"}],"user_notes_count":3,"updated_at":"2026-08-07T10:00:00.000Z"}]"##;
         let (_, provider) = provider_on(&[("merge_requests?state=opened", listing)], "main");
         let listed = provider.list_prs().await.expect("listing");
         let summary = &listed[0].summary;
         assert_eq!(listed[0].pr.number, 4);
         assert!(summary.draft);
-        assert_eq!(summary.labels, ["bug"]);
+        assert_eq!(summary.labels, [Label::new("bug".to_owned(), "#d73a4a")]);
+        assert!(summary.labels[0].color.is_some());
         assert_eq!(summary.comments, Some(3));
         assert_eq!(summary.updated, 1_786_096_800);
     }

@@ -576,18 +576,26 @@ pub(super) fn ci_glyph_spans(
     }
 }
 
-/// A forge label as a chip, two columns off whatever precedes it.
-pub(super) fn label_chip_spans(theme: &Theme, label: &str) -> [Span<'static>; 2] {
+/// A forge label as a chip, two columns off whatever precedes it, tinted with
+/// the forge's colour the way GitHub draws it on a dark page.
+pub(super) fn label_chip_spans(theme: &Theme, label: &crate::ci::Label) -> [Span<'static>; 2] {
+    let style = match label.color {
+        Some((r, g, b)) => {
+            let color = Color::Rgb(r, g, b);
+            let bg = crate::theme::blend(theme.bg, color, LABEL_TINT_PERCENT);
+            Style::new().fg(readable_on(color, bg)).bg(bg)
+        }
+        None => Style::new()
+            .fg(theme.warn_fg)
+            .bg(diff_render::card_surface(theme)),
+    };
     [
         Span::raw("  "),
-        Span::styled(
-            format!(" {label} "),
-            Style::new()
-                .fg(theme.warn_fg)
-                .bg(diff_render::card_surface(theme)),
-        ),
+        Span::styled(format!(" {} ", label.name), style),
     ]
 }
+
+const LABEL_TINT_PERCENT: u16 = 25;
 
 /// ` +A -B` over `bg`, with a zero side dimmed.
 pub(super) fn diffstat_spans(

@@ -9,8 +9,8 @@ use serde::Deserialize;
 use crate::ci::error::{CiError, Result, parse_json};
 use crate::ci::exec::CommandRunner;
 use crate::ci::model::{
-    CiJob, CiRun, JobId, JobStatus, ListedPr, LogChunk, PrComment, PrConversation, PrNote, PrState,
-    PrSummary, PrVerdict, PullRequest, ReviewerCandidate, RunDetail, RunExtras, RunId,
+    CiJob, CiRun, JobId, JobStatus, Label, ListedPr, LogChunk, PrComment, PrConversation, PrNote,
+    PrState, PrSummary, PrVerdict, PullRequest, ReviewerCandidate, RunDetail, RunExtras, RunId,
     reviewers_from,
 };
 use crate::ci::provider::{
@@ -435,6 +435,14 @@ struct PullItem {
 #[derive(Deserialize)]
 struct LabelItem {
     name: String,
+    #[serde(default)]
+    color: String,
+}
+
+impl From<LabelItem> for Label {
+    fn from(label: LabelItem) -> Self {
+        Self::new(label.name, &label.color)
+    }
 }
 
 #[derive(Deserialize)]
@@ -488,7 +496,7 @@ impl PullItem {
             comments: self.comments,
             labels: std::mem::take(&mut self.labels)
                 .into_iter()
-                .map(|label| label.name)
+                .map(Label::from)
                 .collect(),
             updated: epoch_secs(&self.updated_at),
             ..PrSummary::default()
@@ -510,7 +518,7 @@ impl PullItem {
         let body = std::mem::take(&mut self.body);
         let labels = std::mem::take(&mut self.labels)
             .into_iter()
-            .map(|label| label.name)
+            .map(Label::from)
             .collect();
         let (changed_files, additions, deletions) =
             (self.changed_files, self.additions, self.deletions);
@@ -1251,7 +1259,7 @@ mod create_pr_tests {
         ]));
         let conversation = provider(&runner).pr_conversation(7).await.expect("read");
         assert_eq!(conversation.state, PrState::Merged);
-        assert_eq!(conversation.labels, ["bug"]);
+        assert_eq!(conversation.labels, [Label::new("bug".to_owned(), "")]);
         let ids: Vec<&str> = conversation.notes.iter().map(|n| n.id.as_str()).collect();
         assert_eq!(
             ids,
@@ -1274,7 +1282,7 @@ mod create_pr_tests {
     async fn the_listing_summarizes_draft_size_labels_and_comments() {
         let listing = r#"[{"number":7,"title":"WIP: Guard","head":{"ref":"feat","sha":"aa1"},
             "base":{"ref":"main","sha":"bb2"},"user":{"login":"author"},
-            "labels":[{"name":"bug"}],"additions":12,"deletions":3,"comments":2,
+            "labels":[{"name":"bug","color":"d73a4a"}],"additions":12,"deletions":3,"comments":2,
             "updated_at":"2026-08-07T10:00:00Z"}]"#;
         let runner = Arc::new(RecordingRunner::new(&[("pulls?state=open", listing)]));
         let listed = provider(&runner).list_prs().await.expect("listing");
@@ -1282,7 +1290,7 @@ mod create_pr_tests {
         assert!(summary.draft, "a WIP: title marks a draft");
         assert_eq!((summary.additions, summary.deletions), (Some(12), Some(3)));
         assert_eq!(summary.comments, Some(2));
-        assert_eq!(summary.labels, ["bug"]);
+        assert_eq!(summary.labels, [Label::new("bug".to_owned(), "d73a4a")]);
         assert_eq!(summary.updated, 1_786_096_800);
     }
 

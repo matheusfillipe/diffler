@@ -177,6 +177,29 @@ impl From<PullRequest> for ListedPr {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Label {
+    pub name: String,
+    /// The colour the forge paints the label with, when it reports one.
+    pub color: Option<diffler_core::language::Rgb>,
+}
+
+impl Label {
+    /// `hex` as forges spell it: `d73a4a` or `#d73a4a`, anything else is no colour.
+    #[must_use]
+    pub fn new(name: String, hex: &str) -> Self {
+        let digits = hex.trim_start_matches('#');
+        let color = (digits.len() == 6)
+            .then(|| u32::from_str_radix(digits, 16).ok())
+            .flatten()
+            .map(|value| {
+                let [_, r, g, b] = value.to_be_bytes();
+                (r, g, b)
+            });
+        Self { name, color }
+    }
+}
+
 /// What a forge's PR listing tells about each PR; a forge leaves out what its
 /// listing lacks.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -188,7 +211,7 @@ pub struct PrSummary {
     pub additions: Option<u64>,
     pub deletions: Option<u64>,
     pub comments: Option<u64>,
-    pub labels: Vec<String>,
+    pub labels: Vec<Label>,
     /// Unix seconds; we store 0 when the forge gives no update time.
     pub updated: u64,
 }
@@ -274,7 +297,7 @@ pub struct PrConversation {
     pub pr: PullRequest,
     pub body: String,
     pub state: PrState,
-    pub labels: Vec<String>,
+    pub labels: Vec<Label>,
     pub changed_files: Option<u64>,
     pub additions: Option<u64>,
     pub deletions: Option<u64>,

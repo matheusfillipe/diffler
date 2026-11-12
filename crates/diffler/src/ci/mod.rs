@@ -15,7 +15,7 @@ pub(crate) use exec::test_support;
 pub use exec::{CommandRunner, RealRunner};
 pub use model::{
     Annotation, AnnotationLevel, Artifact, Capabilities, CiJob, CiJobLeg, CiRun, DagSource, JobId,
-    JobStatus, ListedPr, LogChunk, LogMode, LogStepMeta, PrComment, PrConversation, PrNote,
+    JobStatus, Label, ListedPr, LogChunk, LogMode, LogStepMeta, PrComment, PrConversation, PrNote,
     PrReviewer, PrState, PrSummary, PrVerdict, PullRequest, ReviewerCandidate, RunDetail,
     RunExtras, RunId, fmt_duration, reviewers_from, ts_sort_key,
 };

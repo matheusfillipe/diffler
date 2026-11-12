@@ -10,9 +10,10 @@ use serde::{Deserialize, Serialize};
 use crate::ci::error::{CiError, Result, parse_json};
 use crate::ci::exec::CommandRunner;
 use crate::ci::model::{
-    Annotation, AnnotationLevel, Artifact, CiJob, CiJobLeg, CiRun, JobId, JobStatus, ListedPr,
-    LogChunk, LogStepMeta, PrComment, PrConversation, PrNote, PrState, PrSummary, PrVerdict,
-    PullRequest, ReviewerCandidate, RunDetail, RunExtras, RunId, reviewers_from, ts_sort_key,
+    Annotation, AnnotationLevel, Artifact, CiJob, CiJobLeg, CiRun, JobId, JobStatus, Label,
+    ListedPr, LogChunk, LogStepMeta, PrComment, PrConversation, PrNote, PrState, PrSummary,
+    PrVerdict, PullRequest, ReviewerCandidate, RunDetail, RunExtras, RunId, reviewers_from,
+    ts_sort_key,
 };
 use crate::ci::provider::{ForgeProvider, NewPrNote, ProviderKind};
 
@@ -1502,7 +1503,7 @@ impl PrListingApi {
                 additions: self.additions,
                 deletions: self.deletions,
                 comments: Some(self.comments.len() as u64),
-                labels: self.labels.into_iter().map(|label| label.name).collect(),
+                labels: self.labels.into_iter().map(Label::from).collect(),
                 updated: created_epoch(&self.updated_at),
             },
             pr: self.pr.into_pr(),
@@ -1607,6 +1608,14 @@ impl CandidatesPage {
 #[derive(Deserialize)]
 struct LabelApi {
     name: String,
+    #[serde(default)]
+    color: String,
+}
+
+impl From<LabelApi> for Label {
+    fn from(label: LabelApi) -> Self {
+        Self::new(label.name, &label.color)
+    }
 }
 
 #[derive(Deserialize)]
@@ -1701,7 +1710,7 @@ impl ConversationApi {
             pr: self.pr.into_pr(),
             body: self.body,
             state,
-            labels: self.labels.into_iter().map(|label| label.name).collect(),
+            labels: self.labels.into_iter().map(Label::from).collect(),
             changed_files: self.changed_files,
             additions: self.additions,
             deletions: self.deletions,
@@ -2744,7 +2753,7 @@ jobs:
             .await
             .expect("conversation");
         assert_eq!(conversation.state, PrState::Draft);
-        assert_eq!(conversation.labels, ["stale"]);
+        assert_eq!(conversation.labels, [Label::new("stale".to_owned(), "")]);
         assert_eq!(conversation.body, "Adds widgets.");
         assert_eq!(conversation.changed_files, Some(2));
         let notes: Vec<(&str, Option<PrVerdict>)> = conversation
@@ -2816,7 +2825,7 @@ jobs:
                 {"__typename":"CheckRun","status":"IN_PROGRESS","conclusion":""},
                 {"__typename":"StatusContext","state":"SUCCESS"}],
             "additions":12,"deletions":3,"comments":[{"id":"a"},{"id":"b"}],
-            "labels":[{"name":"bug"}],"updatedAt":"2026-08-07T10:00:00Z"},
+            "labels":[{"name":"bug","color":"d73a4a"}],"updatedAt":"2026-08-07T10:00:00Z"},
            {"number":8,"title":"Fix docs","author":{"login":"peer"},"reviewDecision":"",
             "statusCheckRollup":[{"__typename":"StatusContext","state":"FAILURE"},
                 {"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]},
@@ -2835,7 +2844,8 @@ jobs:
         assert_eq!(first.review, Some(PrVerdict::ChangesRequested));
         assert_eq!((first.additions, first.deletions), (Some(12), Some(3)));
         assert_eq!(first.comments, Some(2));
-        assert_eq!(first.labels, ["bug"]);
+        assert_eq!(first.labels, [Label::new("bug".to_owned(), "d73a4a")]);
+        assert_eq!(first.labels[0].color, Some((0xd7, 0x3a, 0x4a)));
         assert_eq!(first.updated, 1_786_096_800);
         let second = &listed[1].summary;
         assert_eq!(second.checks, Some(JobStatus::Failed));

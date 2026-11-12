@@ -561,7 +561,7 @@ pub(crate) mod tests {
             pr: pr(number),
             body: "Adds **widgets**.\n\nSecond paragraph.".to_owned(),
             state: crate::ci::PrState::Open,
-            labels: vec!["backend".to_owned()],
+            labels: vec![crate::ci::Label::new("backend".to_owned(), "")],
             changed_files: Some(2),
             additions: Some(52),
             deletions: Some(3),
