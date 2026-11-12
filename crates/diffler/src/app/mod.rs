@@ -1348,12 +1348,12 @@ impl App {
             }
             AppEvent::CiExtras(extras) => self.on_ci_extras(extras),
             AppEvent::CiLog {
-                text,
-                steps,
-                next_offset,
-                done,
+                run,
+                job,
+                from,
+                chunk,
             } => {
-                self.on_ci_log(&text, steps, next_offset, done);
+                self.on_ci_log(&run, &job, from, chunk);
                 Flow::Continue
             }
             AppEvent::CiError(message) => self.on_ci_error(message),

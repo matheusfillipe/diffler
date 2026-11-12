@@ -3,7 +3,7 @@ source: crates/diffler/src/ui/ci_log.rs
 expression: terminal.backend()
 ---
 " <tab> fold · / search · y yank · ? help                    "
-"                                                            "
+"  ▸ lint                                                    "
 "▌▸ Build  1 lines                                           "
 " ▸ Test  2 lines                                            "
 "                                                            "

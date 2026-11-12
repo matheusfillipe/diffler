@@ -116,6 +116,8 @@ pub struct LogStepMeta {
     pub status: JobStatus,
     /// [`ts_sort_key`] of the step's start, the lower bound of its log lines.
     pub start_key: u64,
+    /// [`ts_sort_key`] of the step's end, 0 while it runs.
+    pub end_key: u64,
     pub duration_secs: Option<i64>,
 }
 

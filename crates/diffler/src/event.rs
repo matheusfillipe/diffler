@@ -105,10 +105,10 @@ pub enum AppEvent {
     CiRunDetail(crate::ci::RunDetail),
     CiExtras(crate::ci::RunExtras),
     CiLog {
-        text: String,
-        steps: Vec<crate::ci::LogStepMeta>,
-        next_offset: u64,
-        done: bool,
+        run: crate::ci::RunId,
+        job: crate::ci::JobId,
+        from: u64,
+        chunk: crate::ci::LogChunk,
     },
     CiError(String),
     /// Kept apart from `CiError` so the in-flight guard frees only the PR-list slot.

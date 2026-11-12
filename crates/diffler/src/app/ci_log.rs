@@ -174,18 +174,50 @@ impl App {
         });
     }
 
-    pub(super) fn on_ci_log(
+    /// Opens job `lint` of run `1` and hands back the answer `text` would get.
+    #[cfg(test)]
+    pub(crate) fn test_log_event(
         &mut self,
         text: &str,
         steps: Vec<crate::ci::LogStepMeta>,
-        offset: u64,
-        done: bool,
+    ) -> crate::event::AppEvent {
+        let (run, job) = (
+            crate::ci::RunId("1".into()),
+            crate::ci::JobId("lint".into()),
+        );
+        self.open_run = Some(run.clone());
+        self.open_job = Some(job.clone());
+        crate::event::AppEvent::CiLog {
+            run,
+            job,
+            from: self.log_offset,
+            chunk: crate::ci::LogChunk {
+                text: text.to_owned(),
+                steps,
+                next_offset: self.log_offset + text.len() as u64,
+                done: true,
+            },
+        }
+    }
+
+    /// Requests run concurrently, so we drop an answer for a job that is no
+    /// longer open or from an offset the log has already moved past.
+    pub(super) fn on_ci_log(
+        &mut self,
+        run: &crate::ci::RunId,
+        job: &crate::ci::JobId,
+        from: u64,
+        chunk: crate::ci::LogChunk,
     ) {
-        self.log_text.push_str(text);
-        self.log_offset = offset;
-        self.log_done = done;
-        if !steps.is_empty() {
-            self.log_steps = steps;
+        let current = self.open_run.as_ref() == Some(run) && self.open_job.as_ref() == Some(job);
+        if !current || from != self.log_offset {
+            return;
+        }
+        self.log_text.push_str(&chunk.text);
+        self.log_offset = chunk.next_offset;
+        self.log_done = chunk.done;
+        if !chunk.steps.is_empty() {
+            self.log_steps = chunk.steps;
         }
         let rebuilt = CiLogView::parse(&self.log_text, &self.log_steps);
         self.ci_log = Some(match self.ci_log.take() {
@@ -267,26 +299,35 @@ impl App {
     }
 }
 
-/// Lines before the first step form a leading section.
+/// Step times have whole-second precision, so we switch steps on a `##[group]`
+/// line naming one, and move on by time only once the current step has ended.
 fn sections_by_step(raw: &str, metas: &[LogStepMeta]) -> Vec<CiLogStep> {
     let mut leading: Vec<String> = Vec::new();
     let mut buckets: Vec<Vec<String>> = vec![Vec::new(); metas.len()];
+    let mut current: Option<usize> = None;
     for raw_line in raw.lines() {
         let (key, content) = line_key_and_content(raw_line);
-        // a skipped step has key 0 and claims nothing; started steps come in
-        // ascending order
-        match metas
-            .iter()
-            .enumerate()
-            .filter(|(_, m)| m.start_key > 0 && m.start_key <= key)
-            .map(|(i, _)| i)
-            .next_back()
-        {
-            Some(i) => {
-                if let Some(bucket) = buckets.get_mut(i) {
-                    bucket.push(content);
-                }
-            }
+        let named = content.strip_prefix("##[group]").and_then(|name| {
+            metas
+                .iter()
+                .enumerate()
+                .skip(current.unwrap_or(0))
+                .find(|(_, m)| m.start_key > 0 && m.name == name.trim())
+                .map(|(i, _)| i)
+        });
+        let ended = |i: usize| {
+            metas
+                .get(i)
+                .is_some_and(|m| key > m.end_key.max(m.start_key))
+        };
+        current = match (named, current) {
+            (Some(i), _) => Some(i),
+            (None, None) => step_running_at(metas, key, None),
+            (None, Some(c)) if ended(c) => step_running_at(metas, key, Some(c)).or(Some(c)),
+            (None, c) => c,
+        };
+        match current.and_then(|i| buckets.get_mut(i)) {
+            Some(bucket) => bucket.push(content),
             None => leading.push(content),
         }
     }
@@ -310,6 +351,22 @@ fn sections_by_step(raw: &str, metas: &[LogStepMeta]) -> Vec<CiLogStep> {
         });
     }
     steps
+}
+
+/// The first step after `after` that started by `key` and was still running
+/// then, else the last one that started. A skipped step has start key 0 and
+/// claims nothing.
+fn step_running_at(metas: &[LogStepMeta], key: u64, after: Option<usize>) -> Option<usize> {
+    let started: Vec<(usize, &LogStepMeta)> = metas
+        .iter()
+        .enumerate()
+        .filter(|(i, m)| m.start_key > 0 && m.start_key <= key && after.is_none_or(|c| *i > c))
+        .collect();
+    started
+        .iter()
+        .find(|(_, m)| m.end_key == 0 || m.end_key >= key)
+        .or(started.last())
+        .map(|(i, _)| *i)
 }
 
 fn sections_by_group(raw: &str) -> Vec<CiLogStep> {
@@ -528,12 +585,14 @@ mod tests {
                 name: "Set up job".into(),
                 status: JobStatus::Ok,
                 start_key: ts_sort_key("2026-06-20T00:00:00Z"),
+                end_key: 0,
                 duration_secs: Some(1),
             },
             LogStepMeta {
                 name: "Run build".into(),
                 status: JobStatus::Failed,
                 start_key: ts_sort_key("2026-06-20T00:00:05Z"),
+                end_key: 0,
                 duration_secs: Some(13),
             },
         ];
@@ -548,6 +607,72 @@ mod tests {
         assert_eq!(view.steps[1].name, "Run build");
         assert_eq!(view.steps[1].duration_secs, Some(13));
         assert!(view.steps[1].lines.iter().any(|l| l == "running"));
+    }
+
+    #[test]
+    fn steps_starting_in_the_same_second_split_on_their_group_line() {
+        let meta = |name: &str| LogStepMeta {
+            name: name.into(),
+            status: JobStatus::Ok,
+            start_key: ts_sort_key("2026-06-20T00:00:19Z"),
+            end_key: 0,
+            duration_secs: Some(0),
+        };
+        let metas = vec![
+            meta("Run setup"),
+            meta("Run python -m unittest"),
+            meta("Complete job"),
+        ];
+        let raw = "2026-06-20T00:00:19.1Z ##[group]Run setup\n\
+                   2026-06-20T00:00:19.2Z installed\n\
+                   2026-06-20T00:00:19.3Z ##[group]Run python -m unittest\n\
+                   2026-06-20T00:00:19.4Z Traceback (most recent call last):\n\
+                   2026-06-20T00:00:19.5Z FAILED (errors=1)\n";
+        let view = CiLogView::parse(raw, &metas);
+        assert_eq!(view.steps[0].lines.len(), 2, "{:?}", view.steps[0].lines);
+        assert!(view.steps[1].lines.iter().any(|l| l == "FAILED (errors=1)"));
+        assert!(view.steps[2].lines.is_empty());
+    }
+
+    #[test]
+    fn a_log_answer_counts_once_and_only_for_the_open_job() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let text = "2026-06-20T00:00:01Z ##[group]Build\n2026-06-20T00:00:02Z compiling\n";
+        let first = app.test_log_event(text, Vec::new());
+        let repeat = app.test_log_event(text, Vec::new());
+        app.handle(first);
+        app.handle(repeat);
+        let stale = app.test_log_event(text, Vec::new());
+        app.open_job = Some(crate::ci::JobId("test".into()));
+        app.handle(stale);
+        assert_eq!(
+            app.log_text, text,
+            "a repeat and another job's answer add nothing"
+        );
+    }
+
+    #[test]
+    fn a_step_finished_within_its_second_hands_over_to_the_one_still_running() {
+        let meta = |name: &str, start: &str, end: &str| LogStepMeta {
+            name: name.into(),
+            status: JobStatus::Ok,
+            start_key: ts_sort_key(start),
+            end_key: ts_sort_key(end),
+            duration_secs: Some(0),
+        };
+        let metas = vec![
+            meta("Checkout", "2026-06-20T00:00:10Z", "2026-06-20T00:00:12Z"),
+            meta("Setup", "2026-06-20T00:00:12Z", "2026-06-20T00:00:12Z"),
+            meta("Test", "2026-06-20T00:00:12Z", "2026-06-20T00:00:60Z"),
+        ];
+        let raw = "2026-06-20T00:00:11Z cloning\n\
+                   2026-06-20T00:00:13Z running tests\n\
+                   2026-06-20T00:00:20Z FAILED\n";
+        let view = CiLogView::parse(raw, &metas);
+        assert_eq!(view.steps[0].lines, ["cloning"]);
+        assert!(view.steps[1].lines.is_empty());
+        assert_eq!(view.steps[2].lines, ["running tests", "FAILED"]);
     }
 
     #[test]
@@ -620,18 +745,21 @@ mod tests {
                 name: "Set up job".into(),
                 status: JobStatus::Ok,
                 start_key: ts_sort_key("2026-06-20T00:00:00Z"),
+                end_key: 0,
                 duration_secs: Some(1),
             },
             LogStepMeta {
                 name: "Cleanup (skipped)".into(),
                 status: JobStatus::Skipped,
                 start_key: 0,
+                end_key: 0,
                 duration_secs: None,
             },
             LogStepMeta {
                 name: "Run build".into(),
                 status: JobStatus::Ok,
                 start_key: ts_sort_key("2026-06-20T00:00:05Z"),
+                end_key: 0,
                 duration_secs: Some(13),
             },
         ];

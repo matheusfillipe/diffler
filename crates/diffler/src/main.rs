@@ -703,10 +703,10 @@ async fn run_ci_request(
         },
         CiRequest::Log { run, job, offset } => match provider.job_log(&run, &job, offset).await {
             Ok(chunk) => AppEvent::CiLog {
-                text: chunk.text,
-                steps: chunk.steps,
-                next_offset: chunk.next_offset,
-                done: chunk.done,
+                run,
+                job,
+                from: offset,
+                chunk,
             },
             Err(err) => AppEvent::CiError(err.to_string()),
         },

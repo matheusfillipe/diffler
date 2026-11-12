@@ -19,6 +19,8 @@ use crate::ci::provider::{ForgeProvider, NewPrNote, ProviderKind};
 
 pub type YamlCache = std::sync::Arc<std::sync::Mutex<HashMap<String, String>>>;
 
+const ALLOW_ESCAPES: &str = "--allow-escape-sequences";
+
 /// We keep the last response per endpoint so the next poll asks conditionally;
 /// a `304` costs no rate limit, which keeps the runs list live.
 #[derive(Debug, Clone)]
@@ -126,6 +128,27 @@ impl GitHubProvider {
         self.runner
             .run("gh", &["api".to_owned(), self.scoped(path)])
             .await
+    }
+
+    /// Newer `gh` refuses to print a response holding terminal escapes, which
+    /// every coloured CI log does, and older `gh` rejects the flag that allows
+    /// them, so we only pass it once `gh` asks for it.
+    async fn api_log(&self, path: &str) -> Result<String> {
+        match self.api(path).await {
+            Err(CiError::Exec { message, .. }) if message.contains(ALLOW_ESCAPES) => {
+                self.runner
+                    .run(
+                        "gh",
+                        &[
+                            "api".to_owned(),
+                            ALLOW_ESCAPES.to_owned(),
+                            self.scoped(path),
+                        ],
+                    )
+                    .await
+            }
+            other => other,
+        }
     }
 
     /// Thread handle and resolution per review-comment database id, from the
@@ -435,7 +458,7 @@ impl ForgeProvider for GitHubProvider {
             "repos/{{owner}}/{{repo}}/actions/jobs/{}/logs",
             job.database_id
         );
-        match self.api(&log_path).await {
+        match self.api_log(&log_path).await {
             Ok(full) => {
                 // we honour `offset` so a re-poll racing `done` duplicates nothing
                 let mut start = usize::try_from(offset)
@@ -1162,6 +1185,7 @@ impl RunStep {
             } else {
                 0
             },
+            end_key: self.completed_at.as_deref().map_or(0, ts_sort_key),
             duration_secs: dur,
         }
     }
@@ -2355,6 +2379,24 @@ jobs:
         assert_eq!(chunk.steps.len(), 1);
         assert_eq!(chunk.steps[0].duration_secs, Some(3));
         assert_eq!(chunk.next_offset, chunk.text.len() as u64);
+    }
+
+    #[tokio::test]
+    async fn a_coloured_log_retries_when_gh_asks_to_allow_escapes() {
+        let jobs = r#"{"jobs":[{"id":7,"name":"test","status":"completed","conclusion":"failure",
+            "steps":[]}]}"#;
+        let chunk = provider(&[
+            ("runs/42/jobs", jobs),
+            (ALLOW_ESCAPES, "\u{1b}[31mFAILED\u{1b}[0m\n"),
+            (
+                "/logs",
+                "ERR:the response contains terminal escape sequences; pass --allow-escape-sequences to output it anyway",
+            ),
+        ])
+        .job_log(&RunId("42".into()), &JobId("test".into()), 0)
+        .await
+        .expect("log");
+        assert!(chunk.text.contains("FAILED"));
     }
 
     #[tokio::test]

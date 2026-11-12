@@ -131,29 +131,21 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     use crate::config::LoadedConfig;
-    use crate::event::AppEvent;
     use crate::test_support::standard_fixture;
-
-    fn log_event(text: &str) -> AppEvent {
-        AppEvent::CiLog {
-            text: text.to_owned(),
-            steps: Vec::new(),
-            next_offset: text.len() as u64,
-            done: true,
-        }
-    }
 
     fn build_app() -> App {
         let fixture = standard_fixture();
         let mut app = App::new(fixture.review(), LoadedConfig::default());
-        app.handle(log_event(
+        let event = app.test_log_event(
             "lint\tUNKNOWN STEP\t2026-06-20T00:00:01Z ##[group]Build\n\
              lint\tUNKNOWN STEP\t2026-06-20T00:00:02Z compiling…\n\
              lint\tUNKNOWN STEP\t2026-06-20T00:00:03Z ##[endgroup]\n\
              lint\tUNKNOWN STEP\t2026-06-20T00:00:04Z ##[group]Test\n\
              lint\tUNKNOWN STEP\t2026-06-20T00:00:05Z running tests\n\
              lint\tUNKNOWN STEP\t2026-06-20T00:00:06Z ok\n",
-        ));
+            Vec::new(),
+        );
+        app.handle(event);
         app
     }
 
@@ -191,27 +183,27 @@ mod tests {
         use crate::ci::{JobStatus, LogStepMeta, ts_sort_key};
         let fixture = standard_fixture();
         let mut app = App::new(fixture.review(), LoadedConfig::default());
-        app.handle(AppEvent::CiLog {
-            text: "lint\tUNKNOWN STEP\t2026-06-20T00:00:00Z setting up\n\
-                   lint\tUNKNOWN STEP\t2026-06-20T00:00:05Z running clippy\n"
-                .to_owned(),
-            steps: vec![
+        let event = app.test_log_event(
+            "lint\tUNKNOWN STEP\t2026-06-20T00:00:00Z setting up\n\
+             lint\tUNKNOWN STEP\t2026-06-20T00:00:05Z running clippy\n",
+            vec![
                 LogStepMeta {
                     name: "Set up job".into(),
                     status: JobStatus::Ok,
                     start_key: ts_sort_key("2026-06-20T00:00:00Z"),
+                    end_key: 0,
                     duration_secs: Some(2),
                 },
                 LogStepMeta {
                     name: "Run cargo clippy".into(),
                     status: JobStatus::Failed,
                     start_key: ts_sort_key("2026-06-20T00:00:05Z"),
+                    end_key: 0,
                     duration_secs: Some(73),
                 },
             ],
-            next_offset: 0,
-            done: true,
-        });
+        );
+        app.handle(event);
         let backend = TestBackend::new(60, 6);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal.draw(|f| draw(f, &mut app)).expect("draw");
