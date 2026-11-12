@@ -65,7 +65,8 @@ in its own worktree, and it opens as a new tab next to your project.
 - Comment on any file of the repo, too.
 - Open your repos and worktrees as tabs and switch between them with one key.
 - Step back through a file's history and see who changed each line.
-- It works in git and jj repos, and shows images right in the terminal over
+- It works in git and jj repos.
+- It shows images right in the terminal, over
   [kitty, sixel or iTerm2](https://github.com/benjajaja/ratatui-image).
 
 ## Install
