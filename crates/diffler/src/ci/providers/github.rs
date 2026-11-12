@@ -21,6 +21,9 @@ pub type YamlCache = std::sync::Arc<std::sync::Mutex<HashMap<String, String>>>;
 
 const ALLOW_ESCAPES: &str = "--allow-escape-sequences";
 
+/// The bot that writes Copilot's code reviews.
+const COPILOT_REVIEWER: &str = "copilot-pull-request-reviewer";
+
 /// We keep the last response per endpoint so the next poll asks conditionally;
 /// a `304` costs no rate limit, which keeps the runs list live.
 #[derive(Debug, Clone)]
@@ -213,6 +216,53 @@ impl GitHubProvider {
             .await?;
         let slug: RepoSlug = parse_json("repo slug", &raw)?;
         Ok((slug.owner.login, slug.name))
+    }
+
+    /// The pull request's node id and its pending review requests. We ask
+    /// GraphQL, since `gh pr view` leaves out a request to a bot like Copilot.
+    async fn pr_handle(&self, number: u64) -> Result<PrHandleApi> {
+        let (owner, name) = self.repo_slug().await?;
+        let query = "query($owner:String!,$name:String!,$number:Int!){\
+            repository(owner:$owner,name:$name){pullRequest(number:$number){id \
+            reviewRequests(first:50){nodes{requestedReviewer{\
+            ... on User{login} ... on Bot{login} ... on Team{slug}}}}}}}";
+        let args = [
+            "api".to_owned(),
+            "graphql".to_owned(),
+            "-f".to_owned(),
+            format!("query={query}"),
+            "-f".to_owned(),
+            format!("owner={owner}"),
+            "-f".to_owned(),
+            format!("name={name}"),
+            "-F".to_owned(),
+            format!("number={number}"),
+        ];
+        let raw = self.runner.run("gh", &args).await?;
+        let page: PrHandlePage = parse_json("pull request handle", &raw)?;
+        Ok(page.data.repository.pull_request)
+    }
+
+    /// Copilot reviews as a bot, which only GraphQL's `requestReviews` accepts.
+    async fn request_copilot_review(&self, number: u64) -> Result<()> {
+        let pull_request = self.pr_handle(number).await?.id;
+        let raw = self
+            .api(&format!("users/{COPILOT_REVIEWER}%5Bbot%5D"))
+            .await?;
+        let bot: NodeIdApi = parse_json("copilot reviewer", &raw)?;
+        let mutation = "mutation($pr:ID!,$bot:ID!){requestReviews(input:\
+            {pullRequestId:$pr,botIds:[$bot],union:true}){clientMutationId}}";
+        let args = [
+            "api".to_owned(),
+            "graphql".to_owned(),
+            "-f".to_owned(),
+            format!("query={mutation}"),
+            "-f".to_owned(),
+            format!("pr={pull_request}"),
+            "-f".to_owned(),
+            format!("bot={}", bot.node_id),
+        ];
+        self.runner.run("gh", &args).await.map(|_| ())
     }
 
     /// The raw file body, unwrapped from the base64 contents envelope.
@@ -708,7 +758,13 @@ impl ForgeProvider for GitHubProvider {
         ];
         let raw = self.gh(&args).await?;
         let conversation: ConversationApi = parse_json("pr conversation", &raw)?;
-        Ok(conversation.into_conversation())
+        // we prefer the GraphQL list, which holds bot requests, and keep gh's own when GraphQL fails
+        let requests = match self.pr_handle(number).await {
+            Ok(handle) => Some(handle.review_requests.nodes),
+            Err(CiError::Exec { .. } | CiError::Parse { .. }) => None,
+            Err(err) => return Err(err),
+        };
+        Ok(conversation.into_conversation(requests))
     }
 
     async fn post_pr_note(&self, new: &NewPrNote) -> Result<()> {
@@ -742,10 +798,22 @@ impl ForgeProvider for GitHubProvider {
         ];
         let raw = self.runner.run("gh", &args).await?;
         let page: CandidatesPage = parse_json("reviewer candidates", &raw)?;
-        Ok(page.into_candidates())
+        let mut candidates = page.into_candidates();
+        // GitHub lists only users as assignable, so we add the Copilot bot ourselves
+        candidates.insert(
+            0,
+            ReviewerCandidate {
+                login: COPILOT_REVIEWER.to_owned(),
+                suggested: false,
+            },
+        );
+        Ok(candidates)
     }
 
     async fn request_reviewer(&self, number: u64, login: &str) -> Result<()> {
+        if login == COPILOT_REVIEWER {
+            return self.request_copilot_review(number).await;
+        }
         let args = [
             "api".to_owned(),
             "-X".to_owned(),
@@ -1559,7 +1627,47 @@ struct ConversationApi {
     review_requests: Vec<ReviewRequestApi>,
 }
 
-/// A user carries a `login`, a team only its `slug`.
+#[derive(Deserialize)]
+struct PrHandlePage {
+    data: PrHandleData,
+}
+
+#[derive(Deserialize)]
+struct PrHandleData {
+    repository: PrHandleRepo,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PrHandleRepo {
+    pull_request: PrHandleApi,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PrHandleApi {
+    id: String,
+    review_requests: ReviewRequestNodes,
+}
+
+#[derive(Deserialize)]
+struct ReviewRequestNodes {
+    nodes: Vec<ReviewRequestNode>,
+}
+
+/// A request to a deleted account names no reviewer.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewRequestNode {
+    requested_reviewer: Option<ReviewRequestApi>,
+}
+
+#[derive(Deserialize)]
+struct NodeIdApi {
+    node_id: String,
+}
+
+/// A user or a bot carries a `login`, a team only its `slug`.
 #[derive(Deserialize)]
 struct ReviewRequestApi {
     login: Option<String>,
@@ -1699,7 +1807,7 @@ impl ReviewApi {
 }
 
 impl ConversationApi {
-    fn into_conversation(self) -> PrConversation {
+    fn into_conversation(self, with_bots: Option<Vec<ReviewRequestNode>>) -> PrConversation {
         let state = match self.state.as_str() {
             "MERGED" => PrState::Merged,
             "CLOSED" => PrState::Closed,
@@ -1712,8 +1820,14 @@ impl ConversationApi {
         let verdicts = timeline
             .into_iter()
             .filter_map(|review| Some((review.author.login.clone(), Some(review.verdict()?))));
-        let requested = self
-            .review_requests
+        let requests = match with_bots {
+            Some(nodes) => nodes
+                .into_iter()
+                .filter_map(|node| node.requested_reviewer)
+                .collect(),
+            None => self.review_requests,
+        };
+        let requested = requests
             .into_iter()
             .filter_map(|request| Some((request.reviewer()?, None)));
         let reviewers = reviewers_from(&author, verdicts.chain(requested));
@@ -2788,12 +2902,22 @@ jobs:
           {"id":"PRR_4","author":{"login":"author"},"body":"","state":"COMMENTED","submittedAt":"2026-08-04T00:00:00Z"}],
         "reviewRequests":[{"__typename":"User","login":"peer"},{"__typename":"Team","name":"Core","slug":"core"}]}"#;
 
+    const SLUG: &str = r#"{"owner":{"login":"acme"},"name":"widgets"}"#;
+
+    const REQUESTS: &str = r#"{"data":{"repository":{"pullRequest":{"id":"PR_7","reviewRequests":{"nodes":[
+        {"requestedReviewer":{"login":"peer"}},{"requestedReviewer":{"slug":"core"}},
+        {"requestedReviewer":{"login":"copilot-pull-request-reviewer"}},{"requestedReviewer":null}]}}}}}"#;
+
     #[tokio::test]
     async fn a_conversation_keeps_comments_and_reviews_that_say_something_in_order() {
-        let conversation = provider(&[("pr view 7", CONVERSATION)])
-            .pr_conversation(7)
-            .await
-            .expect("conversation");
+        let conversation = provider(&[
+            ("pr view 7", CONVERSATION),
+            ("repo view", SLUG),
+            ("graphql", REQUESTS),
+        ])
+        .pr_conversation(7)
+        .await
+        .expect("conversation");
         assert_eq!(conversation.state, PrState::Draft);
         assert_eq!(conversation.labels, [Label::new("stale".to_owned(), "")]);
         assert_eq!(conversation.body, "Adds widgets.");
@@ -2818,10 +2942,14 @@ jobs:
 
     #[tokio::test]
     async fn a_conversation_names_each_reviewer_and_where_they_stand() {
-        let conversation = provider(&[("pr view 7", CONVERSATION)])
-            .pr_conversation(7)
-            .await
-            .expect("conversation");
+        let conversation = provider(&[
+            ("pr view 7", CONVERSATION),
+            ("repo view", SLUG),
+            ("graphql", REQUESTS),
+        ])
+        .pr_conversation(7)
+        .await
+        .expect("conversation");
         let reviewers: Vec<(&str, Option<PrVerdict>)> = conversation
             .reviewers
             .iter()
@@ -2835,6 +2963,7 @@ jobs:
                 ("critic", Some(PrVerdict::Approved)),
                 ("peer", None),
                 ("@core", None),
+                ("copilot-pull-request-reviewer", None),
             ],
             "reviews count in time order, an approval outlives a later comment, a dismissed review counts for nothing, and the author is no reviewer"
         );
@@ -2854,7 +2983,72 @@ jobs:
             .iter()
             .map(|c| (c.login.as_str(), c.suggested))
             .collect();
-        assert_eq!(shown, [("lead", true), ("peer", false)]);
+        assert_eq!(
+            shown,
+            [
+                ("copilot-pull-request-reviewer", false),
+                ("lead", true),
+                ("peer", false)
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_requests_ask_graphql_for_bots_and_fall_back_to_gh() {
+        let runner = std::sync::Arc::new(RecordingRunner::new(&[
+            ("pr view 7", CONVERSATION),
+            ("repo view", SLUG),
+            (
+                "graphql",
+                "ERR:Fragment on Bot can't be spread inside RequestedReviewer",
+            ),
+        ]));
+        let conversation = provider_with(std::sync::Arc::clone(&runner))
+            .pr_conversation(7)
+            .await
+            .expect("the page still loads");
+        let pending: Vec<&str> = conversation
+            .reviewers
+            .iter()
+            .filter(|r| r.verdict.is_none())
+            .map(|r| r.login.as_str())
+            .collect();
+        assert_eq!(pending, ["peer", "@core"]);
+        let query = runner
+            .calls()
+            .into_iter()
+            .find(|call| call.contains("graphql"))
+            .expect("a graphql call");
+        assert!(query.contains("... on Bot{login}"), "{query}");
+    }
+
+    #[tokio::test]
+    async fn a_copilot_review_goes_through_graphql_with_the_bot_id() {
+        let runner = std::sync::Arc::new(RecordingRunner::new(&[
+            ("repo view", SLUG),
+            (
+                "copilot-pull-request-reviewer%5Bbot%5D",
+                r#"{"node_id":"BOT_1"}"#,
+            ),
+            ("query($owner", REQUESTS),
+        ]));
+        provider_with(std::sync::Arc::clone(&runner))
+            .request_reviewer(7, COPILOT_REVIEWER)
+            .await
+            .expect("requested");
+        let calls = runner.calls();
+        let mutation = calls.last().expect("a mutation");
+        assert!(mutation.contains("requestReviews"), "{mutation}");
+        assert!(
+            mutation.contains("pr=PR_7") && mutation.contains("bot=BOT_1"),
+            "{mutation}"
+        );
+        assert!(
+            !calls
+                .iter()
+                .any(|call| call.contains("requested_reviewers")),
+            "the REST endpoint ignores bots"
+        );
     }
 
     #[tokio::test]
