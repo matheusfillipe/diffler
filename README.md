@@ -1,14 +1,20 @@
-# diffler
+<h1 align="center">diffler</h1>
 
-**magit, without Emacs.** diffler is a terminal git UI that stages, commits and
-reviews pull requests, and lets your coding agent reply to the comments you
-leave in the diff.
+<p align="center">
+<b>magit, without Emacs, built for working with coding agents.</b><br>
+A terminal git UI where you stage and commit, review pull requests and their CI,<br>
+and leave comments in the diff that your agent answers and fixes.
+</p>
 
-[![crates.io](https://img.shields.io/crates/v/diffler.svg)](https://crates.io/crates/diffler)
-[![npm](https://img.shields.io/npm/v/@mattfillipe/diffler.svg)](https://www.npmjs.com/package/@mattfillipe/diffler)
-[![IRC](https://img.shields.io/badge/IRC-chat.h4ks.com-blue.svg)](https://chat.h4ks.com)
+<p align="center">
+<a href="#install">Install</a> ·
+<a href="#quick-start">Quick start</a> ·
+<a href="#with-a-coding-agent">Agents</a> ·
+<a href="#keys">Keys</a> ·
+<a href="https://chat.h4ks.com">IRC</a>
+</p>
 
-![diffler: reviewing an agent's edits as it makes them, a walkthrough of the change, and a pull request review](assets/demo.gif)
+![diffler: commenting on an agent's change and watching it reply and fix the code, its walkthrough, a commit, a pull request review, a failing CI log and a theme switch](assets/demo.gif)
 
 I love magit and wanted it as its own program, with the vim-style keys it has
 in [Doom Emacs](https://github.com/doomemacs/doomemacs). Then coding agents
@@ -16,44 +22,72 @@ came along, and reading what they write became a big part of the day. So in
 diffler you comment right in the diff, and your agent replies in the thread
 and fixes the code while you watch.
 
-## Features
+## What it does
 
-- Stage, commit, branch, push and pull with vim-style keys
-- Comment on any line or range, in a diff or in any file of the repo
-- Review GitHub, GitLab and Forgejo pull requests without checking them out
-- Follow CI runs and read their logs
-- Your agent answers your comments and walks you through its changes, if you want it to
-- Step back through a file's history and see who changed each line
-- Open several projects and worktrees side by side as tabs
-- Works in git and jj repos
-- Shows images right in the terminal, over [kitty, sixel or iTerm2](https://github.com/benjajaja/ratatui-image)
+### Your agent answers your comments
+
+Press <kbd>c</kbd> on any line to leave a comment, then <kbd>Z</kbd> to hand
+your comments over. Your agent replies in each thread and fixes the code, and
+the diff updates while you watch.
+
+![a comment on a line that crashes, the agent's reply under it, and the fixed code below](assets/readme/agent.png)
+
+### It walks you through its change
+
+Your agent can publish a walkthrough of what it changed: one stop per decision,
+each pointing at the code it is about, and open it in diffler. It can also take
+you straight to any file, line or pull request.
+
+![a walkthrough stop: its title in the sidebar, the highlighted code, and the agent's notes](assets/readme/walkthrough.png)
+
+### Pull requests without the browser
+
+<kbd>b</kbd> <kbd>p</kbd> lists the open pull requests with their CI, review
+state and labels, on GitHub, GitLab and Forgejo. Open one to read its
+conversation, review the diff and submit your review.
+
+![the pull request list with check marks, diff sizes and colored labels](assets/readme/prs.png)
+
+![a pull request diff with a reviewer's thread, a new comment and the submit review menu](assets/readme/pr-review.png)
+
+### CI logs, down to the failing step
+
+<kbd>o</kbd> lists the CI runs of your branch. Open a run, then the step that
+failed, to read its log. Press <kbd>w</kbd> on a pull request to check it out
+in its own worktree, and it opens as a new tab next to your project.
+
+![two project tabs and a failing test step unfolded to its traceback](assets/readme/ci.png)
+
+### And more
+
+- Stage files or hunks, commit, amend, branch, stash, push and pull, all from
+  the keyboard.
+- Comment on any file of the repo, too.
+- Open your repos and worktrees as tabs and switch between them with one key.
+- Step back through a file's history and see who changed each line.
+- It works in git and jj repos, and shows images right in the terminal over
+  [kitty, sixel or iTerm2](https://github.com/benjajaja/ratatui-image).
 
 ## Install
 
-On macOS or Linux:
+<details>
+<summary><b>macOS</b></summary>
 
 ```sh
 brew tap matheusfillipe/diffler https://github.com/matheusfillipe/diffler
 brew install diffler
 ```
 
-On Windows:
+</details>
+
+<details>
+<summary><b>Windows</b></summary>
 
 ```sh
 winget install matheusfillipe.diffler
 ```
 
-With Rust, on any of them:
-
-```sh
-cargo install diffler
-```
-
-Prebuilt binaries for x86_64 and arm64 are on the
-[releases page](https://github.com/matheusfillipe/diffler/releases).
-
-<details>
-<summary><b>Scoop</b></summary>
+Or with Scoop:
 
 ```sh
 scoop bucket add diffler https://github.com/matheusfillipe/diffler
@@ -63,10 +97,7 @@ scoop install diffler
 </details>
 
 <details>
-<summary><b>Arch</b></summary>
-
-`diffler-bin` on the AUR ships the prebuilt binary, so it installs without
-building.
+<summary><b>Arch Linux</b></summary>
 
 ```sh
 yay -S diffler-bin
@@ -77,12 +108,17 @@ yay -S diffler-bin
 <details>
 <summary><b>Nix</b></summary>
 
-The flake serves the prebuilt binary. `nix run` tries it without installing
-anything, `nix profile install` keeps it.
+```sh
+nix profile install github:matheusfillipe/diffler
+```
+
+</details>
+
+<details>
+<summary><b>Cargo</b></summary>
 
 ```sh
-nix run github:matheusfillipe/diffler
-nix profile install github:matheusfillipe/diffler
+cargo install diffler
 ```
 
 </details>
@@ -90,58 +126,39 @@ nix profile install github:matheusfillipe/diffler
 <details>
 <summary><b>npm</b></summary>
 
-A wrapper that fetches the prebuilt binary. The package name is scoped, the
-command it installs is plain `diffler`.
-
 ```sh
-npx @mattfillipe/diffler
 npm install -g @mattfillipe/diffler
 ```
 
 </details>
 
+Prebuilt binaries for Linux, macOS and Windows, on x86_64 and arm64, are on the
+[releases page](https://github.com/matheusfillipe/diffler/releases).
+
 ## Quick start
 
-```sh
-diffler                 # open it in the current repo
-diffler path/to/repo    # or in another one
-```
+Run `diffler` in any git repo.
 
-You land on the status screen, which lists your changed files, unpushed
-commits, branches and pull requests. Keys are written vim-style: `<cr>` is
-Enter, `<c-d>` is Ctrl+d, and `b` `p` means press `b`, then `p`.
-
-Move to a file and press `<cr>` to see its diff. `s` stages it, `cc` commits,
-and `c` leaves a comment on the line under the cursor.
-
-For pull requests, press `b` `p` to list the open ones and `<cr>` to open one's
-page with its description and conversation. There, `c` comments on the pull
-request and `R` requests a reviewer. Press `<cr>` again to review its diff, and
-`S` to submit your line comments as one review. `b` `P` opens a new pull
-request from the current branch.
+- <kbd>Enter</kbd> opens the file, diff or pull request under the cursor
+- <kbd>s</kbd> stages, <kbd>c</kbd> <kbd>c</kbd> commits
+- <kbd>c</kbd> comments on the line
+- <kbd>e</kbd> opens the file in your editor
+- <kbd>Ctrl</kbd>+<kbd>k</kbd> finds any command, <kbd>?</kbd> shows every key
 
 ### With a coding agent
 
-diffler talks to your agent over MCP, the protocol agents use to call outside
-tools. Connect it once:
+Connect your agent once:
 
 <details>
 <summary><b>Claude Code</b></summary>
-
-Install the plugin. It connects diffler and adds three commands: `/df` to
-answer your comments, `/dfa` to walk you through a change, and `/dfr` to review
-a change and leave comments.
 
 ```sh
 claude plugin marketplace add matheusfillipe/diffler
 claude plugin install diffler@diffler
 ```
 
-If you only want the connection, without the commands:
-
-```sh
-claude mcp add diffler -- npx -y diffler-mcp
-```
+This also adds `/df` to answer your comments, `/dfa` for a walkthrough of a
+change, and `/dfr` to review one.
 
 </details>
 
@@ -163,8 +180,7 @@ Add the server to `opencode.json` in the project, or globally in
 }
 ```
 
-And install the `/df`, `/dfa` and `/dfr` commands (opencode has no package
-mechanism for commands, so this fetches the ones maintained in this repo):
+Then install the `/df`, `/dfa` and `/dfr` commands:
 
 ```sh
 mkdir -p ~/.config/opencode/commands
@@ -177,23 +193,15 @@ for c in df dfa dfr; do curl -fsSLo ~/.config/opencode/commands/$c.md \
 <details>
 <summary><b>Any other MCP agent</b></summary>
 
-Run `npx -y diffler-mcp` as a stdio server. It finds the port of the diffler
-running in your repo, since each diffler writes its own to `.diffler/mcp.json`.
-Or point it at `http://127.0.0.1:8417/mcp` (streamable HTTP), the port the
-first diffler you started takes. The server also ships `review`, `walkthrough` and
-`critique` prompts that prompt-aware clients surface as commands.
+Run `npx -y diffler-mcp` as a stdio server. It connects to the diffler running
+in your repo. A client that speaks streamable HTTP can also connect to
+`http://127.0.0.1:8417/mcp`, where the first diffler you start listens.
 
 </details>
 
-Now comment on the agent's changes in diffler and press `Z`. That tells your
-agent your comments are ready. It replies in each thread and fixes the code,
-and you resolve the thread once you're happy. You can also ask it for a
-walkthrough of its change and open that from the status screen. More in
-[docs/walkthroughs.md](docs/walkthroughs.md), and the agent's tools are listed
-in [docs/mcp.md](docs/mcp.md).
-
-If you don't use an agent, turn the connection off with `diffler --no-mcp`, or
-`enabled = false` under `[mcp]` in the config.
+Then comment on its changes and press `Z`. Your agent replies in each thread and
+fixes the code. Its tools are in [docs/mcp.md](docs/mcp.md), and
+`diffler --no-mcp` turns the connection off.
 
 ## How it compares
 
@@ -213,13 +221,11 @@ If you don't use an agent, turn the connection off with `diffler --no-mcp`, or
 
 ## Keys
 
-You move around like in vim: `j`/`k`, `gg`/`G`, `/` to search, `<c-d>`/`<c-u>`
-to scroll. If you forget a key, `?` shows every key of the screen you're on,
-and `<c-k>` lets you search all actions by name.
+You move like in vim: `j`/`k`, `gg`/`G`, `/` to search, Ctrl+d/Ctrl+u to scroll.
 
 | Key | What it does |
 | --- | --- |
-| `<cr>` | Open what's under the cursor |
+| Enter | Open what's under the cursor |
 | `s` / `u` | Stage / unstage |
 | `cc` | Commit |
 | `c` | Comment on the line, or on a range you selected with `V`, in a diff or any file |
@@ -228,12 +234,12 @@ and `<c-k>` lets you search all actions by name.
 | `t` | Change how the file list is grouped |
 | `\|` | Switch between a unified and a side-by-side diff |
 | `]` / `[` | Jump to the next / previous hunk |
-| `za` / `tab` | Fold or unfold a hunk, or the earlier replies of a thread |
+| `za` / Tab | Fold or unfold a hunk, or the earlier replies of a thread |
 | `*` / `#` | Find where the symbol on the line is used |
 | `d` | Review against another branch or commit |
 | `C` | Open the list of comments |
 | `gf` | Open any file in the repo |
-| `alt-n` | Open another project as a tab, then `alt-h` / `alt-l` to switch |
+| Alt+n | Open another project as a tab, then Alt+h / Alt+l to switch |
 | `w` | Open, create or remove a worktree |
 | `y` / `Y` | Copy your selection or this file's comments / all comments, to paste into any agent |
 | `gy` / `gx` | Copy / open the GitHub, GitLab or Forgejo link to the line |
@@ -242,17 +248,15 @@ and `<c-k>` lets you search all actions by name.
 | `e` | Open the file in your editor |
 | `q` | Go back, or quit |
 
-Every binding is remappable in [docs/config.example.toml](docs/config.example.toml).
-The mouse works, over tmux too: click to select or fold, and
-right-click (or press and hold) a line, file or comment for what you can do
-with it.
+The mouse works too: right-click anything for a menu. You can remap every key in
+[docs/config.example.toml](docs/config.example.toml).
 
 ## Configuration
 
-Layered TOML: defaults, then `~/.config/diffler/config.toml`, then
-`<repo>/.diffler/config.toml`, then CLI flags. Every option is documented in
-[docs/config.example.toml](docs/config.example.toml). See the merged result and
-where each value came from:
+diffler reads `~/.config/diffler/config.toml`, then `.diffler/config.toml` in
+the repo, then the command line flags, and the later ones win.
+[docs/config.example.toml](docs/config.example.toml) lists every option. To see
+the merged result and where each value came from, run:
 
 ```sh
 diffler config --dump
@@ -260,10 +264,10 @@ diffler config --dump
 
 ## Themes
 
-Switch live with `T`, or set `ui.theme`. See every theme in the
-[gallery](showcase/THEMES.md). Add your own as a TOML file in
-`~/.config/diffler/themes/`: [docs/themes](docs/themes/README.md) lists
-every key.
+Press `T` to switch themes live, or set `ui.theme`. The
+[gallery](showcase/THEMES.md) shows all of them. To make your own, put a TOML
+file in `~/.config/diffler/themes/`, and [docs/themes](docs/themes/README.md)
+lists every key you can set.
 
 ![the review screen in catppuccin-mocha: the file tree, a diff carrying a comment thread with the agent's reply, and the comments sidebar](showcase/img/catppuccin-mocha.png)
 
@@ -274,8 +278,8 @@ just ci     # fmt + clippy + tests
 just e2e    # PTY end-to-end suite (needs uv)
 ```
 
-Requires Rust 1.90+, `just`, `cargo-nextest`. Hooks: `prek install`. See
-[CONTRIBUTING.md](CONTRIBUTING.md).
+You need Rust 1.90 or newer, `just` and `cargo-nextest`. Run `prek install` once
+to set up the git hooks. [CONTRIBUTING.md](CONTRIBUTING.md) has the rest.
 
 ## License
 
