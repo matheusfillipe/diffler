@@ -856,7 +856,12 @@ pub(super) fn cursor_line(line: Line<'static>, theme: &Theme, width: u16) -> Lin
         .spans
         .into_iter()
         .map(|span| {
-            let style = span.style.bg(theme.cursor_line);
+            let is_match = matches!(span.style.bg, Some(bg) if bg == theme.search || bg == theme.search_current);
+            let style = if is_match {
+                span.style
+            } else {
+                span.style.bg(theme.cursor_line)
+            };
             Span::styled(span.content, style)
         })
         .collect();
@@ -1332,6 +1337,27 @@ mod tests {
                 .position(|c| c == '●')
         };
         assert_eq!(column(&under_cursor), column(&plain));
+    }
+
+    #[test]
+    fn a_search_match_stays_highlighted_under_the_cursor() {
+        let theme = Theme::github_dark();
+        let row = Line::from(crate::ui::highlight_spans(
+            "reviewer-name",
+            theme.base(),
+            &[(9..13, true)],
+            &theme,
+        ));
+        let banded = cursor_line(row, &theme, 20);
+        let bg_of = |text: &str| {
+            banded
+                .spans
+                .iter()
+                .find(|s| s.content.contains(text))
+                .and_then(|s| s.style.bg)
+        };
+        assert_eq!(bg_of("name"), Some(theme.search_current));
+        assert_eq!(bg_of("view"), Some(theme.cursor_line));
     }
 
     #[test]
