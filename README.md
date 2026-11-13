@@ -11,6 +11,7 @@ and leave comments in the diff that your agent answers and fixes.
 <a href="#quick-start">Quick start</a> ·
 <a href="#with-a-coding-agent">Agents</a> ·
 <a href="#keys">Keys</a> ·
+<a href="#faq">FAQ</a> ·
 <a href="https://chat.h4ks.com">IRC</a>
 </p>
 
@@ -61,8 +62,8 @@ in its own worktree, and it opens as a new tab next to your project.
 
 ### And more
 
-- Stage files or hunks, commit, amend, branch, stash, push and pull, all from
-  the keyboard.
+- Stage files, hunks or single lines, commit, amend, branch, stash, push and
+  pull, all from the keyboard.
 - Comment on any file of the repo, too.
 - Press <kbd>y</kbd> to copy what you selected with <kbd>V</kbd>, or a file's
   comments as markdown to paste into any agent. On a pull request it copies the
@@ -208,21 +209,29 @@ Then ask your agent to answer your comments (`/df` in Claude Code and opencode).
 It replies in each thread and fixes the code. Its tools are in
 [docs/mcp.md](docs/mcp.md), and `diffler --no-mcp` turns the connection off.
 
-## How it compares
+## FAQ
 
-| | diffler | [tuicr](https://github.com/agavra/tuicr) | [lazygit](https://github.com/jesseduffield/lazygit) | [magit](https://magit.vc) |
-|---|:---:|:---:|:---:|:---:|
-| Standalone binary | ✅ | ✅ | ✅ | ❌ |
-| Stage and commit | ✅ | ❌ | ✅ | ✅ |
-| Line comments | ✅ | ✅ | ❌ | ❌ |
-| PR review | ✅¹ | ✅² | ❌ | ❌ |
-| Agent replies in the thread | ✅ | ❌³ | ❌ | ❌ |
-| Agent walkthroughs | ✅ | ❌ | ❌ | ❌ |
-| jj | ✅ | ✅ | ❌ | ❌ |
+**Do I need a coding agent to use diffler?**
+No. It is a full git UI by itself. `diffler --no-mcp` turns the agent
+connection off.
 
-<sub>¹ GitHub, GitLab and Forgejo.</sub><br>
-<sub>² GitHub, GitLab, Gitea, Bitbucket, Azure DevOps and Gerrit.</sub><br>
-<sub>³ tuicr exports your comments as markdown for you to paste into the agent.</sub>
+**Does it send my code or usage data anywhere?**
+No. diffler has no telemetry. It talks to GitHub, GitLab or Forgejo only when
+you open their pull requests or CI, with the credentials you already set up
+for `gh`, `glab` or Forgejo.
+
+**Who can reach the agent connection?**
+Only programs on your machine. The MCP server listens on `127.0.0.1`.
+
+**Can an agent post on my pull request?**
+No. What an agent writes stays in diffler on your machine. Only comments and
+replies under your name go to the forge, and only when you submit the review
+yourself.
+
+**Is it safe to let an agent read review comments?**
+Other people write the comments on a pull request, and your agent reads them
+as plain text. diffler passes them on unchanged, so treat them like any text
+from the internet when you decide what your agent may do.
 
 ## Keys
 
@@ -231,7 +240,7 @@ You move like in vim: `j`/`k`, `gg`/`G`, `/` to search, Ctrl+d/Ctrl+u to scroll.
 | Key | What it does |
 | --- | --- |
 | Enter | Open what's under the cursor |
-| `s` / `u` | Stage / unstage |
+| `s` / `u` | Stage / unstage a file, a hunk, or the lines you selected with `V` |
 | `cc` | Commit |
 | `c` | Comment on the line, or on a range you selected with `V`, in a diff or any file |
 | `m` | Mark the file as viewed |
@@ -274,6 +283,15 @@ file in `~/.config/diffler/themes/`, and [docs/themes](docs/themes/README.md)
 lists every key you can set.
 
 ![the review screen in catppuccin-mocha: the file tree, a diff carrying a comment thread with the agent's reply, and the comments sidebar](showcase/img/catppuccin-mocha.png)
+
+## Similar projects and inspiration
+
+- [magit](https://magit.vc) and [neogit](https://github.com/NeogitOrg/neogit)
+- [lazygit](https://github.com/jesseduffield/lazygit)
+- [gitui](https://github.com/gitui-org/gitui)
+- [gitu](https://github.com/altsem/gitu)
+- [tuicr](https://github.com/agavra/tuicr)
+- [jjui](https://github.com/idursun/jjui)
 
 ## Development
 
