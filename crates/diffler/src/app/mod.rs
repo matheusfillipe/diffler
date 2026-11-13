@@ -1853,13 +1853,12 @@ impl App {
 
     pub(crate) fn bot_filter(&self) -> bots::BotFilter {
         bots::BotFilter {
-            hide: self.hides_bots(),
             review: self.config.review.clone(),
         }
     }
 
-    /// While anything is hidden the status line counts it, so we only speak
-    /// when it does not.
+    /// The status line shows the count while anything is hidden, so we show a
+    /// message only when it shows none.
     pub(crate) fn toggle_bots(&mut self) {
         self.set_hide_bots(!self.hides_bots());
         if !self.hides_bots() {
@@ -1869,8 +1868,7 @@ impl App {
         }
     }
 
-    /// The live toggle; `H` writes it back into the config, as the theme
-    /// picker does with its own key.
+    /// We keep the live toggle in the config, so a new view starts from it.
     pub fn hides_bots(&self) -> bool {
         self.config.review.hide_bots
     }

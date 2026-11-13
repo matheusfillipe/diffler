@@ -880,7 +880,11 @@ impl GitLabUser {
             self.username
                 .strip_prefix(scope)
                 .and_then(|rest| rest.split_once("_bot"))
-                .is_some_and(|(id, _)| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()))
+                .is_some_and(|(id, after)| {
+                    !id.is_empty()
+                        && id.bytes().all(|b| b.is_ascii_digit())
+                        && (after.is_empty() || after.starts_with('_'))
+                })
         });
         if is_token_bot {
             crate::ci::bot_login(self.username)
@@ -1037,6 +1041,7 @@ mod tests {
         assert_eq!(name("group_7_bot_c0ffee"), "group_7_bot_c0ffee[bot]");
         assert_eq!(name("reviewer"), "reviewer");
         assert_eq!(name("project_manager_bot"), "project_manager_bot");
+        assert_eq!(name("group_2024_botanist"), "group_2024_botanist");
     }
 
     fn provider_on(

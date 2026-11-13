@@ -74,8 +74,8 @@ pub(crate) fn on_path(program: &str, path: &std::ffi::OsStr) -> bool {
 
 const BOT_SUFFIX: &str = "[bot]";
 
-/// GitHub's own spelling for an app account, which we give every author a
-/// forge marks as a bot so the UI needs only the name.
+/// We give every author a forge marks as a bot GitHub's `[bot]` suffix, so
+/// the UI can tell bots by name alone.
 pub fn bot_login(login: String) -> String {
     if login.ends_with(BOT_SUFFIX) {
         login
@@ -215,6 +215,7 @@ pub(crate) fn is_plain_name(name: &str) -> bool {
 /// The forge's host and the picture it serves for `login`. GitLab serves one
 /// only behind a user lookup, so it gets none.
 pub fn avatar_url(detected: &Detected, remote_url: &str, login: &str) -> Option<(String, String)> {
+    let login = without_bot_suffix(login);
     if !is_plain_name(login) {
         return None;
     }
@@ -479,9 +480,14 @@ mod tests {
             avatar_url(&gitlab, "https://gitlab.com/acme/widgets", "reviewer"),
             None
         );
-        for odd in ["", "../etc", ".hidden", "bot[bot]", "a/b", "a b"] {
+        for odd in ["", "../etc", ".hidden", "a[b]", "a/b", "a b"] {
             assert_eq!(avatar_url(&github, "", odd), None, "{odd}");
         }
+        assert_eq!(
+            avatar_url(&github, "", "Copilot[bot]").map(|(_, url)| url),
+            Some("https://github.com/Copilot.png?size=64".to_owned()),
+            "a bot's picture is its account's own"
+        );
         let crafted = Detected {
             kind: ProviderKind::Forgejo,
             host: Some("forge.example/../../tmp".to_owned()),

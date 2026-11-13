@@ -114,7 +114,7 @@ impl PrPage {
             conversation
                 .notes
                 .iter()
-                .filter(|note| self.bots.hides_note(note))
+                .filter(|note| self.bots.hides_note(note, &conversation.notes))
                 .count()
         })
     }
@@ -213,7 +213,7 @@ fn layout(
         .notes
         .iter()
         .enumerate()
-        .filter(|(_, note)| !bots.hides_note(note))
+        .filter(|(_, note)| !bots.hides_note(note, &conversation.notes))
         .collect();
     lines.push((
         None,

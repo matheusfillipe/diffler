@@ -221,7 +221,7 @@ impl DiffView {
         let Some(card) = session
             .comments
             .get(comment)
-            .filter(|card| thread_folds(card))
+            .filter(|card| thread_folds(&self.bots.shown(card)))
         else {
             return false;
         };

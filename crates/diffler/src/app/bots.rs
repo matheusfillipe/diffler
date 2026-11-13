@@ -10,18 +10,21 @@ use crate::config::ReviewConfig;
 /// What the review screens hide, one copy per view so a draw needs no `App`.
 #[derive(Debug, Clone, Default)]
 pub struct BotFilter {
-    pub hide: bool,
     pub review: ReviewConfig,
 }
 
 impl BotFilter {
+    fn hiding(&self) -> bool {
+        self.review.hide_bots
+    }
+
     pub fn is_bot(&self, author: &str) -> bool {
         self.review.is_bot(author)
     }
 
     /// A thread a bot started stays while a person answered in it.
     pub fn hides_thread(&self, comment: &Comment) -> bool {
-        self.hide
+        self.hiding()
             && self.is_bot(&comment.author)
             && comment
                 .replies
@@ -29,13 +32,22 @@ impl BotFilter {
                 .all(|reply| self.is_bot(&reply.author))
     }
 
-    pub fn hides_note(&self, note: &PrNote) -> bool {
-        self.hide && self.is_bot(&note.author)
+    /// The same rule for a PR's conversation, where a thread is a root note
+    /// and the notes whose `reply_to` names it.
+    pub fn hides_note(&self, note: &PrNote, notes: &[PrNote]) -> bool {
+        if !self.hiding() || !self.is_bot(&note.author) {
+            return false;
+        }
+        note.reply_to.is_some()
+            || notes
+                .iter()
+                .filter(|other| other.reply_to.as_ref() == Some(&note.id))
+                .all(|reply| self.is_bot(&reply.author))
     }
 
     /// `comment` with the bot replies it hides left out.
     pub fn shown<'a>(&self, comment: &'a Comment) -> Cow<'a, Comment> {
-        if !self.hide || !comment.replies.iter().any(|r| self.is_bot(&r.author)) {
+        if !self.hiding() || !comment.replies.iter().any(|r| self.is_bot(&r.author)) {
             return Cow::Borrowed(comment);
         }
         let mut shown = comment.clone();
@@ -46,7 +58,7 @@ impl BotFilter {
     /// Bot comments and replies out of sight: whole bot threads, and bot
     /// replies in the threads that stay.
     pub fn hidden_count(&self, session: &Session) -> usize {
-        if !self.hide {
+        if !self.hiding() {
             return 0;
         }
         session
@@ -106,7 +118,6 @@ mod tests {
 
     fn hiding(extra: &[&str]) -> BotFilter {
         BotFilter {
-            hide: true,
             review: ReviewConfig {
                 hide_bots: true,
                 bots: extra.iter().map(|bot| (*bot).to_owned()).collect(),
@@ -128,8 +139,10 @@ mod tests {
         let filter = hiding(&["release-helper"]);
         assert!(filter.hides_thread(&comment("release-helper", &[])));
         let off = BotFilter {
-            hide: false,
-            ..filter
+            review: ReviewConfig {
+                hide_bots: false,
+                ..filter.review.clone()
+            },
         };
         assert!(!off.hides_thread(&comment("release-helper", &[])));
         let session = Session {
@@ -154,5 +167,34 @@ mod tests {
             ..Session::default()
         };
         assert_eq!(filter.hidden_count(&session), 3);
+    }
+
+    fn note(id: &str, author: &str, reply_to: Option<&str>) -> PrNote {
+        PrNote {
+            id: id.to_owned(),
+            author: author.to_owned(),
+            body: "note".to_owned(),
+            at: 0,
+            verdict: None,
+            thread_id: None,
+            reply_to: reply_to.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn a_bot_note_a_person_answered_keeps_its_place_above_the_answer() {
+        let filter = hiding(&[]);
+        let notes = [
+            note("1", "project_4_bot_ab[bot]", None),
+            note("2", "reviewer", Some("1")),
+            note("3", "project_4_bot_ab[bot]", Some("1")),
+            note("4", "project_4_bot_ab[bot]", None),
+        ];
+        let hidden: Vec<&str> = notes
+            .iter()
+            .filter(|n| filter.hides_note(n, &notes))
+            .map(|n| n.id.as_str())
+            .collect();
+        assert_eq!(hidden, ["3", "4"]);
     }
 }
