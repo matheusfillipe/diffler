@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794565699308,
+  "lastUpdate": 1794565946355,
   "repoUrl": "https://github.com/matheusfillipe/diffler",
   "entries": {
     "Benchmark": [
@@ -21407,6 +21407,102 @@ window.BENCHMARK_DATA = {
             "name": "scope_index/20000",
             "value": 76875172,
             "range": "± 4020284",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7e90f936b4543a8b50e8d4baad80eb810de8ee5c",
+          "message": "chore(deps): bump the deps group across 1 directory with 9 updates (#64)\n\nBumps the deps group with 9 updates in the / directory:\n\n| Package | From | To |\n| --- | --- | --- |\n| [similar](https://github.com/mitsuhiko/similar) | `3.2.0` | `3.2.1` |\n| [notify](https://github.com/notify-rs/notify) | `8.2.0` | `8.2.2` |\n| [tree-sitter-md](https://github.com/tree-sitter-grammars/tree-sitter-markdown) | `0.5.3` | `0.5.4` |\n| [tree-sitter-scala](https://github.com/tree-sitter/tree-sitter-scala) | `0.26.3` | `0.26.9` |\n| [tree-sitter-dart](https://github.com/nielsenko/tree-sitter-dart) | `0.2.0` | `0.3.0` |\n| [tree-sitter-powershell](https://github.com/airbus-cert/tree-sitter-powershell) | `0.26.4` | `0.26.6` |\n| [toml](https://github.com/toml-rs/toml) | `1.1.8+spec-1.1.0` | `1.2.1+spec-1.1.0` |\n| [uuid](https://github.com/uuid-rs/uuid) | `1.29.0` | `1.29.2` |\n| [unicode-width](https://github.com/unicode-rs/unicode-width) | `0.2.2` | `0.2.3` |\n\n\n\nUpdates `similar` from 3.2.0 to 3.2.1\n- [Changelog](https://github.com/mitsuhiko/similar/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/mitsuhiko/similar/compare/3.2.0...3.2.1)\n\nUpdates `notify` from 8.2.0 to 8.2.2\n- [Release notes](https://github.com/notify-rs/notify/releases)\n- [Changelog](https://github.com/notify-rs/notify/blob/notify-8.2.2/CHANGELOG.md)\n- [Commits](https://github.com/notify-rs/notify/compare/notify-8.2.0...notify-8.2.2)\n\nUpdates `tree-sitter-md` from 0.5.3 to 0.5.4\n- [Release notes](https://github.com/tree-sitter-grammars/tree-sitter-markdown/releases)\n- [Commits](https://github.com/tree-sitter-grammars/tree-sitter-markdown/compare/v0.5.3...v0.5.4)\n\nUpdates `tree-sitter-scala` from 0.26.3 to 0.26.9\n- [Release notes](https://github.com/tree-sitter/tree-sitter-scala/releases)\n- [Commits](https://github.com/tree-sitter/tree-sitter-scala/compare/v0.26.3...v0.26.9)\n\nUpdates `tree-sitter-dart` from 0.2.0 to 0.3.0\n- [Changelog](https://github.com/nielsenko/tree-sitter-dart/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/nielsenko/tree-sitter-dart/compare/v0.2.0...v0.3.0)\n\nUpdates `tree-sitter-powershell` from 0.26.4 to 0.26.6\n- [Commits](https://github.com/airbus-cert/tree-sitter-powershell/compare/v0.26.4...v0.26.6)\n\nUpdates `toml` from 1.1.8+spec-1.1.0 to 1.2.1+spec-1.1.0\n- [Commits](https://github.com/toml-rs/toml/compare/toml-v1.1.8...toml-v1.2.1)\n\nUpdates `uuid` from 1.29.0 to 1.29.2\n- [Release notes](https://github.com/uuid-rs/uuid/releases)\n- [Commits](https://github.com/uuid-rs/uuid/compare/v1.29.0...v1.29.2)\n\nUpdates `unicode-width` from 0.2.2 to 0.2.3\n- [Commits](https://github.com/unicode-rs/unicode-width/compare/v0.2.2...v0.2.3)\n\n---\nupdated-dependencies:\n- dependency-name: notify\n  dependency-version: 8.2.2\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: deps\n- dependency-name: similar\n  dependency-version: 3.2.1\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: deps\n- dependency-name: toml\n  dependency-version: 1.2.1+spec-1.1.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: deps\n- dependency-name: tree-sitter-dart\n  dependency-version: 0.3.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: deps\n- dependency-name: tree-sitter-md\n  dependency-version: 0.5.4\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: deps\n- dependency-name: tree-sitter-powershell\n  dependency-version: 0.26.6\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: deps\n- dependency-name: tree-sitter-scala\n  dependency-version: 0.26.9\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: deps\n- dependency-name: unicode-width\n  dependency-version: 0.2.3\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: deps\n- dependency-name: uuid\n  dependency-version: 1.29.2\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: deps\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-11-13T11:28:10+01:00",
+          "tree_id": "28f325c1ef0141dbb818608ca11ad5fd9df6e168",
+          "url": "https://github.com/matheusfillipe/diffler/commit/7e90f936b4543a8b50e8d4baad80eb810de8ee5c"
+        },
+        "date": 1794565945698,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "syndiff_emphasis/1000",
+            "value": 8374393,
+            "range": "± 324799",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/1000",
+            "value": 15693,
+            "range": "± 239",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/1000",
+            "value": 5937511,
+            "range": "± 36989",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/1000",
+            "value": 4733496,
+            "range": "± 79652",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/5000",
+            "value": 47619717,
+            "range": "± 792788",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/5000",
+            "value": 78630,
+            "range": "± 337",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/5000",
+            "value": 29819673,
+            "range": "± 324620",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/5000",
+            "value": 23641557,
+            "range": "± 573161",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/20000",
+            "value": 198122600,
+            "range": "± 2456875",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/20000",
+            "value": 316849,
+            "range": "± 4059",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/20000",
+            "value": 125088944,
+            "range": "± 1827385",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/20000",
+            "value": 99552114,
+            "range": "± 1304890",
             "unit": "ns/iter"
           }
         ]
