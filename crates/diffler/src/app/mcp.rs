@@ -38,7 +38,9 @@ impl App {
                 self.comments_response(|c| status.is_none_or(|wanted| c == wanted)),
             ),
             McpRequestKind::ListReviews => McpResponse::Reviews(self.review_summaries()),
-            McpRequestKind::ReplyComment { id, body } => self.agent_reply(&id, &body),
+            McpRequestKind::ReplyComment { id, body, as_human } => {
+                self.agent_reply(&id, &body, as_human)
+            }
             McpRequestKind::ProposeResolve { id, note } => {
                 self.agent_propose_resolve(&id, note.as_deref())
             }
@@ -51,8 +53,21 @@ impl App {
                 as_human,
                 outside_diff,
             } => self.agent_add_comment(&file, (line, line_end), &body, as_human, outside_diff),
-            McpRequestKind::DeleteComment { id } => self.agent_delete_comment(&id),
-            McpRequestKind::EditComment { id, body } => self.agent_edit_comment(&id, &body),
+            McpRequestKind::DeleteComment { id, reply: None } => self.agent_delete_comment(&id),
+            McpRequestKind::DeleteComment {
+                id,
+                reply: Some(index),
+            } => self.agent_delete_reply(&id, index),
+            McpRequestKind::EditComment {
+                id,
+                reply: None,
+                body,
+            } => self.agent_edit_comment(&id, &body),
+            McpRequestKind::EditComment {
+                id,
+                reply: Some(index),
+                body,
+            } => self.agent_edit_reply(&id, index, &body),
             McpRequestKind::Feedback => McpResponse::Feedback {
                 comments: self.comments_response(|c| c != CommentStatus::Resolved),
             },
@@ -588,21 +603,101 @@ impl App {
             .map(|(source, _)| source)
     }
 
-    fn agent_reply(&mut self, id: &str, body: &str) -> McpResponse {
+    fn agent_reply(&mut self, id: &str, body: &str, as_human: bool) -> McpResponse {
         let Some(source) = self.source_of_comment(id) else {
             return McpResponse::Error(format!("unknown comment id: {id}"));
         };
         if let Err(err) = self.review.ensure_source(&source) {
             return McpResponse::Error(err.to_string());
         }
+        let author = if as_human {
+            self.author.clone()
+        } else {
+            AGENT_AUTHOR.to_owned()
+        };
         self.review
             .session_for_mut(&source)
-            .reply(id, AGENT_AUTHOR, body);
+            .reply(id, &author, body);
         if let Err(err) = self.persist_review_change(&source) {
             return McpResponse::Error(err);
         }
-        self.info("agent replied to a comment");
+        self.info(if as_human {
+            "agent drafted a reply as you"
+        } else {
+            "agent replied to a comment"
+        });
         self.comment_status_response(&source, id)
+    }
+
+    /// The source of the comment, once we know the forge has no copy of reply
+    /// `index`: a posted reply would come back on sync.
+    fn editable_reply(&mut self, id: &str, index: usize) -> Result<ReviewSource, String> {
+        let source = self
+            .source_of_comment(id)
+            .ok_or_else(|| format!("unknown comment id: {id}"))?;
+        self.review
+            .ensure_source(&source)
+            .map_err(|err| err.to_string())?;
+        let reply = self
+            .review
+            .session_for(&source)
+            .comment(id)
+            .and_then(|comment| comment.replies.get(index))
+            .ok_or_else(|| format!("comment {id} has no reply {index}"))?;
+        if reply.remote_id.is_some() {
+            return Err(format!(
+                "reply {index} of comment {id} is already posted to the forge; ask the human to change it there"
+            ));
+        }
+        let posting = format!("r-{id}-");
+        if self
+            .pr_posts_inflight
+            .iter()
+            .any(|key| key.starts_with(&posting))
+        {
+            return Err(format!(
+                "a reply of comment {id} is being posted to the forge; try again once it is done"
+            ));
+        }
+        Ok(source)
+    }
+
+    fn agent_edit_reply(&mut self, id: &str, index: usize, body: &str) -> McpResponse {
+        let body = body.trim();
+        if body.is_empty() {
+            return McpResponse::Error("reply body is empty".to_owned());
+        }
+        if body.len() > BODY_MAX_BYTES {
+            return McpResponse::Error(format!(
+                "reply body: {} bytes, {BODY_MAX_BYTES} at most",
+                body.len()
+            ));
+        }
+        let source = match self.editable_reply(id, index) {
+            Ok(source) => source,
+            Err(message) => return McpResponse::Error(message),
+        };
+        self.review
+            .session_for_mut(&source)
+            .edit_reply(id, index, body);
+        if let Err(err) = self.persist_review_change(&source) {
+            return McpResponse::Error(err);
+        }
+        self.info("agent edited a reply");
+        McpResponse::Ok
+    }
+
+    fn agent_delete_reply(&mut self, id: &str, index: usize) -> McpResponse {
+        let source = match self.editable_reply(id, index) {
+            Ok(source) => source,
+            Err(message) => return McpResponse::Error(message),
+        };
+        self.review.session_for_mut(&source).delete_reply(id, index);
+        if let Err(err) = self.persist_review_change(&source) {
+            return McpResponse::Error(err);
+        }
+        self.info("agent deleted a reply");
+        McpResponse::Ok
     }
 
     /// Marks the comment replied; only the human resolves it (`R`). We post
@@ -1352,6 +1447,7 @@ mod tests {
     fn agent_reply_flips_status_persists_and_toasts() {
         let (fixture, mut app, id) = app_with_comment();
         let response = app.handle_mcp(McpRequestKind::ReplyComment {
+            as_human: false,
             id: id.clone(),
             body: "it is the answer".to_owned(),
         });
@@ -1373,9 +1469,65 @@ mod tests {
     }
 
     #[test]
+    fn a_reply_as_human_waits_as_the_humans_draft_and_can_be_rewritten_or_dropped() {
+        let (_fixture, mut app, id) = app_with_comment();
+        let reply = |app: &mut App, as_human, body: &str| {
+            app.handle_mcp(McpRequestKind::ReplyComment {
+                id: id.clone(),
+                body: body.to_owned(),
+                as_human,
+            })
+        };
+        reply(&mut app, false, "the agent's answer");
+        reply(&mut app, true, "draft in your voice");
+        let replies = &app.review.session.comments[0].replies;
+        assert_eq!(replies[0].author, AGENT_AUTHOR);
+        assert_eq!(replies[1].author, app.author);
+
+        let edited = app.handle_mcp(McpRequestKind::EditComment {
+            id: id.clone(),
+            reply: Some(1),
+            body: "better draft".to_owned(),
+        });
+        assert_eq!(edited, McpResponse::Ok);
+        let deleted = app.handle_mcp(McpRequestKind::DeleteComment {
+            id: id.clone(),
+            reply: Some(0),
+        });
+        assert_eq!(deleted, McpResponse::Ok);
+        let replies = &app.review.session.comments[0].replies;
+        assert_eq!(replies.len(), 1);
+        assert_eq!(replies[0].body, "better draft");
+        assert_eq!(replies[0].author, app.author);
+    }
+
+    #[test]
+    fn a_reply_the_forge_has_or_a_missing_one_is_refused() {
+        let (_fixture, mut app, id) = app_with_comment();
+        app.review.session.reply(&id, "reviewer", "posted already");
+        app.review.session.comments[0].replies[0].remote_id = Some("9".to_owned());
+        let posted = app.handle_mcp(McpRequestKind::EditComment {
+            id: id.clone(),
+            reply: Some(0),
+            body: "rewrite".to_owned(),
+        });
+        assert!(matches!(posted, McpResponse::Error(m) if m.contains("already posted")));
+        let missing = app.handle_mcp(McpRequestKind::DeleteComment {
+            id: id.clone(),
+            reply: Some(5),
+        });
+        assert!(matches!(missing, McpResponse::Error(m) if m.contains("no reply 5")));
+        assert_eq!(
+            app.review.session.comments[0].replies[0].body,
+            "posted already"
+        );
+    }
+
+    #[test]
     fn agent_reply_to_unknown_id_errors() {
         let (_fixture, mut app, _id) = app_with_comment();
         let response = app.handle_mcp(McpRequestKind::ReplyComment {
+            as_human: false,
             id: "nope".to_owned(),
             body: "hello".to_owned(),
         });
@@ -1412,6 +1564,7 @@ mod tests {
     fn propose_resolve_after_a_reply_writes_nothing() {
         let (_fixture, mut app, id) = app_with_comment();
         app.handle_mcp(McpRequestKind::ReplyComment {
+            as_human: false,
             id: id.clone(),
             body: "checked the job: the host is right".to_owned(),
         });
@@ -1692,6 +1845,7 @@ mod tests {
         };
 
         let response = app.handle_mcp(McpRequestKind::EditComment {
+            reply: None,
             id: id.clone(),
             body: "corrected".to_owned(),
         });
@@ -1715,7 +1869,10 @@ mod tests {
             panic!("expected an added comment");
         };
 
-        let response = app.handle_mcp(McpRequestKind::DeleteComment { id: id.clone() });
+        let response = app.handle_mcp(McpRequestKind::DeleteComment {
+            id: id.clone(),
+            reply: None,
+        });
         assert!(matches!(response, McpResponse::Ok), "{response:?}");
         assert!(app.review.session.comment(&id).is_none());
     }
@@ -1725,6 +1882,7 @@ mod tests {
         let (_fixture, mut app, human_id) = app_with_comment();
 
         let edit = app.handle_mcp(McpRequestKind::EditComment {
+            reply: None,
             id: human_id.clone(),
             body: "rewritten by the agent".to_owned(),
         });
@@ -1734,6 +1892,7 @@ mod tests {
         assert_ne!(comment.author, AGENT_AUTHOR, "the human keeps authorship");
 
         let delete = app.handle_mcp(McpRequestKind::DeleteComment {
+            reply: None,
             id: human_id.clone(),
         });
         assert!(matches!(delete, McpResponse::Ok), "{delete:?}");
@@ -1750,11 +1909,13 @@ mod tests {
             .for_each(|c| c.remote_id = Some("100".to_owned()));
 
         let edit = app.handle_mcp(McpRequestKind::EditComment {
+            reply: None,
             id: human_id.clone(),
             body: "rewritten by the agent".to_owned(),
         });
         assert!(matches!(edit, McpResponse::Error(_)), "{edit:?}");
         let delete = app.handle_mcp(McpRequestKind::DeleteComment {
+            reply: None,
             id: human_id.clone(),
         });
         assert!(matches!(delete, McpResponse::Error(_)), "{delete:?}");
@@ -1784,12 +1945,14 @@ mod tests {
             .expect("a stop");
 
         let edit = app.handle_mcp(McpRequestKind::EditComment {
+            reply: None,
             id: stop_id.clone(),
             body: "rewritten outside publish_walkthrough".to_owned(),
         });
         assert!(matches!(edit, McpResponse::Error(_)), "{edit:?}");
 
         let delete = app.handle_mcp(McpRequestKind::DeleteComment {
+            reply: None,
             id: stop_id.clone(),
         });
         assert!(matches!(delete, McpResponse::Error(_)), "{delete:?}");
@@ -1816,13 +1979,17 @@ mod tests {
         };
         assert!(app.review.session.reply(&id, "human", "no, main calls it"));
 
-        let response = app.handle_mcp(McpRequestKind::DeleteComment { id: id.clone() });
+        let response = app.handle_mcp(McpRequestKind::DeleteComment {
+            id: id.clone(),
+            reply: None,
+        });
         assert!(matches!(response, McpResponse::Error(_)), "{response:?}");
         let comment = app.review.session.comment(&id).expect("comment survives");
         assert_eq!(comment.replies.len(), 1, "the human's reply survives too");
         assert_eq!(comment.replies[0].body, "no, main calls it");
 
         let edit = app.handle_mcp(McpRequestKind::EditComment {
+            reply: None,
             id: id.clone(),
             body: "corrected: it is reachable from main".to_owned(),
         });
@@ -1848,7 +2015,10 @@ mod tests {
                 .reply(&id, AGENT_AUTHOR, "confirmed, dropping it")
         );
 
-        let response = app.handle_mcp(McpRequestKind::DeleteComment { id: id.clone() });
+        let response = app.handle_mcp(McpRequestKind::DeleteComment {
+            id: id.clone(),
+            reply: None,
+        });
         assert!(matches!(response, McpResponse::Ok), "{response:?}");
         assert!(app.review.session.comment(&id).is_none());
     }
@@ -1857,6 +2027,7 @@ mod tests {
     fn edit_comment_on_an_unknown_id_errors() {
         let (_fixture, mut app, _id) = app_with_comment();
         let response = app.handle_mcp(McpRequestKind::EditComment {
+            reply: None,
             id: "nope".to_owned(),
             body: "x".to_owned(),
         });
@@ -1916,6 +2087,7 @@ mod tests {
         app.review.save_for(&source).expect("save");
 
         let response = app.handle_mcp(McpRequestKind::ReplyComment {
+            as_human: false,
             id,
             body: "because".to_owned(),
         });

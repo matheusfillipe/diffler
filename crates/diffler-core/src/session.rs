@@ -266,6 +266,28 @@ impl Session {
         self.comments.iter().find(|comment| comment.id == id)
     }
 
+    pub fn edit_reply(&mut self, comment_id: &str, index: usize, body: &str) -> bool {
+        let Some(reply) = self
+            .comment_mut(comment_id)
+            .and_then(|comment| comment.replies.get_mut(index))
+        else {
+            return false;
+        };
+        body.clone_into(&mut reply.body);
+        true
+    }
+
+    pub fn delete_reply(&mut self, comment_id: &str, index: usize) -> bool {
+        let Some(comment) = self.comment_mut(comment_id) else {
+            return false;
+        };
+        if index >= comment.replies.len() {
+            return false;
+        }
+        comment.replies.remove(index);
+        true
+    }
+
     /// Flag a comment as addressed, writing nothing into the thread.
     pub fn mark_replied(&mut self, comment_id: &str) -> bool {
         let Some(comment) = self.comment_mut(comment_id) else {

@@ -2854,6 +2854,7 @@ mod tests {
             kind: crate::mcp::McpRequestKind::ReplyComment {
                 id,
                 body: "late reply".to_owned(),
+                as_human: false,
             },
             project: None,
             reply,

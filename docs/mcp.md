@@ -31,11 +31,16 @@ You can open several repositories as tabs in one diffler, and the agent reaches 
   for one already posted to the forge, for a walkthrough stop or note
   (revise or drop those with `publish_walkthrough`), and for one someone
   other than the agent has replied to, since deleting a comment deletes its
-  replies (edit the body instead).
+  replies (edit the body instead). With `reply`, it deletes just that reply,
+  refused once the forge has it.
 - **edit_comment**: replace the body of a comment, keeping its author,
   status, replies, and anchor. Same refusals as
   `delete_comment` except the reply one, since editing never touches replies.
+  With `reply`, it rewrites that reply instead, refused once the forge has it.
 - **reply_comment**: answer a comment in place; you see the reply immediately.
+  Pass `as_human` to draft it as yours: you send it with your next submitted
+  review. `get_comments` lists each reply
+  with its `index`, which `edit_comment` and `delete_comment` take as `reply`.
 - **propose_resolve**: tell you a comment is dealt with, by marking it replied. Its optional note goes into the thread only when the agent has not replied there yet, so an answered comment keeps just the answer. Only you resolve it, in the TUI.
 - **mark_viewed**: mark a file viewed in the review you're currently looking at.
 - **open_project**: open another git repository or worktree as a tab in your diffler, by path. The agent should call it for every repository or worktree it changed beyond the one diffler started in. The tab opens behind the one you are looking at.

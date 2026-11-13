@@ -470,7 +470,7 @@ impl Workspace {
         let id = match kind {
             McpRequestKind::ReplyComment { id, .. }
             | McpRequestKind::ProposeResolve { id, .. }
-            | McpRequestKind::DeleteComment { id }
+            | McpRequestKind::DeleteComment { id, .. }
             | McpRequestKind::EditComment { id, .. }
             | McpRequestKind::GetWalkthrough { id: Some(id) }
             | McpRequestKind::PublishWalkthrough { id: Some(id), .. }
@@ -743,6 +743,7 @@ mod tests {
         let reply = McpRequestKind::ReplyComment {
             id: id.clone(),
             body: "answered".to_owned(),
+            as_human: false,
         };
         assert!(matches!(
             call(&mut workspace, None, reply),

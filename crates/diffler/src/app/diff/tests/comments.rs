@@ -573,6 +573,31 @@ fn claiming_a_comment_toggles_authorship_and_back() {
 }
 
 #[test]
+fn claiming_someone_elses_thread_claims_the_agents_unposted_replies() {
+    let fixture = standard_fixture();
+    let mut app = diff_app(&fixture);
+    let anchor = diffler_core::session::Anchor {
+        file: "src/lib.rs".to_owned(),
+        line: Some(2),
+        line_end: None,
+        on_old_side: false,
+        line_text: None,
+        on_file: false,
+    };
+    let session = &mut app.review.session;
+    let id = session.add_comment(anchor, "peer", "naming?").id.clone();
+    session.reply(&id, crate::mcp::AGENT_AUTHOR, "posted earlier");
+    session.comments[0].replies[0].remote_id = Some("7".to_owned());
+    session.reply(&id, crate::mcp::AGENT_AUTHOR, "renamed it");
+
+    app.claim_comment(&id);
+    let replies = &app.review.session.comments[0].replies;
+    assert_eq!(replies[0].author, crate::mcp::AGENT_AUTHOR, "posted stays");
+    assert_eq!(replies[1].author, "reviewer");
+    assert_eq!(app.review.session.comments[0].author, "peer");
+}
+
+#[test]
 fn claiming_on_a_row_that_is_not_a_comment_says_so() {
     let fixture = standard_fixture();
     let mut app = diff_app(&fixture);

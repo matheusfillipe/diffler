@@ -639,6 +639,14 @@ impl App {
                 comment.author.clone_from(&author);
                 claimed += 1;
             }
+            for reply in comment
+                .replies
+                .iter_mut()
+                .filter(|r| r.remote_id.is_none() && r.author == crate::mcp::AGENT_AUTHOR)
+            {
+                reply.author.clone_from(&author);
+                claimed += 1;
+            }
         }
         self.after_session_change();
         self.info(format!("claimed {claimed} comments as you"));

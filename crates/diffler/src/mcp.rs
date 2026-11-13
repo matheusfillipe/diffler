@@ -68,9 +68,11 @@ pub enum McpRequestKind {
         status: Option<CommentStatus>,
     },
     ListReviews,
+    /// `as_human` makes the human the reply's author.
     ReplyComment {
         id: String,
         body: String,
+        as_human: bool,
     },
     ProposeResolve {
         id: String,
@@ -93,10 +95,12 @@ pub enum McpRequestKind {
     /// which `publish_walkthrough` owns.
     DeleteComment {
         id: String,
+        reply: Option<usize>,
     },
     /// Keeps status, replies and anchor. Same refusals as `DeleteComment`.
     EditComment {
         id: String,
+        reply: Option<usize>,
         body: String,
     },
     /// Open + replied comments for `wait_for_feedback` after an epoch bump.
@@ -388,8 +392,14 @@ pub struct CommentInfo {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub struct ReplyInfo {
+    /// The reply's position in the thread, which `edit_comment` and
+    /// `delete_comment` take as `reply`.
+    #[schemars(with = "Count")]
+    pub index: usize,
     pub author: String,
     pub body: String,
+    /// The forge already has it, so it can no longer change here.
+    pub posted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
@@ -511,6 +521,10 @@ pub struct GetCommentsParams {
 pub struct ReplyCommentParams {
     pub id: String,
     pub body: String,
+    /// Author the reply as the human, so it waits as their draft and goes out
+    /// with their next submitted review. Use it when the human asks for
+    /// replies in their name.
+    pub as_human: Option<bool>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -562,6 +576,10 @@ pub struct AddCommentResponse {
 pub struct DeleteCommentParams {
     /// The comment to delete, from `get_comments` or `add_comment`.
     pub id: String,
+    /// A reply's `index` in that comment's thread, from `get_comments`, to
+    /// delete just that reply.
+    #[schemars(with = "Option<Count>")]
+    pub reply: Option<usize>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -569,6 +587,10 @@ pub struct EditCommentParams {
     /// The comment to rewrite, from `get_comments` or `add_comment`.
     pub id: String,
     pub body: String,
+    /// A reply's `index` in that comment's thread, from `get_comments`, to
+    /// rewrite just that reply.
+    #[schemars(with = "Option<Count>")]
+    pub reply: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, schemars::JsonSchema)]
@@ -825,9 +847,12 @@ pub fn comment_info(comment: &Comment, model: &DiffModel, source: &ReviewSource)
         replies: comment
             .replies
             .iter()
-            .map(|r| ReplyInfo {
+            .enumerate()
+            .map(|(index, r)| ReplyInfo {
+                index,
                 author: r.author.clone(),
                 body: r.body.clone(),
+                posted: r.remote_id.is_some(),
             })
             .collect(),
         outdated,
@@ -964,7 +989,9 @@ impl DifflerMcp {
         }
     }
 
-    #[tool(description = "Answer a review comment in place; the human sees the reply immediately.")]
+    #[tool(
+        description = "Answer a review comment in place; the human sees the reply immediately. It is the agent's reply; `as_human` drafts it in the human's name instead, for them to review in diffler and send with their next submitted review. Use that when they ask for replies as them or in their voice."
+    )]
     async fn reply_comment(
         &self,
         Parameters(params): Parameters<ReplyCommentParams>,
@@ -972,6 +999,7 @@ impl DifflerMcp {
         let kind = McpRequestKind::ReplyComment {
             id: params.id,
             body: params.body,
+            as_human: params.as_human.unwrap_or(false),
         };
         match self.request(kind).await? {
             McpResponse::Replied { status } => Ok(Json(ReplyResponse { ok: true, status })),
@@ -1032,13 +1060,16 @@ impl DifflerMcp {
     }
 
     #[tool(
-        description = "Delete a comment, yours or the human's. Refused for one already posted to the forge, for one someone else has replied to (edit it instead), and for a walkthrough stop or note, which `publish_walkthrough` revises."
+        description = "Delete a comment, yours or the human's, or with `reply` one reply in its thread. Refused for anything already posted to the forge, for a comment someone else has replied to (edit it instead), and for a walkthrough stop or note, which `publish_walkthrough` revises."
     )]
     async fn delete_comment(
         &self,
         Parameters(params): Parameters<DeleteCommentParams>,
     ) -> Result<Json<OkResponse>, ErrorData> {
-        let kind = McpRequestKind::DeleteComment { id: params.id };
+        let kind = McpRequestKind::DeleteComment {
+            id: params.id,
+            reply: params.reply,
+        };
         match self.request(kind).await? {
             McpResponse::Ok => Ok(Json(OkResponse { ok: true })),
             _ => Err(mismatch()),
@@ -1046,7 +1077,7 @@ impl DifflerMcp {
     }
 
     #[tool(
-        description = "Replace a comment's body, yours or the human's, keeping its author, status, replies and anchor. Refused for one already posted to the forge, and for a walkthrough stop or note, which `publish_walkthrough` revises."
+        description = "Replace a comment's body, yours or the human's, keeping its author, status, replies and anchor; with `reply`, replace that reply's body instead. Refused for anything already posted to the forge, and for a walkthrough stop or note, which `publish_walkthrough` revises."
     )]
     async fn edit_comment(
         &self,
@@ -1054,6 +1085,7 @@ impl DifflerMcp {
     ) -> Result<Json<OkResponse>, ErrorData> {
         let kind = McpRequestKind::EditComment {
             id: params.id,
+            reply: params.reply,
             body: params.body,
         };
         match self.request(kind).await? {

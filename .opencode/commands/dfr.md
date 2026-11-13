@@ -25,7 +25,10 @@ Review the active review in diffler:
    after reading what you wrote, so say this plainly when you report back.
 7. Write as yourself by default, so the human answers you in the thread.
    Pass `as_human` on a comment only when they ask for a draft they will
-   send as their own.
+   send as their own. The same goes for answering someone else's thread in
+   their name: `reply_comment` with `as_human`. Rewrite or drop such a draft
+   reply with `edit_comment` or `delete_comment` and its `reply` index from
+   `get_comments`.
 8. Tell the human the comments are ready; run /df to keep answering their
    feedback on them afterward.
 

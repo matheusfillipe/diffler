@@ -192,7 +192,38 @@ impl App {
                 self.after_session_change();
                 self.info("handed the comment back to the agent");
             }
-            None => self.info("not an agent comment to claim"),
+            None => self.claim_agent_replies(id),
+        }
+    }
+
+    /// Someone else's thread: we claim the agent's replies in it that the
+    /// forge doesn't have yet, so they go out with the human's next review.
+    fn claim_agent_replies(&mut self, id: &str) {
+        let source = self.active_review_source();
+        let author = self.author.clone();
+        let session = self.review.session_for_mut(&source);
+        let Some(comment) = session.comments.iter_mut().find(|c| c.id == id) else {
+            return;
+        };
+        let mut claimed = 0;
+        for reply in comment
+            .replies
+            .iter_mut()
+            .filter(|r| r.remote_id.is_none() && r.author == crate::mcp::AGENT_AUTHOR)
+        {
+            reply.author.clone_from(&author);
+            claimed += 1;
+        }
+        match claimed {
+            0 => self.info("move onto an agent comment or reply to claim it"),
+            1 => {
+                self.after_session_change();
+                self.info("claimed the agent's reply as you");
+            }
+            n => {
+                self.after_session_change();
+                self.info(format!("claimed {n} agent replies as you"));
+            }
         }
     }
 
@@ -204,13 +235,16 @@ impl App {
             self.info("a walkthrough's own comments aren't claimable");
             return;
         }
-        let count = self
-            .review
-            .session_for(&source)
-            .comments
+        let comments = &self.review.session_for(&source).comments;
+        let count = comments
             .iter()
             .filter(|c| c.author == crate::mcp::AGENT_AUTHOR)
-            .count();
+            .count()
+            + comments
+                .iter()
+                .flat_map(|c| &c.replies)
+                .filter(|r| r.remote_id.is_none() && r.author == crate::mcp::AGENT_AUTHOR)
+                .count();
         if count == 0 {
             self.info("no agent comments to claim");
             return;
