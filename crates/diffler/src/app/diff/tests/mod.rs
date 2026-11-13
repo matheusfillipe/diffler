@@ -1,5 +1,6 @@
 //! Tests for the diff screen, split by topic, with the helpers they share.
 
+mod bots;
 mod comments;
 mod composer;
 mod navigation;

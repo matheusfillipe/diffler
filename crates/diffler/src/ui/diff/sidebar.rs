@@ -107,7 +107,7 @@ pub(super) fn draw_sidebar(
                         return Line::default();
                     };
                     let viewed = session.is_viewed(&file.path, &file.content_hash());
-                    let open = open_comment_count(session, &file.path);
+                    let open = open_comment_count(session, &diff.bots, &file.path);
                     sidebar_file_line(&row_ctx, file, name, viewed, open)
                 }
                 TreeNode::Stop { index } => {
@@ -213,11 +213,17 @@ fn base_name(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).to_owned()
 }
 
-pub(super) fn open_comment_count(session: &Session, path: &str) -> usize {
+pub(super) fn open_comment_count(
+    session: &Session,
+    bots: &crate::app::bots::BotFilter,
+    path: &str,
+) -> usize {
     session
         .comments
         .iter()
-        .filter(|c| c.anchor.file == path && c.status != CommentStatus::Resolved)
+        .filter(|c| {
+            c.anchor.file == path && c.status != CommentStatus::Resolved && !bots.hides_thread(c)
+        })
         .count()
 }
 

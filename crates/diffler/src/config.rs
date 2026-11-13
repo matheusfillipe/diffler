@@ -26,6 +26,7 @@ pub struct Config {
     pub editor: EditorConfig,
     pub ci: CiConfig,
     pub worktree: WorktreeConfig,
+    pub review: ReviewConfig,
     pub classify: ClassifyConfig,
     /// `glob = language` highlighting rules, checked before name and shebang.
     pub syntax: BTreeMap<String, String>,
@@ -211,6 +212,21 @@ impl Default for WorktreeConfig {
         Self {
             path: "../{repo}-{branch}".to_owned(),
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReviewConfig {
+    /// Whether bot comments start hidden; `H` toggles it live.
+    pub hide_bots: bool,
+    /// Accounts to treat as bots beside the ones the forge marks itself.
+    pub bots: Vec<String>,
+}
+
+impl ReviewConfig {
+    pub fn is_bot(&self, author: &str) -> bool {
+        crate::ci::is_bot_login(author) || self.bots.iter().any(|bot| bot == author)
     }
 }
 
@@ -506,9 +522,17 @@ struct PartialConfig {
     editor: PartialEditor,
     ci: PartialCi,
     worktree: PartialWorktree,
+    review: PartialReview,
     classify: ClassifyConfig,
     syntax: BTreeMap<String, String>,
     keys: KeysConfig,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct PartialReview {
+    hide_bots: Option<bool>,
+    bots: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -772,6 +796,20 @@ fn apply_layer(
         origins,
     );
     set(
+        layer.review.hide_bots,
+        &mut config.review.hide_bots,
+        "review.hide_bots",
+        origin,
+        origins,
+    );
+    set(
+        layer.review.bots,
+        &mut config.review.bots,
+        "review.bots",
+        origin,
+        origins,
+    );
+    set(
         layer.ci.provider,
         &mut config.ci.provider,
         "ci.provider",
@@ -899,7 +937,7 @@ fn apply_cli(cli: &CliOverrides, config: &mut Config, origins: &mut BTreeMap<Str
 }
 
 /// Always listed in the `--dump` origins block; `keys.*` entries follow from the user's config.
-const SCALAR_KEYS: [&str; 20] = [
+const SCALAR_KEYS: [&str; 22] = [
     "ui.theme",
     "ui.context_lines",
     "ui.recent_commits",
@@ -920,6 +958,8 @@ const SCALAR_KEYS: [&str; 20] = [
     "ci.gitlab.host",
     "ci.forgejo.host",
     "worktree.path",
+    "review.hide_bots",
+    "review.bots",
 ];
 
 /// `diffler config --dump`: the merged TOML, then each key's origin as comments.

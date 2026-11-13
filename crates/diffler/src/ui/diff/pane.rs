@@ -163,11 +163,11 @@ pub(super) fn draw_pane(
     let [header_area, body_area] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
     let viewed = session.is_viewed(&file.path, &file.content_hash());
-    let open = open_comment_count(session, &file.path);
+    let open = open_comment_count(session, &diff.bots, &file.path);
     let total = session
         .comments
         .iter()
-        .filter(|c| c.anchor.file == file.path)
+        .filter(|c| c.anchor.file == file.path && !diff.bots.hides_thread(c))
         .count();
     frame.render_widget(
         Paragraph::new(pane_header_line(
@@ -454,7 +454,7 @@ fn split_row_lines(
                         line,
                         highlights.and_then(|hl| split_side_syntax(hl, line, side)),
                         CellMarks {
-                            annotated: line_annotated(ctx.session, &file.path, line),
+                            annotated: line_annotated(ctx.session, ctx.bots, &file.path, line),
                             staged: line_staged(ctx, &file.path, line),
                         },
                     )
@@ -595,7 +595,7 @@ fn row_lines(
             let syntax = highlights
                 .get(&file.path)
                 .and_then(|cached| line_syntax(&cached.old, &cached.new, line));
-            let annotated = line_annotated(ctx.session, &file.path, line);
+            let annotated = line_annotated(ctx.session, ctx.bots, &file.path, line);
             render_diff_line(
                 ctx.theme,
                 line,
@@ -698,9 +698,14 @@ fn line_staged(ctx: &RenderCtx<'_>, file_path: &str, line: &DiffLine) -> bool {
         .is_some_and(|staged| staged.is_staged(file_path, line))
 }
 
-fn line_annotated(session: &Session, file_path: &str, line: &DiffLine) -> bool {
+fn line_annotated(
+    session: &Session,
+    bots: &crate::app::bots::BotFilter,
+    file_path: &str,
+    line: &DiffLine,
+) -> bool {
     session.comments.iter().any(|c| {
-        if c.anchor.file != file_path {
+        if c.anchor.file != file_path || bots.hides_thread(c) {
             return false;
         }
         let Some((start, end)) = c.anchor.span() else {

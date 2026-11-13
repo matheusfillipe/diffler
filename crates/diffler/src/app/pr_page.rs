@@ -51,15 +51,17 @@ pub(crate) struct PrPage {
     pub viewport: u16,
     /// A comment the forge refused, so the next `c` starts from its text.
     pub unsent: Option<String>,
+    pub bots: super::bots::BotFilter,
     lines: Vec<(Option<PrItem>, PrLine)>,
     lines_width: u16,
     stale: bool,
 }
 
 impl PrPage {
-    fn new(pr: PullRequest) -> Self {
+    fn new(pr: PullRequest, bots: super::bots::BotFilter) -> Self {
         Self {
             pr,
+            bots,
             conversation: None,
             error: None,
             cursor: 1,
@@ -86,6 +88,7 @@ impl PrPage {
             self.lines = layout(
                 self.conversation.as_ref(),
                 self.error.as_deref(),
+                &self.bots,
                 width,
                 highlighter,
             );
@@ -99,6 +102,21 @@ impl PrPage {
     /// The rows [`Self::lines`] last built.
     pub(crate) fn cached_lines(&self) -> &[(Option<PrItem>, PrLine)] {
         &self.lines
+    }
+
+    pub(crate) fn set_bots(&mut self, bots: super::bots::BotFilter) {
+        self.bots = bots;
+        self.invalidate();
+    }
+
+    pub(crate) fn notes_hidden(&self) -> usize {
+        self.conversation.as_ref().map_or(0, |conversation| {
+            conversation
+                .notes
+                .iter()
+                .filter(|note| self.bots.hides_note(note))
+                .count()
+        })
     }
 
     /// The old rows stay until the next draw rebuilds them, so a key handled
@@ -155,6 +173,7 @@ impl PrPage {
 fn layout(
     conversation: Option<&PrConversation>,
     error: Option<&str>,
+    bots: &super::bots::BotFilter,
     width: u16,
     highlighter: &Highlighter,
 ) -> Vec<(Option<PrItem>, PrLine)> {
@@ -190,17 +209,23 @@ fn layout(
         );
     }
     lines.push((None, PrLine::Blank));
+    let shown: Vec<(usize, &PrNote)> = conversation
+        .notes
+        .iter()
+        .enumerate()
+        .filter(|(_, note)| !bots.hides_note(note))
+        .collect();
     lines.push((
         None,
         PrLine::Section {
             title: "Conversation",
-            count: Some(conversation.notes.len()),
+            count: Some(shown.len()),
         },
     ));
-    if conversation.notes.is_empty() {
+    if shown.is_empty() {
         lines.push((None, PrLine::NoNotes));
     }
-    for (index, note) in conversation.notes.iter().enumerate() {
+    for (index, note) in shown {
         let item = PrItem::Note(index);
         let budget = if note.reply_to.is_some() {
             budget.saturating_sub(super::REPLY_LANE).max(8)
@@ -234,7 +259,8 @@ impl App {
     /// The PR's page, its conversation loading behind it. Enter there opens the diff.
     pub(crate) fn open_pr_page(&mut self, pr: PullRequest) {
         let number = pr.number;
-        self.pr_pages.push(PrPage::new(pr));
+        let bots = self.bot_filter();
+        self.pr_pages.push(PrPage::new(pr, bots));
         self.push_screen(Screen::Pr);
         self.pending_ci = Some(CiRequest::PrConversation(number));
     }
@@ -598,6 +624,37 @@ pub(crate) mod tests {
             app.pr_page().and_then(PrPage::item_at_cursor),
             Some(PrItem::Files)
         );
+    }
+
+    #[test]
+    fn h_hides_bot_notes_from_the_conversation_and_keeps_the_others_in_reach() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_pr_page(pr(7));
+        let mut with_bot = conversation(7);
+        with_bot
+            .notes
+            .insert(0, note("c0", "github-actions[bot]", "coverage 80%"));
+        app.on_pr_conversation(7, &Ok(Box::new(with_bot)));
+        let notes = |app: &mut App| -> Vec<usize> {
+            let highlighter = std::sync::Arc::clone(&app.highlighter);
+            let page = app.pr_page_mut().expect("page");
+            page.lines(80, &highlighter)
+                .iter()
+                .filter_map(|(item, line)| match (item, line) {
+                    (Some(PrItem::Note(index)), PrLine::Head(_)) => Some(*index),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(notes(&mut app), [0, 1, 2]);
+        app.handle(crate::test_support::key('H'));
+        assert_eq!(
+            notes(&mut app),
+            [1, 2],
+            "the bot note leaves, the rest keep their place"
+        );
+        assert_eq!(app.hidden_bot_count(), 1);
     }
 
     #[test]

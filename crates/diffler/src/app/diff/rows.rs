@@ -414,6 +414,7 @@ pub(crate) struct CardViews<'a> {
     pub figures: &'a FigureCache,
     pub unresolved_anchors: &'a HashMap<String, Located>,
     pub open_threads: &'a HashSet<String>,
+    pub bots: &'a crate::app::bots::BotFilter,
 }
 
 impl CardViews<'_> {
@@ -429,7 +430,7 @@ impl CardViews<'_> {
         highlighter: Option<&Highlighter>,
     ) -> Vec<CommentLine> {
         comment_display(
-            comment,
+            &self.bots.shown(comment),
             wrap_width,
             highlighter,
             blocks_of(self.figures, &comment.id),
@@ -512,12 +513,17 @@ type CommentBuckets = (
     Vec<(usize, Placement)>,
 );
 
-fn collect_comments(file: &FileDiff, session: &Session, model: &DiffModel) -> CommentBuckets {
+fn collect_comments(
+    file: &FileDiff,
+    session: &Session,
+    model: &DiffModel,
+    bots: &crate::app::bots::BotFilter,
+) -> CommentBuckets {
     let mut by_line: HashMap<(usize, usize), Vec<(usize, Placement)>> = HashMap::new();
     let mut unanchored: Vec<(usize, Placement)> = Vec::new();
     for (comment_idx, comment) in session.comments.iter().enumerate() {
         let anchor = &comment.anchor;
-        if anchor.file != file.path {
+        if anchor.file != file.path || bots.hides_thread(comment) {
             continue;
         }
         let outdated = anchor.is_outdated(model);
@@ -562,7 +568,7 @@ pub(super) fn build_rows(
         draft: draft.as_ref(),
         cards,
     };
-    let (by_line, unanchored) = collect_comments(file, session, model);
+    let (by_line, unanchored) = collect_comments(file, session, model, cards.bots);
     push_comment_rows(&mut rows, &mut copy, &unanchored, ctx);
     if ctx.draft.is_some_and(|d| d.is_unanchored(file)) {
         push_draft_rows(&mut rows, &mut copy, ctx.draft);
@@ -702,7 +708,7 @@ pub(super) fn build_split_rows(
         draft: draft.as_ref(),
         cards,
     };
-    let (by_line, unanchored) = collect_comments(file, session, model);
+    let (by_line, unanchored) = collect_comments(file, session, model, cards.bots);
     push_split_comments(&mut rows, &unanchored, ctx);
     if ctx.draft.is_some_and(|d| d.is_unanchored(file)) {
         push_split_draft_rows(&mut rows, ctx.draft);

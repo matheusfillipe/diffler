@@ -294,12 +294,14 @@ impl LineCtx<'_> {
         let note = note.and_then(|index| self.page.conversation.as_ref()?.notes.get(index));
         let author = note.map_or(self.page.pr.author.as_str(), |note| note.author.as_str());
         self.avatars.gap(&mut spans, bg, author, true);
-        spans.push(Span::styled(
-            author.to_owned(),
+        spans.extend(super::author_spans(
+            author,
+            usize::MAX,
             Style::new()
                 .fg(self.author_color(bg, author))
                 .bg(bg)
                 .add_modifier(Modifier::BOLD),
+            dim,
         ));
         match note {
             None => spans.push(Span::styled(" · opened the pull request", dim)),

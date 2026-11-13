@@ -238,7 +238,10 @@ fn ordered_comments<'a>(
     ctx: &'a RenderCtx<'_>,
     diff: &DiffView,
 ) -> Vec<(&'a diffler_core::session::Comment, bool)> {
-    comments_in_order(ctx.session, diff.commit_model.as_ref().or(ctx.review_model))
+    let mut ordered =
+        comments_in_order(ctx.session, diff.commit_model.as_ref().or(ctx.review_model));
+    ordered.retain(|(comment, _)| !diff.bots.hides_thread(comment));
+    ordered
 }
 
 pub(super) fn comments_in_order<'a>(

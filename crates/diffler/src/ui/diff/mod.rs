@@ -88,9 +88,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             diff.commit_model.as_ref().or(review_model),
             human_author,
         );
+        let bots = diff.bots.clone();
         let ctx = RenderCtx {
             theme,
             session,
+            bots: &bots,
             staged,
             review_model,
             search,
@@ -116,6 +118,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
 struct RenderCtx<'a> {
     theme: &'a Theme,
     session: &'a Session,
+    bots: &'a crate::app::bots::BotFilter,
     /// Set while the working tree of a repo with an index is on screen.
     staged: Option<&'a diffler_core::vcs::StagedLines>,
     review_model: Option<&'a DiffModel>,

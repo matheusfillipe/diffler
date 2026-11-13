@@ -60,6 +60,23 @@ its assignable users; GitLab's project members; Forgejo's `reviewers`
 endpoint. A pick posts `PrPost::RequestReviewer`. GitLab replaces the whole
 reviewer list on update, so its request sends the current ids plus the new one.
 
+## Bot comments
+
+Each provider gives a bot author the `[bot]` suffix GitHub uses for app
+accounts (`ci::bot_login`), so everything past the forge boundary tells a bot
+by its name alone. GitHub marks one with `type: "Bot"` on a line comment, and
+with `__typename: Bot` in GraphQL for the conversation, which `pr_handle`
+fetches beside the review requests because `gh pr view` leaves the type out.
+GitLab marks none in its notes, so we read its access-token naming
+(`project_<id>_bot_…`, `group_<id>_bot_…`). Forgejo marks none, so there only
+`[review] bots` names them.
+
+`H` (`Action::ToggleBots`) hides them through `app::bots::BotFilter`, which
+each `DiffView` and `PrPage` holds a copy of so a draw needs no `App`. A bot
+thread hides unless a person replied in it; a bot reply leaves the person's
+thread. `Workspace` keeps one value for every tab, a tab opened later
+included, and `[review] hide_bots` is only the start value.
+
 ## GitLab merge requests
 
 A thread is a discussion and a comment is one of

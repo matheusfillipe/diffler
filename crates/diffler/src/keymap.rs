@@ -104,6 +104,7 @@ pub enum Action {
     CollapseContext,
     ExpandWholeFile,
     SwitchTheme,
+    ToggleBots,
     SwitchDiffAlgorithm,
     Comment,
     VisualSelect,
@@ -248,6 +249,7 @@ impl Action {
             Self::CollapseContext => "collapse_context",
             Self::ExpandWholeFile => "expand_whole_file",
             Self::SwitchTheme => "switch_theme",
+            Self::ToggleBots => "toggle_bots",
             Self::SwitchDiffAlgorithm => "switch_diff_algorithm",
             Self::Comment => "comment",
             Self::VisualSelect => "visual_select",
@@ -391,6 +393,7 @@ impl Action {
             Self::CollapseContext => "show fewer lines around each change",
             Self::ExpandWholeFile => "show the whole file",
             Self::SwitchTheme => "change the theme",
+            Self::ToggleBots => "hide or show bot comments",
             Self::SwitchDiffAlgorithm => "change the diff algorithm",
             Self::Comment => "comment on this line",
             Self::VisualSelect => "select several rows",
@@ -440,7 +443,7 @@ impl Action {
         }
     }
 
-    pub(crate) const ALL: [Self; 136] = [
+    pub(crate) const ALL: [Self; 137] = [
         Self::CenterCursor,
         Self::CursorTop,
         Self::CursorBottom,
@@ -448,6 +451,7 @@ impl Action {
         Self::CollapseContext,
         Self::ExpandWholeFile,
         Self::SwitchTheme,
+        Self::ToggleBots,
         Self::SwitchDiffAlgorithm,
         Self::NextFunction,
         Self::PrevFunction,
@@ -696,6 +700,7 @@ const DIFF_DEFAULTS: &[(&str, Action)] = &[
     ("s", Action::Stage),
     ("t", Action::CycleSidebarMode),
     ("T", Action::SwitchTheme),
+    ("H", Action::ToggleBots),
     ("<c-a>", Action::SwitchDiffAlgorithm),
     ("h", Action::MoveLeft),
     ("l", Action::MoveRight),
@@ -892,6 +897,7 @@ const PR_DEFAULTS: &[(&str, Action)] = &[
     ("gx", Action::OpenUrl),
     ("o", Action::OpenRuns),
     ("T", Action::SwitchTheme),
+    ("H", Action::ToggleBots),
     ("<c-r>", Action::Refresh),
     ("/", Action::Search),
     ("n", Action::SearchNext),

@@ -80,6 +80,8 @@ pub struct Workspace {
     mcp_port: Option<u16>,
     /// Whether the terminal has focus; only the tab in front shares it.
     focused: bool,
+    /// One bot toggle for every tab, so a tab opened later follows it too.
+    hide_bots: bool,
 }
 
 impl Workspace {
@@ -94,6 +96,7 @@ impl Workspace {
             feedback_tx: watch::Sender::new(0),
             mcp_port: None,
             focused: true,
+            hide_bots: app.hides_bots(),
         };
         workspace.push_tab(app);
         workspace
@@ -236,6 +239,7 @@ impl Workspace {
     }
 
     pub fn handle(&mut self, event: WsEvent) -> Flow {
+        let (front, front_hides) = (self.active, self.active().hides_bots());
         let flow = match event {
             WsEvent::Input(AppEvent::Quit) => return Flow::Quit,
             WsEvent::Input(AppEvent::Key(key)) => self.handle_key(key),
@@ -252,12 +256,24 @@ impl Workspace {
             WsEvent::Mcp(AppEvent::Mcp(request)) => self.handle_mcp(request),
             WsEvent::Input(event) | WsEvent::Mcp(event) => self.active_mut().handle(event),
         };
+        if self.active == front && self.active().hides_bots() != front_hides {
+            self.hide_bots = !front_hides;
+        }
         let tab_flow = self.apply_tab_op();
+        self.share_hide_bots();
         self.publish_feedback();
         match (flow, tab_flow) {
             (Flow::Quit, _) => Flow::Quit,
             (Flow::Continue, _) | (_, Flow::Continue) => Flow::Continue,
             _ => Flow::Idle,
+        }
+    }
+
+    fn share_hide_bots(&mut self) {
+        for tab in &mut self.tabs {
+            if tab.app.hides_bots() != self.hide_bots {
+                tab.app.set_hide_bots(self.hide_bots);
+            }
         }
     }
 
@@ -691,6 +707,26 @@ mod tests {
             McpResponse::Added { id } => id,
             other => panic!("the comment was refused: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn h_hides_bots_in_every_tab_and_a_tab_opened_later_follows() {
+        let (first, second, third) = (changed_repo(), changed_repo(), changed_repo());
+        let (mut workspace, _rx) = workspace(&first);
+        workspace.open(&second.root).expect("second project");
+        workspace.active_mut().open_working_tree_diff(None);
+        workspace.handle(WsEvent::Input(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('H'),
+            KeyModifiers::SHIFT,
+        ))));
+        assert!(workspace.tabs.iter().all(|tab| tab.app.hides_bots()));
+
+        workspace.open(&third.root).expect("third project");
+        workspace.handle(alt('l'));
+        assert!(
+            workspace.tabs.iter().all(|tab| tab.app.hides_bots()),
+            "a new tab takes the shared toggle, not its config's start value"
+        );
     }
 
     #[tokio::test]

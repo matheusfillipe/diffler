@@ -72,6 +72,27 @@ pub(crate) fn on_path(program: &str, path: &std::ffi::OsStr) -> bool {
         .any(|dir| dir.join(program).is_file() || dir.join(format!("{program}.exe")).is_file())
 }
 
+const BOT_SUFFIX: &str = "[bot]";
+
+/// GitHub's own spelling for an app account, which we give every author a
+/// forge marks as a bot so the UI needs only the name.
+pub fn bot_login(login: String) -> String {
+    if login.ends_with(BOT_SUFFIX) {
+        login
+    } else {
+        format!("{login}{BOT_SUFFIX}")
+    }
+}
+
+pub fn is_bot_login(login: &str) -> bool {
+    login.ends_with(BOT_SUFFIX)
+}
+
+/// The name without the bot suffix, for showing beside a `bot` tag.
+pub fn without_bot_suffix(login: &str) -> &str {
+    login.strip_suffix(BOT_SUFFIX).unwrap_or(login)
+}
+
 /// `git@host:owner/repo.git`, `https://host/owner/repo`, or `ssh://git@host:port/owner/repo`.
 fn parse_host(url: &str) -> Option<String> {
     if let Some(rest) = url.strip_prefix("git@") {

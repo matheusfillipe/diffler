@@ -225,7 +225,9 @@ impl GitHubProvider {
         let query = "query($owner:String!,$name:String!,$number:Int!){\
             repository(owner:$owner,name:$name){pullRequest(number:$number){id \
             reviewRequests(first:50){nodes{requestedReviewer{\
-            ... on User{login} ... on Bot{login} ... on Team{slug}}}}}}}";
+            ... on User{login} ... on Bot{login} ... on Team{slug}}}} \
+            comments(last:100){nodes{author{__typename login}}} \
+            reviews(last:100){nodes{author{__typename login}}}}}}";
         let args = [
             "api".to_owned(),
             "graphql".to_owned(),
@@ -759,12 +761,12 @@ impl ForgeProvider for GitHubProvider {
         let raw = self.gh(&args).await?;
         let conversation: ConversationApi = parse_json("pr conversation", &raw)?;
         // we prefer the GraphQL list, which holds bot requests, and keep gh's own when GraphQL fails
-        let requests = match self.pr_handle(number).await {
-            Ok(handle) => Some(handle.review_requests.nodes),
+        let handle = match self.pr_handle(number).await {
+            Ok(handle) => Some(handle),
             Err(CiError::Exec { .. } | CiError::Parse { .. }) => None,
             Err(err) => return Err(err),
         };
-        Ok(conversation.into_conversation(requests))
+        Ok(conversation.into_conversation(handle))
     }
 
     async fn post_pr_note(&self, new: &NewPrNote) -> Result<()> {
@@ -1389,6 +1391,18 @@ struct ThreadCommentNode {
 struct UserApi {
     #[serde(default)]
     login: String,
+    #[serde(default, rename = "type")]
+    kind: String,
+}
+
+impl UserApi {
+    fn name(self) -> String {
+        if self.kind == "Bot" {
+            crate::ci::bot_login(self.login)
+        } else {
+            self.login
+        }
+    }
 }
 
 impl ReviewCommentApi {
@@ -1400,7 +1414,7 @@ impl ReviewCommentApi {
             start_line: self.start_line.or(self.original_start_line),
             new_side: self.side.as_deref() != Some("LEFT"),
             body: self.body,
-            author: self.user.login,
+            author: self.user.name(),
             reply_to: self.in_reply_to_id.map(|id| id.to_string()),
             thread_id: None,
             resolved: false,
@@ -1648,6 +1662,42 @@ struct PrHandleRepo {
 struct PrHandleApi {
     id: String,
     review_requests: ReviewRequestNodes,
+    #[serde(default)]
+    comments: AuthorNodes,
+    #[serde(default)]
+    reviews: AuthorNodes,
+}
+
+impl PrHandleApi {
+    /// `gh pr view` leaves out whether an author is a bot, so we read it here.
+    fn bot_logins(&self) -> HashSet<String> {
+        self.comments
+            .nodes
+            .iter()
+            .chain(&self.reviews.nodes)
+            .filter_map(|node| node.author.as_ref())
+            .filter(|author| author.typename == "Bot")
+            .map(|author| author.login.clone())
+            .collect()
+    }
+}
+
+#[derive(Deserialize, Default)]
+struct AuthorNodes {
+    nodes: Vec<AuthorNode>,
+}
+
+/// A deleted account leaves no author.
+#[derive(Deserialize)]
+struct AuthorNode {
+    author: Option<TypedAuthor>,
+}
+
+#[derive(Deserialize)]
+struct TypedAuthor {
+    #[serde(rename = "__typename")]
+    typename: String,
+    login: String,
 }
 
 #[derive(Deserialize)]
@@ -1807,7 +1857,7 @@ impl ReviewApi {
 }
 
 impl ConversationApi {
-    fn into_conversation(self, with_bots: Option<Vec<ReviewRequestNode>>) -> PrConversation {
+    fn into_conversation(self, handle: Option<PrHandleApi>) -> PrConversation {
         let state = match self.state.as_str() {
             "MERGED" => PrState::Merged,
             "CLOSED" => PrState::Closed,
@@ -1820,8 +1870,21 @@ impl ConversationApi {
         let verdicts = timeline
             .into_iter()
             .filter_map(|review| Some((review.author.login.clone(), Some(review.verdict()?))));
-        let requests = match with_bots {
-            Some(nodes) => nodes
+        let bots = handle
+            .as_ref()
+            .map(PrHandleApi::bot_logins)
+            .unwrap_or_default();
+        let named = |login: String| {
+            if bots.contains(&login) {
+                crate::ci::bot_login(login)
+            } else {
+                login
+            }
+        };
+        let requests = match handle {
+            Some(handle) => handle
+                .review_requests
+                .nodes
                 .into_iter()
                 .filter_map(|node| node.requested_reviewer)
                 .collect(),
@@ -1833,16 +1896,22 @@ impl ConversationApi {
         let reviewers = reviewers_from(&author, verdicts.chain(requested));
         let comments = self.comments.into_iter().map(|comment| PrNote {
             id: comment.id,
-            author: comment.author.login,
+            author: named(comment.author.login),
             body: comment.body,
             at: created_epoch(&comment.created_at),
             verdict: None,
             thread_id: None,
             reply_to: None,
         });
-        let mut notes: Vec<PrNote> = comments
-            .chain(self.reviews.into_iter().filter_map(ReviewApi::into_note))
-            .collect();
+        let reviews = self
+            .reviews
+            .into_iter()
+            .filter_map(ReviewApi::into_note)
+            .map(|note| PrNote {
+                author: named(note.author),
+                ..note
+            });
+        let mut notes: Vec<PrNote> = comments.chain(reviews).collect();
         notes.sort_by_key(|note| note.at);
         PrConversation {
             pr: self.pr.into_pr(),
@@ -2872,6 +2941,56 @@ jobs:
         assert_eq!(comments.len(), 1);
         assert_eq!(comments[0].thread_id.as_deref(), Some("T_9"));
         assert!(comments[0].resolved);
+    }
+
+    #[tokio::test]
+    async fn a_line_comment_from_a_bot_account_carries_the_bot_suffix() {
+        let rest = r#"[{"id":100,"path":"a.rs","line":2,"side":"RIGHT","body":"use a constant",
+            "user":{"login":"Copilot","type":"Bot"},"created_at":"2026-01-01T00:00:00Z"},
+            {"id":101,"path":"a.rs","line":2,"side":"RIGHT","body":"agreed","in_reply_to_id":100,
+            "user":{"login":"reviewer","type":"User"},"created_at":"2026-01-01T00:01:00Z"}]"#;
+        let threads = r#"{"data":{"repository":{"pullRequest":{"reviewThreads":{
+            "pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}"#;
+        let provider = provider(&[
+            ("pulls/9/comments", rest),
+            ("repo view", SLUG),
+            ("graphql", threads),
+        ]);
+        let comments = provider.pr_comments(9).await.expect("comments");
+        let authors: Vec<&str> = comments.iter().map(|c| c.author.as_str()).collect();
+        assert_eq!(authors, ["Copilot[bot]", "reviewer"]);
+    }
+
+    #[tokio::test]
+    async fn a_conversation_names_the_authors_graphql_types_as_bots() {
+        let handle = r#"{"data":{"repository":{"pullRequest":{"id":"PR_7",
+            "reviewRequests":{"nodes":[]},
+            "comments":{"nodes":[{"author":{"__typename":"User","login":"reviewer"}}]},
+            "reviews":{"nodes":[{"author":{"__typename":"Bot","login":"lead"}},{"author":null}]}}}}}"#;
+        let conversation = provider(&[
+            ("pr view 7", CONVERSATION),
+            ("repo view", SLUG),
+            ("graphql", handle),
+        ])
+        .pr_conversation(7)
+        .await
+        .expect("conversation");
+        let authors: Vec<&str> = conversation
+            .notes
+            .iter()
+            .map(|note| note.author.as_str())
+            .collect();
+        assert!(authors.contains(&"lead[bot]"), "{authors:?}");
+        assert!(authors.contains(&"reviewer"), "{authors:?}");
+        let reviewers: Vec<&str> = conversation
+            .reviewers
+            .iter()
+            .map(|r| r.login.as_str())
+            .collect();
+        assert!(
+            reviewers.contains(&"lead"),
+            "a reviewer keeps the login a review request needs: {reviewers:?}"
+        );
     }
 
     #[tokio::test]

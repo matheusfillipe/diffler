@@ -84,13 +84,16 @@ pub(super) fn comment_header_spans(
         Span::styled(format!("{status} "), Style::new().fg(colour).bg(bg)),
     ];
     avatars.gap(&mut spans, bg, &comment.author, comment.remote_id.is_some());
-    spans.push(Span::styled(
-        format!("{} ", crate::ui::elide(&comment.author, AUTHOR_MAX)),
+    spans.extend(crate::ui::author_spans(
+        &comment.author,
+        AUTHOR_MAX,
         Style::new()
             .fg(author_color)
             .bg(bg)
             .add_modifier(Modifier::BOLD),
+        Style::new().fg(theme.dim).bg(bg),
     ));
+    spans.push(Span::styled(" ", Style::new().bg(bg)));
     let used: usize = spans.iter().map(Span::width).sum();
     (spans, budget.saturating_sub(used))
 }
@@ -166,12 +169,14 @@ impl ThreadLook<'_> {
             CommentLine::ReplyHead { author, remote } => {
                 let mut spans = self.lane(bar, author);
                 self.avatars.gap(&mut spans, bg, author, *remote);
-                spans.push(Span::styled(
-                    author.clone(),
+                spans.extend(crate::ui::author_spans(
+                    author,
+                    usize::MAX,
                     Style::new()
                         .fg(self.color(author))
                         .bg(bg)
                         .add_modifier(Modifier::BOLD),
+                    dim,
                 ));
                 spans
             }
@@ -300,11 +305,13 @@ pub(in crate::ui) fn card_row(
             }
             look.avatars
                 .gap(&mut spans, bg, &comment.author, comment.remote_id.is_some());
+            spans.extend(crate::ui::author_spans(
+                &comment.author,
+                usize::MAX,
+                Style::new().fg(thread.color(&comment.author)).bg(bg),
+                dim,
+            ));
             spans.extend([
-                Span::styled(
-                    comment.author.clone(),
-                    Style::new().fg(thread.color(&comment.author)).bg(bg),
-                ),
                 Span::styled(" · ".to_owned(), dim),
                 Span::styled(status_label.to_owned(), Style::new().fg(accent).bg(bg)),
             ]);
@@ -577,6 +584,54 @@ flowchart LR
                 );
             }
         }
+    }
+
+    /// A bot thread on `src/lib.rs`, and a person's thread with a bot reply.
+    fn app_with_bots(fixture: &crate::test_support::Fixture) -> App {
+        let mut app = App::new(fixture.review(), crate::config::LoadedConfig::default());
+        app.author = "reviewer".to_owned();
+        let anchor = diffler_core::session::Anchor {
+            file: "src/lib.rs".to_owned(),
+            line: Some(2),
+            line_end: None,
+            on_old_side: false,
+            line_text: None,
+            on_file: false,
+        };
+        app.review
+            .session
+            .add_comment(anchor.clone(), "Copilot[bot]", "consider a named constant");
+        let id = app
+            .review
+            .session
+            .add_comment(anchor, "alice", "why 42?")
+            .id
+            .clone();
+        app.review
+            .session
+            .reply(&id, "coderabbitai[bot]", "walkthrough of the change");
+        app.review
+            .session
+            .reply(&id, "reviewer", "it is the answer");
+        app.open_working_tree_diff(None);
+        open_lib_diff(&mut app);
+        app
+    }
+
+    #[test]
+    fn bot_authors_carry_a_bot_tag() {
+        let fixture = standard_fixture();
+        let mut app = app_with_bots(&fixture);
+        insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    #[test]
+    fn hidden_bots_leave_the_people_and_a_count_in_the_status_line() {
+        let fixture = standard_fixture();
+        let mut app = app_with_bots(&fixture);
+        app.handle(key('C'));
+        app.handle(key('H'));
+        insta::assert_snapshot!(render(&mut app).backend());
     }
 
     #[test]

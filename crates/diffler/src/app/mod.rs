@@ -2,6 +2,7 @@
 //! so we can unit-test the whole shell; `ui::draw` renders the state.
 
 pub mod avatar;
+pub mod bots;
 mod ci;
 pub mod ci_log;
 mod commands;
@@ -1721,6 +1722,7 @@ impl App {
             Action::CreatePr => self.create_pr_start(),
             Action::CommentsOverview => self.toggle_comments_sidebar(),
             Action::SwitchTheme => self.open_choice_picker(ChoiceKind::Theme),
+            Action::ToggleBots => self.toggle_bots(),
             Action::SwitchDiffAlgorithm => self.open_choice_picker(ChoiceKind::DiffAlgorithm),
             Action::OpenFilePicker => self.open_file_picker(),
             Action::Blame => self.blame_focused(),
@@ -1847,6 +1849,58 @@ impl App {
         name.clone_into(&mut self.config.ui.theme);
         self.rebuild_highlighter();
         self.info(format!("theme: {name}"));
+    }
+
+    pub(crate) fn bot_filter(&self) -> bots::BotFilter {
+        bots::BotFilter {
+            hide: self.hides_bots(),
+            review: self.config.review.clone(),
+        }
+    }
+
+    /// While anything is hidden the status line counts it, so we only speak
+    /// when it does not.
+    pub(crate) fn toggle_bots(&mut self) {
+        self.set_hide_bots(!self.hides_bots());
+        if !self.hides_bots() {
+            self.info("H to hide bot comments");
+        } else if self.hidden_bot_count() == 0 {
+            self.info("no bot comments here; H to show them again");
+        }
+    }
+
+    /// The live toggle; `H` writes it back into the config, as the theme
+    /// picker does with its own key.
+    pub fn hides_bots(&self) -> bool {
+        self.config.review.hide_bots
+    }
+
+    pub(crate) fn set_hide_bots(&mut self, hide: bool) {
+        self.config.review.hide_bots = hide;
+        let filter = self.bot_filter();
+        for page in &mut self.pr_pages {
+            page.set_bots(filter.clone());
+        }
+        if let Some(diff) = self.diff.as_mut() {
+            diff.bots = filter;
+            diff.mark_rows_dirty();
+        }
+        let rows = self.comment_rows().len();
+        if let Some(diff) = self.diff.as_mut() {
+            diff.comments_cursor = diff.comments_cursor.min(rows.saturating_sub(1));
+        }
+    }
+
+    /// Bot comments and replies hidden in the review on screen.
+    pub(crate) fn hidden_bot_count(&self) -> usize {
+        match self.screen() {
+            Screen::Diff => self.diff.as_ref().map_or(0, |diff| {
+                self.bot_filter()
+                    .hidden_count(self.review.session_for(&diff.source))
+            }),
+            Screen::Pr => self.pr_page().map_or(0, pr_page::PrPage::notes_hidden),
+            _ => 0,
+        }
     }
 
     /// Models already computed under the old algorithm are re-diffed

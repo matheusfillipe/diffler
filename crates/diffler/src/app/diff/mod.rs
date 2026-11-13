@@ -161,6 +161,7 @@ pub struct DiffView {
     /// last render's rect and scroll for hit-testing.
     pub(crate) comments_open: bool,
     pub(crate) comments_cursor: usize,
+    pub(crate) bots: crate::app::bots::BotFilter,
     pub(crate) comments_scroll: usize,
     pub(crate) comments_rect: ratatui::layout::Rect,
     /// Last render's comment-sidebar line -> row index (into
@@ -279,6 +280,7 @@ impl DiffView {
             pane: ratatui::layout::Rect::default(),
             comments_open: false,
             comments_cursor: 0,
+            bots: crate::app::bots::BotFilter::default(),
             comments_scroll: 0,
             comments_rect: ratatui::layout::Rect::default(),
             comment_lines: Vec::new(),
@@ -767,6 +769,7 @@ impl DiffView {
             figures: &self.figures,
             unresolved_anchors: &self.unresolved_anchors,
             open_threads: &self.open_threads,
+            bots: &self.bots,
         }
     }
 

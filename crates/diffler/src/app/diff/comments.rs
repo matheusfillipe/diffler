@@ -224,7 +224,11 @@ impl App {
             return Vec::new();
         };
         let session = self.review.session_for(&diff.source);
-        let mut ordered: Vec<&diffler_core::session::Comment> = session.comments.iter().collect();
+        let mut ordered: Vec<&diffler_core::session::Comment> = session
+            .comments
+            .iter()
+            .filter(|comment| !diff.bots.hides_thread(comment))
+            .collect();
         ordered.sort_by_key(|comment| {
             (
                 self.file_rank(&comment.anchor.file),

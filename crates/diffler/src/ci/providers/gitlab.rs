@@ -872,6 +872,24 @@ struct GitLabUser {
     username: String,
 }
 
+impl GitLabUser {
+    /// GitLab names the bot behind a project or group access token
+    /// `project_<id>_bot_<hash>` or `group_<id>_bot_<hash>`.
+    fn name(self) -> String {
+        let is_token_bot = ["project_", "group_"].iter().any(|scope| {
+            self.username
+                .strip_prefix(scope)
+                .and_then(|rest| rest.split_once("_bot"))
+                .is_some_and(|(id, _)| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()))
+        });
+        if is_token_bot {
+            crate::ci::bot_login(self.username)
+        } else {
+            self.username
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct DraftNoteItem {
     id: u64,
@@ -911,7 +929,7 @@ impl DiscussionItem {
             let id = note.id.to_string();
             notes.push(PrNote {
                 id: id.clone(),
-                author: note.author.map(|a| a.username).unwrap_or_default(),
+                author: note.author.map(GitLabUser::name).unwrap_or_default(),
                 body: note.body,
                 at: epoch_secs(note.created_at.as_deref()),
                 verdict: None,
@@ -966,7 +984,7 @@ impl NoteItem {
             start_line: start_line.filter(|start| Some(*start) != line),
             new_side,
             body: self.body,
-            author: self.author.map(|a| a.username).unwrap_or_default(),
+            author: self.author.map(GitLabUser::name).unwrap_or_default(),
             reply_to,
             thread_id: Some(thread_id.to_owned()),
             resolved: self.resolved,
@@ -1005,6 +1023,20 @@ mod tests {
 
     fn provider(responses: &[(&'static str, &str)]) -> GitLabProvider {
         GitLabProvider::new(Box::new(RecordingRunner::new(responses)), None, None)
+    }
+
+    #[test]
+    fn access_token_bots_are_named_bots_and_people_are_not() {
+        let name = |username: &str| {
+            GitLabUser {
+                username: username.to_owned(),
+            }
+            .name()
+        };
+        assert_eq!(name("project_42_bot_5f3a"), "project_42_bot_5f3a[bot]");
+        assert_eq!(name("group_7_bot_c0ffee"), "group_7_bot_c0ffee[bot]");
+        assert_eq!(name("reviewer"), "reviewer");
+        assert_eq!(name("project_manager_bot"), "project_manager_bot");
     }
 
     fn provider_on(

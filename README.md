@@ -47,6 +47,7 @@ you straight to any file, line or pull request.
 state and labels, on GitHub, GitLab and Forgejo. Open one to read its
 conversation, review the diff and submit your review. <kbd>C</kbd> lists every
 comment on the side, and <kbd>R</kbd> requests a reviewer, Copilot included.
+<kbd>H</kbd> hides the comments bots left, so you can focus on what people wrote.
 
 ![the pull request list with check marks, diff sizes and colored labels](assets/readme/prs.png)
 
@@ -251,6 +252,7 @@ You move like in vim: `j`/`k`, `gg`/`G`, `/` to search, Ctrl+d/Ctrl+u to scroll.
 | `*` / `#` | Find where the symbol on the line is used |
 | `d` | Review against another branch or commit |
 | `C` | Open the list of comments |
+| `H` | Hide or show comments from bots, in every tab |
 | `gf` | Open any file in the repo |
 | Alt+n | Open another project as a tab, then Alt+h / Alt+l to switch |
 | `w` | Open, create or remove a worktree |

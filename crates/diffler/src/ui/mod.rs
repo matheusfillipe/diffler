@@ -856,6 +856,21 @@ pub(super) fn scroll_to_span(
 
 pub(super) use crate::text::elide;
 
+/// An author's name, a bot's with its suffix traded for a dim `bot` tag.
+pub(super) fn author_spans(
+    author: &str,
+    max: usize,
+    style: Style,
+    tag: Style,
+) -> Vec<Span<'static>> {
+    let name = crate::ci::without_bot_suffix(author);
+    let mut spans = vec![Span::styled(elide(name, max), style)];
+    if name.len() < author.len() {
+        spans.push(Span::styled(" bot", tag));
+    }
+    spans
+}
+
 /// A list row under the cursor: banded to full width, its lead cell taken by
 /// the accent bar. The diff sidebar draws its own, since its band also shows
 /// pane focus.
@@ -1052,6 +1067,14 @@ pub(super) fn status_bar(app: &App, width: u16) -> Line<'static> {
         spans.push(Span::styled(
             format!(" · {outside} {noun} outside the diff, C to list"),
             on_panel(theme.warn_fg),
+        ));
+    }
+    let hidden = app.hidden_bot_count();
+    if hidden > 0 {
+        let noun = if hidden == 1 { "comment" } else { "comments" };
+        spans.push(Span::styled(
+            format!(" · {hidden} bot {noun} hidden, H to show"),
+            on_panel(theme.dim),
         ));
     }
     let mut tail = Vec::new();

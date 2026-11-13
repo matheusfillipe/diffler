@@ -115,6 +115,8 @@ impl App {
             self.config.classify.rules(),
             self.config.ui.side_by_side,
         );
+        view.bots = self.bot_filter();
+        view.mark_rows_dirty();
         match draft {
             Some(draft) if same_source => {
                 // the composer only draws on the file it is anchored to, so
