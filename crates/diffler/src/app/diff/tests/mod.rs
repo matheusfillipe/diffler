@@ -7,6 +7,7 @@ mod refresh;
 mod side_by_side;
 mod sidebar;
 mod sources;
+mod staging;
 mod viewed;
 mod walkthrough;
 mod yank;

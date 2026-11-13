@@ -219,6 +219,7 @@ impl App {
             Action::ClaimAllComments => self.claim_all_comments_start(),
             // a file in the sidebar takes a whole-file comment
             Action::Comment => self.comment_on_selected_file(),
+            Action::Stage => self.toggle_staged_selected_file(),
             // the walkthrough layout's summary and stop rows take `d` as their
             // own delete
             Action::DeleteComment => match self.walkthrough_row_at_tree_cursor() {
@@ -281,6 +282,7 @@ impl App {
             Action::ClaimComment => self.claim_comment_at_cursor(),
             Action::ClaimAllComments => self.claim_all_comments_start(),
             Action::MarkViewed => self.diff_toggle_viewed(),
+            Action::Stage => self.toggle_staged_at_cursor(),
             Action::UnviewAll => self.diff_unview_all(),
             Action::CopyFileFeedback => self.copy_file_or_selection(),
             Action::CopyAllFeedback => self.copy_feedback(false),

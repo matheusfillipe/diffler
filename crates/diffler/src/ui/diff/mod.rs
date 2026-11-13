@@ -32,6 +32,7 @@ use crate::theme::Theme;
 use crate::ui::Hint;
 use crate::ui::diff_render::cursor_band;
 use crate::ui::status_bar;
+use diffler_core::source::ReviewSource;
 
 const HINTS: &[Hint] = &[
     Hint::Leaf(&[Action::Comment], "add comment"),
@@ -74,6 +75,8 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         // we clone the source so the session's borrow stays off the view, which the rasteriser mutates
         let source = diff.source.clone();
         let session = review.session_for(&source);
+        let staged = (matches!(source, ReviewSource::WorkingTree) && review.vcs.has_index())
+            .then(|| review.status.staged_lines());
         // rasterising needs the graph mutably while the pane's loop borrows the model, so we do it up front
         let rasters = rasterize_figures(diff, theme, pane_width, open_figure_hint.as_deref());
         patch_figure_copy_text(diff, &rasters);
@@ -88,6 +91,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         let ctx = RenderCtx {
             theme,
             session,
+            staged,
             review_model,
             search,
             highlighter,
@@ -112,6 +116,8 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
 struct RenderCtx<'a> {
     theme: &'a Theme,
     session: &'a Session,
+    /// Set while the working tree of a repo with an index is on screen.
+    staged: Option<&'a diffler_core::vcs::StagedLines>,
     review_model: Option<&'a DiffModel>,
     search: Option<&'a Search>,
     highlighter: &'a diffler_core::highlight::Highlighter,

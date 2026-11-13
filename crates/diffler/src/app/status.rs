@@ -5,7 +5,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
-use diffler_core::model::FileDiff;
+use diffler_core::model::{FileDiff, LineSelection};
 use diffler_core::review::Review;
 use diffler_core::source::ReviewSource;
 use diffler_core::vcs::{BranchInfo, CommitLists, LogEntry, NetworkOp, Vcs, VcsError, Worktree};
@@ -1235,7 +1235,77 @@ impl App {
         }
     }
 
+    /// The changed lines a `V` selection covers, with their section and file.
+    /// `Err` says why the selection can't be staged as lines.
+    fn selected_lines(&self) -> Option<Result<(Section, String, LineSelection), &'static str>> {
+        let (lo, hi) = self.status.selection()?;
+        let rows = self.visible_rows();
+        let mut picked: Option<(Section, usize)> = None;
+        let mut lines = LineSelection::default();
+        for row in rows.get(lo..=hi)? {
+            let Row::DiffLine {
+                section,
+                file,
+                hunk,
+                line,
+            } = *row
+            else {
+                continue;
+            };
+            if picked.is_some_and(|owner| owner != (section, file)) {
+                return Some(Err("select lines of one file to stage them"));
+            }
+            picked = Some((section, file));
+            if let Some(line) = self
+                .section_files(section)
+                .get(file)
+                .and_then(|f| f.hunks.get(hunk))
+                .and_then(|h| h.lines.get(line))
+            {
+                lines.insert(line);
+            }
+        }
+        let (section, file) = picked?;
+        let file = self.section_files(section).get(file)?;
+        if file.old_path.is_some() {
+            return Some(Err("stage a renamed file whole"));
+        }
+        if lines.is_empty() {
+            return Some(Err("select an added or deleted line to stage it"));
+        }
+        Some(Ok((section, file.path.clone(), lines)))
+    }
+
+    /// Stage or unstage just the selected lines; `false` when no selection
+    /// covers diff lines, so the caller acts on the cursor row.
+    fn stage_selected_lines(&mut self, stage: bool) -> bool {
+        let Some(picked) = self.selected_lines() else {
+            return false;
+        };
+        match picked {
+            Err(reason) => self.info(reason),
+            Ok((Section::Staged, ..)) if stage && self.review.vcs.has_index() => {
+                self.info("already staged");
+            }
+            Ok((section, ..)) if !stage && section != Section::Staged => self.info("not staged"),
+            Ok((_, path, lines)) => {
+                self.status.set_anchor(None);
+                self.vcs_op(move |vcs| {
+                    if stage {
+                        vcs.stage_lines(Path::new(&path), &lines)
+                    } else {
+                        vcs.unstage_lines(Path::new(&path), &lines)
+                    }
+                });
+            }
+        }
+        true
+    }
+
     fn stage_at_cursor(&mut self) {
+        if self.stage_selected_lines(true) {
+            return;
+        }
         let Some(row) = self.cursor_row() else {
             return;
         };
@@ -1260,6 +1330,9 @@ impl App {
     }
 
     fn unstage_at_cursor(&mut self) {
+        if self.stage_selected_lines(false) {
+            return;
+        }
         let Some(row) = self.cursor_row() else {
             return;
         };

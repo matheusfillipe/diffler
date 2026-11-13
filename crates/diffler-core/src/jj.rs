@@ -12,7 +12,7 @@ use std::process::Command;
 
 use crate::diffalgo::{DiffAlgorithm, DiffSettings};
 use crate::git::GitVcs;
-use crate::model::{DiffModel, HunkId};
+use crate::model::{DiffModel, HunkId, LineSelection};
 use crate::vcs::{
     BlameSpan, Bookmark, BranchInfo, ChangeInfo, ChangeOp, FileVersion, HeadInfo, JjView, LogEntry,
     NetworkOp, PullOutcome, PullTarget, StatusModel, Vcs, VcsError, Worktree, WorktreeOp,
@@ -535,11 +535,11 @@ impl Vcs for JjVcs {
     /// One diff pass of `@-` vs the working copy. jj marks a new file
     /// intent-to-add in the index, so git's three lists would count it twice.
     fn status(&self) -> Result<StatusModel, VcsError> {
-        Ok(StatusModel {
-            untracked: DiffModel::default(),
-            unstaged: DiffModel::default(),
-            staged: self.working_tree_diff()?,
-        })
+        Ok(StatusModel::new(
+            DiffModel::default(),
+            DiffModel::default(),
+            self.working_tree_diff()?,
+        ))
     }
 
     fn working_tree_diff(&self) -> Result<DiffModel, VcsError> {
@@ -752,6 +752,14 @@ impl Vcs for JjVcs {
     }
 
     fn unstage_hunk(&self, _rel: &Path, _hunk: &HunkId) -> Result<(), VcsError> {
+        Err(VcsError::Rejected(NO_STAGING.into()))
+    }
+
+    fn stage_lines(&self, _rel: &Path, _lines: &LineSelection) -> Result<(), VcsError> {
+        Err(VcsError::Rejected(NO_STAGING.into()))
+    }
+
+    fn unstage_lines(&self, _rel: &Path, _lines: &LineSelection) -> Result<(), VcsError> {
         Err(VcsError::Rejected(NO_STAGING.into()))
     }
 

@@ -24,8 +24,9 @@ use crate::app::{
 use crate::theme::Theme;
 use crate::ui::color::slot_color;
 use crate::ui::diff_render::{
-    LineFlags, Mark, PairSelection, align_scroll, diff_line_height, file_gutter_width, fold_row,
-    hunk_header, line_syntax, render_diff_line, render_split_pair, split_pair_height, syntax_row,
+    CellMarks, LineFlags, Mark, PairSelection, align_scroll, diff_line_height, file_gutter_width,
+    fold_row, hunk_header, line_syntax, render_diff_line, render_split_pair, split_pair_height,
+    syntax_row,
 };
 use crate::ui::{diffstat_spans, proportion_bar};
 
@@ -452,7 +453,10 @@ fn split_row_lines(
                     (
                         line,
                         highlights.and_then(|hl| split_side_syntax(hl, line, side)),
-                        line_annotated(ctx.session, &file.path, line),
+                        CellMarks {
+                            annotated: line_annotated(ctx.session, &file.path, line),
+                            staged: line_staged(ctx, &file.path, line),
+                        },
                     )
                 })
             };
@@ -601,7 +605,10 @@ fn row_lines(
                 LineFlags {
                     selected: state.selected,
                     focused: state.focused,
-                    annotated,
+                    marks: CellMarks {
+                        annotated,
+                        staged: line_staged(ctx, &file.path, line),
+                    },
                 },
                 marks,
             )
@@ -684,6 +691,11 @@ fn render_scope_crumb(
         _ => Vec::new(),
     };
     frame.render_widget(Paragraph::new(scope_line(theme, &crumbs, area.width)), area);
+}
+
+fn line_staged(ctx: &RenderCtx<'_>, file_path: &str, line: &DiffLine) -> bool {
+    ctx.staged
+        .is_some_and(|staged| staged.is_staged(file_path, line))
 }
 
 fn line_annotated(session: &Session, file_path: &str, line: &DiffLine) -> bool {

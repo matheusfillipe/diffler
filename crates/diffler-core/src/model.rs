@@ -1,5 +1,6 @@
 //! Diff model: files, hunks, lines.
 
+use std::collections::BTreeSet;
 use std::ops::Range;
 
 use serde::{Deserialize, Serialize};
@@ -236,6 +237,135 @@ impl DiffLine {
 
     pub const fn number_on(&self, old_side: bool) -> Option<u32> {
         if old_side { self.old_no } else { self.new_no }
+    }
+}
+
+/// Changed lines picked out of one file's diff: added ones by their number on
+/// the new side, deleted ones by their number on the old side.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LineSelection {
+    pub added: BTreeSet<u32>,
+    pub deleted: BTreeSet<u32>,
+}
+
+impl LineSelection {
+    pub fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.deleted.is_empty()
+    }
+
+    pub fn insert(&mut self, line: &DiffLine) {
+        match line.kind {
+            LineKind::Added => self.added.extend(line.new_no),
+            LineKind::Deleted => self.deleted.extend(line.old_no),
+            LineKind::Context => {}
+        }
+    }
+
+    pub fn contains(&self, line: &DiffLine) -> bool {
+        match line.kind {
+            LineKind::Added => line.new_no.is_some_and(|n| self.added.contains(&n)),
+            LineKind::Deleted => line.old_no.is_some_and(|n| self.deleted.contains(&n)),
+            LineKind::Context => false,
+        }
+    }
+}
+
+impl FileDiff {
+    /// The line on the other side that a line this diff leaves unchanged
+    /// maps to: `number` counts on the old side when `from_old`, and the
+    /// answer counts on the new side. `None` for a line the diff changes.
+    pub fn counterpart_line(&self, number: u32, from_old: bool) -> Option<u32> {
+        let on = |line: &DiffLine| line.number_on(from_old);
+        let (gained_kind, lost_kind) = if from_old {
+            (LineKind::Added, LineKind::Deleted)
+        } else {
+            (LineKind::Deleted, LineKind::Added)
+        };
+        let (mut gained_above, mut lost_above) = (0_u32, 0_u32);
+        for hunk in &self.hunks {
+            if let Some(line) = hunk.lines.iter().find(|line| on(line) == Some(number)) {
+                if line.kind != LineKind::Context {
+                    return None;
+                }
+                return line.number_on(!from_old);
+            }
+            let header_start = if from_old {
+                hunk.old_start
+            } else {
+                hunk.new_start
+            };
+            let hunk_end = hunk
+                .lines
+                .iter()
+                .filter_map(on)
+                .max()
+                .unwrap_or(header_start);
+            if hunk_end >= number {
+                break;
+            }
+            for line in &hunk.lines {
+                if line.kind == gained_kind {
+                    gained_above += 1;
+                } else if line.kind == lost_kind {
+                    lost_above += 1;
+                }
+            }
+        }
+        (number + gained_above).checked_sub(lost_above)
+    }
+
+    /// The old side's text with only the changes `take` accepts applied, or
+    /// `None` when a side's text is missing. An unaccepted deletion stays and
+    /// an unaccepted addition is left out.
+    pub fn text_with_changes(&self, take: impl Fn(&DiffLine) -> bool) -> Option<String> {
+        let old: Vec<&str> = self
+            .old_text
+            .as_deref()
+            .unwrap_or_default()
+            .split_inclusive('\n')
+            .collect();
+        let new: Vec<&str> = self
+            .new_text
+            .as_deref()
+            .unwrap_or_default()
+            .split_inclusive('\n')
+            .collect();
+        let line_at = |side: &[&str], number: u32| -> Option<String> {
+            Some((*side.get(number.checked_sub(1)? as usize)?).to_owned())
+        };
+        let mut out = String::new();
+        // a side's last line may lack its newline, and the lines we keep from
+        // the other side can follow it
+        let mut push = |text: &str| {
+            if !out.is_empty() && !out.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str(text);
+        };
+        let mut next_old = 1;
+        for line in self.hunks.iter().flat_map(|hunk| &hunk.lines) {
+            match line.kind {
+                LineKind::Added => {
+                    if take(line) {
+                        push(&line_at(&new, line.new_no?)?);
+                    }
+                }
+                LineKind::Context | LineKind::Deleted => {
+                    let number = line.old_no?;
+                    for untouched in next_old..number {
+                        push(&line_at(&old, untouched)?);
+                    }
+                    next_old = number + 1;
+                    if line.kind == LineKind::Context || !take(line) {
+                        push(&line_at(&old, number)?);
+                    }
+                }
+            }
+        }
+        for untouched in next_old..=u32::try_from(old.len()).ok()? {
+            push(&line_at(&old, untouched)?);
+        }
+        Some(out)
     }
 }
 

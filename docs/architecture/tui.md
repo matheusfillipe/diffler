@@ -85,8 +85,10 @@ section alike, the files already viewed sort to the top, so what is left to
 read is one run at the bottom the way the review layout's buckets do it.
 A viewed file leads with a green `✓` in place of its status glyph, the way a
 resolved comment does in the comments pane, so a run of finished files reads
-down the left edge. The lead cell stays the cursor's own `▌` alone, and a
-rail in the diff means an added line and nothing else.
+down the left edge. The lead cell stays the cursor's own `▌` alone. A
+rail in the diff marks a changed line: thick (`▌`) while the change is still
+to stage, thin (`▏`) once the index holds it. Only the working tree diff of a
+repo with an index draws the thin one.
 `m` marks the file and moves to the row listed under it, walking what the
 sidebar shows: a folded group stays folded, and reaching the end of the list
 with files left says so. With nothing below it the cursor holds its row

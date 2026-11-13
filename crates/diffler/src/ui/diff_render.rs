@@ -54,7 +54,7 @@ pub fn render_hunk_lines(
             LineFlags {
                 selected: selected == Some(index + 1),
                 focused: true,
-                annotated: false,
+                marks: CellMarks::default(),
             },
             &[],
         )
@@ -228,7 +228,7 @@ pub(super) fn text_height(text: &str, prefix_cols: usize, width: u16) -> usize {
 pub struct LineFlags {
     pub selected: bool,
     pub focused: bool,
-    pub annotated: bool,
+    pub marks: CellMarks,
 }
 
 pub fn render_diff_line(
@@ -243,7 +243,7 @@ pub fn render_diff_line(
     let LineFlags {
         selected,
         focused,
-        annotated,
+        marks: CellMarks { annotated, staged },
     } = flags;
     let (base_bg, emph_bg) = line_backgrounds(theme, line, selected, focused, annotated);
 
@@ -254,9 +254,9 @@ pub fn render_diff_line(
     let prefix = |first: bool| {
         vec![
             Span::styled(
-                rail(line),
+                rail(line, staged),
                 Style::new()
-                    .fg(rail_color(theme, line, selected))
+                    .fg(rail_color(theme, line, selected, staged))
                     .bg(base_bg),
             ),
             Span::styled(
@@ -363,9 +363,12 @@ fn line_backgrounds(
     (base_bg, emph_bg)
 }
 
-fn rail(line: &DiffLine) -> &'static str {
+/// A thick bar marks a change still to stage, a thin one a change the index
+/// already holds.
+fn rail(line: &DiffLine, staged: bool) -> &'static str {
     match line.kind {
         _ if line.reformat_only => " ",
+        LineKind::Added | LineKind::Deleted if staged => "▏",
         LineKind::Added | LineKind::Deleted => "▌",
         LineKind::Context => " ",
     }
@@ -404,19 +407,35 @@ fn line_content(
         .collect()
 }
 
-fn rail_color(theme: &Theme, line: &DiffLine, selected: bool) -> Color {
+fn rail_color(theme: &Theme, line: &DiffLine, selected: bool, staged: bool) -> Color {
     if selected {
         return theme.accent;
     }
-    match line.kind {
+    let color = match line.kind {
         LineKind::Added => theme.added,
         LineKind::Deleted => theme.error_fg,
         LineKind::Context => theme.dim,
+    };
+    if staged {
+        crate::theme::blend(color, theme.panel, STAGED_RAIL_FADE_PERCENT)
+    } else {
+        color
     }
 }
 
+const STAGED_RAIL_FADE_PERCENT: u16 = 35;
+
+/// What a diff line carries besides its text.
+#[derive(Clone, Copy, Default)]
+pub struct CellMarks {
+    /// A comment sits on this line.
+    pub annotated: bool,
+    /// The index already holds this change.
+    pub staged: bool,
+}
+
 /// One side of a side-by-side row, `None` for a column with no counterpart.
-pub type SplitCell<'a> = Option<(&'a DiffLine, Option<&'a [StyledRange]>, bool)>;
+pub type SplitCell<'a> = Option<(&'a DiffLine, Option<&'a [StyledRange]>, CellMarks)>;
 
 fn split_prefix_width(gutter: usize) -> usize {
     1 + gutter + 1
@@ -514,7 +533,7 @@ fn side_rows(
     selected: bool,
     focused: bool,
 ) -> Vec<Vec<Span<'static>>> {
-    let Some((line, syntax, annotated)) = cell else {
+    let Some((line, syntax, CellMarks { annotated, staged })) = cell else {
         let bg = if selected {
             cursor_band(theme, theme.panel, focused)
         } else {
@@ -537,9 +556,9 @@ fn side_rows(
     let prefix = |first: bool| {
         vec![
             Span::styled(
-                rail(line),
+                rail(line, staged),
                 Style::new()
-                    .fg(rail_color(theme, line, selected))
+                    .fg(rail_color(theme, line, selected, staged))
                     .bg(base_bg),
             ),
             Span::styled(
@@ -1041,7 +1060,7 @@ flowchart LR
         LineFlags {
             selected: false,
             focused: true,
-            annotated: false,
+            marks: CellMarks::default(),
         }
     }
 
@@ -1173,7 +1192,7 @@ flowchart LR
         let flags = LineFlags {
             selected: true,
             focused: false,
-            annotated: false,
+            marks: CellMarks::default(),
         };
         let rendered = render_diff_line(&theme, &added, None, 4, 60, flags, &[]);
         let emphasized: String = rendered[0]
@@ -1260,7 +1279,7 @@ flowchart LR
             LineFlags {
                 selected: false,
                 focused: true,
-                annotated: false,
+                marks: CellMarks::default(),
             },
             &[],
         );

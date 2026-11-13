@@ -14,6 +14,7 @@ mod rowref;
 mod rows;
 mod sidebar;
 mod slide;
+mod stage;
 
 pub(crate) use focus::{PendingFocus, TYPING_REFUSAL};
 

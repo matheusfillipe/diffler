@@ -1,13 +1,13 @@
 //! Backend-agnostic VCS interface. Only the `git` and `repo` modules and test
 //! fixtures may import git2.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
 use crate::diffalgo::DiffAlgorithm;
-use crate::model::{DiffModel, HunkId};
+use crate::model::{DiffLine, DiffModel, HunkId, LineKind, LineSelection};
 
 #[derive(Debug, Error)]
 pub enum VcsError {
@@ -234,6 +234,89 @@ pub struct StatusModel {
     pub untracked: DiffModel,
     pub unstaged: DiffModel,
     pub staged: DiffModel,
+    staged_lines: StagedLines,
+}
+
+impl StatusModel {
+    pub fn new(untracked: DiffModel, unstaged: DiffModel, staged: DiffModel) -> Self {
+        let staged_lines = StagedLines::of(&untracked, &unstaged, &staged);
+        Self {
+            untracked,
+            unstaged,
+            staged,
+            staged_lines,
+        }
+    }
+
+    pub const fn staged_lines(&self) -> &StagedLines {
+        &self.staged_lines
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct FileStagedLines {
+    has_staged_changes: bool,
+    /// Worktree line numbers the index lacks.
+    unstaged_added: BTreeSet<u32>,
+    /// HEAD line numbers the index dropped.
+    staged_deleted: BTreeSet<u32>,
+}
+
+/// Which changed lines of the HEAD-to-worktree diff the index already holds.
+#[derive(Debug, Clone, Default)]
+pub struct StagedLines {
+    files: HashMap<String, FileStagedLines>,
+}
+
+impl StagedLines {
+    fn of(untracked: &DiffModel, unstaged: &DiffModel, staged: &DiffModel) -> Self {
+        let mut files: HashMap<String, FileStagedLines> = HashMap::new();
+        for file in &staged.files {
+            let entry = files.entry(file.path.clone()).or_default();
+            entry.has_staged_changes = true;
+            entry.staged_deleted.extend(
+                file.hunks
+                    .iter()
+                    .flat_map(|hunk| &hunk.lines)
+                    .filter(|line| line.kind == LineKind::Deleted)
+                    .filter_map(|line| line.old_no),
+            );
+        }
+        for file in unstaged.files.iter().chain(&untracked.files) {
+            files
+                .entry(file.path.clone())
+                .or_default()
+                .unstaged_added
+                .extend(
+                    file.hunks
+                        .iter()
+                        .flat_map(|hunk| &hunk.lines)
+                        .filter(|line| line.kind == LineKind::Added)
+                        .filter_map(|line| line.new_no),
+                );
+        }
+        Self { files }
+    }
+
+    /// Whether the index holds this changed line of `path`'s HEAD-to-worktree
+    /// diff.
+    pub fn is_staged(&self, path: &str, line: &DiffLine) -> bool {
+        let Some(file) = self.files.get(path) else {
+            return false;
+        };
+        match line.kind {
+            LineKind::Added => {
+                file.has_staged_changes
+                    && line
+                        .new_no
+                        .is_some_and(|n| !file.unstaged_added.contains(&n))
+            }
+            LineKind::Deleted => line
+                .old_no
+                .is_some_and(|n| file.staged_deleted.contains(&n)),
+            LineKind::Context => false,
+        }
+    }
 }
 
 pub trait Vcs: Send {
@@ -329,6 +412,12 @@ pub trait Vcs: Send {
     fn unstage(&self, rel: &Path) -> Result<(), VcsError>;
     /// Remove one staged hunk from the index, keeping the worktree.
     fn unstage_hunk(&self, rel: &Path, hunk: &HunkId) -> Result<(), VcsError>;
+    /// Stage only `lines` of a file's unstaged changes, numbered as the
+    /// index-to-worktree diff numbers them.
+    fn stage_lines(&self, rel: &Path, lines: &LineSelection) -> Result<(), VcsError>;
+    /// Take only `lines` of a file's staged changes back out of the index,
+    /// numbered as the HEAD-to-index diff numbers them.
+    fn unstage_lines(&self, rel: &Path, lines: &LineSelection) -> Result<(), VcsError>;
     /// Throw away worktree changes only; an untracked file is deleted.
     /// Refused while the file has staged changes (unstage first).
     fn discard(&self, rel: &Path) -> Result<(), VcsError>;

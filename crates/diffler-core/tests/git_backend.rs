@@ -815,6 +815,123 @@ fn stage_one_hunk_of_two_then_unstage_hunk_reverses() {
     assert_eq!(st.unstaged.files[0].hunks.len(), 2);
 }
 
+fn select(
+    file: &diffler_core::model::FileDiff,
+    pick: impl Fn(&str) -> bool,
+) -> diffler_core::model::LineSelection {
+    let mut selection = diffler_core::model::LineSelection::default();
+    for line in file.hunks.iter().flat_map(|hunk| &hunk.lines) {
+        if pick(&line.text) {
+            selection.insert(line);
+        }
+    }
+    selection
+}
+
+#[test]
+fn staging_lines_takes_only_those_lines_and_unstaging_gives_them_back() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\ntwo\nthree\n");
+    fx.commit_all("base");
+    fx.write("a.txt", "one\nTWO\nextra\nthree\nlast\n");
+
+    let v = vcs(&fx);
+    let st = v.status().expect("status");
+    let picked = select(&st.unstaged.files[0], |text| {
+        text == "extra" || text == "last"
+    });
+    v.stage_lines(Path::new("a.txt"), &picked).expect("stage");
+
+    let st = v.status().expect("status");
+    assert_eq!(
+        st.staged.files[0].new_text.as_deref(),
+        Some("one\ntwo\nextra\nthree\nlast\n"),
+        "the index holds the two picked lines and still the old `two`"
+    );
+    let left: Vec<&str> = st.unstaged.files[0]
+        .hunks
+        .iter()
+        .flat_map(|hunk| &hunk.lines)
+        .filter(|line| line.kind != diffler_core::model::LineKind::Context)
+        .map(|line| line.text.as_str())
+        .collect();
+    assert_eq!(left, ["two", "TWO"]);
+
+    let back = select(&st.staged.files[0], |text| text == "last");
+    v.unstage_lines(Path::new("a.txt"), &back).expect("unstage");
+    let st = v.status().expect("status");
+    assert_eq!(
+        st.staged.files[0].new_text.as_deref(),
+        Some("one\ntwo\nextra\nthree\n")
+    );
+}
+
+#[test]
+fn staging_some_lines_of_an_untracked_file_adds_it_and_unstaging_them_all_drops_it() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "x\n");
+    fx.commit_all("base");
+    fx.write("new.txt", "alpha\nbeta\ngamma");
+
+    let v = vcs(&fx);
+    let st = v.status().expect("status");
+    let picked = select(&st.untracked.files[0], |text| text != "beta");
+    v.stage_lines(Path::new("new.txt"), &picked).expect("stage");
+    let st = v.status().expect("status");
+    assert_eq!(st.staged.files[0].status, FileStatus::Added);
+    assert_eq!(st.staged.files[0].new_text.as_deref(), Some("alpha\ngamma"));
+
+    let all = select(&st.staged.files[0], |_| true);
+    v.unstage_lines(Path::new("new.txt"), &all)
+        .expect("unstage");
+    let st = v.status().expect("status");
+    assert!(st.staged.files.is_empty());
+    assert_eq!(st.untracked.files[0].path, "new.txt");
+}
+
+#[test]
+fn staging_lines_under_text_attributes_stores_lf_endings() {
+    let fx = Fixture::new();
+    fx.write(".gitattributes", "*.txt text\n");
+    fx.write("a.txt", "one\ntwo\n");
+    fx.commit_all("base");
+    fx.write("a.txt", "one\r\nTWO\r\nlast\r\n");
+
+    let v = vcs(&fx);
+    let st = v.status().expect("status");
+    let picked = select(&st.unstaged.files[0], |text| text.starts_with("last"));
+    v.stage_lines(Path::new("a.txt"), &picked).expect("stage");
+
+    let mut index = fx.repo.index().expect("index");
+    index.read(true).expect("reread index");
+    let entry = index.get_path(Path::new("a.txt"), 0).expect("entry");
+    let blob = fx.repo.find_blob(entry.id).expect("blob");
+    assert_eq!(blob.content(), b"one\ntwo\nlast\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn staging_lines_of_a_symlink_is_refused() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "x\n");
+    fx.commit_all("base");
+    std::os::unix::fs::symlink("a.txt", fx.root().join("link")).expect("symlink");
+
+    let v = vcs(&fx);
+    let st = v.status().expect("status");
+    let file = st
+        .untracked
+        .files
+        .iter()
+        .find(|file| file.path == "link")
+        .expect("link listed");
+    let all = select(file, |_| true);
+    assert!(matches!(
+        v.stage_lines(Path::new("link"), &all),
+        Err(VcsError::Rejected(_))
+    ));
+}
+
 #[test]
 fn stage_hunk_on_untracked_file_stages_it() {
     let fx = Fixture::new();

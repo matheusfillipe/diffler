@@ -149,6 +149,7 @@
 # prev_file = "<c-p>"      # also K
 # next_unviewed = "u"
 # mark_viewed = "m"
+# stage = "s"              # stage the selected lines, the hunk, or the file in the sidebar; again to unstage
 # unview_all = "U"
 # cycle_sidebar_mode = "t"  # file sidebar layout, or the comments pane's grouping when it has focus
 # toggle_side_by_side = "|"

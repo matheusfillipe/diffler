@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 
 use crate::diffalgo::{DiffAlgorithm, DiffSettings, histogram_hunks};
 use crate::model::{
-    DiffLine, DiffModel, FileDiff, FileStatus, Hunk, HunkId, LineKind, disambiguated_hunk_id,
+    DiffLine, DiffModel, FileDiff, FileStatus, Hunk, HunkId, LineKind, LineSelection,
+    disambiguated_hunk_id,
 };
 use crate::vcs::{
     BlameSpan, BranchInfo, FileVersion, HeadInfo, LogEntry, NetworkOp, StatusModel, Vcs, VcsError,
@@ -521,11 +522,11 @@ impl Vcs for GitVcs {
         )?;
         let staged = self.diff_to_model(&mut staged)?;
 
-        Ok(StatusModel {
-            untracked: DiffModel { files: untracked },
-            unstaged: DiffModel { files: unstaged },
+        Ok(StatusModel::new(
+            DiffModel { files: untracked },
+            DiffModel { files: unstaged },
             staged,
-        })
+        ))
     }
 
     fn working_tree_diff(&self) -> Result<DiffModel, VcsError> {
@@ -913,6 +914,39 @@ impl Vcs for GitVcs {
         Ok(())
     }
 
+    fn stage_lines(&self, rel: &Path, lines: &LineSelection) -> Result<(), VcsError> {
+        self.refuse_symlink(rel)?;
+        let mut diff = self
+            .repo
+            .diff_index_to_workdir(None, Some(&mut self.workdir_diff_options()))?;
+        let file = self.text_file_of(&mut diff, rel)?;
+        let mut text = file
+            .text_with_changes(|line| lines.contains(line))
+            .ok_or_else(not_a_text_file)?;
+        // we write the blob ourselves, so we apply git's line ending conversion
+        if self.stores_lf(rel)? {
+            text = text.replace("\r\n", "\n");
+        }
+        let gone = !self.workdir_path()?.join(rel).exists();
+        self.write_index_text(rel, &text, gone)
+    }
+
+    fn unstage_lines(&self, rel: &Path, lines: &LineSelection) -> Result<(), VcsError> {
+        self.refuse_symlink(rel)?;
+        let head_tree = self.head_tree()?;
+        let mut diff = self.repo.diff_tree_to_index(
+            head_tree.as_ref(),
+            None,
+            Some(&mut self.plain_diff_options()),
+        )?;
+        let file = self.text_file_of(&mut diff, rel)?;
+        // the index keeps every staged change the selection leaves alone
+        let text = file
+            .text_with_changes(|line| !lines.contains(line))
+            .ok_or_else(not_a_text_file)?;
+        self.write_index_text(rel, &text, file.status == FileStatus::Added)
+    }
+
     fn discard(&self, rel: &Path) -> Result<(), VcsError> {
         let head_tree = self.head_tree()?;
         let mut opts = git2::DiffOptions::new();
@@ -1203,7 +1237,112 @@ fn apply_git_algorithm(
     opts.indent_heuristic(indent_heuristic);
 }
 
+fn not_a_text_file() -> VcsError {
+    VcsError::Rejected("stage a binary file whole".into())
+}
+
+const SYMLINK_MODE: u32 = 0o120_000;
+
 impl GitVcs {
+    fn refuse_symlink(&self, rel: &Path) -> Result<(), VcsError> {
+        let in_index = self
+            .repo
+            .index()?
+            .get_path(rel, 0)
+            .is_some_and(|entry| entry.mode == SYMLINK_MODE);
+        let in_worktree = fs::symlink_metadata(self.workdir_path()?.join(rel))
+            .is_ok_and(|meta| meta.file_type().is_symlink());
+        if in_index || in_worktree {
+            return Err(VcsError::Rejected("stage a symlink whole".into()));
+        }
+        Ok(())
+    }
+
+    /// Whether git turns `rel`'s CRLF line endings into LF when it stores it.
+    fn stores_lf(&self, rel: &Path) -> Result<bool, VcsError> {
+        let flags = git2::AttrCheckFlags::FILE_THEN_INDEX;
+        let text = self.repo.get_attr(rel, "text", flags)?;
+        match git2::AttrValue::from_string(text) {
+            git2::AttrValue::False => return Ok(false),
+            git2::AttrValue::True | git2::AttrValue::String(_) => return Ok(true),
+            git2::AttrValue::Unspecified | git2::AttrValue::Bytes(_) => {}
+        }
+        if self.repo.get_attr(rel, "eol", flags)?.is_some() {
+            return Ok(true);
+        }
+        let autocrlf = self.repo.config()?.get_string("core.autocrlf").ok();
+        Ok(matches!(
+            autocrlf.as_deref().map(str::to_ascii_lowercase).as_deref(),
+            Some("true" | "input" | "yes" | "on" | "1")
+        ))
+    }
+
+    fn text_file_of(&self, diff: &mut git2::Diff<'_>, rel: &Path) -> Result<FileDiff, VcsError> {
+        let rel = rel.to_string_lossy();
+        let idx = diff
+            .deltas()
+            .position(|delta| delta_new_path(&delta) == rel)
+            .ok_or_else(|| VcsError::Rejected("file not found (diff changed?)".into()))?;
+        self.build_file(diff, idx)?
+            .filter(|file| !file.binary)
+            .ok_or_else(not_a_text_file)
+    }
+
+    /// `absent_when_empty` drops the entry for an empty text, where the side
+    /// we moved towards has no file.
+    fn write_index_text(
+        &self,
+        rel: &Path,
+        text: &str,
+        absent_when_empty: bool,
+    ) -> Result<(), VcsError> {
+        let mut index = self.repo.index()?;
+        if text.is_empty() && absent_when_empty {
+            index.remove_path(rel)?;
+        } else {
+            let mode = index
+                .get_path(rel, 0)
+                .map_or_else(|| self.workdir_file_mode(rel), |entry| entry.mode);
+            let entry = git2::IndexEntry {
+                ctime: git2::IndexTime::new(0, 0),
+                mtime: git2::IndexTime::new(0, 0),
+                dev: 0,
+                ino: 0,
+                mode,
+                uid: 0,
+                gid: 0,
+                file_size: 0,
+                id: git2::Oid::ZERO_SHA1,
+                flags: 0,
+                flags_extended: 0,
+                path: rel.to_string_lossy().replace('\\', "/").into_bytes(),
+            };
+            index.add_frombuffer(&entry, text.as_bytes())?;
+        }
+        index.write()?;
+        Ok(())
+    }
+
+    fn workdir_file_mode(&self, rel: &Path) -> u32 {
+        const REGULAR: u32 = 0o100_644;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            const EXECUTABLE: u32 = 0o100_755;
+            let executable = self
+                .repo
+                .workdir()
+                .and_then(|root| fs::metadata(root.join(rel)).ok())
+                .is_some_and(|meta| meta.permissions().mode() & 0o111 != 0);
+            if executable {
+                return EXECUTABLE;
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = rel;
+        REGULAR
+    }
+
     /// Render one hunk of `rel` as a unified patch libgit2 can apply to the
     /// index. `reverse` flips the patch so applying it undoes a staged hunk.
     fn synthesize_patch(
