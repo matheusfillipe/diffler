@@ -546,20 +546,35 @@ impl ForgeProvider for GitHubProvider {
         })
     }
 
+    /// `gh pr list` fetches every check run and comment body and takes seconds
+    /// on a busy repo, so we query only the rollup state and the comment count.
     async fn list_prs(&self) -> Result<Vec<ListedPr>> {
+        let (owner, name) = self.repo_slug().await?;
+        let query = "query($owner:String!,$name:String!){repository(owner:$owner,name:$name){\
+            pullRequests(states:OPEN,first:50,orderBy:{field:CREATED_AT,direction:DESC}){nodes{\
+            number title url baseRefName headRefName headRefOid author{login} isDraft \
+            reviewDecision additions deletions updatedAt labels(first:100){nodes{name color}} \
+            comments{totalCount} commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}}}";
         let args = [
-            "pr",
-            "list",
-            "--limit",
-            "50",
-            "--json",
-            "number,title,url,baseRefName,headRefName,headRefOid,author,isDraft,reviewDecision,\
-             statusCheckRollup,additions,deletions,comments,labels,updatedAt",
-        ]
-        .map(str::to_owned);
-        let raw = self.gh(&args).await?;
-        let items: Vec<PrListingApi> = parse_json("pr list", &raw)?;
-        Ok(items.into_iter().map(PrListingApi::into_listed).collect())
+            "api".to_owned(),
+            "graphql".to_owned(),
+            "-f".to_owned(),
+            format!("query={query}"),
+            "-f".to_owned(),
+            format!("owner={owner}"),
+            "-f".to_owned(),
+            format!("name={name}"),
+        ];
+        let raw = self.runner.run("gh", &args).await?;
+        let page: PrListPage = parse_json("pr list", &raw)?;
+        Ok(page
+            .data
+            .repository
+            .pull_requests
+            .nodes
+            .into_iter()
+            .map(PrListingApi::into_listed)
+            .collect())
     }
 
     async fn pr_comments(&self, number: u64) -> Result<Vec<PrComment>> {
@@ -1373,12 +1388,7 @@ struct ThreadsPageInfo {
 struct ThreadNode {
     id: String,
     is_resolved: bool,
-    comments: ThreadComments,
-}
-
-#[derive(Deserialize)]
-struct ThreadComments {
-    nodes: Vec<ThreadCommentNode>,
+    comments: Nodes<ThreadCommentNode>,
 }
 
 #[derive(Deserialize)]
@@ -1505,8 +1515,9 @@ struct PrListItem {
     head_ref_name: String,
     #[serde(default)]
     head_ref_oid: String,
+    /// A deleted account leaves no author.
     #[serde(default)]
-    author: AuthorApi,
+    author: Option<AuthorApi>,
 }
 
 #[derive(Deserialize, Default)]
@@ -1524,8 +1535,35 @@ impl PrListItem {
             base_ref: self.base_ref_name,
             head_ref: self.head_ref_name,
             head_oid: self.head_ref_oid,
-            author: self.author.login,
+            author: self.author.unwrap_or_default().login,
         }
+    }
+}
+
+#[derive(Deserialize)]
+struct PrListPage {
+    data: PrListData,
+}
+
+#[derive(Deserialize)]
+struct PrListData {
+    repository: PrListRepo,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PrListRepo {
+    pull_requests: Nodes<PrListingApi>,
+}
+
+#[derive(Deserialize)]
+struct Nodes<T> {
+    nodes: Vec<T>,
+}
+
+impl<T> Default for Nodes<T> {
+    fn default() -> Self {
+        Self { nodes: Vec::new() }
     }
 }
 
@@ -1538,60 +1576,49 @@ struct PrListingApi {
     is_draft: bool,
     #[serde(default)]
     review_decision: Option<String>,
-    #[serde(default)]
-    status_check_rollup: Vec<CheckApi>,
     additions: Option<u64>,
     deletions: Option<u64>,
     #[serde(default)]
-    comments: Vec<serde::de::IgnoredAny>,
+    comments: CountApi,
     #[serde(default)]
-    labels: Vec<LabelApi>,
+    labels: Nodes<LabelApi>,
+    #[serde(default)]
+    commits: Nodes<CommitNode>,
     #[serde(default)]
     updated_at: String,
 }
 
-/// A check run carries `status` and `conclusion`, a commit status only `state`.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct CountApi {
+    total_count: u64,
+}
+
 #[derive(Deserialize)]
-struct CheckApi {
-    #[serde(default)]
-    status: Option<String>,
-    #[serde(default)]
-    conclusion: Option<String>,
-    #[serde(default)]
-    state: Option<String>,
+struct CommitNode {
+    commit: RollupCommit,
 }
 
-impl CheckApi {
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RollupCommit {
+    status_check_rollup: Option<RollupApi>,
+}
+
+/// GitHub leaves skipped and neutral checks out of this rollup.
+#[derive(Deserialize)]
+struct RollupApi {
+    state: String,
+}
+
+impl RollupApi {
     fn status(&self) -> JobStatus {
-        if let Some(state) = &self.state {
-            return match state.as_str() {
-                "SUCCESS" => JobStatus::Ok,
-                "FAILURE" | "ERROR" => JobStatus::Failed,
-                _ => JobStatus::Running,
-            };
+        match self.state.as_str() {
+            "SUCCESS" => JobStatus::Ok,
+            "FAILURE" | "ERROR" => JobStatus::Failed,
+            _ => JobStatus::Running,
         }
-        let lower = |s: &Option<String>| s.as_deref().unwrap_or_default().to_ascii_lowercase();
-        let conclusion = lower(&self.conclusion);
-        // GitHub's own rollup fails a PR on these, so we must count them before
-        // the skipped and neutral checks drop out
-        if matches!(conclusion.as_str(), "action_required" | "cancelled") {
-            return JobStatus::Failed;
-        }
-        map_status(
-            &lower(&self.status),
-            (!conclusion.is_empty()).then_some(conclusion.as_str()),
-        )
     }
-}
-
-/// The PR's checks as one status. Skipped and neutral checks say nothing about
-/// the PR, so we leave them out.
-fn checks_rollup(checks: &[CheckApi]) -> Option<JobStatus> {
-    checks
-        .iter()
-        .map(CheckApi::status)
-        .filter(|status| !matches!(status, JobStatus::Skipped | JobStatus::Neutral))
-        .reduce(JobStatus::worse)
 }
 
 impl PrListingApi {
@@ -1601,15 +1628,21 @@ impl PrListingApi {
             Some("CHANGES_REQUESTED") => Some(PrVerdict::ChangesRequested),
             _ => None,
         };
+        let checks = self
+            .commits
+            .nodes
+            .last()
+            .and_then(|node| node.commit.status_check_rollup.as_ref())
+            .map(RollupApi::status);
         ListedPr {
             summary: PrSummary {
                 draft: self.is_draft,
-                checks: checks_rollup(&self.status_check_rollup),
+                checks,
                 review,
                 additions: self.additions,
                 deletions: self.deletions,
-                comments: Some(self.comments.len() as u64),
-                labels: self.labels.into_iter().map(Label::from).collect(),
+                comments: Some(self.comments.total_count),
+                labels: self.labels.nodes.into_iter().map(Label::from).collect(),
                 updated: created_epoch(&self.updated_at),
             },
             pr: self.pr.into_pr(),
@@ -1661,11 +1694,11 @@ struct PrHandleRepo {
 #[serde(rename_all = "camelCase")]
 struct PrHandleApi {
     id: String,
-    review_requests: ReviewRequestNodes,
+    review_requests: Nodes<ReviewRequestNode>,
     #[serde(default)]
-    comments: AuthorNodes,
+    comments: Nodes<AuthorNode>,
     #[serde(default)]
-    reviews: AuthorNodes,
+    reviews: Nodes<AuthorNode>,
 }
 
 impl PrHandleApi {
@@ -1682,11 +1715,6 @@ impl PrHandleApi {
     }
 }
 
-#[derive(Deserialize, Default)]
-struct AuthorNodes {
-    nodes: Vec<AuthorNode>,
-}
-
 /// A deleted account leaves no author.
 #[derive(Deserialize)]
 struct AuthorNode {
@@ -1698,11 +1726,6 @@ struct TypedAuthor {
     #[serde(rename = "__typename")]
     typename: String,
     login: String,
-}
-
-#[derive(Deserialize)]
-struct ReviewRequestNodes {
-    nodes: Vec<ReviewRequestNode>,
 }
 
 /// A request to a deleted account names no reviewer.
@@ -1746,7 +1769,7 @@ struct CandidatesData {
 #[serde(rename_all = "camelCase")]
 struct CandidatesRepo {
     pull_request: CandidatesPr,
-    assignable_users: LoginNodes,
+    assignable_users: Nodes<AuthorApi>,
 }
 
 #[derive(Deserialize)]
@@ -1759,11 +1782,6 @@ struct CandidatesPr {
 #[derive(Deserialize)]
 struct SuggestedApi {
     reviewer: AuthorApi,
-}
-
-#[derive(Deserialize)]
-struct LoginNodes {
-    nodes: Vec<AuthorApi>,
 }
 
 impl CandidatesPage {
@@ -1864,7 +1882,12 @@ impl ConversationApi {
             _ if self.is_draft => PrState::Draft,
             _ => PrState::Open,
         };
-        let author = self.pr.author.login.clone();
+        let author = self
+            .pr
+            .author
+            .as_ref()
+            .map(|author| author.login.clone())
+            .unwrap_or_default();
         let mut timeline: Vec<&ReviewApi> = self.reviews.iter().collect();
         timeline.sort_by(|a, b| a.submitted_at.cmp(&b.submitted_at));
         let verdicts = timeline
@@ -2104,7 +2127,10 @@ jobs:
                    "status":"completed","conclusion":"success","workflowName":"CI",
                    "createdAt":"2026-06-18T10:00:00Z","url":"https://gh/run/1","jobs":[]}"#,
             ),
-            ("pr list", "[]"),
+            (
+                "graphql",
+                r#"{"data":{"repository":{"pullRequests":{"nodes":[]}}}}"#,
+            ),
             (
                 "pr view",
                 r#"{"number":7,"title":"t","url":"https://gh/pr/7","baseRefName":"main",
@@ -2150,8 +2176,16 @@ jobs:
             api.contains("repos/mine/widgets/") && !api.contains("{owner}"),
             "the api path names the repo: {api}"
         );
+        let listing = calls
+            .iter()
+            .find(|c| c.contains("pullRequests"))
+            .expect("the listing query");
+        assert!(
+            listing.contains("owner=mine") && listing.contains("name=widgets"),
+            "the listing names the repo: {listing}"
+        );
         let subcommands: Vec<&String> = calls.iter().filter(|c| !c.starts_with("api")).collect();
-        assert_eq!(subcommands.len(), 6, "{subcommands:?}");
+        assert_eq!(subcommands.len(), 5, "{subcommands:?}");
         for call in subcommands {
             assert!(
                 call.contains("-R mine/widgets"),
@@ -3172,23 +3206,19 @@ jobs:
 
     #[tokio::test]
     async fn the_listing_summarizes_checks_review_size_and_comments() {
-        let listing = r#"[{"number":7,"title":"Add widgets","author":{"login":"reviewer"},
-            "isDraft":true,"reviewDecision":"CHANGES_REQUESTED",
-            "statusCheckRollup":[
-                {"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"},
-                {"__typename":"CheckRun","status":"COMPLETED","conclusion":"SKIPPED"},
-                {"__typename":"CheckRun","status":"IN_PROGRESS","conclusion":""},
-                {"__typename":"StatusContext","state":"SUCCESS"}],
-            "additions":12,"deletions":3,"comments":[{"id":"a"},{"id":"b"}],
-            "labels":[{"name":"bug","color":"d73a4a"}],"updatedAt":"2026-08-07T10:00:00Z"},
-           {"number":8,"title":"Fix docs","author":{"login":"peer"},"reviewDecision":"",
-            "statusCheckRollup":[{"__typename":"StatusContext","state":"FAILURE"},
-                {"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]},
-           {"number":9,"title":"Gate","author":{"login":"peer"},
-            "statusCheckRollup":[
-                {"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"},
-                {"__typename":"CheckRun","status":"COMPLETED","conclusion":"ACTION_REQUIRED"}]}]"#;
-        let listed = provider(&[("pr list", listing)])
+        let listing = r#"{"data":{"repository":{"pullRequests":{"nodes":[
+            {"number":7,"title":"Add widgets","author":{"login":"reviewer"},
+             "isDraft":true,"reviewDecision":"CHANGES_REQUESTED",
+             "commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"PENDING"}}}]},
+             "additions":12,"deletions":3,"comments":{"totalCount":2},
+             "labels":{"nodes":[{"name":"bug","color":"d73a4a"}]},"updatedAt":"2026-08-07T10:00:00Z"},
+            {"number":8,"title":"Fix docs","author":{"login":"peer"},"reviewDecision":null,
+             "commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"FAILURE"}}}]},
+             "comments":{"totalCount":0},"labels":{"nodes":[]}},
+            {"number":9,"title":"No checks","author":null,
+             "commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]},
+             "comments":{"totalCount":0},"labels":{"nodes":[]}}]}}}}"#;
+        let listed = provider(&[("repo view", SLUG), ("graphql", listing)])
             .list_prs()
             .await
             .expect("listing");
@@ -3206,9 +3236,12 @@ jobs:
         assert_eq!(second.checks, Some(JobStatus::Failed));
         assert_eq!(second.review, None);
         assert_eq!(
-            listed[2].summary.checks,
-            Some(JobStatus::Failed),
-            "a check waiting for approval blocks the PR"
+            listed[2].summary.checks, None,
+            "a PR with no checks shows none"
+        );
+        assert_eq!(
+            listed[2].pr.author, "",
+            "a deleted author leaves the name empty"
         );
     }
 
