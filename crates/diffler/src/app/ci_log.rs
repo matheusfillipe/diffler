@@ -20,7 +20,89 @@ pub struct CiLogStep {
     pub status: Option<JobStatus>,
     pub duration_secs: Option<i64>,
     pub lines: Vec<String>,
+    /// One per line of `lines`.
+    pub kinds: Vec<LogLineKind>,
     pub folded: bool,
+}
+
+impl CiLogStep {
+    fn new(
+        name: String,
+        status: Option<JobStatus>,
+        duration_secs: Option<i64>,
+        lines: Vec<String>,
+    ) -> Self {
+        Self {
+            name,
+            status,
+            duration_secs,
+            lines,
+            kinds: Vec::new(),
+            folded: true,
+        }
+    }
+}
+
+/// What a log line is to its reader, from the runner's `##[...]` workflow
+/// commands and the usual failure words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogLineKind {
+    Plain,
+    /// What the runner prints inside a `##[group]` (the command, its shell and
+    /// environment) and its debug output.
+    Muted,
+    GroupEdge,
+    Command,
+    Error,
+    Warning,
+    Notice,
+}
+
+impl LogLineKind {
+    fn classify(lines: &[String]) -> Vec<Self> {
+        let mut in_group = false;
+        lines
+            .iter()
+            .map(|line| {
+                let kind = Self::of(line, in_group);
+                if kind == Self::GroupEdge {
+                    in_group = line.starts_with("##[group]");
+                }
+                kind
+            })
+            .collect()
+    }
+
+    fn of(line: &str, in_group: bool) -> Self {
+        if let Some((marker, _)) = workflow_command(line) {
+            return match marker {
+                "group" | "endgroup" => Self::GroupEdge,
+                "command" => Self::Command,
+                "error" => Self::Error,
+                "warning" => Self::Warning,
+                "notice" => Self::Notice,
+                _ => Self::Muted,
+            };
+        }
+        if in_group {
+            return Self::Muted;
+        }
+        let trimmed = line.trim_start();
+        let failed = ["error:", "error[", "ERROR", "FAILED", "FAIL ", "Traceback"]
+            .iter()
+            .any(|word| trimmed.starts_with(word))
+            || trimmed.contains("panicked at");
+        if failed { Self::Error } else { Self::Plain }
+    }
+}
+
+/// The marker and the text after it, for a line like `##[error]boom`. GitHub
+/// prints the commands its own actions run as `[command]git version`.
+pub fn workflow_command(line: &str) -> Option<(&str, &str)> {
+    if let Some(rest) = line.strip_prefix("[command]") {
+        return Some(("command", rest));
+    }
+    line.strip_prefix("##[")?.split_once(']')
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,11 +122,14 @@ pub struct CiLogView {
 
 impl CiLogView {
     pub fn parse(raw: &str, metas: &[LogStepMeta]) -> Self {
-        let steps = if metas.is_empty() {
+        let mut steps = if metas.is_empty() {
             sections_by_group(raw)
         } else {
             sections_by_step(raw, metas)
         };
+        for step in &mut steps {
+            step.kinds = LogLineKind::classify(&step.lines);
+        }
         Self {
             steps,
             cursor: 0,
@@ -333,22 +418,15 @@ fn sections_by_step(raw: &str, metas: &[LogStepMeta]) -> Vec<CiLogStep> {
     }
     let mut steps = Vec::new();
     if !leading.is_empty() {
-        steps.push(CiLogStep {
-            name: String::new(),
-            status: None,
-            duration_secs: None,
-            lines: leading,
-            folded: true,
-        });
+        steps.push(CiLogStep::new(String::new(), None, None, leading));
     }
     for (meta, lines) in metas.iter().zip(buckets) {
-        steps.push(CiLogStep {
-            name: meta.name.clone(),
-            status: Some(meta.status),
-            duration_secs: meta.duration_secs,
+        steps.push(CiLogStep::new(
+            meta.name.clone(),
+            Some(meta.status),
+            meta.duration_secs,
             lines,
-            folded: true,
-        });
+        ));
     }
     steps
 }
@@ -375,13 +453,12 @@ fn sections_by_group(raw: &str) -> Vec<CiLogStep> {
     for raw_line in raw.lines() {
         let (_, content) = line_key_and_content(raw_line);
         if let Some(name) = content.strip_prefix("##[group]") {
-            steps.push(CiLogStep {
-                name: name.trim().to_owned(),
-                status: None,
-                duration_secs: None,
-                lines: Vec::new(),
-                folded: true,
-            });
+            steps.push(CiLogStep::new(
+                name.trim().to_owned(),
+                None,
+                None,
+                Vec::new(),
+            ));
             continue;
         }
         if content.trim_end() == "##[endgroup]" {
@@ -393,16 +470,7 @@ fn sections_by_group(raw: &str) -> Vec<CiLogStep> {
         }
     }
     if !leading.is_empty() {
-        steps.insert(
-            0,
-            CiLogStep {
-                name: String::new(),
-                status: None,
-                duration_secs: None,
-                lines: leading,
-                folded: true,
-            },
-        );
+        steps.insert(0, CiLogStep::new(String::new(), None, None, leading));
     }
     steps
 }

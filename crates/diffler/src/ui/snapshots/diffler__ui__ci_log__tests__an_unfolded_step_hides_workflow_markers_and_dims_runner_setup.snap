@@ -1,0 +1,15 @@
+---
+source: crates/diffler/src/ui/ci_log.rs
+expression: terminal.backend()
+---
+" <tab> fold · / search · y yank · ? help                    "
+"  ▸ lint                                                    "
+"▌▾ × Run cargo test  3s  7 lines                            "
+"    Run cargo test                                          "
+"    cargo test                                              "
+"    shell: /usr/bin/bash -e {0}                             "
+"                                                            "
+"    test widgets ... FAILED                                 "
+"    Process completed with exit code 1.                     "
+"    /usr/bin/git version                                    "
+" STATUS  fixture@main · mcp off · 3 files, 0 viewed         "

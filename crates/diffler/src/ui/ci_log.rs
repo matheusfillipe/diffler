@@ -6,7 +6,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::app::App;
-use crate::app::ci_log::{CiLogRow, CiLogView};
+use crate::app::ci_log::{CiLogRow, CiLogView, LogLineKind, workflow_command};
 use crate::app::rowsel::RowSelect;
 use crate::ci::fmt_duration;
 use crate::keymap::Action;
@@ -115,12 +115,49 @@ fn row_line(
             ));
             Line::from(spans)
         }
-        CiLogRow::Line { .. } => {
+        CiLogRow::Line { step, line } => {
             let text = view.line_text(row);
+            let kind = view
+                .steps
+                .get(step)
+                .and_then(|step| step.kinds.get(line))
+                .copied()
+                .unwrap_or(LogLineKind::Plain);
+            let shown = match (kind, workflow_command(text)) {
+                (LogLineKind::GroupEdge, Some(("endgroup", _))) => "",
+                (_, Some((_, rest))) => rest,
+                (_, None) => text,
+            };
+            let skipped = text.len() - shown.len();
+            let search: Vec<_> = search
+                .iter()
+                .filter(|(range, _)| range.end > skipped)
+                .map(|(range, current)| {
+                    (
+                        range.start.saturating_sub(skipped)..range.end - skipped,
+                        *current,
+                    )
+                })
+                .collect();
             let mut spans = vec![Span::styled("    ", theme.base())];
-            spans.extend(super::highlight_spans(text, theme.base(), search, theme));
+            spans.extend(super::highlight_spans(
+                shown,
+                line_style(theme, kind),
+                &search,
+                theme,
+            ));
             Line::from(spans)
         }
+    }
+}
+
+fn line_style(theme: &Theme, kind: LogLineKind) -> Style {
+    match kind {
+        LogLineKind::Plain => theme.base(),
+        LogLineKind::Muted | LogLineKind::GroupEdge => theme.dim_style(),
+        LogLineKind::Command | LogLineKind::Notice => theme.base().fg(theme.accent),
+        LogLineKind::Error => theme.base().fg(theme.error_fg),
+        LogLineKind::Warning => theme.base().fg(theme.warn_fg),
     }
 }
 
@@ -155,6 +192,58 @@ mod tests {
         let backend = TestBackend::new(60, 8);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal.draw(|f| draw(f, &mut app)).expect("draw");
+        insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn an_unfolded_step_hides_workflow_markers_and_dims_runner_setup() {
+        use crate::ci::{JobStatus, LogStepMeta, ts_sort_key};
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        let event = app.test_log_event(
+            "2026-06-20T00:00:00Z ##[group]Run cargo test\n\
+             2026-06-20T00:00:00Z cargo test\n\
+             2026-06-20T00:00:00Z shell: /usr/bin/bash -e {0}\n\
+             2026-06-20T00:00:00Z ##[endgroup]\n\
+             2026-06-20T00:00:01Z test widgets ... FAILED\n\
+             2026-06-20T00:00:02Z ##[error]Process completed with exit code 1.\n\
+             2026-06-20T00:00:03Z [command]/usr/bin/git version\n",
+            vec![LogStepMeta {
+                name: "Run cargo test".into(),
+                status: JobStatus::Failed,
+                start_key: ts_sort_key("2026-06-20T00:00:00Z"),
+                end_key: 0,
+                duration_secs: Some(3),
+            }],
+        );
+        app.handle(event);
+        let view = app.ci_log.as_mut().expect("ci_log view");
+        view.steps[0].folded = false;
+        assert_eq!(
+            view.steps[0].kinds,
+            [
+                LogLineKind::GroupEdge,
+                LogLineKind::Muted,
+                LogLineKind::Muted,
+                LogLineKind::GroupEdge,
+                LogLineKind::Plain,
+                LogLineKind::Error,
+                LogLineKind::Command,
+            ]
+        );
+        let backend = TestBackend::new(60, 11);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|f| draw(f, &mut app)).expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        let error_row = (0..buffer.area.height)
+            .find(|&y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+                    .contains("Process completed")
+            })
+            .expect("error line on screen");
+        assert_eq!(buffer[(4, error_row)].fg, app.theme.error_fg);
         insta::assert_snapshot!(terminal.backend());
     }
 
