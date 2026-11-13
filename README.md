@@ -211,24 +211,24 @@ It replies in each thread and fixes the code. Its tools are in
 
 ## FAQ
 
-**Do I need a coding agent to use diffler?**
+**Do I need a coding agent to use diffler?**\
 No. It is a full git UI by itself. `diffler --no-mcp` turns the agent
 connection off.
 
-**Does it send my code or usage data anywhere?**
+**Does it send my code or usage data anywhere?**\
 No. diffler has no telemetry. It talks to GitHub, GitLab or Forgejo only when
 you open their pull requests or CI, with the credentials you already set up
 for `gh`, `glab` or Forgejo.
 
-**Who can reach the agent connection?**
+**Who can reach the agent connection?**\
 Only programs on your machine. The MCP server listens on `127.0.0.1`.
 
-**Can an agent post on my pull request?**
+**Can an agent post on my pull request?**\
 No. What an agent writes stays in diffler on your machine. Only comments and
 replies under your name go to the forge, and only when you submit the review
 yourself.
 
-**Is it safe to let an agent read review comments?**
+**Is it safe to let an agent read review comments?**\
 Other people write the comments on a pull request, and your agent reads them
 as plain text. diffler passes them on unchanged, so treat them like any text
 from the internet when you decide what your agent may do.
