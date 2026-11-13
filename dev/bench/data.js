@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794564488505,
+  "lastUpdate": 1794565699308,
   "repoUrl": "https://github.com/matheusfillipe/diffler",
   "entries": {
     "Benchmark": [
@@ -21311,6 +21311,102 @@ window.BENCHMARK_DATA = {
             "name": "scope_index/20000",
             "value": 52967996,
             "range": "± 2211239",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "25a8fc9e6974001884861c8c47672f92206517a9",
+          "message": "chore(deps): bump astral-sh/setup-uv from 10.3.0 to 10.3.3 (#62)\n\nBumps [astral-sh/setup-uv](https://github.com/astral-sh/setup-uv) from 10.3.0 to 10.3.3.\n- [Release notes](https://github.com/astral-sh/setup-uv/releases)\n- [Commits](https://github.com/astral-sh/setup-uv/compare/v10.3.0...v10.3.3)\n\n---\nupdated-dependencies:\n- dependency-name: astral-sh/setup-uv\n  dependency-version: 10.3.3\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-11-13T11:24:49+01:00",
+          "tree_id": "15e04e5ddd0fea5d74a7f350bfcf0f99cdf8fd99",
+          "url": "https://github.com/matheusfillipe/diffler/commit/25a8fc9e6974001884861c8c47672f92206517a9"
+        },
+        "date": 1794565698491,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "syndiff_emphasis/1000",
+            "value": 6398637,
+            "range": "± 177246",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/1000",
+            "value": 12209,
+            "range": "± 144",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/1000",
+            "value": 4499620,
+            "range": "± 28260",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/1000",
+            "value": 3581696,
+            "range": "± 157818",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/5000",
+            "value": 37721482,
+            "range": "± 731868",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/5000",
+            "value": 64178,
+            "range": "± 289",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/5000",
+            "value": 23180261,
+            "range": "± 805419",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/5000",
+            "value": 18271822,
+            "range": "± 321536",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/20000",
+            "value": 154063452,
+            "range": "± 4128387",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/20000",
+            "value": 253447,
+            "range": "± 15061",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/20000",
+            "value": 97011480,
+            "range": "± 1244536",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/20000",
+            "value": 76875172,
+            "range": "± 4020284",
             "unit": "ns/iter"
           }
         ]
