@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794913173824,
+  "lastUpdate": 1794913555530,
   "repoUrl": "https://github.com/matheusfillipe/diffler",
   "entries": {
     "Benchmark": [
@@ -22079,6 +22079,102 @@ window.BENCHMARK_DATA = {
             "name": "scope_index/20000",
             "value": 73951334,
             "range": "± 1830640",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "committer": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "distinct": true,
+          "id": "1761b28fbfc87ebe25b070f0b0784a68ee4b2d88",
+          "message": "fix: bump libz-sys past its advisory and ignore the unmaintained chrono",
+          "timestamp": "2026-11-17T12:02:05+01:00",
+          "tree_id": "8ece486bf9d5561034e3ac1c94db067d6f4c501d",
+          "url": "https://github.com/matheusfillipe/diffler/commit/1761b28fbfc87ebe25b070f0b0784a68ee4b2d88"
+        },
+        "date": 1794913554420,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "syndiff_emphasis/1000",
+            "value": 6323233,
+            "range": "± 31722",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/1000",
+            "value": 12463,
+            "range": "± 233",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/1000",
+            "value": 4471638,
+            "range": "± 59241",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/1000",
+            "value": 3563347,
+            "range": "± 32173",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/5000",
+            "value": 35461152,
+            "range": "± 405422",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/5000",
+            "value": 64013,
+            "range": "± 547",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/5000",
+            "value": 22516926,
+            "range": "± 105693",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/5000",
+            "value": 17936312,
+            "range": "± 357233",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/20000",
+            "value": 148838923,
+            "range": "± 995092",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/20000",
+            "value": 252814,
+            "range": "± 1178",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/20000",
+            "value": 91822903,
+            "range": "± 552386",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/20000",
+            "value": 72969816,
+            "range": "± 750377",
             "unit": "ns/iter"
           }
         ]
