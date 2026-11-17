@@ -198,6 +198,22 @@ for c in df dfa dfr; do curl -fsSLo ~/.config/opencode/commands/$c.md \
 </details>
 
 <details>
+<summary><b>Codex</b></summary>
+
+Add the server to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.diffler]
+command = "npx"
+args = ["-y", "diffler-mcp"]
+default_tools_approval_mode = "approve"
+```
+
+The last line lets Codex use diffler without asking you before every call.
+
+</details>
+
+<details>
 <summary><b>Any other MCP agent</b></summary>
 
 Run `npx -y diffler-mcp` as a stdio server. It connects to the diffler running
