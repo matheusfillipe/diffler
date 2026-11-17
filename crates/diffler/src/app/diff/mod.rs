@@ -9,6 +9,7 @@ mod folds;
 pub(super) mod lens;
 mod nav;
 mod open;
+pub(crate) mod panes;
 mod review;
 mod rowref;
 mod rows;

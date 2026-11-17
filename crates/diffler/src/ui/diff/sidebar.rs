@@ -420,6 +420,39 @@ mod tests {
         (x, y, target)
     }
 
+    fn mouse_up(col: u16, row: u16) -> crate::event::AppEvent {
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        crate::event::AppEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    #[test]
+    fn dragging_the_sidebar_divider_widens_the_file_tree_and_a_double_click_resets_it() {
+        let (_fixture, mut app) = diff_app();
+        render(&mut app);
+        let auto = app.pane_widths.sidebar(120, false);
+        let divider = auto + 1;
+        app.handle(mouse_click(divider, 10));
+        app.handle(crate::test_support::mouse_drag(60, 10));
+        insta::assert_snapshot!(render(&mut app).backend());
+        app.handle(mouse_up(60, 10));
+        assert_eq!(app.pane_widths.sidebar(120, false), 59);
+        assert_eq!(app.resizing, None);
+
+        app.handle(mouse_click(60, 10));
+        app.handle(mouse_up(60, 10));
+        app.handle(mouse_click(60, 10));
+        assert_eq!(
+            app.pane_widths.sidebar(120, false),
+            auto,
+            "a double-click puts the automatic width back"
+        );
+    }
+
     #[test]
     fn the_walkthrough_layout_names_itself_in_the_sidebar_heading() {
         let fixture = standard_fixture();
@@ -644,7 +677,7 @@ mod tests {
         app.handle(key('\n'));
         let terminal = render(&mut app);
         let buffer = terminal.backend().buffer();
-        let sidebar = crate::ui::diff::sidebar_width(120);
+        let sidebar = crate::app::PaneWidths::default().sidebar(120, false);
         let search_bgs = [app.theme.search, app.theme.search_current];
         let mut highlighted = 0;
         for y in 0..40 {

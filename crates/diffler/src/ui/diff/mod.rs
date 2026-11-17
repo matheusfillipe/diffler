@@ -17,7 +17,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, Paragraph};
 
 use self::avatars::AvatarCtx;
 use self::cards::CardSearch;
@@ -25,7 +25,7 @@ use self::comments::{draw_comments, pane_author_orders};
 use self::pane::{FigureRaster, draw_pane, patch_figure_copy_text, rasterize_figures};
 use self::references::draw_references;
 use self::sidebar::draw_sidebar;
-use crate::app::{App, DiffView};
+use crate::app::{App, DiffView, Divider, PaneWidths};
 use crate::keymap::Action;
 use crate::search::Search;
 use crate::theme::Theme;
@@ -42,20 +42,17 @@ const HINTS: &[Hint] = &[
     Hint::Leaf(&[Action::Help], "help"),
 ];
 
-fn sidebar_width(total: u16) -> u16 {
-    (total / 4).clamp(28, 44).min(total)
-}
-
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let (body, bar) = super::screen_chrome(frame, app, HINTS);
 
     let open_figure_hint = app.active_keymap().chord_for(Action::OpenFigureGraph);
     app.queue_enrich_selected();
     // comment bodies are parsed to this width, so we set it before anything reads them
-    let right = app.diff.as_ref().map_or(0, |diff| {
-        comments_width(body.width, diff.comments_open || diff.refs_visible())
-    });
-    let pane_width = pane_width(body.width, right);
+    let right_open = app
+        .diff
+        .as_ref()
+        .is_some_and(|diff| diff.comments_open || diff.refs_visible());
+    let pane_width = app.pane_widths.diff(body.width, right_open);
     if let Some(diff) = app.diff.as_mut() {
         diff.set_wrap_width(pane_width);
     }
@@ -70,6 +67,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let algorithm = app.config.diff.algorithm;
     let avatar_states = app.avatars_shown().then_some(&app.avatars);
     let covered = app.modal.is_some() || app.which_key_panel().is_some();
+    let (panes, resizing) = (app.pane_widths, app.resizing);
     if let Some(diff) = app.diff.as_mut() {
         diff.ensure_rows(review);
         // we clone the source so the session's borrow stays off the view, which the rasteriser mutates
@@ -93,6 +91,8 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             theme,
             session,
             bots: &bots,
+            panes,
+            resizing,
             staged,
             review_model,
             search,
@@ -119,6 +119,8 @@ struct RenderCtx<'a> {
     theme: &'a Theme,
     session: &'a Session,
     bots: &'a crate::app::bots::BotFilter,
+    panes: PaneWidths,
+    resizing: Option<Divider>,
     /// Set while the working tree of a repo with an index is on screen.
     staged: Option<&'a diffler_core::vcs::StagedLines>,
     review_model: Option<&'a DiffModel>,
@@ -141,9 +143,10 @@ struct RowState {
 const PANE_GAP: u16 = 1;
 
 fn draw_body(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut DiffView) {
-    let width = (sidebar_width(area.width) + 1).min(area.width);
-    let comments = comments_width(area.width, diff.comments_open || diff.refs_visible());
-    let [list_area, _gap, pane_area, _right_gap, comments_area] = Layout::horizontal([
+    let right_open = diff.comments_open || diff.refs_visible();
+    let width = (ctx.panes.sidebar(area.width, right_open) + 1).min(area.width);
+    let comments = ctx.panes.comments(area.width, right_open);
+    let [list_area, gap, pane_area, right_gap, comments_area] = Layout::horizontal([
         Constraint::Length(width),
         Constraint::Length(PANE_GAP),
         Constraint::Min(0),
@@ -151,6 +154,17 @@ fn draw_body(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
         Constraint::Length(comments),
     ])
     .areas(area);
+    let grabbed = match ctx.resizing {
+        Some(Divider::Left) => Some(gap),
+        Some(Divider::Right) => Some(right_gap),
+        None => None,
+    };
+    if let Some(divider) = grabbed {
+        frame.render_widget(
+            Block::new().style(Style::new().bg(ctx.theme.accent)),
+            divider,
+        );
+    }
     draw_sidebar(frame, list_area, ctx, diff);
     draw_pane(frame, pane_area, ctx, diff);
     if comments > 0 && diff.refs_visible() {
@@ -158,20 +172,6 @@ fn draw_body(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCtx<'_>, diff: &mut 
     } else if comments > 0 {
         draw_comments(frame, comments_area, ctx, diff);
     }
-}
-
-/// The diff pane's width once the file sidebar and a `right` pane of that
-/// width take their columns, matching `draw_body`'s layout.
-fn pane_width(total: u16, right: u16) -> u16 {
-    let right = if right == 0 { 0 } else { right + PANE_GAP };
-    total.saturating_sub(sidebar_width(total) + 1 + PANE_GAP + right)
-}
-
-fn comments_width(total: u16, open: bool) -> u16 {
-    if !open {
-        return 0;
-    }
-    sidebar_width(total).min(total / 3)
 }
 
 #[derive(Clone, Copy)]

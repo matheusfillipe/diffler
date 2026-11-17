@@ -44,6 +44,7 @@ pub(crate) use diff::TYPING_REFUSAL;
 pub use diff::lens::{Lens, LensRequest, PreviewLine, RefEntry, compute_lens};
 #[cfg(test)]
 pub(crate) use diff::merge_count;
+pub(crate) use diff::panes::{Divider, PaneWidths};
 pub use diff::{
     CommentFacts, CommentGrouping, CommentLine, CommentPaneRow, DeclaredRequest, DiffRow, DiffView,
     FileHighlights, FileScope, Pane, Placement, REPLY_LANE, RediffRequest, RowCopy, ScrollAlign,
@@ -853,6 +854,10 @@ pub struct App {
     highlighter_generation: u64,
     /// A left press not yet let go, which opens the context menu once held.
     held_press: Option<menu::HeldPress>,
+    /// Side pane widths the reader dragged, kept for the whole session.
+    pub(crate) pane_widths: diff::panes::PaneWidths,
+    /// The divider a left press grabbed, until the button comes up.
+    pub(crate) resizing: Option<diff::panes::Divider>,
     pub pending_tab: Option<tabs::TabOp>,
     /// Set while several projects are open.
     pub tab_strip: Option<tabs::TabStrip>,
@@ -1128,6 +1133,8 @@ impl App {
             pending_lens: None,
             pending_tab: None,
             held_press: None,
+            pane_widths: diff::panes::PaneWidths::default(),
+            resizing: None,
             language_picks: Vec::new(),
             highlighter_generation: 0,
             tab_strip: None,
@@ -1434,6 +1441,9 @@ impl App {
             );
             return;
         }
+        if self.resize_panes(mouse) {
+            return;
+        }
         let gesture = match mouse.kind {
             MouseEventKind::ScrollDown => MouseGesture::Scroll {
                 col,
@@ -1469,6 +1479,48 @@ impl App {
             _ => return,
         };
         self.mouse_gesture(gesture);
+    }
+
+    /// A press on a diff divider grabs it, a drag moves it and a double-click
+    /// resets it; `true` when the event went to a divider.
+    fn resize_panes(&mut self, mouse: crossterm::event::MouseEvent) -> bool {
+        use crossterm::event::{MouseButton, MouseEventKind};
+        if mouse.kind == MouseEventKind::Up(MouseButton::Left) && self.resizing.take().is_some() {
+            return true;
+        }
+        // a release we never saw (outside the window, under a dialog) ends the
+        // drag at the next press, so it cannot steal a selection drag
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+            self.resizing = None;
+        }
+        let Some(right_open) = self
+            .diff
+            .as_ref()
+            .filter(|_| self.screen() == Screen::Diff)
+            .map(|diff| diff.comments_open || diff.refs_visible())
+        else {
+            return false;
+        };
+        let total = self.frame_width;
+        match (mouse.kind, self.resizing) {
+            (MouseEventKind::Drag(MouseButton::Left), Some(divider)) => {
+                self.pane_widths
+                    .drag(divider, total, mouse.column, right_open);
+            }
+            (MouseEventKind::Down(MouseButton::Left), _) => {
+                let Some(divider) = self.pane_widths.divider_at(total, mouse.column, right_open)
+                else {
+                    return false;
+                };
+                if self.register_click_is_double(mouse.column, mouse.row) {
+                    self.pane_widths.reset(divider);
+                } else {
+                    self.resizing = Some(divider);
+                }
+            }
+            _ => return false,
+        }
+        true
     }
 
     fn select_at(&mut self, col: u16, row: u16) {

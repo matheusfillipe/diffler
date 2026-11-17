@@ -113,7 +113,11 @@ pointer: each entry is a palette `Command`, so it names its key and runs
 the same action. The diff screen picks the verbs by the pane the click
 lands in (`diff_menu_actions`), the status screen by the row's kind
 (`status_menu_actions`), and over an open selection the entries act on the
-whole range. Screens with no mouse support open no menu. A click on the tab
+whole range. Screens with no mouse support open no menu. On the diff screen
+a press on a pane divider, or the column beside it on the diff's side, grabs
+it and a drag resizes that side pane (`app/diff/panes.rs`), stopping before
+the diff drops under 40 columns; a double-click on it goes back to the
+automatic width. The sizes last for the session. A click on the tab
 row switches tabs, read against the width the row was drawn at. A click
 outside an open composer keeps its text aside (`DiffView::parked_drafts`,
 one per line, reply or edit) and closes it; opening the composer on the
