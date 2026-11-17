@@ -1,18 +1,18 @@
 {
-  "version": "0.23.0",
+  "version": "0.23.1",
   "description": "Terminal code review for AI coding agents",
   "homepage": "https://github.com/matheusfillipe/diffler",
   "license": "MIT OR Apache-2.0",
   "architecture": {
     "64bit": {
-      "url": "https://github.com/matheusfillipe/diffler/releases/download/v0.23.0/diffler-v0.23.0-x86_64-pc-windows-msvc.zip",
-      "hash": "33864635466d645a2fe5523c2fffe1a328972a577eb577d2a6b72996e4681e24",
-      "extract_dir": "diffler-v0.23.0-x86_64-pc-windows-msvc"
+      "url": "https://github.com/matheusfillipe/diffler/releases/download/v0.23.1/diffler-v0.23.1-x86_64-pc-windows-msvc.zip",
+      "hash": "e7ef2ce005c777e015d60f2d204949e807d583c224a7fdb86980e71e83a917ef",
+      "extract_dir": "diffler-v0.23.1-x86_64-pc-windows-msvc"
     },
     "arm64": {
-      "url": "https://github.com/matheusfillipe/diffler/releases/download/v0.23.0/diffler-v0.23.0-aarch64-pc-windows-msvc.zip",
-      "hash": "48fc033c8e98cadc881c4b6bce97be36756f0f8474a4320c3605617e8914a000",
-      "extract_dir": "diffler-v0.23.0-aarch64-pc-windows-msvc"
+      "url": "https://github.com/matheusfillipe/diffler/releases/download/v0.23.1/diffler-v0.23.1-aarch64-pc-windows-msvc.zip",
+      "hash": "177da9a5bf295faf927e0e9422cb6cf37f28deafb9959dffe617f855278504f4",
+      "extract_dir": "diffler-v0.23.1-aarch64-pc-windows-msvc"
     }
   },
   "bin": "diffler.exe"
