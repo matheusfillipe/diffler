@@ -4,7 +4,11 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
-ignore = []
+ignore = [
+  # chrono only reaches us through rmcp and schemars, and no maintained
+  # release exists to move to yet
+  { id = "RUSTSEC-2026-0543", reason = "transitive through rmcp and schemars, no upgrade available" },
+]
 
 [licenses]
 version = 2
