@@ -855,7 +855,7 @@ dependencies = [
 
 [[package]]
 name = "diffler"
-version = "0.23.1"
+version = "0.23.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -889,7 +889,7 @@ dependencies = [
 
 [[package]]
 name = "diffler-core"
-version = "0.23.1"
+version = "0.23.2"
 dependencies = [
  "arborium-dockerfile",
  "criterion",
