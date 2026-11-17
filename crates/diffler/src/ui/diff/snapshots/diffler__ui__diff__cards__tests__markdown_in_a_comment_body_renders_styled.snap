@@ -1,5 +1,5 @@
 ---
-source: crates/diffler/src/ui/diff.rs
+source: crates/diffler/src/ui/diff/cards.rs
 expression: terminal.backend()
 ---
 " c add comment · r reply · m mark viewed · C see comment list · ? help                                                  "
@@ -11,8 +11,8 @@ expression: terminal.backend()
 "                                  ▌ reviewer · open                                                                     "
 "                                  ▌ call foo() then make it bold                                                        "
 "                                  ▌                                                                                     "
-"                                ▌   2          41                                                                       "
-"                                ▌        2     42                                                                       "
+"                                ▏   2          41                                                                       "
+"                                ▏        2     42                                                                       "
 "                                    3    3 }                                                                            "
 "                                                                                                                        "
 "                                                                                                                        "

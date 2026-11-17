@@ -1,5 +1,5 @@
 ---
-source: crates/diffler/src/ui/diff.rs
+source: crates/diffler/src/ui/diff/pane.rs
 expression: render(&mut app).backend()
 ---
 " c add comment · r reply · m mark viewed · C see comment list · ? help                                                  "
@@ -11,8 +11,8 @@ expression: render(&mut app).backend()
 "                                   17   17 fn f17() {}                                                                  "
 "                                   18   18 fn f18() {}                                                                  "
 "                                   19   19 fn f19() {}                                                                  "
-"                                ▌  20      fn f20() {}                                                                  "
-"                                ▌       20 fn twenty() {}                                                               "
+"                                ▏  20      fn f20() {}                                                                  "
+"                                ▏       20 fn twenty() {}                                                               "
 "                                   21   21 fn f21() {}                                                                  "
 "                                   22   22 fn f22() {}                                                                  "
 "                                   23   23 fn f23() {}                                                                  "

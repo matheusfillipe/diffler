@@ -1,6 +1,5 @@
 ---
-source: crates/diffler/src/ui/diff.rs
-assertion_line: 2673
+source: crates/diffler/src/ui/diff/comments.rs
 expression: render(&mut app).backend()
 ---
 " c add comment · r reply · m mark viewed · C see comment list · ? help                                                  "
@@ -12,8 +11,8 @@ expression: render(&mut app).backend()
 "                                  ▌ reviewer · open                                          ○ dave This preview has …  "
 "                                  ▌ why 42?                                                                             "
 "                                  ▌                                                        ▸ todo.md (1)                "
-"                                ▌   2          41                                                                       "
-"                                ▌        2     42                                                                       "
+"                                ▏   2          41                                                                       "
+"                                ▏        2     42                                                                       "
 "                                  ▌ alexandra-the-longform-reviewer · open                                              "
 "                                  ▌ looks fine                                                                          "
 "                                  ▌                                                                                     "

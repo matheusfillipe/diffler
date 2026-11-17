@@ -1,5 +1,5 @@
 ---
-source: crates/diffler/src/ui/diff.rs
+source: crates/diffler/src/ui/diff/pane.rs
 expression: render(&mut app).backend()
 ---
 " c add comment · r reply · m mark viewed · C see comment list · ? help                                                  "
@@ -9,9 +9,9 @@ expression: render(&mut app).backend()
 "                                 @@ -1,4 +1,4 @@                                                                        "
 "                                    1    1 fn main() {                                                                  "
 "                                    2     ≈    let total=add(1,2);                                                      "
-"                                ▌   3          let label = name(total);                                                 "
+"                                ▏   3          let label = name(total);                                                 "
 "                                         2≈    let total = add(1, 2);                                                   "
-"                                ▌        3     let label = title(total);                                                "
+"                                ▏        3     let label = title(total);                                                "
 "                                    4    4 }                                                                            "
 "                                                                                                                        "
 "                                                                                                                        "

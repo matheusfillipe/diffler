@@ -38,8 +38,8 @@ pub fn render_hunk_lines(
     theme: &Theme,
     hunk: &Hunk,
     syntax: Option<SideSyntax<'_>>,
-    width: u16,
-    selected: Option<usize>,
+    (width, selected): (u16, Option<usize>),
+    unstaged: bool,
 ) -> Vec<Line<'static>> {
     let gutter = hunk_gutter_width(hunk);
     let mut lines = vec![hunk_header(theme, hunk, width, selected == Some(0), true)];
@@ -54,7 +54,10 @@ pub fn render_hunk_lines(
             LineFlags {
                 selected: selected == Some(index + 1),
                 focused: true,
-                marks: CellMarks::default(),
+                marks: CellMarks {
+                    annotated: false,
+                    unstaged,
+                },
             },
             &[],
         )
@@ -243,7 +246,10 @@ pub fn render_diff_line(
     let LineFlags {
         selected,
         focused,
-        marks: CellMarks { annotated, staged },
+        marks: CellMarks {
+            annotated,
+            unstaged,
+        },
     } = flags;
     let (base_bg, emph_bg) = line_backgrounds(theme, line, selected, focused, annotated);
 
@@ -254,9 +260,9 @@ pub fn render_diff_line(
     let prefix = |first: bool| {
         vec![
             Span::styled(
-                rail(line, staged),
+                rail(line, unstaged),
                 Style::new()
-                    .fg(rail_color(theme, line, selected, staged))
+                    .fg(rail_color(theme, line, selected, unstaged))
                     .bg(base_bg),
             ),
             Span::styled(
@@ -363,12 +369,12 @@ fn line_backgrounds(
     (base_bg, emph_bg)
 }
 
-/// A thick bar marks a change still to stage, a thin one a change the index
-/// already holds.
-fn rail(line: &DiffLine, staged: bool) -> &'static str {
+/// A thick bar marks a committed or staged change, a thin one a change still
+/// to stage.
+fn rail(line: &DiffLine, unstaged: bool) -> &'static str {
     match line.kind {
         _ if line.reformat_only => " ",
-        LineKind::Added | LineKind::Deleted if staged => "▏",
+        LineKind::Added | LineKind::Deleted if unstaged => "▏",
         LineKind::Added | LineKind::Deleted => "▌",
         LineKind::Context => " ",
     }
@@ -407,7 +413,7 @@ fn line_content(
         .collect()
 }
 
-fn rail_color(theme: &Theme, line: &DiffLine, selected: bool, staged: bool) -> Color {
+fn rail_color(theme: &Theme, line: &DiffLine, selected: bool, unstaged: bool) -> Color {
     if selected {
         return theme.accent;
     }
@@ -416,22 +422,22 @@ fn rail_color(theme: &Theme, line: &DiffLine, selected: bool, staged: bool) -> C
         LineKind::Deleted => theme.error_fg,
         LineKind::Context => theme.dim,
     };
-    if staged {
-        crate::theme::blend(color, theme.panel, STAGED_RAIL_FADE_PERCENT)
+    if unstaged {
+        crate::theme::blend(color, theme.panel, UNSTAGED_RAIL_FADE_PERCENT)
     } else {
         color
     }
 }
 
-const STAGED_RAIL_FADE_PERCENT: u16 = 35;
+const UNSTAGED_RAIL_FADE_PERCENT: u16 = 35;
 
 /// What a diff line carries besides its text.
 #[derive(Clone, Copy, Default)]
 pub struct CellMarks {
     /// A comment sits on this line.
     pub annotated: bool,
-    /// The index already holds this change.
-    pub staged: bool,
+    /// A working tree change still to stage.
+    pub unstaged: bool,
 }
 
 /// One side of a side-by-side row, `None` for a column with no counterpart.
@@ -533,7 +539,15 @@ fn side_rows(
     selected: bool,
     focused: bool,
 ) -> Vec<Vec<Span<'static>>> {
-    let Some((line, syntax, CellMarks { annotated, staged })) = cell else {
+    let Some((
+        line,
+        syntax,
+        CellMarks {
+            annotated,
+            unstaged,
+        },
+    )) = cell
+    else {
         let bg = if selected {
             cursor_band(theme, theme.panel, focused)
         } else {
@@ -556,9 +570,9 @@ fn side_rows(
     let prefix = |first: bool| {
         vec![
             Span::styled(
-                rail(line, staged),
+                rail(line, unstaged),
                 Style::new()
-                    .fg(rail_color(theme, line, selected, staged))
+                    .fg(rail_color(theme, line, selected, unstaged))
                     .bg(base_bg),
             ),
             Span::styled(
@@ -1097,7 +1111,7 @@ flowchart LR
     #[test]
     fn hunk_renders_header_gutter_and_emphasis() {
         let theme = Theme::github_dark();
-        let lines = render_hunk_lines(&theme, &sample_hunk(), None, 60, None);
+        let lines = render_hunk_lines(&theme, &sample_hunk(), None, (60, None), false);
         assert_eq!(lines.len(), 5, "header + 4 diff lines");
         let has_bg = |line: &Line<'_>, bg| line.spans.iter().any(|s| s.style.bg == Some(bg));
         assert!(has_bg(&lines[2], theme.del_emph_bg), "deleted emphasis bg");
@@ -1119,7 +1133,7 @@ flowchart LR
             context: String::new(),
             lines: vec![first_word],
         };
-        let lines = render_hunk_lines(&theme, &hunk, None, 60, None);
+        let lines = render_hunk_lines(&theme, &hunk, None, (60, None), false);
         let emphasized: String = lines[1]
             .spans
             .iter()
@@ -1132,8 +1146,8 @@ flowchart LR
     #[test]
     fn selected_row_gets_cursor_background() {
         let theme = Theme::github_dark();
-        let plain = render_hunk_lines(&theme, &sample_hunk(), None, 60, None);
-        let selected = render_hunk_lines(&theme, &sample_hunk(), None, 60, Some(2));
+        let plain = render_hunk_lines(&theme, &sample_hunk(), None, (60, None), false);
+        let selected = render_hunk_lines(&theme, &sample_hunk(), None, (60, Some(2)), false);
         assert_eq!(plain[1], selected[1], "unselected rows unchanged");
         assert_ne!(plain[2], selected[2], "selected row repainted");
     }
@@ -1219,7 +1233,7 @@ flowchart LR
             context: String::new(),
             lines: vec![bad],
         };
-        let lines = render_hunk_lines(&theme, &hunk, None, 40, None);
+        let lines = render_hunk_lines(&theme, &hunk, None, (40, None), false);
         let text: String = lines[1]
             .spans
             .iter()
@@ -1242,7 +1256,7 @@ flowchart LR
             context: String::new(),
             lines: vec![over],
         };
-        let lines = render_hunk_lines(&theme, &hunk, None, 40, None);
+        let lines = render_hunk_lines(&theme, &hunk, None, (40, None), false);
         let text: String = lines[1]
             .spans
             .iter()

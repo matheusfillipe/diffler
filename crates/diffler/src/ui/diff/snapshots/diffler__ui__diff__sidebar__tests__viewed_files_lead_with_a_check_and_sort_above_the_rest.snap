@@ -1,5 +1,5 @@
 ---
-source: crates/diffler/src/ui/diff.rs
+source: crates/diffler/src/ui/diff/sidebar.rs
 expression: render(&mut app).backend()
 ---
 " c add comment · r reply · m mark viewed · C see comment list · ? help                                                  "
@@ -7,7 +7,7 @@ expression: render(&mut app).backend()
 "▌✓ a.txt                  +1 -0  modified  a.txt ✓ viewed                                                    +1 -0 █████"
 " ✓ b.txt                  +1 -0  @@ -1,1 +1,2 @@                                                                        "
 " ● c.txt                  +1 -0     1    1 one                                                                          "
-"                                ▌        2 two                                                                          "
+"                                ▏        2 two                                                                          "
 "                                                                                                                        "
 "                                                                                                                        "
 "                                                                                                                        "

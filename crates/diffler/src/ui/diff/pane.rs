@@ -455,7 +455,7 @@ fn split_row_lines(
                         highlights.and_then(|hl| split_side_syntax(hl, line, side)),
                         CellMarks {
                             annotated: line_annotated(ctx.session, ctx.bots, &file.path, line),
-                            staged: line_staged(ctx, &file.path, line),
+                            unstaged: line_unstaged(ctx, &file.path, line),
                         },
                     )
                 })
@@ -607,7 +607,7 @@ fn row_lines(
                     focused: state.focused,
                     marks: CellMarks {
                         annotated,
-                        staged: line_staged(ctx, &file.path, line),
+                        unstaged: line_unstaged(ctx, &file.path, line),
                     },
                 },
                 marks,
@@ -693,9 +693,9 @@ fn render_scope_crumb(
     frame.render_widget(Paragraph::new(scope_line(theme, &crumbs, area.width)), area);
 }
 
-fn line_staged(ctx: &RenderCtx<'_>, file_path: &str, line: &DiffLine) -> bool {
+fn line_unstaged(ctx: &RenderCtx<'_>, file_path: &str, line: &DiffLine) -> bool {
     ctx.staged
-        .is_some_and(|staged| staged.is_staged(file_path, line))
+        .is_some_and(|staged| !staged.is_staged(file_path, line))
 }
 
 fn line_annotated(

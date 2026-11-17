@@ -118,6 +118,7 @@ fn body(app: &App, area: Rect) -> (Vec<Line<'static>>, u16, Vec<Option<usize>>) 
                     line_rows: &mut line_rows,
                     cursor_line_index: &mut cursor_line_index,
                     cursor_span: &mut cursor_span,
+                    unstaged: section != Section::Staged,
                 };
                 index += hunk_block(app, file_diff, hunk, index, area.width, &mut accum);
             }
@@ -175,6 +176,8 @@ struct BodyAccum<'a> {
     /// A wrapped diff line is taller than one row, and the margin has to
     /// clear all of it.
     cursor_span: &'a mut usize,
+    /// The hunk sits in a section still to stage, so its rail draws thin.
+    unstaged: bool,
 }
 
 /// Returns how many rows the block spans.
@@ -211,9 +214,13 @@ fn hunk_block(
         .highlights
         .get(&(file_diff.path.clone(), file_diff.sides_hash()))
         .map(|cached| (cached.old.as_slice(), cached.new.as_slice()));
-    accum
-        .lines
-        .extend(render_hunk_lines(&app.theme, hunk, syntax, width, selected));
+    accum.lines.extend(render_hunk_lines(
+        &app.theme,
+        hunk,
+        syntax,
+        (width, selected),
+        accum.unstaged,
+    ));
     accum.line_rows.extend(
         heights
             .iter()
