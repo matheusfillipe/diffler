@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794918778189,
+  "lastUpdate": 1795109736430,
   "repoUrl": "https://github.com/matheusfillipe/diffler",
   "entries": {
     "Benchmark": [
@@ -22367,6 +22367,102 @@ window.BENCHMARK_DATA = {
             "name": "scope_index/20000",
             "value": 59197313,
             "range": "± 1591557",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "committer": {
+            "email": "matheusfillipeag@gmail.com",
+            "name": "Matheus Fillipe",
+            "username": "matheusfillipe"
+          },
+          "distinct": true,
+          "id": "064149376d55749585bbaf794950778315f7d313",
+          "message": "fix: declare agent flags as plain booleans so clients send true, not \"true\"",
+          "timestamp": "2026-11-19T18:30:53+01:00",
+          "tree_id": "4756c52ad2e073ba5084c50a6f2546d69a41c1cb",
+          "url": "https://github.com/matheusfillipe/diffler/commit/064149376d55749585bbaf794950778315f7d313"
+        },
+        "date": 1795109735481,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "syndiff_emphasis/1000",
+            "value": 7641463,
+            "range": "± 67433",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/1000",
+            "value": 23844,
+            "range": "± 278",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/1000",
+            "value": 5467341,
+            "range": "± 27866",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/1000",
+            "value": 4499782,
+            "range": "± 38173",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/5000",
+            "value": 46746340,
+            "range": "± 982297",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/5000",
+            "value": 119964,
+            "range": "± 5251",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/5000",
+            "value": 28065210,
+            "range": "± 261397",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/5000",
+            "value": 23097687,
+            "range": "± 206549",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/20000",
+            "value": 196649507,
+            "range": "± 3161297",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/20000",
+            "value": 497016,
+            "range": "± 4518",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/20000",
+            "value": 123994281,
+            "range": "± 757126",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/20000",
+            "value": 101947143,
+            "range": "± 1392671",
             "unit": "ns/iter"
           }
         ]
