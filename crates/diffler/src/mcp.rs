@@ -524,7 +524,8 @@ pub struct ReplyCommentParams {
     /// Author the reply as the human, so it waits as their draft and goes out
     /// with their next submitted review. Use it when the human asks for
     /// replies in their name.
-    pub as_human: Option<bool>,
+    #[serde(default)]
+    pub as_human: bool,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -557,11 +558,13 @@ pub struct AddCommentParams {
     /// Author the comment as the human, so it goes out untouched with their
     /// next submitted review. Off by default, which leaves the comment the
     /// agent's own for the human to answer.
-    pub as_human: Option<bool>,
+    #[serde(default)]
+    pub as_human: bool,
     /// Comment on lines outside the diff, numbered as in the file. The human
     /// reviews the diff, so such a comment waits in their comment list; set
     /// it only for a point about code outside the change.
-    pub outside_diff: Option<bool>,
+    #[serde(default)]
+    pub outside_diff: bool,
     /// The project to act on: its folder name from `review_status`, or its
     /// path. Omit it for the project the human is looking at.
     pub project: Option<String>,
@@ -999,7 +1002,7 @@ impl DifflerMcp {
         let kind = McpRequestKind::ReplyComment {
             id: params.id,
             body: params.body,
-            as_human: params.as_human.unwrap_or(false),
+            as_human: params.as_human,
         };
         match self.request(kind).await? {
             McpResponse::Replied { status } => Ok(Json(ReplyResponse { ok: true, status })),
@@ -1050,8 +1053,8 @@ impl DifflerMcp {
             line: params.line,
             line_end: params.line_end,
             body: params.body,
-            as_human: params.as_human.unwrap_or(false),
-            outside_diff: params.outside_diff.unwrap_or(false),
+            as_human: params.as_human,
+            outside_diff: params.outside_diff,
         };
         match self.request_in(params.project, kind).await? {
             McpResponse::Added { id } => Ok(Json(AddCommentResponse { id })),
@@ -1966,6 +1969,19 @@ mod tests {
                     tool.name
                 );
             }
+        }
+    }
+
+    #[test]
+    fn as_human_is_an_optional_plain_boolean() {
+        for tool in DifflerMcp::tool_router().list_all() {
+            let schema = serde_json::Value::Object((*tool.input_schema).clone());
+            let Some(flag) = schema.pointer("/properties/as_human") else {
+                continue;
+            };
+            assert_eq!(flag["type"], "boolean", "{}: {flag}", tool.name);
+            let required = schema["required"].as_array().cloned().unwrap_or_default();
+            assert!(!required.contains(&"as_human".into()), "{}", tool.name);
         }
     }
 
