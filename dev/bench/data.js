@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795109736430,
+  "lastUpdate": 1795190704737,
   "repoUrl": "https://github.com/matheusfillipe/diffler",
   "entries": {
     "Benchmark": [
@@ -22463,6 +22463,102 @@ window.BENCHMARK_DATA = {
             "name": "scope_index/20000",
             "value": 101947143,
             "range": "± 1392671",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "78ce09e7b108bc025276340062231d2ccb18b3ec",
+          "message": "chore(deps): bump the deps group with 3 updates (#65)\n\nBumps the deps group with 3 updates: [rmcp](https://github.com/modelcontextprotocol/rust-sdk), [tree-sitter-sequel](https://github.com/derekstride/tree-sitter-sql) and [tree-sitter-scala](https://github.com/tree-sitter/tree-sitter-scala).\n\n\nUpdates `rmcp` from 3.9.0 to 3.10.0\n- [Release notes](https://github.com/modelcontextprotocol/rust-sdk/releases)\n- [Changelog](https://github.com/modelcontextprotocol/rust-sdk/blob/main/release-plz.toml)\n- [Commits](https://github.com/modelcontextprotocol/rust-sdk/compare/rmcp-v3.9.0...rmcp-v3.10.0)\n\nUpdates `tree-sitter-sequel` from 0.3.11 to 0.3.13\n- [Release notes](https://github.com/derekstride/tree-sitter-sql/releases)\n- [Changelog](https://github.com/DerekStride/tree-sitter-sql/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/derekstride/tree-sitter-sql/compare/v0.3.11...v0.3.13)\n\nUpdates `tree-sitter-scala` from 0.26.12 to 0.26.13\n- [Release notes](https://github.com/tree-sitter/tree-sitter-scala/releases)\n- [Commits](https://github.com/tree-sitter/tree-sitter-scala/compare/v0.26.12...v0.26.13)\n\n---\nupdated-dependencies:\n- dependency-name: rmcp\n  dependency-version: 3.10.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: deps\n- dependency-name: tree-sitter-sequel\n  dependency-version: 0.3.13\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: deps\n- dependency-name: tree-sitter-scala\n  dependency-version: 0.26.13\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: deps\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-11-20T17:00:40+01:00",
+          "tree_id": "77e0fb227beb407f5da19fbe9a4e8e32ef883761",
+          "url": "https://github.com/matheusfillipe/diffler/commit/78ce09e7b108bc025276340062231d2ccb18b3ec"
+        },
+        "date": 1795190703846,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "syndiff_emphasis/1000",
+            "value": 5128349,
+            "range": "± 188162",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/1000",
+            "value": 14923,
+            "range": "± 865",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/1000",
+            "value": 3611426,
+            "range": "± 242679",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/1000",
+            "value": 2877244,
+            "range": "± 232942",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/5000",
+            "value": 31237997,
+            "range": "± 1218926",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/5000",
+            "value": 74577,
+            "range": "± 597",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/5000",
+            "value": 18572752,
+            "range": "± 923309",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/5000",
+            "value": 14455081,
+            "range": "± 259528",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "syndiff_emphasis/20000",
+            "value": 137325953,
+            "range": "± 3089996",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pairing_fallback/20000",
+            "value": 305209,
+            "range": "± 19989",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "highlight_whole_file/20000",
+            "value": 78221700,
+            "range": "± 2622148",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scope_index/20000",
+            "value": 63657189,
+            "range": "± 1073959",
             "unit": "ns/iter"
           }
         ]
