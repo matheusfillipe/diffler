@@ -30,6 +30,7 @@ pub mod rowsel;
 mod search;
 pub mod stats;
 mod status;
+mod suggestion;
 pub mod tabs;
 pub mod text_edit;
 pub mod walkthrough;

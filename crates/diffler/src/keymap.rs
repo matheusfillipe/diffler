@@ -107,6 +107,9 @@ pub enum Action {
     ToggleBots,
     SwitchDiffAlgorithm,
     Comment,
+    Suggest,
+    /// Add a suggestion block to the open comment.
+    AddSuggestion,
     VisualSelect,
     Reply,
     Resolve,
@@ -252,6 +255,8 @@ impl Action {
             Self::ToggleBots => "toggle_bots",
             Self::SwitchDiffAlgorithm => "switch_diff_algorithm",
             Self::Comment => "comment",
+            Self::Suggest => "suggest",
+            Self::AddSuggestion => "add_suggestion",
             Self::VisualSelect => "visual_select",
             Self::Reply => "reply",
             Self::Resolve => "resolve",
@@ -396,6 +401,8 @@ impl Action {
             Self::ToggleBots => "hide or show bot comments",
             Self::SwitchDiffAlgorithm => "change the diff algorithm",
             Self::Comment => "comment on this line",
+            Self::Suggest => "suggest a change",
+            Self::AddSuggestion => "add a suggestion block to this comment",
             Self::VisualSelect => "select several rows",
             Self::Reply => "reply to this comment",
             Self::Resolve => "resolve this comment",
@@ -443,7 +450,7 @@ impl Action {
         }
     }
 
-    pub(crate) const ALL: [Self; 137] = [
+    pub(crate) const ALL: [Self; 139] = [
         Self::CenterCursor,
         Self::CursorTop,
         Self::CursorBottom,
@@ -539,6 +546,8 @@ impl Action {
         Self::FullPageDown,
         Self::FullPageUp,
         Self::Comment,
+        Self::Suggest,
+        Self::AddSuggestion,
         Self::VisualSelect,
         Self::Reply,
         Self::Resolve,
@@ -726,6 +735,8 @@ const DIFF_DEFAULTS: &[(&str, Action)] = &[
     ("{", Action::PrevComment),
     ("}", Action::NextComment),
     ("c", Action::Comment),
+    ("gs", Action::Suggest),
+    ("<c-s>", Action::AddSuggestion),
     ("V", Action::VisualSelect),
     ("r", Action::Reply),
     ("R", Action::Resolve),

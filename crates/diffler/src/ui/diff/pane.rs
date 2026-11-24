@@ -490,6 +490,7 @@ fn split_row_lines(
         SplitRow::Composer { line } => match composer {
             Some(composer) => vec![composer_row_line(
                 ctx.theme,
+                ctx.suggest_key.as_deref(),
                 composer,
                 line,
                 width,
@@ -628,6 +629,7 @@ fn row_lines(
         DiffRow::Composer { line } => match diff.composer.as_ref() {
             Some(composer) => vec![composer_row_line(
                 ctx.theme,
+                ctx.suggest_key.as_deref(),
                 composer,
                 *line,
                 width,

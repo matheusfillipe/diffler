@@ -1042,7 +1042,7 @@ impl DifflerMcp {
     }
 
     #[tool(
-        description = "Write a review comment on a line or an inclusive line range in the review the human has open: the working tree, or the commit, range or PR on screen. To comment on another review, `focus` it first. The comment is anchored like the human's own, so it shows as outdated once its line changes. It is the agent's comment, for the human to answer in its thread; `as_human` makes it the human's own, sent with their next submitted review. Returns its `id`."
+        description = "Write a review comment on a line or an inclusive line range in the review the human has open: the working tree, or the commit, range or PR on screen. To comment on another review, `focus` it first. The comment is anchored like the human's own, so it shows as outdated once its line changes. It is the agent's comment, for the human to answer in its thread; `as_human` makes it the human's own, sent with their next submitted review. The body may hold a ```suggestion block with the text to replace the anchored lines. Returns its `id`."
     )]
     async fn add_comment(
         &self,

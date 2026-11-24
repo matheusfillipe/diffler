@@ -231,7 +231,12 @@ impl App {
                 Some(WalkthroughSidebarRow::Stop(index)) => self.confirm_delete_stop(index),
                 None => self.info("move into the diff to comment"),
             },
-            Action::VisualSelect | Action::Reply | Action::Resolve | Action::ClaimComment => {
+            Action::VisualSelect
+            | Action::Suggest
+            | Action::AddSuggestion
+            | Action::Reply
+            | Action::Resolve
+            | Action::ClaimComment => {
                 self.info("move into the diff to comment");
             }
             Action::SymbolLens | Action::SymbolLensBack => {
@@ -265,6 +270,8 @@ impl App {
             // side-by-side is read-only; commenting and selection need the
             // unified pane
             Action::Comment
+            | Action::Suggest
+            | Action::AddSuggestion
             | Action::VisualSelect
             | Action::Reply
             | Action::Resolve
@@ -274,6 +281,7 @@ impl App {
                 self.info("switch to the unified view (|) to comment");
             }
             Action::Comment => self.comment_at_cursor(),
+            Action::Suggest | Action::AddSuggestion => self.suggest_at_cursor(),
             Action::VisualSelect => self.toggle_visual(),
             Action::Reply => self.reply_at_cursor(),
             Action::Resolve => self.resolve_at_cursor(),

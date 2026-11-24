@@ -69,7 +69,11 @@ input modal behind a branch name, a PR title or body, and a review summary,
 hands the buffer to `$EDITOR` on a scratch temp file, deleted once the text
 is read back whatever the outcome, and reads it into the same box; a
 cancelled edit, a failed editor, or the box holding nothing focused all
-leave it exactly as it was, the last one saying so. Runs (the
+leave it exactly as it was, the last one saying so. `<c-s>` in the
+composer and `gs` on a line insert a ```` ```suggestion ```` block of the
+anchored lines (`app/suggestion.rs`); a card holding one draws it as a
+small diff, the anchored lines read off the row model
+(`DiffView::suggested_over`, read through `CardViews`). Runs (the
 CI run list), Graph (CI run detail on the shared node-graph component), Prs
 (open PRs of the repo's forge), CiLog (a
 job's log folded into its real steps), and File (below). The diff sidebar has three

@@ -46,6 +46,15 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let (body, bar) = super::screen_chrome(frame, app, HINTS);
 
     let open_figure_hint = app.active_keymap().chord_for(Action::OpenFigureGraph);
+    let suggest_key = app
+        .active_keymap()
+        .chord_for(Action::AddSuggestion)
+        .map(|chord| {
+            chord
+                .trim_start_matches('<')
+                .trim_end_matches('>')
+                .to_owned()
+        });
     app.queue_enrich_selected();
     // comment bodies are parsed to this width, so we set it before anything reads them
     let right_open = app
@@ -102,6 +111,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             algorithm,
             author_orders,
             avatars: AvatarCtx::new(avatar_states, human_author, covered),
+            suggest_key,
         };
         draw_body(frame, body, &ctx, diff);
     }
@@ -131,6 +141,8 @@ struct RenderCtx<'a> {
     algorithm: diffler_core::diffalgo::DiffAlgorithm,
     author_orders: HashMap<&'a str, usize>,
     avatars: AvatarCtx<'a>,
+    /// The composer's footer names this key for adding a suggestion.
+    suggest_key: Option<String>,
 }
 
 #[derive(Clone, Copy)]

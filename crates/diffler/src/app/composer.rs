@@ -5,7 +5,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use diffler_core::session::Anchor;
 use unicode_width::UnicodeWidthChar;
 
-use super::{App, DiffRow, Flow, text_edit};
+use super::{App, DiffRow, Flow, suggestion, text_edit};
 use crate::editor::{EditorPurpose, TextBoxTarget};
 use crate::keymap::Action;
 
@@ -204,9 +204,79 @@ impl App {
         });
     }
 
+    /// The lines the open composer's comment is anchored to, for a suggestion
+    /// to replace.
+    fn composer_anchored_lines(&self) -> Vec<String> {
+        let Some(diff) = self.diff.as_ref() else {
+            return Vec::new();
+        };
+        let Some(composer) = diff.composer.as_ref() else {
+            return Vec::new();
+        };
+        let session = self.review.session_for(&diff.source);
+        let anchor = match composer.anchor() {
+            Some(anchor) => Some(anchor),
+            None => composer
+                .comment_id()
+                .and_then(|id| session.comment(id))
+                .map(|comment| &comment.anchor),
+        };
+        anchor.map_or_else(Vec::new, |anchor| {
+            suggestion::anchored_lines(&diff.model_for_rows(&self.review), anchor)
+        })
+    }
+
+    fn add_suggestion_to_composer(&mut self) {
+        let lines = self.composer_anchored_lines();
+        if lines.is_empty() {
+            self.info("comment on a diff line to suggest a change");
+            return;
+        }
+        let Some(diff) = self.diff.as_mut() else {
+            return;
+        };
+        if let Some(composer) = diff.composer.as_mut() {
+            suggestion::insert(&mut composer.buffer, &mut composer.cursor, &lines);
+        }
+        diff.mark_reflow();
+        diff.ensure_rows(&self.review);
+    }
+
+    /// Open the composer on the cursor's line or selection with a suggestion
+    /// block already in it and the cursor on a blank line above for the why.
+    pub(crate) fn suggest_on(&mut self, anchor: Anchor) {
+        let lines = self.diff.as_ref().map_or_else(Vec::new, |diff| {
+            suggestion::anchored_lines(&diff.model_for_rows(&self.review), &anchor)
+        });
+        if lines.is_empty() {
+            self.info("move to a diff line to suggest a change");
+            return;
+        }
+        self.open_composer(ComposerKind::New { anchor }, String::new());
+        let Some(diff) = self.diff.as_mut() else {
+            return;
+        };
+        if let Some(composer) = diff.composer.as_mut() {
+            if composer.buffer.is_empty() {
+                composer.buffer.push('\n');
+                composer.cursor = 1;
+                suggestion::insert(&mut composer.buffer, &mut composer.cursor, &lines);
+                composer.cursor = 0;
+            } else {
+                suggestion::insert(&mut composer.buffer, &mut composer.cursor, &lines);
+            }
+        }
+        diff.mark_reflow();
+        diff.ensure_rows(&self.review);
+    }
+
     pub(super) fn handle_composer_key(&mut self, key: &KeyEvent) -> Flow {
         if self.matches_action(key, Action::EditExternally) {
             self.edit_composer_externally();
+            return Flow::Continue;
+        }
+        if self.matches_action(key, Action::AddSuggestion) {
+            self.add_suggestion_to_composer();
             return Flow::Continue;
         }
         let Some(diff) = self.diff.as_mut() else {

@@ -342,6 +342,19 @@ pub(in crate::ui) fn card_row(
             spans
         }
         CommentLine::Figure { .. } => return None,
+        CommentLine::Suggestion { added, text } => {
+            let (sign, sign_fg, line_bg) = if *added {
+                ("+ ", theme.added, theme.add_line_bg)
+            } else {
+                ("- ", theme.error_fg, theme.del_line_bg)
+            };
+            let spans = vec![
+                bar,
+                Span::styled(sign, Style::new().fg(sign_fg).bg(line_bg)),
+                Span::styled(text.clone(), Style::new().fg(theme.fg).bg(line_bg)),
+            ];
+            return Some(pad_line(spans, line_bg, width));
+        }
         CommentLine::ReplyGap
         | CommentLine::ReplyHead { .. }
         | CommentLine::Reply { .. }
@@ -400,6 +413,7 @@ pub(super) fn summary_row_line(
         }
         // the summary has no anchor and no thread
         CommentLine::Note(_)
+        | CommentLine::Suggestion { .. }
         | CommentLine::ReplyGap
         | CommentLine::ReplyHead { .. }
         | CommentLine::Reply { .. }
@@ -415,6 +429,7 @@ pub(super) fn summary_row_line(
 /// The open composer, drawn as the card it will become, with the caret as a reversed cell.
 pub(super) fn composer_row_line(
     theme: &Theme,
+    suggest_key: Option<&str>,
     composer: &Composer,
     line: usize,
     width: u16,
@@ -459,7 +474,16 @@ pub(super) fn composer_row_line(
             Span::styled(" newline · ".to_owned(), dim),
             Span::styled("esc".to_owned(), fg),
             Span::styled(" cancel".to_owned(), dim),
-        ],
+        ]
+        .into_iter()
+        .chain(suggest_key.into_iter().flat_map(|key| {
+            [
+                Span::styled(" · ".to_owned(), dim),
+                Span::styled(key.to_owned(), fg),
+                Span::styled(" add suggestion".to_owned(), dim),
+            ]
+        }))
+        .collect(),
     };
     pad_line(spans, bg, width)
 }
@@ -1186,6 +1210,94 @@ flowchart LR
             app.handle(key(c));
         }
         insta::assert_snapshot!(render(&mut app).backend());
+    }
+
+    fn composer_text(app: &App) -> (String, usize) {
+        let composer = app.diff.as_ref().unwrap().composer.as_ref().unwrap();
+        (composer.buffer.clone(), composer.cursor)
+    }
+
+    #[test]
+    fn gs_opens_a_comment_holding_the_line_as_a_suggestion() {
+        let (_fixture, mut app) = diff_app();
+        open_lib_diff(&mut app);
+        cursor_to_added_line(&mut app);
+        app.handle(key('g'));
+        app.handle(key('s'));
+        assert_eq!(
+            composer_text(&app),
+            ("\n```suggestion\n    42\n```".to_owned(), 0),
+            "the cursor waits on the blank line above for the why"
+        );
+        for c in "spell it out".chars() {
+            app.handle(key(c));
+        }
+        app.handle(crate::test_support::ctrl_key('s'));
+        let (buffer, _) = composer_text(&app);
+        assert_eq!(
+            buffer, "spell it out\n```suggestion\n    42\n```\n```suggestion\n    42\n```",
+            "ctrl-s adds another block on its own lines"
+        );
+    }
+
+    #[test]
+    fn ctrl_s_in_a_reply_suggests_over_the_threads_lines() {
+        let (_fixture, mut app) = diff_app();
+        open_lib_diff(&mut app);
+        cursor_to_added_line(&mut app);
+        app.handle(key('c'));
+        app.handle(key('x'));
+        app.handle(key('\n'));
+        settle_submit(&mut app);
+        let comment_row = app
+            .diff
+            .as_ref()
+            .unwrap()
+            .rows()
+            .iter()
+            .position(|row| matches!(row, crate::app::DiffRow::Comment { line: 0, .. }))
+            .expect("the comment header");
+        app.diff.as_mut().unwrap().cursor = comment_row;
+        app.handle(key('r'));
+        app.handle(crate::test_support::ctrl_key('s'));
+        assert_eq!(
+            composer_text(&app),
+            ("```suggestion\n    42\n```".to_owned(), 14)
+        );
+    }
+
+    #[test]
+    fn a_suggestion_renders_as_a_small_diff_of_the_anchored_line() {
+        let (_fixture, mut app) = diff_app();
+        open_lib_diff(&mut app);
+        app.review.session.add_comment(
+            diffler_core::session::Anchor {
+                file: "src/lib.rs".to_owned(),
+                line: Some(2),
+                line_end: None,
+                on_old_side: false,
+                line_text: Some("    42".to_owned()),
+                on_file: false,
+            },
+            "reviewer",
+            "name the number\n```suggestion\n    ANSWER\n```\nit reads better",
+        );
+        app.diff.as_mut().unwrap().invalidate();
+        let terminal = render(&mut app);
+        let buffer = terminal.backend().buffer();
+        let row_bg = |needle: &str| {
+            (0..buffer.area.height).find_map(|y| {
+                let line: String = (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect();
+                let x = line.find(needle)?;
+                let x = u16::try_from(line[..x].chars().count()).ok()?;
+                buffer[(x, y)].style().bg
+            })
+        };
+        assert_eq!(row_bg("- "), Some(app.theme.del_line_bg));
+        assert_eq!(row_bg("+     ANSWER"), Some(app.theme.add_line_bg));
+        insta::assert_snapshot!(terminal.backend());
     }
 
     #[test]

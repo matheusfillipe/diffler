@@ -93,6 +93,13 @@ impl App {
         self.open_composer(ComposerKind::New { anchor }, String::new());
     }
 
+    pub(super) fn suggest_at_cursor(&mut self) {
+        match self.comment_anchor() {
+            Some(anchor) => self.suggest_on(anchor),
+            None => self.info("move to a diff line to suggest a change"),
+        }
+    }
+
     /// `c` in the file sidebar: a whole-file comment (a line-less anchor) on the
     /// selected file, rendered above that file's diff.
     pub(super) fn comment_on_selected_file(&mut self) {

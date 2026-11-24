@@ -128,6 +128,9 @@ pub struct DiffView {
     /// Parsed bodies of the comments that hold a figure, so we parse a
     /// diagram only when it changes.
     pub(crate) figures: FigureCache,
+    /// The anchored lines of each comment that suggests a change, read off
+    /// the model the rows were built from.
+    suggested_over: HashMap<String, Vec<String>>,
     /// A figure was parsed afresh, so its `click` targets still need reading.
     figures_dirty: bool,
     /// Stop and note comments whose `anchor_ref` fails to resolve, and why.
@@ -267,6 +270,7 @@ impl DiffView {
             slide: None,
             walkthrough_built: None,
             figures: FigureCache::new(),
+            suggested_over: HashMap::new(),
             figures_dirty: false,
             unresolved_anchors: HashMap::new(),
             pin_broken: false,
@@ -485,6 +489,15 @@ impl DiffView {
         let model_cow = Self::model_for_layout(self.layout, base, &self.context_files);
         let model: &DiffModel = &model_cow;
         self.selected = self.selected.min(model.files.len().saturating_sub(1));
+        self.suggested_over = session
+            .comments
+            .iter()
+            .filter(|comment| super::suggestion::has_suggestion(&comment.body))
+            .map(|comment| {
+                let lines = super::suggestion::anchored_lines(model, &comment.anchor);
+                (comment.id.clone(), lines)
+            })
+            .collect();
         let composer = self.composer.as_ref();
         // we capture what the cursor, visual anchor and band sit on while
         // `self.rows` still holds the list they were seated against
@@ -768,6 +781,7 @@ impl DiffView {
     pub(crate) fn card_views(&self) -> rows::CardViews<'_> {
         rows::CardViews {
             figures: &self.figures,
+            suggested_over: &self.suggested_over,
             unresolved_anchors: &self.unresolved_anchors,
             open_threads: &self.open_threads,
             bots: &self.bots,

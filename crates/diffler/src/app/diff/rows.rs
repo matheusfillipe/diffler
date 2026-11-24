@@ -10,6 +10,7 @@ use diffler_core::walkthrough::Located;
 
 use crate::app::composer::{Composer, ComposerKind, ComposerLine, card_budget};
 use crate::app::markdown::{self, MdSpan};
+use crate::app::suggestion;
 use crate::app::walkthrough::{Block, FigureCache, unresolved_explanation};
 
 /// One terminal row of the diff pane. Indices point into the model the view
@@ -89,6 +90,12 @@ pub enum CommentLine {
     FoldedReplies {
         count: usize,
         authors: Vec<String>,
+    },
+    /// One line of a suggestion block's diff: an anchored line it replaces,
+    /// or a line it puts in their place.
+    Suggestion {
+        added: bool,
+        text: String,
     },
     Footer,
 }
@@ -186,6 +193,7 @@ pub(super) fn row_copy_for(line: &CommentLine, header: &str, key: &str) -> RowCo
         }
         CommentLine::ReplyHead { author, .. } => RowCopy::Text(author.clone()),
         CommentLine::FoldedReplies { count, .. } => RowCopy::Text(folded_replies_text(*count)),
+        CommentLine::Suggestion { text, .. } => RowCopy::Text(text.clone()),
         CommentLine::Figure { block, row } => RowCopy::Figure {
             key: key.to_owned(),
             block: *block,
@@ -223,12 +231,49 @@ fn body_display(
                 }
             }
         }
-        None => {
-            for logical in markdown::parse(body, highlighter, budget) {
+        None => push_prose(&mut lines, body, highlighter, budget),
+    }
+    lines
+}
+
+fn push_prose(
+    lines: &mut Vec<CommentLine>,
+    text: &str,
+    highlighter: Option<&Highlighter>,
+    budget: usize,
+) {
+    for logical in markdown::parse(text, highlighter, budget) {
+        lines.extend(
+            markdown::wrap(&logical, budget, budget)
+                .into_iter()
+                .map(CommentLine::Body),
+        );
+    }
+}
+
+/// A body holding suggestion blocks, each drawn as a small diff of the
+/// `anchored` lines it replaces against the lines it suggests.
+fn suggestion_body_display(
+    body: &str,
+    row_width: u16,
+    highlighter: Option<&Highlighter>,
+    anchored: &[String],
+) -> Vec<CommentLine> {
+    let budget = card_budget(row_width);
+    let mut lines = vec![CommentLine::Header];
+    for part in suggestion::split(body) {
+        match part {
+            suggestion::Part::Prose(text) => push_prose(&mut lines, &text, highlighter, budget),
+            suggestion::Part::Suggestion(suggested) => {
+                let removed = anchored.iter().map(|text| (false, text.as_str()));
+                let added = suggested.into_iter().map(|text| (true, text));
                 lines.extend(
-                    markdown::wrap(&logical, budget, budget)
-                        .into_iter()
-                        .map(CommentLine::Body),
+                    removed
+                        .chain(added)
+                        .map(|(added, text)| CommentLine::Suggestion {
+                            added,
+                            text: text.to_owned(),
+                        }),
                 );
             }
         }
@@ -266,9 +311,14 @@ pub fn comment_display(
     blocks: Option<&[Block]>,
     unresolved: Option<Located>,
     open: bool,
+    anchored: &[String],
 ) -> Vec<CommentLine> {
     let budget = card_budget(row_width);
-    let mut lines = body_display(&comment.body, row_width, highlighter, blocks);
+    let mut lines = if blocks.is_none() && suggestion::has_suggestion(&comment.body) {
+        suggestion_body_display(&comment.body, row_width, highlighter, anchored)
+    } else {
+        body_display(&comment.body, row_width, highlighter, blocks)
+    };
     if let Some(reason) =
         unresolved.and_then(|reason| unresolved_explanation(&comment.anchor.file, reason))
     {
@@ -415,6 +465,8 @@ pub(crate) struct CardViews<'a> {
     pub unresolved_anchors: &'a HashMap<String, Located>,
     pub open_threads: &'a HashSet<String>,
     pub bots: &'a crate::app::bots::BotFilter,
+    /// The anchored lines of each comment that suggests a change.
+    pub suggested_over: &'a HashMap<String, Vec<String>>,
 }
 
 impl CardViews<'_> {
@@ -436,6 +488,9 @@ impl CardViews<'_> {
             blocks_of(self.figures, &comment.id),
             self.unresolved_anchors.get(&comment.id).copied(),
             self.open_threads.contains(&comment.id),
+            self.suggested_over
+                .get(&comment.id)
+                .map_or(&[], Vec::as_slice),
         )
     }
 }

@@ -295,7 +295,7 @@ fn comment_display_lines_cover_body_and_replies() {
         .id
         .clone();
     session.reply(&id, "agent", "done\nand verified");
-    let lines = comment_display(&session.comments[0], u16::MAX, None, None, None, false);
+    let lines = comment_display(&session.comments[0], u16::MAX, None, None, None, false, &[]);
     let plain = |s: &str| MdSpan {
         text: s.to_owned(),
         ..MdSpan::default()
@@ -343,7 +343,7 @@ fn comment_display_wraps_long_text_to_the_pane_width() {
         .id
         .clone();
     session.reply(&id, "agent", "a reply that also runs past the pane");
-    let lines = comment_display(&session.comments[0], 30, None, None, None, false);
+    let lines = comment_display(&session.comments[0], 30, None, None, None, false, &[]);
     let budget = 30 - 4;
     let text = |runs: &[MdSpan]| runs.iter().map(|s| s.text.clone()).collect::<String>();
     for line in &lines {
@@ -401,7 +401,7 @@ fn thread_with(replies: &[(&str, &str)]) -> Session {
 #[test]
 fn a_closed_thread_folds_the_replies_before_the_latest() {
     let session = thread_with(&[("agent", "one"), ("reviewer", "two"), ("agent", "three")]);
-    let closed = comment_display(&session.comments[0], u16::MAX, None, None, None, false);
+    let closed = comment_display(&session.comments[0], u16::MAX, None, None, None, false, &[]);
     assert!(closed.contains(&CommentLine::FoldedReplies {
         count: 2,
         authors: vec!["agent".to_owned(), "reviewer".to_owned()],
@@ -413,7 +413,7 @@ fn a_closed_thread_folds_the_replies_before_the_latest() {
             .count()
     };
     assert_eq!(heads(&closed), 1, "only the latest reply shows");
-    let open = comment_display(&session.comments[0], u16::MAX, None, None, None, true);
+    let open = comment_display(&session.comments[0], u16::MAX, None, None, None, true, &[]);
     assert_eq!(heads(&open), 3, "an open thread shows every reply");
     assert!(
         !open
@@ -429,7 +429,7 @@ fn a_closed_thread_shows_its_latest_reply_in_full() {
         ("reviewer", "two"),
         ("agent", "a\n\nb\n\nc\n\nd\n\ne"),
     ]);
-    let closed = comment_display(&session.comments[0], u16::MAX, None, None, None, false);
+    let closed = comment_display(&session.comments[0], u16::MAX, None, None, None, false, &[]);
     let body = closed
         .iter()
         .filter(|line| matches!(line, CommentLine::Reply { .. }))
@@ -492,7 +492,7 @@ fn comment_display_hard_splits_an_unbreakable_token() {
         "reviewer",
         "https://example.invalid/a/very/long/unbroken/path/segment/thing",
     );
-    let lines = comment_display(&session.comments[0], 24, None, None, None, false);
+    let lines = comment_display(&session.comments[0], 24, None, None, None, false, &[]);
     for line in &lines {
         if let CommentLine::Body(runs) = line {
             let width: usize = runs.iter().map(|s| s.text.width()).sum();

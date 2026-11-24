@@ -159,8 +159,15 @@ fn card_rows(app: &App, width: u16) -> BTreeMap<usize, Vec<Vec<Line<'static>>>> 
             orders: &orders,
             avatars: &avatars,
         };
-        let parts =
-            crate::app::comment_display(comment, width, Some(&app.highlighter), None, None, true);
+        let parts = crate::app::comment_display(
+            comment,
+            width,
+            Some(&app.highlighter),
+            None,
+            None,
+            true,
+            &[],
+        );
         let drawn = parts
             .iter()
             .filter_map(|part| {

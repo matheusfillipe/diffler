@@ -29,7 +29,8 @@ and fixes the code while you watch.
 
 Press <kbd>c</kbd> on any line to leave a comment, or select a few lines with
 <kbd>V</kbd> first to comment on all of them. Your agent replies in each thread
-and fixes the code, and the diff updates while you watch.
+and fixes the code, and the diff updates while you watch. Press <kbd>gs</kbd>
+instead to suggest a change that GitHub and GitLab can apply.
 
 ![a comment on a line that crashes, the agent's reply under it, and the fixed code below](assets/readme/agent.png)
 

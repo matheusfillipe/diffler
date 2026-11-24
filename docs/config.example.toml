@@ -163,6 +163,8 @@
 # collapse_context = "-"
 # expand_whole_file = "="
 # comment = "c"
+# suggest = "gs"            # comment on the line or selection with a suggestion block of its text
+# add_suggestion = "<c-s>"  # in an open comment, add a suggestion block of the anchored lines
 # visual_select = "V"
 # reply = "r"
 # resolve = "R"

@@ -26,7 +26,8 @@ You can open several repositories as tabs in one diffler, and the agent reaches 
   hunk. The body is trimmed and has to say something, capped like a stop's.
   Authored as the agent by default, so the human answers it in the thread;
   pass `as_human` to author it as the human's own instead, so it goes out
-  untouched with their next submitted review.
+  untouched with their next submitted review. The body may hold a
+  ```` ```suggestion ```` block with the text to replace the anchored lines.
 - **delete_comment**: delete a comment, the agent's or the human's. Refused
   for one already posted to the forge, for a walkthrough stop or note
   (revise or drop those with `publish_walkthrough`), and for one someone

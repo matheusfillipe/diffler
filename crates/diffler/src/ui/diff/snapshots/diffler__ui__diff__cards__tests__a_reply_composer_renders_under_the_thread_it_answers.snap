@@ -15,7 +15,7 @@ expression: render(&mut app).backend()
 "                                  ▌                                                                                     "
 "                                  ▌ reply                                                                               "
 "                                  ▌ because                                                                             "
-"                                  ▌ enter submit · a-enter newline · esc cancel                                         "
+"                                  ▌ enter submit · a-enter newline · esc cancel · c-s add suggestion                    "
 "                                    3    3 }                                                                            "
 "                                                                                                                        "
 "                                                                                                                        "
