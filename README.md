@@ -152,6 +152,8 @@ Run `diffler` in any git repo.
 - <kbd>e</kbd> opens the file in your editor
 - <kbd>Ctrl</kbd>+<kbd>k</kbd> finds any command, <kbd>?</kbd> shows every key
 
+You can also start somewhere specific. `diffler pr` opens your branch's pull request (or `diffler pr 42` for another one), and `diffler open src/main.rs:12` opens a file at a line. `diffler stats` prints the language breakdown and `diffler comments` prints your review comments as markdown.
+
 ### With a coding agent
 
 Connect your agent once:

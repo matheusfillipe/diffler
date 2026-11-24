@@ -1,6 +1,8 @@
 //! The language breakdown screen. Counting reads every tracked file, so it
 //! runs on the blocking pool.
 
+use std::fmt::Write as _;
+
 use diffler_core::stats::RepoStats;
 
 use crate::app::{App, Flow, Screen};
@@ -61,6 +63,30 @@ impl StatsView {
         }
         rows
     }
+}
+
+/// The breakdown as aligned plain text, in the scan's code order.
+pub fn stats_table(stats: &RepoStats) -> String {
+    let totals = stats.totals();
+    let rows = stats.languages.iter().chain(std::iter::once(&totals));
+    let width = rows
+        .clone()
+        .map(|row| row.name.len())
+        .max()
+        .unwrap_or(0)
+        .max("Language".len());
+    let mut out = format!(
+        "{:<width$}  {:>7}  {:>9}  {:>9}\n",
+        "Language", "Files", "Code", "Lines"
+    );
+    for row in rows {
+        let _ = writeln!(
+            out,
+            "{:<width$}  {:>7}  {:>9}  {:>9}",
+            row.name, row.files, row.code, row.lines
+        );
+    }
+    out
 }
 
 #[derive(Debug, Clone)]
@@ -172,6 +198,18 @@ mod tests {
             stats: Box::new(stats),
             token,
         });
+    }
+
+    #[test]
+    fn the_table_aligns_each_language_and_ends_on_the_total() {
+        let table = super::stats_table(&counted(&[("Rust", 120), ("TOML", 8)]));
+        assert_eq!(
+            table,
+            "Language    Files       Code      Lines\n\
+             Rust            1        120        120\n\
+             TOML            1          8          8\n\
+             total           2        128        128\n"
+        );
     }
 
     #[test]

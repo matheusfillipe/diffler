@@ -104,6 +104,18 @@ impl App {
         }
     }
 
+    /// Start on a spot from the command line. We keep the startup message,
+    /// since no agent asked for this one.
+    pub fn focus_at_launch(&mut self, target: FocusTarget) -> Result<(), String> {
+        let startup_message = self.message.take();
+        let response = self.agent_focus(target, None);
+        self.message = startup_message;
+        match response {
+            McpResponse::Error(err) => Err(err),
+            _ => Ok(()),
+        }
+    }
+
     /// The page loads the PR itself, so a PR the open list has not reached,
     /// or one already merged, opens all the same.
     fn focus_pr_page(&mut self, number: u64, note: Option<&str>) -> McpResponse {

@@ -600,6 +600,11 @@ impl App {
         self.copy_exported_feedback(exported, file_only);
     }
 
+    pub fn working_tree_feedback(&self) -> Option<String> {
+        self.feedback_markdown(&ReviewSource::WorkingTree, None, self.review.model())
+            .map(|(markdown, _)| markdown)
+    }
+
     /// The source's open comments as a markdown prompt, with their count.
     pub(crate) fn feedback_markdown(
         &self,

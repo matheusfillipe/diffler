@@ -95,6 +95,36 @@ fn y_copies_the_selected_files_feedback_as_markdown() {
 }
 
 #[test]
+fn the_working_tree_feedback_is_empty_until_a_comment_exists() {
+    let fixture = standard_fixture();
+    let mut app = App::new(fixture.review(), LoadedConfig::default());
+    assert_eq!(app.working_tree_feedback(), None);
+
+    app.review.session.add_comment(
+        Anchor {
+            file: "todo.md".to_owned(),
+            line: None,
+            line_end: None,
+            on_old_side: false,
+            line_text: None,
+            on_file: false,
+        },
+        "reviewer",
+        "tighten this",
+    );
+    let repo = fixture.root.file_name().unwrap().to_string_lossy();
+    assert_eq!(
+        app.working_tree_feedback().as_deref(),
+        Some(
+            format!(
+                "## Review feedback: {repo} @ main (1 comment)\n\n### todo.md\n> tighten this\n"
+            )
+            .as_str()
+        )
+    );
+}
+
+#[test]
 fn y_with_a_visual_selection_copies_the_diff_lines() {
     let fixture = standard_fixture();
     let mut app = diff_app(&fixture);

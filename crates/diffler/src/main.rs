@@ -43,6 +43,31 @@ enum Command {
         #[arg(long)]
         dump: bool,
     },
+    /// Open a pull request's page, by default the current branch's
+    Pr {
+        /// Pull request number
+        number: Option<u64>,
+    },
+    /// Open a file, optionally at a line
+    Open {
+        /// The file to open, with an optional line after a colon
+        #[arg(value_name = "FILE[:LINE]")]
+        location: String,
+    },
+    /// Print the repository's language breakdown
+    Stats,
+    /// Print the working tree's review comments as markdown
+    Comments,
+}
+
+fn split_location(raw: &str) -> (String, Option<u32>) {
+    let split = raw
+        .rsplit_once(':')
+        .and_then(|(file, line)| Some((file, line.parse().ok()?)));
+    match split {
+        Some((file, line)) if !file.is_empty() => (file.to_owned(), Some(line)),
+        _ => (raw.to_owned(), None),
+    }
 }
 
 #[tokio::main]
@@ -58,28 +83,130 @@ async fn main() -> color_eyre::Result<()> {
     };
     let loaded = config::load(repo.as_deref().ok(), &overrides)?;
 
-    match cli.command {
-        Some(Command::Config { dump: true }) => print_config_dump(&loaded),
-        Some(Command::Config { dump: false }) => Err(color_eyre::eyre::eyre!(
-            "nothing to do: try `diffler config --dump`"
-        )),
-        None => {
-            // fail before touching the terminal so the error stays readable
-            let root = match repo {
-                Ok(root) => root,
-                Err(err) => exit_without_repo(&err, &cli.path),
-            };
-            let review = Review::open_with_settings(&root, &loaded.config.diff_settings())?;
-            let app = App::new(review, loaded);
-            let terminal = ratatui::init();
-            set_mouse_capture(true);
-            install_mouse_panic_hook();
-            // the App lives in this future, and clippy's large_futures wants it on the heap
-            let result = Box::pin(run(terminal, app, overrides)).await;
-            set_mouse_capture(false);
-            ratatui::restore();
-            result
+    let command = match cli.command {
+        Some(Command::Config { dump: true }) => return print_config_dump(&loaded),
+        Some(Command::Config { dump: false }) => {
+            return Err(color_eyre::eyre::eyre!(
+                "nothing to do: try `diffler config --dump`"
+            ));
         }
+        command => command,
+    };
+    // fail before touching the terminal so the error stays readable
+    let root = match repo {
+        Ok(root) => root,
+        Err(err) => exit_without_repo(&err, &cli.path),
+    };
+    let review = Review::open_with_settings(&root, &loaded.config.diff_settings())?;
+    if matches!(command, Some(Command::Stats)) {
+        return print_stats(&review, &loaded);
+    }
+    let mut app = App::new(review, loaded);
+    let target = match command {
+        Some(Command::Comments) => {
+            print_comments(&app);
+            return Ok(());
+        }
+        Some(Command::Pr { number }) => {
+            let number = match number {
+                Some(number) => number,
+                None => branch_pr(&app).await.unwrap_or_else(|err| fail(&err)),
+            };
+            Some(mcp::FocusTarget::Pr(number))
+        }
+        Some(Command::Open { location }) => {
+            let (file, line) = split_location(&location);
+            Some(mcp::FocusTarget::Code {
+                file: repo_relative(&root, &file),
+                line,
+                line_end: None,
+                review: None,
+            })
+        }
+        _ => None,
+    };
+    if let Some(target) = target
+        && let Err(err) = app.focus_at_launch(target)
+    {
+        fail(&err);
+    }
+    let terminal = ratatui::init();
+    set_mouse_capture(true);
+    install_mouse_panic_hook();
+    // the App lives in this future, and clippy's large_futures wants it on the heap
+    let result = Box::pin(run(terminal, app, overrides)).await;
+    set_mouse_capture(false);
+    ratatui::restore();
+    result
+}
+
+/// The open pull request whose head is the checked-out branch.
+async fn branch_pr(app: &App) -> Result<u64, String> {
+    let Some(remote) = app.ci_remotes().into_iter().next() else {
+        return Err("no forge detected for this repo, so it has no pull requests".to_owned());
+    };
+    let Some(branch) = app.head.branch.as_deref() else {
+        return Err("HEAD is detached; pass the pull request number".to_owned());
+    };
+    let provider = provider_for(
+        &remote,
+        &app.review.repo_root,
+        Some(branch),
+        app.ci_yaml_cache.clone(),
+        app.ci_etags.clone(),
+    );
+    match provider.current_pr().await {
+        Ok(Some(pr)) => Ok(pr.number),
+        Ok(None) => Err(format!(
+            "no open pull request for branch {branch}; pass its number"
+        )),
+        Err(err) => Err(format!("cannot look up the pull request: {err}")),
+    }
+}
+
+/// A path from the shell is relative to the working directory, and the
+/// review names files from the repository root.
+fn repo_relative(root: &Path, file: &str) -> String {
+    let inside = std::fs::canonicalize(file).ok().and_then(|full| {
+        let root = std::fs::canonicalize(root).ok()?;
+        Some(
+            full.strip_prefix(root)
+                .ok()?
+                .to_string_lossy()
+                .replace('\\', "/"),
+        )
+    });
+    inside.unwrap_or_else(|| file.to_owned())
+}
+
+#[allow(clippy::print_stderr)]
+fn fail(message: &str) -> ! {
+    eprintln!("diffler: {message}");
+    std::process::exit(1)
+}
+
+// the TUI never starts on this path, so stdout is safe
+#[allow(clippy::print_stdout)]
+fn print_stats(review: &Review, loaded: &config::LoadedConfig) -> color_eyre::Result<()> {
+    // we count untracked files too, as the languages screen does
+    let untracked: Vec<String> = review
+        .status
+        .untracked
+        .files
+        .iter()
+        .map(|file| file.path.clone())
+        .collect();
+    let rules = loaded.config.classify.rules();
+    let stats = diffler_core::stats::scan_repo(&review.repo_root, &untracked, &rules)?;
+    print!("{}", app::stats::stats_table(&stats));
+    Ok(())
+}
+
+// the TUI never starts on this path, so stdout is safe
+#[allow(clippy::print_stdout)]
+fn print_comments(app: &App) {
+    if let Some(markdown) = app.working_tree_feedback() {
+        print!("{markdown}");
     }
 }
 
@@ -749,6 +876,54 @@ fn run_git(label: &str, argv: &[String], repo_root: &Path) -> AppEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse(args: &[&str]) -> Cli {
+        Cli::try_parse_from(std::iter::once("diffler").chain(args.iter().copied()))
+            .expect("valid arguments")
+    }
+
+    #[test]
+    fn pr_takes_an_optional_number() {
+        assert!(matches!(
+            parse(&["pr", "42"]).command,
+            Some(Command::Pr { number: Some(42) })
+        ));
+        assert!(matches!(
+            parse(&["pr"]).command,
+            Some(Command::Pr { number: None })
+        ));
+        assert!(Cli::try_parse_from(["diffler", "pr", "abc"]).is_err());
+    }
+
+    #[test]
+    fn open_splits_a_trailing_line_off_the_file() {
+        let location = |args: &[&str]| match parse(args).command {
+            Some(Command::Open { location }) => split_location(&location),
+            other => panic!("expected open, got {other:?}"),
+        };
+        assert_eq!(
+            location(&["open", "src/lib.rs:12"]),
+            ("src/lib.rs".to_owned(), Some(12))
+        );
+        assert_eq!(
+            location(&["open", "src/lib.rs"]),
+            ("src/lib.rs".to_owned(), None)
+        );
+        assert_eq!(location(&["open", "a:b"]), ("a:b".to_owned(), None));
+        assert_eq!(location(&["open", ":3"]), (":3".to_owned(), None));
+    }
+
+    #[test]
+    fn subcommands_take_the_repository_path_and_global_flags() {
+        let cli = parse(&["../widgets", "stats"]);
+        assert_eq!(cli.path, "../widgets");
+        assert!(matches!(cli.command, Some(Command::Stats)));
+
+        let cli = parse(&["comments", "--no-mcp"]);
+        assert_eq!(cli.path, ".");
+        assert!(cli.no_mcp);
+        assert!(matches!(cli.command, Some(Command::Comments)));
+    }
 
     #[test]
     fn a_git_child_cannot_ask_the_user_anything() {
