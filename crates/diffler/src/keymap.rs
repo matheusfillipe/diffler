@@ -885,6 +885,8 @@ const PR_DEFAULTS: &[(&str, Action)] = &[
     ("[", Action::PrevSection),
     ("<c-n>", Action::NextSection),
     ("<c-p>", Action::PrevSection),
+    ("za", Action::ToggleFold),
+    ("<tab>", Action::ToggleFold),
     ("<cr>", Action::Open),
     ("D", Action::OpenPrDiff),
     ("c", Action::Comment),

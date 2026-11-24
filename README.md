@@ -264,7 +264,7 @@ You move like in vim: `j`/`k`, `gg`/`G`, `/` to search, Ctrl+d/Ctrl+u to scroll.
 | `t` | Change how the file list is grouped |
 | `\|` | Switch between a unified and a side-by-side diff |
 | `]` / `[` | Jump to the next / previous hunk |
-| `za` / Tab | Fold or unfold a hunk, or the earlier replies of a thread |
+| `za` / Tab | Fold or unfold a hunk, the earlier replies of a thread, or a pull request comment |
 | `*` / `#` | Find where the symbol on the line is used |
 | `d` | Review against another branch or commit |
 | `C` | Open the list of comments |

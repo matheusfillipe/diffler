@@ -272,6 +272,7 @@
 # reply = "r"
 # next_section = "]"      # step to the next card
 # prev_section = "["
+# toggle_fold = "za"      # fold the description or a comment; <tab> too
 # branch_checkout = "b"
 # pr_worktree = "w"
 # request_reviewer = "R"

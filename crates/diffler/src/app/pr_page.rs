@@ -2,6 +2,8 @@
 //! the PR as a whole, which its diff has no line for. It sits between the PR
 //! list and the PR's diff.
 
+use std::collections::HashSet;
+
 use crossterm::event::KeyEvent;
 use diffler_core::highlight::Highlighter;
 
@@ -13,7 +15,7 @@ use crate::ci::{PrConversation, PrNote, PullRequest, ReviewerCandidate};
 use crate::keymap::Action;
 
 /// What a row belongs to, so a key acts on the whole card the cursor is in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum PrItem {
     Files,
     Reviewers,
@@ -38,9 +40,14 @@ pub(crate) enum PrLine {
     Body(Vec<MdSpan>),
     Loading,
     Failed(String),
+    /// The rows a folded card hides.
+    Folded(usize),
     NoDescription,
     NoNotes,
 }
+
+/// A folded card keeps this many rows, so its first lines still read.
+const FOLDED_ROWS: usize = 2;
 
 pub(crate) struct PrPage {
     pub pr: PullRequest,
@@ -52,6 +59,7 @@ pub(crate) struct PrPage {
     /// A comment the forge refused, so the next `c` starts from its text.
     pub unsent: Option<String>,
     pub bots: super::bots::BotFilter,
+    folded: HashSet<PrItem>,
     lines: Vec<(Option<PrItem>, PrLine)>,
     lines_width: u16,
     stale: bool,
@@ -68,6 +76,7 @@ impl PrPage {
             scroll: 0,
             viewport: 0,
             unsent: None,
+            folded: HashSet::new(),
             lines: Vec::new(),
             lines_width: 0,
             stale: true,
@@ -89,6 +98,7 @@ impl PrPage {
                 self.conversation.as_ref(),
                 self.error.as_deref(),
                 &self.bots,
+                &self.folded,
                 width,
                 highlighter,
             );
@@ -154,6 +164,21 @@ impl PrPage {
             .collect()
     }
 
+    /// Folds or unfolds the card under the cursor and keeps the cursor on its head.
+    fn toggle_fold(&mut self) -> bool {
+        let Some(item @ (PrItem::Description | PrItem::Note(_))) = self.item_at_cursor() else {
+            return false;
+        };
+        if !self.folded.remove(&item) {
+            self.folded.insert(item);
+        }
+        if let Some(head) = self.lines.iter().position(|(at, _)| *at == Some(item)) {
+            self.cursor = head;
+        }
+        self.invalidate();
+        true
+    }
+
     fn last_line(&self) -> usize {
         self.lines.len().saturating_sub(1)
     }
@@ -174,6 +199,7 @@ fn layout(
     conversation: Option<&PrConversation>,
     error: Option<&str>,
     bots: &super::bots::BotFilter,
+    folded: &HashSet<PrItem>,
     width: u16,
     highlighter: &Highlighter,
 ) -> Vec<(Option<PrItem>, PrLine)> {
@@ -204,7 +230,7 @@ fn layout(
             &mut lines,
             PrItem::Description,
             &conversation.body,
-            budget,
+            (budget, folded.contains(&PrItem::Description)),
             highlighter,
         );
     }
@@ -233,7 +259,13 @@ fn layout(
             budget
         };
         lines.push((Some(item), PrLine::Head(Some(index))));
-        push_body(&mut lines, item, &note.body, budget, highlighter);
+        push_body(
+            &mut lines,
+            item,
+            &note.body,
+            (budget, folded.contains(&item)),
+            highlighter,
+        );
         lines.push((None, PrLine::Blank));
     }
     lines
@@ -243,15 +275,26 @@ fn push_body(
     lines: &mut Vec<(Option<PrItem>, PrLine)>,
     item: PrItem,
     body: &str,
-    budget: usize,
+    (budget, folded): (usize, bool),
     highlighter: &Highlighter,
 ) {
-    for logical in markdown::parse(body, Some(highlighter), budget) {
-        lines.extend(
-            markdown::wrap(&logical, budget, budget)
-                .into_iter()
-                .map(|spans| (Some(item), PrLine::Body(spans))),
-        );
+    let rows: Vec<_> = markdown::parse(body, Some(highlighter), budget)
+        .iter()
+        .flat_map(|logical| markdown::wrap(logical, budget, budget))
+        .collect();
+    let kept = if folded {
+        FOLDED_ROWS.min(rows.len())
+    } else {
+        rows.len()
+    };
+    let hidden = rows.len() - kept;
+    lines.extend(
+        rows.into_iter()
+            .take(kept)
+            .map(|spans| (Some(item), PrLine::Body(spans))),
+    );
+    if hidden > 0 {
+        lines.push((Some(item), PrLine::Folded(hidden)));
     }
 }
 
@@ -318,6 +361,11 @@ impl App {
             Action::FullPageUp => page.cursor = page.cursor.saturating_sub(step(true)),
             Action::NextSection => page.step_item(true),
             Action::PrevSection => page.step_item(false),
+            Action::ToggleFold => {
+                if !page.toggle_fold() {
+                    self.info("move to the description or a comment to fold it");
+                }
+            }
             Action::Open | Action::RequestReviewer
                 if action == Action::RequestReviewer
                     || page.item_at_cursor() == Some(PrItem::Reviewers) =>
@@ -624,6 +672,48 @@ pub(crate) mod tests {
             app.pr_page().and_then(PrPage::item_at_cursor),
             Some(PrItem::Files)
         );
+    }
+
+    #[test]
+    fn tab_folds_the_card_under_the_cursor_to_its_first_rows() {
+        let fixture = standard_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        app.open_pr_page(pr(7));
+        let mut long = conversation(7);
+        long.body = (1..=6)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        app.on_pr_conversation(7, &Ok(Box::new(long)));
+        let description = |app: &mut App| -> Vec<PrLine> {
+            let highlighter = std::sync::Arc::clone(&app.highlighter);
+            let page = app.pr_page_mut().expect("page");
+            page.lines(80, &highlighter)
+                .iter()
+                .filter(|(item, _)| *item == Some(PrItem::Description))
+                .map(|(_, line)| line.clone())
+                .collect()
+        };
+        let unfolded = description(&mut app);
+        let page = app.pr_page_mut().expect("page");
+        page.cursor = page
+            .cached_lines()
+            .iter()
+            .rposition(|(item, _)| *item == Some(PrItem::Description))
+            .expect("description row");
+        app.handle(crate::test_support::key('\t'));
+        let folded = description(&mut app);
+        assert_eq!(folded.len(), 1 + FOLDED_ROWS + 1, "{folded:?}");
+        assert_eq!(
+            folded.last(),
+            Some(&PrLine::Folded(unfolded.len() - 1 - FOLDED_ROWS))
+        );
+        assert_eq!(
+            app.pr_page().and_then(PrPage::item_at_cursor),
+            Some(PrItem::Description)
+        );
+        app.handle(crate::test_support::key('\t'));
+        assert_eq!(description(&mut app), unfolded);
     }
 
     #[test]

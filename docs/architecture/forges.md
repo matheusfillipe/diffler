@@ -39,7 +39,7 @@ walkthroughs and viewed marks all read them. `get_pr` is its MCP read.
 
 The page sits between the PR list and the diff: `<cr>` in the list or on a
 status PR row opens it with the cursor on the files row, so a second `<cr>`
-opens the diff, and `q` from the diff comes back to it. `App::pr_pages`
+opens the diff, and `q` from the diff comes back to it. `za` or `<tab>` folds the description or a comment to its first two rows. `App::pr_pages`
 holds one page per `Screen::Pr` on the stack. `c` and `r` post through
 `PrPost::Note`; GitLab threads its notes, so a reply goes into the
 discussion, while GitHub and Forgejo have flat PR comments, so a reply
