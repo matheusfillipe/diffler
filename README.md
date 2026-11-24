@@ -46,9 +46,9 @@ you straight to any file, line or pull request.
 
 <kbd>b</kbd> <kbd>p</kbd> lists the open pull requests with their CI, review
 state and labels, on GitHub, GitLab and Forgejo. Press <kbd>f</kbd> there to
-show only the ones waiting on your review, your own, or a label. Open one to read its
-conversation, review the diff and submit your review. <kbd>C</kbd> lists every
-comment on the side, and <kbd>R</kbd> requests a reviewer, Copilot included.
+show only the ones waiting on your review, your own, or a label. Open one to
+read its conversation, review the diff and submit your review. <kbd>C</kbd>
+lists every comment on the side, and <kbd>R</kbd> requests a reviewer, Copilot included.
 <kbd>H</kbd> hides the comments bots left, so you can focus on what people wrote.
 
 ![the pull request list with check marks, diff sizes and colored labels](assets/readme/prs.png)
@@ -154,7 +154,10 @@ Run `diffler` in any git repo.
 - <kbd>e</kbd> opens the file in your editor
 - <kbd>Ctrl</kbd>+<kbd>k</kbd> finds any command, <kbd>?</kbd> shows every key
 
-You can also start somewhere specific. `diffler pr` opens your branch's pull request (or `diffler pr 42` for another one), and `diffler open src/main.rs:12` opens a file at a line. `diffler stats` prints the language breakdown and `diffler comments` prints your review comments as markdown.
+You can also start somewhere specific. `diffler pr` opens your branch's pull
+request (or `diffler pr 42` for another one), and `diffler open src/main.rs:12`
+opens a file at a line. `diffler stats` prints the language breakdown and
+`diffler comments` prints your review comments as markdown.
 
 ### With a coding agent
 
@@ -264,6 +267,7 @@ You move like in vim: `j`/`k`, `gg`/`G`, `/` to search, Ctrl+d/Ctrl+u to scroll.
 | `s` / `u` | Stage / unstage a file, a hunk, or the lines you selected with `V` |
 | `cc` | Commit |
 | `c` | Comment on the line, or on a range you selected with `V`, in a diff or any file |
+| `gs` | Suggest a change to the line or the `V` selection, or Ctrl+s inside a comment |
 | `m` | Mark the file as viewed |
 | `t` | Change how the file list is grouped |
 | `\|` | Switch between a unified and a side-by-side diff |
