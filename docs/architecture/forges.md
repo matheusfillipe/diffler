@@ -25,6 +25,17 @@ submit_pr_review` posts each whole-file comment through `post_pr_comment`
 network call and one more forge notification per whole-file comment,
 since GitHub gives no way to fold it into the single review post.
 
+## PR list filter
+
+`f` on the list sets `App::pr_filter` (`ci::PrFilter`: one preset plus
+toggles), which lasts the session and starts at `[prs] default_filter`. The
+plain "all open" filter keeps the repository listing; any other filter goes
+through GitHub's search, as `repo:… is:pr is:open` plus qualifiers. GitLab maps
+it onto merge request list parameters. Forgejo's pulls endpoint filters by
+little, so we filter its newest open page ourselves. `ProviderKind::filters_by`
+says which options each forge supports; the menu greys the rest and the
+provider refuses them.
+
 ## PR page
 
 `Screen::Pr` shows what a PR says outside its diff: state, labels, the

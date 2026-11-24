@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ci::error::{CiError, Result, parse_json};
 use crate::ci::exec::CommandRunner;
+use crate::ci::filter::PrFilter;
 use crate::ci::model::{
     Annotation, AnnotationLevel, Artifact, CiJob, CiJobLeg, CiRun, JobId, JobStatus, Label,
     ListedPr, LogChunk, LogStepMeta, PrComment, PrConversation, PrNote, PrState, PrSummary,
@@ -198,6 +199,30 @@ impl GitHubProvider {
     }
 
     /// For GraphQL calls, where `gh` expands no `{owner}`/`{repo}` placeholders.
+    async fn search_prs(&self, search: &str) -> Result<Vec<ListedPr>> {
+        let query = format!(
+            "query($q:String!){{search(type:ISSUE,query:$q,first:50){{nodes{{\
+            ... on PullRequest{{{PR_LISTING_FIELDS}}}}}}}}}"
+        );
+        let args = [
+            "api".to_owned(),
+            "graphql".to_owned(),
+            "-f".to_owned(),
+            format!("query={query}"),
+            "-f".to_owned(),
+            format!("q={search}"),
+        ];
+        let raw = self.runner.run("gh", &args).await?;
+        let page: PrSearchPage = parse_json("pr search", &raw)?;
+        Ok(page
+            .data
+            .search
+            .nodes
+            .into_iter()
+            .map(PrListingApi::into_listed)
+            .collect())
+    }
+
     async fn repo_slug(&self) -> Result<(String, String)> {
         if let Some((owner, name)) = self.slug.as_deref().and_then(|s| s.split_once('/')) {
             return Ok((owner.to_owned(), name.to_owned()));
@@ -548,13 +573,18 @@ impl ForgeProvider for GitHubProvider {
 
     /// `gh pr list` fetches every check run and comment body and takes seconds
     /// on a busy repo, so we query only the rollup state and the comment count.
-    async fn list_prs(&self) -> Result<Vec<ListedPr>> {
+    async fn list_prs(&self, filter: &PrFilter) -> Result<Vec<ListedPr>> {
         let (owner, name) = self.repo_slug().await?;
-        let query = "query($owner:String!,$name:String!){repository(owner:$owner,name:$name){\
-            pullRequests(states:OPEN,first:50,orderBy:{field:CREATED_AT,direction:DESC}){nodes{\
-            number title url baseRefName headRefName headRefOid author{login} isDraft \
-            reviewDecision additions deletions updatedAt labels(first:100){nodes{name color}} \
-            comments{totalCount} commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}}}";
+        if !filter.is_all() {
+            return self
+                .search_prs(&filter.github_search(&format!("{owner}/{name}")))
+                .await;
+        }
+        let query = format!(
+            "query($owner:String!,$name:String!){{repository(owner:$owner,name:$name){{\
+            pullRequests(states:OPEN,first:50,orderBy:{{field:CREATED_AT,direction:DESC}}){{nodes{{\
+            {PR_LISTING_FIELDS}}}}}}}}}"
+        );
         let args = [
             "api".to_owned(),
             "graphql".to_owned(),
@@ -1540,9 +1570,25 @@ impl PrListItem {
     }
 }
 
+/// What one PR list row reads, shared by the repository listing and the search.
+const PR_LISTING_FIELDS: &str = "number title url baseRefName headRefName headRefOid \
+    author{login} isDraft reviewDecision additions deletions updatedAt \
+    labels(first:100){nodes{name color}} comments{totalCount} \
+    commits(last:1){nodes{commit{statusCheckRollup{state}}}}";
+
 #[derive(Deserialize)]
 struct PrListPage {
     data: PrListData,
+}
+
+#[derive(Deserialize)]
+struct PrSearchPage {
+    data: PrSearchData,
+}
+
+#[derive(Deserialize)]
+struct PrSearchData {
+    search: Nodes<PrListingApi>,
 }
 
 #[derive(Deserialize)]
@@ -2153,7 +2199,10 @@ jobs:
             .run_detail(&RunId("1".to_owned()))
             .await
             .expect("detail");
-        provider(None).list_prs().await.expect("prs");
+        provider(None)
+            .list_prs(&PrFilter::default())
+            .await
+            .expect("prs");
         provider(None).pr(7).await.expect("pr");
         provider(Some("feat")).current_pr().await.expect("current");
         provider(None)
@@ -3205,6 +3254,38 @@ jobs:
     }
 
     #[tokio::test]
+    async fn a_filter_searches_the_repo_and_reads_the_same_rows() {
+        let found = r#"{"data":{"search":{"nodes":[
+            {"number":7,"title":"Add widgets","author":{"login":"reviewer"},"isDraft":false,
+             "commits":{"nodes":[]},"comments":{"totalCount":1},"labels":{"nodes":[]}}]}}}"#;
+        let runner = std::sync::Arc::new(RecordingRunner::new(&[("graphql", found)]));
+        let provider = GitHubProvider::new(
+            Box::new(runner.clone()),
+            Vec::new(),
+            None,
+            YamlCache::default(),
+            EtagCache::default(),
+            Some("acme/widgets".to_owned()),
+        );
+        let filter = PrFilter {
+            preset: crate::ci::PrPreset::Review,
+            hide_drafts: true,
+            ..PrFilter::default()
+        };
+        let listed = provider.list_prs(&filter).await.expect("search");
+        assert_eq!(listed[0].pr.number, 7);
+        assert_eq!(listed[0].summary.comments, Some(1));
+        let call = runner.calls().join("\n");
+        assert!(call.contains("search(type:ISSUE"), "{call}");
+        assert!(
+            call.contains(
+                "q=repo:acme/widgets is:pr is:open sort:created-desc review-requested:@me draft:false"
+            ),
+            "{call}"
+        );
+    }
+
+    #[tokio::test]
     async fn the_listing_summarizes_checks_review_size_and_comments() {
         let listing = r#"{"data":{"repository":{"pullRequests":{"nodes":[
             {"number":7,"title":"Add widgets","author":{"login":"reviewer"},
@@ -3219,7 +3300,7 @@ jobs:
              "commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]},
              "comments":{"totalCount":0},"labels":{"nodes":[]}}]}}}}"#;
         let listed = provider(&[("repo view", SLUG), ("graphql", listing)])
-            .list_prs()
+            .list_prs(&PrFilter::default())
             .await
             .expect("listing");
         let first = &listed[0].summary;

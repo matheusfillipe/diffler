@@ -3681,7 +3681,7 @@ mod tests {
     async fn dispatch_if_queued(app: &App, provider: &crate::ci::GitHubProvider) {
         use crate::ci::ForgeProvider;
         if matches!(app.pending_ci, Some(CiRequest::Prs)) {
-            let _ = provider.list_prs().await;
+            let _ = provider.list_prs(&crate::ci::PrFilter::default()).await;
         }
     }
 
@@ -4303,10 +4303,10 @@ mod tests {
         app.ci_remotes = vec![github_remote()];
         app.status.group_folded[Group::Prs.index()] = false;
         cursor_to(&mut app, |row| matches!(row, Row::RecentHeader { .. }));
-        app.handle(AppEvent::CiPrs(vec![
-            pull_request(141).into(),
-            pull_request(142).into(),
-        ]));
+        app.handle(AppEvent::CiPrs(
+            crate::ci::PrFilter::default(),
+            vec![pull_request(141).into(), pull_request(142).into()],
+        ));
         assert!(
             matches!(app.cursor_row(), Some(Row::RecentHeader { .. })),
             "the PR rows insert above the repo band without dragging the cursor: {:?}",

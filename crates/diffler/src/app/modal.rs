@@ -391,6 +391,7 @@ impl App {
                 );
             }
             InputOp::WorktreeBranch => self.add_worktree(body, true),
+            InputOp::PrFilter(field) => self.submit_pr_filter(field, body),
             InputOp::Comment(kind) => self.apply_comment(*kind, body),
             InputOp::CreateBranch { checkout } => {
                 let name = body.to_owned();

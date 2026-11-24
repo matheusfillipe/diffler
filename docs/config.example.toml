@@ -82,6 +82,11 @@
 # Accounts to treat as bots beside the ones GitHub and GitLab mark themselves.
 # bots = ["release-helper"]
 
+[prs]
+# Which pull requests b p lists when a session starts: "all", "review" (asking
+# for my review), "mine" or "involves". f on the list changes it.
+# default_filter = "all"
+
 [classify]
 # Globs that pin a path into one of the "kinds" sidebar buckets, consulted
 # before the built-in rules and before the repo's own linguist-* gitattributes.
@@ -266,6 +271,18 @@
 # copy_url = "gy"
 # open_url = "gx"
 # refresh = "<c-r>"
+# pr_filter = "f"         # prefix key: the [keys.pr_filter] menu
+
+[keys.pr_filter]
+# all = "a"               # every open pull request
+# review = "r"            # asking for your review
+# mine = "m"
+# involves = "i"
+# no_drafts = "d"         # press again to show drafts
+# passing = "k"           # only passing checks, GitHub only
+# label = "l"
+# author = "u"
+# search = "/"            # a raw GitHub search, GitHub only
 
 [keys.pr]
 # open = "<cr>"           # open the pull request's diff

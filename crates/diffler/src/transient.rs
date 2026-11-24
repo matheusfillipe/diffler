@@ -17,6 +17,7 @@ pub enum TransientKind {
     Stash,
     Change,
     Worktree,
+    PrFilter,
 }
 
 impl TransientKind {
@@ -35,6 +36,7 @@ impl TransientKind {
             Self::Change => "change",
             // `[keys.worktrees]` is already the worktree screen's keymap
             Self::Worktree => "worktree_menu",
+            Self::PrFilter => "pr_filter",
         }
     }
 
@@ -50,10 +52,11 @@ impl TransientKind {
             Self::Stash => "Stash",
             Self::Change => "Change",
             Self::Worktree => "Worktree",
+            Self::PrFilter => "Filter pull requests",
         }
     }
 
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Commit,
         Self::Branch,
         Self::Diff,
@@ -64,6 +67,7 @@ impl TransientKind {
         Self::Stash,
         Self::Change,
         Self::Worktree,
+        Self::PrFilter,
     ];
 }
 
@@ -84,6 +88,14 @@ pub struct TransientGroup {
 pub struct Transient {
     pub kind: TransientKind,
     pub groups: Vec<TransientGroup>,
+}
+
+/// Entries the which-key panel draws apart: the settings now in effect, and
+/// the ones this repo cannot use.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TransientMarks {
+    pub on: Vec<Action>,
+    pub unavailable: Vec<Action>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -238,6 +250,42 @@ const CHANGE_GROUPS: &[DefaultGroup] = &[
     ),
 ];
 
+/// The presets swap one for another; the toggles narrow whichever is on.
+const PR_FILTER_GROUPS: &[DefaultGroup] = &[
+    (
+        "Preset",
+        &[
+            ("all", "a", Action::PrFilterAll, "Show all open"),
+            ("review", "r", Action::PrFilterReview, "Show ones to review"),
+            ("mine", "m", Action::PrFilterMine, "Show mine"),
+            (
+                "involves",
+                "i",
+                Action::PrFilterInvolves,
+                "Show ones involving me",
+            ),
+        ],
+    ),
+    (
+        "Narrow",
+        &[
+            ("no_drafts", "d", Action::PrFilterNoDrafts, "Hide drafts"),
+            (
+                "passing",
+                "k",
+                Action::PrFilterPassing,
+                "Require passing checks",
+            ),
+            ("label", "l", Action::PrFilterLabel, "Pick a label…"),
+            ("author", "u", Action::PrFilterAuthor, "Pick an author…"),
+        ],
+    ),
+    (
+        "Search",
+        &[("search", "/", Action::PrFilterSearch, "Edit search…")],
+    ),
+];
+
 impl TransientKind {
     fn default_groups(self) -> &'static [DefaultGroup] {
         match self {
@@ -251,6 +299,7 @@ impl TransientKind {
             Self::Fetch => FETCH_GROUPS,
             Self::Change => CHANGE_GROUPS,
             Self::Worktree => WORKTREE_GROUPS,
+            Self::PrFilter => PR_FILTER_GROUPS,
         }
     }
 }

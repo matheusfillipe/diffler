@@ -8,6 +8,7 @@ use serde::Deserialize;
 
 use crate::ci::error::{CiError, Result, parse_json};
 use crate::ci::exec::CommandRunner;
+use crate::ci::filter::{PrFilter, PrPreset};
 use crate::ci::model::{
     CiJob, CiRun, JobId, JobStatus, Label, ListedPr, LogChunk, PrComment, PrConversation, PrNote,
     PrState, PrSummary, PrVerdict, PullRequest, ReviewerCandidate, RunDetail, RunExtras, RunId,
@@ -105,6 +106,19 @@ impl ForgejoProvider {
     }
 
     async fn call(&self, path: &str, extra: &[String]) -> Result<String> {
+        self.request(&format!("repos/{}/{path}", self.repo), extra)
+            .await
+    }
+
+    /// The signed-in user's login, which needs a token.
+    async fn my_login(&self) -> Result<String> {
+        let raw = self.request("user", &[]).await?;
+        let user: ForgejoUser = parse_json("forgejo user", &raw)?;
+        Ok(user.login)
+    }
+
+    /// `api_path` is relative to `/api/v1/`.
+    async fn request(&self, api_path: &str, extra: &[String]) -> Result<String> {
         let host = self
             .host
             .as_deref()
@@ -123,7 +137,7 @@ impl ForgejoProvider {
             args.push(format!("Authorization: token {token}"));
         }
         args.extend_from_slice(extra);
-        args.push(format!("https://{host}/api/v1/repos/{}/{path}", self.repo));
+        args.push(format!("https://{host}/api/v1/{api_path}"));
         // the status bar renders a failed exec's argv, so we mask the token
         self.runner.run("curl", &args).await.map_err(|err| {
             let Some(token) = &self.token else { return err };
@@ -195,10 +209,23 @@ impl ForgeProvider for ForgejoProvider {
         Ok(RunExtras::default())
     }
 
-    async fn list_prs(&self) -> Result<Vec<ListedPr>> {
+    /// The pulls endpoint filters by little beyond state, so we filter the
+    /// newest open page ourselves.
+    async fn list_prs(&self, filter: &PrFilter) -> Result<Vec<ListedPr>> {
+        if let Some(what) = filter.declined_by(ProviderKind::Forgejo) {
+            return Err(CiError::Unsupported(what));
+        }
+        let me = match filter.preset {
+            PrPreset::Review | PrPreset::Mine => Some(self.my_login().await?),
+            PrPreset::All | PrPreset::Involves => None,
+        };
         let raw = self.get("pulls?state=open&limit=50").await?;
         let pulls: Vec<PullItem> = parse_json("pr list", &raw)?;
-        Ok(pulls.into_iter().map(PullItem::into_listed).collect())
+        Ok(pulls
+            .into_iter()
+            .filter(|pull| pull.matches(filter, me.as_deref()))
+            .map(PullItem::into_listed)
+            .collect())
     }
 
     async fn create_pr(&self, new: &crate::ci::NewPullRequest) -> Result<PullRequest> {
@@ -424,6 +451,9 @@ struct PullItem {
     draft: bool,
     #[serde(default)]
     labels: Vec<LabelItem>,
+    /// Forgejo sends `null` when nobody is asked.
+    #[serde(default)]
+    requested_reviewers: Option<Vec<ForgejoUser>>,
     additions: Option<u64>,
     deletions: Option<u64>,
     changed_files: Option<u64>,
@@ -486,6 +516,29 @@ impl PullItem {
     /// Older Forgejo marks a draft only with a WIP: title prefix.
     fn is_draft(&self) -> bool {
         self.draft || self.title.starts_with("WIP:")
+    }
+
+    /// `me` is the viewer's login, set when the preset needs it.
+    fn matches(&self, filter: &PrFilter, me: Option<&str>) -> bool {
+        let preset = match filter.preset {
+            PrPreset::Review => self
+                .requested_reviewers
+                .iter()
+                .flatten()
+                .any(|user| Some(user.login.as_str()) == me),
+            PrPreset::Mine => Some(self.user.login.as_str()) == me,
+            PrPreset::All | PrPreset::Involves => true,
+        };
+        preset
+            && !(filter.hide_drafts && self.is_draft())
+            && filter
+                .label
+                .as_ref()
+                .is_none_or(|label| self.labels.iter().any(|l| l.name == *label))
+            && filter
+                .author
+                .as_ref()
+                .is_none_or(|author| self.user.login == *author)
     }
 
     fn into_listed(mut self) -> ListedPr {
@@ -1285,13 +1338,42 @@ mod create_pr_tests {
             "labels":[{"name":"bug","color":"d73a4a"}],"additions":12,"deletions":3,"comments":2,
             "updated_at":"2026-08-07T10:00:00Z"}]"#;
         let runner = Arc::new(RecordingRunner::new(&[("pulls?state=open", listing)]));
-        let listed = provider(&runner).list_prs().await.expect("listing");
+        let listed = provider(&runner)
+            .list_prs(&PrFilter::default())
+            .await
+            .expect("listing");
         let summary = &listed[0].summary;
         assert!(summary.draft, "a WIP: title marks a draft");
         assert_eq!((summary.additions, summary.deletions), (Some(12), Some(3)));
         assert_eq!(summary.comments, Some(2));
         assert_eq!(summary.labels, [Label::new("bug".to_owned(), "d73a4a")]);
         assert_eq!(summary.updated, 1_786_096_800);
+    }
+
+    #[tokio::test]
+    async fn a_filter_keeps_the_pulls_asking_me_that_match_every_toggle() {
+        let pulls = r#"[
+            {"number":1,"title":"Asks me","head":{"ref":"a","sha":"1"},"base":{"ref":"main","sha":"0"},
+             "user":{"login":"peer"},"labels":[{"name":"backend"}],"requested_reviewers":[{"login":"reviewer"}]},
+            {"number":2,"title":"WIP: Asks me, draft","head":{"ref":"b","sha":"2"},"base":{"ref":"main","sha":"0"},
+             "user":{"login":"peer"},"labels":[{"name":"backend"}],"requested_reviewers":[{"login":"reviewer"}]},
+            {"number":3,"title":"Asks someone else","head":{"ref":"c","sha":"3"},"base":{"ref":"main","sha":"0"},
+             "user":{"login":"peer"},"labels":[{"name":"backend"}],"requested_reviewers":null},
+            {"number":4,"title":"Other label","head":{"ref":"d","sha":"4"},"base":{"ref":"main","sha":"0"},
+             "user":{"login":"peer"},"labels":[],"requested_reviewers":[{"login":"reviewer"}]}]"#;
+        let runner = Arc::new(RecordingRunner::new(&[
+            ("api/v1/user", r#"{"login":"reviewer"}"#),
+            ("pulls?state=open", pulls),
+        ]));
+        let filter = PrFilter {
+            preset: PrPreset::Review,
+            hide_drafts: true,
+            label: Some("backend".to_owned()),
+            ..PrFilter::default()
+        };
+        let listed = provider(&runner).list_prs(&filter).await.expect("listing");
+        let numbers: Vec<u64> = listed.iter().map(|listed| listed.pr.number).collect();
+        assert_eq!(numbers, [1]);
     }
 
     #[tokio::test]

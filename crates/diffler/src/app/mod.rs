@@ -25,6 +25,7 @@ mod modal;
 mod network;
 pub mod pr;
 pub mod pr_create;
+mod pr_filter;
 pub mod pr_page;
 pub mod rowsel;
 mod search;
@@ -203,6 +204,7 @@ pub enum InputOp {
     WorktreeBranch,
     /// A comment written, edited or answered in the file viewer.
     Comment(Box<composer::ComposerKind>),
+    PrFilter(pr_filter::PrFilterField),
 }
 
 /// What selecting a branch in the branch list does.
@@ -408,6 +410,7 @@ struct Transients {
     stash: Transient,
     change: Transient,
     worktree: Transient,
+    pr_filter: Transient,
 }
 
 impl Transients {
@@ -423,6 +426,7 @@ impl Transients {
             TransientKind::Stash => &self.stash,
             TransientKind::Change => &self.change,
             TransientKind::Worktree => &self.worktree,
+            TransientKind::PrFilter => &self.pr_filter,
         }
     }
 }
@@ -430,7 +434,7 @@ impl Transients {
 /// What the which-key panel lists.
 #[derive(Debug)]
 pub enum WhichKey<'a> {
-    Transient(&'a Transient),
+    Transient(&'a Transient, crate::transient::TransientMarks),
     /// The keys that finish the chord `prefix` started, beside what each does.
     Chord {
         prefix: String,
@@ -580,6 +584,7 @@ fn build_transients(
         stash: build(TransientKind::Stash),
         change: build(TransientKind::Change),
         worktree: build(TransientKind::Worktree),
+        pr_filter: build(TransientKind::PrFilter),
     }
 }
 
@@ -794,6 +799,9 @@ pub struct App {
     /// What the PR list shows beside each PR, by number.
     pub(crate) pr_summaries: std::collections::HashMap<u64, crate::ci::PrSummary>,
     pub prs_cursor: usize,
+    /// Which PRs `prs` holds; it lasts the session and starts at
+    /// `[prs] default_filter`.
+    pub pr_filter: crate::ci::PrFilter,
     /// Scroll offsets of the two full-screen lists, so the view holds still
     /// until the cursor reaches its margin.
     pub(crate) prs_scroll: usize,
@@ -988,6 +996,7 @@ impl App {
         let highlighter = Arc::new(language::highlighter(theme.syntax, &[], &config.syntax));
         let keymaps = Keymaps::build(&config.keys, &mut startup_warnings);
         let transients = build_transients(&config.keys, &mut startup_warnings);
+        let pr_filter = crate::ci::PrFilter::from_preset(config.prs.default_filter);
 
         let mut message = startup_warnings
             .into_iter()
@@ -1094,6 +1103,7 @@ impl App {
             prs: Vec::new(),
             pr_summaries: std::collections::HashMap::new(),
             prs_cursor: 0,
+            pr_filter,
             pending_pr_posts: Vec::new(),
             pr_posts_inflight: std::collections::HashSet::new(),
             runs_cursor: 0,
@@ -1340,7 +1350,13 @@ impl App {
                 self.on_pr_created(*result);
                 Flow::Continue
             }
-            AppEvent::CiPrs(prs) => self.on_prs_event(prs),
+            AppEvent::CiPrs(filter, prs) => {
+                if filter == self.pr_filter {
+                    self.on_prs_event(prs)
+                } else {
+                    Flow::Continue
+                }
+            }
             AppEvent::PrComments {
                 number,
                 comments,
@@ -1629,6 +1645,14 @@ impl App {
     }
 
     /// The change menu is jj's alone, so a git repo neither opens nor lists it.
+    fn transient_marks(&self, kind: TransientKind) -> crate::transient::TransientMarks {
+        if kind == TransientKind::PrFilter {
+            self.pr_filter_marks()
+        } else {
+            crate::transient::TransientMarks::default()
+        }
+    }
+
     pub(crate) fn offers_transient(&self, kind: TransientKind) -> bool {
         kind != TransientKind::Change || !self.review.vcs.has_index()
     }
@@ -1642,8 +1666,14 @@ impl App {
     /// flashes the panel.
     pub fn which_key_panel(&self) -> Option<WhichKey<'_>> {
         if let Some(open) = self.transient {
-            return (self.tick_count.wrapping_sub(open.opened_at) >= WHICH_KEY_REVEAL_TICKS)
-                .then(|| WhichKey::Transient(self.transients.get(open.kind)));
+            return (self.tick_count.wrapping_sub(open.opened_at) >= WHICH_KEY_REVEAL_TICKS).then(
+                || {
+                    WhichKey::Transient(
+                        self.transients.get(open.kind),
+                        self.transient_marks(open.kind),
+                    )
+                },
+            );
         }
         if self.pending.is_empty() || u32::from(self.pending_ticks) < WHICH_KEY_REVEAL_TICKS {
             return None;
@@ -1772,6 +1802,9 @@ impl App {
             Action::SearchPrev => self.search_step_or_follow(false),
             Action::OpenRuns => self.open_runs(),
             Action::OpenPrs => self.open_prs(),
+            action if pr_filter::is_pr_filter_action(action) => {
+                self.apply_pr_filter_action(action);
+            }
             Action::CreatePr => self.create_pr_start(),
             Action::CommentsOverview => self.toggle_comments_sidebar(),
             Action::SwitchTheme => self.open_choice_picker(ChoiceKind::Theme),

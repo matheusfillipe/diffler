@@ -9,6 +9,7 @@ use serde::Deserialize;
 
 use crate::ci::error::{CiError, Result, parse_json};
 use crate::ci::exec::CommandRunner;
+use crate::ci::filter::{PrFilter, PrPreset};
 use crate::ci::model::{
     CiJob, CiRun, JobId, JobStatus, Label, ListedPr, LogChunk, PrComment, PrConversation, PrNote,
     PrState, PrSummary, PrVerdict, PullRequest, ReviewerCandidate, RunDetail, RunExtras, RunId,
@@ -260,10 +261,19 @@ impl ForgeProvider for GitLabProvider {
         Ok(RunExtras::default())
     }
 
-    async fn list_prs(&self) -> Result<Vec<ListedPr>> {
-        let raw = self
-            .api("projects/:fullpath/merge_requests?state=opened&order_by=updated_at&per_page=20&with_labels_details=true")
-            .await?;
+    async fn list_prs(&self, filter: &PrFilter) -> Result<Vec<ListedPr>> {
+        if let Some(what) = filter.declined_by(ProviderKind::GitLab) {
+            return Err(CiError::Unsupported(what));
+        }
+        let mut path = "projects/:fullpath/merge_requests?state=opened&order_by=updated_at&per_page=20&with_labels_details=true".to_owned();
+        if filter.preset == PrPreset::Review {
+            let raw = self.api("user").await?;
+            let me: GitLabUser = parse_json("glab user", &raw)?;
+            path.push_str("&reviewer_username=");
+            path.push_str(&crate::ci::encode_path(&me.username));
+        }
+        path.push_str(&merge_request_params(filter));
+        let raw = self.api(&path).await?;
         let items: Vec<MergeRequestItem> = parse_json("glab merge requests", &raw)?;
         Ok(items
             .into_iter()
@@ -600,6 +610,27 @@ fn position_fields(refs: &DiffRefs, new: &NewPrComment) -> Vec<(String, String)>
         ]);
     }
     fields
+}
+
+/// The merge request list parameters for `filter`, past the review request,
+/// which needs the viewer's username looked up first.
+fn merge_request_params(filter: &PrFilter) -> String {
+    let mut params = String::new();
+    if filter.preset == PrPreset::Mine {
+        params.push_str("&scope=created_by_me");
+    }
+    if filter.hide_drafts {
+        params.push_str("&draft=no");
+    }
+    if let Some(label) = &filter.label {
+        params.push_str("&labels=");
+        params.push_str(&crate::ci::encode_path(label));
+    }
+    if let Some(author) = &filter.author {
+        params.push_str("&author_username=");
+        params.push_str(&crate::ci::encode_path(author));
+    }
+    params
 }
 
 fn mr_url(output: &str) -> Option<&str> {
@@ -1761,12 +1792,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_filter_asks_for_my_reviews_and_narrows_by_params() {
+        let (runner, provider) = provider_on(
+            &[
+                ("--method GET user", r#"{"username":"reviewer"}"#),
+                ("merge_requests?state=opened", "[]"),
+            ],
+            "main",
+        );
+        let filter = PrFilter {
+            preset: PrPreset::Review,
+            hide_drafts: true,
+            label: Some("needs review".to_owned()),
+            author: Some("peer".to_owned()),
+            ..PrFilter::default()
+        };
+        provider.list_prs(&filter).await.expect("listing");
+        let listing = runner.calls().last().cloned().unwrap_or_default();
+        assert!(
+            listing.ends_with(
+                "&reviewer_username=reviewer&draft=no&labels=needs%20review&author_username=peer"
+            ),
+            "{listing}"
+        );
+    }
+
+    #[test]
+    fn mine_is_a_scope_and_needs_no_lookup() {
+        assert_eq!(
+            merge_request_params(&PrFilter::from_preset(PrPreset::Mine)),
+            "&scope=created_by_me"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_filter_gitlab_cannot_apply_fails_out_loud() {
+        let (runner, provider) = provider_on(&[], "main");
+        let filter = PrFilter {
+            passing_checks: true,
+            ..PrFilter::default()
+        };
+        let err = provider.list_prs(&filter).await.expect_err("declined");
+        assert!(err.to_string().contains("check status"), "{err}");
+        assert!(runner.calls().is_empty());
+    }
+
+    #[tokio::test]
     async fn the_listing_summarizes_draft_labels_and_notes() {
         let listing = r##"[{"iid":4,"title":"Guard","source_branch":"feat/guard",
             "target_branch":"main","author":{"username":"author"},"draft":true,
             "labels":[{"name":"bug","color":"#d73a4a"}],"user_notes_count":3,"updated_at":"2026-08-07T10:00:00.000Z"}]"##;
         let (_, provider) = provider_on(&[("merge_requests?state=opened", listing)], "main");
-        let listed = provider.list_prs().await.expect("listing");
+        let listed = provider
+            .list_prs(&PrFilter::default())
+            .await
+            .expect("listing");
         let summary = &listed[0].summary;
         assert_eq!(listed[0].pr.number, 4);
         assert!(summary.draft);

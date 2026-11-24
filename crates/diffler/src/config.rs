@@ -27,6 +27,7 @@ pub struct Config {
     pub ci: CiConfig,
     pub worktree: WorktreeConfig,
     pub review: ReviewConfig,
+    pub prs: PrsConfig,
     pub classify: ClassifyConfig,
     /// `glob = language` highlighting rules, checked before name and shebang.
     pub syntax: BTreeMap<String, String>,
@@ -224,6 +225,13 @@ pub struct ReviewConfig {
     pub bots: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PrsConfig {
+    /// The pull request list's filter when a session starts.
+    pub default_filter: crate::ci::PrPreset,
+}
+
 impl ReviewConfig {
     pub fn is_bot(&self, author: &str) -> bool {
         crate::ci::is_bot_login(author) || self.bots.iter().any(|bot| bot == author)
@@ -298,6 +306,7 @@ pub struct KeysConfig {
     pub stash: BTreeMap<String, String>,
     pub change: BTreeMap<String, String>,
     pub worktree_menu: BTreeMap<String, String>,
+    pub pr_filter: BTreeMap<String, String>,
 }
 
 impl KeysConfig {
@@ -313,6 +322,7 @@ impl KeysConfig {
             crate::transient::TransientKind::Stash => &self.stash,
             crate::transient::TransientKind::Change => &self.change,
             crate::transient::TransientKind::Worktree => &self.worktree_menu,
+            crate::transient::TransientKind::PrFilter => &self.pr_filter,
         }
     }
 }
@@ -523,6 +533,7 @@ struct PartialConfig {
     ci: PartialCi,
     worktree: PartialWorktree,
     review: PartialReview,
+    prs: PartialPrs,
     classify: ClassifyConfig,
     syntax: BTreeMap<String, String>,
     keys: KeysConfig,
@@ -533,6 +544,13 @@ struct PartialConfig {
 struct PartialReview {
     hide_bots: Option<bool>,
     bots: Option<Vec<String>>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct PartialPrs {
+    // a raw string, so an unknown value warns without aborting the parse
+    default_filter: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -809,6 +827,18 @@ fn apply_layer(
         origin,
         origins,
     );
+    if let Some(name) = layer.prs.default_filter {
+        match crate::ci::PrPreset::parse(&name) {
+            Some(preset) => {
+                config.prs.default_filter = preset;
+                origins.insert("prs.default_filter".to_owned(), origin.clone());
+            }
+            None => warnings.push(format!(
+                "unknown prs.default_filter \"{name}\", using \"{}\"",
+                config.prs.default_filter.name()
+            )),
+        }
+    }
     set(
         layer.ci.provider,
         &mut config.ci.provider,
@@ -907,6 +937,11 @@ fn apply_layer(
             &mut config.keys.worktree_menu,
             "worktree_menu",
         ),
+        (
+            layer.keys.pr_filter,
+            &mut config.keys.pr_filter,
+            "pr_filter",
+        ),
     ];
     for (entries, target, section) in key_sections {
         for (action, chord) in entries {
@@ -937,7 +972,7 @@ fn apply_cli(cli: &CliOverrides, config: &mut Config, origins: &mut BTreeMap<Str
 }
 
 /// Always listed in the `--dump` origins block; `keys.*` entries follow from the user's config.
-const SCALAR_KEYS: [&str; 22] = [
+const SCALAR_KEYS: [&str; 23] = [
     "ui.theme",
     "ui.context_lines",
     "ui.recent_commits",
@@ -960,6 +995,7 @@ const SCALAR_KEYS: [&str; 22] = [
     "worktree.path",
     "review.hide_bots",
     "review.bots",
+    "prs.default_filter",
 ];
 
 /// `diffler config --dump`: the merged TOML, then each key's origin as comments.
@@ -1391,6 +1427,28 @@ mod tests {
         assert!(
             warning.contains("histogram"),
             "names the fallback: {warning}"
+        );
+    }
+
+    #[test]
+    fn the_pr_list_default_filter_reads_a_preset_and_warns_on_an_unknown_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project.toml");
+        fs::write(&project, "[prs]\ndefault_filter = \"review\"\n").unwrap();
+        let loaded = load_layers(None, Some(&project), &CliOverrides::default()).unwrap();
+        assert_eq!(
+            loaded.config.prs.default_filter,
+            crate::ci::PrPreset::Review
+        );
+        assert!(loaded.origins.contains_key("prs.default_filter"));
+
+        fs::write(&project, "[prs]\ndefault_filter = \"everything\"\n").unwrap();
+        let loaded = load_layers(None, Some(&project), &CliOverrides::default()).unwrap();
+        assert_eq!(loaded.config.prs.default_filter, crate::ci::PrPreset::All);
+        assert!(
+            loaded.warnings[0].contains("everything"),
+            "{:?}",
+            loaded.warnings
         );
     }
 

@@ -99,7 +99,8 @@ pub enum AppEvent {
         post: Box<crate::app::pr::PrPost>,
         result: Result<Option<crate::ci::PrComment>, String>,
     },
-    CiPrs(Vec<crate::ci::ListedPr>),
+    /// The filter it was fetched under, so a reply to an older filter is dropped.
+    CiPrs(crate::ci::PrFilter, Vec<crate::ci::ListedPr>),
     CiPr(Option<crate::ci::PullRequest>),
     PrCreated(Box<Result<crate::ci::PullRequest, String>>),
     CiRunDetail(crate::ci::RunDetail),

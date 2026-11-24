@@ -12,6 +12,7 @@ use crate::ci::{PrSummary, PullRequest};
 use crate::keymap::Action;
 use crate::text::elide;
 use crate::theme::Theme;
+use crate::transient::TransientKind;
 use crate::ui::Hint;
 
 const HINTS: &[Hint] = &[
@@ -23,18 +24,47 @@ const HINTS: &[Hint] = &[
 ];
 
 pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
-    let (body, bar) = super::screen_chrome(frame, app, HINTS);
+    let (mut body, bar) = super::screen_chrome(frame, app, HINTS);
+    if !app.pr_filter.is_all() && body.height > 1 {
+        frame.render_widget(Paragraph::new(filter_line(app)), Rect { height: 1, ..body });
+        body.y += 1;
+        body.height -= 1;
+    }
     draw_list(frame, app, body);
     frame.render_widget(Paragraph::new(super::status_bar(app, bar.width)), bar);
 }
 
+/// The key that opens the filter menu, as the keymap binds it.
+fn filter_chord(app: &App) -> String {
+    app.active_keymap()
+        .prefix_chord(TransientKind::PrFilter)
+        .unwrap_or_default()
+}
+
+fn filter_line(app: &App) -> Line<'static> {
+    let dim = app.theme.dim_style();
+    Line::from(vec![
+        Span::styled(format!("  {}", app.pr_filter.describe().join(" · ")), dim),
+        Span::styled(
+            format!("   {}", filter_chord(app)),
+            Style::new().fg(app.theme.fg),
+        ),
+        Span::styled(" change filter", dim),
+    ])
+}
+
 fn draw_list(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     if app.prs.is_empty() {
+        let text = if app.pr_filter.is_all() || !app.status.prs_loaded {
+            "  no open pull requests…".to_owned()
+        } else {
+            format!(
+                "  no pull requests match, {} to change filter",
+                filter_chord(app)
+            )
+        };
         frame.render_widget(
-            Paragraph::new(Line::styled(
-                "  no open pull requests…",
-                app.theme.dim_style(),
-            )),
+            Paragraph::new(Line::styled(text, app.theme.dim_style())),
             area,
         );
         return;
@@ -346,6 +376,34 @@ mod tests {
         let mut app = prs_app(&fixture);
         let backend = TestBackend::new(80, 6);
         let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|f| draw(f, &mut app)).expect("draw");
+        insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn a_filter_names_itself_above_the_list() {
+        let fixture = standard_fixture();
+        let mut app = prs_app(&fixture);
+        app.pr_filter = crate::ci::PrFilter {
+            preset: crate::ci::PrPreset::Review,
+            hide_drafts: true,
+            label: Some("backend".to_owned()),
+            ..crate::ci::PrFilter::default()
+        };
+        app.status.prs_loaded = true;
+        app.prs = vec![pr(12, "Add widgets", "alice", "feat/widgets", "main")];
+        let mut terminal = Terminal::new(TestBackend::new(80, 6)).expect("terminal");
+        terminal.draw(|f| draw(f, &mut app)).expect("draw");
+        insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn an_empty_filtered_list_names_the_key_that_changes_it() {
+        let fixture = standard_fixture();
+        let mut app = prs_app(&fixture);
+        app.pr_filter = crate::ci::PrFilter::from_preset(crate::ci::PrPreset::Mine);
+        app.status.prs_loaded = true;
+        let mut terminal = Terminal::new(TestBackend::new(80, 6)).expect("terminal");
         terminal.draw(|f| draw(f, &mut app)).expect("draw");
         insta::assert_snapshot!(terminal.backend());
     }

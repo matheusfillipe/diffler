@@ -45,7 +45,8 @@ you straight to any file, line or pull request.
 ### Pull requests without the browser
 
 <kbd>b</kbd> <kbd>p</kbd> lists the open pull requests with their CI, review
-state and labels, on GitHub, GitLab and Forgejo. Open one to read its
+state and labels, on GitHub, GitLab and Forgejo. Press <kbd>f</kbd> there to
+show only the ones waiting on your review, your own, or a label. Open one to read its
 conversation, review the diff and submit your review. <kbd>C</kbd> lists every
 comment on the side, and <kbd>R</kbd> requests a reviewer, Copilot included.
 <kbd>H</kbd> hides the comments bots left, so you can focus on what people wrote.

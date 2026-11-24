@@ -4,6 +4,7 @@
 mod detect;
 mod error;
 mod exec;
+mod filter;
 mod model;
 mod provider;
 mod providers;
@@ -13,6 +14,7 @@ pub use error::{CiError, Result};
 #[cfg(test)]
 pub(crate) use exec::test_support;
 pub use exec::{CommandRunner, RealRunner};
+pub use filter::{PrFilter, PrFilterOption, PrPreset};
 pub use model::{
     Annotation, AnnotationLevel, Artifact, Capabilities, CiJob, CiJobLeg, CiRun, DagSource, JobId,
     JobStatus, Label, ListedPr, LogChunk, LogMode, LogStepMeta, PrComment, PrConversation, PrNote,
@@ -259,7 +261,7 @@ fn parse_repo_path(url: &str) -> Option<String> {
     path.contains('/').then(|| path.to_owned())
 }
 
-fn encode_path(path: &str) -> String {
+pub(crate) fn encode_path(path: &str) -> String {
     path.bytes()
         .map(|byte| {
             if byte.is_ascii_alphanumeric() || b"/-._~".contains(&byte) {

@@ -47,6 +47,15 @@ pub enum Action {
     DiffWorkingTree,
     OpenRuns,
     OpenPrs,
+    PrFilterAll,
+    PrFilterReview,
+    PrFilterMine,
+    PrFilterInvolves,
+    PrFilterNoDrafts,
+    PrFilterPassing,
+    PrFilterLabel,
+    PrFilterAuthor,
+    PrFilterSearch,
     CreatePr,
     CommentsOverview,
     OpenStats,
@@ -195,6 +204,15 @@ impl Action {
             Self::DiffWorkingTree => "diff_working_tree",
             Self::OpenRuns => "open_runs",
             Self::OpenPrs => "open_prs",
+            Self::PrFilterAll => "pr_filter_all",
+            Self::PrFilterReview => "pr_filter_review",
+            Self::PrFilterMine => "pr_filter_mine",
+            Self::PrFilterInvolves => "pr_filter_involves",
+            Self::PrFilterNoDrafts => "pr_filter_no_drafts",
+            Self::PrFilterPassing => "pr_filter_passing",
+            Self::PrFilterLabel => "pr_filter_label",
+            Self::PrFilterAuthor => "pr_filter_author",
+            Self::PrFilterSearch => "pr_filter_search",
             Self::CreatePr => "create_pr",
             Self::CommentsOverview => "comments_overview",
             Self::OpenStats => "open_stats",
@@ -341,6 +359,15 @@ impl Action {
             Self::DiffWorkingTree => "review only the uncommitted changes",
             Self::OpenRuns => "see CI runs",
             Self::OpenPrs => "list open pull requests",
+            Self::PrFilterAll => "show every open pull request",
+            Self::PrFilterReview => "show pull requests asking for your review",
+            Self::PrFilterMine => "show your own pull requests",
+            Self::PrFilterInvolves => "show pull requests involving you",
+            Self::PrFilterNoDrafts => "hide or show draft pull requests",
+            Self::PrFilterPassing => "show only pull requests with passing checks, or all",
+            Self::PrFilterLabel => "filter pull requests by a label",
+            Self::PrFilterAuthor => "filter pull requests by an author",
+            Self::PrFilterSearch => "search pull requests with a GitHub query",
             Self::CreatePr => "open a pull request for this branch",
             Self::CommentsOverview => "show or hide the comment list",
             Self::OpenStats => "see lines of code per language",
@@ -450,7 +477,7 @@ impl Action {
         }
     }
 
-    pub(crate) const ALL: [Self; 139] = [
+    pub(crate) const ALL: [Self; 148] = [
         Self::CenterCursor,
         Self::CursorTop,
         Self::CursorBottom,
@@ -467,6 +494,15 @@ impl Action {
         Self::ClaimComment,
         Self::ClaimAllComments,
         Self::OpenPrs,
+        Self::PrFilterAll,
+        Self::PrFilterReview,
+        Self::PrFilterMine,
+        Self::PrFilterInvolves,
+        Self::PrFilterNoDrafts,
+        Self::PrFilterPassing,
+        Self::PrFilterLabel,
+        Self::PrFilterAuthor,
+        Self::PrFilterSearch,
         Self::CreatePr,
         Self::CommentsOverview,
         Self::OpenStats,
@@ -688,6 +724,8 @@ const STATUS_PREFIXES: &[(&str, TransientKind)] = &[
 ];
 
 const LOG_PREFIXES: &[(&str, TransientKind)] = &[("c", TransientKind::Change)];
+
+const PRS_PREFIXES: &[(&str, TransientKind)] = &[("f", TransientKind::PrFilter)];
 
 const NO_PREFIXES: &[(&str, TransientKind)] = &[];
 
@@ -1003,7 +1041,7 @@ impl Keymap {
             Context::Log => (LOG_DEFAULTS, LOG_PREFIXES, &keys.log, "log"),
             Context::CiLog => (CI_LOG_DEFAULTS, NO_PREFIXES, &keys.ci_log, "ci_log"),
             Context::Graph => (GRAPH_DEFAULTS, NO_PREFIXES, &keys.graph, "graph"),
-            Context::Prs => (PRS_DEFAULTS, NO_PREFIXES, &keys.prs, "prs"),
+            Context::Prs => (PRS_DEFAULTS, PRS_PREFIXES, &keys.prs, "prs"),
             Context::Pr => (PR_DEFAULTS, NO_PREFIXES, &keys.pr, "pr"),
             Context::File => (FILE_DEFAULTS, NO_PREFIXES, &keys.file, "file"),
             Context::Stats => (STATS_DEFAULTS, NO_PREFIXES, &keys.stats, "stats"),

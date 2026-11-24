@@ -770,8 +770,9 @@ fn dispatch_ci(app: &App, request: CiRequest, tx: &mpsc::UnboundedSender<AppEven
     };
     if let Some(remote) = remote {
         let provider = provider_for(&remote, &repo_root, branch.as_deref(), yaml_cache, etags);
+        let pr_filter = app.pr_filter.clone();
         tokio::spawn(async move {
-            let _ = tx.send(run_ci_request(provider, request).await);
+            let _ = tx.send(run_ci_request(provider, request, pr_filter).await);
         });
     }
 }
@@ -779,6 +780,7 @@ fn dispatch_ci(app: &App, request: CiRequest, tx: &mpsc::UnboundedSender<AppEven
 async fn run_ci_request(
     provider: Box<dyn crate::ci::ForgeProvider + Send>,
     request: CiRequest,
+    pr_filter: crate::ci::PrFilter,
 ) -> AppEvent {
     match request {
         CiRequest::Runs => match provider.list_runs(30).await {
@@ -792,8 +794,8 @@ async fn run_ci_request(
                 .await
                 .map_err(|err| err.to_string()),
         )),
-        CiRequest::Prs => match provider.list_prs().await {
-            Ok(prs) => AppEvent::CiPrs(prs),
+        CiRequest::Prs => match provider.list_prs(&pr_filter).await {
+            Ok(prs) => AppEvent::CiPrs(pr_filter, prs),
             Err(err) => AppEvent::CiPrsError(err.to_string()),
         },
         CiRequest::PrComments(number) => match provider.pr_comments(number).await {

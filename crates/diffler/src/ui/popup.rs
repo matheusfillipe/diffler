@@ -8,7 +8,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
 use crate::app::WhichKey;
 use crate::theme::Theme;
-use crate::transient::Transient;
+use crate::transient::{Transient, TransientMarks};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Popup {
@@ -158,7 +158,16 @@ const WHICH_KEY_MAX_HEIGHT: u16 = 12;
 struct WhichKeyColumn {
     heading: String,
     entries: Vec<(String, String)>,
+    /// One per entry; a column with none draws every entry plain.
+    looks: Vec<EntryLook>,
     width: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EntryLook {
+    Plain,
+    On,
+    Unavailable,
 }
 
 impl WhichKeyColumn {
@@ -172,6 +181,7 @@ impl WhichKeyColumn {
         Self {
             heading,
             entries,
+            looks: Vec::new(),
             width,
         }
     }
@@ -211,9 +221,9 @@ pub struct WhichKeyPanel {
 impl WhichKeyPanel {
     pub fn new(which_key: &WhichKey<'_>) -> Self {
         match which_key {
-            WhichKey::Transient(transient) => Self {
+            WhichKey::Transient(transient, marks) => Self {
                 title: transient.kind.title().to_owned(),
-                columns: transient_columns(transient),
+                columns: transient_columns(transient, marks),
             },
             WhichKey::Chord { prefix, rest } => Self {
                 title: format!("{prefix}…"),
@@ -260,7 +270,7 @@ impl WhichKeyPanel {
     }
 }
 
-fn transient_columns(transient: &Transient) -> Vec<WhichKeyColumn> {
+fn transient_columns(transient: &Transient, marks: &TransientMarks) -> Vec<WhichKeyColumn> {
     transient
         .groups
         .iter()
@@ -275,7 +285,21 @@ fn transient_columns(transient: &Transient) -> Vec<WhichKeyColumn> {
                     )
                 })
                 .collect();
-            WhichKeyColumn::new(group.heading.to_owned(), entries)
+            let mut column = WhichKeyColumn::new(group.heading.to_owned(), entries);
+            column.looks = group
+                .entries
+                .iter()
+                .map(|entry| {
+                    if marks.unavailable.contains(&entry.action) {
+                        EntryLook::Unavailable
+                    } else if marks.on.contains(&entry.action) {
+                        EntryLook::On
+                    } else {
+                        EntryLook::Plain
+                    }
+                })
+                .collect();
+            column
         })
         .collect()
 }
@@ -288,6 +312,10 @@ fn render_bands(
     let key_style = Style::new().fg(theme.purple).bg(theme.panel);
     let dim = Style::new().fg(theme.dim).bg(theme.panel);
     let fg = Style::new().fg(theme.fg).bg(theme.panel);
+    let on = Style::new()
+        .fg(theme.accent)
+        .bg(theme.panel)
+        .add_modifier(Modifier::BOLD);
     let sep = " ".repeat(WHICH_KEY_COL_SPACING);
 
     let mut lines = Vec::new();
@@ -320,9 +348,15 @@ fn render_bands(
                     Some((key, label)) => {
                         let used = key.chars().count() + WHICH_KEY_KEY_SEP + label.chars().count();
                         let pad = column.width.saturating_sub(used);
-                        spans.push(Span::styled(key.clone(), key_style));
+                        let (key_look, label_look) = match column.looks.get(row) {
+                            Some(EntryLook::On) => (key_style, on),
+                            Some(EntryLook::Unavailable) => (dim, dim),
+                            Some(EntryLook::Plain) | None => (key_style, fg),
+                        };
+                        spans.push(Span::styled(key.clone(), key_look));
                         spans.push(Span::styled(" ".repeat(WHICH_KEY_KEY_SEP), fg));
-                        spans.push(Span::styled(format!("{label}{}", " ".repeat(pad)), fg));
+                        spans.push(Span::styled(label.clone(), label_look));
+                        spans.push(Span::styled(" ".repeat(pad), fg));
                     }
                     None => spans.push(Span::styled(" ".repeat(column.width), fg)),
                 }
@@ -843,7 +877,8 @@ pub(super) mod tests {
         );
         assert!(warnings.is_empty());
         let terminal = render(|frame, theme| {
-            WhichKeyPanel::new(&WhichKey::Transient(&transient)).render(frame, theme);
+            WhichKeyPanel::new(&WhichKey::Transient(&transient, TransientMarks::default()))
+                .render(frame, theme);
         });
         insta::assert_snapshot!(terminal.backend());
     }
@@ -856,7 +891,8 @@ pub(super) mod tests {
         );
         assert!(warnings.is_empty());
         let terminal = render(|frame, theme| {
-            WhichKeyPanel::new(&WhichKey::Transient(&transient)).render(frame, theme);
+            WhichKeyPanel::new(&WhichKey::Transient(&transient, TransientMarks::default()))
+                .render(frame, theme);
         });
         insta::assert_snapshot!(terminal.backend());
     }
@@ -869,8 +905,44 @@ pub(super) mod tests {
         );
         assert!(warnings.is_empty());
         let terminal = render(|frame, theme| {
-            WhichKeyPanel::new(&WhichKey::Transient(&transient)).render(frame, theme);
+            WhichKeyPanel::new(&WhichKey::Transient(&transient, TransientMarks::default()))
+                .render(frame, theme);
         });
+        insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn the_pr_filter_menu_marks_what_is_on_and_greys_what_the_forge_cannot_do() {
+        use crate::keymap::Action;
+        let (transient, warnings) = crate::transient::Transient::build(
+            crate::transient::TransientKind::PrFilter,
+            &crate::config::KeysConfig::default(),
+        );
+        assert!(warnings.is_empty());
+        let marks = TransientMarks {
+            on: vec![Action::PrFilterReview, Action::PrFilterNoDrafts],
+            unavailable: vec![Action::PrFilterPassing, Action::PrFilterSearch],
+        };
+        let terminal = render(|frame, theme| {
+            WhichKeyPanel::new(&WhichKey::Transient(&transient, marks.clone()))
+                .render(frame, theme);
+        });
+        let theme = Theme::github_dark();
+        let buffer = terminal.backend().buffer();
+        let cell_of = |text: &str| {
+            (0..buffer.area.height)
+                .find_map(|y| {
+                    let row: String = (0..buffer.area.width)
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect();
+                    row.find(text)
+                        .map(|at| (row[..at].chars().count() as u16, y))
+                })
+                .map_or_else(|| panic!("{text} drawn"), |(x, y)| buffer[(x, y)].clone())
+        };
+        assert_eq!(cell_of("Show ones to review").fg, theme.accent);
+        assert_eq!(cell_of("Require passing checks").fg, theme.dim);
+        assert_eq!(cell_of("Show mine").fg, theme.fg);
         insta::assert_snapshot!(terminal.backend());
     }
 
