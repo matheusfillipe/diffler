@@ -30,6 +30,8 @@ pub enum Action {
     ToggleFold,
     OpenAllFolds,
     FoldAll,
+    FoldMore,
+    FoldLess,
     ToggleSideBySide,
     Stage,
     Unstage,
@@ -187,6 +189,8 @@ impl Action {
             Self::ToggleFold => "toggle_fold",
             Self::OpenAllFolds => "open_all_folds",
             Self::FoldAll => "fold_all",
+            Self::FoldMore => "fold_more",
+            Self::FoldLess => "fold_less",
             Self::ToggleSideBySide => "toggle_side_by_side",
             Self::Stage => "stage",
             Self::Unstage => "unstage",
@@ -340,8 +344,12 @@ impl Action {
             Self::UnviewAll => "mark every file unviewed",
             Self::CycleSidebarMode => "change how the file list is grouped",
             Self::ToggleFold => "fold or unfold the item under the cursor",
-            Self::OpenAllFolds => "unfold every hunk in this file",
-            Self::FoldAll => "fold every hunk in this file",
+            Self::OpenAllFolds => {
+                "unfold every hunk in this file, or every folder in the file tree"
+            }
+            Self::FoldAll => "fold every hunk in this file, or every folder in the file tree",
+            Self::FoldMore => "fold the file tree one folder level more",
+            Self::FoldLess => "unfold the file tree one folder level more",
             Self::ToggleSideBySide => "switch between unified and side-by-side diff",
             Self::Stage => "stage file, hunk or lines",
             Self::Unstage => "unstage file, hunk or lines",
@@ -477,7 +485,7 @@ impl Action {
         }
     }
 
-    pub(crate) const ALL: [Self; 148] = [
+    pub(crate) const ALL: [Self; 150] = [
         Self::CenterCursor,
         Self::CursorTop,
         Self::CursorBottom,
@@ -526,6 +534,8 @@ impl Action {
         Self::ToggleFold,
         Self::OpenAllFolds,
         Self::FoldAll,
+        Self::FoldMore,
+        Self::FoldLess,
         Self::ToggleSideBySide,
         Self::Stage,
         Self::Unstage,
@@ -760,6 +770,8 @@ const DIFF_DEFAULTS: &[(&str, Action)] = &[
     ("<tab>", Action::ToggleFold),
     ("zR", Action::OpenAllFolds),
     ("zM", Action::FoldAll),
+    ("zm", Action::FoldMore),
+    ("zr", Action::FoldLess),
     ("+", Action::ExpandContext),
     ("-", Action::CollapseContext),
     ("=", Action::ExpandWholeFile),

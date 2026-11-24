@@ -112,6 +112,42 @@ fn folding_a_dir_hides_its_subtree_and_unfolding_restores_it() {
 }
 
 #[test]
+fn z_keys_fold_the_file_tree_level_by_level() {
+    let fixture = Fixture::new();
+    let files = [
+        "app/api/routes.rs",
+        "app/db/models.rs",
+        "app/main.rs",
+        "docs/guide.md",
+    ];
+    for path in files {
+        fixture.write(path, "one\n");
+    }
+    fixture.commit_all("init");
+    for path in files {
+        fixture.write(path, "two\n");
+    }
+    let mut app = diff_app(&fixture);
+    let mut press = |chord: &str| {
+        for c in chord.chars() {
+            app.handle(key(c));
+        }
+        tree_row_count(&app)
+    };
+    // open: app, api, routes.rs, db, models.rs, main.rs, docs, guide.md
+    assert_eq!(press("zM"), 2, "only the outermost folders stay");
+    assert_eq!(
+        press("zr"),
+        6,
+        "the first level opens, its subfolders stay folded"
+    );
+    assert_eq!(press("zr"), 8, "the next level opens everything");
+    assert_eq!(press("zr"), 8, "nothing deeper to open");
+    assert_eq!(press("zm"), 6, "one level folds back");
+    assert_eq!(press("zR"), 8);
+}
+
+#[test]
 fn cr_on_a_file_row_focuses_the_diff_pane() {
     let fixture = standard_fixture();
     let mut app = diff_app(&fixture);

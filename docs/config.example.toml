@@ -194,8 +194,10 @@
 # cursor_top = "zt"
 # cursor_bottom = "zb"
 # toggle_fold = "za"       # also <tab>: fold or unfold the folder, section, hunk or comment thread under the cursor
-# open_all_folds = "zR"    # open every folded hunk in the file on screen
-# fold_all = "zM"          # fold every hunk in the file on screen
+# open_all_folds = "zR"    # open every folded hunk in the file on screen, or every folder in the tree
+# fold_all = "zM"          # fold every hunk in the file on screen, or every folder in the tree
+# fold_more = "zm"         # fold the file tree one folder level more
+# fold_less = "zr"         # unfold the file tree one folder level more
 # switch_theme = "T"
 # toggle_bots = "H"        # hide or show bot comments
 # switch_diff_algorithm = "<c-a>"

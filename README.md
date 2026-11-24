@@ -269,6 +269,7 @@ You move like in vim: `j`/`k`, `gg`/`G`, `/` to search, Ctrl+d/Ctrl+u to scroll.
 | `\|` | Switch between a unified and a side-by-side diff |
 | `]` / `[` | Jump to the next / previous hunk |
 | `za` / Tab | Fold or unfold a hunk, the earlier replies of a thread, or a pull request comment |
+| `zm` / `zr` | In the file tree, fold or unfold the folders one level at a time (`zM` / `zR` for all) |
 | `*` / `#` | Find where the symbol on the line is used |
 | `d` | Review against another branch or commit |
 | `C` | Open the list of comments |

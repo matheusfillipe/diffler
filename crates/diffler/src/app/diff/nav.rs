@@ -23,6 +23,24 @@ fn foldable_at(rows: &[TreeRow], at: usize) -> Option<usize> {
         .rposition(|above| above.depth < row.depth && header(&above.node))
 }
 
+/// The path a folder or file row names, so the cursor can find its row again
+/// after the tree folds around it.
+fn row_fold_key(
+    row: &TreeRow,
+    diff: &DiffView,
+    review: &diffler_core::review::Review,
+) -> Option<String> {
+    match &row.node {
+        TreeNode::Dir { path, .. } => Some(path.clone()),
+        TreeNode::File { index, .. } => diff
+            .model(review)
+            .files
+            .get(*index)
+            .map(|file| file.path.clone()),
+        _ => None,
+    }
+}
+
 /// What `d` deletes from the walkthrough layout's sidebar: everything, or one
 /// stop.
 enum WalkthroughSidebarRow {
@@ -209,6 +227,10 @@ impl App {
             Action::FullPageUp => self.diff_tree_step(-self.tree_page(true)),
             Action::Open => self.diff_tree_activate(),
             Action::ToggleFold => self.diff_toggle_dir_fold(),
+            Action::FoldAll => self.set_dir_fold_level(|_, _| 0),
+            Action::OpenAllFolds => self.set_dir_fold_level(|_, deepest| deepest),
+            Action::FoldMore => self.set_dir_fold_level(|level, _| level.saturating_sub(1)),
+            Action::FoldLess => self.set_dir_fold_level(|level, deepest| (level + 1).min(deepest)),
             Action::MarkViewed => self.diff_toggle_viewed(),
             Action::UnviewAll => self.diff_unview_all(),
             Action::OpenEditor => self.editor_at_diff_cursor(),
@@ -309,6 +331,9 @@ impl App {
             Action::ToggleFold => self.diff_toggle_fold(),
             Action::OpenAllFolds => self.diff_open_all_folds(),
             Action::FoldAll => self.diff_fold_all(),
+            Action::FoldMore | Action::FoldLess => {
+                self.info("move to the file tree to fold folders by level");
+            }
             other => {
                 self.info(format!("{} does nothing on this screen", other.name()));
             }
@@ -744,6 +769,68 @@ impl App {
         // we seat the cursor on the row that folded, since the tree shrank
         let rows = sidebar_rows(diff, review);
         diff.tree_cursor = target.min(rows.len().saturating_sub(1));
+    }
+
+    /// Folds every folder at or below a nesting level, counted from the
+    /// outermost folders at 0. `pick` turns the current level and the level
+    /// that opens everything into the new level.
+    fn set_dir_fold_level(&mut self, pick: impl Fn(usize, usize) -> usize) {
+        let review = &self.review;
+        let Some(diff) = self.diff.as_mut() else {
+            return;
+        };
+        let before = sidebar_rows(diff, review);
+        let cursor_key = before
+            .get(diff.tree_cursor)
+            .and_then(|row| row_fold_key(row, diff, review));
+        let folded = std::mem::take(&mut diff.folded_dirs);
+        let dirs: Vec<(String, usize)> = sidebar_rows(diff, review)
+            .into_iter()
+            .filter_map(|row| match row.node {
+                TreeNode::Dir { path, .. } => Some((path, row.depth)),
+                _ => None,
+            })
+            .collect();
+        let Some(outermost) = dirs.iter().map(|(_, depth)| *depth).min() else {
+            diff.folded_dirs = folded;
+            self.info("no folders to fold here");
+            return;
+        };
+        let level_of = |depth: usize| depth - outermost;
+        let deepest = dirs
+            .iter()
+            .map(|(_, depth)| level_of(*depth) + 1)
+            .max()
+            .unwrap_or(0);
+        let current = dirs
+            .iter()
+            .filter(|(path, _)| folded.contains(path))
+            .map(|(_, depth)| level_of(*depth))
+            .min()
+            .unwrap_or(deepest);
+        let level = pick(current, deepest);
+        diff.folded_dirs = dirs
+            .into_iter()
+            .filter(|(_, depth)| level_of(*depth) >= level)
+            .map(|(path, _)| path)
+            .collect();
+        let rows = sidebar_rows(diff, review);
+        diff.tree_cursor = cursor_key
+            .and_then(|key| {
+                rows.iter().rposition(|row| match &row.node {
+                    TreeNode::Dir { path, .. } => {
+                        *path == key || key.starts_with(&format!("{path}/"))
+                    }
+                    _ => row_fold_key(row, diff, review).as_deref() == Some(key.as_str()),
+                })
+            })
+            .unwrap_or(diff.tree_cursor)
+            .min(rows.len().saturating_sub(1));
+        self.info(if level >= deepest {
+            "every folder open".to_owned()
+        } else {
+            format!("folders open to level {level}")
+        });
     }
 
     /// `<c-n>`/`<c-p>`: jump the tree cursor to the next/prev file row (skipping

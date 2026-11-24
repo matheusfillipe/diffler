@@ -131,6 +131,8 @@ ssh/tmux.
 The diff pane folds hunks (`app/diff/folds.rs`), the same unit `]`/`[`
 step through. `za`/`<tab>` on any row of a hunk folds it, and on a folded
 hunk opens it; `zM` folds every hunk of the file and `zR` opens them all.
+In the file tree the same keys fold or open every folder, and `zm` / `zr`
+fold or open one nesting level at a time, counted from the outermost folders.
 Nothing starts folded. A folded hunk replaces its header and everything
 under it with one `DiffRow::Fold` that reads as the header plus what it
 hides, `@@ -19,7 +19,7 @@ fn f() {  ⋯ 7 lines +1 -1 · 1 comment`, so `]`/`[`
