@@ -32,6 +32,15 @@ use std::path::Path;
 use crate::config::CiConfig;
 use crate::graph::{Edge, Model, Node, NodeId, NodeStatus, RankDir};
 
+/// The fence that opens a code-review suggestion on GitHub and GitLab.
+pub const SUGGESTION_FENCE: &str = "```suggestion";
+
+/// Whether `line` opens a suggestion, indented or not.
+#[must_use]
+pub fn is_suggestion_fence(line: &str) -> bool {
+    line.trim() == SUGGESTION_FENCE
+}
+
 /// A configured `host` overrides remote detection for a self-hosted instance.
 pub fn detect_for_repo(
     repo_root: &Path,

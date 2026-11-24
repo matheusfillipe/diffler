@@ -549,7 +549,7 @@ struct PartialReview {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct PartialPrs {
-    // a raw string, so an unknown value warns without aborting the parse
+    // we read a raw string so an unknown value warns without aborting the parse
     default_filter: Option<String>,
 }
 
@@ -665,9 +665,13 @@ fn set_layout(
     origins.insert(key.to_owned(), origin.clone());
 }
 
-fn set_algorithm(
+/// [`set`] for a key read as a raw string, which warns on an unknown value
+/// and keeps the one before it.
+fn set_parsed<T: std::fmt::Display>(
     value: Option<String>,
-    target: &mut DiffAlgorithm,
+    parse: fn(&str) -> Option<T>,
+    target: &mut T,
+    key: &str,
     origin: &Origin,
     origins: &mut BTreeMap<String, Origin>,
     warnings: &mut Vec<String>,
@@ -675,14 +679,12 @@ fn set_algorithm(
     let Some(value) = value else {
         return;
     };
-    let Some(algorithm) = DiffAlgorithm::parse(&value) else {
-        warnings.push(format!(
-            "unknown diff.algorithm \"{value}\", using \"{target}\""
-        ));
+    let Some(parsed) = parse(&value) else {
+        warnings.push(format!("unknown {key} \"{value}\", using \"{target}\""));
         return;
     };
-    *target = algorithm;
-    origins.insert("diff.algorithm".to_owned(), origin.clone());
+    *target = parsed;
+    origins.insert(key.to_owned(), origin.clone());
 }
 
 // a flat list, one statement per key
@@ -760,9 +762,11 @@ fn apply_layer(
         origin,
         origins,
     );
-    set_algorithm(
+    set_parsed(
         layer.diff.algorithm,
+        DiffAlgorithm::parse,
         &mut config.diff.algorithm,
+        "diff.algorithm",
         origin,
         origins,
         warnings,
@@ -827,18 +831,15 @@ fn apply_layer(
         origin,
         origins,
     );
-    if let Some(name) = layer.prs.default_filter {
-        match crate::ci::PrPreset::parse(&name) {
-            Some(preset) => {
-                config.prs.default_filter = preset;
-                origins.insert("prs.default_filter".to_owned(), origin.clone());
-            }
-            None => warnings.push(format!(
-                "unknown prs.default_filter \"{name}\", using \"{}\"",
-                config.prs.default_filter.name()
-            )),
-        }
-    }
+    set_parsed(
+        layer.prs.default_filter,
+        crate::ci::PrPreset::parse,
+        &mut config.prs.default_filter,
+        "prs.default_filter",
+        origin,
+        origins,
+        warnings,
+    );
     set(
         layer.ci.provider,
         &mut config.ci.provider,

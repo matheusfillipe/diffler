@@ -293,11 +293,7 @@ pub(super) fn thread_folds(comment: &Comment) -> bool {
 }
 
 pub fn folded_replies_text(count: usize) -> String {
-    if count == 1 {
-        "▸ 1 earlier reply".to_owned()
-    } else {
-        format!("▸ {count} earlier replies")
-    }
+    crate::text::fold_label(count, "earlier reply", "earlier replies")
 }
 
 /// The terminal lines a comment occupies at `row_width` columns. Shared by

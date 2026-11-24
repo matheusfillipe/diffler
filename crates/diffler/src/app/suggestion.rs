@@ -5,8 +5,8 @@ use diffler_core::model::DiffModel;
 use diffler_core::session::Anchor;
 
 use super::{byte_index, text_edit};
+use crate::ci::{SUGGESTION_FENCE, is_suggestion_fence};
 
-const FENCE: &str = "```suggestion";
 const CLOSE: &str = "```";
 
 /// The text of the lines `anchor` covers, on the side of the diff it sits on.
@@ -40,7 +40,7 @@ pub(super) fn insert(buffer: &mut String, cursor: &mut usize, lines: &[String]) 
     if *cursor > text_edit::line_start(buffer, *cursor) {
         block.push('\n');
     }
-    block.push_str(FENCE);
+    block.push_str(SUGGESTION_FENCE);
     block.push('\n');
     let first_line = block.chars().count();
     for line in lines {
@@ -56,7 +56,7 @@ pub(super) fn insert(buffer: &mut String, cursor: &mut usize, lines: &[String]) 
 }
 
 pub(super) fn has_suggestion(body: &str) -> bool {
-    body.lines().any(|line| line.trim() == FENCE)
+    body.lines().any(is_suggestion_fence)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -71,7 +71,7 @@ pub(super) fn split(body: &str) -> Vec<Part<'_>> {
     let mut prose = String::new();
     let mut lines = body.lines();
     while let Some(line) = lines.next() {
-        if line.trim() != FENCE {
+        if !is_suggestion_fence(line) {
             prose.push_str(line);
             prose.push('\n');
             continue;

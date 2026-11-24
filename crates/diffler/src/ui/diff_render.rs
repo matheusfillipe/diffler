@@ -353,11 +353,13 @@ fn line_backgrounds(
     let (line_bg, emph_bg) = if line.reformat_only {
         (theme.panel, theme.panel)
     } else {
-        match line.kind {
-            LineKind::Added => (theme.add_line_bg, theme.add_emph_bg),
-            LineKind::Deleted => (theme.del_line_bg, theme.del_emph_bg),
-            LineKind::Context => (theme.panel, theme.panel),
-        }
+        let (_, _, line_bg) = line_look(theme, line.kind);
+        let emph_bg = match line.kind {
+            LineKind::Added => theme.add_emph_bg,
+            LineKind::Deleted => theme.del_emph_bg,
+            LineKind::Context => theme.panel,
+        };
+        (line_bg, emph_bg)
     };
     let reads_as_context = line.kind == LineKind::Context || line.reformat_only;
     let base_bg = match selected {
@@ -413,15 +415,20 @@ fn line_content(
         .collect()
 }
 
+/// The sign, sign colour and line background a line of `kind` draws with.
+pub(super) fn line_look(theme: &Theme, kind: LineKind) -> (&'static str, Color, Color) {
+    match kind {
+        LineKind::Added => ("+ ", theme.added, theme.add_line_bg),
+        LineKind::Deleted => ("- ", theme.error_fg, theme.del_line_bg),
+        LineKind::Context => ("  ", theme.dim, theme.panel),
+    }
+}
+
 fn rail_color(theme: &Theme, line: &DiffLine, selected: bool, unstaged: bool) -> Color {
     if selected {
         return theme.accent;
     }
-    let color = match line.kind {
-        LineKind::Added => theme.added,
-        LineKind::Deleted => theme.error_fg,
-        LineKind::Context => theme.dim,
-    };
+    let (_, color, _) = line_look(theme, line.kind);
     if unstaged {
         crate::theme::blend(color, theme.panel, UNSTAGED_RAIL_FADE_PERCENT)
     } else {

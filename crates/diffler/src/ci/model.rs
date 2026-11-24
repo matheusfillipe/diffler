@@ -2,6 +2,8 @@
 
 use time::OffsetDateTime;
 
+use crate::ci::filter::PrFilterOption;
+
 /// A run or pipeline id as the provider spells it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RunId(pub String);
@@ -392,6 +394,14 @@ pub struct Capabilities {
     pub resolve_threads: bool,
     /// Without it, a whole-file comment is held back from a submit.
     pub file_comments: bool,
+    pub pr_filters: &'static [PrFilterOption],
+}
+
+impl Capabilities {
+    #[must_use]
+    pub fn filters_by(&self, option: PrFilterOption) -> bool {
+        self.pr_filters.contains(&option)
+    }
 }
 
 /// Where a provider's dependency edges come from.

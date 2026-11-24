@@ -163,12 +163,10 @@ impl LineCtx<'_> {
             }
             PrLine::Folded(hidden) => {
                 let (bg, mut spans) = self.card_lead(item);
-                let text = if *hidden == 1 {
-                    "▸ 1 more line".to_owned()
-                } else {
-                    format!("▸ {hidden} more lines")
-                };
-                spans.push(Span::styled(text, dim.bg(bg)));
+                spans.push(Span::styled(
+                    crate::text::fold_label(*hidden, "more line", "more lines"),
+                    Style::new().fg(self.theme.accent).bg(bg),
+                ));
                 super::fill_row(Line::from(spans), bg, self.width)
             }
             PrLine::NoDescription => {

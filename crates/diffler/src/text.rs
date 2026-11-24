@@ -7,6 +7,11 @@ pub fn plural<'a>(count: usize, one: &'a str, many: &'a str) -> &'a str {
     if count == 1 { one } else { many }
 }
 
+/// The label of a fold row that hides `count` items, e.g. `▸ 3 more lines`.
+pub fn fold_label(count: usize, one: &str, many: &str) -> String {
+    format!("▸ {count} {}", plural(count, one, many))
+}
+
 /// Truncate `s` to `max` display columns, trailing it with `…` when it does
 /// not fit. `max` counts terminal display-width cells, so a wide glyph
 /// (CJK, most emoji) counts twice and the cut never lands mid-glyph.

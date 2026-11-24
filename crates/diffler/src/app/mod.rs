@@ -204,7 +204,7 @@ pub enum InputOp {
     WorktreeBranch,
     /// A comment written, edited or answered in the file viewer.
     Comment(Box<composer::ComposerKind>),
-    PrFilter(pr_filter::PrFilterField),
+    PrFilter(crate::ci::PrFilterOption),
 }
 
 /// What selecting a branch in the branch list does.
@@ -550,7 +550,7 @@ const UNFOCUSED_POLL_FACTOR: u64 = 12;
 pub enum CiRequest {
     Runs,
     Pr,
-    Prs,
+    Prs(crate::ci::PrFilter),
     PrComments(u64),
     PrConversation(u64),
     ReviewerCandidates(u64),
@@ -795,13 +795,16 @@ pub struct App {
     pub(crate) pending_walkthrough_open: Option<(String, diff::Slide)>,
     /// The agent's focus on a review still fetching.
     pub(crate) pending_focus: Option<diff::PendingFocus>,
+    /// Every open PR, whatever the PR list's filter.
     pub prs: Vec<crate::ci::PullRequest>,
     /// What the PR list shows beside each PR, by number.
     pub(crate) pr_summaries: std::collections::HashMap<u64, crate::ci::PrSummary>,
     pub prs_cursor: usize,
-    /// Which PRs `prs` holds; it lasts the session and starts at
+    /// The PR list's filter; it lasts the session and starts at
     /// `[prs] default_filter`.
     pub pr_filter: crate::ci::PrFilter,
+    /// The PR list's rows while `pr_filter` narrows it, `None` until the forge answers.
+    pub(crate) filtered_prs: Option<Vec<crate::ci::PullRequest>>,
     /// Scroll offsets of the two full-screen lists, so the view holds still
     /// until the cursor reaches its margin.
     pub(crate) prs_scroll: usize,
@@ -996,7 +999,6 @@ impl App {
         let highlighter = Arc::new(language::highlighter(theme.syntax, &[], &config.syntax));
         let keymaps = Keymaps::build(&config.keys, &mut startup_warnings);
         let transients = build_transients(&config.keys, &mut startup_warnings);
-        let pr_filter = crate::ci::PrFilter::from_preset(config.prs.default_filter);
 
         let mut message = startup_warnings
             .into_iter()
@@ -1059,6 +1061,16 @@ impl App {
             .and_then(|upstream| upstream.split_once('/'))
             .map(|(remote, _)| remote.to_owned());
         let ci_remotes = detect_ci_remotes(&review, &config.ci, pushes_to.as_deref());
+        let (pr_filter, filter_warning) = pr_filter::startup_filter(
+            config.prs.default_filter,
+            ci_remotes.first().map(|remote| remote.detected.kind),
+        );
+        if message.is_none() {
+            message = filter_warning.map(|text| StatusMessage {
+                text,
+                severity: Severity::Warning,
+            });
+        }
 
         let mut app = Self {
             review,
@@ -1104,6 +1116,7 @@ impl App {
             pr_summaries: std::collections::HashMap::new(),
             prs_cursor: 0,
             pr_filter,
+            filtered_prs: None,
             pending_pr_posts: Vec::new(),
             pr_posts_inflight: std::collections::HashSet::new(),
             runs_cursor: 0,
@@ -1351,11 +1364,13 @@ impl App {
                 Flow::Continue
             }
             AppEvent::CiPrs(filter, prs) => {
-                if filter == self.pr_filter {
-                    self.on_prs_event(prs)
-                } else {
-                    Flow::Continue
+                if filter.is_all() {
+                    return self.on_prs_event(prs);
                 }
+                if filter == self.pr_filter {
+                    self.on_filtered_prs(prs);
+                }
+                Flow::Continue
             }
             AppEvent::PrComments {
                 number,
@@ -1644,7 +1659,6 @@ impl App {
         }
     }
 
-    /// The change menu is jj's alone, so a git repo neither opens nor lists it.
     fn transient_marks(&self, kind: TransientKind) -> crate::transient::TransientMarks {
         if kind == TransientKind::PrFilter {
             self.pr_filter_marks()
@@ -1653,6 +1667,7 @@ impl App {
         }
     }
 
+    /// The change menu is jj's alone, so a git repo neither opens nor lists it.
     pub(crate) fn offers_transient(&self, kind: TransientKind) -> bool {
         kind != TransientKind::Change || !self.review.vcs.has_index()
     }

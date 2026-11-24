@@ -32,9 +32,15 @@ toggles), which lasts the session and starts at `[prs] default_filter`. The
 plain "all open" filter keeps the repository listing; any other filter goes
 through GitHub's search, as `repo:… is:pr is:open` plus qualifiers. GitLab maps
 it onto merge request list parameters. Forgejo's pulls endpoint filters by
-little, so we filter its newest open page ourselves. `ProviderKind::filters_by`
+little, so we filter its newest open page ourselves. `Capabilities::pr_filters`
 says which options each forge supports; the menu greys the rest and the
-provider refuses them.
+provider refuses them. A `default_filter` the forge cannot apply falls back to
+every open PR with a startup warning.
+
+`App::prs` always holds every open PR, since the status screen's open-PR group
+and PR lookups for focus and walkthroughs read it. A narrowed list arrives in
+`App::filtered_prs` through its own `CiRequest::Prs(filter)`, and a reply for a
+filter that is no longer active is dropped.
 
 ## PR page
 

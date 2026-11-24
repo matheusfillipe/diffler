@@ -155,12 +155,19 @@ impl GitLabProvider {
         }
     }
 
+    async fn my_username(&self) -> Result<String> {
+        let raw = self.api("user").await?;
+        let me: GitLabUser = parse_json("glab user", &raw)?;
+        Ok(me.username)
+    }
+
     /// The position needs a form field, so a body `--form` would misread goes
     /// out as a stub that the next edit replaces; the anchor holds either way.
     async fn post_discussion(&self, new: &NewPrComment) -> Result<DiscussionItem> {
         let refs = self.diff_refs(new.number).await?;
-        let staged = form_hazard(&new.body);
-        let body = if staged { "…" } else { new.body.as_str() };
+        let full_body = suggestion_body(new);
+        let staged = form_hazard(&full_body);
+        let body = if staged { "…" } else { full_body.as_str() };
         let mut fields = vec![("body".to_owned(), body.to_owned())];
         fields.extend(position_fields(&refs, new));
         let raw = self
@@ -187,7 +194,7 @@ impl GitLabProvider {
                     "projects/:fullpath/merge_requests/{}/discussions/{}/notes/{}",
                     new.number, discussion.id, note.id
                 ),
-                &[("body".to_owned(), new.body.clone())],
+                &[("body".to_owned(), full_body)],
             )
             .await?;
         let edited: NoteItem = parse_json("glab edit note", &raw)?;
@@ -267,10 +274,8 @@ impl ForgeProvider for GitLabProvider {
         }
         let mut path = "projects/:fullpath/merge_requests?state=opened&order_by=updated_at&per_page=20&with_labels_details=true".to_owned();
         if filter.preset == PrPreset::Review {
-            let raw = self.api("user").await?;
-            let me: GitLabUser = parse_json("glab user", &raw)?;
             path.push_str("&reviewer_username=");
-            path.push_str(&crate::ci::encode_path(&me.username));
+            path.push_str(&crate::ci::encode_path(&self.my_username().await?));
         }
         path.push_str(&merge_request_params(filter));
         let raw = self.api(&path).await?;
@@ -460,7 +465,7 @@ impl ForgeProvider for GitLabProvider {
                     }
                 }
             }
-            let mut fields = vec![("note".to_owned(), comment.body.clone())];
+            let mut fields = vec![("note".to_owned(), suggestion_body(comment))];
             fields.extend(position_fields(&refs, comment));
             match self.send_form("POST", &drafts, &fields).await {
                 Ok(raw) => {
@@ -566,6 +571,29 @@ impl ForgeProvider for GitLabProvider {
 /// `--form` reads a leading `@` as a filename and a bare `-` as standard input.
 fn form_hazard(value: &str) -> bool {
     value.starts_with('@') || value == "-"
+}
+
+/// GitLab applies a bare suggestion to the note's last line only, so we
+/// stretch it over the lines above that the comment's range covers.
+fn suggestion_body(new: &NewPrComment) -> String {
+    let above = match (new.start_line, new.line) {
+        (Some(start), Some(end)) if end > start => end - start,
+        _ => return new.body.clone(),
+    };
+    new.body
+        .split_inclusive('\n')
+        .map(|line| {
+            if crate::ci::is_suggestion_fence(line) {
+                line.replacen(
+                    crate::ci::SUGGESTION_FENCE,
+                    &format!("{}:-{above}+0", crate::ci::SUGGESTION_FENCE),
+                    1,
+                )
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect()
 }
 
 /// GitLab resolves an unchanged line only when the position names both sides.
@@ -1237,6 +1265,24 @@ mod tests {
             start_line: None,
             ..new_comment(0, None, true)
         }
+    }
+
+    #[test]
+    fn a_suggestion_on_a_range_covers_the_lines_above_the_anchor() {
+        let body = "use a loop\n```suggestion\nfor x in xs:\n    f(x)\n```\n";
+        let range = NewPrComment {
+            body: body.to_owned(),
+            ..new_comment(12, Some(10), true)
+        };
+        assert_eq!(
+            suggestion_body(&range),
+            "use a loop\n```suggestion:-2+0\nfor x in xs:\n    f(x)\n```\n"
+        );
+        let single = NewPrComment {
+            body: body.to_owned(),
+            ..new_comment(12, None, true)
+        };
+        assert_eq!(suggestion_body(&single), body);
     }
 
     #[tokio::test]

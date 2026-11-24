@@ -198,7 +198,6 @@ impl GitHubProvider {
         }
     }
 
-    /// For GraphQL calls, where `gh` expands no `{owner}`/`{repo}` placeholders.
     async fn search_prs(&self, search: &str) -> Result<Vec<ListedPr>> {
         let query = format!(
             "query($q:String!){{search(type:ISSUE,query:$q,first:50){{nodes{{\
@@ -223,6 +222,7 @@ impl GitHubProvider {
             .collect())
     }
 
+    /// For GraphQL calls, where `gh` expands no `{owner}`/`{repo}` placeholders.
     async fn repo_slug(&self) -> Result<(String, String)> {
         if let Some((owner, name)) = self.slug.as_deref().and_then(|s| s.split_once('/')) {
             return Ok((owner.to_owned(), name.to_owned()));

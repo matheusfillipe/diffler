@@ -523,7 +523,7 @@ impl App {
     fn shown_pr_author(&self, number: u64) -> Option<String> {
         let pr = match self.screen() {
             Screen::Pr => self.pr_page().map(|page| &page.pr),
-            Screen::Prs => self.prs.get(self.prs_cursor),
+            Screen::Prs => self.listed_prs().get(self.prs_cursor),
             _ => None,
         }?;
         (pr.number == number).then(|| pr.author.clone())

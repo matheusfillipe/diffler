@@ -1,0 +1,10 @@
+---
+source: crates/diffler/src/ui/prs.rs
+expression: terminal.backend()
+---
+" <cr> open · D review diff · b checkout · w open in a worktree · ? help         "
+"  search: is:closed   f change filter                                           "
+"▌   #3 Drop widgets  feat/drop → main                               alice       "
+"                                                                                "
+"                                                                                "
+" PRS  fixture@main · mcp off · 3 files, 0 viewed                                "

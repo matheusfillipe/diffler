@@ -46,15 +46,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let (body, bar) = super::screen_chrome(frame, app, HINTS);
 
     let open_figure_hint = app.active_keymap().chord_for(Action::OpenFigureGraph);
-    let suggest_key = app
-        .active_keymap()
-        .chord_for(Action::AddSuggestion)
-        .map(|chord| {
-            chord
-                .trim_start_matches('<')
-                .trim_end_matches('>')
-                .to_owned()
-        });
+    let suggest_key = app.active_keymap().chord_for(Action::AddSuggestion);
     app.queue_enrich_selected();
     // comment bodies are parsed to this width, so we set it before anything reads them
     let right_open = app

@@ -40,7 +40,7 @@ impl App {
         if !self.pr_checked {
             self.pending_ci = Some(CiRequest::Pr);
         } else if self.status.prs_loaded && !self.is_group_folded(super::status::Group::Prs) {
-            self.pending_ci = Some(CiRequest::Prs);
+            self.pending_ci = Some(CiRequest::Prs(crate::ci::PrFilter::default()));
         }
     }
 

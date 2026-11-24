@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::ci::provider::ProviderKind;
+use crate::ci::provider::{ProviderKind, capabilities_for};
 
 /// One preset at a time; the toggles of a [`PrFilter`] narrow it further.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -15,6 +15,12 @@ pub enum PrPreset {
     /// Open PRs I authored.
     Mine,
     Involves,
+}
+
+impl std::fmt::Display for PrPreset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
 }
 
 impl PrPreset {
@@ -64,15 +70,37 @@ pub enum PrFilterOption {
     Search,
 }
 
-impl ProviderKind {
+impl PrFilterOption {
+    pub const ALL: &'static [Self] = &[
+        Self::Review,
+        Self::Mine,
+        Self::Involves,
+        Self::HideDrafts,
+        Self::PassingChecks,
+        Self::Label,
+        Self::Author,
+        Self::Search,
+    ];
+
+    /// The toggles a raw search replaces, so they do nothing while one is set.
     #[must_use]
-    pub fn filters_by(self, option: PrFilterOption) -> bool {
+    pub fn is_toggle(self) -> bool {
+        matches!(
+            self,
+            Self::HideDrafts | Self::PassingChecks | Self::Label | Self::Author
+        )
+    }
+
+    fn words(self) -> &'static str {
         match self {
-            ProviderKind::GitHub => true,
-            ProviderKind::GitLab | ProviderKind::Forgejo => !matches!(
-                option,
-                PrFilterOption::Involves | PrFilterOption::PassingChecks | PrFilterOption::Search
-            ),
+            Self::Review => "filtering by review request",
+            Self::Mine => "filtering by authorship",
+            Self::Involves => "filtering by involvement",
+            Self::HideDrafts => "filtering out drafts",
+            Self::PassingChecks => "filtering by check status",
+            Self::Label => "filtering by label",
+            Self::Author => "filtering by author",
+            Self::Search => "a raw pull request search",
         }
     }
 }
@@ -86,58 +114,32 @@ impl PrFilter {
         }
     }
 
+    #[must_use]
+    pub fn is_set(&self, option: PrFilterOption) -> bool {
+        match option {
+            PrFilterOption::Review => self.preset == PrPreset::Review,
+            PrFilterOption::Mine => self.preset == PrPreset::Mine,
+            PrFilterOption::Involves => self.preset == PrPreset::Involves,
+            PrFilterOption::HideDrafts => self.hide_drafts,
+            PrFilterOption::PassingChecks => self.passing_checks,
+            PrFilterOption::Label => self.label.is_some(),
+            PrFilterOption::Author => self.author.is_some(),
+            PrFilterOption::Search => self.search.is_some(),
+        }
+    }
+
     /// The first part of this filter `kind` cannot apply, in words, so a
     /// provider refuses it out loud.
     #[must_use]
     pub fn declined_by(&self, kind: ProviderKind) -> Option<&'static str> {
-        [
-            (
-                self.preset == PrPreset::Review,
-                PrFilterOption::Review,
-                "filtering by review request",
-            ),
-            (
-                self.preset == PrPreset::Mine,
-                PrFilterOption::Mine,
-                "filtering by authorship",
-            ),
-            (
-                self.preset == PrPreset::Involves,
-                PrFilterOption::Involves,
-                "filtering by involvement",
-            ),
-            (
-                self.hide_drafts,
-                PrFilterOption::HideDrafts,
-                "filtering out drafts",
-            ),
-            (
-                self.passing_checks,
-                PrFilterOption::PassingChecks,
-                "filtering by check status",
-            ),
-            (
-                self.label.is_some(),
-                PrFilterOption::Label,
-                "filtering by label",
-            ),
-            (
-                self.author.is_some(),
-                PrFilterOption::Author,
-                "filtering by author",
-            ),
-            (
-                self.search.is_some(),
-                PrFilterOption::Search,
-                "a raw pull request search",
-            ),
-        ]
-        .into_iter()
-        .find(|&(set, option, _)| set && !kind.filters_by(option))
-        .map(|(_, _, what)| what)
+        let capabilities = capabilities_for(kind);
+        PrFilterOption::ALL
+            .iter()
+            .find(|&&option| self.is_set(option) && !capabilities.filters_by(option))
+            .map(|option| option.words())
     }
 
-    /// Whether this is today's plain "every open PR" list.
+    /// Whether this filter lists every open PR.
     #[must_use]
     pub fn is_all(&self) -> bool {
         *self == Self::default()
@@ -308,11 +310,12 @@ mod tests {
     #[test]
     fn gitlab_and_forgejo_decline_what_they_cannot_filter() {
         for kind in [ProviderKind::GitLab, ProviderKind::Forgejo] {
-            assert!(kind.filters_by(PrFilterOption::Review));
-            assert!(kind.filters_by(PrFilterOption::Label));
-            assert!(!kind.filters_by(PrFilterOption::Involves));
-            assert!(!kind.filters_by(PrFilterOption::PassingChecks));
-            assert!(!kind.filters_by(PrFilterOption::Search));
+            let capabilities = capabilities_for(kind);
+            assert!(capabilities.filters_by(PrFilterOption::Review));
+            assert!(capabilities.filters_by(PrFilterOption::Label));
+            assert!(!capabilities.filters_by(PrFilterOption::Involves));
+            assert!(!capabilities.filters_by(PrFilterOption::PassingChecks));
+            assert!(!capabilities.filters_by(PrFilterOption::Search));
         }
     }
 }

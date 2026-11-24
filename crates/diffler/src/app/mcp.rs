@@ -2439,7 +2439,7 @@ mod tests {
             "the PR isn't known yet: the walkthrough waits rather than opening empty"
         );
         assert!(
-            matches!(app.pending_ci, Some(crate::app::CiRequest::Prs)),
+            matches!(app.pending_ci, Some(crate::app::CiRequest::Prs(_))),
             "{:?}",
             app.pending_ci
         );

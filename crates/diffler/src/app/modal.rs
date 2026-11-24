@@ -349,12 +349,15 @@ impl App {
             return;
         };
         let body = buffer.trim();
-        // the review summary is optional and an empty description clears it;
-        // everything else needs content
+        // the review summary is optional, and an empty description or PR
+        // filter field clears it; everything else needs content
         if body.is_empty()
             && !matches!(
                 on_submit,
-                InputOp::ReviewBody { .. } | InputOp::PrField { .. } | InputOp::Describe { .. }
+                InputOp::ReviewBody { .. }
+                    | InputOp::PrField { .. }
+                    | InputOp::Describe { .. }
+                    | InputOp::PrFilter(_)
             )
         {
             return;

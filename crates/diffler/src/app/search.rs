@@ -180,7 +180,7 @@ impl App {
                 .map(|(i, run)| (i, format!("{} {}", run.name, run.title)))
                 .collect(),
             Screen::Prs => self
-                .prs
+                .listed_prs()
                 .iter()
                 .enumerate()
                 .map(|(i, pr)| (i, format!("{} {}", pr.headline(), pr.author)))

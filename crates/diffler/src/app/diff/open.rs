@@ -293,7 +293,7 @@ impl App {
     pub(crate) fn request_pr_list(&mut self) {
         if !self.status.prs_in_flight {
             self.status.prs_in_flight = true;
-            self.pending_ci = Some(crate::app::CiRequest::Prs);
+            self.pending_ci = Some(crate::app::CiRequest::Prs(crate::ci::PrFilter::default()));
         }
     }
 

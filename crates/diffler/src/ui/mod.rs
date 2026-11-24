@@ -14,6 +14,7 @@ mod pr;
 mod prs;
 mod runs;
 mod stats;
+pub use stats::stats_table;
 pub mod status;
 mod worktrees;
 

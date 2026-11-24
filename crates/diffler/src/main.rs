@@ -102,30 +102,11 @@ async fn main() -> color_eyre::Result<()> {
         return print_stats(&review, &loaded);
     }
     let mut app = App::new(review, loaded);
-    let target = match command {
-        Some(Command::Comments) => {
-            print_comments(&app);
-            return Ok(());
-        }
-        Some(Command::Pr { number }) => {
-            let number = match number {
-                Some(number) => number,
-                None => branch_pr(&app).await.unwrap_or_else(|err| fail(&err)),
-            };
-            Some(mcp::FocusTarget::Pr(number))
-        }
-        Some(Command::Open { location }) => {
-            let (file, line) = split_location(&location);
-            Some(mcp::FocusTarget::Code {
-                file: repo_relative(&root, &file),
-                line,
-                line_end: None,
-                review: None,
-            })
-        }
-        _ => None,
-    };
-    if let Some(target) = target
+    if matches!(command, Some(Command::Comments)) {
+        print_comments(&app);
+        return Ok(());
+    }
+    if let Some(target) = launch_target(&app, command, &root).await
         && let Err(err) = app.focus_at_launch(target)
     {
         fail(&err);
@@ -138,6 +119,33 @@ async fn main() -> color_eyre::Result<()> {
     set_mouse_capture(false);
     ratatui::restore();
     result
+}
+
+/// Where a subcommand asks the TUI to open.
+async fn launch_target(
+    app: &App,
+    command: Option<Command>,
+    root: &Path,
+) -> Option<mcp::FocusTarget> {
+    match command? {
+        Command::Pr { number } => {
+            let number = match number {
+                Some(number) => number,
+                None => branch_pr(app).await.unwrap_or_else(|err| fail(&err)),
+            };
+            Some(mcp::FocusTarget::Pr(number))
+        }
+        Command::Open { location } => {
+            let (file, line) = split_location(&location);
+            Some(mcp::FocusTarget::Code {
+                file: repo_relative(root, &file),
+                line,
+                line_end: None,
+                review: None,
+            })
+        }
+        Command::Config { .. } | Command::Stats | Command::Comments => None,
+    }
 }
 
 /// The open pull request whose head is the checked-out branch.
@@ -188,17 +196,8 @@ fn fail(message: &str) -> ! {
 // the TUI never starts on this path, so stdout is safe
 #[allow(clippy::print_stdout)]
 fn print_stats(review: &Review, loaded: &config::LoadedConfig) -> color_eyre::Result<()> {
-    // we count untracked files too, as the languages screen does
-    let untracked: Vec<String> = review
-        .status
-        .untracked
-        .files
-        .iter()
-        .map(|file| file.path.clone())
-        .collect();
-    let rules = loaded.config.classify.rules();
-    let stats = diffler_core::stats::scan_repo(&review.repo_root, &untracked, &rules)?;
-    print!("{}", app::stats::stats_table(&stats));
+    let stats = app::stats::stats_scan(review, &loaded.config.classify)()?;
+    print!("{}", ui::stats_table(&stats));
     Ok(())
 }
 
@@ -489,19 +488,9 @@ fn dispatch_stats(app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
         return;
     };
     let tx = tx.clone();
-    let root = app.review.repo_root.clone();
-    // we count untracked files too, so a new file counts like the rest
-    let untracked: Vec<String> = app
-        .review
-        .status
-        .untracked
-        .files
-        .iter()
-        .map(|file| file.path.clone())
-        .collect();
-    let rules = app.config.classify.rules();
+    let scan = app::stats::stats_scan(&app.review, &app.config.classify);
     tokio::task::spawn_blocking(move || {
-        let stats = diffler_core::stats::scan_repo(&root, &untracked, &rules).unwrap_or_default();
+        let stats = scan().unwrap_or_default();
         let _ = tx.send(AppEvent::RepoStats {
             stats: Box::new(stats),
             token: request.token,
@@ -770,9 +759,8 @@ fn dispatch_ci(app: &App, request: CiRequest, tx: &mpsc::UnboundedSender<AppEven
     };
     if let Some(remote) = remote {
         let provider = provider_for(&remote, &repo_root, branch.as_deref(), yaml_cache, etags);
-        let pr_filter = app.pr_filter.clone();
         tokio::spawn(async move {
-            let _ = tx.send(run_ci_request(provider, request, pr_filter).await);
+            let _ = tx.send(run_ci_request(provider, request).await);
         });
     }
 }
@@ -780,7 +768,6 @@ fn dispatch_ci(app: &App, request: CiRequest, tx: &mpsc::UnboundedSender<AppEven
 async fn run_ci_request(
     provider: Box<dyn crate::ci::ForgeProvider + Send>,
     request: CiRequest,
-    pr_filter: crate::ci::PrFilter,
 ) -> AppEvent {
     match request {
         CiRequest::Runs => match provider.list_runs(30).await {
@@ -794,8 +781,8 @@ async fn run_ci_request(
                 .await
                 .map_err(|err| err.to_string()),
         )),
-        CiRequest::Prs => match provider.list_prs(&pr_filter).await {
-            Ok(prs) => AppEvent::CiPrs(pr_filter, prs),
+        CiRequest::Prs(filter) => match provider.list_prs(&filter).await {
+            Ok(prs) => AppEvent::CiPrs(filter, prs),
             Err(err) => AppEvent::CiPrsError(err.to_string()),
         },
         CiRequest::PrComments(number) => match provider.pr_comments(number).await {

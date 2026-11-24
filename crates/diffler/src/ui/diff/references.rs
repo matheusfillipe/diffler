@@ -53,11 +53,7 @@ fn reference_block(look: BlockLook<'_>, entry: &RefEntry) -> Vec<Line<'static>> 
         let gutter = line
             .number
             .map_or_else(|| "    ".to_owned(), |n| format!("{n:>4}"));
-        let (mark, mark_fg) = match line.kind {
-            LineKind::Added => ("+ ", theme.added),
-            LineKind::Deleted => ("- ", theme.error_fg),
-            LineKind::Context => ("  ", theme.dim),
-        };
+        let (mark, mark_fg, _) = crate::ui::diff_render::line_look(theme, line.kind);
         let code = line.text.trim_end().get(indent..).unwrap_or_default();
         let text = crate::text::elide(code, usize::from(width).saturating_sub(11));
         let own = at == entry.own;

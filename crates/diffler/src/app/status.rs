@@ -3680,7 +3680,7 @@ mod tests {
     /// request is queued.
     async fn dispatch_if_queued(app: &App, provider: &crate::ci::GitHubProvider) {
         use crate::ci::ForgeProvider;
-        if matches!(app.pending_ci, Some(CiRequest::Prs)) {
+        if matches!(app.pending_ci, Some(CiRequest::Prs(_))) {
             let _ = provider.list_prs(&crate::ci::PrFilter::default()).await;
         }
     }
@@ -3698,7 +3698,7 @@ mod tests {
         let mut app = App::new(fixture.review(), LoadedConfig::default());
         assert!(!app.ci_remotes().is_empty(), "the forge is detected");
         assert!(
-            !matches!(app.pending_ci, Some(CiRequest::Prs)),
+            !matches!(app.pending_ci, Some(CiRequest::Prs(_))),
             "startup asks the forge for nothing this group needs: {:?}",
             app.pending_ci
         );
@@ -3728,7 +3728,7 @@ mod tests {
 
         cursor_to(&mut app, |row| matches!(row, Row::PrsHeader { .. }));
         app.handle(key('\t'));
-        assert!(matches!(app.pending_ci, Some(CiRequest::Prs)));
+        assert!(matches!(app.pending_ci, Some(CiRequest::Prs(_))));
         dispatch_if_queued(&app, &provider).await;
         assert_eq!(
             runner.calls().len(),
@@ -3773,7 +3773,7 @@ mod tests {
         app.ci_remotes = vec![github_remote()];
         cursor_to(&mut app, |row| matches!(row, Row::PrsHeader { .. }));
         app.handle(key('\t'));
-        assert!(matches!(app.pending_ci, Some(CiRequest::Prs)));
+        assert!(matches!(app.pending_ci, Some(CiRequest::Prs(_))));
         // the request is on the wire; its answer has not landed
         app.pending_ci = None;
         app.handle(key('\t'));
@@ -4202,7 +4202,7 @@ mod tests {
         app.status.group_folded[Group::Prs.index()] = false;
         app.on_ci_runs(Vec::new());
         assert!(
-            matches!(app.pending_ci, Some(CiRequest::Prs)),
+            matches!(app.pending_ci, Some(CiRequest::Prs(_))),
             "an open group keeps its list fresh"
         );
         app.pending_ci = None;

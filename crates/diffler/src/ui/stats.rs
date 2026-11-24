@@ -1,5 +1,7 @@
 //! The language breakdown table.
 
+use std::fmt::Write as _;
+
 use diffler_core::stats::{LanguageCount, RepoStats};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -187,6 +189,33 @@ fn left_out_line(theme: &Theme, stats: &RepoStats) -> Option<Line<'static>> {
         format!("  left out: {}", parts.join(" · ")),
         theme.dim_style(),
     ))
+}
+
+/// The breakdown as aligned plain text for a terminal, in the scan's code
+/// order and the screen's column order.
+pub fn stats_table(stats: &RepoStats) -> String {
+    let totals = stats.totals();
+    let rows: Vec<&LanguageCount> = stats.languages.iter().chain([&totals]).collect();
+    let width =
+        super::column_width(rows.iter().map(|row| row.name), usize::MAX).max("Language".len());
+    let mut out = format!(
+        "{}  {:>7}  {:>9}  {:>9}\n",
+        super::fit("Language", width),
+        "Files",
+        "Lines",
+        "Code"
+    );
+    for row in rows {
+        let _ = writeln!(
+            out,
+            "{}  {:>7}  {:>9}  {:>9}",
+            super::fit(row.name, width),
+            thousands(row.files),
+            thousands(row.lines),
+            thousands(row.code)
+        );
+    }
+    out
 }
 
 pub(super) fn thousands(value: usize) -> String {
@@ -385,5 +414,32 @@ mod tests {
         assert_eq!(super::thousands(1_000), "1,000");
         assert_eq!(super::thousands(49_314), "49,314");
         assert_eq!(super::thousands(1_234_567), "1,234,567");
+    }
+
+    #[test]
+    fn the_cli_table_aligns_each_language_and_ends_on_the_total() {
+        let row = |name, code| diffler_core::stats::LanguageCount {
+            name,
+            color: (0x80, 0x80, 0x80),
+            files: 1,
+            lines: code,
+            code,
+            comments: 0,
+            blanks: 0,
+            bytes: 0,
+        };
+        let stats = diffler_core::stats::RepoStats {
+            languages: vec![row("Rust", 1_200), row("TOML", 8)],
+            unknown_files: 0,
+            skipped_files: 0,
+            generated_files: 0,
+        };
+        assert_eq!(
+            super::stats_table(&stats),
+            "Language    Files      Lines       Code\n\
+             Rust            1      1,200      1,200\n\
+             TOML            1          8          8\n\
+             total           2      1,208      1,208\n"
+        );
     }
 }

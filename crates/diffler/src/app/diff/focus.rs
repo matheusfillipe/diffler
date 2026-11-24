@@ -755,7 +755,10 @@ mod tests {
 
         let focused = focus(&mut app, code("pr_only.rs", Some((2, 2)), Some("pr:7")));
         assert_eq!(focused.view, FocusView::Waiting);
-        assert!(matches!(app.pending_ci, Some(crate::app::CiRequest::Prs)));
+        assert!(matches!(
+            app.pending_ci,
+            Some(crate::app::CiRequest::Prs(_))
+        ));
 
         let head_oid = app.review.vcs.resolve("feature").expect("head");
         app.on_prs_event(vec![
@@ -777,6 +780,47 @@ mod tests {
         );
         assert_eq!(cursor_line(&app), Some(("pr_only.rs".to_owned(), Some(2))));
         assert!(app.pending_focus.is_none());
+    }
+
+    #[test]
+    fn a_pr_outside_the_pr_list_filter_still_lands() {
+        let fixture = pr_fixture();
+        let mut app = App::new(fixture.review(), LoadedConfig::default());
+        with_forge(&mut app);
+        app.pr_filter = crate::ci::PrFilter {
+            search: Some("is:closed".into()),
+            ..crate::ci::PrFilter::default()
+        };
+        app.filtered_prs = Some(Vec::new());
+
+        let focused = focus(&mut app, code("pr_only.rs", Some((2, 2)), Some("pr:7")));
+        assert_eq!(focused.view, FocusView::Waiting);
+        let Some(crate::app::CiRequest::Prs(filter)) = &app.pending_ci else {
+            panic!("the open PR list is requested");
+        };
+        assert!(filter.is_all());
+
+        let head_oid = app.review.vcs.resolve("feature").expect("head");
+        app.handle(crate::event::AppEvent::CiPrs(
+            crate::ci::PrFilter::default(),
+            vec![
+                crate::ci::PullRequest {
+                    number: 7,
+                    title: "add pr_only.rs".into(),
+                    url: None,
+                    base_ref: "main".into(),
+                    head_ref: "feature".into(),
+                    head_oid,
+                    author: "reviewer".into(),
+                }
+                .into(),
+            ],
+        ));
+
+        assert_eq!(
+            app.diff.as_ref().map(|diff| &diff.source),
+            Some(&ReviewSource::pr(7))
+        );
     }
 
     fn pr_fixture() -> Fixture {

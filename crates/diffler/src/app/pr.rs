@@ -195,13 +195,12 @@ impl App {
         }
         self.prs_cursor = 0;
         self.push_screen(super::Screen::Prs);
-        self.pending_ci = Some(super::CiRequest::Prs);
+        self.pending_ci = Some(self.pr_list_request());
     }
 
     pub(crate) fn on_prs_event(&mut self, listed: Vec<crate::ci::ListedPr>) -> super::Flow {
         // the status screen renders `prs` too, so new rows can shift its cursor
         let anchor = self.status_cursor_anchor();
-        self.pr_summaries.clear();
         self.prs.clear();
         for crate::ci::ListedPr { pr, summary } in listed {
             self.pr_summaries.insert(pr.number, summary);
@@ -209,7 +208,9 @@ impl App {
         }
         self.status.prs_loaded = true;
         self.status.prs_in_flight = false;
-        self.prs_cursor = self.prs_cursor.min(self.prs.len().saturating_sub(1));
+        self.prs_cursor = self
+            .prs_cursor
+            .min(self.listed_prs().len().saturating_sub(1));
         self.restore_status_cursor(anchor);
         if let Some((id, slide)) = self.pending_walkthrough_open.take() {
             self.open_walkthrough(&id, slide);
@@ -220,25 +221,25 @@ impl App {
 
     pub(crate) fn dispatch_prs(&mut self, action: crate::keymap::Action) {
         use crate::keymap::Action;
-        if let Some(cursor) = super::list_motion(self.prs_cursor, self.prs.len(), action) {
+        if let Some(cursor) = super::list_motion(self.prs_cursor, self.listed_prs().len(), action) {
             self.prs_cursor = cursor;
             return;
         }
         match action {
-            Action::Refresh => self.pending_ci = Some(super::CiRequest::Prs),
+            Action::Refresh => self.pending_ci = Some(self.pr_list_request()),
             Action::Open => {
-                if let Some(pr) = self.prs.get(self.prs_cursor).cloned() {
+                if let Some(pr) = self.listed_prs().get(self.prs_cursor).cloned() {
                     self.open_pr_page(pr);
                 }
             }
             Action::OpenPrDiff => {
-                if let Some(pr) = self.prs.get(self.prs_cursor).cloned() {
+                if let Some(pr) = self.listed_prs().get(self.prs_cursor).cloned() {
                     self.open_pr_review_for(pr);
                 }
             }
             Action::BranchCheckout => self.checkout_selected_pr(),
             Action::PrWorktree => {
-                if let Some(pr) = self.prs.get(self.prs_cursor).cloned() {
+                if let Some(pr) = self.listed_prs().get(self.prs_cursor).cloned() {
                     self.pr_worktree(&pr);
                 }
             }
@@ -253,7 +254,7 @@ impl App {
                 }
             }
             Action::RequestReviewer => {
-                if let Some(number) = self.prs.get(self.prs_cursor).map(|pr| pr.number) {
+                if let Some(number) = self.listed_prs().get(self.prs_cursor).map(|pr| pr.number) {
                     self.load_reviewer_candidates(number);
                 }
             }
@@ -262,7 +263,7 @@ impl App {
     }
 
     fn selected_pr_url(&mut self) -> Option<(Option<String>, String)> {
-        let Some(pr) = self.prs.get(self.prs_cursor) else {
+        let Some(pr) = self.listed_prs().get(self.prs_cursor) else {
             self.info("move to a pull request first");
             return None;
         };
@@ -305,7 +306,7 @@ impl App {
     }
 
     pub(crate) fn checkout_selected_pr(&mut self) {
-        let Some(pr) = self.prs.get(self.prs_cursor).cloned() else {
+        let Some(pr) = self.listed_prs().get(self.prs_cursor).cloned() else {
             return;
         };
         self.checkout_pr(&pr);

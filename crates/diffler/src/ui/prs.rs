@@ -24,12 +24,13 @@ const HINTS: &[Hint] = &[
 ];
 
 pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
-    let (mut body, bar) = super::screen_chrome(frame, app, HINTS);
-    if !app.pr_filter.is_all() && body.height > 1 {
-        frame.render_widget(Paragraph::new(filter_line(app)), Rect { height: 1, ..body });
-        body.y += 1;
-        body.height -= 1;
-    }
+    let (body, bar) = if app.pr_filter.is_all() {
+        super::screen_chrome(frame, app, HINTS)
+    } else {
+        let (header, body, bar) = super::screen_chrome_with_header(frame, app, HINTS);
+        frame.render_widget(Paragraph::new(filter_line(app)), header);
+        (body, bar)
+    };
     draw_list(frame, app, body);
     frame.render_widget(Paragraph::new(super::status_bar(app, bar.width)), bar);
 }
@@ -42,20 +43,24 @@ fn filter_chord(app: &App) -> String {
 }
 
 fn filter_line(app: &App) -> Line<'static> {
-    let dim = app.theme.dim_style();
-    Line::from(vec![
-        Span::styled(format!("  {}", app.pr_filter.describe().join(" · ")), dim),
-        Span::styled(
-            format!("   {}", filter_chord(app)),
-            Style::new().fg(app.theme.fg),
-        ),
-        Span::styled(" change filter", dim),
-    ])
+    let mut spans = vec![Span::styled(
+        format!("  {}  ", app.pr_filter.describe().join(" · ")),
+        app.theme.dim_style(),
+    )];
+    spans.extend(
+        super::hint_line(
+            app,
+            &[Hint::Prefix(TransientKind::PrFilter, "change filter")],
+        )
+        .spans,
+    );
+    Line::from(spans)
 }
 
 fn draw_list(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
-    if app.prs.is_empty() {
-        let text = if app.pr_filter.is_all() || !app.status.prs_loaded {
+    let prs = app.listed_prs();
+    if prs.is_empty() {
+        let text = if app.pr_filter.is_all() || !app.listed_prs_loaded() {
             "  no open pull requests…".to_owned()
         } else {
             format!(
@@ -70,12 +75,9 @@ fn draw_list(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         return;
     }
     let height = area.height.max(1) as usize;
-    let scroll = super::scroll_to_cursor(app.prs_cursor, app.prs_scroll, height, app.prs.len());
-    app.prs_scroll = scroll;
-    let author_width =
-        super::column_width(app.prs.iter().map(|pr| pr.author.as_str()), AUTHOR_WIDTH);
-    let rows: Vec<Line<'static>> = app
-        .prs
+    let scroll = super::scroll_to_cursor(app.prs_cursor, app.prs_scroll, height, prs.len());
+    let author_width = super::column_width(prs.iter().map(|pr| pr.author.as_str()), AUTHOR_WIDTH);
+    let rows: Vec<Line<'static>> = prs
         .iter()
         .enumerate()
         .skip(scroll)
@@ -90,6 +92,7 @@ fn draw_list(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         })
         .collect();
     frame.render_widget(Paragraph::new(rows), area);
+    app.prs_scroll = scroll;
 }
 
 /// We size the age column for `12mo`, the widest age we render.
@@ -390,8 +393,22 @@ mod tests {
             label: Some("backend".to_owned()),
             ..crate::ci::PrFilter::default()
         };
-        app.status.prs_loaded = true;
-        app.prs = vec![pr(12, "Add widgets", "alice", "feat/widgets", "main")];
+        app.filtered_prs = Some(vec![pr(12, "Add widgets", "alice", "feat/widgets", "main")]);
+        let mut terminal = Terminal::new(TestBackend::new(80, 6)).expect("terminal");
+        terminal.draw(|f| draw(f, &mut app)).expect("draw");
+        insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn a_raw_search_states_only_itself_above_the_list() {
+        let fixture = standard_fixture();
+        let mut app = prs_app(&fixture);
+        app.pr_filter = crate::ci::PrFilter {
+            hide_drafts: true,
+            search: Some("is:closed".to_owned()),
+            ..crate::ci::PrFilter::default()
+        };
+        app.filtered_prs = Some(vec![pr(3, "Drop widgets", "alice", "feat/drop", "main")]);
         let mut terminal = Terminal::new(TestBackend::new(80, 6)).expect("terminal");
         terminal.draw(|f| draw(f, &mut app)).expect("draw");
         insta::assert_snapshot!(terminal.backend());
@@ -402,7 +419,7 @@ mod tests {
         let fixture = standard_fixture();
         let mut app = prs_app(&fixture);
         app.pr_filter = crate::ci::PrFilter::from_preset(crate::ci::PrPreset::Mine);
-        app.status.prs_loaded = true;
+        app.filtered_prs = Some(Vec::new());
         let mut terminal = Terminal::new(TestBackend::new(80, 6)).expect("terminal");
         terminal.draw(|f| draw(f, &mut app)).expect("draw");
         insta::assert_snapshot!(terminal.backend());

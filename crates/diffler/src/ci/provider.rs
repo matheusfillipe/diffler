@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 
 use crate::ci::error::{CiError, Result};
-use crate::ci::filter::PrFilter;
+use crate::ci::filter::{PrFilter, PrFilterOption};
 use crate::ci::model::{
     Capabilities, CiRun, DagSource, JobId, ListedPr, LogChunk, LogMode, PrComment, PrConversation,
     PrNote, PullRequest, ReviewerCandidate, RunDetail, RunExtras, RunId,
@@ -45,21 +45,33 @@ pub fn capabilities_for(kind: ProviderKind) -> Capabilities {
             logs: LogMode::Dump,
             resolve_threads: true,
             file_comments: true,
+            pr_filters: PrFilterOption::ALL,
         },
         ProviderKind::GitLab => Capabilities {
             dag: DagSource::RunApi,
             logs: LogMode::Poll,
             resolve_threads: true,
             file_comments: true,
+            pr_filters: LIST_API_FILTERS,
         },
         ProviderKind::Forgejo => Capabilities {
             dag: DagSource::None,
             logs: LogMode::None,
             resolve_threads: false,
             file_comments: false,
+            pr_filters: LIST_API_FILTERS,
         },
     }
 }
+
+/// What a forge's plain pull request list endpoint can narrow by.
+const LIST_API_FILTERS: &[PrFilterOption] = &[
+    PrFilterOption::Review,
+    PrFilterOption::Mine,
+    PrFilterOption::HideDrafts,
+    PrFilterOption::Label,
+    PrFilterOption::Author,
+];
 
 // async-trait needs `Sync` to box the default methods' futures without knowing `Self`
 #[async_trait]

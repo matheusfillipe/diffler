@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use diffler_core::model::LineKind;
 use diffler_core::session::{Comment, CommentStatus};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -343,11 +344,12 @@ pub(in crate::ui) fn card_row(
         }
         CommentLine::Figure { .. } => return None,
         CommentLine::Suggestion { added, text } => {
-            let (sign, sign_fg, line_bg) = if *added {
-                ("+ ", theme.added, theme.add_line_bg)
+            let kind = if *added {
+                LineKind::Added
             } else {
-                ("- ", theme.error_fg, theme.del_line_bg)
+                LineKind::Deleted
             };
+            let (sign, sign_fg, line_bg) = crate::ui::diff_render::line_look(theme, kind);
             let spans = vec![
                 bar,
                 Span::styled(sign, Style::new().fg(sign_fg).bg(line_bg)),
